@@ -36,11 +36,16 @@ export const protocolOperations = (
       ...(operation.annotations === undefined ? {} : { annotations: operation.annotations }),
       ...(operation._meta === undefined ? {} : { _meta: operation._meta }),
       input: operation.input,
-      ...(operation.outputSchema === undefined ? {} : { outputSchema: operation.outputSchema }),
       run: operation.run,
     };
-    if (kind === "query") queries[name] = operationDeclaration({ ...native, kind });
-    else mutations[name] = operationDeclaration({ ...native, kind: "mutation" });
+    // Copy the property itself: an adapter may build a large output schema only when it is read.
+    const output = Object.getOwnPropertyDescriptor(operation, "outputSchema");
+    const withOutput = <T extends object>(target: T): T =>
+      output === undefined || (output.get === undefined && output.value === undefined)
+        ? target
+        : Object.defineProperty(target, "outputSchema", { ...output, enumerable: true });
+    if (kind === "query") queries[name] = operationDeclaration(withOutput({ ...native, kind }));
+    else mutations[name] = operationDeclaration(withOutput({ ...native, kind: "mutation" }));
   }
   return { queries, mutations };
 };

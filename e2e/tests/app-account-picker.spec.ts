@@ -629,13 +629,20 @@ export default defineApp({ accounts: { service } }, async () => ({ queries: {} }
         yield* browser.use("Submit the stale draft", (page) =>
           page.getByRole("textbox", { name: "Account name", exact: true }).press("Enter"),
         );
-        yield* browser.use("A changed provider cannot receive the stale form", (page) =>
-          page
-            .getByText("The app’s account setup changed. Close this form and try again.", {
-              exact: true,
-            })
-            .waitFor({ state: "visible" }),
-        );
+        yield* browser.use("A changed provider cannot receive the stale form", (page) => {
+          const form = page.getByRole("dialog");
+          return Promise.all([
+            form.getByText("App account setup changed", { exact: true }).waitFor(),
+            form
+              .getByText("This connection no longer matches the app’s requirements.", {
+                exact: true,
+              })
+              .waitFor(),
+            form
+              .getByText("Close this form and start account setup again.", { exact: true })
+              .waitFor(),
+          ]);
+        });
         expect(starts).toBe(attemptsBeforeChange);
         expect(
           yield* browser.use("The rejected draft remains available", (page) =>

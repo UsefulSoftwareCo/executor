@@ -209,7 +209,11 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
             page.waitForResponse(
               (response) =>
                 response.request().method() === "DELETE" &&
-                new URL(response.url()).pathname === `${prefix}/accounts/${deleting}`,
+                [actors.organization.id, actors.organization.slug].some(
+                  (organization) =>
+                    new URL(response.url()).pathname ===
+                    `/api/organizations/${organization}/accounts/${deleting}`,
+                ),
             ),
             page.getByRole("button", { name: "Delete account", exact: true }).click(),
           ]).then(([response]) => response.status()),

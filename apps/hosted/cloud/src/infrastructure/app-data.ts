@@ -15,7 +15,10 @@ const NativeLoader = Schema.declare(
     "get" in value &&
     typeof value.get === "function",
 );
-type Supervisor = Pick<Effect.Success<ReturnType<typeof makeFacetSupervisor>>, "invoke" | "cancel">;
+type Supervisor = Pick<
+  Effect.Success<ReturnType<typeof makeFacetSupervisor>>,
+  "invoke" | "cancel" | "cache"
+>;
 /** One supervisor name is one immutable configured-app ID, across deployments. */
 export class AppDataSupervisor extends Cloudflare.DurableObject<AppDataSupervisor, Supervisor>()(
   "AppDataSupervisor",
@@ -34,6 +37,7 @@ export const AppDataSupervisorLive = AppDataSupervisor.make(
       ).pipe(Effect.orDie);
       const supervisor = yield* makeFacetSupervisor(state.raw, loader);
       return {
+        cache: supervisor.cache,
         invoke: (
           input: typeof FacetInvocation.Type,
           load: () => Promise<typeof FacetBundle.Type>,

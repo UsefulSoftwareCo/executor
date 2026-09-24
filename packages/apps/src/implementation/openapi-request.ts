@@ -12,6 +12,7 @@ import {
 } from "effect/unstable/http";
 import {
   OpenapiResponseError,
+  ApiErrorRecovery,
   ApiErrorResponse,
   defaultOpenapiErrorLimits,
 } from "../contracts/api-response-error.ts";
@@ -28,6 +29,9 @@ import {
 } from "../contracts/openapi.ts";
 
 type DeclaredError = OpenapiErrorResponse & { readonly decoder: Schema.Decoder<Schema.Json> };
+
+// Recovery is optional for arbitrary APIs: a missing or malformed value keeps the declared error.
+const bodyRecovery = Schema.decodeUnknownOption(Schema.Struct({ recovery: ApiErrorRecovery }));
 
 // Read once with byte/time bounds. Unsupported or invalid responses retain the generic failure.
 function responseError(
@@ -65,10 +69,12 @@ function responseError(
                 Schema.Struct({ message: ApiErrorResponse.fields.message }),
               )(parsed.value);
         if (Option.isNone(message)) continue;
+        const recovery = bodyRecovery(parsed.value);
         return new OpenapiResponseError({
           code: candidate.code,
           status: response.status,
           message: message.value.message,
+          ...(Option.isSome(recovery) ? { recovery: recovery.value.recovery } : {}),
         });
       }
     }
@@ -91,6 +97,43 @@ const swaggerRequest = Schema.decodeUnknownSync(
     ),
   }),
 );
+/** Reserved characters an `allowReserved` path value keeps; `?` and `#` would end the path. */
+const reservedPath = new Set([
+  ":",
+  "@",
+  "!",
+  "$",
+  "&",
+  "'",
+  "(",
+  ")",
+  "*",
+  "+",
+  ",",
+  ";",
+  "=",
+  "/",
+]);
+/**
+ * Swagger escapes every path value, so `allowReserved` path values (Google's `{+name}`) are
+ * expanded here. Existing escapes are kept unless they decode to a dot, a separator, `?`, `#`
+ * or another escape, which could change the path later. Dot and empty segments are rejected.
+ */
+function reservedPathValue(value: unknown): string {
+  const text = Array.isArray(value) ? value.map(scalar).join(",") : scalar(value);
+  if (/[?#\\]/.test(text)) throw new Error("This path value contains a forbidden character");
+  const encoded = text.replace(/%[0-9A-Fa-f]{2}|[^]/gu, (part) => {
+    if (part.length === 3 && part.startsWith("%")) {
+      if ("./\\?#%".includes(String.fromCharCode(Number.parseInt(part.slice(1), 16))))
+        throw new Error("This path value contains a forbidden escape");
+      return part;
+    }
+    return reservedPath.has(part) ? part : encodeURIComponent(part);
+  });
+  if (encoded.split("/").some((segment) => segment === "" || segment === "." || segment === ".."))
+    throw new Error("This path value would change the request path");
+  return encoded;
+}
 const bytes = (value: unknown) =>
   Uint8Array.from(atob(scalar(value)), (char) => char.charCodeAt(0));
 /** Create request helpers from credential-free generated authentication metadata. */
@@ -154,10 +197,19 @@ export function createRequest(config: {
             if (authorized === undefined)
               throw new Error("The selected account cannot call this tool");
             const parameters: Record<string, unknown> = {};
-            for (const p of op.request.parameters) {
+            // Reserved path values are expanded before Swagger sees the operation.
+            let path = op.path;
+            const swaggerParameters = op.request.parameters.filter((p) => {
               const group = args[p.in === "header" ? "headers" : p.in];
-              if (group !== undefined) parameters[`${p.in}.${p.name}`] = object(group)[p.name];
-            }
+              const value = group === undefined ? undefined : object(group)[p.name];
+              if (p.in === "path" && p.allowReserved === true && p.content === undefined) {
+                if (value === undefined) throw new Error("A required path parameter is missing");
+                path = path.replaceAll(`{${p.name}}`, reservedPathValue(value));
+                return false;
+              }
+              if (group !== undefined) parameters[`${p.in}.${p.name}`] = value;
+              return true;
+            });
             const content = op.request.requestBody?.content ?? {};
             const contentType =
               args.contentType === undefined ? Object.keys(content)[0] : scalar(args.contentType);
@@ -190,13 +242,17 @@ export function createRequest(config: {
                   servers: [{ url: op.baseUrl }],
                   components: { securitySchemes: op.securitySchemes },
                   paths: {
-                    [op.path]: {
-                      [op.method.toLowerCase()]: { ...op.request, operationId: op.name },
+                    [path]: {
+                      [op.method.toLowerCase()]: {
+                        ...op.request,
+                        parameters: swaggerParameters,
+                        operationId: op.name,
+                      },
                     },
                   },
                 },
                 operationId: op.name,
-                pathName: op.path,
+                pathName: path,
                 method: op.method.toLowerCase(),
                 parameters,
                 securities: { authorized },
@@ -206,10 +262,24 @@ export function createRequest(config: {
             );
             // The account is authorized for the pinned API origin only. Redirects
             // stay manual so a provider cannot forward credentials to another host.
+            // Parameter values also cannot add dot segments, which Swagger leaves unescaped,
+            // or leave the operation's fixed path prefix.
+            const pathname = prepared.url.replace(/^[^:]+:\/\/[^/]*/, "").split(/[?#]/)[0] ?? "";
+            if (pathname.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment)))
+              throw new Error("This path value would change the request path");
             const url = new URL(prepared.url);
-            if (url.origin !== new URL(op.baseUrl).origin || url.username || url.password)
+            const brace = op.path.indexOf("{");
+            const prefix = new URL(op.baseUrl + (brace < 0 ? op.path : op.path.slice(0, brace)));
+            if (
+              url.origin !== prefix.origin ||
+              !url.pathname.startsWith(prefix.pathname) ||
+              url.username ||
+              url.password
+            )
               throw new Error("The request escaped its API origin");
             const headers = new Headers(prepared.headers);
+            // GitHub requires this header; Workers do not supply one by default.
+            if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             if (prepared.body instanceof FormData) headers.delete("content-type");
             return { ...prepared, url, headers };
           },

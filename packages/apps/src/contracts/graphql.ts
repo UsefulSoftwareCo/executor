@@ -122,3 +122,16 @@ export interface GraphqlTool {
 }
 /** One tool per root field; subscriptions require a separate long-lived host. */
 export type GraphqlTools = Readonly<Record<string, GraphqlTool>>;
+
+/** Persisted execution data for one root field; no credentials or executable schema. */
+export const GraphqlToolDefinition = Schema.Struct({
+  name: Name,
+  kind: Schema.Literals(["query", "mutation"]),
+  field: Name,
+  description: Schema.String,
+  arguments: Schema.Array(Schema.Struct({ name: Name, type: Schema.String })),
+  inputSchema: JsonObject,
+  composite: Schema.Boolean,
+  selection: Schema.String,
+});
+export type GraphqlToolDefinition = typeof GraphqlToolDefinition.Type;

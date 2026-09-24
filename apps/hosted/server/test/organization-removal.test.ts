@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Layer } from "effect";
-import { StorageError } from "@executor-js/sdk/core";
+import { StorageError, WebhookConflict } from "@executor-js/sdk/core";
 import { removeOrganizationDurably } from "../src/implementation/organization-removal.ts";
 import {
   OrganizationBilling,
@@ -41,6 +41,7 @@ const recorder = () => {
 const settled = (overrides?: {
   readonly ownerRemove?: Effect.Effect<unknown, unknown>;
   readonly logo?: string | null;
+  readonly webhookRemove?: Effect.Effect<{ status: string }, unknown>;
 }) => {
   const calls: Array<string> = [];
   const record: { current: OrganizationRemovalRecord } = {
@@ -53,9 +54,15 @@ const settled = (overrides?: {
   };
   const executor = {
     // The purge already ran, so this owner has no apps and no webhooks left.
-    apps: { list: () => Effect.succeed([]) },
+    apps: { list: () => Effect.succeed(overrides?.webhookRemove ? [{ id: "app_synthetic" }] : []) },
     accounts: { list: () => Effect.succeed([]) },
-    webhooks: { list: () => Effect.succeed([]), remove: () => Effect.void },
+    webhooks: {
+      list: () =>
+        Effect.succeed(
+          overrides?.webhookRemove ? [{ id: "hook_synthetic", status: "active" }] : [],
+        ),
+      remove: () => overrides?.webhookRemove ?? Effect.succeed({ status: "stopped" }),
+    },
     owners: {
       remove: () =>
         Effect.sync(() => calls.push("owners.remove")).pipe(
@@ -172,4 +179,48 @@ test("a step that keeps failing reports its organization and its step name", asy
   // The run stops there; no later step runs against a store that is unreachable.
   assert.deepEqual(steps, ["unregister-webhooks", "purge-owner-store"]);
   assert.ok(!world.calls.includes("removals.finish"));
+});
+
+test("webhook lease contention is retried inside the unregister step", async () => {
+  let attempts = 0;
+  const world = settled({
+    webhookRemove: Effect.suspend(() =>
+      ++attempts === 1 ? Effect.fail(new WebhookConflict()) : Effect.succeed({ status: "stopped" }),
+    ),
+  });
+  const { run, steps } = recorder();
+  await Effect.runPromise(
+    removeOrganizationDurably(organization, run).pipe(Effect.provide(world.services)),
+  );
+  assert.equal(attempts, 2);
+  assert.deepEqual(steps, ordered);
+  assert.equal(world.record.current.status, "done");
+});
+
+test("an unfinished unregister stays in its provider step and cannot purge the owner", async () => {
+  const world = settled({ webhookRemove: Effect.succeed({ status: "stopping" }) });
+  const { run, steps } = recorder();
+  const failure = await Effect.runPromise(
+    Effect.flip(removeOrganizationDurably(organization, run).pipe(Effect.provide(world.services))),
+  );
+  assert.equal(failure._tag, "OrganizationRemovalFailed");
+  assert.equal(failure.step, "unregister-webhooks");
+  assert.deepEqual(steps, ["unregister-webhooks"]);
+  assert.ok(!world.calls.includes("owners.remove"));
+});
+
+test("provider failures retain the workflow retry policy instead of the lease retry", async () => {
+  let attempts = 0;
+  const world = settled({
+    webhookRemove: Effect.suspend(() => {
+      attempts++;
+      return Effect.fail(new StorageError());
+    }),
+  });
+  const { run } = recorder();
+  await Effect.runPromiseExit(
+    removeOrganizationDurably(organization, run).pipe(Effect.provide(world.services)),
+  );
+  assert.equal(attempts, 1);
+  assert.ok(!world.calls.includes("owners.remove"));
 });

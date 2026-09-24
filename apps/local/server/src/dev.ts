@@ -13,7 +13,7 @@ const development = Effect.gen(function* () {
   const server = yield* startLocalServer(settings, undefined, { web, devtools: localDevtools });
   const link = yield* server.issuePairingLink;
   yield* Console.log(
-    `Executor dev: ${server.url}\nUI hot reload is enabled.\nConnect (one use, expires in 5 minutes):\n${Redacted.value(link.url)}`,
+    `Executor dev: ${settings.browserOrigin ?? server.url}\nUI hot reload is enabled.\nConnect (one use, expires in 5 minutes):\n${Redacted.value(link.url)}`,
   );
   yield* Effect.never;
 });

@@ -1,6 +1,9 @@
 /** Telemetry configuration is parsed at composition roots; headers remain redacted. */
 import { Config, Context, Effect, Option, Schema } from "effect";
 
+/** Bound each collector request, including its acknowledgement; exporter retries retain the batch. */
+export const telemetryRequestTimeout = "5 seconds" as const;
+
 const Endpoint = Schema.String.check(
   Schema.makeFilter(
     (value) => {

@@ -23,7 +23,7 @@ import {
   Clock01Icon,
 } from "@hugeicons/core-free-icons";
 
-/** Products supply metadata reconciliation and navigation; source authoring belongs to agents. */
+/** Products supply metadata reconciliation and navigation; people edit skill files in the Skills view; agents author other source. */
 export function AppWorkspace<E>({
   app,
   atoms,

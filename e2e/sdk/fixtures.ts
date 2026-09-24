@@ -1,5 +1,15 @@
 /** Fixture control is loopback-only. Test callers receive sessions, never database credentials. */
-import { Config, Effect, FileSystem, Path, Redacted, Schedule, Schema, Stream } from "effect";
+import {
+  Cause,
+  Config,
+  Effect,
+  FileSystem,
+  Path,
+  Redacted,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { randomBytes } from "node:crypto";
@@ -9,7 +19,13 @@ export { FixtureControl, FixtureActor, FixtureActors } from "./contracts.ts";
 /** Safe errors describe the control operation without the capability or response body. */
 export class FixtureFailed extends Schema.TaggedError<FixtureFailed>()("FixtureFailed", {
   operation: Schema.String,
-}) {}
+  status: Schema.optional(Schema.Number),
+  reason: Schema.optional(Schema.Literals(["timeout", "transport"])),
+}) {
+  override get message() {
+    return `Fixture ${this.operation} failed${this.status === undefined ? (this.reason === undefined ? "" : ` (${this.reason})`) : ` (HTTP ${this.status})`}`;
+  }
+}
 
 /** Invoke an authenticated local control operation with bounded lifetime. */
 export const fixtureRequest = (
@@ -26,12 +42,20 @@ export const fixtureRequest = (
       ).pipe(HttpClientRequest.bearerToken(control.token));
       if (payload !== undefined) request = yield* HttpClientRequest.bodyJson(request, payload);
       const response = yield* http.execute(request);
-      if (response.status !== 200) return yield* new FixtureFailed({ operation: path });
+      if (response.status !== 200)
+        return yield* new FixtureFailed({ operation: path, status: response.status });
       return yield* response.json;
     }),
   ).pipe(
     Effect.timeout(timeout),
-    Effect.mapError(() => new FixtureFailed({ operation: path })),
+    Effect.mapError((cause) =>
+      Schema.is(FixtureFailed)(cause)
+        ? cause
+        : new FixtureFailed({
+            operation: path,
+            reason: Cause.isTimeoutError(cause) ? "timeout" : "transport",
+          }),
+    ),
   );
 
 /** Parse the private capability supplied by an environment owner to a test process. */

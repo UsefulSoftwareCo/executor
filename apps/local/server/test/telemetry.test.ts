@@ -106,7 +106,7 @@ test(
                   origin: from,
                   "content-type": "application/json",
                   ...(authenticated
-                    ? { cookie: `${sessionCookie(port)}=${Redacted.value(cookie)}` }
+                    ? { cookie: `${sessionCookie({ port })}=${Redacted.value(cookie)}` }
                     : {}),
                 },
                 body,

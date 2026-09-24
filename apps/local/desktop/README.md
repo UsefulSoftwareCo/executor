@@ -11,11 +11,10 @@ to use Electron in Node mode.
 
 ## Run
 
-Use Node 22.23+ and an authenticated 1Password CLI. Create an ignored
-`.env.development.op` in the repository root with 1Password references for
-`EXECUTOR_API_KEY` and `EXECUTOR_ENCRYPTION_KEY`. The resolved values must meet
-the [local server configuration](../server/README.md#configuration) requirements.
-Then run from the repository root:
+Use Node 22.23+. No configuration is needed: `scripts/local-dev.ts` supplies a
+development key pair from the checkout's ignored `.local/dev/`. Variables that
+you set, such as the [local server configuration](../server/README.md#configuration),
+win over these defaults. Run from the repository root:
 
 ```sh
 bun install
@@ -28,8 +27,7 @@ Node runtime. After changes to Electron or server source, rerun
 `bun run desktop:dev` to rebuild and restart.
 
 On macOS, reopen `.local/desktop-runtime/Executor Dev.app` from Finder. Its launcher
-resolves the repository's ignored `.env.development.op` through `op run` each time.
-It writes no resolved credentials to disk. The bundle remains attached to this
+loads the same `scripts/local-dev.ts` defaults each time. The bundle remains attached to this
 workspace, like T3 Code's development launcher. It is not a release installer.
 Finder launches write diagnostics to `.local/desktop.log`.
 
@@ -50,7 +48,7 @@ MCP clients can then use that browser for local consent.
 
 ## Runtime
 
-- `.local/desktop/` holds the desktop database and retained builds. Set
+- `.local/dev/desktop/` holds the desktop database and retained builds. Set
   `EXECUTOR_DESKTOP_DATA_DIR` to choose another directory. Do not point two running
   hosts at the same data directory.
 - `.local/desktop-shell/` holds Chromium's application profile. Browser session

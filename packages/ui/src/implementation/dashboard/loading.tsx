@@ -5,12 +5,15 @@ import { PageFrame, PageHeader } from "./page.tsx";
 /** One placeholder shares the footprint of an installed app card. */
 export function AppCardSkeleton() {
   return (
-    <div aria-hidden className="flex min-h-[137px] flex-col rounded-lg border p-4">
-      <div className="flex items-center gap-3">
-        <Skeleton className="size-8.5 shrink-0 rounded-md" />
-        <Skeleton className="h-3.5 w-28 max-w-[60%]" />
+    <div
+      aria-hidden
+      className="flex min-h-[137px] flex-col rounded-lg border p-4 max-[600px]:grid max-[600px]:min-h-0 max-[600px]:grid-cols-[auto_minmax(0,1fr)] max-[600px]:items-center max-[600px]:gap-x-3 max-[600px]:gap-y-1.5 max-[600px]:px-3.5 max-[600px]:py-3"
+    >
+      <div className="flex items-center gap-3 max-[600px]:contents">
+        <Skeleton className="size-8.5 shrink-0 rounded-md max-[600px]:row-span-2" />
+        <Skeleton className="h-3.5 w-28 max-w-[60%] max-[600px]:self-end" />
       </div>
-      <Skeleton className="mt-auto h-3 w-36 max-w-[80%]" />
+      <Skeleton className="mt-auto h-3 w-36 max-w-[80%] max-[600px]:col-start-2 max-[600px]:mt-0 max-[600px]:self-start" />
     </div>
   );
 }
@@ -21,7 +24,7 @@ export function AppCardsSkeleton() {
     <div
       role="status"
       aria-label="Loading apps"
-      className="grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1"
+      className="grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1 max-[600px]:gap-2"
     >
       {Array.from({ length: 6 }, (_, index) => (
         <AppCardSkeleton key={index} />

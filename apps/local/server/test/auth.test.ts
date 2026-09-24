@@ -137,7 +137,7 @@ test(
               assert.ok(cookie);
               assert.match(
                 cookie,
-                new RegExp(`^${sessionCookie(Number(new URL(server.url).port))}=`),
+                new RegExp(`^${sessionCookie({ port: Number(new URL(server.url).port) })}=`),
               );
               const authenticated = await client(server.url, { cookie, origin: server.url });
               for (let count = 0; count < 2; count++) {

@@ -87,9 +87,28 @@ export class SkillDefinitionInvalid extends Schema.TaggedError<SkillDefinitionIn
 export const AppSkills = Schema.Array(AppSkillSource).check(
   Schema.makeFilter((skills) => new Set(skills.map((skill) => skill.name)).size === skills.length),
 );
-/** Safe loader failure; source bodies and authorization headers remain private. */
+/** Short display name for a skill source, such as "GitLab" or an index host name. */
+export const SkillServiceName = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9 .-]{0,98}[A-Za-z0-9])?$/),
+);
+/**
+ * A skill loader failure shown to people. `message` is the explanation they read; write it for
+ * them and never include URLs, tokens or response bodies. `reason` selects the title and whether
+ * a retry can help. Custom loaders throw this error to get the same presentation as built-ins.
+ */
 export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
-  reason: Schema.Literals(["source", "request", "document", "limit", "changed", "encoding"]),
+  reason: Schema.Literals([
+    "source",
+    "request",
+    "rate_limited",
+    "document",
+    "limit",
+    "changed",
+    "encoding",
+  ]),
+  // Error instances read an omitted message as "", so an empty message means none was given.
+  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
 }) {}
 /** Bounds shared by skill loaders across all app hosts. */
 export const skillLoadLimits = {
@@ -102,6 +121,10 @@ export const skillLoadLimits = {
 export interface SkillTransport {
   readonly fetch?: typeof globalThis.fetch | undefined;
   readonly signal?: AbortSignal | undefined;
+}
+/** A custom loader's transport and the service name shown when a request fails. */
+export interface SkillReaderOptions extends SkillTransport {
+  readonly service: string;
 }
 /** A public GitHub repository and an optional immutable commit, tag or branch. */
 export interface GitHubSkillsOptions extends SkillTransport {

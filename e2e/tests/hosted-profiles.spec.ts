@@ -26,125 +26,144 @@ const who=query({input:object({})},async ctx=>({context:{auth:"auth" in ctx,prof
 const tick=mutation({input:object({})},async ctx=>ctx.accounts.service.id);
 const capture=workflow({input:object({})},async ctx=>ctx.step.do("identity",async step=>({context:{auth:"auth" in step,profile:"profile" in step},account:step.accounts.service.id})));
 export default defineApp({accounts:{service,extra:service.many()}}, async ctx => ({queries:{who},mutations:{tick},workflows:{capture},schedules:{tick:interval({minutes:1},tick,{})}, skills: [{name:"selected-account",description:"Instructions for the selected account",files:[{path:"SKILL.md",content:"---\\nname: selected-account\\ndescription: Instructions for the selected account\\n---\\n"+ctx.accounts.service.id}]}]}));`;
+const profileFixture = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const prefix = `/api/organizations/${actors.organization.id}`;
+  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+    name: `Personal app ${randomUUID().slice(0, 8)}`,
+    files: [{ path: "index.ts", content: source }],
+  });
+  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+  const app = yield* body(App, deployed),
+    path = `${prefix}/apps/${app.id}`;
+  const accounts: { actor: Session; id: string }[] = [],
+    installed: { actor: Session; id: string }[] = [];
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      for (const item of installed)
+        yield* api.request(item.actor, "DELETE", `${path}/profiles/${item.id}`);
+      yield* api.request(actors.owner, "DELETE", path);
+      for (const item of accounts)
+        yield* api.request(item.actor, "DELETE", `${prefix}/accounts/${item.id}`);
+    }).pipe(Effect.orDie),
+  );
+  const access = yield* body(Access, yield* api.request(actors.owner, "GET", `${path}/access`));
+  expect(
+    (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
+      revision: access.revision,
+      audience: { kind: "everyone" },
+    })).status,
+  ).toBe(200);
+  const identity = (actor: Session) =>
+    api
+      .request(actor, "GET", "/api/viewer")
+      .pipe(Effect.flatMap((response) => body(Schema.Struct({ userId: Schema.String }), response)));
+  const [aliceIdentity, bobIdentity] = yield* Effect.all(
+    [identity(actors.member), identity(actors.admin)],
+    { concurrency: 2 },
+  );
+  const aliceId = aliceIdentity.userId,
+    bobId = bobIdentity.userId;
+  const create = (actor: Session) =>
+    api
+      .request(actor, "POST", `${path}/profiles`, {
+        accounts: { extra: [] },
+        idempotencyKey: "personal",
+        subject: "forged-subject",
+      })
+      .pipe(
+        Effect.tap((response) =>
+          Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
+        ),
+        Effect.flatMap((response) => body(Profile, response)),
+      );
+  let [alice, bob] = yield* Effect.all([create(actors.member), create(actors.admin)], {
+    concurrency: 2,
+  });
+  installed.push({ actor: actors.member, id: alice.id }, { actor: actors.admin, id: bob.id });
+  expect(alice.subject).toBe(aliceId);
+  expect(bob.subject).toBe(bobId);
+  const inventoryProfiles = (actor: Session) =>
+    api.request(actor, "GET", `${prefix}/inventory`).pipe(
+      Effect.flatMap((response) =>
+        body(Schema.Struct({ profiles: Schema.Array(Profile) }), response),
+      ),
+      Effect.map((inventory) => inventory.profiles.map((profile) => profile.id)),
+    );
+  expect(yield* inventoryProfiles(actors.member)).toContain(alice.id);
+  expect(yield* inventoryProfiles(actors.member)).not.toContain(bob.id);
+  expect(yield* inventoryProfiles(actors.admin)).toContain(bob.id);
+  expect(yield* inventoryProfiles(actors.owner)).not.toContain(alice.id);
+  expect(alice.id).not.toBe(bob.id);
+  const connect = (actor: Session, profile: string, label: string, shared = false) =>
+    Effect.gen(function* () {
+      const connection = yield* api.request(actor, "POST", `${path}/connections`, {
+        profile,
+        requirement: "service",
+        destination: shared
+          ? { kind: "shared", audience: { kind: "everyone" } }
+          : { kind: "personal" },
+      });
+      expect(connection.status, JSON.stringify(connection.body)).toBe(200);
+      const request = yield* body(Resource, connection);
+      const response = yield* api.request(
+        actor,
+        "POST",
+        `${prefix}/connections/${request.id}/submit`,
+        { method: "key", label, fields: { token: "synthetic-profile-key" } },
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const account = yield* body(Resource, response);
+      accounts.push({ actor, id: account.id });
+      return account.id;
+    });
+  const [mailA, mailB] = yield* Effect.all(
+    [connect(actors.member, alice.id, "Alice mail"), connect(actors.admin, bob.id, "Bob mail")],
+    { concurrency: 2 },
+  );
+  const get = (actor: Session, id: string) =>
+    api
+      .request(actor, "GET", `${path}/profiles/${id}`)
+      .pipe(Effect.flatMap((response) => body(Profile, response)));
+  alice = yield* get(actors.member, alice.id);
+  bob = yield* get(actors.admin, bob.id);
+  const call = (actor: Session, profile: string) =>
+    api.request(actor, "POST", `${path}/tools/call`, {
+      profile,
+      tool: "queries.who",
+      input: {},
+    });
+  return {
+    api,
+    actors,
+    prefix,
+    app,
+    path,
+    alice,
+    bob,
+    mailA,
+    mailB,
+    connect,
+    get,
+    call,
+    inventoryProfiles,
+  };
+});
 layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
   it.effect(scenarios.hostedProfiles.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors;
-        const prefix = `/api/organizations/${actors.organization.id}`;
-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-          name: `Personal app ${randomUUID().slice(0, 8)}`,
-          files: [{ path: "index.ts", content: source }],
-        });
-        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        const app = yield* body(App, deployed),
-          path = `${prefix}/apps/${app.id}`;
-        const accounts: { actor: Session; id: string }[] = [],
-          installed: { actor: Session; id: string }[] = [];
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            for (const item of installed)
-              yield* api.request(item.actor, "DELETE", `${path}/profiles/${item.id}`);
-            yield* api.request(actors.owner, "DELETE", path);
-            for (const item of accounts)
-              yield* api.request(item.actor, "DELETE", `${prefix}/accounts/${item.id}`);
-          }).pipe(Effect.orDie),
-        );
-        const access = yield* body(
-          Access,
-          yield* api.request(actors.owner, "GET", `${path}/access`),
-        );
-        expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
-            revision: access.revision,
-            audience: { kind: "everyone" },
-          })).status,
-        ).toBe(200);
-        const identity = (actor: Session) =>
-          api
-            .request(actor, "GET", "/api/viewer")
-            .pipe(
-              Effect.flatMap((response) =>
-                body(Schema.Struct({ userId: Schema.String }), response),
-              ),
-            );
-        const aliceId = (yield* identity(actors.member)).userId,
-          bobId = (yield* identity(actors.admin)).userId;
-        const create = (actor: Session) =>
-          api
-            .request(actor, "POST", `${path}/profiles`, {
-              accounts: { extra: [] },
-              idempotencyKey: "personal",
-              subject: "forged-subject",
-            })
-            .pipe(
-              Effect.tap((response) =>
-                Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
-              ),
-              Effect.flatMap((response) => body(Profile, response)),
-            );
-        let alice = yield* create(actors.member),
-          bob = yield* create(actors.admin);
-        installed.push({ actor: actors.member, id: alice.id }, { actor: actors.admin, id: bob.id });
-        expect(alice.subject).toBe(aliceId);
-        expect(bob.subject).toBe(bobId);
-        const inventoryProfiles = (actor: Session) =>
-          api.request(actor, "GET", `${prefix}/inventory`).pipe(
-            Effect.flatMap((response) =>
-              body(Schema.Struct({ profiles: Schema.Array(Profile) }), response),
-            ),
-            Effect.map((inventory) => inventory.profiles.map((profile) => profile.id)),
-          );
-        expect(yield* inventoryProfiles(actors.member)).toContain(alice.id);
-        expect(yield* inventoryProfiles(actors.member)).not.toContain(bob.id);
-        expect(yield* inventoryProfiles(actors.admin)).toContain(bob.id);
-        expect(yield* inventoryProfiles(actors.owner)).not.toContain(alice.id);
-
-        expect(alice.id).not.toBe(bob.id);
-        const connect = (actor: Session, profile: string, label: string, shared = false) =>
-          Effect.gen(function* () {
-            const connection = yield* api.request(actor, "POST", `${path}/connections`, {
-              profile,
-              requirement: "service",
-              destination: shared
-                ? { kind: "shared", audience: { kind: "everyone" } }
-                : { kind: "personal" },
-            });
-            expect(connection.status, JSON.stringify(connection.body)).toBe(200);
-            const request = yield* body(Resource, connection);
-            const response = yield* api.request(
-              actor,
-              "POST",
-              `${prefix}/connections/${request.id}/submit`,
-              { method: "key", label, fields: { token: "synthetic-profile-key" } },
-            );
-            expect(response.status, JSON.stringify(response.body)).toBe(200);
-            const account = yield* body(Resource, response);
-            accounts.push({ actor, id: account.id });
-            return account.id;
-          });
-        const mailA = yield* connect(actors.member, alice.id, "Alice mail"),
-          mailB = yield* connect(actors.admin, bob.id, "Bob mail");
-        const get = (actor: Session, id: string) =>
-          api
-            .request(actor, "GET", `${path}/profiles/${id}`)
-            .pipe(Effect.flatMap((response) => body(Profile, response)));
-        alice = yield* get(actors.member, alice.id);
-        bob = yield* get(actors.admin, bob.id);
-        const call = (actor: Session, profile: string) =>
-          api.request(actor, "POST", `${path}/tools/call`, {
-            profile,
-            tool: "queries.who",
-            input: {},
-          });
+        const fixture = yield* profileFixture;
+        const { api, actors, app, path, mailA, mailB, bob, call } = fixture;
+        let { alice } = fixture;
         const browser = yield* Browser;
         const skillPath = `${path}/skills/selected-account`;
         const selectedSkill = yield* api.request(
           actors.member,
           "GET",
-          `${skillPath}?profile=${alice.id}`,
+          `${path}/skills/selected-account?profile=${alice.id}`,
         );
         expect(selectedSkill.status).toBe(200);
         yield* browser.login(actors.member);
@@ -198,32 +217,39 @@ layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
         expect((yield* api.request(actors.member, "GET", path)).body).not.toHaveProperty(
           "accounts",
         );
-        for (const [actor, other] of [
-          [actors.member, bob.id],
-          [actors.admin, alice.id],
-          [actors.owner, alice.id],
-        ] as const) {
-          expect((yield* call(actor, other)).status).toBe(403);
-          expect((yield* api.request(actor, "GET", `${skillPath}?profile=${other}`)).status).toBe(
-            403,
-          );
-          expect((yield* api.request(actor, "GET", `${path}/profiles/${other}`)).status).toBe(403);
-          expect((yield* api.request(actor, "DELETE", `${path}/profiles/${other}`)).status).toBe(
-            403,
-          );
-          expect(
-            (yield* api.request(actor, "PATCH", `${path}/profiles/${other}/enabled`, {
-              expectedRevision: 1,
-              enabled: false,
-            })).status,
-          ).toBe(403);
-          expect(
-            (yield* api.request(actor, "POST", `${path}/connections`, {
-              profile: other,
-              requirement: "service",
-            })).status,
-          ).toBe(403);
-        }
+        yield* Effect.forEach(
+          [
+            [actors.member, bob.id],
+            [actors.admin, alice.id],
+            [actors.owner, alice.id],
+          ] as const,
+          ([actor, other]) =>
+            Effect.gen(function* () {
+              expect((yield* call(actor, other)).status).toBe(403);
+              expect(
+                (yield* api.request(actor, "GET", `${skillPath}?profile=${other}`)).status,
+              ).toBe(403);
+              expect((yield* api.request(actor, "GET", `${path}/profiles/${other}`)).status).toBe(
+                403,
+              );
+              expect(
+                (yield* api.request(actor, "DELETE", `${path}/profiles/${other}`)).status,
+              ).toBe(403);
+              expect(
+                (yield* api.request(actor, "PATCH", `${path}/profiles/${other}/enabled`, {
+                  expectedRevision: 1,
+                  enabled: false,
+                })).status,
+              ).toBe(403);
+              expect(
+                (yield* api.request(actor, "POST", `${path}/connections`, {
+                  profile: other,
+                  requirement: "service",
+                })).status,
+              ).toBe(403);
+            }),
+          { concurrency: 3, discard: true },
+        );
         expect(
           (yield* api.request(actors.member, "PATCH", `${path}/profiles/${alice.id}`, {
             expectedRevision: alice.revision,
@@ -248,6 +274,17 @@ layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
           }),
         );
         expect((yield* call(actors.member, alice.id)).status).toBe(200);
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedProfileRevocation.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* profileFixture;
+        const { api, actors, prefix, path, mailA, bob, connect, get, call, inventoryProfiles } =
+          fixture;
+        let { alice } = fixture;
         const shared = yield* connect(actors.admin, bob.id, "Shared mail", true);
         alice = yield* get(actors.member, alice.id);
         expect(
@@ -325,7 +362,11 @@ layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
         ).toBe(200);
         expect((yield* call(actors.member, alice.id)).status).toBe(403);
         expect(
-          (yield* api.request(actors.member, "GET", `${skillPath}?profile=${alice.id}`)).status,
+          (yield* api.request(
+            actors.member,
+            "GET",
+            `${path}/skills/selected-account?profile=${alice.id}`,
+          )).status,
         ).toBe(403);
         const revoked = yield* get(actors.member, alice.id);
         const stopped = yield* body(
@@ -355,7 +396,11 @@ layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
         expect((yield* call(actors.member, alice.id)).status).toBe(403);
         expect(yield* inventoryProfiles(actors.member)).not.toContain(alice.id);
         expect(
-          (yield* api.request(actors.member, "GET", `${skillPath}?profile=${alice.id}`)).status,
+          (yield* api.request(
+            actors.member,
+            "GET",
+            `${path}/skills/selected-account?profile=${alice.id}`,
+          )).status,
         ).toBe(403);
         expect(
           (yield* api.request(actors.member, "DELETE", `${path}/profiles/${alice.id}`)).status,

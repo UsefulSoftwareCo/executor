@@ -218,6 +218,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
               headers: trace,
               ...(input.approval === undefined ? {} : { approval: input.approval }),
               ...(input.replay === undefined ? {} : { replay: input.replay }),
+              ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
             };
             const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(WorkerInvocation))(
               request,

@@ -36,7 +36,11 @@ export function PageHeader({
           <p className="mt-1.25 text-[13px] leading-[1.6] text-muted-foreground">{description}</p>
         )}
       </div>
-      {children && <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>}
+      {children && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 max-[600px]:w-full max-[600px]:flex-nowrap max-[600px]:[&>*]:min-w-0 max-[600px]:[&>*]:flex-1 max-[600px]:[&>*]:basis-0 max-[600px]:[&>*]:px-3">
+          {children}
+        </div>
+      )}
     </header>
   );
 }

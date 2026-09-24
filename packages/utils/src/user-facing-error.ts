@@ -15,10 +15,16 @@ export interface ErrorPresentation {
   readonly agentFixable?: boolean;
   /** One safe value the user needs for recovery, such as a URL to send to the service. */
   readonly detail?: { readonly label: string; readonly value: string };
+  /**
+   * Present only when the Executor team must fix the problem. Safe evidence for a public
+   * report: fixed codes and statuses, never user data, URLs, or upstream text.
+   */
+  readonly report?: string;
 }
 
-type PresentationProperties = Required<Omit<ErrorPresentation, "detail">> & {
+type PresentationProperties = Required<Omit<ErrorPresentation, "detail" | "report">> & {
   readonly detail: ErrorPresentation["detail"];
+  readonly report: ErrorPresentation["report"];
   readonly code: string;
   readonly fixPrompt: string;
 };
@@ -52,9 +58,21 @@ const MessageField = Schema.String.pipe(
     encode: SchemaGetter.passthrough(),
   }),
 );
+// Recovery follows the same rule, so API and MCP callers receive the curated recovery.
+const Recovery = Schema.Struct({ action: Schema.String, instructions: Schema.String });
+const RecoveryField = Recovery.pipe(
+  Schema.decodeTo(Schema.optionalKey(Recovery), {
+    decode: SchemaGetter.omit(),
+    encode: SchemaGetter.passthrough(),
+  }),
+);
+type DerivedFields = {
+  readonly message: typeof MessageField;
+  readonly recovery: typeof RecoveryField;
+};
 // Derived presentation cannot be supplied by constructor callers.
 type ErrorFields<Tag extends string, Fields extends Schema.Struct.Fields> = Omit<
-  Schema.TaggedStruct<Tag, Fields & { readonly message: typeof MessageField }>,
+  Schema.TaggedStruct<Tag, Fields & DerivedFields>,
   "~type.make.in"
 > & {
   readonly "~type.make.in": Schema.TaggedStruct<Tag, Fields>["~type.make.in"];
@@ -77,9 +95,11 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
       ? {}
       : { description: `${definition.description} ${definition.recovery.action}` };
   const DefinedError = Schema.Error<UserFacingError & { readonly _tag: Tag }>(definition.tag)(
-    Schema.TaggedStruct(definition.tag, { ...fields, message: MessageField }).annotate(
-      documentation,
-    ),
+    Schema.TaggedStruct(definition.tag, {
+      ...fields,
+      message: MessageField,
+      recovery: RecoveryField,
+    }).annotate(documentation),
     {
       httpApiStatus: definition.status,
       ...documentation,
@@ -123,6 +143,11 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
         return presentation(this).detail;
       },
     },
+    report: {
+      get(this: Self) {
+        return presentation(this).report;
+      },
+    },
     fixPrompt: {
       get(this: Self) {
         const details = presentation(this);
@@ -152,8 +177,8 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
   // SAFETY: Schema.Error and TaggedStruct construct and decode the fields and literal tag.
   // The complete, type-checked descriptor set above supplies the presentation on
   // that same constructor before it escapes. This narrows its generic Self type;
-  // message is derived, omitted on decode, and required on encode. Narrowing its
-  // constructor input to payload fields prevents callers from replacing the getter.
+  // message and recovery are derived, omitted on decode, and required on encode. Narrowing
+  // the constructor input to payload fields prevents callers from replacing the getters.
   return DefinedError as unknown as ErrorClass<Tag, Fields>;
 }
 

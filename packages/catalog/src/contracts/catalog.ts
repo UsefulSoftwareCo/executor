@@ -1,7 +1,7 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
-import { Option, Schema, type Effect } from "effect";
-import { TemplateErrorCode } from "@executor-js/app-templates";
-import { JsonObject, SourceFiles } from "@executor-js/sdk";
+import { Option, Schema, SchemaGetter, type Effect } from "effect";
+import { SkippedOperation, TemplateErrorCode } from "@executor-js/app-templates";
+import { DeployedApp, JsonObject, SourceFiles } from "@executor-js/sdk";
 import { ImportAuth, ImportUrl, type CustomAppInput } from "./imports.ts";
 
 /** Public integrations.sh v1 entries; only metadata consumed by the importer is retained. */
@@ -49,9 +49,21 @@ export const CatalogImport = Schema.Struct({
   graphql: Schema.optional(GraphqlImport),
 });
 export type CatalogImport = typeof CatalogImport.Type;
-/** Ordinary source files ready for a product to save or deploy using its own rules. */
-export const PreparedApp = Schema.Struct({ files: SourceFiles });
+/**
+ * Ordinary source files ready for a product to save or deploy using its own rules, and the API
+ * operations the importer had to leave out. Only OpenAPI imports skip operations.
+ */
+export const PreparedApp = Schema.Struct({
+  files: SourceFiles,
+  skippedOperations: Schema.Array(SkippedOperation),
+});
 export type PreparedApp = typeof PreparedApp.Type;
+/** A deployed import and the operations it left out, so the user can see what is missing. */
+export const ImportedApp = DeployedApp.mapFields((fields) => ({
+  ...fields,
+  skippedOperations: Schema.Array(SkippedOperation),
+}));
+export type ImportedApp = typeof ImportedApp.Type;
 /** The registry envelope is versioned, rather than guessed from an arbitrary array. */
 export const CatalogFeed = Schema.Struct({
   version: Schema.Literal(1),
@@ -83,6 +95,9 @@ export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>
         "mcp_auth_header",
         "document_size",
         "document_fetch",
+        "document_http",
+        "document_timeout",
+        "document_redirect",
         "document_json",
         "document_yaml",
         "document_kind",
@@ -90,9 +105,24 @@ export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>
       ]),
     ]),
     reason: Schema.String,
+    // Optional on the wire for older clients; restored from safe fields on decode.
+    message: Schema.optionalKey(Schema.String).pipe(
+      Schema.decodeTo(Schema.optionalKey(Schema.String), {
+        decode: SchemaGetter.omit(),
+        encode: SchemaGetter.passthrough(),
+      }),
+    ),
+    /** Observed unsuccessful download status; absent for transport, parse and generation failures. */
+    httpStatus: Schema.optional(Schema.Int),
   },
   { httpApiStatus: 422 },
 ) {}
+// Imported OpenAPI tools only forward a declared message, not arbitrary body fields.
+Object.defineProperty(CatalogImportFailed.prototype, "message", {
+  get(this: CatalogImportFailed) {
+    return `${this.reason} [${this.code}${this.httpStatus === undefined ? "" : `; HTTP ${this.httpStatus}`}]`;
+  },
+});
 /** Remote catalog availability is separate from the local app inventory. */
 export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()(
   "CatalogUnavailable",

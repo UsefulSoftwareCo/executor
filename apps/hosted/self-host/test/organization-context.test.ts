@@ -221,14 +221,8 @@ test(
                 lookupOrganizationSlug(() =>
                   auth.api.getOrganization({ headers, query: { organizationId } }),
                 ),
-              membership: (headers, organizationId) =>
-                lookupMembership(() =>
-                  auth.api.getActiveMemberRole({
-                    headers,
-                    query: { organizationId },
-                    returnHeaders: true,
-                  }),
-                ),
+              membership: (principal, organizationId) =>
+                lookupMembership(context.adapter, principal, organizationId),
               removeOrganization: (organizationId) =>
                 deleteOrganizationRecords(context.adapter, organizationId),
             });

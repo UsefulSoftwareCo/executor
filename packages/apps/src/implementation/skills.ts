@@ -2,11 +2,13 @@
 import { Effect, Ref, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { skillFromFiles } from "./skill-files.ts";
+import { httpProviderError } from "./provider-error.ts";
 import {
   AppSkillMetadata,
   AppSkills,
   SkillFilePath,
   SkillLoadFailed,
+  SkillServiceName,
   skillLoadLimits,
   type GitHubSkillsOptions,
   type WellKnownSkillsOptions,
@@ -14,6 +16,51 @@ import {
 } from "../contracts/skills.ts";
 
 const failed = (reason: SkillLoadFailed["reason"]) => new SkillLoadFailed({ reason });
+/** Keep only the status and whether the service reported a rate limit. */
+const rejected = (status: number, headers: Readonly<Record<string, string>>) =>
+  new SkillLoadFailed({
+    reason:
+      httpProviderError(status, headers)?.reason === "rate_limited" ? "rate_limited" : "request",
+    status,
+  });
+/** Describe a loader failure for people, naming the service it came from. */
+const describe = (service: string, { reason, status }: SkillLoadFailed) => {
+  switch (reason) {
+    case "rate_limited":
+      return `${service} is rate limiting skill requests (HTTP ${status}).`;
+    case "request":
+      return status === undefined
+        ? `Could not reach ${service} to load skills.`
+        : `${service} returned HTTP ${status} while loading skills.`;
+    case "source":
+      return `The ${service} skill source settings are not valid.`;
+    case "document":
+      return `A skill from ${service} is not a valid skill document.`;
+    case "limit":
+      return `The skills from ${service} exceed Executor’s file or size limits.`;
+    case "changed":
+      return `The skills on ${service} changed while they were being read.`;
+    case "encoding":
+      return `A skill file from ${service} is not valid UTF-8 text.`;
+  }
+};
+/** Give every failure without a message one that names the service. */
+export const withService =
+  (service: string | undefined) =>
+  <A, R>(effect: Effect.Effect<A, SkillLoadFailed, R>) =>
+    service === undefined || !Schema.is(SkillServiceName)(service)
+      ? effect
+      : effect.pipe(
+          Effect.mapError((error) =>
+            !error.message
+              ? new SkillLoadFailed({
+                  reason: error.reason,
+                  message: describe(service, error),
+                  ...(error.status === undefined ? {} : { status: error.status }),
+                })
+              : error,
+          ),
+        );
 const parse = <S extends Schema.Top>(schema: S, input: unknown) =>
   Schema.decodeUnknownEffect(schema)(input).pipe(Effect.mapError(() => failed("document")));
 
@@ -34,7 +81,7 @@ const pathUrl = (base: string, path: string) =>
   new URL(path.split("/").map(encodeURIComponent).join("/"), base).href;
 
 /** One loader invocation owns its byte budget and all of its network requests. */
-const reader = (transport: SkillTransport) =>
+export const reader = (transport: SkillTransport) =>
   Effect.gen(function* () {
     const bytes = yield* Ref.make(0);
     const read = (url: string) =>
@@ -60,7 +107,8 @@ const reader = (transport: SkillTransport) =>
             },
           })
           .pipe(Effect.mapError(() => failed("request")));
-        if (response.status < 200 || response.status >= 300) return yield* failed("request");
+        if (response.status < 200 || response.status >= 300)
+          return yield* rejected(response.status, response.headers);
         const chunks: Uint8Array[] = [];
         let size = 0;
         yield* response.stream.pipe(
@@ -163,7 +211,7 @@ export const githubSkillsEffect = (options: GitHubSkillsOptions) =>
       { concurrency: 1 },
     );
     return yield* parse(AppSkills, skills);
-  });
+  }).pipe(withService("GitHub"));
 
 const Index = Schema.Struct({
   skills: Schema.Array(
@@ -213,4 +261,4 @@ export const wellKnownSkillsEffect = (options: WellKnownSkillsOptions) =>
     );
     if ((yield* remote.read(url.href)) !== first) return yield* failed("changed");
     return yield* parse(AppSkills, skills);
-  });
+  }).pipe(withService(URL.canParse(options.url) ? new URL(options.url).hostname : undefined));

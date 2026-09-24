@@ -75,8 +75,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     DeploymentBuildFailed: () =>
       "The app could not be built. Check its source or try a different catalog entry.",
     BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
-    CatalogImportFailed: () =>
-      "The app could not be imported. Check its source or try a different catalog entry.",
+    CatalogImportFailed: ({ reason }) => `The app could not be imported. ${reason}`,
     AccountRequired: () => "Connect an account to load this app’s tools.",
     AccountSelectionInvalid: () => "Select accounts that match this app’s requirements.",
     AccountFieldsInvalid: () => "Check the account details and try again.",
@@ -92,10 +91,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     OAuthClientUnavailable: () =>
       "This provider needs an OAuth client. Enter its client details below.",
     OAuthSetupFailed: (error) => `${error.description} ${error.recovery.action}`,
-    OAuthCompletionFailed: (error) =>
-      error.reason === "invalid_client"
-        ? "The OAuth client was rejected. Update its details and try again."
-        : "Sign-in did not complete. Try connecting again.",
+    OAuthCompletionFailed: (error) => `${error.description} ${error.recovery.action}`,
     InputInvalid: () => "The input does not match this tool’s schema.",
     AppProviderFailed: (error) => `${error.description} ${error.recovery.action}`,
     AppEvaluationFailed: (error) => `${error.description} ${error.recovery.action}`,

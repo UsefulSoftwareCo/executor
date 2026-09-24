@@ -216,7 +216,7 @@ export default defineApp({ accounts: {} }, async (appContext) => ({  mutations: 
                 .sort(),
               [
                 "index.ts",
-                "operations.json",
+                "openapi.json",
                 "provider.ts",
                 ...skills.map((file) => file.path),
               ].sort(),

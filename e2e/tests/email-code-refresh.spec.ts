@@ -1,13 +1,13 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, withHostedCase } from "../support/case.ts";
+import { TestLive, withCase } from "../support/case.ts";
 import { retainedDraft } from "../support/sign-in-refresh.ts";
 import { scenarios } from "../test-plan.ts";
 
-layer(HostedLive, { excludeTestServices: true })("Email code refresh", (it) => {
+layer(TestLive, { excludeTestServices: true })("Email code refresh", (it) => {
   it.effect(scenarios.emailCodeRefresh.title, (context) =>
-    withHostedCase(
+    withCase(
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
@@ -27,7 +27,12 @@ layer(HostedLive, { excludeTestServices: true })("Email code refresh", (it) => {
         expect(document.private).toBe(true);
         yield* browser
           .use("Cloud verifies sign-out before rendering the form", (page) =>
-            page.locator("#executor-entry").textContent(),
+            page.evaluate(
+              (html) =>
+                new DOMParser().parseFromString(html, "text/html").getElementById("executor-entry")
+                  ?.textContent,
+              document.html,
+            ),
           )
           .pipe(
             Effect.flatMap(

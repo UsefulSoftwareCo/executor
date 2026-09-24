@@ -14,10 +14,11 @@ import {
   McpImportAuth,
   graphqlCatalogAuth,
   type CatalogEntry,
+  type ImportedApp,
 } from "@executor-js/catalog/contracts";
-import type { App } from "@executor-js/sdk";
 import type { QueryProps, MutationProps, InstallApp } from "../../contracts/dashboard.ts";
 import { Empty, LoadingRows, ProviderIcon, SearchInput } from "./common.tsx";
+import { SkippedOperationsNotice, useImportReview } from "./skipped-operations.tsx";
 import { Button } from "../components/button.tsx";
 import {
   Select,
@@ -226,12 +227,13 @@ export function CatalogInstall<E>({
   entry,
   onBack,
   onInstalled,
-}: MutationProps<InstallApp, App, E> & {
+}: MutationProps<InstallApp, ImportedApp, E> & {
   readonly entry: CatalogEntry;
   readonly onBack: () => void;
-  readonly onInstalled: (app: App) => void | Promise<void>;
+  readonly onInstalled: (app: ImportedApp) => void | Promise<void>;
 }) {
   const imported = useAtomValue(mutation);
+  const { review, installed } = useImportReview(onInstalled);
   const [mcpAuth, setMcpAuth] = useState<McpImportAuth>("auto");
   const pending = imported.waiting;
   return (
@@ -251,7 +253,12 @@ export function CatalogInstall<E>({
           Add app
         </h1>
       </div>
-      {entry.kind === "graphql" ? (
+      {review ? (
+        <SkippedOperationsNotice
+          operations={review.skippedOperations}
+          onContinue={() => onInstalled(review)}
+        />
+      ) : entry.kind === "graphql" ? (
         <RemoteAppForm
           kind="graphql"
           mutation={mutation}
@@ -272,7 +279,7 @@ export function CatalogInstall<E>({
               ? { graphql: { url: source.url, auth: source.auth } }
               : {}),
           })}
-          onInstalled={onInstalled}
+          onInstalled={installed}
         />
       ) : (
         <AppCreateForm
@@ -284,7 +291,7 @@ export function CatalogInstall<E>({
             name,
             ...(entry.kind === "mcp" ? { mcpAuth } : {}),
           })}
-          onCreated={onInstalled}
+          onCreated={installed}
           label="Add app"
           onCancel={onBack}
           beforeName={

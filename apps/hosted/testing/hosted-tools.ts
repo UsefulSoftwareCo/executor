@@ -61,8 +61,9 @@ export const hostedDevtools = (input: {
           ...fixture,
         });
     }
+    // A local TLS proxy forwards the public host; writes still require the browser's exact Origin.
     const allowed = (request: HttpServerRequest.HttpServerRequest, write: boolean) =>
-      request.headers.host === host &&
+      (request.headers["x-forwarded-host"] ?? request.headers.host) === host &&
       (write
         ? request.headers.origin === origin
         : request.headers.origin === undefined || request.headers.origin === origin);

@@ -5,6 +5,7 @@ import { Cause, Effect, Option, Schema } from "effect";
 import {
   OAuthClientUnavailable,
   OAuthSetupFailed,
+  oauthClientEntryReasons,
   type Account,
   type Provider,
   type AccountConnectionId,
@@ -70,7 +71,7 @@ export function OAuthFields({
               Option.isSome(failure) &&
               (Schema.is(OAuthClientUnavailable)(failure.value) ||
                 (Schema.is(OAuthSetupFailed)(failure.value) &&
-                  failure.value.reason === "invalid_client"));
+                  oauthClientEntryReasons.has(failure.value.reason)));
             if (required) refresh();
             return required;
           }}

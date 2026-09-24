@@ -76,6 +76,33 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
           expect(created.status, JSON.stringify(created.body)).toBe(200);
           const app = yield* body(App, created),
             path = `${prefix}/apps/${app.id}`;
+          // This diagnostic app explicitly refreshes on every evaluation so discovery
+          // failures remain observable after its GraphQL catalog has been cached.
+          if (kind === "graphql") {
+            const source = yield* body(
+              Schema.Struct({
+                files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+              }),
+              yield* api.request(actors.owner, "GET", `${path}/source`),
+            );
+            expect(source.files.find((file) => file.path === "index.ts")?.content).toContain(
+              "graphqlOperations({",
+            );
+            const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
+              files: source.files.map((file) =>
+                file.path === "index.ts"
+                  ? {
+                      ...file,
+                      content: file.content.replace(
+                        "graphqlOperations({",
+                        "graphqlOperations({ revalidate: true,",
+                      ),
+                    }
+                  : file,
+              ),
+            });
+            expect(updated.status).toBe(200);
+          }
           const accounts: string[] = [];
           const profile = yield* body(
             Resource,
@@ -144,13 +171,14 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
           if (kind !== "openapi") {
             yield* upstream.configure({ status: 401 });
             yield* assertFailure(yield* catalog(), "unauthorized", 401);
-            // Discovery needed by background setup retains the same safe failure.
+            // Lazy MCP sources do not discover tools when listing unrelated webhooks.
             const setup = yield* api.request(
               actors.owner,
               "GET",
               `${path}/webhook-definitions?profile=${profile.id}`,
             );
-            expect(setup.status, JSON.stringify(setup.body)).toBe(502);
+            expect(setup.status, JSON.stringify(setup.body)).toBe(kind === "mcp" ? 200 : 502);
+            if (kind === "mcp") expect(setup.body).toEqual([]);
           }
           yield* upstream.configure({ status: 401, phase: "call" });
           expect((yield* catalog()).status).toBe(200);

@@ -8,6 +8,7 @@ import {
   type HttpClientResponse,
 } from "effect/unstable/http";
 import { recordExportFailure } from "./measurements.ts";
+import { telemetryRequestTimeout } from "./config.ts";
 
 /** Local collector discovery can resolve its destination when an export runs. */
 export const CurrentTelemetryClient = Context.Reference<HttpClient.HttpClient | undefined>(
@@ -19,7 +20,11 @@ export const CurrentTelemetryClient = Context.Reference<HttpClient.HttpClient | 
 const selectedClient = Layer.unwrap(
   CurrentTelemetryClient.pipe(
     Effect.map((client) =>
-      client === undefined ? FetchHttpClient.layer : Layer.succeed(HttpClient.HttpClient, client),
+      // Export-only RequestInit options, such as browser keepalive, must not
+      // enter product clients that share the page's Layer memo map.
+      client === undefined
+        ? Layer.fresh(FetchHttpClient.layer)
+        : Layer.succeed(HttpClient.HttpClient, client),
     ),
   ),
 );
@@ -122,6 +127,17 @@ export const telemetryHttpClient = Layer.effect(
         HttpClient.transform((response, request) =>
           response.pipe(
             Effect.tap(acknowledge),
+            Effect.timeout(telemetryRequestTimeout),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(
+                new HttpClientError.HttpClientError({
+                  reason: new HttpClientError.TransportError({
+                    request,
+                    description: "Telemetry collector acknowledgement timed out",
+                  }),
+                }),
+              ),
+            ),
             Effect.tapError((error) =>
               recordExportFailure(
                 new URL(request.url).pathname,

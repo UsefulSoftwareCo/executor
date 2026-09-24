@@ -100,7 +100,16 @@ export default defineApp({accounts:{}}, {queries:{
           ]),
         );
         expect(exhausted.status).toBe(422);
-        expect(exhausted.body).toEqual({ _tag: "BuildMemoryExceeded" });
+        expect(exhausted.body).toEqual({
+          _tag: "BuildMemoryExceeded",
+          message:
+            "This app's build needed more memory than Executor currently allows. No new deployment was activated.",
+          recovery: {
+            action:
+              "This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
+            instructions: expect.stringContaining("Tell the user the build hit the current limit."),
+          },
+        });
         const retained = yield* body(Deployed, yield* api.request(actors.owner, "GET", path));
         expect(retained.activeDeployment).toBe(original.activeDeployment);
         const live = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
@@ -120,7 +129,7 @@ export default defineApp({accounts:{}}, {queries:{
         yield* browser.use("Show the compiler memory failure and recovery", (page) =>
           page
             .getByText(
-              "Executor ran out of memory while building the app. No new deployment was activated. Review the build's dependencies and memory use before deploying again.",
+              "This app's build needed more memory than Executor currently allows. No new deployment was activated. This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
               { exact: true },
             )
             .waitFor(),

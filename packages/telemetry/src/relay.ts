@@ -58,31 +58,25 @@ export type TelemetryBatch = typeof TelemetryBatch.Type;
 /** Collect one invocation into memory, flush before returning, and never contact a remote collector. */
 export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
-    const traces: string[] = [];
-    const logs: string[] = [];
+    const traces = recordPacker('{"resourceSpans":[{"scopeSpans":[{"spans":[', "]}]}]}");
+    const logs = recordPacker('{"resourceLogs":[{"scopeLogs":[{"logRecords":[', "]}]}]}");
     let dropped = 0;
     const capture: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
       const body = await request.text();
       if (new URL(request.url).pathname === "/v1/traces") {
         const payload = Schema.decodeUnknownSync(TracePayload)(body);
-        dropped += packRecords(
+        dropped += traces.append(
           payload.resourceSpans.flatMap((resource) =>
             resource.scopeSpans.flatMap((scope) => scope.spans),
           ),
-          traces,
-          '{"resourceSpans":[{"scopeSpans":[{"spans":[',
-          "]}]}]}",
         );
       } else {
         const payload = Schema.decodeUnknownSync(LogPayload)(body);
-        dropped += packRecords(
+        dropped += logs.append(
           payload.resourceLogs.flatMap((resource) =>
             resource.scopeLogs.flatMap((scope) => scope.logRecords),
           ),
-          logs,
-          '{"resourceLogs":[{"scopeLogs":[{"logRecords":[',
-          "]}]}]}",
         );
       }
       return Response.json({});
@@ -103,45 +97,49 @@ export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       ),
       Effect.provideService(FetchHttpClient.Fetch, capture),
     );
-    return { value, telemetry: { traces, logs, dropped } };
+    return { value, telemetry: { traces: traces.finish(), logs: logs.finish(), dropped } };
   });
 
-// Native exporters can emit a thousand records at once. Split complete records,
-// not JSON text, and preserve the existing four-envelope memory bound per signal.
-// Resource identity is deliberately assigned by the parent, never the isolate.
-const packRecords = (
-  records: ReadonlyArray<Schema.Json>,
-  target: string[],
-  prefix: string,
-  suffix: string,
-): number => {
+// Native exporters split an invocation into several batches. Keep its last
+// envelope open across batches so a partial envelope does not consume a slot.
+// Both the four-envelope memory bound and 1,000-record decode bound still apply.
+const recordPacker = (prefix: string, suffix: string) => {
+  const target: string[] = [];
   let parts: string[] = [];
   const overhead = encoder.encode(prefix + suffix).byteLength;
   let bytes = overhead;
-  let dropped = 0;
   const flush = () => {
     if (parts.length === 0) return;
     target.push(prefix + parts.join(",") + suffix);
     parts = [];
     bytes = overhead;
   };
-  for (const record of records) {
-    const encoded = JSON.stringify(record);
-    const size = encoder.encode(encoded).byteLength;
-    if (size + overhead > payloadBytes || target.length >= 4) {
-      dropped++;
-      continue;
-    }
-    if (bytes + size + (parts.length > 0 ? 1 : 0) > payloadBytes) flush();
-    if (target.length >= 4) {
-      dropped++;
-      continue;
-    }
-    bytes += size + (parts.length > 0 ? 1 : 0);
-    parts.push(encoded);
-  }
-  flush();
-  return dropped;
+  return {
+    append(records: ReadonlyArray<Schema.Json>): number {
+      let dropped = 0;
+      for (const record of records) {
+        const encoded = JSON.stringify(record);
+        const size = encoder.encode(encoded).byteLength;
+        if (size + overhead > payloadBytes || target.length >= 4) {
+          dropped++;
+          continue;
+        }
+        if (parts.length >= 1000 || bytes + size + (parts.length > 0 ? 1 : 0) > payloadBytes)
+          flush();
+        if (target.length >= 4) {
+          dropped++;
+          continue;
+        }
+        bytes += size + (parts.length > 0 ? 1 : 0);
+        parts.push(encoded);
+      }
+      return dropped;
+    },
+    finish(): string[] {
+      flush();
+      return target;
+    },
+  };
 };
 
 const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));

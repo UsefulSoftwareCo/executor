@@ -23,7 +23,7 @@ export const localScheduleHandlers = (
       (request.method === "POST" && request.headers.origin !== requestOrigin(config, request))
     )
       return yield* new DashboardForbidden();
-    if (!(yield* auth.valid(request.cookies[sessionCookie(config.port)])))
+    if (!(yield* auth.valid(request.cookies[sessionCookie(config)])))
       return yield* new DashboardUnauthorized();
   });
   return HttpApiBuilder.group(DashboardApi, "schedules", (handlers) =>

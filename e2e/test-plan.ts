@@ -15,6 +15,9 @@ export const TargetPlan = Schema.Union([
 export const TestPlan = Schema.Struct({
   file: Schema.String,
   title: Schema.String,
+  fixtures: Schema.optional(Schema.Literal("actors")),
+  appOrigin: Schema.optional(Schema.Literal(true)),
+  managementProfiles: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
   targets: Schema.Struct({ "self-host": TargetPlan, local: TargetPlan, cloud: TargetPlan }),
 });
 const scheduled = { status: "scheduled" } as const;
@@ -30,7 +33,69 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  graphqlPublicCache: {
+    fixtures: "actors",
+    file: "graphql-cache.spec.ts",
+    title: "Public GraphQL profiles share metadata while query results remain live",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback introspection fixture"),
+      local: na("Hosted app deployment scenario"),
+    },
+  },
+  graphqlCatalogCache: {
+    fixtures: "actors",
+    file: "graphql-cache.spec.ts",
+    title:
+      "GraphQL catalogs reuse introspection and refresh isolated query and mutation definitions",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback introspection fixture"),
+      local: na("Hosted app deployment scenario"),
+    },
+  },
+  mcpCatalogCache: {
+    fixtures: "actors",
+    file: "mcp-catalog.spec.ts",
+    title: "MCP catalog cache skips repeated discovery and revalidates account revisions",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback default; external emulators.dev fixture used for remote measurement"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpCatalogRefresh: {
+    fixtures: "actors",
+    file: "mcp-catalog.spec.ts",
+    title: "MCP catalog notifications invalidate schemas and failed refreshes retain values",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback notification fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  liveOpenapi: {
+    fixtures: "actors",
+    file: "live-openapi.spec.ts",
+    title: "Live OpenAPI refreshes operations while preserving static credential placement",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture; deployed Cloud API benchmark covers the live runtime"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  appCache: {
+    fixtures: "actors",
+    file: "app-cache.spec.ts",
+    title: "App cache shares values, fences concurrent loads and retains background refreshes",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted profile API fixture; Node adapter exercised by self-host"),
+    },
+  },
   cloudImpersonation: {
+    fixtures: "actors",
     file: "cloud-impersonation.spec.ts",
     title: "Platform admin impersonation uses the shared widget and restores the original session",
     targets: {
@@ -40,33 +105,37 @@ export const scenarios = {
     },
   },
   mcpMemoryBurst: {
-    file: "mcp-memory.spec.ts",
+    fixtures: "actors",
+    file: "mcp-memory-burst.spec.ts",
     title: "MCP subscriptions survive a reconnect burst",
     targets: {
-      cloud: scheduled,
+      cloud: { status: "scheduled", runtime: "attached" },
       "self-host": na("Cloudflare Durable Object memory investigation"),
       local: na("Cloudflare Durable Object memory investigation"),
     },
   },
   mcpMemoryShared: {
-    file: "mcp-memory.spec.ts",
+    fixtures: "actors",
+    file: "mcp-memory-shared.spec.ts",
     title: "MCP subscriptions survive concurrent clients on one session",
     targets: {
-      cloud: scheduled,
+      cloud: { status: "scheduled", runtime: "attached" },
       "self-host": na("Cloudflare Durable Object memory investigation"),
       local: na("Cloudflare Durable Object memory investigation"),
     },
   },
   mcpMemory: {
+    fixtures: "actors",
     file: "mcp-memory.spec.ts",
     title: "MCP subscriptions survive idle sessions and reconnect churn",
     targets: {
-      cloud: scheduled,
+      cloud: { status: "scheduled", runtime: "attached" },
       "self-host": na("Cloudflare Durable Object memory investigation"),
       local: na("Cloudflare Durable Object memory investigation"),
     },
   },
   toolsErrorState: {
+    fixtures: "actors",
     file: "tools-error-state.spec.ts",
     title: "Tools errors explain discovery failures and preserve retry on desktop and mobile",
     targets: {
@@ -87,6 +156,7 @@ export const scenarios = {
     },
   },
   testingSdk: {
+    fixtures: "actors",
     file: "testing-sdk.spec.ts",
     title: "Testing SDK isolates overlapping populated organizations and cleans failed scenarios",
     targets: {
@@ -96,6 +166,7 @@ export const scenarios = {
     },
   },
   cloudSsoOidc: {
+    fixtures: "actors",
     file: "cloud-sso.spec.ts",
     title: "Cloud SSO OIDC setup preserves drafts and binds verified identities to one team",
     targets: {
@@ -105,6 +176,7 @@ export const scenarios = {
     },
   },
   cloudSsoSaml: {
+    fixtures: "actors",
     file: "cloud-sso.spec.ts",
     title: "Cloud SSO SAML accepts signed assertions and rejects tampering and replay",
     targets: {
@@ -126,8 +198,19 @@ export const scenarios = {
     },
   },
   memberControls: {
+    fixtures: "actors",
     file: "member-controls.spec.ts",
     title: "Member restrictions keep controls visible and the app overview stable",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization member roles."),
+    },
+  },
+  memberControlsMobile: {
+    fixtures: "actors",
+    file: "member-controls.spec.ts",
+    title: "Mobile member restrictions keep controls visible and the app overview stable",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -144,7 +227,9 @@ export const scenarios = {
     },
   },
   optimisticObservability: {
+    fixtures: "actors",
     file: "optimistic-observability.spec.ts",
+    appOrigin: true,
     title: "optimistic replay failures are delivered without changing a submitted write",
     targets: {
       cloud: scheduled,
@@ -153,6 +238,7 @@ export const scenarios = {
     },
   },
   browserObservability: {
+    fixtures: "actors",
     file: "browser-observability.spec.ts",
     title: "browser decode and startup failures reach correlated error collectors",
     targets: {
@@ -162,6 +248,7 @@ export const scenarios = {
     },
   },
   emptyStateRecovery: {
+    fixtures: "actors",
     file: "empty-state-recovery.spec.ts",
     title: "Empty states preserve drafts and respect app permissions",
     targets: {
@@ -171,6 +258,7 @@ export const scenarios = {
     },
   },
   emptyAccountSearch: {
+    fixtures: "actors",
     file: "empty-state-recovery.spec.ts",
     title: "Empty account searches can be cleared without losing selections",
     targets: {
@@ -180,6 +268,7 @@ export const scenarios = {
     },
   },
   emptyStateMcp: {
+    fixtures: "actors",
     file: "empty-state-mcp.spec.ts",
     title: "Empty organization consent offers a valid self-host recovery",
     targets: {
@@ -189,6 +278,7 @@ export const scenarios = {
     },
   },
   emptyStateBilling: {
+    fixtures: "actors",
     file: "empty-state-billing.spec.ts",
     title: "Empty billing catalog can be refreshed",
     targets: {
@@ -198,6 +288,7 @@ export const scenarios = {
     },
   },
   emptyStates: {
+    fixtures: "actors",
     file: "empty-states.spec.ts",
     title: "Empty states guide first use and recover from filters",
     targets: {
@@ -207,6 +298,7 @@ export const scenarios = {
     },
   },
   sourceHighlighting: {
+    fixtures: "actors",
     file: "source-highlighting.spec.ts",
     title: "Source browser highlights CSS, Markdown, JSON, and HTML files",
     targets: {
@@ -216,6 +308,7 @@ export const scenarios = {
     },
   },
   appFilters: {
+    fixtures: "actors",
     file: "app-filters.spec.ts",
     title: "App filters retain cards through loading, failure and retry",
     targets: {
@@ -225,6 +318,7 @@ export const scenarios = {
     },
   },
   sdkQueryBudgets: {
+    fixtures: "actors",
     file: "sdk-query-budgets.spec.ts",
     title: "SDK batches invocation accounts and finished workflow history",
     targets: {
@@ -234,6 +328,7 @@ export const scenarios = {
     },
   },
   toolAccountContext: {
+    fixtures: "actors",
     file: "tool-account-context.spec.ts",
     title: "Tools identify their accounts and replace catalogs after account selection",
     targets: {
@@ -252,6 +347,7 @@ export const scenarios = {
     },
   },
   appBrowser: {
+    fixtures: "actors",
     file: "app-browser.spec.ts",
     title: "App browser shows skill and workflow overviews",
     targets: {
@@ -270,6 +366,7 @@ export const scenarios = {
     },
   },
   memberGroupVisibility: {
+    fixtures: "actors",
     file: "group-visibility.spec.ts",
     title: "Members only see and share into their own groups",
     targets: {
@@ -290,7 +387,9 @@ export const scenarios = {
     },
   },
   groupAuthoring: {
+    fixtures: "actors",
     file: "resource-access.spec.ts",
+    appOrigin: true,
     title: "Groups protect app drafts and independent copies",
     targets: {
       "self-host": scheduled,
@@ -299,6 +398,7 @@ export const scenarios = {
     },
   },
   resourceIsolation: {
+    fixtures: "actors",
     file: "resource-isolation.spec.ts",
     title: "Group resource grants and account connections cannot cross organizations",
     targets: {
@@ -310,6 +410,7 @@ export const scenarios = {
     },
   },
   resourceSharing: {
+    fixtures: "actors",
     file: "resource-sharing.spec.ts",
     title: "Group sharing forms retain drafts and recover stale edits on desktop and mobile",
     targets: {
@@ -319,8 +420,31 @@ export const scenarios = {
     },
   },
   resourceAccess: {
+    fixtures: "actors",
     file: "resource-access.spec.ts",
-    title: "Groups enforce private apps and complete array credential access",
+    title: "Groups enforce private app access and live membership changes",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization sharing policy."),
+    },
+  },
+  arrayResourceAccess: {
+    fixtures: "actors",
+    file: "resource-access.spec.ts",
+    appOrigin: true,
+    title: "Array accounts enforce complete access through API and private UI",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization sharing policy."),
+    },
+  },
+  arrayResourceDeletion: {
+    fixtures: "actors",
+    file: "resource-access.spec.ts",
+    appOrigin: true,
+    title: "Array account deletion preserves authoring access and clears profile bindings",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -328,6 +452,7 @@ export const scenarios = {
     },
   },
   publishingDialog: {
+    fixtures: "actors",
     file: "publishing-dialog.spec.ts",
     title: "Publishing dialog explains readiness and keeps copied listings separate",
     targets: {
@@ -339,6 +464,7 @@ export const scenarios = {
     },
   },
   appPackageMetadata: {
+    fixtures: "actors",
     file: "app-package-metadata.spec.ts",
     title: "App templates retain package names independently of installed labels",
     targets: {
@@ -349,7 +475,18 @@ export const scenarios = {
       local: na("This scenario exercises the hosted import API."),
     },
   },
+  openapiUserAgent: {
+    fixtures: "actors",
+    file: "openapi-user-agent.spec.ts",
+    title: "Imported OpenAPI PAT calls supply User-Agent and preserve explicit client headers",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker OpenAPI transport."),
+      local: na("Exercises the hosted import and account connection APIs."),
+    },
+  },
   templateAccounts: {
+    fixtures: "actors",
     file: "template-accounts.spec.ts",
     title: "Imported templates route shared tools to explicitly selected accounts",
     targets: {
@@ -368,6 +505,7 @@ export const scenarios = {
     },
   },
   appPackage: {
+    fixtures: "actors",
     file: "app-package.spec.ts",
     title: "App builds retain their selected npm framework across rebuilds",
     targets: {
@@ -381,6 +519,7 @@ export const scenarios = {
     },
   },
   productAnalytics: {
+    fixtures: "actors",
     file: "product-analytics.spec.ts",
     title: "Cloud product events preserve identity and dashboard replay masks private data",
     targets: {
@@ -390,6 +529,7 @@ export const scenarios = {
     },
   },
   feedback: {
+    fixtures: "actors",
     file: "feedback.spec.ts",
     title: "Cloud feedback enforces its API contract and reaches the local ingestion service",
     targets: {
@@ -399,6 +539,7 @@ export const scenarios = {
     },
   },
   groupFormErrors: {
+    fixtures: "actors",
     file: "groups.spec.ts",
     title: "Group forms show field errors and retain drafts through failed saves",
     targets: {
@@ -408,6 +549,7 @@ export const scenarios = {
     },
   },
   passwordRefresh: {
+    fixtures: "actors",
     file: "password-refresh.spec.ts",
     title: "Password sign-in retains its draft through tab-focus session checks",
     targets: {
@@ -426,6 +568,7 @@ export const scenarios = {
     },
   },
   groups: {
+    fixtures: "actors",
     file: "groups.spec.ts",
     title: "Groups persist atomic membership edits and enforce current admin permissions",
     targets: {
@@ -435,6 +578,7 @@ export const scenarios = {
     },
   },
   groupsIsolation: {
+    fixtures: "actors",
     file: "groups.spec.ts",
     title: "Group identities and memberships cannot cross organization boundaries",
     targets: {
@@ -446,6 +590,7 @@ export const scenarios = {
     },
   },
   openapiErrors: {
+    fixtures: "actors",
     file: "openapi-errors.spec.ts",
     title: "OpenAPI errors preserve declared details through MCP without leaking response bodies",
     targets: {
@@ -455,6 +600,7 @@ export const scenarios = {
     },
   },
   providerErrors: {
+    fixtures: "actors",
     file: "provider-errors.spec.ts",
     title: "Provider failures retain safe reasons and account recovery across protocols",
     targets: {
@@ -464,6 +610,7 @@ export const scenarios = {
     },
   },
   graphqlCatalogImport: {
+    fixtures: "actors",
     file: "graphql-catalog.spec.ts",
     title: "GraphQL catalog import hides CLI entries and connects account tools",
     targets: {
@@ -473,6 +620,7 @@ export const scenarios = {
     },
   },
   cloudCatalogInstall: {
+    fixtures: "actors",
     file: "cloud-compiler.spec.ts",
     title: "Cloud catalog installs Axiom through the browser and reaches account setup",
     targets: {
@@ -482,6 +630,7 @@ export const scenarios = {
     },
   },
   cloudCompilerDependencies: {
+    fixtures: "actors",
     file: "cloud-compiler.spec.ts",
     title: "Cloud compiler installs imported packages and preserves source manifests",
     targets: {
@@ -491,6 +640,7 @@ export const scenarios = {
     },
   },
   cloudCompilerMemory: {
+    fixtures: "actors",
     file: "cloud-compiler.spec.ts",
     title: "Cloud compiler memory failures preserve the active deployment",
     targets: {
@@ -500,6 +650,7 @@ export const scenarios = {
     },
   },
   requestTiming: {
+    fixtures: "actors",
     file: "request-timing.spec.ts",
     title: "Cloud request timings correlate browser resources with the server trace",
     targets: {
@@ -509,16 +660,29 @@ export const scenarios = {
     },
   },
   oauthCompatibility: {
+    fixtures: "actors",
     file: "oauth-compatibility.spec.ts",
     title:
-      "OAuth accepts valid HTTP 200 registration and advertised ES256 tokens without weakening validation",
+      "OAuth accepts compatible registration and token variants, classifies registration failures, and keeps token validation",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
       local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
     },
   },
+  importDiagnostics: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "import-diagnostics.spec.ts",
+    title: "OpenAPI imports distinguish download, parse and generation failures safely",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback definition host to exercise the shared importer."),
+      local: na("The shared importer is exercised through the hosted import route."),
+    },
+  },
   setupDiagnostics: {
+    fixtures: "actors",
     file: "setup-diagnostics.spec.ts",
     title: "Setup failures deliver safe catalog and OAuth diagnostics",
     targets: {
@@ -528,6 +692,7 @@ export const scenarios = {
     },
   },
   mcpAuthDiscovery: {
+    fixtures: "actors",
     file: "mcp-auth-discovery.spec.ts",
     title: "MCP imports defer discovery and OAuth setup honors POST authentication challenges",
     targets: {
@@ -537,6 +702,7 @@ export const scenarios = {
     },
   },
   mcpDeferredSetup: {
+    fixtures: "actors",
     file: "mcp-deferred-setup.spec.ts",
     title: "MCP outages preserve added apps and recover in account setup and tools",
     targets: {
@@ -548,6 +714,7 @@ export const scenarios = {
     },
   },
   oauthUrlPolicy: {
+    fixtures: "actors",
     file: "oauth-url-policy.spec.ts",
     title: "OAuth setup honors host URL policy and named loopback callbacks",
     targets: {
@@ -564,6 +731,7 @@ export const scenarios = {
     targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
   },
   workspaceSource: {
+    fixtures: "actors",
     file: "workspace-source.spec.ts",
     title: "Workspace reads reuse confirmed source and preserve concurrent writes",
     targets: {
@@ -573,6 +741,7 @@ export const scenarios = {
     },
   },
   historicalSource: {
+    fixtures: "actors",
     file: "historical-source.spec.ts",
     title: "Historical source deploys without downloading later revisions",
     targets: {
@@ -582,6 +751,7 @@ export const scenarios = {
     },
   },
   appCopies: {
+    fixtures: "actors",
     file: "app-copies.spec.ts",
     title: "App copies use running source and remain independent through edits and navigation",
     targets: {
@@ -601,6 +771,7 @@ export const scenarios = {
     targets: cloudOnboarding,
   },
   betaNotice: {
+    fixtures: "actors",
     file: "beta-notice.spec.ts",
     title: "Marketing preview opens once and beta banners reopen it across homepage and dashboard",
     targets: {
@@ -610,6 +781,7 @@ export const scenarios = {
     },
   },
   deploymentLinks: {
+    fixtures: "actors",
     file: "deployment-links.spec.ts",
     title: "Cloud product links follow the deployment origin",
     targets: {
@@ -619,16 +791,19 @@ export const scenarios = {
     },
   },
   teamCreateRoute: {
+    fixtures: "actors",
     file: "team-create-route.spec.ts",
     title: "Team setup routing waits for membership and redirects existing members",
     targets: cloudOnboarding,
   },
   signInEntry: {
+    fixtures: "actors",
     file: "sign-in-entry.spec.ts",
     title: "Sign-in completion selects destinations before loading a page",
     targets: cloudOnboarding,
   },
   rootEntryLoading: {
+    fixtures: "actors",
     file: "root-entry-loading.spec.ts",
     title:
       "Signed-in root restores Apps before organization lookup without reloading on canonical navigation",
@@ -644,6 +819,7 @@ export const scenarios = {
     },
   },
   accountConnectionQuery: {
+    fixtures: "actors",
     file: "account-connection-query.spec.ts",
     title: "Account connection stays in the app and loads its tools without a page refresh",
     targets: {
@@ -671,6 +847,7 @@ export const scenarios = {
     },
   },
   groupedResources: {
+    fixtures: "actors",
     file: "grouped-resources.spec.ts",
     title:
       "account groups isolate workflow starts and webhook configuration while retaining disabled history",
@@ -681,6 +858,7 @@ export const scenarios = {
     },
   },
   groupedAccounts: {
+    fixtures: "actors",
     file: "grouped-accounts.spec.ts",
     title: "profile selection loads the full catalog and pins tool calls",
     targets: {
@@ -690,6 +868,7 @@ export const scenarios = {
     },
   },
   appAccountPicker: {
+    fixtures: "actors",
     file: "app-account-picker.spec.ts",
     title:
       "App account picker saves in place, retains failed choices and supports multiple accounts",
@@ -700,6 +879,7 @@ export const scenarios = {
     },
   },
   oauthClientRecovery: {
+    fixtures: "actors",
     file: "oauth-client-recovery.spec.ts",
     title:
       "Rejected OAuth clients remain editable and replacements commit only after successful sign-in",
@@ -710,6 +890,7 @@ export const scenarios = {
     },
   },
   oauthConnectStoryboard: {
+    fixtures: "actors",
     file: "oauth-connect-storyboard.spec.ts",
     title: "OAuth connect storyboard captures loading, consent, success and recovery frames",
     targets: {
@@ -719,6 +900,7 @@ export const scenarios = {
     },
   },
   oauthSetupErrors: {
+    fixtures: "actors",
     file: "oauth-setup-errors.spec.ts",
     title:
       "OAuth setup explains each discovery failure and preserves recovery on desktop and mobile",
@@ -726,6 +908,16 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer; hosted presentation is shared."),
       local: na("Local connection-link coverage is in the local OAuth scenario."),
+    },
+  },
+  oauthErrorReport: {
+    fixtures: "actors",
+    file: "oauth-error-report.spec.ts",
+    title: "Cloud tracks an unusable OAuth registration response with safe evidence",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Only Cloud records product failures for the Executor team."),
+      local: na("Only Cloud records product failures for the Executor team."),
     },
   },
   localOAuth: {
@@ -738,6 +930,7 @@ export const scenarios = {
     },
   },
   oauthPermissionsLayout: {
+    fixtures: "actors",
     file: "oauth-permissions-layout.spec.ts",
     title:
       "OAuth permissions collapse and scroll within the connection dialog on desktop and mobile",
@@ -748,6 +941,7 @@ export const scenarios = {
     },
   },
   oauthClientForm: {
+    fixtures: "actors",
     file: "oauth-client-credentials.spec.ts",
     title:
       "OAuth forms use provider configuration and recover a completed machine connection after response loss",
@@ -758,6 +952,7 @@ export const scenarios = {
     },
   },
   oauthClientCredentials: {
+    fixtures: "actors",
     file: "oauth-client-credentials.spec.ts",
     title: "Client credentials connects without redirects and renews tokens with provider settings",
     targets: {
@@ -767,6 +962,7 @@ export const scenarios = {
     },
   },
   oauthProviderConfig: {
+    fixtures: "actors",
     file: "oauth-provider-config.spec.ts",
     title: "OAuth provider code controls scopes, resources, and client authentication",
     targets: {
@@ -776,6 +972,7 @@ export const scenarios = {
     },
   },
   oauthClientSetup: {
+    fixtures: "actors",
     file: "oauth-client-setup.spec.ts",
     title:
       "OAuth client setup is read-only, cached, and explicit about required clients and failures",
@@ -786,6 +983,7 @@ export const scenarios = {
     },
   },
   appAccountOAuth: {
+    fixtures: "actors",
     file: "app-account-picker.spec.ts",
     title:
       "App account sign-in names the account before OAuth and returns cancellation to the same app",
@@ -796,6 +994,7 @@ export const scenarios = {
     },
   },
   queryRefresh: {
+    fixtures: "actors",
     file: "query-refresh.spec.ts",
     title: "Dashboard refresh preserves drafts through failed reads and recovery",
     targets: {
@@ -805,6 +1004,7 @@ export const scenarios = {
     },
   },
   membersRefresh: {
+    fixtures: "actors",
     file: "query-refresh.spec.ts",
     title: "Dashboard members retain their rows and invitation draft through refresh errors",
     targets: {
@@ -814,6 +1014,7 @@ export const scenarios = {
     },
   },
   sessionHint: {
+    fixtures: "actors",
     file: "session-hint.spec.ts",
     title: "Session hints paint early without granting access and clear on sign-out or expiry",
     targets: {
@@ -824,7 +1025,16 @@ export const scenarios = {
   },
   localAppDetailLoading: {
     file: "local-app-detail-loading.spec.ts",
-    title: "Local app navigation keeps a stable loading panel through live reads",
+    title: "Local desktop app navigation keeps a stable loading panel through live reads",
+    targets: {
+      local: scheduled,
+      "self-host": na("This journey checks local pairing and live app reads."),
+      cloud: na("This journey checks local pairing and live app reads."),
+    },
+  },
+  localAppDetailLoadingMobile: {
+    file: "local-app-detail-loading.spec.ts",
+    title: "Local mobile app navigation keeps a stable loading panel through live reads",
     targets: {
       local: scheduled,
       "self-host": na("This journey checks local pairing and live app reads."),
@@ -832,15 +1042,37 @@ export const scenarios = {
     },
   },
   appDetailLoading: {
+    fixtures: "actors",
     file: "app-detail-loading.spec.ts",
-    title: "App detail navigation preserves its frame while metadata and tools load",
+    title: "Desktop app detail navigation preserves its frame while metadata and tools load",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This journey checks hosted app metadata requests."),
     },
   },
+  appDetailLoadingMobile: {
+    fixtures: "actors",
+    file: "app-detail-loading.spec.ts",
+    title: "Mobile app detail navigation preserves its frame while metadata and tools load",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This journey checks hosted app metadata requests."),
+    },
+  },
+  organizationIcon: {
+    fixtures: "actors",
+    file: "organization-icon.spec.ts",
+    title: "Organization icon uploads and survives a settings reload",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Organization settings are hosted only."),
+    },
+  },
   settingsLoading: {
+    fixtures: "actors",
     file: "settings-loading.spec.ts",
     title: "Settings loading keeps static labels and controls around unknown values",
     targets: {
@@ -850,6 +1082,7 @@ export const scenarios = {
     },
   },
   apiKeysLoading: {
+    fixtures: "actors",
     file: "settings-loading.spec.ts",
     title: "API keys loading keeps its page identity and reads tokens before metadata",
     targets: {
@@ -859,6 +1092,7 @@ export const scenarios = {
     },
   },
   dashboardLoading: {
+    fixtures: "actors",
     file: "dashboard-loading.spec.ts",
     title: "Dashboard loading shows content skeletons without auth or organization gates",
     targets: {
@@ -867,8 +1101,22 @@ export const scenarios = {
       local: na("This journey checks hosted session entry and organization references."),
     },
   },
+  frameworkDiscovery: {
+    fixtures: "actors",
+    file: "framework-discovery.spec.ts",
+    managementProfiles: ["owner"],
+    title: "framework discovery exposes pinned contracts and linked authoring topics",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted discovery journey; local skills have separate MCP coverage."),
+    },
+  },
   frameworkAuthoring: {
+    fixtures: "actors",
     file: "framework-authoring.spec.ts",
+    managementProfiles: ["owner"],
+    appOrigin: true,
     title: "framework discovery deploys its checked example with optimistic updates and rollback",
     targets: {
       "self-host": scheduled,
@@ -877,7 +1125,9 @@ export const scenarios = {
     },
   },
   appPendingWrites: {
+    fixtures: "actors",
     file: "app-pending-writes.spec.ts",
+    appOrigin: true,
     title: "closing an app warns about queued optimistic deletes until writes settle",
     targets: {
       "self-host": scheduled,
@@ -885,8 +1135,32 @@ export const scenarios = {
       local: na("The shared browser client is exercised through hosted app authentication."),
     },
   },
-  appUi: {
+  appUiDiscovery: {
+    fixtures: "actors",
     file: "app-ui.spec.ts",
+    appOrigin: true,
+    title: "MCP discovers private app URLs and preserves browser-only API boundaries",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted Better Auth and organization routes."),
+    },
+  },
+  appUiAccess: {
+    fixtures: "actors",
+    file: "app-ui.spec.ts",
+    appOrigin: true,
+    title: "private app access revokes live sessions and supports complete DNS labels",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted Better Auth and organization routes."),
+    },
+  },
+  appUi: {
+    fixtures: "actors",
+    file: "app-ui.spec.ts",
+    appOrigin: true,
     title: "private app bookmarks authenticate and execute through the hosted runtime",
     targets: {
       "self-host": scheduled,
@@ -895,7 +1169,9 @@ export const scenarios = {
     },
   },
   appReload: {
+    fixtures: "actors",
     file: "app-reload.spec.ts",
+    appOrigin: true,
     title: "hosted apps reload on deployment and recover missed version notifications",
     targets: {
       "self-host": scheduled,
@@ -904,7 +1180,9 @@ export const scenarios = {
     },
   },
   appTailwind: {
+    fixtures: "actors",
     file: "app-tailwind.spec.ts",
+    appOrigin: true,
     title: "React app deployments compile Tailwind utilities and preserve ordinary styles",
     targets: {
       "self-host": scheduled,
@@ -915,7 +1193,9 @@ export const scenarios = {
     },
   },
   appObservability: {
+    fixtures: "actors",
     file: "app-observability.spec.ts",
+    appOrigin: true,
     title: "app query traces connect browser, streamed host work, runtime and React commits",
     targets: {
       "self-host": scheduled,
@@ -923,7 +1203,41 @@ export const scenarios = {
       local: na("This scenario uses hosted deployment and app authentication."),
     },
   },
+  appWarmQueries: {
+    fixtures: "actors",
+    file: "app-observability.spec.ts",
+    appOrigin: true,
+    title: "warm app queries export timing without reloading retained server builds",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted deployment and app authentication."),
+    },
+  },
+  appRetryTraces: {
+    fixtures: "actors",
+    file: "app-observability.spec.ts",
+    appOrigin: true,
+    title: "app subscription retries retain failed attempts and native trace links",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted deployment and app authentication."),
+    },
+  },
+  appStreamRevocation: {
+    fixtures: "actors",
+    file: "app-observability.spec.ts",
+    appOrigin: true,
+    title: "app query streams and retained assets enforce live access revocation",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted deployment and app authentication."),
+    },
+  },
   observabilityOutcomes: {
+    fixtures: "actors",
     file: "observability-outcomes.spec.ts",
     title: "observability retains logical failures, large app traces and unsampled requests",
     targets: {
@@ -933,7 +1247,9 @@ export const scenarios = {
     },
   },
   appDomainStatus: {
+    fixtures: "actors",
     file: "app-domain-status.spec.ts",
+    appOrigin: true,
     title: "app domains show pending setup, retry failures and expose only ready links",
     targets: {
       cloud: scheduled,
@@ -942,7 +1258,9 @@ export const scenarios = {
     },
   },
   appUiFailures: {
+    fixtures: "actors",
     file: "app-ui-failures.spec.ts",
+    appOrigin: true,
     title: "private app failures stay visible and recover without losing drafts",
     targets: {
       "self-host": scheduled,
@@ -951,7 +1269,9 @@ export const scenarios = {
     },
   },
   appUiFailureTelemetry: {
+    fixtures: "actors",
     file: "app-ui-failures.spec.ts",
+    appOrigin: true,
     title: "private app crash reports reach the host collector before authored telemetry starts",
     targets: {
       "self-host": scheduled,
@@ -960,6 +1280,7 @@ export const scenarios = {
     },
   },
   executorKeyAccount: {
+    fixtures: "actors",
     file: "executor-key-account.spec.ts",
     title: "Executor installs each user’s managed key without rebinding the shared app",
     targets: {
@@ -968,7 +1289,29 @@ export const scenarios = {
       local: na("Local uses its configured instance API key."),
     },
   },
+  executorCustomization: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "executor-customization.spec.ts",
+    title: "Executor customization preserves personal accounts through the browser and MCP",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
+  executorInstallationLoading: {
+    fixtures: "actors",
+    file: "executor-key-account.spec.ts",
+    title: "Executor installation shows progress and preserves search through failure and retry",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
   executorAppCardAccount: {
+    fixtures: "actors",
     file: "executor-key-account.spec.ts",
     title: "Executor app card shows the current user's profile account",
     targets: {
@@ -978,8 +1321,19 @@ export const scenarios = {
     },
   },
   sharedAuthorization: {
+    fixtures: "actors",
     file: "shared-authorization.spec.ts",
-    title: "MCP and API authorization share exact tool selection and live grant restrictions",
+    title: "API grants enforce exact tool selection and audience boundaries",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario checks hosted API and MCP parity."),
+    },
+  },
+  liveGrantRestrictions: {
+    fixtures: "actors",
+    file: "shared-authorization.spec.ts",
+    title: "MCP and API grants retain exact selections through refresh and live narrowing",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -987,15 +1341,47 @@ export const scenarios = {
     },
   },
   patMcp: {
+    fixtures: "actors",
     file: "pat-mcp.spec.ts",
-    title: "PATs authenticate MCP with current access, approvals and live revocation",
+    title: "PATs authenticate MCP in model and native modes with organization access",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Local uses its instance credential."),
     },
   },
+  patMcpRoles: {
+    fixtures: "actors",
+    file: "pat-mcp.spec.ts",
+    title: "PAT MCP clients recheck current organization roles without reconnecting",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no personal access tokens."),
+    },
+  },
+  patMcpApprovals: {
+    fixtures: "actors",
+    file: "pat-mcp.spec.ts",
+    title: "PAT MCP approvals bind continuations to the token and enforce live revocation",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no personal access tokens."),
+    },
+  },
+  patMcpExpiry: {
+    fixtures: "actors",
+    file: "pat-mcp.spec.ts",
+    title: "PAT expiry rejects new requests and existing MCP clients",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no personal access tokens."),
+    },
+  },
   patMcpInFlight: {
+    fixtures: "actors",
     file: "pat-mcp-in-flight.spec.ts",
     title: "Revocation between tool calls stops an already running MCP execute",
     targets: {
@@ -1007,6 +1393,7 @@ export const scenarios = {
     },
   },
   namedApiKeys: {
+    fixtures: "actors",
     file: "named-api-keys.spec.ts",
     title: "Personal access tokens inherit user permissions and support expiry and revocation",
     targets: {
@@ -1016,6 +1403,7 @@ export const scenarios = {
     },
   },
   organizationApiKeys: {
+    fixtures: "actors",
     file: "organization-api-keys.spec.ts",
     title: "Deleting an organization revokes its managed and personal API keys",
     targets: {
@@ -1025,6 +1413,7 @@ export const scenarios = {
     },
   },
   memberApiKeys: {
+    fixtures: "actors",
     file: "member-api-keys.spec.ts",
     title: "Organization membership removal permanently revokes pinned API keys",
     targets: {
@@ -1034,6 +1423,7 @@ export const scenarios = {
     },
   },
   userApiKey: {
+    fixtures: "actors",
     file: "user-api-key.spec.ts",
     title: "User API keys are private and independent of dashboard sessions",
     targets: {
@@ -1073,6 +1463,7 @@ export const scenarios = {
     },
   },
   codeFormatting: {
+    fixtures: "actors",
     file: "code-formatting.spec.ts",
     title: "code blocks format source and copy without changing stored content",
     targets: {
@@ -1081,7 +1472,18 @@ export const scenarios = {
       cloud: scheduled,
     },
   },
+  sourceDisplayBudget: {
+    fixtures: "actors",
+    file: "source-display-budget.spec.ts",
+    title: "source display budgets bound inline content and preserve complete stored files",
+    targets: {
+      local: na("Hosted source display budgets."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   profileSetupStatus: {
+    fixtures: "actors",
     file: "profile-setup-status.spec.ts",
     title: "account setup stays invisible until provider registration fails",
     targets: {
@@ -1090,7 +1492,18 @@ export const scenarios = {
       cloud: na("Uses a loopback provider fixture."),
     },
   },
+  profileCreation: {
+    fixtures: "actors",
+    file: "profile-picker.spec.ts",
+    title: "profile creation preserves existing accounts and discards cancelled drafts",
+    targets: {
+      local: na("Hosted browser authority journey."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   profilePicker: {
+    fixtures: "actors",
     file: "profile-picker.spec.ts",
     title: "profile picker keeps scalar and array choices isolated across tabs",
     targets: {
@@ -1099,9 +1512,27 @@ export const scenarios = {
       cloud: scheduled,
     },
   },
+  profileAppTabs: {
+    fixtures: "actors",
+    file: "profile-picker.spec.ts",
+    appOrigin: true,
+    title: "authored app tabs preserve profile choice and reject disabled or foreign profiles",
+    targets: {
+      local: na("Hosted browser authority journey."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedProfiles: {
+    fixtures: "actors",
     file: "hosted-profiles.spec.ts",
-    title: "hosted profiles isolate subjects across shared accounts and recheck access",
+    title: "hosted profiles isolate subjects and preserve disabled account selections",
+    targets: { local: na("Hosted membership only."), "self-host": scheduled, cloud: scheduled },
+  },
+  hostedProfileRevocation: {
+    fixtures: "actors",
+    file: "hosted-profiles.spec.ts",
+    title: "hosted profiles recheck shared accounts for schedules, workflows and revocation",
     targets: { local: na("Hosted membership only."), "self-host": scheduled, cloud: scheduled },
   },
   profiles: {
@@ -1114,6 +1545,7 @@ export const scenarios = {
     },
   },
   workflows: {
+    fixtures: "actors",
     file: "workflows.spec.ts",
     title: "app workflows pin deployments and accounts, retry steps, and enforce permissions",
     targets: {
@@ -1122,7 +1554,18 @@ export const scenarios = {
       local: na("This scenario uses hosted app and account management routes."),
     },
   },
+  workflowFailures: {
+    fixtures: "actors",
+    file: "workflows.spec.ts",
+    title: "app workflows enforce approval, failure, timeout rollback and termination",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app and account management routes."),
+    },
+  },
   workflowTimeout: {
+    fixtures: "actors",
     file: "workflow-durability.spec.ts",
     title: "workflow timeouts roll back confirmed writes without late commits",
     targets: {
@@ -1132,6 +1575,7 @@ export const scenarios = {
     },
   },
   workflowSleep: {
+    fixtures: "actors",
     file: "workflow-durability.spec.ts",
     title: "workflow sleep preserves completed mutations and resumes execution",
     targets: {
@@ -1141,6 +1585,7 @@ export const scenarios = {
     },
   },
   appContext: {
+    fixtures: "actors",
     file: "app-context.spec.ts",
     title: "standalone app handlers receive fresh accounts and scoped storage",
     targets: {
@@ -1193,6 +1638,7 @@ export const scenarios = {
     },
   },
   skillFolder: {
+    fixtures: "actors",
     file: "skill-folder.spec.ts",
     title: "skill folders share one loader and respect explicit catalogs",
     targets: {
@@ -1203,7 +1649,34 @@ export const scenarios = {
       ),
     },
   },
+
+  skillFolderValidation: {
+    fixtures: "actors",
+    file: "skill-folder-validation.spec.ts",
+    title: "skill folders validate every selected document and honor empty overrides",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "Shared runtime behavior is covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
+
+  skillFolderPaths: {
+    fixtures: "actors",
+    file: "skill-folder-paths.spec.ts",
+    title: "skill folders reject path traversal and duplicate catalogs",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "Shared runtime behavior is covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
   dynamicSkills: {
+    fixtures: "actors",
     file: "dynamic-skills.spec.ts",
     title: "dynamic skills refresh remote publications without redeployment",
     targets: {
@@ -1215,12 +1688,23 @@ export const scenarios = {
     },
   },
   appSkills: {
+    fixtures: "actors",
     file: "app-skills.spec.ts",
     title: "bundled app skills remain authorized and pinned across deployments",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This scenario tests hosted membership; local skills are covered through MCP."),
+    },
+  },
+  appSkillDeployments: {
+    fixtures: "actors",
+    file: "app-skills.spec.ts",
+    title: "app skill deployments retain pinned history through updates and activation",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This journey checks hosted skill authorization and deployments."),
     },
   },
   scheduledBrowser: {
@@ -1239,6 +1723,7 @@ export const scenarios = {
     },
   },
   hostedScheduleBrowser: {
+    fixtures: "actors",
     file: "hosted-schedule-browser.spec.ts",
     title: "hosted schedule controls enable, run, approve and pause through the browser",
     targets: {
@@ -1248,6 +1733,7 @@ export const scenarios = {
     },
   },
   scheduleDiscoveryStates: {
+    fixtures: "actors",
     file: "hosted-schedule-browser.spec.ts",
     title: "schedule discovery distinguishes loading, failure and confirmed empty results",
     targets: {
@@ -1258,6 +1744,7 @@ export const scenarios = {
   },
 
   scheduleLoading: {
+    fixtures: "actors",
     file: "hosted-schedule-browser.spec.ts",
     title: "schedule tab keeps its layout through metadata, settings and discovery loading",
     targets: {
@@ -1267,6 +1754,7 @@ export const scenarios = {
     },
   },
   scheduleAccountSetup: {
+    fixtures: "actors",
     file: "hosted-schedule-browser.spec.ts",
     title: "schedule discovery offers account setup without a false empty result",
     targets: {
@@ -1287,6 +1775,7 @@ export const scenarios = {
     },
   },
   hostedSchedules: {
+    fixtures: "actors",
     file: "hosted-schedules.spec.ts",
     title: "hosted scheduled runs require current membership and browser approval",
     targets: {
@@ -1316,6 +1805,7 @@ export const scenarios = {
     },
   },
   mcp: {
+    fixtures: "actors",
     file: "claude-mcp.spec.ts",
     title: "Claude Code connects through /mcp, browser authentication and a real tool call",
     targets: {
@@ -1325,6 +1815,7 @@ export const scenarios = {
     },
   },
   mcpProtocol: {
+    fixtures: "actors",
     file: "mcp-server.spec.ts",
     title: "MCP OAuth grants support discovery, execution, refresh and revocation",
     targets: {
@@ -1333,7 +1824,18 @@ export const scenarios = {
       local: na("This scenario tests hosted organization consent, which Local does not have."),
     },
   },
+  mcpSkills: {
+    fixtures: "actors",
+    file: "mcp-server.spec.ts",
+    title: "MCP skills expose pinned instructions and obey live OAuth grant restrictions",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario tests hosted organization consent, which Local does not have."),
+    },
+  },
   organizationRemoval: {
+    fixtures: "actors",
     file: "organization-removal.spec.ts",
     title: "Owners delete an organization with every app, account and membership it holds",
     targets: {
@@ -1345,6 +1847,7 @@ export const scenarios = {
     },
   },
   hosted: {
+    fixtures: "actors",
     file: "hosted-shared.spec.ts",
     title: "hosted roles, account connection, discovery and invocation agree",
     targets: {
@@ -1354,6 +1857,7 @@ export const scenarios = {
     },
   },
   remoteMcp: {
+    fixtures: "actors",
     file: "hosted-shared.spec.ts",
     title: "a public remote MCP server imports, discovers tools and calls one end to end",
     targets: {
@@ -1363,6 +1867,7 @@ export const scenarios = {
     },
   },
   password: {
+    fixtures: "actors",
     file: "hosted.spec.ts",
     title: "self-host password login opens the owner and member dashboards",
     targets: {
@@ -1374,6 +1879,7 @@ export const scenarios = {
     },
   },
   scale: {
+    fixtures: "actors",
     file: "hosted.spec.ts",
     title: "concurrent owners and admins save every account in a large inventory",
     targets: {
@@ -1386,6 +1892,7 @@ export const scenarios = {
     },
   },
   telemetry: {
+    fixtures: "actors",
     file: "hosted.spec.ts",
     title: "real requests reach Motel with correlated server spans",
     targets: {
@@ -1483,9 +1990,13 @@ export const patternForTarget = (
   filter: string,
   cloudMode: "managed" | "attached" = "managed",
 ): string => {
+  const selected = new RegExp(filter);
   const titles = scenariosForSuite(suite, cloudMode)
-    .filter((scenario) => scenario.targets[target].status === "scheduled")
+    .filter(
+      (scenario) =>
+        scenario.targets[target].status === "scheduled" && selected.test(scenario.title),
+    )
     .map((scenario) => scenario.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   if (titles.length === 0) return "(?!)";
-  return `^(?=[\\s\\S]*(?:${filter || ".*"}))[\\s\\S]*(?:${titles.join("|")})$`;
+  return `^(?:[\\s\\S]* )?(?:${titles.join("|")})$`;
 };

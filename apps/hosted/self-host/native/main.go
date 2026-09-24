@@ -446,21 +446,18 @@ func serve(mode string) error {
 	if err != nil {
 		return err
 	}
-	// The generated file contains paths and a network-policy boolean, never keys.
+	// The generated file contains paths, the dashboard origin and a network-policy boolean, never keys.
+	// App requests for the dashboard origin reach the product through a service binding, so the
+	// bundled Executor app never needs private fetch. Other private destinations are an explicit opt-in.
 	privateFetch := values["EXECUTOR_APPS_ALLOW_PRIVATE_FETCH"]
-	if mode == "export" {
+	if privateFetch == "" || mode == "export" {
 		privateFetch = "false"
-	}
-	if privateFetch == "" {
-		u, _ := url.Parse(values["BETTER_AUTH_URL"])
-		host := u.Hostname()
-		ip := net.ParseIP(host)
-		privateFetch = strconv.FormatBool(host == "localhost" || strings.HasSuffix(host, ".localhost") || !strings.Contains(host, ".") || (ip != nil && (ip.IsLoopback() || ip.IsPrivate())))
 	}
 	if privateFetch != "true" && privateFetch != "false" {
 		return errors.New("EXECUTOR_APPS_ALLOW_PRIVATE_FETCH must be true or false")
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APPS_PRIVATE_FETCH@@"), []byte(privateFetch))
+	config = bytes.ReplaceAll(config, []byte("@@SELF_ORIGIN@@"), []byte(strconv.Quote(values["BETTER_AUTH_URL"])))
 	config = bytes.ReplaceAll(config, []byte("@@RUNTIME@@"), []byte(strings.Trim(strconv.Quote(runtime), "\"")))
 	service := `"product"`
 	if mode == "export" {

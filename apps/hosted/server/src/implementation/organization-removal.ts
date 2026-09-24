@@ -2,7 +2,8 @@ import { deleteOrganizationRecords } from "./organization-records.ts";
 /** Removal is one durable workflow. The request only refuses, hides and starts it. */
 import { organizationIconKey } from "./organization-icons.ts";
 import { requireOrganizationOwner } from "./access.ts";
-import { Effect } from "effect";
+import { Effect, Schedule } from "effect";
+import { defaultWebhookLifecycleLimits } from "@executor-js/sdk/core";
 import { Authentication } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
@@ -13,6 +14,7 @@ import {
 import {
   OrganizationBilling,
   OrganizationRemovals,
+  OrganizationRemovalFailed,
   type OrganizationRemovalRetries,
   type OrganizationRemovalStepRunner,
 } from "../contracts/organization-removal.ts";
@@ -99,6 +101,23 @@ export const removeOrganizationDurably = <R = never>(
           for (const subscription of subscriptions)
             if (subscription.status !== "stopped")
               yield* executor.webhooks.remove({ app: app.id, subscription: subscription.id }).pipe(
+                // A lease is local contention, not a provider outage. Wait for the
+                // current attempt or its lease to finish without exponential gaps.
+                Effect.retry({
+                  while: (error) => error._tag === "WebhookConflict",
+                  schedule: Schedule.spaced("500 millis"),
+                  times: Math.ceil(defaultWebhookLifecycleLimits.leaseMs / 500),
+                }),
+                Effect.flatMap((stopped) =>
+                  stopped.status === "stopped"
+                    ? Effect.void
+                    : Effect.fail(
+                        new OrganizationRemovalFailed({
+                          organization,
+                          step: "unregister-webhooks",
+                        }),
+                      ),
+                ),
                 // The subscription or its app is already gone, or the provider
                 // has already stopped it. Either way there is nothing to release.
                 Effect.catchTags({

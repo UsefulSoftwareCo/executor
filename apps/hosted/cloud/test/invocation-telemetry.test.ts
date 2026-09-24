@@ -58,6 +58,23 @@ test("native CPU and full invocation time survive without exporting provider pay
   assert.equal(scheduled["cloudflare.ray_id"], undefined);
 });
 
+test("native stream exceptions expose categories without provider messages", async () => {
+  const summary = await Effect.runPromise(
+    invocationSummary({
+      ...invocation,
+      outcome: "exception",
+      exceptions: [
+        { message: "Network connection lost: private-token" },
+        { message: "internal error; reference = private-reference" },
+        { message: "private-error-message" },
+      ],
+    }),
+  );
+  assert.equal(summary["cloudflare.exception.count"], 3);
+  assert.equal(summary["cloudflare.exception.codes"], "disconnected,internal,unclassified");
+  assert.doesNotMatch(JSON.stringify(summary), /private|reference|Network|message/);
+});
+
 test("the real event exporter delivers valid summaries and a safe decoding failure", async () => {
   const received: string[] = [];
   const server = createServer(async (request, response) => {
@@ -92,6 +109,9 @@ test("the real event exporter delivers valid summaries and a safe decoding failu
     assert.match(payload, /cloudflare.invocation/);
     assert.match(payload, /Invalid Cloudflare invocation timing record/);
     assert.match(payload, /cloudflare.cpu_time_ms/);
+    assert.match(payload, /cloudflare.exception.count/);
+    assert.match(payload, /cloudflare.exception.codes/);
+    assert.match(payload, /unclassified/);
     assert.match(payload, /1234567890abcdef/);
     assert.match(payload, /"links":\[/);
     assert.match(payload, /executor.worker.cpu_ms/);

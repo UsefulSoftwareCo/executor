@@ -11,7 +11,7 @@ export const publishingPreview = (
 ) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
-    const workspace = (url: URL) => url.pathname.endsWith(`/apps/${app}/workspace`);
+    const workspace = (url: URL) => url.pathname.endsWith(`/apps/${app}/workspace/display`);
     const authoring = (url: URL) => url.pathname.endsWith(`/apps/${app}/authoring`);
     const listings = (url: URL) => url.pathname.endsWith("/app-publications/published");
     const source = (route: Route) =>

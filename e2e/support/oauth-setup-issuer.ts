@@ -21,6 +21,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let expiresAt = 0;
   let registrationStatus: 200 | 201 | 400 = 201;
   let malformedRegistration = false;
+  let registrationError: "invalid_client_metadata" | "invalid_redirect_uri" =
+    "invalid_client_metadata";
+  let omitSecretExpiry = false;
+  let nonceRequested: boolean | undefined;
   let idTokenAlgorithms: readonly string[] | undefined;
   let includeIdToken = false;
   let invalidNonce = false;
@@ -88,6 +92,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         )
           return HttpServerResponse.empty({ status: 400 });
         const code = randomUUID();
+        nonceRequested = params.get("nonce") !== null;
         codes.set(code, { clientId, redirect, challenge, nonce: params.get("nonce") });
         const callback = new URL(redirect);
         callback.searchParams.set("code", code);
@@ -265,7 +270,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (registrationStatus === 400)
           return yield* HttpServerResponse.json(
             {
-              error: "invalid_client_metadata",
+              error: registrationError,
               error_description: "PRIVATE_PROVIDER_ERROR",
             },
             { status: 400 },
@@ -276,7 +281,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           {
             ...(malformedRegistration ? {} : { client_id: `synthetic-client-${registrations}` }),
             client_secret: "synthetic-client-secret",
-            client_secret_expires_at: expiresAt,
+            ...(omitSecretExpiry ? {} : { client_secret_expires_at: expiresAt }),
             token_endpoint_auth_method: input.token_endpoint_auth_method,
             redirect_uris: input.redirect_uris,
           },
@@ -285,11 +290,15 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       }),
     ),
   );
+  const listener = yield* Effect.sync(() => createServer());
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+      Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port: 0 })),
     ),
   );
+  // Scenario work has ended. Release unfinished provider requests before the
+  // HTTP adapter waits for its listener to close.
+  yield* Effect.addFinalizer(() => Effect.sync(() => listener.closeAllConnections()));
   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
   if (!("port" in server.address)) return yield* Effect.die("OAuth fixture needs a TCP listener");
   const origin = `http://127.0.0.1:${server.address.port}`;
@@ -300,6 +309,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly registration?: boolean;
       readonly registrationStatus?: typeof registrationStatus;
       readonly malformedRegistration?: boolean;
+      readonly registrationError?: typeof registrationError;
+      readonly omitSecretExpiry?: boolean;
       readonly idTokenAlgorithms?: readonly string[];
       readonly includeIdToken?: boolean;
       readonly invalidNonce?: boolean;
@@ -322,6 +333,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.registrationStatus !== undefined) registrationStatus = input.registrationStatus;
         if (input.malformedRegistration !== undefined)
           malformedRegistration = input.malformedRegistration;
+        if (input.registrationError !== undefined) registrationError = input.registrationError;
+        if (input.omitSecretExpiry !== undefined) omitSecretExpiry = input.omitSecretExpiry;
         if (input.registration !== undefined) registration = input.registration;
         if (input.expiresAt !== undefined) expiresAt = input.expiresAt;
         if (input.discovery !== undefined) discovery = input.discovery;
@@ -335,6 +348,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       probes,
       tokenExchanges,
       tokenChecks,
+      nonceRequested,
     })),
   };
 });

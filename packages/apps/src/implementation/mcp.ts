@@ -3,7 +3,11 @@ import { ProviderError } from "../contracts/provider-error.ts";
 /** Official MCP transports at an Effect boundary. Connections belong to one operation. */
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { ErrorCode, McpError as ProtocolError } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ErrorCode,
+  McpError as ProtocolError,
+  ToolListChangedNotificationSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
 import {
   StreamableHTTPClientTransport,
@@ -105,23 +109,38 @@ function withClient<A, E>(
   connection: McpConnection,
   mode: "discover" | "call",
   use: (client: Client) => Effect.Effect<A, E>,
+  changed?: Effect.Effect<void, unknown>,
 ) {
   const attempt = (kind: "http" | "sse") =>
     Effect.scoped(
       Effect.gen(function* () {
         const telemetry = yield* captureTelemetry;
         const rejected = yield* Deferred.make<never, ProviderError>();
+        const pending = new Set<Promise<void>>();
         const { client, transport } = yield* Effect.acquireRelease(
           Effect.sync(() => {
             const fetch = transportFetch(connection, telemetry, rejected);
+            const client = new Client(
+              { name: "executor-apps", version: "0.1.0" },
+              {
+                jsonSchemaValidator: mcpJsonSchemaValidator,
+                capabilities: mode === "call" ? { elicitation: { form: {} } } : {},
+              },
+            );
+            if (changed !== undefined) {
+              client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+                const task = Effect.runPromiseWith(telemetry.context)(
+                  changed.pipe(
+                    Effect.timeout("5 seconds"),
+                    Effect.catchCause(() => Effect.logWarning("MCP catalog invalidation failed")),
+                  ),
+                );
+                pending.add(task);
+                return task.finally(() => pending.delete(task));
+              });
+            }
             return {
-              client: new Client(
-                { name: "executor-apps", version: "0.1.0" },
-                {
-                  jsonSchemaValidator: mcpJsonSchemaValidator,
-                  capabilities: mode === "call" ? { elicitation: { form: {} } } : {},
-                },
-              ),
+              client,
               transport:
                 kind === "http"
                   ? new StreamableHTTPClientTransport(connection.url, {
@@ -138,6 +157,10 @@ function withClient<A, E>(
           }),
           ({ client, transport }) =>
             Effect.gen(function* () {
+              client.removeNotificationHandler("notifications/tools/list_changed");
+              yield* Effect.promise(async () => {
+                await Promise.allSettled(pending);
+              });
               if (
                 transport instanceof StreamableHTTPClientTransport &&
                 transport.sessionId !== undefined
@@ -193,7 +216,7 @@ function withClient<A, E>(
 }
 
 /** Discover and call with a fresh selected-account transport for each operation. */
-export const mcpToolsEffect = (input: McpToolsOptions) =>
+export const mcpClientEffect = (input: McpToolsOptions, changed?: Effect.Effect<void, unknown>) =>
   Effect.gen(function* () {
     const options = yield* Schema.decodeUnknownEffect(McpToolsOptions)(input).pipe(
       Effect.mapError(() => new McpError({ phase: "connect", reason: "invalid_input" })),
@@ -206,18 +229,20 @@ export const mcpToolsEffect = (input: McpToolsOptions) =>
       headers: Redacted.make({ ...options.headers }),
       timeoutMs: options.timeoutMs ?? defaultMcpClientLimits.timeoutMs,
     };
-    return yield* adaptMcpTools(
-      mcpClient(
-        (mode, use) =>
-          withClient(connection, mode, use).pipe(
-            Effect.mapError((error) =>
-              options.accountId === undefined
-                ? error
-                : accountProviderError(error, options.accountId),
-            ),
+    return mcpClient(
+      (mode, use) =>
+        withClient(connection, mode, use, changed).pipe(
+          Effect.mapError((error) =>
+            options.accountId === undefined
+              ? error
+              : accountProviderError(error, options.accountId),
           ),
-        connection.timeoutMs,
-        failure,
-      ),
+        ),
+      connection.timeoutMs,
+      failure,
     );
   });
+
+/** Discover and compile all tools for connection probes and low-level consumers. */
+export const mcpToolsEffect = (input: McpToolsOptions) =>
+  mcpClientEffect(input).pipe(Effect.flatMap(adaptMcpTools));

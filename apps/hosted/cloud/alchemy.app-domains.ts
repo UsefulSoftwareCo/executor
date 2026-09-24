@@ -38,9 +38,28 @@ export default AppDomainZone.make(
         ]),
       ),
     }).pipe(retain());
+    // Account-owned tokens currently share the saturated account allowance.
+    // Test stages use the deployment user's separate quota through one scoped
+    // token, without consuming a token for every disposable environment.
+    const testToken = yield* Cloudflare.ApiToken.UserApiToken("TestControllerToken", {
+      policies: zone.zoneId.pipe(
+        Output.map((zoneId) => [
+          {
+            effect: "allow" as const,
+            permissionGroups: [
+              "DNS Write" as const,
+              "Zone Read" as const,
+              "SSL and Certificates Read" as const,
+            ],
+            resources: { [`com.cloudflare.api.account.zone.${zoneId}`]: "*" },
+          },
+        ]),
+      ),
+    }).pipe(retain());
     return {
       zone: { id: zone.zoneId, domain: zone.name, accountId },
       controllerToken: token.value,
+      testControllerToken: testToken.value,
     };
   }),
 );

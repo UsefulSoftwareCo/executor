@@ -27,17 +27,18 @@ These settings override the defaults:
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
+| `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://v2.executor.sh`. |
 | `SSO_DISCOVERY_URL`                  | no       | OIDC discovery document. Leave it empty to keep SSO off.                 |
 | `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` | no       | Credentials for that identity provider.                                  |
 | `SSO_ALLOWED_DOMAINS`                | no       | Comma-separated email domains allowed to join through SSO.               |
 
 App code runs in an isolate whose `fetch` reaches only public addresses, the same
-as Executor Cloud. The default follows `BETTER_AUTH_URL`: a public origin keeps
-private fetch off, and a loopback, private or single-label origin turns it on,
-because the bundled Executor app must reach the dashboard to use its own tools.
-A startup line records it when the derived default turns private fetch on. Set
-`EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` yourself to override that default. Every app
-in the instance shares that network position, so grant it deliberately.
+as Executor Cloud. Requests to your own `BETTER_AUTH_URL` origin go straight to
+the server and do not use the network. Thus the bundled Executor app works when
+that origin resolves to a private address, such as a Tailscale name. To let app
+code reach other private addresses, set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true`.
+The default is `false`. Every app in the instance shares that network position,
+so grant it deliberately.
 
 `BETTER_AUTH_URL` must match the scheme, host and port you actually use. If it
 does not, browser sign-in is rejected as an invalid origin. Railway detection uses `RAILWAY_PUBLIC_DOMAIN`. Origins are never inferred

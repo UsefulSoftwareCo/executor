@@ -9,7 +9,7 @@ import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 
 /** Prevent duplicate submits and late navigation when the form has been left. */
-export function AppCreateForm<Input, E>({
+export function AppCreateForm<Input, E, A extends App = App>({
   mutation,
   Failure,
   initialName,
@@ -19,10 +19,10 @@ export function AppCreateForm<Input, E>({
   label,
   children,
   beforeName,
-}: MutationProps<Input, App, E> & {
+}: MutationProps<Input, A, E> & {
   readonly initialName: string;
   readonly input: (name: string) => Input;
-  readonly onCreated: (app: App) => void | Promise<void>;
+  readonly onCreated: (app: A) => void | Promise<void>;
   readonly onCancel?: (() => void) | undefined;
   readonly label: string;
   readonly children?: ((pending: boolean) => ReactNode) | undefined;

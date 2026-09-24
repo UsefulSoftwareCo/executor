@@ -15,7 +15,7 @@ import type { DashboardAccount } from "@executor-js/local-server/contracts";
 import { Cause, Option, Schema } from "effect";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft02Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import { Key01Icon } from "@hugeicons/core-free-icons";
 import { toolsAtom, toolListAtom } from "../../contracts/api.ts";
 import { appToolReadiness, accountSetupFailure } from "../../contracts/dashboard.ts";
 import { Button } from "@executor-js/ui/components/button";
@@ -165,17 +165,6 @@ function LiveAppTools({ app, accounts, selected, profile, revision, selection }:
           search: { view: "tools", tool, profile },
         });
       }}
-      back={
-        <Link
-          className="inline-flex min-h-11 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-          to="/apps/$appId"
-          params={{ appId: app.id }}
-          search={{ view: "tools", profile }}
-        >
-          <HugeiconsIcon icon={ArrowLeft02Icon} size={16} />
-          All tools
-        </Link>
-      }
     />
   );
 }

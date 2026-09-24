@@ -55,14 +55,13 @@ function ResourceLinks({ docsUrl }: { readonly docsUrl: string }) {
 /**
  * The dashboard layout: a sidebar rail on wide screens, which collapses to an
  * icon rail on medium ones, where it can be toggled either way. On phones the rail
- * becomes a compact top bar (`identity`, or the brand) and a floating Menu pill
- * that opens the same navigation, resource links and footer in a bottom sheet.
+ * becomes a floating Menu pill that opens the same navigation, resource links and
+ * footer in a bottom sheet, so page content starts at the top of the screen.
  */
 export function DashboardShell({
   docsUrl,
   brand,
   navigation,
-  identity,
   banner,
   footer,
   children,
@@ -71,8 +70,6 @@ export function DashboardShell({
   readonly docsUrl: string;
   readonly brand: ReactNode;
   readonly navigation: ReactNode;
-  /** Centered in the phone top bar in place of the brand, for example an organization switcher. */
-  readonly identity?: ReactNode;
   /** A full-width notice above the navigation and page content. */
   readonly banner?: ReactNode;
   readonly footer?: ReactNode;
@@ -84,7 +81,7 @@ export function DashboardShell({
   const collapsed = medium && mediumCollapsed;
   return (
     <div
-      className={`shell grid h-dvh max-[740px]:grid-cols-1 ${banner ? "grid-rows-[auto_minmax(0,_1fr)] max-[740px]:grid-rows-[auto_auto_minmax(0,_1fr)]" : "max-[740px]:grid-rows-[auto_minmax(0,_1fr)]"} ${collapsed ? "grid-cols-[60px_minmax(0,_1fr)]" : "grid-cols-[224px_minmax(0,_1fr)] max-[1000px]:grid-cols-[190px_minmax(0,_1fr)]"}`}
+      className={`shell grid h-dvh max-[740px]:grid-cols-1 ${banner ? "grid-rows-[auto_minmax(0,_1fr)]" : "max-[740px]:grid-rows-[minmax(0,_1fr)]"} ${collapsed ? "grid-cols-[60px_minmax(0,_1fr)]" : "grid-cols-[224px_minmax(0,_1fr)] max-[1000px]:grid-cols-[190px_minmax(0,_1fr)]"}`}
     >
       <a
         className="skip-link fixed z-10 top-2 left-2 py-[8px] px-[12px] bg-background border border-border rounded-[6px] [transform:translateY(-150%)] focus:[transform:none]"
@@ -127,10 +124,11 @@ export function DashboardShell({
           {footer}
         </div>
       </aside>
-      <header className="shell-bar hidden max-[740px]:flex items-center justify-center gap-2 min-w-0 border-b border-b-border [padding:env(safe-area-inset-top)_max(8px,_env(safe-area-inset-right))_0_max(8px,_env(safe-area-inset-left))] min-h-14 [&_.organization-switcher]:max-w-full [&_.organization-switcher]:min-w-0 [&_.organization-switcher]:p-0 [&_.organization-trigger]:w-auto [&_.organization-trigger]:max-w-full [&_.organization-trigger]:px-[10px]">
-        {identity ?? brand}
-      </header>
-      <main id="main" className="main flex flex-col overflow-y-auto min-w-0 min-h-0" tabIndex={-1}>
+      <main
+        id="main"
+        className="main flex flex-col overflow-y-auto min-w-0 min-h-0 max-[740px]:pt-[env(safe-area-inset-top)]"
+        tabIndex={-1}
+      >
         {children}
         <div className="hidden max-[740px]:block h-20 shrink-0" aria-hidden />
       </main>

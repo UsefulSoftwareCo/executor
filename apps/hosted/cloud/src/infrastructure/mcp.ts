@@ -24,6 +24,7 @@ import { cloudExecutor } from "./executor.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { AppDataSupervisor, AppDataSupervisorLive } from "./app-data.ts";
 import { unavailableAuthEmail } from "../contracts/email.ts";
+import { forwardMcpRequest } from "../implementation/mcp-forward.ts";
 
 const admitExecution = Context.Reference<Effect.Effect<void, ExecutionRejected>>(
   "cloud/McpExecutionAdmission",
@@ -40,6 +41,10 @@ const makeMcpSessions = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
   const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
   return Effect.gen(function* () {
+    const state = yield* Cloudflare.DurableObjectState;
+    // Opaque object identity is stable across activations; the random activation
+    // identifies a fresh in-memory MCP registry without recording session tokens.
+    const activation = yield* Effect.sync(() => crypto.randomUUID());
     const handler = yield* makeHostedMcp(Effect.flatten(admitExecution)).pipe(
       Effect.provide(HttpServer.layerServices),
     );
@@ -86,7 +91,19 @@ const makeMcpSessions = Effect.gen(function* () {
         new URL(request.url, "https://mcp.internal").pathname.startsWith("/api/mcp/approvals/")
           ? browser
           : http,
-      ).pipe(analytics.wrap, reportErrors),
+      ).pipe(
+        Effect.tap((response) =>
+          Effect.annotateCurrentSpan("http.response.status_code", response.status),
+        ),
+        Effect.withSpan("mcp.session.request", {
+          attributes: {
+            "executor.mcp.object_id": state.id.toString(),
+            "executor.mcp.activation_id": activation,
+          },
+        }),
+        analytics.wrap,
+        reportErrors,
+      ),
     };
   });
 }).pipe(
@@ -110,9 +127,10 @@ export const cloudMcp = Effect.gen(function* () {
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const headers = yield* traceHeaders;
-      return yield* sessions
-        .getByName(mcpSessionKey(access))
-        .fetch(request.modify({ headers: { ...request.headers, ...headers } }));
+      const traced = request.modify({ headers: { ...request.headers, ...headers } });
+      return yield* forwardMcpRequest(traced, (attempt) =>
+        sessions.getByName(mcpSessionKey(access)).fetch(attempt),
+      );
     }).pipe(Effect.withSpan("mcp.session.forward"));
   return {
     http: authenticatedMcp(forward),

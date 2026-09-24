@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-cache": "workspace:*",
     "@executor-js/reactivity": "workspace:*",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
   },

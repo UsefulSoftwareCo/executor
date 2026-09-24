@@ -1,3 +1,5 @@
+import type { AuthContext } from "@better-auth/core";
+import type { Principal } from "../contracts/auth.ts";
 import { type Profile } from "@executor-js/sdk/core";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
@@ -22,7 +24,7 @@ import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { Cookies, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
   ApiAuthentication,
   Authentication,
@@ -42,20 +44,26 @@ import {
   organizationOwner,
 } from "../contracts/organization.ts";
 
-/** Adapt the public Better Auth role endpoint, preserving any renewed session cookies. */
+/** Read current membership once after native session verification; never retain roles between requests. */
 export const lookupMembership = (
-  call: () => Promise<{ headers: Headers; response: { role: string } }>,
+  adapter: Pick<AuthContext["adapter"], "findOne">,
+  principal: Principal,
+  organization: OrganizationId,
 ) =>
   Effect.tryPromise({
-    try: call,
-    catch: (cause) =>
-      cause instanceof APIError && (cause.statusCode === 401 || cause.statusCode === 403)
-        ? new OrganizationForbidden()
-        : new AuthenticationUnavailable(),
+    try: () =>
+      adapter.findOne({
+        model: "member",
+        where: [
+          { field: "userId", value: principal.userId },
+          { field: "organizationId", value: organization },
+        ],
+        select: ["role"],
+      }),
+    catch: () => new AuthenticationUnavailable(),
   }).pipe(
-    Effect.flatMap(({ headers, response }) =>
-      Schema.decodeUnknownEffect(OrganizationRole)(response.role).pipe(
-        Effect.map((role) => ({ role, headers })),
+    Effect.flatMap((member) =>
+      Schema.decodeUnknownEffect(Schema.Struct({ role: OrganizationRole }))(member).pipe(
         Effect.mapError(() => new OrganizationForbidden()),
       ),
     ),
@@ -141,7 +149,7 @@ export const withOrganizationRequest = <E, R>(
     if (principal === null) return yield* new Unauthorized();
     const organization = yield* auth.organization(reference);
     yield* refuseRemoved(organization);
-    const membership = yield* auth.membership(headers, organization);
+    const membership = yield* auth.membership(principal, organization);
     const access = {
       organization,
       owner: organizationOwner(organization),
@@ -158,10 +166,7 @@ export const withOrganizationRequest = <E, R>(
       Effect.provideService(CurrentUsage, { source: "dashboard" }),
       Effect.provideService(CurrentPrincipal, principal),
       Effect.provideService(CurrentAuthorization, fullAuthority),
-    )).pipe(
-      HttpServerResponse.mergeCookies(Cookies.fromSetCookie(membership.headers.getSetCookie())),
-      HttpServerResponse.setHeader("cache-control", "no-store"),
-    );
+    )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
   });
 
 /** Apply the current organization checks without translating away product failures. */

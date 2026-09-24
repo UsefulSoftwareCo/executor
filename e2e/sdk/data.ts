@@ -79,54 +79,64 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
         },
       ],
     });
-    const tokens = yield* Effect.forEach(
-      Array.from({ length: shape.accounts }, (_, index) => index),
-      () =>
-        emulatorRequest(created.providerBaseUrl, "/_emulate/credentials", {
-          type: "bearer-token",
-          login,
-          scopes: ["repo"],
-        }).pipe(
-          Effect.flatMap(
-            Schema.decodeUnknownEffect(
-              Schema.Struct({
-                credential: Schema.Struct({
-                  token: Schema.RedactedFromValue(Schema.NonEmptyString),
-                }),
-              }),
+    const [tokens, apps] = yield* Effect.all(
+      [
+        Effect.forEach(
+          Array.from({ length: shape.accounts }, (_, index) => index),
+          () =>
+            emulatorRequest(created.providerBaseUrl, "/_emulate/credentials", {
+              type: "bearer-token",
+              login,
+              scopes: ["repo"],
+            }).pipe(
+              Effect.flatMap(
+                Schema.decodeUnknownEffect(
+                  Schema.Struct({
+                    credential: Schema.Struct({
+                      token: Schema.RedactedFromValue(Schema.NonEmptyString),
+                    }),
+                  }),
+                ),
+              ),
+              Effect.map((value) => value.credential.token),
             ),
-          ),
-          Effect.map((value) => value.credential.token),
+          { concurrency: 8 },
         ),
-      { concurrency: 8 },
-    );
-    const apps = yield* Effect.forEach(
-      Array.from({ length: shape.apps }, (_, index) => index),
-      (index) =>
-        api
-          .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-            name: `Operations ${String(index + 1).padStart(2, "0")}`,
-            files: [{ path: "index.ts", content: source(created.providerBaseUrl, login) }],
-          })
-          .pipe(Effect.flatMap((response) => body(App, response))),
-      { concurrency: 4 },
+        Effect.forEach(
+          Array.from({ length: shape.apps }, (_, index) => index),
+          (index) =>
+            api
+              .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+                name: `Operations ${String(index + 1).padStart(2, "0")}`,
+                files: [{ path: "index.ts", content: source(created.providerBaseUrl, login) }],
+              })
+              .pipe(Effect.flatMap((response) => body(App, response))),
+          { concurrency: 4 },
+        ),
+      ],
+      { concurrency: 2 },
     );
     const first = apps[0];
     if (first === undefined)
       return yield* Effect.die(new Error("The data shape requires at least one app"));
-    for (const app of apps) {
-      const path = `${prefix}/apps/${app.id}/access`;
-      const current = yield* body(
-        Schema.Struct({ revision: Schema.String }),
-        yield* api.request(actors.owner, "GET", path),
-      );
-      const shared = yield* api.request(actors.owner, "PATCH", path, {
-        revision: current.revision,
-        audience: { kind: "everyone" },
-      });
-      if (shared.status !== 200)
-        return yield* Effect.die(new Error("Could not share the seeded app"));
-    }
+    yield* Effect.forEach(
+      apps,
+      (app) =>
+        Effect.gen(function* () {
+          const path = `${prefix}/apps/${app.id}/access`;
+          const current = yield* body(
+            Schema.Struct({ revision: Schema.String }),
+            yield* api.request(actors.owner, "GET", path),
+          );
+          const shared = yield* api.request(actors.owner, "PATCH", path, {
+            revision: current.revision,
+            audience: { kind: "everyone" },
+          });
+          if (shared.status !== 200)
+            return yield* Effect.die(new Error("Could not share the seeded app"));
+        }),
+      { concurrency: 4, discard: true },
+    );
     const connections = yield* Effect.forEach(
       tokens,
       (token, index) =>
@@ -150,12 +160,12 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
           );
           return { account: saved.id, profile: profile.id };
         }),
-      { concurrency: 6 },
+      { concurrency: 16 },
     );
     const primary = connections[0];
     if (primary === undefined)
       return yield* Effect.die(new Error("The data shape requires at least one account"));
-    const configured = yield* Effect.forEach(
+    const configure = Effect.forEach(
       apps,
       (app, index) =>
         Effect.gen(function* () {
@@ -181,53 +191,80 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
         `Synthetic record ${index}, seed ${shape.seed}. ` +
         "Representative record content. ".repeat(1 + (index % 12)),
     }));
-    for (let offset = 0; offset < rows.length; offset += 100) {
-      const response = yield* api.request(
-        actors.owner,
-        "POST",
-        `${prefix}/apps/${first.id}/tools/call`,
-        {
-          profile: primary.profile,
-          tool: "mutations.seed",
-          input: { records: rows.slice(offset, offset + 100) },
-        },
+    const populate = Effect.forEach(
+      Array.from({ length: Math.ceil(rows.length / 250) }, (_, index) => index * 250),
+      (offset) =>
+        Effect.gen(function* () {
+          const response = yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/apps/${first.id}/tools/call`,
+            {
+              profile: primary.profile,
+              tool: "mutations.seed",
+              input: { records: rows.slice(offset, offset + 250) },
+            },
+          );
+          const result = yield* body(Schema.Struct({ inserted: Schema.Number }), response);
+          if (result.inserted !== Math.min(250, rows.length - offset))
+            return yield* Effect.die(new Error("Seed did not persist every requested record"));
+        }),
+      { concurrency: 4, discard: true },
+    );
+    const createGroups = Effect.gen(function* () {
+      const [member, admin, directory] = yield* Effect.all(
+        [
+          api
+            .request(actors.member, "GET", "/api/viewer")
+            .pipe(
+              Effect.flatMap((response) =>
+                body(Schema.Struct({ userId: Schema.String }), response),
+              ),
+            ),
+          api
+            .request(actors.admin, "GET", "/api/viewer")
+            .pipe(
+              Effect.flatMap((response) =>
+                body(Schema.Struct({ userId: Schema.String }), response),
+              ),
+            ),
+          api.request(actors.owner, "GET", `${prefix}/groups`).pipe(
+            Effect.flatMap((response) =>
+              body(
+                Schema.Struct({
+                  members: Schema.Array(
+                    Schema.Struct({ id: Schema.String, userId: Schema.String }),
+                  ),
+                }),
+                response,
+              ),
+            ),
+          ),
+        ],
+        { concurrency: 3 },
       );
-      const result = yield* body(Schema.Struct({ inserted: Schema.Number }), response);
-      if (result.inserted !== Math.min(100, rows.length - offset))
-        return yield* Effect.die(new Error("Seed did not persist every requested record"));
-    }
-    const member = yield* body(
-      Schema.Struct({ userId: Schema.String }),
-      yield* api.request(actors.member, "GET", "/api/viewer"),
-    );
-    const admin = yield* body(
-      Schema.Struct({ userId: Schema.String }),
-      yield* api.request(actors.admin, "GET", "/api/viewer"),
-    );
-    const directory = yield* body(
-      Schema.Struct({
-        members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
-      }),
-      yield* api.request(actors.owner, "GET", `${prefix}/groups`),
-    );
-    const memberId = directory.members.find((entry) => entry.userId === member.userId)?.id;
-    const adminId = directory.members.find((entry) => entry.userId === admin.userId)?.id;
-    if (memberId === undefined || adminId === undefined)
-      return yield* Effect.die(new Error("Seed actors must be organization members"));
-    const groups = yield* Effect.forEach(
-      [
-        { name: "Support", memberIds: [memberId] },
-        { name: "Engineering", memberIds: [adminId] },
-      ],
-      (group) =>
-        api
-          .request(actors.owner, "POST", `${prefix}/groups`, {
-            ...group,
-            description: "Synthetic scenario group",
-          })
-          .pipe(Effect.flatMap((response) => body(Resource, response))),
-      { concurrency: 2 },
-    );
+      const memberId = directory.members.find((entry) => entry.userId === member.userId)?.id;
+      const adminId = directory.members.find((entry) => entry.userId === admin.userId)?.id;
+      if (memberId === undefined || adminId === undefined)
+        return yield* Effect.die(new Error("Seed actors must be organization members"));
+      return yield* Effect.forEach(
+        [
+          { name: "Support", memberIds: [memberId] },
+          { name: "Engineering", memberIds: [adminId] },
+        ],
+        (group) =>
+          api
+            .request(actors.owner, "POST", `${prefix}/groups`, {
+              ...group,
+              description: "Synthetic scenario group",
+            })
+            .pipe(Effect.flatMap((response) => body(Resource, response))),
+        { concurrency: 2 },
+      );
+    });
+    const [configured, , groups] = yield* Effect.all([configure, populate, createGroups], {
+      concurrency: 3,
+    });
     const restricted = apps[1],
       engineering = groups[1];
     if (restricted !== undefined && engineering !== undefined) {

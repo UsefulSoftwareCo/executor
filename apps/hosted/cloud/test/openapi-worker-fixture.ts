@@ -60,7 +60,8 @@ export default {
       );
       const op = metadata.operations[0];
       if (op === undefined) throw new Error("Missing imported operation");
-      const validator = jsonSchema(op.input);
+      // Operations reference the app's shared definitions; the runtime attaches them on use.
+      const validator = jsonSchema({ ...op.input, $defs: metadata.definitions });
       let rejects = false;
       try {
         validator.parse({ path: { id: {} }, body: { label: "parent", child: { label: 42 } } });

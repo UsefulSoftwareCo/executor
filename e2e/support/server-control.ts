@@ -6,8 +6,9 @@ import { Evidence } from "./evidence.ts";
 
 /** Control calls never touch a shared developer preview or production service. */
 export const serverControl = (
-  action: "start" | "stop" | "restart",
+  action: "start" | "stop" | "restart" | "clock/advance",
   expectedStatus: 200 | 500 = 200,
+  body?: { readonly milliseconds: number },
 ) =>
   Effect.gen(function* () {
     const target = yield* Target,
@@ -38,10 +39,11 @@ export const serverControl = (
       `Product process ${action}`,
       Effect.scoped(
         Effect.gen(function* () {
+          const request = HttpClientRequest.post(`${origin}/${action}`).pipe(
+            HttpClientRequest.bearerToken(target.apiKey),
+          );
           const response = yield* client.execute(
-            HttpClientRequest.post(`${origin}/${action}`).pipe(
-              HttpClientRequest.bearerToken(target.apiKey),
-            ),
+            body === undefined ? request : yield* HttpClientRequest.bodyJson(request, body),
           );
           if (response.status !== expectedStatus)
             return yield* Effect.die(

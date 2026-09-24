@@ -42,33 +42,19 @@ export function AppsPage<E>({
         description="Your installed apps and their selected accounts."
         {...(Option.isSome(data) ? { count: data.value.apps.length } : {})}
       >
+        {connect}
         {(!Option.isSome(data) || data.value.apps.length > 0 || pending) && action}
       </PageHeader>
-      <section
-        aria-labelledby="agent-start-title"
-        className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-lg border bg-muted/30 p-5"
-      >
-        <div className="min-w-0 flex-1 basis-72">
-          <h2 id="agent-start-title" className="text-sm font-semibold">
-            Want to manage or extend your apps?
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Ask your agent to update an app, add features, or build something new. Connect it to
-            Executor over MCP to get started.
-          </p>
-        </div>
-        {connect}
-      </section>
       {/* Controls above cards should use half-card or full-card widths. Search uses a full
-          card and Filters uses half a card at each grid breakpoint. */}
-      <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4">
+          card and Filters uses half a card at each grid breakpoint. Phones share one row. */}
+      <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4 max-[600px]:mb-3 max-[600px]:flex-nowrap max-[600px]:gap-2">
         {(!Option.isSome(data) || data.value.apps.length > 0 || pending || search.length > 0) && (
-          <div className="w-[calc((100%_-_2rem)/3)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/2)] max-[600px]:w-full">
+          <div className="w-[calc((100%_-_2rem)/3)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/2)] max-[600px]:w-auto max-[600px]:min-w-0 max-[600px]:flex-1">
             <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
           </div>
         )}
         {filters && (
-          <div className="w-[calc((100%_-_2rem)/6)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/4)] max-[600px]:w-1/2">
+          <div className="w-[calc((100%_-_2rem)/6)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/4)] max-[600px]:w-auto">
             {filters}
           </div>
         )}
@@ -124,7 +110,7 @@ function AppsList({
           Try another name.
         </Empty>
       ) : (
-        <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
+        <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1 max-[600px]:gap-2">
           {pending}
           {apps.map((app) => {
             const context = selectedAccountContext(
@@ -145,17 +131,17 @@ function AppsList({
             return (
               <Card asChild key={app.id} className="gap-0 rounded-lg p-4 shadow-none">
                 <AppLink
-                  className="app-card flex min-h-[137px] flex-col min-w-0 p-[16px] border border-border rounded-[8px] bg-background [transition:border-color_120ms,_background-color_120ms] hover:border-input hover:bg-muted focus-visible:[outline:2px_solid_var(--ring)] focus-visible:outline-offset-[3px]"
+                  className="app-card flex min-h-[137px] flex-col min-w-0 p-[16px] border border-border rounded-[8px] bg-background [transition:border-color_120ms,_background-color_120ms] hover:border-input hover:bg-muted focus-visible:[outline:2px_solid_var(--ring)] focus-visible:outline-offset-[3px] max-[600px]:grid max-[600px]:min-h-0 max-[600px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[600px]:items-center max-[600px]:gap-x-3 max-[600px]:gap-y-0.5 max-[600px]:px-3.5 max-[600px]:py-3"
                   app={app.id}
                   aria-label={`Open ${app.name}${needsSignIn ? ", needs sign-in" : unavailable ? ", account unavailable" : ""}`}
                 >
-                  <div className="app-card-heading flex items-center justify-between gap-3">
-                    <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px]">
+                  <div className="app-card-heading flex items-center justify-between gap-3 max-[600px]:contents">
+                    <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px] max-[600px]:contents max-[600px]:[&_>_.provider-icon]:row-span-2">
                       <ProviderIcon
                         name={provider?.name ?? app.name}
                         url={providerDisplayUrl(provider)}
                       />
-                      <div>
+                      <div className="max-[600px]:col-start-2 max-[600px]:row-start-1 max-[600px]:self-end">
                         <strong title={app.name}>{app.name}</strong>
                       </div>
                     </div>
@@ -163,12 +149,12 @@ function AppsList({
                       icon={ArrowRight02Icon}
                       strokeWidth={2}
                       size={15}
-                      className="app-card-arrow shrink-0 text-muted-foreground"
+                      className="app-card-arrow shrink-0 text-muted-foreground max-[600px]:col-start-3 max-[600px]:row-span-2 max-[600px]:row-start-1"
                       aria-hidden
                     />
                   </div>
-                  <div className="app-card-footer flex items-center justify-between gap-3 mt-auto pt-4 text-[11px] text-muted-foreground">
-                    <div className="account-cell [.app-card_&]:flex-1 [.app-card_&]:[align-content:start] [.app-card_&]:text-foreground [.app-card_&_>_span]:min-w-0 grid gap-1.25 text-[12px] min-w-0 [&_>_span]:flex [&_>_span]:items-center [&_>_span]:gap-1.5 [&_>_span]:wrap-anywhere [&_svg]:text-muted-foreground [&_svg]:shrink-0">
+                  <div className="app-card-footer flex items-center justify-between gap-3 mt-auto pt-4 text-[11px] text-muted-foreground max-[600px]:col-start-2 max-[600px]:row-start-2 max-[600px]:mt-0 max-[600px]:self-start max-[600px]:pt-0">
+                    <div className="account-cell [.app-card_&]:flex-1 [.app-card_&]:[align-content:start] [.app-card_&]:text-foreground max-[600px]:[.app-card_&]:text-muted-foreground [.app-card_&_>_span]:min-w-0 grid gap-1.25 text-[12px] min-w-0 [&_>_span]:flex [&_>_span]:items-center [&_>_span]:gap-1.5 [&_>_span]:wrap-anywhere [&_svg]:text-muted-foreground [&_svg]:shrink-0">
                       {issues.length > 0 ? (
                         <span className="setup-state inline-flex items-center gap-1">
                           <HugeiconsIcon

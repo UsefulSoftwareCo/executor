@@ -5,6 +5,8 @@ import { captureTelemetry } from "@executor-js/telemetry";
 import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as oauth from "oauth4webapi";
 import {
+  OAuthProviderErrorCode,
+  OAuthResponseField,
   OAuthResource,
   OAuthServer,
   OAuthTokenServer,
@@ -37,42 +39,14 @@ const ProtocolCode = Schema.Literals([
   "schema_decode",
   "timeout",
 ]);
-const ProviderError = Schema.Literals([
-  "invalid_grant",
-  "invalid_client",
-  "invalid_request",
-  "invalid_scope",
-  "unauthorized_client",
-  "unsupported_grant_type",
-  "invalid_redirect_uri",
-  "invalid_client_metadata",
-  "access_denied",
-  "server_error",
-  "temporarily_unavailable",
-]);
-const ValidationField = Schema.Literals([
-  "client_id",
-  "client_secret",
-  "client_secret_expires_at",
-  "access_token",
-  "token_type",
-  "expires_in",
-  "refresh_token",
-  "id_token",
-  "issuer",
-  "authorization_endpoint",
-  "token_endpoint",
-  "jwt_alg",
-]);
-
 /** Private, sanitized protocol failure. Never retain a response, request, or thrown library error. */
 export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>()(
   "OAuthProtocolFailed",
   {
     code: Schema.optional(ProtocolCode),
     status: Schema.optional(Schema.Int),
-    providerError: Schema.optional(ProviderError),
-    field: Schema.optional(ValidationField),
+    providerError: Schema.optional(OAuthProviderErrorCode),
+    field: Schema.optional(OAuthResponseField),
     reason: Schema.Literals([
       "request",
       "invalid_grant",
@@ -80,6 +54,7 @@ export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>
       "invalid_response",
       "metadata_missing",
       "destination_blocked",
+      "resource_mismatch",
     ]),
   },
 ) {}
@@ -100,7 +75,7 @@ const failure = (error: unknown): OAuthProtocolFailed => {
         ? error.cause.status
         : undefined;
   const providerError =
-    error instanceof oauth.ResponseBodyError && Schema.is(ProviderError)(error.error)
+    error instanceof oauth.ResponseBodyError && Schema.is(OAuthProviderErrorCode)(error.error)
       ? error.error
       : undefined;
   // Match library-owned validation labels; never record its message, cause, expected value or body.
@@ -114,7 +89,7 @@ const failure = (error: unknown): OAuthProtocolFailed => {
     ...(code === undefined ? {} : { code }),
     ...(status === undefined ? {} : { status }),
     ...(providerError === undefined ? {} : { providerError }),
-    ...(Schema.is(ValidationField)(fieldValue) ? { field: fieldValue } : {}),
+    ...(Schema.is(OAuthResponseField)(fieldValue) ? { field: fieldValue } : {}),
     reason:
       error instanceof oauth.ResponseBodyError && error.error === "invalid_grant"
         ? "invalid_grant"
@@ -192,11 +167,41 @@ const clientAuth = (client: OAuthRegistration) => {
   }
 };
 
+/** Fill a missing client_secret_expires_at with RFC 7591's "does not expire" value. */
+const registrationBody = (text: string) => {
+  const parsed: unknown = (() => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  })();
+  return typeof parsed === "object" &&
+    parsed !== null &&
+    !Array.isArray(parsed) &&
+    typeof Reflect.get(parsed, "client_secret") === "string" &&
+    Reflect.get(parsed, "client_secret") !== "" &&
+    (Reflect.get(parsed, "client_secret_expires_at") ?? undefined) === undefined
+    ? JSON.stringify({ ...parsed, client_secret_expires_at: 0 })
+    : text;
+};
+
+/** Read a copy of a token response to learn whether the service returned an ID token. */
+const hasIdToken = async (response: Response) => {
+  if (!response.ok) return false;
+  try {
+    const body: unknown = await response.clone().json();
+    return typeof body === "object" && body !== null && Reflect.get(body, "id_token") !== undefined;
+  } catch {
+    return false;
+  }
+};
+
 /** Resolve protocol operations against one host-supplied Effect HTTP client. */
 export const makeOAuthProtocol = (options: OAuthOptions) => {
   // This callback is the external library boundary, not an internal Promise implementation.
   const transport =
-    (telemetry: Effect.Success<typeof captureTelemetry>) =>
+    (telemetry: Effect.Success<typeof captureTelemetry>, received: (status: number) => void) =>
     (url: string, init: oauth.CustomFetchOptions<string, BodyInit | undefined>) =>
       Effect.runPromiseWith(telemetry.context)(
         Effect.gen(function* () {
@@ -217,6 +222,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           });
           const response = yield* options.httpClient.execute(request);
           yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+          received(response.status);
           const body = yield* response.arrayBuffer.pipe(Effect.withSpan("oauth.response.read"));
           return new Response(body, { status: response.status, headers: response.headers });
         }).pipe(
@@ -228,13 +234,38 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
   const requestOptions = (
     signal: AbortSignal,
     telemetry: Effect.Success<typeof captureTelemetry>,
-  ) => ({ [oauth.customFetch]: transport(telemetry), [oauth.allowInsecureRequests]: true, signal });
+    received: (status: number) => void,
+  ) => ({
+    [oauth.customFetch]: transport(telemetry, received),
+    [oauth.allowInsecureRequests]: true,
+    signal,
+  });
   const request = <A>(run: (settings: ReturnType<typeof requestOptions>) => Promise<A>) =>
     Effect.gen(function* () {
       const telemetry = yield* captureTelemetry;
+      // The last response status tells a rejection (4xx) from a response we could not use (2xx).
+      let status: number | undefined;
       return yield* Effect.tryPromise({
-        try: (signal) => run(requestOptions(signal, telemetry)),
-        catch: failure,
+        try: (signal) =>
+          run(
+            requestOptions(signal, telemetry, (received) => {
+              status = received;
+            }),
+          ),
+        catch: (error) => {
+          const failed = failure(error);
+          return failed.status !== undefined || status === undefined
+            ? failed
+            : new OAuthProtocolFailed({
+                reason: failed.reason,
+                status,
+                ...(failed.code === undefined ? {} : { code: failed.code }),
+                ...(failed.providerError === undefined
+                  ? {}
+                  : { providerError: failed.providerError }),
+                ...(failed.field === undefined ? {} : { field: failed.field }),
+              });
+        },
       });
     }).pipe(
       Effect.timeout("30 seconds"),
@@ -341,7 +372,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         resource.origin !== endpoint.origin ||
         (resource.pathname !== endpoint.pathname && !endpoint.pathname.startsWith(prefix))
       ) {
-        return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
+        return yield* new OAuthProtocolFailed({ reason: "resource_mismatch" });
       }
       return found;
     });
@@ -368,7 +399,18 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           const issuer = found === undefined ? resource.href : found.authorization_servers[0];
           if (issuer === undefined)
             return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
-          const server = yield* discoverIssuer(yield* secureUrl(issuer));
+          const issuerUrl = yield* secureUrl(issuer);
+          // Without protected-resource metadata, MCP's earlier authorization rules use the
+          // server's origin as the authorization base. Atlassian publishes metadata only there.
+          const server = yield* found === undefined && issuerUrl.pathname !== "/"
+            ? discoverIssuer(issuerUrl).pipe(
+                Effect.catchIf(
+                  (error) =>
+                    error.reason === "metadata_missing" || error.reason === "invalid_response",
+                  () => discoverIssuer(new URL(issuerUrl.origin)),
+                ),
+              )
+            : discoverIssuer(issuerUrl);
           const scopes = new Set(method.scopes ?? found?.scopes_supported ?? []);
           if (
             method.grant !== "client_credentials" &&
@@ -415,13 +457,16 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             },
             settings,
           );
-          // Some providers use 200 instead of RFC 7591's 201. Normalize only that status;
-          // oauth4webapi still validates the content type, JSON and registration fields.
+          if (response.status !== 200 && response.status !== 201)
+            return oauth.processDynamicClientRegistrationResponse(response);
+          // Some providers use 200 instead of RFC 7591's 201, and some issue a secret without
+          // client_secret_expires_at. Normalize only the status and that missing expiry, which
+          // RFC 7591 defines as 0 for a secret that does not expire. oauth4webapi still
+          // validates the content type, JSON and every other registration field.
           // The transport span retains the provider's original status.
+          const text = await response.text();
           return oauth.processDynamicClientRegistrationResponse(
-            response.status === 200
-              ? new Response(response.body, { status: 201, headers: response.headers })
-              : response,
+            new Response(registrationBody(text), { status: 201, headers: response.headers }),
           );
         });
         if (
@@ -497,11 +542,15 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               : { additionalParameters: { resource: input.resource } }),
           },
         );
+        // Executor never uses the ID token, so it is optional even after requesting `openid`.
+        // When one is returned, its nonce and claims are still validated.
+        const nonce =
+          input.nonce !== undefined && (await hasIdToken(response)) ? input.nonce : undefined;
         return oauth.processAuthorizationCodeResponse(
           server,
           input.client,
           response,
-          input.nonce === undefined ? {} : { expectedNonce: input.nonce, requireIdToken: true },
+          nonce === undefined ? {} : { expectedNonce: nonce, requireIdToken: true },
         );
       }).pipe(protocolStage("exchange")),
     clientCredentials: (input: {

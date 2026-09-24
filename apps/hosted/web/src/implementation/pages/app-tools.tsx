@@ -8,8 +8,6 @@ import { Json, type App, type Tool, type Profile, type ProfileId } from "@execut
 import { Cause, Exit, Option, Schema } from "effect";
 import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
 import { useId, useState } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Code } from "@executor-js/ui/dashboard/code";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
@@ -90,17 +88,6 @@ export function AppTools({
             search: { view: "tools", tool, profile: profile?.id },
           });
         }}
-        back={
-          <Link
-            className="inline-flex min-h-11 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-            to="/org/$organizationSlug/apps/$appId"
-            params={{ organizationSlug, appId: app.id }}
-            search={{ view: "tools", profile: profile?.id }}
-          >
-            <HugeiconsIcon icon={ArrowLeft02Icon} size={16} aria-hidden />
-            All tools
-          </Link>
-        }
         renderAction={(tool) => (
           <ToolRunner
             key={tool.name}

@@ -5,6 +5,7 @@ import {
   RemoteCustomAppInput,
   ImportUrl,
   type ImportAuth,
+  type ImportedApp,
 } from "@executor-js/catalog/contracts";
 import type { App } from "@executor-js/sdk";
 import { Exit, Option, Schema } from "effect";
@@ -12,6 +13,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Add01Icon } from "@hugeicons/core-free-icons";
 import { useState } from "react";
 import type { MutationProps } from "../../contracts/dashboard.ts";
+import { SkippedOperationsNotice, useImportReview } from "./skipped-operations.tsx";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 import {
@@ -32,28 +34,39 @@ const fields = {
 };
 
 /** Remote source form shared by products; the host owns installation and follow-up navigation. */
-export function CustomAppForm<E>(
-  props: MutationProps<RemoteCustomAppInput, App, E> & {
-    readonly kind: typeof CustomAppKind.Type;
-    readonly onInstalled: (app: App) => void | Promise<void>;
-  },
-) {
-  return <RemoteAppForm {...props} input={(source) => source} />;
+export function CustomAppForm<E>({
+  onInstalled,
+  ...props
+}: MutationProps<RemoteCustomAppInput, ImportedApp, E> & {
+  readonly kind: typeof CustomAppKind.Type;
+  readonly onInstalled: (app: ImportedApp) => void | Promise<void>;
+}) {
+  const { review, installed } = useImportReview(onInstalled);
+  if (review)
+    return (
+      <div className="pt-7">
+        <SkippedOperationsNotice
+          operations={review.skippedOperations}
+          onContinue={() => onInstalled(review)}
+        />
+      </div>
+    );
+  return <RemoteAppForm {...props} onInstalled={installed} input={(source) => source} />;
 }
 
 /** Editable remote settings shared by catalog and custom imports; callers own the command. */
-export function RemoteAppForm<Command, E>({
+export function RemoteAppForm<Command, E, A extends App = App>({
   kind,
   mutation,
   Failure,
   onInstalled,
   initial,
   input: command,
-}: MutationProps<Command, App, E> & {
+}: MutationProps<Command, A, E> & {
   readonly kind: typeof CustomAppKind.Type;
   readonly initial?: { readonly name: string; readonly url: string; readonly auth: ImportAuth };
   readonly input: (source: RemoteCustomAppInput) => Command;
-  readonly onInstalled: (app: App) => void | Promise<void>;
+  readonly onInstalled: (app: A) => void | Promise<void>;
 }) {
   const result = useAtomValue(mutation);
   const add = useAtomSet(mutation, { mode: "promiseExit" });

@@ -1,5 +1,5 @@
 /** Public MCP stream probes with scoped cancellation and payload-free evidence. */
-import { Clock, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Option, Redacted, Schema } from "effect";
 import { randomBytes } from "node:crypto";
 import { Target, driver } from "./platform.ts";
 import { Evidence } from "./evidence.ts";
@@ -8,6 +8,28 @@ const Acknowledgement = Schema.Struct({
   jsonrpc: Schema.Literal("2.0"),
   method: Schema.Literal("notifications/subscriptions/acknowledged"),
 });
+
+const TransportCode = Schema.Literals([
+  "UND_ERR_SOCKET",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "ECONNRESET",
+  "ETIMEDOUT",
+]);
+const TransportError = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  code: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Struct({ code: Schema.optional(Schema.String) })),
+});
+// Raw errors may contain URLs or headers. Retain only known transport codes.
+const transportCode = (cause: unknown) => {
+  const parsed = Schema.decodeUnknownOption(TransportError)(cause);
+  if (Option.isNone(parsed)) return "UNKNOWN";
+  const code = parsed.value.cause?.code ?? parsed.value.code;
+  if (Schema.is(TransportCode)(code)) return code;
+  return parsed.value.name === "AbortError" ? "ABORTED" : "UNKNOWN";
+};
 
 /** Hold one real subscription and observe its terminal state without retaining frames. */
 export const openMcpSubscription = (input: {
@@ -101,7 +123,9 @@ export const openMcpSubscription = (input: {
     }).pipe(Effect.timeout("30 seconds"));
     let outcome: "open" | "ended" | "transport-error" = "open";
     let bytes = initialBytes;
+    let lastReceivedAt = yield* Clock.currentTimeMillis;
     let endedAt: number | undefined;
+    let failureCode: ReturnType<typeof transportCode> | undefined;
     yield* Effect.gen(function* () {
       while (true) {
         const next = yield* driver("consume MCP subscription", () => reader.read());
@@ -111,11 +135,13 @@ export const openMcpSubscription = (input: {
           return;
         }
         bytes += next.value.byteLength;
+        lastReceivedAt = yield* Clock.currentTimeMillis;
       }
     }).pipe(
-      Effect.catch(() =>
+      Effect.catch((error) =>
         Effect.gen(function* () {
           outcome = "transport-error";
+          failureCode = transportCode(Redacted.value(error.cause));
           endedAt = yield* Clock.currentTimeMillis;
         }),
       ),
@@ -127,7 +153,9 @@ export const openMcpSubscription = (input: {
       rayId: response.headers.get("cf-ray"),
       started,
       endedAt,
+      lastReceivedAt,
       outcome,
+      failureCode,
       bytes,
     }));
   });

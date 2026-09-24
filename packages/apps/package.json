@@ -25,7 +25,8 @@
     "./react": "./src/react.ts",
     "./storage/facet": "./src/facet.ts",
     "./skills": "./src/skills.ts",
-    "./skills/effect": "./src/implementation/skill-files.ts"
+    "./skills/effect": "./src/implementation/skill-files.ts",
+    "./openapi-compiler": "./src/openapi-compiler.ts"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -35,6 +36,7 @@
   "dependencies": {
     "@cfworker/json-schema": "4.1.1",
     "@effect/sql-sqlite-do": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-do@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-cache": "workspace:*",
     "@executor-js/app-data": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",

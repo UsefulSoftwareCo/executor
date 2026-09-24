@@ -4,7 +4,7 @@ import { useState, type ReactNode } from "react";
 import type { Tool } from "@executor-js/sdk";
 import { Option } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft02Icon, SourceCodeIcon } from "@hugeicons/core-free-icons";
+import { SidebarLeft01Icon, SourceCodeIcon } from "@hugeicons/core-free-icons";
 import type { QueryProps } from "../../contracts/dashboard.ts";
 import { QueryResult, useQuery } from "./context.tsx";
 import { Code, CopyButton } from "./code.tsx";
@@ -14,30 +14,97 @@ import { Empty, SearchInput } from "./common.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Stable list/inspector layout. Hosts choose navigation and any tool execution controls. */
+/**
+ * Stable list/inspector layout. Hosts choose navigation and any tool execution controls.
+ * On phones the inspector fills the section and the list opens as a panel over it.
+ */
 export function ToolBrowser<E>({
   query,
   Failure,
   selected,
   onSelect,
-  back,
   renderAction,
 }: QueryProps<readonly Tool[], E> & {
   readonly selected: string | undefined;
   readonly onSelect: (tool: string) => void;
-  readonly back: ReactNode;
   readonly renderAction?: (tool: Tool) => ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
+  const [listOpen, setListOpen] = useState(false);
   const tools = Option.isSome(data) ? data.value : [];
   const filtered = tools.filter((tool) =>
     `${tool.name} ${tool.description}`.toLowerCase().includes(search.toLowerCase()),
   );
   const current = tools.find((tool) => tool.name === selected) ?? filtered[0];
-  const inspecting = selected !== undefined && current?.name === selected;
+  const listToggle = (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="-ml-2 hidden shrink-0 text-muted-foreground max-[740px]:inline-flex"
+      aria-label={listOpen ? "Hide tools list" : `Show all ${tools.length} tools`}
+      aria-expanded={listOpen}
+      aria-controls="tools-list-panel"
+      onClick={() => setListOpen((open) => !open)}
+    >
+      <HugeiconsIcon icon={SidebarLeft01Icon} size={18} aria-hidden />
+    </Button>
+  );
+  const list = (toggle?: ReactNode) => (
+    <>
+      <AppSectionHeader>
+        {toggle}
+        <AppSectionTitle className="flex-1">Tools</AppSectionTitle>
+        <span className="font-normal tabular-nums text-muted-foreground">
+          {filtered.length}
+          {search ? ` / ${tools.length}` : ""}
+        </span>
+      </AppSectionHeader>
+      <div className="shrink-0 border-b p-2 [&_.search-field]:w-full">
+        <SearchInput value={search} onChange={setSearch} placeholder="Search tools…" />
+      </div>
+      <nav aria-label="App tools" className="min-h-0 flex-1 space-y-0.5 overflow-auto p-2">
+        {filtered.length === 0 ? (
+          <EmptyState size="compact" icon={null} title="No matching tools">
+            Try another name.
+          </EmptyState>
+        ) : (
+          filtered.map((tool) => (
+            <button
+              type="button"
+              key={tool.name}
+              title={tool.name}
+              aria-pressed={current?.name === tool.name}
+              onClick={() => {
+                setListOpen(false);
+                onSelect(tool.name);
+              }}
+              className={cn(
+                "flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-ring max-[740px]:min-h-11",
+                current?.name === tool.name && "bg-muted font-medium text-foreground",
+              )}
+            >
+              <HugeiconsIcon
+                icon={SourceCodeIcon}
+                size={15}
+                strokeWidth={1.7}
+                className="shrink-0 text-muted-foreground"
+                aria-hidden
+              />
+              <code className="truncate">{tool.name}</code>
+            </button>
+          ))
+        )}
+      </nav>
+    </>
+  );
   return (
-    <div className="tools-section flex min-h-0 flex-1 flex-col">
+    <div
+      className="tools-section relative flex min-h-0 flex-1 flex-col"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") setListOpen(false);
+      }}
+    >
       <QueryResult
         result={result}
         Failure={Failure}
@@ -48,7 +115,6 @@ export function ToolBrowser<E>({
             searchControl={
               <SearchInput value={search} onChange={setSearch} placeholder="Search tools…" />
             }
-            back={back}
           />
         }
       >
@@ -65,66 +131,22 @@ export function ToolBrowser<E>({
             </>
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-[var(--app-tools-list-width)_minmax(0,1fr)] overflow-hidden max-[740px]:grid-cols-1">
-              <aside
-                className={cn(
-                  "flex min-h-0 flex-col bg-muted/15",
-                  inspecting && "max-[740px]:hidden",
-                )}
-              >
-                <AppSectionHeader>
-                  <AppSectionTitle>Tools</AppSectionTitle>
-                  <span className="font-normal tabular-nums text-muted-foreground">
-                    {filtered.length}
-                    {search ? ` / ${tools.length}` : ""}
-                  </span>
-                </AppSectionHeader>
-                <div className="shrink-0 border-b p-2 [&_.search-field]:w-full">
-                  <SearchInput value={search} onChange={setSearch} placeholder="Search tools…" />
-                </div>
-                <nav
-                  aria-label="App tools"
-                  className="min-h-0 flex-1 space-y-0.5 overflow-auto p-2"
-                >
-                  {filtered.length === 0 ? (
-                    <EmptyState size="compact" icon={null} title="No matching tools">
-                      Try another name.
-                    </EmptyState>
-                  ) : (
-                    filtered.map((tool) => (
-                      <button
-                        type="button"
-                        key={tool.name}
-                        title={tool.name}
-                        aria-pressed={current?.name === tool.name}
-                        onClick={() => onSelect(tool.name)}
-                        className={cn(
-                          "flex min-h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-ring max-[740px]:min-h-11",
-                          current?.name === tool.name && "bg-muted font-medium text-foreground",
-                        )}
-                      >
-                        <HugeiconsIcon
-                          icon={SourceCodeIcon}
-                          size={15}
-                          strokeWidth={1.7}
-                          className="shrink-0 text-muted-foreground"
-                          aria-hidden
-                        />
-                        <code className="truncate">{tool.name}</code>
-                      </button>
-                    ))
-                  )}
-                </nav>
+              <aside className="flex min-h-0 flex-col bg-muted/15 max-[740px]:hidden">
+                {list()}
               </aside>
-              <div
-                className={cn(
-                  "tool-detail flex min-h-0 min-w-0 flex-col border-l max-[740px]:hidden max-[740px]:border-0",
-                  inspecting && "max-[740px]:flex",
-                )}
-              >
+              {listOpen && (
+                <div
+                  id="tools-list-panel"
+                  className="absolute inset-0 z-30 hidden min-h-0 flex-col bg-background animate-in fade-in duration-150 max-[740px]:flex"
+                >
+                  {list(listToggle)}
+                </div>
+              )}
+              <div className="tool-detail flex min-h-0 min-w-0 flex-col border-l max-[740px]:border-0">
                 {current ? (
                   <>
                     <AppSectionHeader>
-                      <div className="hidden shrink-0 max-[740px]:flex">{back}</div>
+                      {listToggle}
                       <h2
                         className="min-w-0 flex-1 truncate font-mono text-[13px] font-medium"
                         title={current.name}
@@ -177,12 +199,10 @@ export function ToolBrowserLoading({
   label = "Loading tools",
   selected,
   searchControl,
-  back,
 }: {
   readonly label?: string;
   readonly selected?: string | undefined;
   readonly searchControl?: ReactNode;
-  readonly back?: ReactNode;
 }) {
   return (
     <div
@@ -190,7 +210,7 @@ export function ToolBrowserLoading({
       aria-label={label}
       className="grid min-h-0 flex-1 grid-cols-[var(--app-tools-list-width)_minmax(0,1fr)] max-[740px]:grid-cols-1"
     >
-      <div className={cn(selected !== undefined && "max-[740px]:hidden")}>
+      <div className="max-[740px]:hidden">
         <AppSectionHeader>
           <AppSectionTitle>Tools</AppSectionTitle>
         </AppSectionHeader>
@@ -203,23 +223,11 @@ export function ToolBrowserLoading({
           <Skeleton className="h-3 w-3/4" />
         </div>
       </div>
-      <div
-        className={cn(
-          "min-w-0 border-l max-[740px]:hidden max-[740px]:border-0",
-          selected !== undefined && "max-[740px]:block",
-        )}
-      >
+      <div className="min-w-0 border-l max-[740px]:border-0">
         <AppSectionHeader>
-          {selected !== undefined && (
-            <div className="hidden max-[740px]:block">
-              {back ?? (
-                <span className="inline-flex min-h-11 items-center gap-1.5 text-xs text-muted-foreground">
-                  <HugeiconsIcon icon={ArrowLeft02Icon} size={16} aria-hidden />
-                  All tools
-                </span>
-              )}
-            </div>
-          )}
+          <span className="-ml-2 hidden size-11 shrink-0 items-center justify-center text-muted-foreground max-[740px]:inline-flex">
+            <HugeiconsIcon icon={SidebarLeft01Icon} size={18} aria-hidden />
+          </span>
           {selected ? (
             <AppSectionTitle className="min-w-0 flex-1 truncate font-mono">
               {selected}

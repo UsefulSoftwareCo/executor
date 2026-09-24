@@ -1,4 +1,4 @@
-import { ProviderError } from "apps/contracts";
+import { ProviderError, SkillLoadFailed } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
 import { type Crypto, Effect, Match, Redacted, Result, Schema } from "effect";
@@ -202,6 +202,27 @@ function invocation(state: Snapshot, tool: ToolName, input: Json) {
   }).pipe(Effect.mapError(() => new StorageError()));
 }
 
+/** Keep a skill loader's safe fields; every other evaluation failure stays generic. */
+export const evaluationFailure = (
+  identity: { app: AppId; deployment: DeploymentId },
+  error: unknown,
+  reason = "App evaluation failed",
+) =>
+  new AppEvaluationFailed({
+    app: identity.app,
+    deployment: identity.deployment,
+    reason,
+    ...(Schema.is(SkillLoadFailed)(error)
+      ? {
+          skills: {
+            reason: error.reason,
+            ...(error.message ? { message: error.message } : {}),
+            ...(error.status === undefined ? {} : { status: error.status }),
+          },
+        }
+      : {}),
+  });
+
 const runtimeFailure = (
   identity: { app: AppId; deployment: DeploymentId; tool: ToolName },
   state: Snapshot,
@@ -211,11 +232,11 @@ const runtimeFailure = (
   >().pipe(
     Match.tagsExhaustive({
       ProviderError: (error) => appProviderFailure(state, error),
-      OpenapiResponseError: ({ code, status, message }) =>
+      OpenapiResponseError: ({ code, status, message, recovery }) =>
         new ToolCallFailed({
           ...identity,
           reason: message,
-          response: { code, status, message },
+          response: { code, status, message, ...(recovery === undefined ? {} : { recovery }) },
         }),
       WorkflowFailure: () =>
         new ToolCallFailed({ ...identity, reason: "Workflow operation failed" }),
@@ -238,6 +259,7 @@ const runtimeFailure = (
         new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
       HostEvaluationFailed: () =>
         new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
+      SkillLoadFailed: (error) => evaluationFailure(identity, error),
       RuntimeBuildUnavailable: () =>
         new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
       RuntimeProtocolFailed: () =>
@@ -286,11 +308,7 @@ export const makeTools = (
             Effect.mapError((error) =>
               Schema.is(ProviderError)(error)
                 ? appProviderFailure(state, error)
-                : new AppEvaluationFailed({
-                    app: state.app.id,
-                    deployment: state.deployment.id,
-                    reason: "App evaluation failed",
-                  }),
+                : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, error),
             ),
           );
         const sorted = [...tools]

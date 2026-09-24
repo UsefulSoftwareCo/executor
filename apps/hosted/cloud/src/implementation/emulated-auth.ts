@@ -16,6 +16,9 @@ export const emulatedSocialProviders = (
         clientId: google.clientId,
         clientSecret: google.clientSecret,
         discoveryUrl: `${google.baseUrl}/.well-known/openid-configuration`,
+        // The runner resolves this immutable instance metadata before deployment.
+        // Session reads must not contact the identity provider on every request.
+        discoveryDocument: google.discovery,
         scopes: ["openid", "email", "profile"],
         pkce: true,
         requireIdTokenVerification: true,

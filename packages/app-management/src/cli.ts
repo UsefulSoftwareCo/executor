@@ -129,7 +129,7 @@ export const appCommandFailure = (error: unknown): string | undefined => {
   if (Schema.is(RegistryError)(error))
     return error.reason === "conflict"
       ? "That publishing name is used by another app. Choose another name."
-      : `Registry operation failed (${error.reason}). Check the app name, selected commit, and registry connection.`;
+      : `Registry operation failed (${error.reason}${error.status === undefined ? "" : ` ${error.status}`}). Check the app name, selected commit, and registry connection.`;
   if (Schema.is(AppAccessDenied)(error) || Schema.is(AppClientError)(error))
     return error.reason === "authentication"
       ? "Sign in with executor apps login --host <origin> and try again."

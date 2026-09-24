@@ -33,6 +33,7 @@ import {
   OAuthRegistration,
   OAuthConfidentialRegistration,
   OAuthSetupFailed,
+  type OAuthFailureCause,
   type OAuthOptions,
 } from "../contracts/oauth.ts";
 import {
@@ -51,7 +52,7 @@ import {
 } from "../contracts/shared.ts";
 import type { Credentials, StoredAccount } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
-import { makeOAuthProtocol } from "./oauth-protocol.ts";
+import { makeOAuthProtocol, type OAuthProtocolFailed } from "./oauth-protocol.ts";
 import { ownedAccount } from "./accounts.ts";
 
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown) =>
@@ -78,6 +79,88 @@ const project = (response: JsonObject, fields: unknown) =>
       Effect.flatMap((fields) => decode(JsonObject, fields)),
       Effect.mapError(() => new StorageError()),
     );
+  });
+
+/** Safe evidence from a protocol failure, kept on the user-facing error for diagnosis. */
+const causeOf = (
+  stage: OAuthFailureCause["stage"],
+  error: OAuthProtocolFailed,
+): OAuthFailureCause => ({
+  stage,
+  ...(error.status === undefined ? {} : { status: error.status }),
+  ...(error.providerError === undefined ? {} : { providerError: error.providerError }),
+  ...(error.field === undefined ? {} : { field: error.field }),
+});
+
+/**
+ * Classify a failed request by who must act. A 2xx response that failed validation is an
+ * Executor compatibility problem; a 3xx or 4xx is the service refusing the request.
+ */
+const outcome = (error: OAuthProtocolFailed) =>
+  error.reason === "destination_blocked"
+    ? "blocked"
+    : error.status === undefined
+      ? error.reason === "request"
+        ? "unavailable"
+        : "unanswered"
+      : error.status === 429 || error.status >= 500
+        ? "unavailable"
+        : error.status >= 300
+          ? "rejected"
+          : "incompatible";
+
+const registrationFailed = (error: OAuthProtocolFailed, callbackUrl: typeof HttpUrl.Type) => {
+  const cause = causeOf("register", error);
+  return new OAuthSetupFailed({
+    cause,
+    callbackUrl,
+    reason: Match.value(outcome(error)).pipe(
+      Match.when("blocked", () => "discovery_blocked" as const),
+      Match.when("unavailable", () => "service_unavailable" as const),
+      Match.when("rejected", () =>
+        error.providerError === "invalid_redirect_uri" ||
+        error.status === 401 ||
+        error.status === 403
+          ? ("client_not_approved" as const)
+          : ("registration_rejected" as const),
+      ),
+      // Checks after a successful response, such as a changed auth method, carry no status.
+      Match.whenOr("incompatible", "unanswered", () => "incompatible_response" as const),
+      Match.exhaustive,
+    ),
+  });
+};
+
+const clientCredentialsFailed = (error: OAuthProtocolFailed) =>
+  new OAuthSetupFailed({
+    cause: causeOf("clientCredentials", error),
+    reason:
+      error.reason === "invalid_client"
+        ? "invalid_client"
+        : Match.value(outcome(error)).pipe(
+            Match.when("unavailable", () => "service_unavailable" as const),
+            Match.when("incompatible", () => "incompatible_response" as const),
+            Match.whenOr("blocked", "rejected", "unanswered", () => "token_exchange" as const),
+            Match.exhaustive,
+          ),
+  });
+
+const exchangeFailed = (error: OAuthProtocolFailed) =>
+  new OAuthCompletionFailed({
+    cause: causeOf("exchange", error),
+    reason:
+      error.reason === "invalid_client"
+        ? "invalid_client"
+        : error.reason === "invalid_grant"
+          ? "sign_in_expired"
+          : Match.value(outcome(error)).pipe(
+              Match.when("unavailable", () => "service_unavailable" as const),
+              Match.when("incompatible", () => "incompatible_response" as const),
+              // Callback validation (state, issuer) fails before any token request is sent.
+              Match.when("unanswered", () => "invalid_callback" as const),
+              Match.whenOr("blocked", "rejected", () => "exchange_failed" as const),
+              Match.exhaustive,
+            ),
   });
 
 /** Compose persisted sign-in and refresh operations with the host's encryption and transport. */
@@ -139,10 +222,12 @@ export const makeOAuth = (
         Effect.mapError(
           (error) =>
             new OAuthSetupFailed({
+              cause: causeOf("discover", error),
               reason: Match.value(error.reason).pipe(
-                Match.when("request", () => "discovery_unavailable" as const),
+                Match.when("request", () => "service_unavailable" as const),
                 Match.when("metadata_missing", () => "discovery_missing" as const),
                 Match.when("destination_blocked", () => "discovery_blocked" as const),
+                Match.when("resource_mismatch", () => "resource_mismatch" as const),
                 Match.whenOr(
                   "invalid_response",
                   "invalid_client",
@@ -289,11 +374,7 @@ export const makeOAuth = (
             discovered.scopes,
             method.tokenEndpointAuthMethod,
           )
-          .pipe(
-            Effect.mapError(
-              () => new OAuthSetupFailed({ reason: "registration", callbackUrl: redirect.href }),
-            ),
-          );
+          .pipe(Effect.mapError((error) => registrationFailed(error, HttpUrl.make(redirect.href))));
       }
       if (client === undefined) return yield* new OAuthClientUnavailable(input);
       if (
@@ -317,14 +398,7 @@ export const makeOAuth = (
         ).pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })));
         const tokens = yield* protocol
           .clientCredentials({ ...discovered, client: confidential })
-          .pipe(
-            Effect.mapError(
-              (error) =>
-                new OAuthSetupFailed({
-                  reason: error.reason === "invalid_client" ? "invalid_client" : "token_exchange",
-                }),
-            ),
-          );
+          .pipe(Effect.mapError(clientCredentialsFailed));
         const fields = yield* project(method.response, tokens).pipe(
           Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })),
         );
@@ -496,11 +570,9 @@ export const makeOAuth = (
         db.findFirst("oauthAttempts", { where: (b) => b("id", "=", id) }),
       );
       if (row === null) return yield* invalid();
-      if (row.status !== "pending")
-        return yield* new OAuthCompletionFailed({ reason: "already_completed" });
       const now = yield* Clock.currentTimeMillis;
-      if (row.expiresAt.getTime() <= now)
-        return yield* new OAuthCompletionFailed({ reason: "expired" });
+      if (row.status !== "pending" || row.expiresAt.getTime() <= now)
+        return yield* new OAuthCompletionFailed({ reason: "sign_in_expired" });
       const attempt = yield* decrypt(id, row.encrypted, OAuthAttempt);
       yield* Effect.annotateCurrentSpan("oauth.provider.id", attempt.provider);
       if (attempt.connection !== input.connection) return yield* invalid();
@@ -535,7 +607,7 @@ export const makeOAuth = (
         db.findFirst("oauthAttempts", { where: (b) => b("id", "=", id) }),
       );
       if (claimed?.status !== claim)
-        return yield* new OAuthCompletionFailed({ reason: "already_completed" });
+        return yield* new OAuthCompletionFailed({ reason: "sign_in_expired" });
       if (callback.searchParams.has("error"))
         return yield* new OAuthCompletionFailed({
           reason: ["invalid_client", "unauthorized_client"].includes(
@@ -545,16 +617,17 @@ export const makeOAuth = (
             : "denied",
         });
       if (attempt.reconnect) yield* reconnectTarget(db, attempt);
-      const tokens = yield* protocol.exchange(attempt, callback).pipe(
+      const tokens = yield* protocol
+        .exchange(attempt, callback)
+        .pipe(Effect.mapError(exchangeFailed));
+      const fields = yield* project(attempt.response, tokens).pipe(
         Effect.mapError(
-          (error) =>
+          () =>
             new OAuthCompletionFailed({
-              reason: error.reason === "invalid_client" ? "invalid_client" : "exchange_failed",
+              reason: "incompatible_response",
+              cause: { stage: "exchange" },
             }),
         ),
-      );
-      const fields = yield* project(attempt.response, tokens).pipe(
-        Effect.mapError(() => new OAuthCompletionFailed({ reason: "exchange_failed" })),
       );
       const completedAt = yield* Clock.currentTimeMillis;
       const grant = yield* decode(OAuthGrant, {

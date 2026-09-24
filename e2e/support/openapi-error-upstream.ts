@@ -14,6 +14,16 @@ export const openapiSecretMarker = "synthetic-private-openapi-detail";
 /** Response-specific copy deliberately differs from the static schema description. */
 export const openapiMemoryMessage =
   "The compiler ran out of memory during this build. Review build memory use before retrying.";
+/** Response-specific recovery; the published Executor error schemas require it. */
+export const openapiMemoryRecovery = {
+  action: "Retry after the build memory limit increases.",
+  instructions: "Tell the user the build hit the memory limit before changing the app.",
+};
+/** A declared recovery on an API whose error schema allows extra fields. */
+export const openapiConflictRecovery = {
+  action: "Reload the record, then save again.",
+  instructions: "Read the current revision and reapply the change before retrying.",
+};
 /** A reason-specific response from an error schema with no static description. */
 export const openapiOAuthMessage = "We could not register an OAuth client for this connection.";
 
@@ -162,31 +172,56 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
             message: openapiSecretMarker,
             description: openapiSecretMarker,
             stack: openapiSecretMarker,
+            recovery: openapiMemoryRecovery,
           };
           if (mode === "known")
             return yield* HttpServerResponse.json(
-              { _tag: "BuildMemoryExceeded", message: openapiMemoryMessage },
+              {
+                _tag: "BuildMemoryExceeded",
+                message: openapiMemoryMessage,
+                recovery: openapiMemoryRecovery,
+              },
               { status: 422 },
             );
           if (mode === "dynamic")
             return yield* HttpServerResponse.json(
-              { _tag: "OAuthSetupFailed", reason: "registration", message: openapiOAuthMessage },
+              {
+                _tag: "OAuthSetupFailed",
+                reason: "registration_rejected",
+                message: openapiOAuthMessage,
+                recovery: openapiMemoryRecovery,
+              },
               { status: 422 },
             );
           if (mode === "missing-message")
-            return yield* HttpServerResponse.json({ _tag: "BuildMemoryExceeded" }, { status: 422 });
+            return yield* HttpServerResponse.json(
+              { _tag: "BuildMemoryExceeded", recovery: openapiMemoryRecovery },
+              { status: 422 },
+            );
           if (mode === "invalid-message" || mode === "long-message" || mode === "empty-message")
             return yield* HttpServerResponse.json(
               {
                 _tag: "BuildMemoryExceeded",
                 message:
                   mode === "invalid-message" ? 42 : mode === "long-message" ? "x".repeat(4100) : "",
+                recovery: openapiMemoryRecovery,
               },
               { status: 422 },
             );
+          // Conflict allows extra fields, so recovery is optional and validated separately.
           if (mode === "extras")
             return yield* HttpServerResponse.json(
-              { ...body, _tag: "Conflict", revision: 1 },
+              {
+                ...body,
+                _tag: "Conflict",
+                revision: 1,
+                recovery: { action: openapiSecretMarker, instructions: 42 },
+              },
+              { status: 422 },
+            );
+          if (mode === "conflict-recovery")
+            return yield* HttpServerResponse.json(
+              { _tag: "Conflict", revision: 1, recovery: openapiConflictRecovery },
               { status: 422 },
             );
           if (mode === "slow")

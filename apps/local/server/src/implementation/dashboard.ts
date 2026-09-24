@@ -50,7 +50,7 @@ export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
         Effect.mapError(() => new DashboardForbidden()),
       );
       const bearer = request.headers.authorization === `Bearer ${Redacted.value(config.apiKey)}`;
-      const session = yield* auth.valid(request.cookies[sessionCookie(config.port)]);
+      const session = yield* auth.valid(request.cookies[sessionCookie(config)]);
       if (!bearer && !session) return yield* Effect.fail(new DashboardUnauthorized());
       return (yield* response).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
     }),
@@ -176,7 +176,7 @@ export const dashboard = (
         Effect.mapError(() => new DashboardForbidden()),
       );
       const bearer = request.headers.authorization === `Bearer ${Redacted.value(config.apiKey)}`;
-      const cookie = request.cookies[sessionCookie(config.port)];
+      const cookie = request.cookies[sessionCookie(config)];
       const authorize: LiveAccess = bearer
         ? Effect.void
         : auth
@@ -352,11 +352,12 @@ export const dashboard = (
           const existing = yield* executor.apps.list({ owner, name: payload.name });
           if (existing.length > 0) return yield* new AppNameTaken({ owner, name: payload.name });
           const generated = yield* appCatalog.prepare(payload);
-          return (yield* executor.apps.deploy({
+          const { app } = yield* executor.apps.deploy({
             owner,
             name: payload.name,
             files: generated.files,
-          })).app;
+          });
+          return { ...app, skippedOperations: generated.skippedOperations };
         }),
       )
       .handle("addAccount", ({ payload }) => executor.accounts.add({ owner, ...payload }))
@@ -400,11 +401,12 @@ export const dashboard = (
           const existing = yield* executor.apps.list({ owner, name: input.name });
           if (existing.length > 0) return yield* new AppNameTaken({ owner, name: input.name });
           const generated = yield* appCatalog.custom(input);
-          return (yield* executor.apps.deploy({
+          const { app } = yield* executor.apps.deploy({
             owner,
             name: input.name,
             files: generated.files,
-          })).app;
+          });
+          return { ...app, skippedOperations: generated.skippedOperations };
         }),
       )
       .handle("oauthSetup", ({ payload }) =>

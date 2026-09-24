@@ -1,0 +1,13 @@
+{
+  "name": "@executor-js/app-cache",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts/cache.ts",
+    "./sqlite": "./src/sqlite.ts"
+  },
+  "dependencies": {
+    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+  }
+}

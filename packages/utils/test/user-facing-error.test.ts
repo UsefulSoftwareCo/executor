@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect, Option, Schema } from "effect";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 import { UserFacingError, UnexpectedError } from "../src/user-facing-error.ts";
 
 const Unavailable = UserFacingError.define({
@@ -44,6 +45,7 @@ test("errors stay yieldable and retain their HTTP status and exact wire payload"
   assert.deepEqual(Schema.encodeSync(Unavailable)(error), {
     _tag: "TestUnavailable",
     message: "The service could not complete the check.",
+    recovery: { action: "Try again.", instructions: "Check service availability, then retry." },
   });
   assert.equal(error.message, error.description);
   assert.equal(error.retryable, true);
@@ -57,6 +59,7 @@ test("JSON decoding restores typed fields and error-owned recovery without copyi
     reason: "missing",
     privateDiagnostic: "PRIVATE_VALUE",
     message: "Required settings are missing.",
+    recovery: { action: "Check the settings.", instructions: "Inspect the provider definition." },
   });
   const decoded = Schema.decodeUnknownSync(InvalidSettings)(JSON.parse(JSON.stringify(wire)));
   assert.ok(decoded instanceof InvalidSettings);
@@ -85,7 +88,12 @@ test("an API error union restores each constructor and ignores forged presentati
   assert.ok(decoded instanceof InvalidSettings);
   assert.equal(decoded.title, "Settings invalid");
   assert.equal(decoded.message, "The configured service needs different settings.");
+  assert.deepEqual(decoded.recovery, {
+    action: "Check the settings.",
+    instructions: "Inspect the provider definition.",
+  });
   assert.ok(!decoded.fixPrompt.includes("FORGED"));
+  assert.ok(!JSON.stringify(Schema.encodeSync(errors)(decoded)).includes("FORGED"));
   assert.throws(() => Schema.decodeUnknownSync(errors)({ _tag: "Unknown" }));
   assert.throws(() =>
     Schema.decodeUnknownSync(errors)({
@@ -128,6 +136,7 @@ test("native makers retain constructor defaults, safe messages, and existing ins
       _tag: "TestDefaulted",
       reason: "missing",
       message: "Settings are missing.",
+      recovery: { action: "Check settings.", instructions: "Check the configuration." },
     });
   }
 });
@@ -140,9 +149,39 @@ test("typed clients can decode both the old and new response shapes", () => {
     Schema.decodeUnknownSync(Unavailable)({ _tag: "TestUnavailable" }).message,
     wire.message,
   );
+  assert.deepEqual(
+    Schema.decodeUnknownSync(Unavailable)({ _tag: "TestUnavailable" }).recovery,
+    wire.recovery,
+  );
   assert.throws(() =>
     Schema.decodeUnknownSync(Unavailable)({ _tag: "TestUnavailable", message: 42 }),
   );
+  assert.throws(() =>
+    Schema.decodeUnknownSync(Unavailable)({ _tag: "TestUnavailable", recovery: "Try again." }),
+  );
+});
+
+test("each published error schema requires its message and recovery", () => {
+  const api = HttpApi.make("errors").add(
+    HttpApiGroup.make("group").add(
+      HttpApiEndpoint.get("read", "/read", { error: [Unavailable, InvalidSettings] }),
+    ),
+  );
+  const Published = Schema.Struct({
+    properties: Schema.Struct({ recovery: Schema.Unknown }),
+    required: Schema.Array(Schema.String),
+  });
+  const schemas = OpenApi.fromApi(api).components.schemas;
+  for (const name of ["TestUnavailableEncoded", "TestInvalidSettingsEncoded"]) {
+    const schema = Schema.decodeUnknownSync(Published)(schemas[name]);
+    assert.deepEqual(schema.properties.recovery, {
+      type: "object",
+      properties: { action: { type: "string" }, instructions: { type: "string" } },
+      required: ["action", "instructions"],
+      additionalProperties: false,
+    });
+    for (const key of ["_tag", "message", "recovery"]) assert.ok(schema.required.includes(key));
+  }
 });
 
 test("defined errors are recognized after JSON decoding; other values are not", () => {

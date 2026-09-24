@@ -838,9 +838,9 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
         params: { app: managed.id, deployment: managedAfter.activeDeployment },
       }),
     );
-    assert.ok(generatedSource.files.some((file) => file.path === "operations.json"));
+    assert.ok(generatedSource.files.some((file) => file.path === "openapi.json"));
     assert.ok(!JSON.stringify(generatedSource.files).includes(apiKey));
-    // The generated operations file exceeds the inline budget: listed by size, read on selection.
+    // The generated framework reference exceeds the inline budget: listed by size, read on selection.
     const deploymentParams = { app: managed.id, deployment: managedAfter.activeDeployment };
     const listing = await Effect.runPromise(
       (await reader(server)).dashboard.sourceDisplay({ params: deploymentParams }),
@@ -849,23 +849,28 @@ export default defineApp({ accounts: { executor } }, async () => ({  }));`,
       listing.files.map((file) => file.path),
       generatedSource.files.map((file) => file.path),
     );
-    const operations = generatedSource.files.find((file) => file.path === "operations.json");
-    assert.ok(operations);
+    const reference = generatedSource.files.find(
+      (file) => file.path === "framework-reference.json",
+    );
+    assert.ok(reference);
     assert.deepEqual(
-      listing.files.find((file) => file.path === "operations.json"),
+      listing.files.find((file) => file.path === "framework-reference.json"),
       {
-        path: "operations.json",
-        size: new TextEncoder().encode(operations.content).byteLength,
+        path: "framework-reference.json",
+        size: new TextEncoder().encode(reference.content).byteLength,
       },
     );
     const loaded = await Effect.runPromise(
       (await reader(server)).dashboard.sourceDisplayFile({
         params: deploymentParams,
-        query: { path: "operations.json" },
+        query: { path: "framework-reference.json" },
       }),
     );
-    assert.equal(loaded.size, listing.files.find((file) => file.path === "operations.json")?.size);
-    assert.deepEqual(JSON.parse(loaded.content), JSON.parse(operations.content));
+    assert.equal(
+      loaded.size,
+      listing.files.find((file) => file.path === "framework-reference.json")?.size,
+    );
+    assert.deepEqual(JSON.parse(loaded.content), JSON.parse(reference.content));
     const missing = await Effect.runPromise(
       Effect.flip(
         (await reader(server)).dashboard.sourceDisplayFile({

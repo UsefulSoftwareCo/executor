@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "portless --name executor-self-host vp dev",
+    "dev": "vp dev",
     "build": "vp build",
     "typecheck": "tsc --noEmit"
   },

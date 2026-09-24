@@ -13,6 +13,8 @@ import { Target } from "../support/platform.ts";
 
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { managementApp } from "../support/management-app.ts";
+import { holdQuery } from "../support/query-transition.ts";
 
 const files = [
   {
@@ -64,7 +66,7 @@ const GeneratedOperation = Schema.Struct({
   name: Schema.String,
   method: Schema.String,
   path: Schema.String,
-  security: Schema.Array(Schema.Array(Schema.String)),
+  request: Schema.Struct({ security: OperationSecurity }),
   streaming: Schema.optionalKey(Schema.Boolean),
 });
 const Completed = Schema.Struct({
@@ -72,16 +74,41 @@ const Completed = Schema.Struct({
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
 
+const appFixture = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors,
+    browser = yield* Browser,
+    target = yield* Target;
+  const prefix = `/api/organizations/${actors.organization.id}`;
+  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+    name: `Private UI ${randomUUID().slice(0, 8)}`,
+    files,
+  });
+  expect(deployed.status).toBe(200);
+  const app = yield* body(App, deployed);
+  yield* Effect.addFinalizer(() =>
+    api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+  );
+  const seeded = yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/data/mutate`, {
+    name: "save",
+    input: { body: "Saved from the management API" },
+  });
+  expect(seeded.status).toBe(200);
+  const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
+  expect(new URL(url).hostname.split(".").slice(0, 2).join(".")).toBe(
+    `${app.slug}.${actors.organization.slug}`,
+  );
+  const bookmark = `${url}/inbox/unread?filter=new#latest`;
+  return { api, actors, browser, target, prefix, app, url, bookmark };
+});
+
 layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
-  it.effect(scenarios.appUi.title, (context) =>
+  it.effect(scenarios.appUiDiscovery.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          browser = yield* Browser,
-          target = yield* Target;
-        const prefix = `/api/organizations/${actors.organization.id}`;
+        const { api, actors, browser, prefix, app, url } = yield* appFixture;
+        yield* browser.login(actors.owner);
         const anonymous = yield* api.session();
         const apiDocument = yield* body(
           Schema.Struct({
@@ -97,76 +124,8 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(apiDocument.paths["/api/app-ui/authorize"]?.post?.security).toEqual([
           { browserSession: [] },
         ]);
-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-          name: `Private UI ${randomUUID().slice(0, 8)}`,
-          files,
-        });
-        expect(deployed.status).toBe(200);
-        const app = yield* body(App, deployed);
-        yield* Effect.addFinalizer(() =>
-          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
-        );
-        const seeded = yield* api.request(
-          actors.owner,
-          "POST",
-          `${prefix}/apps/${app.id}/data/mutate`,
-          { name: "save", input: { body: "Saved from the management API" } },
-        );
-        expect(seeded.status).toBe(200);
-        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
-        expect(new URL(url).hostname.split(".").slice(0, 2).join(".")).toBe(
-          `${app.slug}.${actors.organization.slug}`,
-        );
-        const bookmark = `${url}/inbox/unread?filter=new#latest`;
-        yield* browser.omitNetworkTrace;
-        expect(
-          (yield* browser.use("Unsigned protected assets stay private", (page) =>
-            page.context().request.get(`${url}/mark.svg`),
-          )).status(),
-        ).toBe(401);
-        expect(
-          (yield* browser.use("App origin has no management routes", (page) =>
-            page.context().request.get(`${url}/api/auth/get-session`),
-          )).status(),
-        ).toBe(404);
-        yield* browser.use("Direct bookmark requires the existing product login", (page) =>
-          page.goto(bookmark),
-        );
-        yield* browser.use("Sign-in return stays on the dashboard", (page) =>
-          page
-            .getByRole("heading", {
-              name: target.metadata.target === "cloud" ? "Sign in" : "Sign in to Executor",
-              exact: true,
-            })
-            .waitFor(),
-        );
-        yield* browser.login(actors.owner);
-        // Inventory provisions the ordinary Executor app and this user's personal profile.
-        const inventory = yield* body(
-          Schema.Struct({
-            apps: Schema.Array(
-              Schema.Struct({
-                id: Schema.String,
-                slug: Schema.String,
-              }),
-            ),
-          }),
-          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
-        );
-        const management = inventory.apps.find((item) => item.slug === "executor");
-        if (management === undefined) return yield* Effect.die("Executor app was not installed");
-        const profiles = yield* body(
-          Schema.Array(
-            Schema.Struct({
-              id: Schema.String,
-              accounts: Schema.Struct({ service: Schema.String }),
-            }),
-          ),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${management.id}/profiles`),
-        );
-        expect(profiles).toHaveLength(1);
-        const profile = profiles[0];
-        if (profile === undefined) return yield* Effect.die("Executor profile was not installed");
+        const { app: management, profile } = yield* managementApp(actors.owner);
+        expect(profile.accounts.service).toBeTypeOf("string");
         const tools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
         const source = yield* body(
           Schema.Struct({
@@ -201,7 +160,12 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           .sort((a, b) => a.name.localeCompare(b.name));
         expect(
           metadata.operations
-            .map(({ streaming: _streaming, ...operation }) => operation)
+            .map(({ name, method, path, request }) => ({
+              name,
+              method,
+              path,
+              security: request.security.map((requirement) => Object.keys(requirement).sort()),
+            }))
             .sort((a, b) => a.name.localeCompare(b.name)),
         ).toEqual(expected);
         expect(
@@ -287,8 +251,38 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           }),
         )(denied.structuredContent);
         expect(failed.execution.ok).toBe(false);
-
-        yield* openPrivateApp(`${mcpLocation.url}/inbox/unread?filter=new#latest`);
+      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+    ),
+  );
+  it.effect(scenarios.appUi.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, browser, target, prefix, app, url, bookmark } = yield* appFixture;
+        yield* browser.omitNetworkTrace;
+        expect(
+          (yield* browser.use("Unsigned protected assets stay private", (page) =>
+            page.context().request.get(`${url}/mark.svg`),
+          )).status(),
+        ).toBe(401);
+        expect(
+          (yield* browser.use("App origin has no management routes", (page) =>
+            page.context().request.get(`${url}/api/auth/get-session`),
+          )).status(),
+        ).toBe(404);
+        yield* browser.use("Direct bookmark requires the existing product login", (page) =>
+          page.goto(bookmark),
+        );
+        yield* browser.use("Sign-in return stays on the dashboard", (page) =>
+          page
+            .getByRole("heading", {
+              name: target.metadata.target === "cloud" ? "Sign in" : "Sign in to Executor",
+              exact: true,
+            })
+            .waitFor(),
+        );
+        yield* browser.login(actors.owner);
+        yield* openPrivateApp(bookmark);
         yield* browser.use("App query executes after authentication", (page) =>
           page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
         );
@@ -371,6 +365,14 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         yield* browser.use("Data remains after reopening", (page) =>
           page.getByRole("listitem").filter({ hasText: "Saved through app runtime" }).waitFor(),
         );
+      }),
+    ),
+  );
+  it.effect(scenarios.appUiAccess.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, browser, prefix, app, bookmark } = yield* appFixture;
         const access = yield* body(
           Schema.Struct({ revision: Schema.String }),
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
@@ -396,6 +398,9 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         yield* browser.use("Member write succeeds", (page) =>
           page.getByRole("listitem").filter({ hasText: "Saved by a member" }).waitFor(),
         );
+        // Hold the watcher's next document request so the rejected mutation stays
+        // observable. The real version stream still detects the revoked access.
+        const reload = yield* holdQuery([new URL(bookmark).pathname], "continue");
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
             revision: shared.revision,
@@ -411,6 +416,12 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(
           (yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}/ui`)).status,
         ).toBe(403);
+        yield* reload.requested;
+        yield* reload.release;
+        // Finish the watcher transition before opening the renamed app as owner.
+        yield* browser.use("Revocation removes the open app from the browser", (page) =>
+          page.getByText("App unavailable.", { exact: true }).waitFor(),
+        );
         // Each app has its own complete DNS label, independent of the team slug length.
         const maxAppSlug = 63;
         expect(maxAppSlug).toBeGreaterThan(0);
@@ -443,7 +454,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
             name: app.name,
           })).status,
         ).toBe(200);
-      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+      }),
     ),
   );
 });

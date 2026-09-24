@@ -6,6 +6,7 @@ import { Alert, AlertDescription, AlertTitle } from "../components/alert.tsx";
 import { Button } from "../components/button.tsx";
 import { Spinner } from "../components/spinner.tsx";
 import { CopyButton } from "./code.tsx";
+import { ErrorTrackedNote } from "./error-tracking.tsx";
 import { cn } from "../lib/utils.ts";
 
 /** Explain the failure and recovery inline; retain the card while a retry is pending. */
@@ -57,6 +58,7 @@ export function ErrorNotice({
         <p>{error.description}</p>
         <p>{error.recovery.action}</p>
       </AlertDescription>
+      <ErrorTrackedNote error={error} />
       {error.detail && (
         <div className="col-span-2 col-start-1 mt-3 flex flex-col gap-1.5">
           <span className="text-[11px] font-medium text-muted-foreground">

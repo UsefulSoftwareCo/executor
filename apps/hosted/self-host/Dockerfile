@@ -1,8 +1,9 @@
-FROM oven/bun:1.3.11 AS build
+FROM node:24.18.0-bookworm-slim AS build
+COPY --from=oven/bun:1.4.2 /usr/local/bin/bun /usr/local/bin/bun
 ARG EXECUTOR_BUILD_VERSION
 RUN test -n "$EXECUTOR_BUILD_VERSION"
 ENV EXECUTOR_BUILD_VERSION=$EXECUTOR_BUILD_VERSION EXECUTOR_ENVIRONMENT=self-host
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY package.json bun.lock ./
 COPY patches ./patches

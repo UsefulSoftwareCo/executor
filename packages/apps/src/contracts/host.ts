@@ -1,5 +1,5 @@
 export * from "./skills.ts";
-import type { SkillFile } from "./skills.ts";
+import { SkillLoadFailed, type SkillFile } from "./skills.ts";
 import { ProviderError } from "./provider-error.ts";
 import { OpenapiResponseError } from "./api-response-error.ts";
 export { ApiErrorResponse, OpenapiResponseError } from "./api-response-error.ts";
@@ -115,8 +115,15 @@ export type ResolvedAccounts = typeof ResolvedAccounts.Type;
 export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
 export type TrustedToolApproval = typeof TrustedToolApproval.Type;
 
+/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
+export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
+  /** Trusted host deadline; never accepted in public operation JSON. */
+  readonly deadline?: typeof InvocationDeadline.Type;
+  /** Host-owned cache storage and refresh lifetime, separate from app database transactions. */
+  readonly cache?: import("./cache.ts").HostCache;
   /** Packaged app text files supplied by the build bridge. Direct hosts may omit them for an empty package. */
   readonly files?: readonly SkillFile[];
   /** Private delivery capability. It is never accepted in public request JSON or stored in a build. */
@@ -235,6 +242,7 @@ export const HostRequirementsError = Schema.Union([HostRequestInvalid, HostDecla
 /** Inspection can fail while binding accounts or evaluating the live definition. */
 export const HostInspectError = Schema.Union([
   ProviderError,
+  SkillLoadFailed,
   HostRequestInvalid,
   HostDeclarationInvalid,
   HostAccountsInvalid,
@@ -262,6 +270,7 @@ export const HostDataError = HostCallError;
 export const HostError = Schema.Union([
   OpenapiResponseError,
   ProviderError,
+  SkillLoadFailed,
   WorkflowFailure,
   HostRequestInvalid,
   HostAccountsInvalid,

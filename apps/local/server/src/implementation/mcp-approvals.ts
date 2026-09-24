@@ -30,7 +30,7 @@ export const localMcpApproval = (
       (request.method === "POST" && request.headers.origin !== requestOrigin(config, request))
     )
       return HttpServerResponse.empty({ status: 403 });
-    if (!(yield* auth.valid(request.cookies[sessionCookie(config.port)])))
+    if (!(yield* auth.valid(request.cookies[sessionCookie(config)])))
       return HttpServerResponse.empty({ status: 401 });
     const query = yield* HttpServerRequest.schemaSearchParams(
       Schema.Struct({ sessionId: BrowserSessionId, grantId: GrantId }),

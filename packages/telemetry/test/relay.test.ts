@@ -31,6 +31,23 @@ test("a thousand normal spans survive the bounded isolate return channel", async
   Schema.decodeUnknownSync(TelemetryBatch)(captured.telemetry);
 });
 
+test("native export batches share the remaining isolate envelope capacity", async () => {
+  const captured = await Effect.runPromise(
+    collectTelemetry(
+      Effect.forEach(
+        Array.from({ length: 1100 }, (_, index) => index),
+        (index) =>
+          Effect.annotateCurrentSpan("fixture", "x".repeat(480)).pipe(
+            Effect.withSpan(`operation.${index}`),
+          ),
+      ).pipe(Effect.withSpan("app.call")),
+    ),
+  );
+  assert.equal(spanCount(captured.telemetry.traces), 1101);
+  assert.equal(captured.telemetry.dropped, 0);
+  Schema.decodeUnknownSync(TelemetryBatch)(captured.telemetry);
+});
+
 test("one oversized Unicode record is counted without losing its neighbors", async () => {
   const captured = await Effect.runPromise(
     collectTelemetry(

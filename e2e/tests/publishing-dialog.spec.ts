@@ -73,7 +73,8 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
               );
               const sourceHold = yield* holdQuery(
                 [actors.organization.id, actors.organization.slug].map(
-                  (organization) => `/api/organizations/${organization}/apps/${app.id}/workspace`,
+                  (organization) =>
+                    `/api/organizations/${organization}/apps/${app.id}/workspace/display`,
                 ),
                 "continue",
                 { allRequests: true },

@@ -13,6 +13,8 @@ export const registryErrorMessage = (error: RegistryError) =>
     "unsupported-dependencies":
       "Executor app dependencies are not supported yet. Include the required app source directly; normal npm dependencies are supported.",
     storage: "The published source could not be read. Try again.",
-    registry: "The app registry could not be reached. Try again.",
+    network: "The app registry could not be reached. Check the network connection and try again.",
+    status: "The app registry returned an unexpected response. Try again later.",
+    "invalid-response": "The app registry returned an invalid response. Try again later.",
     limit: "The published app exceeds the supported source size.",
   })[error.reason];

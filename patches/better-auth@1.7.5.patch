@@ -15,3 +15,41 @@ index 55b2705f9915dd611fb6d9a5e3b81d5cc47fb846..8caad90d67af19a9d18a937d96668e3a
  		return data;
  	};
  	const consume = async (key, rule) => {
+diff --git a/dist/plugins/generic-oauth/index.mjs b/dist/plugins/generic-oauth/index.mjs
+index 4643efd0..b19e0a98 100644
+--- a/dist/plugins/generic-oauth/index.mjs
++++ b/dist/plugins/generic-oauth/index.mjs
+@@ -87,8 +87,8 @@ const genericOAuth = (options) => {
+ 				let issuer;
+ 				let isOidc = false;
+ 				let idTokenConfig;
+-				if (c.discoveryUrl) {
+-					const discovered = await fetchDiscovery(c.discoveryUrl, c.discoveryHeaders).catch((err) => {
++				if (c.discoveryUrl || c.discoveryDocument) {
++					const discovered = c.discoveryDocument ?? await fetchDiscovery(c.discoveryUrl, c.discoveryHeaders).catch((err) => {
+ 						ctx.logger.error(`Discovery fetch failed for "${c.providerId}": ${err}`);
+ 						return null;
+ 					});
+diff --git a/dist/plugins/generic-oauth/types.d.mts b/dist/plugins/generic-oauth/types.d.mts
+index 96c8b20b..4591ab82 100644
+--- a/dist/plugins/generic-oauth/types.d.mts
++++ b/dist/plugins/generic-oauth/types.d.mts
+@@ -41,6 +41,18 @@ interface GenericOAuthConfig<ID extends string = string> {
+    * If provided, the authorization and token endpoints will be fetched from this URL.
+    */
+   discoveryUrl?: string | undefined;
++  /** Resolved metadata for an explicitly configured provider. Obtain and validate it
++   * before creating the auth instance; token signatures and claims remain verified
++   * against its issuer, audience, algorithms, and live JWKS endpoint. */
++  discoveryDocument?: {
++    readonly issuer: string;
++    readonly authorization_endpoint: string;
++    readonly token_endpoint: string;
++    readonly userinfo_endpoint?: string;
++    readonly jwks_uri: string;
++    readonly id_token_signing_alg_values_supported: readonly string[];
++    readonly end_session_endpoint?: string;
++  } | undefined;
+   /**
+    * Require discovery to provide the issuer and JWKS metadata needed to verify
+    * ID tokens before this provider is registered.

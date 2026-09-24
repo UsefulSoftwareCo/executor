@@ -23,11 +23,18 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
   method: Schema.String,
   path: Schema.String,
   status: Schema.optional(Schema.Number),
-  reason: Schema.Literals(["origin", "timeout", "request"]),
+  response: Schema.optional(
+    Schema.Struct({
+      contentType: Schema.String,
+      characters: Schema.Number,
+      path: Schema.String,
+    }),
+  ),
+  reason: Schema.Literals(["origin", "timeout", "request", "deployment"]),
   cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
 }) {
   override get message() {
-    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}`;
+    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}`;
   }
 }
 /** A server response may be decoded only against its public contract. */
@@ -115,6 +122,10 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                     request = yield* HttpClientRequest.bodyJson(request, data);
                   const response = yield* http.execute(request);
                   const text = yield* response.text;
+                  // Alchemy's temporary deployment Worker answers every path with
+                  // HTTP 200. Classify that exact response without retaining bodies.
+                  const deploying =
+                    response.status === 200 && text === "Alchemy worker is being deployed...";
                   const parsed = text.length
                     ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
                         text,
@@ -125,7 +136,12 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                               method,
                               path: url.pathname,
                               status: response.status,
-                              reason: "request",
+                              response: {
+                                contentType: response.headers["content-type"] ?? "absent",
+                                characters: text.length,
+                                path: new URL(response.url || url.href).pathname,
+                              },
+                              reason: deploying ? "deployment" : "request",
                             }),
                         ),
                       )

@@ -1,7 +1,7 @@
 import type { HostedError } from "../../contracts/errors.ts";
 import type { AccountSubmission, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
 import { useAtomSet } from "@effect/atom-react";
-import type { Account, Provider } from "@executor-js/sdk";
+import { oauthClientEntryReasons, type Account, type Provider } from "@executor-js/sdk";
 import type {
   HostedAccountConnection,
   HostedOAuthSignIn,
@@ -161,7 +161,9 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                 const required = Option.exists(Cause.findErrorOption(cause), (error) =>
                   Match.value(error).pipe(
                     Match.tag("OAuthClientUnavailable", () => true),
-                    Match.tag("OAuthSetupFailed", (error) => error.reason === "invalid_client"),
+                    Match.tag("OAuthSetupFailed", (error) =>
+                      oauthClientEntryReasons.has(error.reason),
+                    ),
                     Match.orElse(() => false),
                   ),
                 );

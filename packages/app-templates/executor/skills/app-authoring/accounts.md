@@ -46,6 +46,9 @@ export default defineApp(requirements, { queries: { listProjects } });
 ```
 
 Deploy the source, create a profile, then request a connection for its account requirement.
+The management examples below use the **local** API. For hosted calls, use
+`profiles_create` and `accounts_connect` with `path.organization`, as shown in
+[deploy.md](deploy.md). Hosted calls derive owner and subject from the caller.
 Discover the management profile path with `tools.search` before calling it:
 
 ```js
@@ -70,7 +73,7 @@ const executor = tools.executor.profiles["<management-profile-id>"];
 const connection = await executor.queries.accountConnections_get({
   path: { connection: "<connection-id>" },
 });
-return connection.state; // Completed means the account is saved and selected for the profile.
+return connection.state; // { status: "completed", account } means setup finished.
 ```
 
 Completing a targeted request saves the account and selects it for the named profile in

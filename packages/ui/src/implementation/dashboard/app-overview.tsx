@@ -72,7 +72,7 @@ export function AppOverview({
         )}
       >
         <section
-          className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+          className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 max-[740px]:p-4"
           aria-label="App accounts"
         >
           <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
@@ -91,7 +91,7 @@ export function AppOverview({
           <div className="flex min-h-0 flex-1 flex-col overflow-auto">{accounts}</div>
         </section>
         <section
-          className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+          className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 max-[740px]:p-4"
           aria-label="App tools preview"
         >
           {tools}
@@ -99,7 +99,7 @@ export function AppOverview({
         {entries}
         {source && (
           <section
-            className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5"
+            className="flex h-60 min-w-0 flex-col overflow-hidden rounded-lg border bg-background p-5 max-[740px]:p-4"
             aria-label="App source"
           >
             <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">

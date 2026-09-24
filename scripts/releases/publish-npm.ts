@@ -131,7 +131,8 @@ NodeRuntime.runMain(
               : Effect.fail(new Error(`Registry integrity does not match ${pkg.version}`)),
           ),
           Effect.timeout(15_000),
-          Effect.retry({ schedule: Schedule.spaced(10_000), times: 60 }),
+          // npm can take over 15 minutes to expose a large accepted archive.
+          Effect.retry({ schedule: Schedule.spaced(15_000), times: 160 }),
         );
         yield* Console.log(`Verified public npm archive ${pkg.version}`);
       }

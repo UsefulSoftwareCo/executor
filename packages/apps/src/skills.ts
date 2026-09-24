@@ -1,16 +1,25 @@
 /** Load standard Agent Skills into the same portable catalog an app can author directly. */
-import { Effect } from "effect";
-import { githubSkillsEffect, wellKnownSkillsEffect } from "./implementation/skills.ts";
+import { Effect, Schema } from "effect";
+import {
+  githubSkillsEffect,
+  reader,
+  wellKnownSkillsEffect,
+  withService,
+} from "./implementation/skills.ts";
 import { skillFromFiles, folderSkillsEffect } from "./implementation/skill-files.ts";
-import type {
-  FolderSkillsOptions,
-  GitHubSkillsOptions,
-  WellKnownSkillsOptions,
-  SkillFile,
+import {
+  SkillServiceName,
+  type FolderSkillsOptions,
+  type GitHubSkillsOptions,
+  type SkillReaderOptions,
+  type WellKnownSkillsOptions,
+  type SkillFile,
 } from "./contracts/skills.ts";
 export {
   SkillLoadFailed,
   SkillDefinitionInvalid,
+  SkillServiceName,
+  type SkillReaderOptions,
   type FolderSkillsOptions,
   type AppSkillSource as Skill,
   type SkillFile,
@@ -36,3 +45,23 @@ export const fileSkill = (files: readonly SkillFile[]) => Effect.runPromise(skil
 /** Read skill directories from ctx.files. Omitted path selects skills/; missing folders return []. */
 export const folderSkills = (options: FolderSkillsOptions) =>
   Effect.runPromise(folderSkillsEffect(options));
+
+/**
+ * Read files for a custom remote skill loader, such as one for GitLab. Reads share one byte
+ * budget and reject with the same safe SkillLoadFailed errors as githubSkills, naming `service`.
+ */
+export const skillReader = (options: SkillReaderOptions) => {
+  const service = Schema.decodeUnknownSync(SkillServiceName)(options.service);
+  const remote = Effect.runSync(reader(options));
+  const run = <A>(effect: Effect.Effect<A, import("./contracts/skills.ts").SkillLoadFailed>) =>
+    Effect.runPromise(
+      effect.pipe(withService(service)),
+      options.signal === undefined ? {} : { signal: options.signal },
+    );
+  return {
+    /** Fetch one UTF-8 text file. */
+    text: (url: string) => run(remote.read(url)),
+    /** Fetch and parse one JSON document. */
+    json: (url: string) => run(remote.json(url)),
+  };
+};

@@ -44,8 +44,9 @@ export const launch = (mode: LaunchMode, platform: string) =>
       yield* Console.log(JSON.stringify({ version: 1, url: server.url }));
     } else {
       const link = yield* server.issuePairingLink;
+      const origin = settings.browserOrigin ?? server.url;
       yield* Console.log(
-        `Executor: ${server.url}\nMCP: ${server.url}/mcp\nConnect (one use, expires in 5 minutes):\n${Redacted.value(link.url)}`,
+        `Executor: ${origin}\nMCP: ${origin}/mcp\nConnect (one use, expires in 5 minutes):\n${Redacted.value(link.url)}`,
       );
       if (mode === "browser")
         yield* openBrowser(link.url, platform).pipe(

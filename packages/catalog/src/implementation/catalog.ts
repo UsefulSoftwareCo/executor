@@ -14,6 +14,7 @@ import { generateCustomApp } from "./custom.ts";
 import { generateMcpApp } from "./mcp.ts";
 import { applyCatalogOverride } from "./overrides.ts";
 import { catalogSource } from "./source.ts";
+import { complete } from "./custom.ts";
 import type { HostEgress } from "@executor-js/utils/url-policy";
 
 /**
@@ -47,7 +48,10 @@ export const createCatalog = (
         const generated = yield* Effect.gen(function* () {
           switch (entry.kind) {
             case "mcp":
-              return yield* generateMcpApp(entry, egress, input.mcpAuth).pipe(catalogStage("mcp"));
+              return yield* generateMcpApp(entry, egress, input.mcpAuth).pipe(
+                Effect.map(complete),
+                catalogStage("mcp"),
+              );
             case "graphql": {
               const settings =
                 input.graphql === undefined
@@ -74,7 +78,10 @@ export const createCatalog = (
               return yield* source.document(entry).pipe(
                 catalogStage("document"),
                 Effect.flatMap((document) =>
-                  generateApp(entry, document).pipe(catalogStage("generate")),
+                  generateApp(entry, document).pipe(
+                    Effect.map(({ files, skippedOperations }) => ({ files, skippedOperations })),
+                    catalogStage("generate"),
+                  ),
                 ),
               );
             case "cli":
@@ -84,7 +91,7 @@ export const createCatalog = (
               });
           }
         });
-        return { files: generated.files };
+        return generated;
       }).pipe(catalogStage("prepare")),
   };
 };

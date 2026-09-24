@@ -14,10 +14,33 @@ import {
   type CatalogSource,
 } from "../contracts/catalog.ts";
 
-/** A destination refused by host policy is reported exactly like any other unreachable URL. */
-class DestinationRefused {
-  readonly _tag = "DestinationRefused";
-}
+/** No hostnames or response text enter an import failure. */
+const destinationRefused = () =>
+  new CatalogImportFailed({
+    code: "destination_blocked",
+    reason:
+      "This API definition URL or its redirect is not allowed by the host. Use an allowed definition URL.",
+  });
+
+const httpFailure = (httpStatus: number) => {
+  const reason = (() => {
+    switch (httpStatus) {
+      case 401:
+      case 403:
+        return "Access to this API definition was denied. Use a definition URL that Executor can read without signing in.";
+      case 404:
+      case 410:
+        return "This API definition was not found. Check the definition URL for the current JSON or YAML document.";
+      case 429:
+        return "The API definition host is limiting requests. Wait before importing again.";
+      default:
+        return httpStatus >= 500
+          ? "The API definition host could not serve the document. Try again later."
+          : "The API definition host returned an unsuccessful response. Check the definition URL and try again.";
+    }
+  })();
+  return new CatalogImportFailed({ code: "document_http", httpStatus, reason });
+};
 
 const maximumHops = 5;
 
@@ -30,34 +53,50 @@ const read = (url: string, egress: HostEgress) =>
   Effect.gen(function* () {
     let destination = parseDestination(url, egress.policy);
     for (let hop = 0; hop <= maximumHops; hop++) {
-      if (destination === undefined) return yield* Effect.fail(new DestinationRefused());
+      if (destination === undefined) return yield* Effect.fail(destinationRefused());
       const response = yield* egress.client.get(destination);
       yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.location;
         // Release the hop's body before issuing the next request.
         yield* response.text.pipe(Effect.ignore);
-        destination =
-          location === undefined
-            ? undefined
-            : redirectDestination(location, destination, egress.policy);
+        if (location === undefined)
+          return yield* new CatalogImportFailed({
+            code: "document_redirect",
+            reason:
+              "The API definition host returned a redirect without a destination. Use the direct JSON or YAML definition URL.",
+          });
+        destination = redirectDestination(location, destination, egress.policy);
         continue;
       }
       if (response.status < 200 || response.status >= 300)
-        return yield* Effect.fail(new DestinationRefused());
+        return yield* httpFailure(response.status);
       const text = yield* response.text;
-      if (text.length > 20_000_000)
+      if (text.length > 40_000_000)
         return yield* Effect.fail(
           new CatalogImportFailed({
             code: "document_size",
-            reason: "This API definition exceeds the 20 MB import limit.",
+            reason: "This API definition exceeds the 40 MB import limit.",
           }),
         );
       return text;
     }
-    return yield* Effect.fail(new DestinationRefused());
+    return yield* new CatalogImportFailed({
+      code: "document_redirect",
+      reason:
+        "The API definition URL redirected too many times. Use the direct JSON or YAML definition URL.",
+    });
   }).pipe(
     Effect.timeout("30 seconds"),
+    Effect.catchTag(
+      "TimeoutError",
+      () =>
+        new CatalogImportFailed({
+          code: "document_timeout",
+          reason:
+            "The API definition did not finish downloading within 30 seconds. Try again or use another definition URL.",
+        }),
+    ),
     // Only a fetch-backed client reads this; an Undici dispatcher never follows a redirect.
     Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
   );
@@ -67,7 +106,7 @@ export const readApiDocument = (url: string, egress: HostEgress) =>
   Effect.gen(function* () {
     const text = yield* read(url, egress).pipe(
       Effect.mapError((error) =>
-        error instanceof CatalogImportFailed
+        Schema.is(CatalogImportFailed)(error)
           ? error
           : new CatalogImportFailed({
               code: "document_fetch",
@@ -82,7 +121,8 @@ export const readApiDocument = (url: string, egress: HostEgress) =>
           () =>
             new CatalogImportFailed({
               code: "document_json",
-              reason: "This API definition is not valid JSON.",
+              reason:
+                "This API definition is not valid JSON. Check its syntax or use the direct JSON or YAML definition URL.",
             }),
         ),
       );
@@ -92,7 +132,8 @@ export const readApiDocument = (url: string, egress: HostEgress) =>
       catch: () =>
         new CatalogImportFailed({
           code: "document_yaml",
-          reason: "This API definition is not valid YAML.",
+          reason:
+            "This API definition is not valid YAML. Check its syntax or use the direct JSON or YAML definition URL.",
         }),
     });
   });
@@ -118,7 +159,8 @@ export const catalogSource = (client: HttpClient.HttpClient): CatalogSource => {
             code: "document_kind",
             reason: "MCP entries are generated without an API definition.",
           });
-        const url = URL.parse(entry.feeds?.[0] ?? entry.connectUrl ?? "");
+        // `connectUrl` locates the definition; `feeds` names the registry lists an entry came from.
+        const url = URL.parse(entry.connectUrl ?? "");
         if (url === null || url.protocol !== "https:")
           return yield* new CatalogImportFailed({
             code: "document_url",

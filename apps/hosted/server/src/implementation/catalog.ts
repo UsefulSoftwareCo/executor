@@ -31,7 +31,7 @@ export const catalogLive = (
         prepare: (input) =>
           input.entry === executor.id
             ? executorAppSource(origin, skills, document).pipe(
-                Effect.map(({ files }) => ({ files })),
+                Effect.map(({ files, skippedOperations }) => ({ files, skippedOperations })),
                 Effect.mapError(
                   (error) => new CatalogImportFailed({ code: error.code, reason: error.reason }),
                 ),

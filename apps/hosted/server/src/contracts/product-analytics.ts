@@ -2,6 +2,7 @@
 import { Cause, Clock, Context, Effect, Exit, Option, Schema } from "effect";
 import { CurrentUserId } from "./auth.ts";
 import { CurrentOrganization } from "./organization.ts";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 
 /** Explicit metadata only. Never add request bodies, URLs, credentials, or operation results. */
 export interface UsageProperties {
@@ -23,6 +24,8 @@ export interface UsageProperties {
   readonly resumed?: boolean;
   readonly duration_ms?: number;
   readonly error_type?: string;
+  readonly error_reason?: string;
+  readonly error_report?: string;
   readonly status_code?: number;
   readonly result_count?: number;
   readonly run_id?: string;
@@ -104,17 +107,29 @@ export const recordUsage = (event: UsageEvent, properties: UsageProperties = {})
 const ErrorTag = Schema.Struct({
   _tag: Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/)),
 });
+const ErrorReason = Schema.Struct({
+  reason: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_-]{0,63}$/)),
+});
 
-/** Export a bounded error discriminator only, never its message, cause, or serialized fields. */
+/** Export bounded error discriminators only, never a message, cause, or other serialized field. */
 export const usageFailure = (cause: Cause.Cause<unknown>): UsageProperties => {
   if (Cause.hasInterrupts(cause)) return { outcome: "cancelled", ok: false };
-  const error = Cause.findErrorOption(cause).pipe(
-    Option.flatMap(Schema.decodeUnknownOption(ErrorTag)),
-  );
+  const failure = Cause.findErrorOption(cause);
+  const error = failure.pipe(Option.flatMap(Schema.decodeUnknownOption(ErrorTag)));
+  const reason = failure.pipe(Option.flatMap(Schema.decodeUnknownOption(ErrorReason)));
   return {
     outcome: "failure",
     ok: false,
     error_type: Option.isSome(error) ? error.value._tag : "UnhandledFailure",
+    ...(Option.isSome(reason) ? { error_reason: reason.value.reason } : {}),
+    // A report is curated safe evidence for failures the Executor team must fix.
+    ...Option.match(failure, {
+      onNone: () => ({}),
+      onSome: (value) =>
+        UserFacingError.is(value) && value.report !== undefined
+          ? { error_report: value.report.slice(0, 300) }
+          : {},
+    }),
   };
 };
 

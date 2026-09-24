@@ -748,16 +748,20 @@ test("import, account creation, selection and generated requests use the normal 
 });
 
 test("unsupported security fails before generating misleading app source", async () => {
-  const document = spec("https://example.test");
-  await assert.rejects(() =>
-    Effect.runPromise(
-      catalogFor(entry, {
-        ...document,
-        components: { securitySchemes: { key: { type: "http", scheme: "basic" } } },
-      })
-        .prepare({ entry: entry.id })
-        .pipe(Effect.provide(NodeServices.layer)),
-    ),
+  // Without the public operation, no operation has a usable authentication method.
+  const { "/public": _public, ...paths } = spec("https://example.test").paths;
+  await assert.rejects(
+    () =>
+      Effect.runPromise(
+        catalogFor(entry, {
+          ...spec("https://example.test"),
+          paths,
+          components: { securitySchemes: { key: { type: "http", scheme: "digest" } } },
+        })
+          .prepare({ entry: entry.id })
+          .pipe(Effect.provide(NodeServices.layer)),
+      ),
+    { code: "no_supported_operations" },
   );
 });
 
@@ -1621,7 +1625,7 @@ test(
           auth.issue().pipe(Effect.flatMap((grant) => auth.exchange(grant.token))),
         );
         const browser = await reader(url, {
-          cookie: `${sessionCookie(port)}=${Redacted.value(session)}`,
+          cookie: `${sessionCookie({ port })}=${Redacted.value(session)}`,
         });
         await Effect.runPromise(
           Effect.scoped(
@@ -1729,7 +1733,8 @@ test("the local dashboard renames apps without changing URLs, accounts or deploy
     const renamed = await Effect.runPromise(
       client.dashboard.renameApp({ params: { app: app.id }, payload: { name: "Renamed locally" } }),
     );
-    assert.deepEqual(renamed, { ...app, name: "Renamed locally", slug: "renamed-locally" });
+    const { skippedOperations: _skipped, ...imported } = app;
+    assert.deepEqual(renamed, { ...imported, name: "Renamed locally", slug: "renamed-locally" });
     assert.equal(
       (await Effect.runPromise(client.dashboard.app({ params: { app: app.id } }))).app.name,
       "Renamed locally",
