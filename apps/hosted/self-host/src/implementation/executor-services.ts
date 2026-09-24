@@ -63,7 +63,8 @@ export const selfHostExecutorServices = <E, R>(
         Config.option,
         Config.map(Option.getOrUndefined),
       );
-      const metadataUrl = clientMetadataUrl?.trim() || accountOAuthClientMetadataUrl(origin);
+      const explicitMetadataUrl = clientMetadataUrl?.trim();
+      const defaultClientMetadataUrl = accountOAuthClientMetadataUrl(origin);
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
@@ -83,7 +84,8 @@ export const selfHostExecutorServices = <E, R>(
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(metadataUrl === undefined ? {} : { clientMetadataUrl: metadataUrl }),
+          ...(explicitMetadataUrl ? { clientMetadataUrl: explicitMetadataUrl } : {}),
+          ...(defaultClientMetadataUrl === undefined ? {} : { defaultClientMetadataUrl }),
         },
         {
           storage,
