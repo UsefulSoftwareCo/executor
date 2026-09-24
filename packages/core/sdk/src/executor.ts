@@ -4685,7 +4685,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                     Effect.logWarning("executor OAuth tool sync failed", {
                       integration: String(ref.integration),
                       connection: String(ref.name),
-                      errorType: typeof error,
+                      errorTag: Predicate.isTagged(error, "StorageError")
+                        ? "StorageError"
+                        : "Unknown",
                     }),
                   ),
                   Effect.withSpan("executor.oauth.tools.sync", {
@@ -5641,7 +5643,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 Effect.logWarning("executor stale tool sync failed", {
                   integration: connection.integration,
                   connection: connection.name,
-                  errorType: typeof error,
+                  errorTag: Predicate.isTagged(error, "StorageError") ? "StorageError" : "Unknown",
                 }).pipe(Effect.as([] as readonly Tool[])),
               ),
               Effect.withSpan("executor.tools.sync_stale", {
@@ -5687,7 +5689,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         syncStaleConnectionTools("bounded").pipe(
           Effect.catch((error) =>
             Effect.logWarning("executor stale tool sync scan failed", {
-              errorType: typeof error,
+              errorTag: Predicate.isTagged(error, "StorageError") ? "StorageError" : "Unknown",
             }),
           ),
         ),
