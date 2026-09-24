@@ -143,14 +143,9 @@ export const cloudDatabaseConnection = Effect.gen(function* () {
   const database = yield* databaseInfrastructure;
   switch (database.kind) {
     case "neon":
-      return {
-        connectionString: yield* Output.named(database.url, "PreviewDatabaseUrl"),
-        flushUnnamedParse: false,
-      };
-    case "hyperdrive": {
-      const connection = yield* Cloudflare.Hyperdrive.Connect(database.resource);
-      return { ...connection, flushUnnamedParse: true };
-    }
+      return { connectionString: yield* Output.named(database.url, "PreviewDatabaseUrl") };
+    case "hyperdrive":
+      return yield* Cloudflare.Hyperdrive.Connect(database.resource);
   }
 }).pipe(Effect.provide(Cloudflare.Hyperdrive.ConnectBinding));
 

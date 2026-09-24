@@ -490,15 +490,6 @@ export const scenarios = {
       local: na("This scenario exercises the Cloud compiler dependency resolver."),
     },
   },
-  sqlTelemetry: {
-    file: "sql-telemetry.spec.ts",
-    title: "Cloud profile reads deliver exact SQL correlation and raw response timing",
-    targets: {
-      cloud: scheduled,
-      "self-host": na("The native PostgreSQL wire driver belongs to the Cloud host."),
-      local: na("The native PostgreSQL wire driver belongs to the Cloud host."),
-    },
-  },
   cloudCompilerMemory: {
     file: "cloud-compiler.spec.ts",
     title: "Cloud compiler memory failures preserve the active deployment",

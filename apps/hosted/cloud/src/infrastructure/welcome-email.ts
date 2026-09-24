@@ -16,14 +16,7 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
     const secrets = yield* cloudSecrets.pipe(Effect.orDie);
     const database = Layer.unwrap(
       connection.connectionString.pipe(
-        Effect.map((url) =>
-          PgClient.layer({
-            url,
-            maxConnections: 1,
-            prepare: false,
-            flushUnnamedParse: connection.flushUnnamedParse,
-          }),
-        ),
+        Effect.map((url) => PgClient.layer({ url, maxConnections: 1, prepare: false })),
       ),
     );
     const deliverUser = (user?: string) =>

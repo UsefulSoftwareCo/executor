@@ -1,18 +1,7 @@
 diff --git a/src/PgConnection.ts b/src/PgConnection.ts
 --- a/src/PgConnection.ts
 +++ b/src/PgConnection.ts
-@@ -120,6 +120,10 @@
-   readonly stream?: (() => Duplex) | undefined
-   readonly types?: PgTypes.Registry | undefined
-   readonly multiplex?: boolean | undefined
-+  /** Flush Parse and await its result before Bind for ordinary exclusive unnamed queries.
-+   * Named statements, multiplexed queries and streaming cursors retain their existing protocol.
-+   */
-+  readonly flushUnnamedParse?: boolean | undefined
-   readonly prepare?: boolean | undefined
-   readonly preparedStatementCacheSize?: number | undefined
-   /** Maximum backend message size in bytes. Defaults to 16 MiB. */
-@@ -269,7 +273,7 @@
+@@ -269,7 +269,7 @@
      Effect.acquireRelease(
        Effect.gen(function*() {
          const password = yield* PasswordInternal.resolve(config.password)
@@ -21,143 +10,6 @@ diff --git a/src/PgConnection.ts b/src/PgConnection.ts
          return new PgConnectionImpl(options, config, session, options.types)
        }),
        (connection) => Effect.sync(() => connection.closeUnsafe()),
-@@ -303,6 +307,7 @@
-  * on the wire. Messages the pump does not handle itself are forwarded here.
-  */
- interface Consumer {
-+  readonly onData?: ((bytes: number) => void) | undefined
-   readonly onMessage: (message: PgProtocol.BackendMessage<unknown>) => void
-   readonly onBatchEnd?: (() => void) | undefined
-   readonly onFatal: (error: SqlError) => void
-@@ -377,6 +382,7 @@
- 
-   private readonly onData = (chunk: Uint8Array): void => {
-     try {
-+      this.consumer?.onData?.(chunk.byteLength)
-       this.session.parser.pushEach(chunk, this.dispatch)
-     } catch (cause) {
-       // A field reader that threw reports the row it could not decode; anything
-@@ -1463,7 +1469,7 @@
-   plan: Plan,
-   wantRows: boolean
- ): Effect.Effect<QueryOutput, SqlError> =>
--  Effect.callback<QueryOutput, SqlError>((resume) => {
-+  Effect.useSpan("sql.wire", { kind: "client" }, (span) => Effect.callback<QueryOutput, SqlError>((resume) => {
-     if (conn.deadWith !== undefined) {
-       resume(Effect.fail(conn.deadWith))
-       return
-@@ -1472,12 +1478,78 @@
-       conn.consumer = undefined
-       resume(effect)
-     })
--    conn.consumer = machine
-+    const started = Date.now()
-+    let pendingBind: Uint8Array | undefined
-+    let requestBytes = 0
-+    const write = (frame: Uint8Array, callback?: () => void) => {
-+      requestBytes += frame.byteLength
-+      span.attribute("db.wire.request_bytes", requestBytes)
-+      conn.session.socket.write(frame, callback)
-+    }
-+
-+    span.attribute("db.wire.started_at_ms", started)
-+    span.attribute("db.wire.protocol_mode", conn.config.flushUnnamedParse === true && plan.parses && plan.prepared === undefined ? "parse-flush-bind" : "pipelined")
-+
-+    let firstData = true
-+    let firstMessage = true
-+    
-+    span.attribute("db.wire.clock", "date-now")
-+    conn.consumer = {
-+      onData: (bytes) => {
-+        if (firstData) {
-+          firstData = false
-+          span.attribute("db.wire.first_data_ms", Date.now() - started)
-+          span.attribute("db.wire.first_data_bytes", bytes)
-+        }
-+      },
-+      onMessage: (message) => {
-+        const observed = Date.now()
-+        const elapsed = observed - started
-+        if (message._tag === "ParseComplete") span.attribute("db.wire.parse_complete_ms", elapsed)
-+        if (message._tag === "BindComplete") span.attribute("db.wire.bind_complete_ms", elapsed)
-+        if (pendingBind !== undefined && (message._tag === "ParseComplete" || message._tag === "ErrorResponse")) {
-+          const remainder = pendingBind
-+          pendingBind = undefined
-+          if (message._tag === "ParseComplete") span.attribute("db.wire.bind_sent_ms", elapsed)
-+          try {
-+            write(message._tag === "ParseComplete" ? remainder : PgProtocol.encodeSync(), () => {
-+              if (message._tag === "ParseComplete") span.attribute("db.wire.bind_write_callback_ms", Date.now() - started)
-+            })
-+          } catch (cause) {
-+            conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
-+            return
-+          }
-+        }
-+        if (firstMessage) {
-+          firstMessage = false
-+          span.attribute("db.wire.first_message_ms", elapsed)
-+          span.attribute("db.wire.first_message_type", message._tag)
-+        }
-+        if (message._tag === "CommandComplete") span.attribute("db.wire.command_complete_ms", elapsed)
-+        if (message._tag === "ReadyForQuery") {
-+          span.attribute("db.wire.ready_ms", elapsed)
-+          span.attribute("db.wire.ready_at_ms", observed)
-+        }
-+        machine.onMessage(message)
-+      },
-+      onFatal: (error) => machine.onFatal(error)
-+    }
-     // A reused statement has no `RowDescription` coming, so its reader has to
-     // be in place before the rows are.
-     conn.session.parser.readField = machine.readField
-     try {
--      conn.session.socket.write(plan.frame)
-+      let frame = plan.frame
-+      if (conn.config.flushUnnamedParse === true && plan.parses && plan.prepared === undefined) {
-+        // Unnamed plans begin with Parse; Bind and its parameters follow it.
-+        const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
-+        const parseEnd = 1 + view.getUint32(1)
-+        pendingBind = frame.subarray(parseEnd)
-+        frame = concat([frame.subarray(0, parseEnd), PgProtocol.encodeFlush()])
-+        
-+      }
-+      write(frame, () => {
-+        span.attribute("db.wire.write_callback_ms", Date.now() - started)
-+      })
-     } catch (cause) {
-       conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
-     }
-@@ -1486,6 +1558,8 @@
-     // ReadyForQuery so it stays usable, destroying it when the drain stalls.
-     return Effect.suspend(() => {
-       if (machine.isDone()) return Effect.void
-+      const discardBind = pendingBind !== undefined
-+      pendingBind = undefined
-       const wait = Effect.callback<void>((resumeWait) => {
-         const timer = setTimeout(
-           () =>
-@@ -1500,10 +1574,19 @@
-           conn.consumer = undefined
-           resumeWait(Effect.void)
-         })
-+        if (discardBind) {
-+          // Register the drain before Sync: a late ParseComplete must never
-+          // release the discarded Bind/Execute after caller interruption.
-+          try {
-+            write(PgProtocol.encodeSync())
-+          } catch (cause) {
-+            conn.fatal(connectionQueryError(cause, "PgConnection: Failed to drain Parse"))
-+          }
-+        }
-       })
--      return Effect.andThen(conn.cancel, wait)
-+      return discardBind ? wait : Effect.andThen(conn.cancel, wait)
-     })
--  })
-+  }))
- 
- /** Turns one decoded row into an object keyed by column name. */
- type RowBuilder = (rowValues: ReadonlyArray<unknown>) => Row
 diff --git a/dist/PgConnection.js b/dist/PgConnection.js
 --- a/dist/PgConnection.js
 +++ b/dist/PgConnection.js
@@ -170,15 +22,58 @@ diff --git a/dist/PgConnection.js b/dist/PgConnection.js
    return new PgConnectionImpl(options, config, session, options.types);
  }), connection => Effect.sync(() => connection.closeUnsafe()), {
    interruptible: true
-@@ -135,6 +135,7 @@
-   }
-   onData = chunk => {
+diff --git a/src/PgConnection.ts b/src/PgConnection.ts
+--- a/src/PgConnection.ts
++++ b/src/PgConnection.ts
+@@ -1463,7 +1463,7 @@
+   plan: Plan,
+   wantRows: boolean
+ ): Effect.Effect<QueryOutput, SqlError> =>
+-  Effect.callback<QueryOutput, SqlError>((resume) => {
++  Effect.useSpan("sql.wire", { kind: "client" }, (span) => Effect.callback<QueryOutput, SqlError>((resume) => {
+     if (conn.deadWith !== undefined) {
+       resume(Effect.fail(conn.deadWith))
+       return
+@@ -1472,12 +1472,30 @@
+       conn.consumer = undefined
+       resume(effect)
+     })
+-    conn.consumer = machine
++    const started = Date.now()
++    let firstMessage = true
++    span.attribute("db.wire.request_bytes", plan.frame.byteLength)
++    span.attribute("db.wire.clock", "date-now")
++    conn.consumer = {
++      onMessage: (message) => {
++        const elapsed = Date.now() - started
++        if (firstMessage) {
++          firstMessage = false
++          span.attribute("db.wire.first_message_ms", elapsed)
++        }
++        if (message._tag === "CommandComplete") span.attribute("db.wire.command_complete_ms", elapsed)
++        if (message._tag === "ReadyForQuery") span.attribute("db.wire.ready_ms", elapsed)
++        machine.onMessage(message)
++      },
++      onFatal: (error) => machine.onFatal(error)
++    }
+     // A reused statement has no `RowDescription` coming, so its reader has to
+     // be in place before the rows are.
+     conn.session.parser.readField = machine.readField
      try {
-+      this.consumer?.onData?.(chunk.byteLength);
-       this.session.parser.pushEach(chunk, this.dispatch);
+-      conn.session.socket.write(plan.frame)
++      conn.session.socket.write(plan.frame, () => {
++        span.attribute("db.wire.write_callback_ms", Date.now() - started)
++      })
      } catch (cause) {
-       // A field reader that threw reports the row it could not decode; anything
-@@ -1018,39 +1019,118 @@
+       conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
+     }
+@@ -1506 +1524 @@
+-  })
++  }))
+diff --git a/dist/PgConnection.js b/dist/PgConnection.js
+--- a/dist/PgConnection.js
++++ b/dist/PgConnection.js
+@@ -1018,39 +1018,62 @@
  const emptyRows = [];
  const emptyValues = [];
  /** One cycle on a connection that carries a single statement at a time. */
@@ -216,61 +111,27 @@ diff --git a/dist/PgConnection.js b/dist/PgConnection.js
 +    const machine = new QueryMachine(conn, plan, wantRows, (effect) => {
          conn.consumer = undefined;
 -        resumeWait(Effect.void);
+-      });
 +        resume(effect);
-+    });
+     });
+-    return Effect.andThen(conn.cancel, wait);
+-  });
+-});
 +    const started = Date.now();
-+    let pendingBind;
-+    let requestBytes = 0;
-+    const write = (frame, callback) => {
-+      requestBytes += frame.byteLength;
-+      span.attribute("db.wire.request_bytes", requestBytes);
-+      conn.session.socket.write(frame, callback);
-+    };
-+
-+    span.attribute("db.wire.started_at_ms", started);
-+    span.attribute("db.wire.protocol_mode", conn.config.flushUnnamedParse === true && plan.parses && plan.prepared === undefined ? "parse-flush-bind" : "pipelined");
-+
-+    let firstData = true;
 +    let firstMessage = true;
-+    
++    span.attribute("db.wire.request_bytes", plan.frame.byteLength);
 +    span.attribute("db.wire.clock", "date-now");
 +    conn.consumer = {
-+        onData: (bytes) => {
-+          if (firstData) {
-+            firstData = false;
-+            span.attribute("db.wire.first_data_ms", Date.now() - started);
-+            span.attribute("db.wire.first_data_bytes", bytes);
-+          }
-+        },
 +        onMessage: (message) => {
-+            const observed = Date.now();
-+        const elapsed = observed - started;
-+        if (message._tag === "ParseComplete") span.attribute("db.wire.parse_complete_ms", elapsed);
-+        if (message._tag === "BindComplete") span.attribute("db.wire.bind_complete_ms", elapsed);
-+        if (pendingBind !== undefined && (message._tag === "ParseComplete" || message._tag === "ErrorResponse")) {
-+          const remainder = pendingBind;
-+          pendingBind = undefined;
-+          if (message._tag === "ParseComplete") span.attribute("db.wire.bind_sent_ms", elapsed);
-+          try {
-+            write(message._tag === "ParseComplete" ? remainder : PgProtocol.encodeSync(), () => {
-+              if (message._tag === "ParseComplete") span.attribute("db.wire.bind_write_callback_ms", Date.now() - started);
-+            });
-+          } catch (cause) {
-+            conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
-+            return;
-+          }
-+        }
++            const elapsed = Date.now() - started;
 +            if (firstMessage) {
 +                firstMessage = false;
 +                span.attribute("db.wire.first_message_ms", elapsed);
-+                span.attribute("db.wire.first_message_type", message._tag);
 +            }
 +            if (message._tag === "CommandComplete")
 +                span.attribute("db.wire.command_complete_ms", elapsed);
-+            if (message._tag === "ReadyForQuery") {
-+          span.attribute("db.wire.ready_ms", elapsed);
-+          span.attribute("db.wire.ready_at_ms", observed);
-+        }
++            if (message._tag === "ReadyForQuery")
++                span.attribute("db.wire.ready_ms", elapsed);
 +            machine.onMessage(message);
 +        },
 +        onFatal: (error) => machine.onFatal(error)
@@ -279,18 +140,9 @@ diff --git a/dist/PgConnection.js b/dist/PgConnection.js
 +    // be in place before the rows are.
 +    conn.session.parser.readField = machine.readField;
 +    try {
-+        let frame = plan.frame;
-+      if (conn.config.flushUnnamedParse === true && plan.parses && plan.prepared === undefined) {
-+        // Unnamed plans begin with Parse; Bind and its parameters follow it.
-+        const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
-+        const parseEnd = 1 + view.getUint32(1);
-+        pendingBind = frame.subarray(parseEnd);
-+        frame = concat([frame.subarray(0, parseEnd), PgProtocol.encodeFlush()]);
-+        
-+      }
-+      write(frame, () => {
-+        span.attribute("db.wire.write_callback_ms", Date.now() - started);
-       });
++        conn.session.socket.write(plan.frame, () => {
++            span.attribute("db.wire.write_callback_ms", Date.now() - started);
++        });
 +    }
 +    catch (cause) {
 +        conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
@@ -307,59 +159,11 @@ diff --git a/dist/PgConnection.js b/dist/PgConnection.js
 +                conn.consumer = undefined;
 +                resumeWait(Effect.void);
 +            });
-+        if (discardBind) {
-+          // Register the drain before Sync: a late ParseComplete must never
-+          // release the discarded Bind/Execute after caller interruption.
-+          try {
-+            write(PgProtocol.encodeSync());
-+          } catch (cause) {
-+            conn.fatal(connectionQueryError(cause, "PgConnection: Failed to drain Parse"));
-+          }
-+        }
 +        });
-+        return discardBind ? wait : Effect.andThen(conn.cancel, wait);
-     });
--    return Effect.andThen(conn.cancel, wait);
--  });
--});
++        return Effect.andThen(conn.cancel, wait);
++    });
 +}));
 +
  const emptyFields = [];
  /** Derives the per-column readers and the row constructor for a description. */
  const describe = (fields, registry) => {
-diff --git a/src/PgClient.ts b/src/PgClient.ts
---- a/src/PgClient.ts
-+++ b/src/PgClient.ts
-@@ -139,6 +139,8 @@
-    * Caches prepared statements by name. Enabled by default. Disable it for
-    * poolers that cannot preserve named statements between queries.
-    */
-+  /** Flush unnamed Parse before Bind on ordinary exclusive queries. */
-+  readonly flushUnnamedParse?: boolean | undefined
-   readonly prepare?: boolean | undefined
-   /** How many statements a connection keeps prepared. Defaults to `100`. */
-   readonly preparedStatementCacheSize?: number | undefined
-diff --git a/dist/PgClient.d.ts b/dist/PgClient.d.ts
---- a/dist/PgClient.d.ts
-+++ b/dist/PgClient.d.ts
-@@ -117,6 +117,8 @@
-      * Caches prepared statements by name. Enabled by default. Disable it for
-      * poolers that cannot preserve named statements between queries.
-      */
-+    /** Flush unnamed Parse before Bind on ordinary exclusive queries. */
-+    readonly flushUnnamedParse?: boolean | undefined;
-     readonly prepare?: boolean | undefined;
-     /** How many statements a connection keeps prepared. Defaults to `100`. */
-     readonly preparedStatementCacheSize?: number | undefined;
-diff --git a/dist/PgConnection.d.ts b/dist/PgConnection.d.ts
---- a/dist/PgConnection.d.ts
-+++ b/dist/PgConnection.d.ts
-@@ -87,6 +87,8 @@
-     readonly stream?: (() => Duplex) | undefined;
-     readonly types?: PgTypes.Registry | undefined;
-     readonly multiplex?: boolean | undefined;
-+    /** Flush unnamed Parse before Bind on ordinary exclusive queries. */
-+    readonly flushUnnamedParse?: boolean | undefined;
-     readonly prepare?: boolean | undefined;
-     readonly preparedStatementCacheSize?: number | undefined;
-     /** Maximum backend message size in bytes. Defaults to 16 MiB. */

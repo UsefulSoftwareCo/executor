@@ -87,13 +87,7 @@ export const provisionTestAccount = (
       const organization = Schema.decodeUnknownSync(Organization)(
         existing === undefined
           ? await test.saveOrganization(
-              test.createOrganization({
-                // Cloud onboarding owns organization creation and uses UUIDs.
-                // Match its IDs so fixture SQL binds have the same wire size.
-                ...(input.host === "cloud" ? { id: crypto.randomUUID() } : {}),
-                name: "Agent tests",
-                slug: input.organization,
-              }),
+              test.createOrganization({ name: "Agent tests", slug: input.organization }),
             )
           : existing,
       );

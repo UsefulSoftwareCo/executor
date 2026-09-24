@@ -4,7 +4,7 @@ import * as Planetscale from "alchemy/Planetscale";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import { Random } from "alchemy";
-import { Config, Effect, Option, Redacted, Schema } from "effect";
+import { Config, Effect, Redacted } from "effect";
 import type { TestStage } from "./stage.ts";
 
 /** Build a credential-redacted Postgres URL with hostname and certificate verification. */
@@ -39,21 +39,10 @@ export const previewDatabase = (stage: TestStage) =>
     const provider = yield* previewDatabaseProvider;
     if (provider === "planetscale") {
       const database = yield* Config.NonEmptyString("TEST_STAGE_DATABASE");
-      const clusterSize = yield* Config.option(
-        Config.NonEmptyString("TEST_STAGE_PLANETSCALE_CLUSTER_SIZE"),
-      );
-      const replicas = yield* Config.option(
-        Config.schema(
-          Schema.Int.check(Schema.makeFilter((value) => value === 0 || value >= 2)),
-          "TEST_STAGE_PLANETSCALE_REPLICAS",
-        ),
-      );
       const branch = yield* Planetscale.PostgresBranch("PreviewDatabase", {
         database,
         name: stage.name,
         parentBranch: "main",
-        ...(Option.isSome(clusterSize) ? { clusterSize: clusterSize.value } : {}),
-        ...(Option.isSome(replicas) ? { replicas: replicas.value } : {}),
       });
       const runtime = yield* Planetscale.PostgresRole("RuntimeRole", {
         database,

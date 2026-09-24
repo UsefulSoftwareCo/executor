@@ -20,7 +20,6 @@ export const billingMembers = Effect.gen(function* () {
           url: yield* connection.connectionString,
           maxConnections: 1,
           prepare: false,
-          flushUnnamedParse: connection.flushUnnamedParse,
         }),
       );
       return yield* PgClient.PgClient.pipe(Effect.provideContext(services));

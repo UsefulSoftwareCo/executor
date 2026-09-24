@@ -28,12 +28,7 @@ export const cloudOnboarding = Effect.gen(function* () {
     Effect.gen(function* () {
       const url = yield* connection.connectionString;
       const services = yield* Layer.build(
-        PgClient.layer({
-          url,
-          maxConnections: 1,
-          prepare: false,
-          flushUnnamedParse: connection.flushUnnamedParse,
-        }),
+        PgClient.layer({ url, maxConnections: 1, prepare: false }),
       );
       return yield* makeOnboarding({ origin }).pipe(
         Effect.provideService(BlobStore, blobs),
