@@ -20,16 +20,20 @@ const sessionSchema = schema({
 const database = fumadb({ namespace: "local-auth", schemas: [sessionSchema] });
 
 /** Store token digests, expiry dates and access restrictions for all browser sessions. */
-export const openBrowserSessions = (directory: string) =>
+export const openBrowserSessions = (directory: string, sharedSql?: SqlClient.SqlClient) =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
-    const location = path.join(directory, "browser-auth.pglite");
-    yield* fs.makeDirectory(location, { recursive: true, mode: 0o700 });
-    yield* fs.chmod(location, 0o700);
-    const context = yield* Layer.build(pgliteLayer({ dataDir: location }));
-    const sql = Context.get(context, SqlClient.SqlClient);
+    const sql =
+      sharedSql ??
+      (yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+        const location = path.join(directory, "browser-auth.pglite");
+        yield* fs.makeDirectory(location, { recursive: true, mode: 0o700 });
+        yield* fs.chmod(location, 0o700);
+        const context = yield* Layer.build(pgliteLayer({ dataDir: location }));
+        return Context.get(context, SqlClient.SqlClient);
+      }));
     const storage = database.client(sqlAdapter({ provider: "postgresql" }));
     const query = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
       effect.pipe(

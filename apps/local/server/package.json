@@ -22,6 +22,8 @@
   "dependencies": {
     "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite-tools": "0.4.8",
     "@executor-js/app-management": "workspace:*",
     "@executor-js/app-registry": "workspace:*",
     "@executor-js/app-source": "workspace:*",

@@ -1,5 +1,6 @@
 /** Local OAuth authenticates consent with dashboard pairing; no hosted identity is required. */
 import { betterAuth } from "better-auth";
+import { PgliteClient } from "@effect/sql-pglite";
 import { APIError, isAPIError } from "better-auth/api";
 import { makeSignature } from "better-auth/crypto";
 import { getMigrations } from "better-auth/db/migration";
@@ -14,6 +15,7 @@ import {
 import { makeAuthDatabase } from "@executor-js/mcp-auth/node-database";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import {
+  Context,
   Effect,
   Layer,
   FileSystem,
@@ -27,6 +29,7 @@ import {
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";
+import { importMcpAuth, type LocalAuthDatabase } from "./auth-database.ts";
 
 /** Invalid credentials never fall back to browser cookies or administrative authority. */
 export class LocalMcpUnauthorized extends Schema.TaggedError<LocalMcpUnauthorized>()(
@@ -44,16 +47,28 @@ const failure = (error: unknown) =>
     : new LocalMcpAuthUnavailable();
 
 /** Own the provider, database, and internal session in the local server scope. */
-export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, crypto: Crypto) =>
+export const makeLocalMcpOAuth = (
+  config: ServerConfig,
+  pairing: LocalAuth,
+  crypto: Crypto,
+  sharedDatabase?: LocalAuthDatabase,
+) =>
   Effect.gen(function* () {
     const origin = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
     const fs = yield* FileSystem.FileSystem,
       path = yield* Path.Path;
-    const directory = path.join(config.directory, "mcp-auth.pglite");
-    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
-    yield* fs.chmod(directory, 0o700);
-    const databaseContext = yield* Layer.build(pgliteLayer({ dataDir: directory }));
-    const db = yield* makeAuthDatabase.pipe(Effect.provideContext(databaseContext));
+    const pglite =
+      sharedDatabase?.pglite ??
+      (yield* Effect.gen(function* () {
+        const directory = path.join(config.directory, "mcp-auth.pglite");
+        yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+        yield* fs.chmod(directory, 0o700);
+        const databaseContext = yield* Layer.build(pgliteLayer({ dataDir: directory }));
+        return Context.get(databaseContext, PgliteClient.PgliteClient);
+      }));
+    const db = yield* makeAuthDatabase.pipe(
+      Effect.provideService(PgliteClient.PgliteClient, pglite),
+    );
     // Separate signing material from encryption use; no generated or fallback secret.
     const secret = yield* Effect.promise(async () => {
       const bytes = await crypto.subtle.digest(
@@ -93,6 +108,7 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
       },
       catch: () => new LocalMcpAuthUnavailable(),
     });
+    if (sharedDatabase?.main) yield* importMcpAuth(config.directory, sharedDatabase);
     const auth = betterAuth(options);
     const context = yield* Effect.tryPromise({
       try: () => auth.$context,

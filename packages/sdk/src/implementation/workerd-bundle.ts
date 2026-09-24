@@ -1,5 +1,5 @@
 /** Bundle only trusted runtime/framework source on the host. Authored code compiles inside workerd. */
-import { build } from "esbuild";
+import { build, stop } from "esbuild";
 import { Effect, Path } from "effect";
 import type { Module } from "@alchemy.run/cloudflare-runtime/core";
 import { RuntimeBuildFailed } from "../contracts/runtime.ts";
@@ -87,4 +87,9 @@ export const bundleWorkerdHost = Effect.gen(function* () {
     content: JSON.stringify({ server, browser }),
   });
   return modules;
-}).pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })));
+}).pipe(
+  // The host bundle is compiled once at startup. Release esbuild's large Go heap;
+  // later app builds can start a new service when needed.
+  Effect.ensuring(Effect.promise(() => stop())),
+  Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" })),
+);

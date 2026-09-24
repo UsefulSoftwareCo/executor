@@ -1,5 +1,6 @@
 /** Local composition owns persistent files and its optional bundled collector. */
 import { Config, Effect, Layer, Logger, Path } from "effect";
+import { OtlpExporter } from "effect/unstable/observability";
 import {
   FetchHttpClient,
   HttpClient,
@@ -17,6 +18,10 @@ import { startProcessMetrics } from "./process.ts";
 export const localTelemetry = (directory: string, service: string) =>
   Layer.unwrap(
     Effect.gen(function* () {
+      const disabled = yield* Config.Boolean("EXECUTOR_DISABLE_LOCAL_TELEMETRY").pipe(
+        Config.withDefault(false),
+      );
+      if (disabled) return OtlpExporter.layerFlusher;
       const path = yield* Path.Path;
       const diagnostics = path.resolve(directory, "diagnostics");
       const file = yield* rotatingJsonLogger(diagnostics, service);

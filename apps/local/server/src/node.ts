@@ -19,6 +19,8 @@ export type {
 import type { ServerConfig } from "./contracts/config.ts";
 import { StartupFailed } from "./contracts/startup.ts";
 import { makeLocalAuth, pairingUrl } from "./implementation/auth.ts";
+import { openLocalAuthDatabase } from "./implementation/auth-database.ts";
+import { openStorage } from "./implementation/storage.ts";
 import { localApi } from "./implementation/server.ts";
 import { startupPhase } from "./implementation/startup-diagnostics.ts";
 
@@ -48,9 +50,15 @@ export const startLocalServer = (
     return yield* Effect.gen(function* () {
       yield* Effect.logInfo("Starting local server");
       yield* Effect.addFinalizer(() => Effect.logInfo("Local server stopped"));
-      const auth = yield* makeLocalAuth(globalThis.crypto, settings.directory).pipe(
+      const storage = yield* openStorage(settings.directory);
+      const authDatabase = yield* openLocalAuthDatabase(settings.directory, storage).pipe(
         startupPhase("authentication"),
       );
+      const auth = yield* makeLocalAuth(
+        globalThis.crypto,
+        settings.directory,
+        authDatabase.sql,
+      ).pipe(startupPhase("authentication"));
       if (bootstrap !== undefined) yield* auth.issue(bootstrap.token);
       const socket = yield* Effect.sync(() => createServer());
       const ready = yield* Deferred.make<void>();
@@ -61,7 +69,14 @@ export const startLocalServer = (
           if (server.address._tag !== "InetAddressV4")
             return yield* new StartupFailed({ stage: "listen" });
           port = server.address.port;
-          return localApi({ ...settings, port }, globalThis.crypto, auth, options);
+          return localApi(
+            { ...settings, port },
+            globalThis.crypto,
+            auth,
+            options,
+            authDatabase,
+            storage,
+          );
         }),
       );
       // Close active connections before the adapter's final shutdown. Requests receive

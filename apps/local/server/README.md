@@ -51,15 +51,16 @@ directory. `bun run with:local …` loads 1Password values instead; see
 
 ## Configuration
 
-| Variable                        | Meaning                                                                                                         |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `EXECUTOR_DATA_DIR`             | Directory containing `executor.pglite/`, `browser-auth.pglite/`, and `builds/`; defaults to `.local/executor`.  |
-| `EXECUTOR_PORT`                 | Loopback listener port; defaults to `4312`.                                                                     |
-| `EXECUTOR_API_KEY`              | Optional supplied bearer token; set with the encryption key. At least 32 characters.                            |
-| `EXECUTOR_ENCRYPTION_KEY`       | Optional supplied AES key; set with the API key. Exactly 64 hexadecimal characters.                             |
-| `EXECUTOR_MCP_TIMEOUT_MS`       | Catalog discovery plus program timeout; defaults to `30000`.                                                    |
-| `EXECUTOR_MCP_MAX_TOOL_CALLS`   | Admitted calls per execute, including search; defaults to `100`.                                                |
-| `EXECUTOR_MCP_MAX_OUTPUT_BYTES` | Result value/log truncation budget; defaults to `65536`. Protocol metadata and truncation markers add overhead. |
+| Variable                           | Meaning                                                                                                         |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `EXECUTOR_DATA_DIR`                | Directory containing `executor.pglite/`, `mcp-auth.pglite/`, and `builds/`; defaults to `.local/executor`.      |
+| `EXECUTOR_PORT`                    | Loopback listener port; defaults to `4312`.                                                                     |
+| `EXECUTOR_API_KEY`                 | Optional supplied bearer token; set with the encryption key. At least 32 characters.                            |
+| `EXECUTOR_ENCRYPTION_KEY`          | Optional supplied AES key; set with the API key. Exactly 64 hexadecimal characters.                             |
+| `EXECUTOR_MCP_TIMEOUT_MS`          | Catalog discovery plus program timeout; defaults to `30000`.                                                    |
+| `EXECUTOR_MCP_MAX_TOOL_CALLS`      | Admitted calls per execute, including search; defaults to `100`.                                                |
+| `EXECUTOR_DISABLE_LOCAL_TELEMETRY` | Set to `true` to disable the local collector, diagnostic files, and process metrics.                            |
+| `EXECUTOR_MCP_MAX_OUTPUT_BYTES`    | Result value/log truncation budget; defaults to `65536`. Protocol metadata and truncation markers add overhead. |
 
 First launch saves generated keys in the OS credential store and records the
 installation ID in `installation.json`. Linux requires a persistent Secret
@@ -108,7 +109,8 @@ The link expires after five minutes and is consumed once. Its token is carried
 in the URL fragment, removed from browser history before exchange, and replaced
 by a seven-day HttpOnly, SameSite=Strict cookie. Refresh retains the session.
 Sessions survive server restarts when the same data directory and address are
-used. Only token digests and expiry dates are saved in `browser-auth.pglite/`.
+used. Only token digests, expiry dates, and access restrictions are saved in
+`mcp-auth.pglite/` alongside MCP OAuth records.
 Disconnect revokes the session persistently; restarting does not extend its
 seven-day expiry. Outstanding pairing links remain process-local. No reusable API key enters the browser.
 Bearer authentication for SDK/MCP remains unchanged. Requests must use the exact
@@ -314,6 +316,12 @@ Local uses disk-persisted PGlite with the PostgreSQL schema and an in-process
 live coordinator. The host owns each database until shutdown. Only one server
 process may open a data directory. `fumadb-effect/pglite` configures the native
 Effect driver to preserve UTC dates on machines outside UTC.
+
+Browser sessions and MCP OAuth share one PGlite engine. On first start after this
+change, existing `browser-auth.pglite/` sessions are copied transactionally into
+`mcp-auth.pglite/`. The old directory stays intact for rollback; an import marker
+prevents revoked sessions from reappearing on subsequent starts. Fresh installs
+create only the shared auth database and the separate Executor database.
 
 Existing `executor.sqlite` and `browser-auth.sqlite` files are untouched and are
 not imported automatically. The new directories start empty, so old browser
