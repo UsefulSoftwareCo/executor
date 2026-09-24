@@ -83,12 +83,10 @@ test("each reached component is stored once and operations keep references", asy
   assert.doesNotMatch(text, /"\$defs"/);
   assert.match(text, /"\$ref":"#\/\$defs\/Node"/);
   const files = new Map(generated.files.map((file) => [file.path, file.content]));
-  const operationLines = files.get("operations.json")?.trim().split("\n") ?? [];
-  // One line per operation between the array brackets; schemas are not indented.
-  assert.equal(operationLines.length, operations.length + 2);
-  assert.deepEqual(JSON.parse(files.get("definitions.json") ?? ""), definitions);
-  assert.match(files.get("index.ts") ?? "", /import definitions from "\.\/definitions\.json"/);
-  assert.match(files.get("index.ts") ?? "", /operations,\n\s+definitions,/);
+  assert.equal(files.has("operations.json"), false);
+  assert.equal(files.has("definitions.json"), false);
+  assert.deepEqual(JSON.parse(files.get("openapi.json") ?? "").source.document, spec);
+  assert.match(files.get("index.ts") ?? "", /liveOpenapiOperations/);
 });
 
 test("the runtime validates through shared recursive definitions", async () => {

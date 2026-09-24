@@ -33,6 +33,24 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  liveOpenapi: {
+    file: "live-openapi.spec.ts",
+    title: "Live OpenAPI refreshes operations while preserving static credential placement",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture; deployed Cloud API benchmark covers the live runtime"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  appCache: {
+    file: "app-cache.spec.ts",
+    title: "App cache shares values, fences concurrent loads and retains background refreshes",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted profile API fixture; Node adapter exercised by self-host"),
+    },
+  },
   cloudImpersonation: {
     fixtures: "actors",
     file: "cloud-impersonation.spec.ts",

@@ -58,6 +58,7 @@ import { OperationToolPrefixes } from "../contracts/operations.ts";
 import { dispatchWebhook } from "./webhooks.ts";
 import { authorDatabase, unavailableStorage } from "./storage.ts";
 import { isApp, toEffectApp } from "./app.ts";
+import { authorCache, unavailableCache } from "./cache.ts";
 
 function safe<A, E>(work: () => Effect.Effect<A, unknown>, failure: E): Effect.Effect<A, E> {
   return Effect.suspend(work).pipe(
@@ -66,6 +67,23 @@ function safe<A, E>(work: () => Effect.Effect<A, unknown>, failure: E): Effect.E
     ),
   );
 }
+
+const evaluationSafe = <A>(work: Effect.Effect<A, unknown>) =>
+  work.pipe(
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+      const error = Cause.squash(cause);
+      const provider = parseProviderError(error);
+      const skills = parseSkillLoadFailed(error);
+      return Effect.fail(
+        Option.isSome(provider)
+          ? provider.value
+          : Option.isSome(skills)
+            ? skills.value
+            : new HostEvaluationFailed(),
+      );
+    }),
+  );
 
 function jsonSchema(decoder: Schema.Decoder<unknown>) {
   const imported = importedJsonSchema(decoder);
@@ -297,6 +315,11 @@ function dispatch(
         context.files ?? [],
       ).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
       const bound = {
+        cache: authorCache(
+          context.cache ?? unavailableCache,
+          Redacted.value(context.accounts),
+          invocationSignal,
+        ),
         files,
         ...(yield* bindAccounts(native.accounts, declared, context).pipe(
           Effect.withSpan("app.accounts.bind"),
@@ -306,20 +329,7 @@ function dispatch(
         fetch: yield* invocationFetch(invocationSignal),
         elicit: makeElicit(delivery, invocationSignal),
       };
-      const definition = yield* native.evaluate(bound).pipe(
-        Effect.catchCause((cause) => {
-          if (Cause.hasInterrupts(cause)) return Effect.interrupt;
-          const error = Cause.squash(cause);
-          const provider = parseProviderError(error);
-          const skills = parseSkillLoadFailed(error);
-          return Effect.fail(
-            Option.isSome(provider)
-              ? provider.value
-              : Option.isSome(skills)
-                ? skills.value
-                : new HostEvaluationFailed(),
-          );
-        }),
+      const definition = yield* evaluationSafe(native.evaluate(bound)).pipe(
         Effect.withSpan("app.evaluate"),
       );
       if (request.operation === "skills") {
@@ -382,6 +392,11 @@ function dispatch(
               );
               return {
                 ...accounts,
+                cache: authorCache(
+                  context.cache ?? unavailableCache,
+                  Redacted.value(current.accounts),
+                  signal,
+                ),
                 files,
                 fetch: yield* invocationFetch(signal),
                 signal,
@@ -441,6 +456,34 @@ function dispatch(
             );
           }
         }
+        const dynamic = definition.dynamicTools;
+        if (dynamic !== undefined) {
+          const discovered = yield* evaluationSafe(dynamic.list()).pipe(
+            Effect.flatMap((value) =>
+              safe(
+                () => Schema.decodeUnknownEffect(Schema.Array(HostedTool))(value),
+                new HostDeclarationInvalid(),
+              ),
+            ),
+          );
+          const names = new Set(metadata.map((tool) => tool.name));
+          for (const tool of discovered) {
+            const readOnly = tool.name.startsWith(OperationToolPrefixes.query);
+            if (
+              (!readOnly && !tool.name.startsWith(OperationToolPrefixes.mutate)) ||
+              tool.name === OperationToolPrefixes.query ||
+              tool.name === OperationToolPrefixes.mutate ||
+              names.has(tool.name)
+            )
+              return yield* new HostDeclarationInvalid();
+            names.add(tool.name);
+            metadata.push({
+              ...tool,
+              readOnly,
+              annotations: { ...tool.annotations, readOnlyHint: readOnly },
+            });
+          }
+        }
         return metadata;
       }
       if (
@@ -457,6 +500,7 @@ function dispatch(
             request,
             {
               files,
+              cache: bound.cache,
               accounts: bound.accounts,
               workflows: workflowControls,
               signal: bound.signal,
@@ -498,8 +542,16 @@ function dispatch(
           : request.name;
       const toolName = `${OperationToolPrefixes[kind]}${name}`;
       const catalog = kind === "query" ? definition.queries : definition.mutations;
-      const tool =
+      const declaredTool =
         catalog !== undefined && Object.hasOwn(catalog, name) ? catalog[name] : undefined;
+      const source = definition.dynamicTools;
+      const resolvedTool =
+        source === undefined || declaredTool !== undefined
+          ? undefined
+          : yield* evaluationSafe(source.resolve(toolName));
+      const tool = declaredTool ?? resolvedTool;
+      if (tool !== undefined && tool.kind !== (kind === "query" ? "query" : "mutation"))
+        return yield* new HostDeclarationInvalid();
       if (tool === undefined)
         return yield* request.operation === "call"
           ? new HostToolNotFound()

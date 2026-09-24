@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { test } from "node:test";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
+import { compileOpenApi } from "@executor-js/app-templates";
 import { localManagementDocument } from "../src/contracts/management.ts";
 import { executorAppSource } from "../src/implementation/executor-app-source.ts";
 
@@ -10,23 +11,17 @@ test("local management compiles HTTP schemas and only publishes agent-safe opera
   const files = await Effect.runPromise(
     executorAppSource().pipe(Effect.provide(NodeServices.layer)),
   );
-  const file = files.find((file) => file.path === "operations.json");
-  assert.ok(file);
-  const metadata = Schema.decodeUnknownSync(
-    Schema.fromJsonString(
-      Schema.Struct({
-        operations: Schema.Array(
-          Schema.Struct({
-            name: Schema.String,
-            path: Schema.String,
-            security: Schema.Array(Schema.Array(Schema.String)),
-            baseUrl: Schema.String,
-            description: Schema.String,
-          }),
-        ),
-      }),
-    ),
-  )(file.content);
+  assert.ok(files.some((file) => file.path === "openapi.json"));
+  assert.ok(!files.some((file) => file.path === "operations.json"));
+  assert.match(
+    files.find((file) => file.path === "index.ts")?.content ?? "",
+    /liveOpenapiOperations/,
+  );
+  const metadata = await Effect.runPromise(
+    compileOpenApi({ name: "Executor" }, localManagementDocument(), {
+      baseUrl: "http://localhost",
+    }),
+  );
   const names = metadata.operations.map((operation) => operation.name);
   for (const name of [
     "apps_deploy",
@@ -55,7 +50,7 @@ test("local management compiles HTTP schemas and only publishes agent-safe opera
     assert.ok(!names.includes(name), name);
   }
   for (const operation of metadata.operations) {
-    assert.deepEqual(operation.security, [["apiKey"]]);
+    assert.deepEqual(operation.request.security, [{ apiKey: [] }]);
     assert.equal(operation.baseUrl, "http://localhost");
   }
   const document = localManagementDocument();

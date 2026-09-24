@@ -71,16 +71,18 @@ Use `graphqlOperations` from `apps/graphql` with the endpoint, selected account'
 headers, and optional cancellation signal. Declare `graphql` (currently
 `16.11.0`) in the app's dependencies.
 
-Use `openapiOperations` from `apps/openapi` with the generated `operations.json`,
-authentication metadata, and selected account. Custom Add generates these
-files from a specification. The runtime helper accepts normalized operations,
-not a raw specification, and needs no extra dependency. Swagger builds requests
-from retained per-operation declarations. It does not download the spec per call.
+Use `liveOpenapiOperations` from `apps/openapi` with `ctx.cache`, the generated
+`openapi.json` configuration, and the selected account. Custom Add retains the
+source URL, allowed origin, and static authentication bindings. The framework
+refreshes compiled revisions through the app cache. A call reads one operation
+and only the shared definitions it needs. Live metadata cannot move credentials
+to another origin or change their header placement. No extra dependency is needed.
+`openapiOperations` is the lower-level helper for normalized metadata.
 Use `contentType` to choose an alternate declared request media type. Binary
 request bodies and multipart binary fields take base64 strings. Binary responses
 return `{ base64, contentType }`; text and NDJSON return text. Success responses
 have a 16 MiB / 30-second read bound. Live SSE requires an authored subscription.
-Old imports must be regenerated before rebuilding with the new helper.
+Existing retained apps keep their source and bundled helper until redeployment.
 
 OpenAPI imports retain documented errors with an exact HTTP status, a required
 literal `_tag`, and either a declared string `message` or a schema description.

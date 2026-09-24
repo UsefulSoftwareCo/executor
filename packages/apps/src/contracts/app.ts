@@ -13,6 +13,8 @@ type Handler<Context> = (context: Context, input: never) => Effect.Effect<unknow
 
 /** App capabilities share one account context. Package metadata belongs in package.json. */
 export interface AppDefinition<Context> {
+  /** Optional dynamic tools; resolution does not enumerate the catalog. */
+  readonly dynamicTools?: import("./dynamic-tools.ts").DynamicTools;
   /** Omission reads packaged skills/. An explicit catalog replaces that default, including []. */
   readonly skills?: readonly AppSkillSource[];
   readonly workflows?: Readonly<Record<string, AppWorkflow>>;
@@ -47,6 +49,8 @@ type AccountsFor<Slot> =
 
 /** Current credentials for one invocation. Never retained in source or build output. */
 export interface BoundContext<Slots extends AccountSlots> {
+  /** Explicit app/build-scoped caching. Account-specific loaders opt into forAccount. */
+  readonly cache: import("./cache.ts").AppCache;
   /** Text files retained in this deployment. Paths are package-relative, never host filesystem paths. */
   readonly files: readonly SkillFile[];
   /** Read-only run management, bound to this configured app. */

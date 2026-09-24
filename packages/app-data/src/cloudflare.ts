@@ -9,6 +9,8 @@ import type {
 import { Clock, Deferred, Effect, Exit, Result, Schema, Semaphore } from "effect";
 import { fingerprint } from "./implementation/cursor.ts";
 import { AppDatabaseError } from "./contracts/database.ts";
+import { CacheReply } from "@executor-js/app-cache/contracts";
+import { sqliteCache } from "@executor-js/app-cache/sqlite";
 
 /** Executable bytes, supplied by the trusted build store rather than a browser request. */
 export const FacetBundle = WorkerBundle;
@@ -17,6 +19,7 @@ export const FacetInvocation = Schema.Struct({
   id: Schema.NonEmptyString,
   identity: Schema.NonEmptyString,
   body: Schema.String,
+  cacheNamespace: Schema.optionalKey(Schema.String),
   write: Schema.Boolean,
   headers: Schema.Record(Schema.String, Schema.String),
 });
@@ -42,7 +45,9 @@ const FacetEntrypoint = Schema.declare(
       headers: Readonly<Record<string, string>>,
       elicitation: ((input: unknown) => Promise<unknown>) | null,
       workflows: ((input: unknown) => Promise<unknown>) | null,
+      cache: ((input: unknown) => Promise<unknown>) | null,
     ) => Promise<unknown>;
+    finish?: (id: string) => Promise<void>;
     cancel: (id: string) => Promise<void>;
   } =>
     typeof value === "object" &&
@@ -67,6 +72,16 @@ export const makeFacetSupervisor = (
   Effect.gen(function* () {
     const execution = yield* Semaphore.make(1);
     const metadata = yield* Semaphore.make(1);
+    const store = sqliteCache(state.storage);
+    const cache = (namespace: string, command: unknown) =>
+      store(namespace, command).pipe(
+        Effect.match({
+          onSuccess: (value) => ({ ok: true as const, value }),
+          onFailure: (error) => ({ ok: false as const, error }),
+        }),
+        Effect.flatMap(Schema.encodeEffect(CacheReply)),
+        Effect.orDie,
+      );
     let activeIdentity: string | undefined;
     let writes = 0;
     const calls = new Map<
@@ -207,6 +222,10 @@ export const makeFacetSupervisor = (
                       invocation.headers,
                       elicitation,
                       workflows,
+                      invocation.cacheNamespace === undefined
+                        ? null
+                        : (command) =>
+                            Effect.runPromise(cache(invocation.cacheNamespace ?? "", command)),
                     ),
                   )
                   .then(Result.succeed, Result.fail);
@@ -218,6 +237,10 @@ export const makeFacetSupervisor = (
                     // A facet transaction closes its input gate, so a cancel RPC cannot
                     // enter until it commits. Abort the isolated facet to roll it back.
                     state.facets.abort("data", "App invocation cancelled");
+                  }
+                  if (Exit.isSuccess(exit) && entrypoint.finish !== undefined) {
+                    state.waitUntil(entrypoint.finish(id).catch(() => undefined));
+                    return;
                   }
                   // Drain the invocation before the next caller acquires a fresh facet capability.
                   await Promise.allSettled([
@@ -240,6 +263,7 @@ export const makeFacetSupervisor = (
         execution.withPermits(1),
       );
     return {
+      cache,
       invoke: (
         input: typeof FacetInvocation.Type,
         load: () => Promise<typeof FacetBundle.Type>,

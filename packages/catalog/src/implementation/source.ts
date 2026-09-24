@@ -46,11 +46,11 @@ const read = (url: string, egress: HostEgress) =>
       if (response.status < 200 || response.status >= 300)
         return yield* Effect.fail(new DestinationRefused());
       const text = yield* response.text;
-      if (text.length > 20_000_000)
+      if (text.length > 40_000_000)
         return yield* Effect.fail(
           new CatalogImportFailed({
             code: "document_size",
-            reason: "This API definition exceeds the 20 MB import limit.",
+            reason: "This API definition exceeds the 40 MB import limit.",
           }),
         );
       return text;

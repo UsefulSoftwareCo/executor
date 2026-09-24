@@ -49,10 +49,21 @@ keep rebuilds repeatable. Apps with no `apps` dependency use the host's framewor
 In this repository, playground workspaces use `"apps": "workspace:*"` for development;
 replace that workspace reference with a released version before deployment.
 
-`openapiOperations` accepts normalized operations from the template generator,
-credential placement metadata, and an optional selected account. It does not
-parse a raw OpenAPI specification. `packages/app-templates` owns that compiler.
-No extra OpenAPI parser is installed in the app.
+`liveOpenapiOperations` reads an OpenAPI document through `ctx.cache`. Generated
+imports retain a source URL, allowed origin, and static credential bindings in
+`openapi.json`. The framework compiles a revision on a cache miss. It writes each
+operation and shared schema before publishing the current revision. A warm call
+reads that revision and the requested operation's schema dependencies. It does
+not download, parse, or read the full catalog. `openapiOperations` remains the
+lower-level helper for already normalized metadata.
+
+The default refresh window is five minutes fresh plus five minutes stale.
+`freshFor` and `staleFor` can change it. A stale read schedules a bounded refresh;
+a failed refresh keeps the last successful revision until its stale window ends.
+The source URL and static compilation configuration identify a shared source.
+Accounts bind at execution time. Live documents cannot change credential
+placement or send credentials to another origin. Editing generated source and
+redeploying is required to change those static choices.
 
 Authenticated templates use `provider.many()` and `accountOperations` from `apps`:
 
@@ -189,3 +200,70 @@ Local and self-host products run authored apps in Alchemy/workerd, using the
 same Worker build format and app-data facets as Cloud. Host filesystem and
 subprocess access are unavailable to app code. Agent `execute(code)` continues
 to use OpenCode CodeMode.
+
+## App cache and lazy sources
+
+Every app context has `cache`. Keys must contain every input that changes the
+result. The host adds app and build isolation. Use `forAccount(account)` for
+private data; it also includes the current credential fingerprint. Use the
+shared cache for public metadata that is identical across accounts.
+
+```ts
+const projects = await ctx.cache.forAccount(ctx.accounts.service).get({
+  key: ["projects", region],
+  schema: array(object({ id: string(), name: string() })),
+  freshFor: "1 minute",
+  staleFor: "2 minutes",
+  load: async ({ fetch, signal }) => {
+    const response = await fetch(urlFor(region), { signal });
+    if (!response.ok) throw new Error("Project lookup failed");
+    return response.json();
+  },
+});
+```
+
+Use the loader's `fetch`, `signal`, and `cache` for background work. Their
+lifetime can outlast the original request. Only successful, schema-valid JSON
+is stored. Concurrent misses share a fenced lease. `invalidate(key)` revokes
+both a cached value and an in-flight loader's right to publish it. Cache storage
+is disposable and bounded: 2 MB per entry, 8 MB per write batch, 128 entries per
+batch, 128 MB and 100,000 entries per app, and seven days of retention. Capacity
+errors are explicit. Background refreshes have a 30-second deadline.
+
+`read` and `readMany` read retained data without loading it. `write` stores
+bounded JSON batches with a retention duration. These support immutable pieces
+that must be stored before a manifest becomes visible.
+
+`dynamicTools({ list, resolve })` separates descriptions from executable
+operations. `list()` returns tool metadata with qualified names such as
+`queries.getProject`. `resolve(name)` returns a query/mutation declaration or
+`undefined`. The host validates input and applies approval policy after resolving
+an operation. `accountOperations` preserves this separation. Static operations
+can run without resolving the source; listings reject duplicate names.
+
+Assign the resolver to the app's `dynamicTools` field. The helper returns only
+`list` and `resolve`, never static query or mutation maps. Both static maps are
+optional, so an app can contain only dynamic tools.
+
+```ts
+export default defineApp(
+  { accounts: {} },
+  {
+    dynamicTools: dynamicTools({
+      list: async () => [
+        {
+          name: "queries.ping",
+          description: "Return pong",
+          inputSchema: { type: "object", properties: {} },
+          readOnly: true,
+        },
+      ],
+      resolve: async (name) =>
+        name === "queries.ping" ? query({ input: object({}) }, async () => "pong") : undefined,
+    }),
+  },
+);
+```
+
+Names include `queries.` or `mutations.`. `list` describes available tools;
+`resolve` returns the matching query or mutation declaration.

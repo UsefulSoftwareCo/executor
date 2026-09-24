@@ -1,6 +1,8 @@
 import { accountProviderError } from "./provider-error.ts";
 /** Combine account-bound protocol operations without changing their upstream inputs. */
 import { Effect, Schema } from "effect";
+import type { DynamicTools } from "../contracts/dynamic-tools.ts";
+import { HostedTool } from "../contracts/host.ts";
 import type { AppOperation, OperationContext } from "../contracts/operations.ts";
 import { JsonObject, type JsonValue } from "../contracts/schema.ts";
 import { nativeOperation, operationDeclaration, type Operation } from "./operations.ts";
@@ -11,6 +13,7 @@ type Operations = {
   readonly queries: Readonly<
     Record<string, Operation<JsonValue, unknown, "query", OperationContext>>
   >;
+  readonly dynamicTools?: DynamicTools;
   readonly mutations: Readonly<
     Record<string, Operation<JsonValue, unknown, "mutation", OperationContext>>
   >;
@@ -127,11 +130,15 @@ export const accountOperations = <Account extends { readonly id: string }>(
     Effect.gen(function* () {
       const queries = new Map<string, Map<string, AppOperation>>();
       const mutations = new Map<string, Map<string, AppOperation>>();
+      const sources = new Map<string, DynamicTools>();
       for (const account of accounts) {
         const operations = yield* Effect.tryPromise({
           try: () => discover(account),
           catch: (error) => accountProviderError(error, account.id),
         });
+        if (sources.has(account.id))
+          return yield* Effect.die(new Error("Account selections must be unique"));
+        if (operations.dynamicTools !== undefined) sources.set(account.id, operations.dynamicTools);
         for (const [source, target] of [
           [operations.queries, queries],
           [operations.mutations, mutations],
@@ -148,7 +155,98 @@ export const accountOperations = <Account extends { readonly id: string }>(
           }
         }
       }
-      return { queries: combine("query", queries), mutations: combine("mutation", mutations) };
+      const declared = {
+        queries: combine("query", queries),
+        mutations: combine("mutation", mutations),
+      };
+      if (sources.size === 0) return declared;
+      return {
+        ...declared,
+        dynamicTools: {
+          list: () =>
+            Effect.gen(function* () {
+              const groups = new Map<string, Map<string, HostedTool>>();
+              for (const [accountId, source] of sources) {
+                const tools = yield* source
+                  .list()
+                  .pipe(Effect.mapError((error) => accountProviderError(error, accountId)));
+                for (const tool of tools) {
+                  const accounts = groups.get(tool.name) ?? new Map<string, HostedTool>();
+                  if (accounts.has(accountId))
+                    return yield* Effect.die(new Error("Duplicate source operation"));
+                  accounts.set(accountId, tool);
+                  groups.set(tool.name, accounts);
+                }
+              }
+              return [...groups].map(([name, accounts]) => {
+                const variants = [...accounts];
+                const first = variants[0]?.[1];
+                if (first === undefined) throw new Error("Expected a source operation");
+                return Schema.decodeUnknownSync(HostedTool)({
+                  name,
+                  description: first.description,
+                  ...(first.title === undefined ? {} : { title: first.title }),
+                  readOnly: name.startsWith("queries."),
+                  inputSchema: {
+                    type: "object",
+                    anyOf: variants.map(([accountId, tool], index) => ({
+                      type: "object",
+                      properties: {
+                        accountId: { type: "string", const: accountId },
+                        input: nestJsonSchema(
+                          tool.inputSchema,
+                          `#/anyOf/${index}/properties/input`,
+                        ),
+                      },
+                      required: ["accountId", "input"],
+                    })),
+                  },
+                  ...(variants.every(([, tool]) => tool.outputSchema !== undefined)
+                    ? {
+                        outputSchema: {
+                          anyOf: variants.flatMap(([, tool], index) =>
+                            tool.outputSchema === undefined
+                              ? []
+                              : [nestJsonSchema(tool.outputSchema, `#/anyOf/${index}`)],
+                          ),
+                        },
+                      }
+                    : {}),
+                  ...(first.annotations !== undefined &&
+                  variants.every(
+                    ([, tool]) =>
+                      JSON.stringify(tool.annotations) === JSON.stringify(first.annotations),
+                  )
+                    ? { annotations: first.annotations }
+                    : {}),
+                  ...(first._meta !== undefined &&
+                  variants.every(
+                    ([, tool]) => JSON.stringify(tool._meta) === JSON.stringify(first._meta),
+                  )
+                    ? { _meta: first._meta }
+                    : {}),
+                });
+              });
+            }),
+          resolve: (name: string) =>
+            Effect.gen(function* () {
+              const kind = name.startsWith("queries.") ? "query" : "mutation";
+              const operations = new Map<string, AppOperation>();
+              for (const [accountId, source] of sources) {
+                const operation = yield* source
+                  .resolve(name)
+                  .pipe(Effect.mapError((error) => accountProviderError(error, accountId)));
+                if (operation !== undefined) {
+                  if (operation.kind !== kind)
+                    return yield* Effect.die(new Error("Operation kind changed"));
+                  operations.set(accountId, operation);
+                }
+              }
+              if (operations.size === 0) return undefined;
+              return nativeOperation(combine(kind, new Map([[name, operations]]))[name]);
+            }),
+        } satisfies DynamicTools,
+      };
     }),
     options,
   );

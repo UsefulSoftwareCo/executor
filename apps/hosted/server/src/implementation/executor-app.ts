@@ -20,17 +20,18 @@ export const executorCatalogEntry = (origin: string) =>
 
 /** The catalog retains the ordinary OAuth connection for explicitly installed copies. */
 const managementIndex = (origin: string, apiKey = false) => `import { defineApp } from "apps";
-import { openapiOperations } from "apps/openapi";
+import { liveOpenapiOperations } from "apps/openapi";
 import { wellKnownSkills } from "apps/skills";
 import { provider } from "./provider.ts";
-import metadata from "./operations.json";
+import configuration from "./openapi.json";
 import { frameworkQueries } from "./framework.ts";
 import reference from "./framework-reference.json";
 
 export default defineApp({ accounts: { service: provider } }, async (context) => {
   const account = context.accounts.service;
-  const operations = await openapiOperations({
-    ...metadata,
+  const operations = liveOpenapiOperations({
+    ...configuration,
+    cache: context.cache,
     ${
       apiKey
         ? `account: account.method === "apiKey"
@@ -38,7 +39,7 @@ export default defineApp({ accounts: { service: provider } }, async (context) =>
       : account,
     fetch: (input, init) => {
       const request = new Request(input, init);
-      if (account.method === "apiKey") request.headers.set("X-Executor-Organization", account.fields.organization);
+      if (account.method === "apiKey" && new URL(request.url).origin === configuration.allowedOrigin) request.headers.set("X-Executor-Organization", account.fields.organization);
       return context.fetch(request);
     },`
         : `account,
@@ -62,11 +63,8 @@ export const executorAppSource = (
       skippedOperations: generated.skippedOperations,
       files: SourceFiles.make([
         { path: "index.ts", content: managementIndex(origin) },
-        // operations.json holds the whole metadata, including shared definitions.
-        ...generated.files.filter(
-          (file) => !["index.ts", "operations.json", "definitions.json"].includes(file.path),
-        ),
-        { path: "operations.json", content: JSON.stringify(generated.metadata) },
+        // Keep static provider and live-source configuration.
+        ...generated.files.filter((file) => !["index.ts"].includes(file.path)),
         ...skills.filter((file) => !file.path.startsWith("skills/")),
       ]),
     })),
@@ -96,8 +94,8 @@ export const provider = defineProvider({ name: "Executor", auth: {
 `,
         },
         {
-          path: "operations.json",
-          content: JSON.stringify(metadata, null, 2),
+          path: "openapi.json",
+          content: JSON.stringify(metadata.configuration, null, 2),
         },
         ...skills.filter((file) => !file.path.startsWith("skills/")),
       ]),

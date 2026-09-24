@@ -381,10 +381,17 @@
         "tailwindcss": "^4.3.3",
       },
     },
+    "packages/app-cache": {
+      "name": "@executor-js/app-cache",
+      "dependencies": {
+        "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+      },
+    },
     "packages/app-data": {
       "name": "@executor-js/app-data",
       "dependencies": {
         "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@executor-js/app-cache": "workspace:*",
         "@executor-js/reactivity": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
       },
@@ -454,6 +461,7 @@
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@effect/sql-sqlite-do": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-do@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@executor-js/app-cache": "workspace:*",
         "@executor-js/app-data": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
@@ -583,6 +591,7 @@
         "@distilled.cloud/cloudflare": "1.0.0-rc.12",
         "@effect/platform-browser": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-browser@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@executor-js/app-cache": "workspace:*",
         "@executor-js/app-data": "workspace:*",
         "@executor-js/reactivity": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
@@ -1306,6 +1315,8 @@
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.2", "", { "os": "win32", "cpu": "x64" }, "sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g=="],
 
     "@executor-js/app-axiom": ["@executor-js/app-axiom@workspace:playground/demo-apps/axiom"],
+
+    "@executor-js/app-cache": ["@executor-js/app-cache@workspace:packages/app-cache"],
 
     "@executor-js/app-data": ["@executor-js/app-data@workspace:packages/app-data"],
 

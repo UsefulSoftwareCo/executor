@@ -17,20 +17,21 @@ export const executorAppSource = () =>
           {
             path: "index.ts",
             content: `import { defineApp } from "apps";
-import { openapiOperations } from "apps/openapi";
+import { liveOpenapiOperations } from "apps/openapi";
 import { wellKnownSkills } from "apps/skills";
 import { executor } from "./provider.ts";
-import metadata from "./operations.json";
+import configuration from "./openapi.json";
 import { frameworkQueries } from "./framework.ts";
 import reference from "./framework-reference.json";
 
 export default defineApp({ accounts: { executor } }, async (context) => {
-  const operations = await openapiOperations({
-    ...metadata,
-    operations: metadata.operations.map(operation => ({
-      ...operation,
-      baseUrl: context.accounts.executor.fields.baseUrl,
-    })),
+  const baseUrl = context.accounts.executor.fields.baseUrl;
+  const operations = liveOpenapiOperations({
+    ...configuration,
+    source: { url: baseUrl + "/openapi.json" },
+    baseUrl,
+    allowedOrigin: new URL(baseUrl).origin,
+    cache: context.cache,
     account: {
       method: context.accounts.executor.method,
       fields: { token: context.accounts.executor.fields.apiKey },
@@ -56,7 +57,10 @@ export const executor = defineProvider({
 });
 `,
           },
-          { path: "operations.json", content: JSON.stringify(metadata, null, 2) },
+          {
+            path: "openapi.json",
+            content: JSON.stringify({ ...metadata.configuration, source: undefined }, null, 2),
+          },
           ...skills.filter((file) => !file.path.startsWith("skills/")),
         ]),
       ),

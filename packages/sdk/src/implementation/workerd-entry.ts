@@ -10,7 +10,7 @@ import type {
   WebSocket as NativeWebSocket,
 } from "@cloudflare/workers-types";
 import { RpcTarget, newWorkersRpcResponse, type RpcStub } from "capnweb";
-import { Cause, Effect, Redacted, Schema } from "effect";
+import { Cause, Effect, Exit, Redacted, Schema } from "effect";
 import {
   DeclaredRequirements,
   HostResponse,
@@ -57,6 +57,7 @@ declare const WebSocketPair: { new (): { 0: NativeWebSocket; 1: NativeWebSocket 
 
 type Callback = (input: unknown) => Promise<unknown>;
 interface DataEntrypoint {
+  cache(namespace: string, command: unknown): Promise<unknown>;
   invoke(
     input: typeof FacetInvocation.Type,
     load: () => Promise<typeof FacetBundle.Type>,
@@ -131,6 +132,7 @@ const invoke = (
   elicit: Callback | null,
   controls: Callback | null,
   execution?: WorkflowExecution,
+  waitUntil?: (task: Promise<void>) => void,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -160,6 +162,7 @@ const invoke = (
               {
                 id,
                 identity,
+                cacheNamespace: input.build,
                 body,
                 headers: input.headers,
                 write:
@@ -218,16 +221,28 @@ const invoke = (
               );
       const call = yield* Effect.acquireRelease(
         Effect.tryPromise({
-          try: () => entry.start(body, input.headers, delivery, workflow, controls),
+          try: () =>
+            entry.start(body, input.headers, delivery, workflow, controls, (command) =>
+              env.DATA.getByName(input.app).cache(input.build, command),
+            ),
           catch: failure,
         }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(AppRpcInvocation))),
-        (call) =>
+        (call, exit) =>
           Effect.promise(async () => {
-            try {
-              await call.cancel();
-            } finally {
-              call[Symbol.dispose]();
-            }
+            const release = async () => {
+              try {
+                if (Exit.isSuccess(exit)) await call.drain?.();
+              } finally {
+                try {
+                  await call.cancel();
+                } finally {
+                  call[Symbol.dispose]();
+                }
+              }
+            };
+            if (Exit.isSuccess(exit) && waitUntil !== undefined)
+              waitUntil(release().catch(() => undefined));
+            else await release();
           }).pipe(Effect.catchCause(() => Effect.void)),
       );
       return yield* Effect.tryPromise({ try: () => call.result(), catch: failure });
@@ -319,6 +334,8 @@ class AppApi extends RpcTarget {
               Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json))(
                 await callbacks.control(JSON.stringify(input)),
               ),
+            undefined,
+            (task) => this.#context.waitUntil(task),
           ),
         ),
         Effect.flatMap(Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Json))),
@@ -351,6 +368,9 @@ export class AppDataSupervisor extends DurableObject<Environment> {
       ),
     );
     return result;
+  }
+  async cache(namespace: string, command: unknown) {
+    return Effect.runPromise((await this.#supervisor).cache(namespace, command));
   }
   async cancel(id: string) {
     return Effect.runPromise((await this.#supervisor).cancel(id));

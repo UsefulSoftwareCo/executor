@@ -172,3 +172,43 @@ Resume waits briefly; if it returns the same pending request, wait and collect
 again. If it returns a new link, show that link too. The original program and
 running tool continue without replay. An unavailable request may have expired,
 been consumed, or been lost on restart; do not rerun the source automatically.
+
+## Cache and lazy operation sources
+
+Use `ctx.cache.get({ key, schema, freshFor, staleFor, load })` for shared JSON.
+Put every result dependency in the key. Use `ctx.cache.forAccount(account)` for
+private results; the host also scopes entries to current credentials. Use the
+loader's `fetch`, `signal`, and `cache` so stale refreshes can finish after the
+request. Errors are not cached. `invalidate(key)` also fences pending loaders.
+
+Use `dynamicTools({ list, resolve })` for large or remote catalogs. List
+qualified tool metadata separately from resolving one query or mutation.
+`accountOperations` preserves lazy resolution. Resolving a tool does not require
+listing all tools. Input validation and approvals still run on each call.
+
+Assign the resolver to the app's `dynamicTools` field. The helper returns only
+`list` and `resolve`, never static query or mutation maps. Both static maps are
+optional, so an app can contain only dynamic tools.
+
+```ts
+export default defineApp(
+  { accounts: {} },
+  {
+    dynamicTools: dynamicTools({
+      list: async () => [
+        {
+          name: "queries.ping",
+          description: "Return pong",
+          inputSchema: { type: "object", properties: {} },
+          readOnly: true,
+        },
+      ],
+      resolve: async (name) =>
+        name === "queries.ping" ? query({ input: object({}) }, async () => "pong") : undefined,
+    }),
+  },
+);
+```
+
+Names include `queries.` or `mutations.`. `list` describes available tools;
+`resolve` returns the matching query or mutation declaration.

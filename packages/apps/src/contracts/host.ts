@@ -122,6 +122,8 @@ export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqua
 export interface HostContext {
   /** Trusted host deadline; never accepted in public operation JSON. */
   readonly deadline?: typeof InvocationDeadline.Type;
+  /** Host-owned cache storage and refresh lifetime, separate from app database transactions. */
+  readonly cache?: import("./cache.ts").HostCache;
   /** Packaged app text files supplied by the build bridge. Direct hosts may omit them for an empty package. */
   readonly files?: readonly SkillFile[];
   /** Private delivery capability. It is never accepted in public request JSON or stored in a build. */
