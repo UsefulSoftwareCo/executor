@@ -5,19 +5,29 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "../components/dropdown-menu.tsx";
-import { useState, type ComponentType } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 import { BookOpen01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { App, AppSkillBundle, AppSkillDocument } from "@executor-js/sdk";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { SkillBindings } from "../../contracts/app-browser.ts";
 import type { FailureProps } from "../../contracts/dashboard.ts";
-import { QueryView } from "./context.tsx";
+import { Option } from "effect";
+import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import type { AppSourceView } from "@executor-js/app-management/contracts";
+import { QueryView, useQuery } from "./context.tsx";
 import { SkillBrowserLoading } from "./app-browser-loading.tsx";
-import { Code, CopyButton } from "./code.tsx";
+import { CopyButton } from "./code.tsx";
 import { EmptyStatePanel } from "./empty-state.tsx";
 import { Button } from "../components/button.tsx";
+import { SkillContent } from "./skill-content.tsx";
+import {
+  SkillDeployment,
+  SkillFileEditor,
+  type Committed,
+  type SkillEditing,
+} from "./skill-editor.tsx";
+
+import { SkillWorkspace } from "./skill-workspace.tsx";
 
 type Skill = AppSkillBundle["skills"][number];
 
@@ -27,40 +37,125 @@ export function AppSkills<E>({
   bindings,
   Failure,
   canEdit,
+  editing,
 }: {
   readonly app: App;
   readonly canEdit: boolean;
   readonly bindings: SkillBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
+  /** Present when this viewer may manage app source; the server still authorizes each commit. */
+  readonly editing?: SkillEditing<E> | undefined;
 }) {
+  // Outside the catalog query, so the status and its deploy survive the catalog reloading.
+  const [committed, setCommitted] = useState<Committed>();
   return (
-    <section aria-label="App skills" className="flex min-h-full flex-col">
-      {app.activeDeployment === null ? (
+    <section aria-label="App skills" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {committed !== undefined && editing !== undefined && (
+        <SkillDeployment
+          key={committed.commit}
+          app={app}
+          commit={committed.commit}
+          deployNow={committed.deploy}
+          onStarted={() => setCommitted({ ...committed, deploy: false })}
+          editing={editing}
+          Failure={Failure}
+        />
+      )}
+      {editing !== undefined && canEdit ? (
+        <QueryView
+          query={editing.atoms.workspace(app.id)}
+          Failure={Failure}
+          pending={<SkillBrowserLoading />}
+        >
+          {(source) => (
+            <EditableSkills
+              app={app}
+              source={source}
+              bindings={bindings}
+              editing={editing}
+              Failure={Failure}
+              onCommitted={setCommitted}
+            />
+          )}
+        </QueryView>
+      ) : app.activeDeployment === null ? (
         <EmptyStatePanel title="No deployment yet">
-          {canEdit
-            ? "Deploy this app to browse its skills."
-            : "The app owner needs to deploy this app before its skills are available."}
+          The app owner needs to deploy this app before its skills are available.
         </EmptyStatePanel>
       ) : (
         <QueryView query={bindings.bundle} Failure={Failure} pending={<SkillBrowserLoading />}>
           {(catalog) => (
-            <SkillCatalog key={catalog.deployment} app={app} catalog={catalog} canEdit={canEdit} />
+            <SkillCatalog
+              app={app}
+              catalog={catalog}
+              canEdit={false}
+              editing={undefined}
+              Failure={Failure}
+              onCommitted={setCommitted}
+            />
           )}
         </QueryView>
       )}
     </section>
   );
 }
-function SkillCatalog({
+const undeployedCatalog = Atom.make(AsyncResult.success(undefined));
+
+function EditableSkills<E>({
+  app,
+  source,
+  bindings,
+  editing,
+  Failure,
+  onCommitted,
+}: {
+  readonly app: App;
+  readonly source: typeof AppSourceView.Type;
+  readonly bindings: SkillBindings<E>;
+  readonly editing: SkillEditing<E>;
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly onCommitted: (result: Committed) => void;
+}) {
+  const { result, data, refresh } = useQuery<AppSkillBundle | undefined, E>(
+    app.activeDeployment === null ? undeployedCatalog : bindings.bundle,
+  );
+  const catalog = Option.getOrUndefined(data);
+  return (
+    <>
+      {AsyncResult.isFailure(result) && (
+        <Failure cause={result.cause} retry={refresh} retrying={result.waiting} />
+      )}
+      <SkillWorkspace
+        app={app}
+        source={source}
+        {...(catalog === undefined ? {} : { catalog })}
+        editing={editing}
+        Failure={Failure}
+        onCommitted={onCommitted}
+      />
+    </>
+  );
+}
+
+function SkillCatalog<E>({
   app,
   catalog,
   canEdit,
+  editing,
+  Failure,
+  onCommitted,
 }: {
   readonly app: App;
   readonly catalog: AppSkillBundle;
   readonly canEdit: boolean;
+  readonly editing: SkillEditing<E> | undefined;
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly onCommitted: (result: Committed) => void;
 }) {
   const [selected, setSelected] = useState<string>();
+  // An open draft asks before another skill or file replaces it.
+  const [dirty, setDirty] = useState(false);
+  const leave = () => !dirty || window.confirm("Discard your unsaved changes?");
   const current = catalog.skills.find((skill) => skill.name === selected) ?? catalog.skills[0];
   if (current === undefined)
     return (
@@ -90,16 +185,18 @@ function SkillCatalog({
       </EmptyStatePanel>
     );
   return (
-    <div className="grid min-h-80 min-[900px]:grid-cols-[240px_minmax(0,1fr)]">
+    <div className="grid min-h-0 flex-1 grid-rows-[minmax(100px,25%)_minmax(0,1fr)] min-[900px]:grid-cols-[240px_minmax(0,1fr)] min-[900px]:grid-rows-1">
       <nav
         aria-label="Skills"
-        className="flex gap-1 overflow-x-auto border-b p-3 min-[900px]:block min-[900px]:border-b-0 min-[900px]:border-r"
+        className="flex min-h-0 gap-1 overflow-auto border-b p-3 min-[900px]:block min-[900px]:border-b-0 min-[900px]:border-r"
       >
         {catalog.skills.map((skill) => (
           <button
             type="button"
             key={skill.name}
-            onClick={() => setSelected(skill.name)}
+            onClick={() => {
+              if (skill.name !== current.name && leave()) setSelected(skill.name);
+            }}
             aria-current={current.name === skill.name ? "true" : undefined}
             className="shrink-0 rounded-md px-3 py-2.5 text-left hover:bg-muted aria-[current=true]:bg-muted min-[900px]:w-full"
           >
@@ -110,18 +207,43 @@ function SkillCatalog({
           </button>
         ))}
       </nav>
-      <SkillFiles key={current.name} skill={current} catalog={catalog} />
+      <SkillFiles
+        key={current.name}
+        app={app}
+        skill={current}
+        catalog={catalog}
+        editing={editing}
+        Failure={Failure}
+        leave={leave}
+        onDirty={setDirty}
+        onCommitted={onCommitted}
+      />
     </div>
   );
 }
-function SkillFiles({
+function SkillFiles<E>({
+  app,
   skill,
   catalog,
+  editing,
+  Failure,
+  leave,
+  onDirty,
+  onCommitted,
 }: {
+  readonly app: App;
   readonly skill: Skill;
   readonly catalog: AppSkillBundle;
+  readonly editing: SkillEditing<E> | undefined;
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly leave: () => boolean;
+  readonly onDirty: (dirty: boolean) => void;
+  readonly onCommitted: (result: Committed) => void;
 }) {
   const [file, setFile] = useState("SKILL.md");
+  const open = (next: string) => {
+    if (next !== file && leave()) setFile(next);
+  };
   const resource = skill.files.find((item) => item.path === file);
   if (resource === undefined)
     return (
@@ -140,103 +262,93 @@ function SkillFiles({
     content: resource.content,
     files: skill.files.map((item) => item.path),
   };
-  return (
-    <div className="min-w-0 px-5 py-5 min-[900px]:px-10">
-      <div className="max-w-3xl">
-        <div className="mb-6 flex min-h-9 items-center justify-between gap-3 border-b pb-3 text-xs">
-          <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
-            <button
-              type="button"
-              className="shrink-0 hover:text-foreground"
-              aria-label="Back to instructions"
-              onClick={() => setFile("SKILL.md")}
-            >
-              {skill.name}
-            </button>
-            <span aria-hidden>/</span>
-            <span aria-label="Current skill file" className="truncate text-foreground">
-              {file === "SKILL.md" ? "Instructions" : file.split("/").at(-1)}
-            </span>
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm">
-                Files <span className="text-muted-foreground">{skill.files.length}</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuRadioGroup value={file} onValueChange={setFile}>
-                {skill.files.map((item) => (
-                  <DropdownMenuRadioItem key={item.path} value={item.path}>
-                    {item.path === "SKILL.md" ? "Instructions" : item.path}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-        <SkillContent document={document} onFile={setFile} />
+  const header = (actions?: ReactNode) => (
+    <div className="sticky top-0 z-10 mb-6 flex min-h-9 flex-wrap items-center justify-between gap-3 border-b bg-background pb-3 text-xs">
+      <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+        <button
+          type="button"
+          className="shrink-0 hover:text-foreground"
+          aria-label="Back to instructions"
+          onClick={() => open("SKILL.md")}
+        >
+          {skill.name}
+        </button>
+        <span aria-hidden>/</span>
+        <span aria-label="Current skill file" className="truncate text-foreground">
+          {file === "SKILL.md" ? "Instructions" : file.split("/").at(-1)}
+        </span>
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-1">
+        {actions}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm">
+              Files <span className="text-muted-foreground">{skill.files.length}</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuRadioGroup value={file} onValueChange={open}>
+              {skill.files.map((item) => (
+                <DropdownMenuRadioItem key={item.path} value={item.path}>
+                  {item.path === "SKILL.md" ? "Instructions" : item.path}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   );
-}
-function SkillContent({
-  document,
-  onFile,
-}: {
-  readonly document: AppSkillDocument;
-  readonly onFile: (file: string) => void;
-}) {
-  const markdown = /\.md$/i.test(document.file);
-  const content =
-    document.file === "SKILL.md"
-      ? document.content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "")
-      : document.content;
+  const reader = <SkillContent document={document} onFile={open} />;
+  const path = `skills/${skill.name}/${file}`;
   return (
-    <div>
-      {!markdown ? (
-        <Code code={document.content} path={document.file} />
-      ) : (
-        <div className="text-sm leading-7 wrap-anywhere [&_h1]:mb-5 [&_h1]:mt-2 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:my-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:my-3 [&_h3]:font-medium [&_p]:my-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 [&_pre]:overflow-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-4 [&_code]:font-mono [&_code]:text-xs [&_table]:block [&_table]:overflow-auto [&_td]:border [&_td]:p-2 [&_th]:border [&_th]:p-2">
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            skipHtml
-            components={{
-              img: ({ alt }) => <span>{alt}</span>,
-              a: ({ href, children }) => {
-                if (href !== undefined && /^https?:\/\//i.test(href))
-                  return (
-                    <a className="underline" href={href} target="_blank" rel="noopener noreferrer">
-                      {children}
-                    </a>
-                  );
-                if (href !== undefined && !/^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(href)) {
-                  const path = new URL(
-                    href,
-                    `https://skill.invalid/${document.file}`,
-                  ).pathname.slice(1);
-                  const resource = document.files.find(
-                    (file) => new URL(file, "https://skill.invalid/").pathname.slice(1) === path,
-                  );
-                  if (resource !== undefined)
-                    return (
-                      <button
-                        type="button"
-                        className="text-left underline"
-                        onClick={() => onFile(resource)}
-                      >
-                        {children}
-                      </button>
-                    );
-                }
-                return <span>{children}</span>;
-              },
-            }}
+    <div className="min-h-0 min-w-0 overflow-y-auto px-5 pb-5 min-[900px]:px-10">
+      <div className="max-w-3xl pt-5">
+        {editing === undefined || !/\.md$/i.test(file) ? (
+          <>
+            {header()}
+            {reader}
+          </>
+        ) : (
+          <QueryView
+            query={editing.atoms.workspace(app.id)}
+            Failure={Failure}
+            pending={
+              <>
+                {header()}
+                {reader}
+              </>
+            }
           >
-            {content}
-          </Markdown>
-        </div>
-      )}
+            {(source) => {
+              const stored = source.files.find((item) => item.path === path);
+              // Skills from code or remote sources, and apps this person cannot change, stay read-only.
+              if (stored === undefined || !source.canEdit)
+                return (
+                  <>
+                    {header()}
+                    {reader}
+                  </>
+                );
+              return (
+                <SkillFileEditor
+                  key={path}
+                  app={app}
+                  path={path}
+                  skill={skill.name}
+                  stored={stored.content}
+                  editing={editing}
+                  Failure={Failure}
+                  header={header}
+                  reader={reader}
+                  onDirty={onDirty}
+                  onCommitted={onCommitted}
+                />
+              );
+            }}
+          </QueryView>
+        )}
+      </div>
     </div>
   );
 }

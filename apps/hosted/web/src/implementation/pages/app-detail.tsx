@@ -28,7 +28,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
 import { AppId, type App, type Profile, type ProfileId } from "@executor-js/sdk";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useBlocker, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
@@ -77,6 +77,11 @@ export function AppDetailPage({
 }) {
   const { organization, role, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
+  const [skillDirty, setSkillDirty] = useState(false);
+  useBlocker({
+    shouldBlockFn: () => skillDirty && !window.confirm("Discard your unsaved changes?"),
+    enableBeforeUnload: skillDirty,
+  });
   const atoms = useDashboardAtoms();
   const inventory = useQuery(atoms.inventory);
   const query = useQuery(liveAppAtom({ organization, app: AppId.make(appId) }));
@@ -391,6 +396,16 @@ export function AppDetailPage({
                               app={current}
                               bindings={appBrowserBindings(organization, current, context.profile)}
                               Failure={HostedFailure}
+                              editing={
+                                canManage
+                                  ? {
+                                      atoms: appManagement(organization),
+                                      onDirty: setSkillDirty,
+                                      onApp: (get, saved) =>
+                                        acknowledgeApp(get, organization, saved),
+                                    }
+                                  : undefined
+                              }
                             />
                           );
                         if (selectedView === "tools")

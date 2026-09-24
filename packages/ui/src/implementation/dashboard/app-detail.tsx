@@ -36,7 +36,7 @@ const sections = [
   { view: "settings", label: "Settings", icon: Settings05Icon },
 ] as const;
 const contentClasses = {
-  skills: "min-h-0 min-w-0 flex-1 overflow-auto",
+  skills: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
   workflows: "min-h-0 min-w-0 flex-1 overflow-auto",
   webhooks: "min-h-0 min-w-0 flex-1 overflow-auto",
   schedules: "min-h-0 min-w-0 flex-1 overflow-auto",
@@ -74,19 +74,19 @@ export function AppDetailLayout({
   useDocumentTitle(productTitle(app?.name ?? "App"));
   return (
     <div className="flex min-h-0 flex-1 flex-col [--app-tools-list-width:260px]">
-      <header className="shrink-0 px-7 pb-7 pt-5 max-[740px]:px-4 max-[740px]:pb-5 max-[740px]:pt-2">
-        <div className="mb-5 w-fit text-xs text-muted-foreground [&_a]:inline-flex [&_a]:min-h-7 [&_a]:items-center [&_a]:gap-2 [&_a:hover]:text-foreground max-[740px]:mb-2 max-[740px]:[&_a]:min-h-11">
+      <header className="shrink-0 px-7 pb-7 pt-5 max-[740px]:flex max-[740px]:items-center max-[740px]:py-1.5 max-[740px]:pl-1 max-[740px]:pr-4">
+        <div className="mb-5 w-fit shrink-0 self-start text-xs text-muted-foreground [&_a]:inline-flex [&_a]:min-h-7 [&_a]:items-center [&_a]:gap-2 [&_a:hover]:text-foreground max-[740px]:mb-0 max-[740px]:[&_a]:size-11 max-[740px]:[&_a]:justify-center max-[740px]:[&_a]:text-[0px] max-[740px]:[&_svg]:size-5">
           {back}
         </div>
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-4 max-[740px]:min-w-0 max-[740px]:flex-1 max-[740px]:gap-y-2 max-[740px]:py-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-4 max-[740px]:gap-2.5 max-[740px]:[&_.provider-icon-large]:size-8 max-[740px]:[&_.provider-icon-large]:rounded-[7px] max-[740px]:[&_.provider-icon-large_img]:size-5">
             <ProviderIcon
               name={provider?.name ?? app?.name ?? "App"}
               url={providerDisplayUrl(provider)}
               large
             />
             <h1
-              className="min-w-0 truncate text-2xl font-semibold tracking-tight max-[740px]:text-xl"
+              className="min-w-0 truncate text-2xl font-semibold tracking-tight max-[740px]:text-lg"
               title={app?.name}
             >
               {app ? (
@@ -106,7 +106,7 @@ export function AppDetailLayout({
             </h1>
           </div>
           {(actions || setupPicker || (app === undefined && canInspectSource)) && (
-            <div className="ml-auto flex min-h-9 flex-wrap items-center justify-end gap-1 max-[740px]:min-h-11 max-[640px]:w-full">
+            <div className="ml-auto flex min-h-9 flex-wrap items-center justify-end gap-1 empty:hidden max-[740px]:min-h-11 max-[640px]:ml-0 max-[640px]:w-full max-[640px]:justify-start max-[640px]:gap-2">
               {app === undefined && canInspectSource ? (
                 <Skeleton className="h-9 w-28 max-[740px]:h-11" />
               ) : (
@@ -132,7 +132,13 @@ export function AppDetailLayout({
             );
             const content = (
               <>
-                <HugeiconsIcon icon={section.icon} size={16} strokeWidth={1.7} aria-hidden />
+                <HugeiconsIcon
+                  icon={section.icon}
+                  size={16}
+                  strokeWidth={1.7}
+                  aria-hidden
+                  className="max-[740px]:hidden"
+                />
                 {section.label}
               </>
             );

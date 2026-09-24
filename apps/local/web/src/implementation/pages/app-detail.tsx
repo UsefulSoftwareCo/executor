@@ -30,7 +30,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { appAtom, toolsAtom } from "../../contracts/api.ts";
 import { renameAppAtom, acknowledgeApp } from "../../contracts/apps.ts";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useBlocker, useNavigate } from "@tanstack/react-router";
 import { Failure } from "../components/common.tsx";
 import { Button } from "@executor-js/ui/components/button";
 import type { DashboardError } from "../../contracts/errors.ts";
@@ -78,6 +78,11 @@ export function AppDetailPage({
   readonly profile?: ProfileId | undefined;
 }) {
   const navigate = useNavigate();
+  const [skillDirty, setSkillDirty] = useState(false);
+  useBlocker({
+    shouldBlockFn: () => skillDirty && !window.confirm("Discard your unsaved changes?"),
+    enableBeforeUnload: skillDirty,
+  });
   const query = useQuery(appAtom(id));
   const app = Option.isSome(query.data)
     ? query.data.value.app
@@ -292,6 +297,11 @@ export function AppDetailPage({
                       app={current.app}
                       bindings={appBrowserBindings(current.app, context.profile)}
                       Failure={Failure}
+                      editing={{
+                        atoms: appManagement,
+                        onApp: acknowledgeApp,
+                        onDirty: setSkillDirty,
+                      }}
                     />
                   );
                 if (tab === "tools")

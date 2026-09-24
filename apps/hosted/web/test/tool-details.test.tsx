@@ -25,15 +25,7 @@ const query = Atom.make(AsyncResult.success<readonly Tool[]>([first, second]));
 
 function Fixture() {
   const [selected, select] = useState<string | undefined>("first");
-  return (
-    <ToolBrowser
-      query={query}
-      selected={selected}
-      onSelect={select}
-      back={null}
-      Failure={() => null}
-    />
-  );
+  return <ToolBrowser query={query} selected={selected} onSelect={select} Failure={() => null} />;
 }
 
 test("tool details render safe Markdown, optional outputs and raw clipboard values, and reset on selection", async () => {

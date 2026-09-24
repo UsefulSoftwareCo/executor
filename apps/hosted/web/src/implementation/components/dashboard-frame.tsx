@@ -138,7 +138,6 @@ export function DashboardFrame({
           <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }} {...brand} />
         )
       }
-      identity={organization}
       banner={banner}
       navigation={
         <>
