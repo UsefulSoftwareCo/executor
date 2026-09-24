@@ -38,6 +38,8 @@ export type Session = {
   readonly organizationId: string | null;
   readonly sealedSession: string;
   readonly refreshedSession: string | null;
+  /** True only while a verified second factor remains bound to this session. */
+  readonly adminVerified?: boolean;
 };
 
 export class SessionContext extends Context.Service<SessionContext, Session>()(
@@ -69,6 +71,7 @@ export class SessionCookies extends Context.Service<SessionCookies, SessionCooki
  * function with no WorkOS-SDK import (this module is in the SPA bundle).
  */
 export type SealedSessionResult = {
+  readonly adminVerified?: boolean;
   readonly userId: string;
   readonly email: string;
   readonly firstName?: string | null;
@@ -101,6 +104,7 @@ export const sessionFromSealed = (
   organizationId: result.organizationId ?? null,
   sealedSession: result.refreshedSession ?? sealedSessionFallback,
   refreshedSession: result.refreshedSession ?? null,
+  adminVerified: result.adminVerified === true,
 });
 
 // ---------------------------------------------------------------------------

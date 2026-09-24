@@ -209,6 +209,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
+          let orgWriteDenied = false;
           const html = yield* runOAuthCallback({
             complete: ({ state, code, callbackDomain }) =>
               executor.oauth
@@ -223,6 +224,11 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
                   { toolSync: "background" },
                 )
                 .pipe(
+                  Effect.tapErrorTag("OrgWriteDeniedError", () =>
+                    Effect.sync(() => {
+                      orgWriteDenied = true;
+                    }),
+                  ),
                   Effect.tapError((cause: unknown) =>
                     Effect.logError("OAuth callback completion failed", cause),
                   ),
@@ -231,7 +237,15 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             toErrorMessage: toPopupErrorMessage,
             channelName: OAUTH_POPUP_CHANNEL,
           });
-          return HttpServerResponse.html(html);
+          // Hosts can offer a verification path without parsing rendered HTML.
+          // Authorization failed before consuming the OAuth state or provider code.
+          const response = HttpServerResponse.html(html);
+          return orgWriteDenied
+            ? response.pipe(
+                HttpServerResponse.setStatus(403),
+                HttpServerResponse.setHeader("x-executor-error", "org_write_denied"),
+              )
+            : response;
         }),
       ),
     ),

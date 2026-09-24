@@ -2207,6 +2207,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         return yield* new OAuthSessionNotFoundError({ state: input.state });
       }
 
+      // Check before exchanging a single-use provider code. A user can unlock
+      // administration and retry this callback without restarting consent.
+      yield* deps.guardOrgWrite(session.owner);
+
       // Reload the SAME app `start` resolved, by its explicit recorded owner.
       const client = yield* loadClient(session.clientOwner, session.clientSlug);
       if (!client) {

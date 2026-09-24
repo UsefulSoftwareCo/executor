@@ -2,19 +2,9 @@
 // Cloud admin users API — the shared, provider-neutral `AdminUsersHandlers`
 // backed by a WorkOS-authorized platform view, mounted at `/api/admin/users*`.
 //
-// TWO credentials reach this plane, and they are the two an operator actually
-// has:
-//   1. an ORG-SCOPED api key -> `PlatformAuth`. The key IS the authority: WorkOS
-//      validated it and reported which org owns it, and there is no member
-//      behind it to check membership for. This is the machine credential
-//      (a customer's backend calling us).
-//   2. an admin SESSION member -> the console. Requires the caller's mirrored
-//      membership (the shared `MemberDirectory` over the local membership
-//      mirror) to carry the `admin` role AND `active` status, matching the
-//      strictest existing cloud guard (`auth/handlers.ts`'s org-delete check) —
-//      a pending admin invite is not an admin.
-// A plain member session, or a USER-scoped api key, is refused: both name one
-// acting member, and this plane deliberately serves the whole tenant.
+// Only an active admin browser session with a completed second factor reaches
+// this plane. Bearer credentials retain ordinary product access, never cross-user
+// access, even when accompanied by a verified browser cookie.
 //
 // The executor is built by `makePlatformExecutor` — `{ tenant, subject:
 // undefined, platformView: true }` — so the reads are tenant-wide and read-only
@@ -54,10 +44,8 @@ import {
 } from "@executor-js/api";
 import type { Executor } from "@executor-js/sdk";
 
-import { ApiKeyService } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import { WorkOsMirror } from "../auth/workos-mirror";
-import { isPlatformAuth, resolveBearerAuth } from "../auth/workos-auth-provider";
 import { orgSelectorFromRequest, authorizeOrganizationSelector } from "../auth/organization";
 import { WorkOSClient } from "../auth/workos";
 import { DbService } from "../db/db";
@@ -66,9 +54,7 @@ import { CloudExecutionSeamsLayer } from "../engine/execution-stack";
 /**
  * Resolve the tenant this request may read, or fail with the neutral 401/403.
  *
- * Returns only the organization id: nothing downstream needs to know WHICH of
- * the two credentials got the caller here, and keeping the acting member out of
- * the return value means no admin read can accidentally become subject-scoped.
+ * Returns only the authorized organization id so admin reads remain tenant-scoped.
  * Exported for its test only.
  */
 export const authorizeTenant = (
@@ -76,27 +62,11 @@ export const authorizeTenant = (
 ): Effect.Effect<
   string,
   AdminUsersUnauthorized | AdminUsersForbidden,
-  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
+  WorkOSClient | UserStoreService | MemberDirectory | WorkOsMirror
 > =>
   Effect.gen(function* () {
-    // (1) The bearer path. `resolveBearerAuth` (not `resolveApiKeyPrincipal`,
-    // which rejects org keys for the product plane) is what distinguishes an
-    // org key from a user key.
-    const bearer = yield* resolveBearerAuth(request).pipe(
-      // Every rejected-credential and infra failure collapses to one refusal:
-      // this plane must not report whether a key exists, belongs to another
-      // org, or merely lacks privilege.
-      Effect.catchCause(() => Effect.succeed(null)),
-    );
-    if (bearer !== null) {
-      if (isPlatformAuth(bearer)) return bearer.organizationId;
-      // A user-scoped key authenticated fine but names one member; the platform
-      // plane has no honest way to serve it.
-      return yield* new AdminUsersForbidden();
-    }
+    if (request.headers.has("authorization")) return yield* new AdminUsersForbidden();
 
-    // (2) The session path: an active admin membership in the selected org,
-    // read from the mirror.
     const workos = yield* WorkOSClient;
     const session = yield* workos
       .authenticateRequest(request)
@@ -115,6 +85,7 @@ export const authorizeTenant = (
     );
     if (!org) return yield* new AdminUsersForbidden();
     if (org.memberRole !== "admin") return yield* new AdminUsersForbidden();
+    if (session.adminVerified !== true) return yield* new AdminUsersForbidden();
     return org.id;
   });
 
@@ -134,7 +105,6 @@ const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = Adm
   // way regardless of what `body` itself raises.
   E | AdminUsersError | AdminUsersUnauthorized | AdminUsersForbidden,
   | WorkOSClient
-  | ApiKeyService
   | UserStoreService
   | MemberDirectory
   | WorkOsMirror
@@ -173,7 +143,6 @@ export const workosAdminUsersProvider: Layer.Layer<
   AdminUsersProvider,
   never,
   | WorkOSClient
-  | ApiKeyService
   | UserStoreService
   | MemberDirectory
   | WorkOsMirror
@@ -184,7 +153,6 @@ export const workosAdminUsersProvider: Layer.Layer<
   Effect.gen(function* () {
     const context = yield* Effect.context<
       | WorkOSClient
-      | ApiKeyService
       | UserStoreService
       | MemberDirectory
       | WorkOsMirror
@@ -233,7 +201,7 @@ export const workosAdminUsersProvider: Layer.Layer<
 );
 
 // Builds the provider per request, providing it to the handlers. Long-lived
-// `WorkOSClient | ApiKeyService` come from the surrounding boot context; the
+// `WorkOSClient` come from the surrounding boot context; the
 // per-request `DbService`/`UserStoreService`/`MemberDirectory` (and the
 // execution seams built over them) are supplied by the combined
 // `requestScopedMiddleware`.
@@ -241,7 +209,7 @@ const AdminUsersProviderMiddleware = HttpRouter.middleware<{
   provides: AdminUsersProvider;
 }>()(
   Effect.gen(function* () {
-    const longLived = yield* Effect.context<WorkOSClient | ApiKeyService>();
+    const longLived = yield* Effect.context<WorkOSClient>();
     return (httpEffect) =>
       Effect.gen(function* () {
         // Built inside the request body so the execution seams close over the

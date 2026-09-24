@@ -29,8 +29,8 @@ import { OrgMemberRole } from "./auth-middleware";
  * with `Forbidden` for a member. Exported for its test only.
  */
 export const requireAdmin = Effect.gen(function* () {
-  const { memberRole } = yield* OrgMemberRole;
-  if (memberRole !== "admin") return yield* new Forbidden();
+  const { memberRole, adminVerified } = yield* OrgMemberRole;
+  if (memberRole !== "admin" || adminVerified !== true) return yield* new Forbidden();
 });
 
 // Target-ownership check — independent of caller privilege. `requireAdmin`
@@ -58,6 +58,7 @@ export const OrgHandlers = HttpApiBuilder.group(OrgHttpApi, "org", (handlers) =>
   handlers
     .handle("listDomains", () =>
       Effect.gen(function* () {
+        yield* requireAdmin;
         const auth = yield* AuthContext;
         const workos = yield* WorkOSClient;
         const org = yield* workos.getOrganization(auth.organizationId);

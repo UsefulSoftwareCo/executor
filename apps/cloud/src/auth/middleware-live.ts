@@ -4,7 +4,8 @@
 // ---------------------------------------------------------------------------
 
 import { Effect, Layer, Redacted } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { ADMIN_MFA_COOKIE } from "./admin-mfa-proof";
 
 import { AuthContext, NoOrganization, Unauthorized } from "@executor-js/api/server";
 
@@ -27,7 +28,10 @@ export const SessionAuthLive = Layer.effect(
       cookie: (httpEffect, { credential }) =>
         Effect.gen(function* () {
           const result = yield* workos
-            .authenticateSealedSession(Redacted.value(credential))
+            .authenticateSealedSession(
+              Redacted.value(credential),
+              (yield* HttpServerRequest.HttpServerRequest).cookies[ADMIN_MFA_COOKIE],
+            )
             .pipe(Effect.orElseSucceed(() => null));
 
           if (!result) {

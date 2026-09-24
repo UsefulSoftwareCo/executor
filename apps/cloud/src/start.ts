@@ -1,3 +1,4 @@
+import { oauthAdminVerificationResponse } from "./auth/oauth-admin-verification";
 import { createMiddleware, createStart } from "@tanstack/react-start";
 import { decodeOAuthCallbackState } from "@executor-js/sdk/shared";
 
@@ -91,7 +92,10 @@ const appRequestMiddleware = createMiddleware({ type: "request" }).server(
     if (isAppOwnedPath(pathname)) {
       const scopedRequest =
         pathname === OAUTH_CALLBACK_PATH ? oauthCallbackOrgScopedRequest(request) : request;
-      return (await getApp()).handler(prepareMcpOrgScope(scopedRequest));
+      const response = await (await getApp()).handler(prepareMcpOrgScope(scopedRequest));
+      return pathname === OAUTH_CALLBACK_PATH
+        ? oauthAdminVerificationResponse(request, response)
+        : response;
     }
     return next();
   },

@@ -38,6 +38,7 @@ import {
   NonProtectedApi,
 } from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
+import { AdminMfaRoutes } from "../auth/admin-mfa-routes";
 import { SessionAuthLive } from "../auth/middleware-live";
 import { runWorkOsEventsSync } from "../auth/workos-events-runner";
 import { makeWorkOsWebhookRoute } from "../auth/workos-webhook";
@@ -115,7 +116,7 @@ export const makeCloudExtensionRoutes = (
   // The tenant-wide admin plane (`/api/admin/users*`). Mounted as an extension
   // rather than on the protected API because the protected plane's middleware
   // binds a product-view executor to one acting member — this one authorizes an
-  // org key (or an admin session) and builds a subject-less platform view.
+  // verified admin session and builds a subject-less platform view.
   const AdminUsersRoutes = makeCloudAdminUsersRoutes(rsLive, {
     router: apiPrefixedRouter,
   });
@@ -131,6 +132,7 @@ export const makeCloudExtensionRoutes = (
   });
 
   return [
+    AdminMfaRoutes.pipe(Layer.provide(requestScopedMiddleware(rsLive).layer)),
     SessionRoutes,
     OrgRoutes,
     AdminUsersRoutes,
