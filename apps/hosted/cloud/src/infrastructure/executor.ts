@@ -50,6 +50,7 @@ import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin } from "./stage.ts";
+import { accountOAuthClientMetadataUrl } from "@executor-js/hosted-server";
 import type { AppDataSupervisor } from "./app-data.ts";
 
 /**
@@ -82,6 +83,7 @@ export const cloudExecutor = Effect.fn(function* (
     Config.option,
     Config.map(Option.getOrUndefined),
   );
+  const metadataUrl = clientMetadataUrl?.trim() || accountOAuthClientMetadataUrl(origin);
   const makeRuntime = yield* cloudRuntime(origin);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
@@ -129,7 +131,7 @@ export const cloudExecutor = Effect.fn(function* (
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...(metadataUrl === undefined ? {} : { clientMetadataUrl: metadataUrl }),
         },
         {
           storage,

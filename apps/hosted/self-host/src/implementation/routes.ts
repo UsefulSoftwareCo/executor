@@ -21,6 +21,8 @@ import {
   ScheduledAuthority,
   ScheduleWakeup,
   hostedOAuthCallback,
+  hostedOAuthClientMetadata,
+  accountOAuthClientMetadataPath,
   hostedWebhookCallback,
   catalogLive,
   requireUserLive,
@@ -142,6 +144,9 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       ),
       HttpRouter.add("*", "/api/auth/*", auth.handler),
       HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
+        HttpRouter.provideRequest(auth.identity),
+      ),
+      HttpRouter.add("GET", accountOAuthClientMetadataPath, hostedOAuthClientMetadata).pipe(
         HttpRouter.provideRequest(auth.identity),
       ),
       mcpRoutes,
