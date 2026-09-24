@@ -42,6 +42,7 @@ import { WorkOS } from "@workos-inc/node";
 import { backfillWorkOsMirror } from "../src/auth/workos-mirror-backfill";
 import { makeWorkOsMirrorStore } from "../src/auth/workos-mirror-store";
 import { organizations } from "../src/db/schema";
+import { describeRefusedAttempt, waitForConnectionSlot } from "../src/db/too-many-connections";
 
 const dryRun = process.argv.includes("--dry-run");
 
@@ -71,32 +72,46 @@ const workos = new WorkOS(apiKey);
 const fromPromise = <A>(fn: () => Promise<A>) =>
   Effect.tryPromise({ try: fn, catch: (cause) => cause });
 
+// A full server refuses the connection with SQLSTATE 53300 when it is opened.
+// Open it first, waiting for a slot, rather than fail the deploy gate that
+// spawned this run (src/db/too-many-connections.ts); the mirror store's own
+// failures do not carry the driver code, so the wait cannot sit around the
+// backfill itself.
+const connected = waitForConnectionSlot(sql, {
+  onRefused: (_failure, attempt) => console.log(describeRefusedAttempt(attempt)),
+});
+
+const backfill = backfillWorkOsMirror(
+  {
+    listOrganizationIds: () =>
+      fromPromise(async () => {
+        // Never a deleted organization: its row is a tombstone (its
+        // memberships are purged, WorkOS no longer has it) and the mirror
+        // refuses a scan of it anyway.
+        const rows = await db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(isNull(organizations.deletedAt))
+          .orderBy(asc(organizations.createdAt));
+        return rows.map((row) => row.id);
+      }),
+    listOrgMembers: (organizationId) =>
+      fromPromise(async () => {
+        const page = await workos.userManagement.listOrganizationMemberships({
+          organizationId,
+          statuses: ["active", "pending", "inactive"],
+        });
+        return page.listMetadata.after ? page.autoPagination() : page.data;
+      }),
+    getUser: (userId) => fromPromise(() => workos.userManagement.getUser(userId)),
+  },
+  makeWorkOsMirrorStore(db),
+  { dryRun, log: (line) => console.log(line) },
+);
+
 await Effect.runPromise(
-  backfillWorkOsMirror(
-    {
-      listOrganizationIds: () =>
-        fromPromise(async () => {
-          // Never a deleted organization: its row is a tombstone (its
-          // memberships are purged, WorkOS no longer has it) and the mirror
-          // refuses a scan of it anyway.
-          const rows = await db
-            .select({ id: organizations.id })
-            .from(organizations)
-            .where(isNull(organizations.deletedAt))
-            .orderBy(asc(organizations.createdAt));
-          return rows.map((row) => row.id);
-        }),
-      listOrgMembers: (organizationId) =>
-        fromPromise(async () => {
-          const page = await workos.userManagement.listOrganizationMemberships({
-            organizationId,
-            statuses: ["active", "pending", "inactive"],
-          });
-          return page.listMetadata.after ? page.autoPagination() : page.data;
-        }),
-      getUser: (userId) => fromPromise(() => workos.userManagement.getUser(userId)),
-    },
-    makeWorkOsMirrorStore(db),
-    { dryRun, log: (line) => console.log(line) },
-  ).pipe(Effect.ensuring(Effect.promise(() => sql.end({ timeout: 5 })))),
+  connected.pipe(
+    Effect.andThen(backfill),
+    Effect.ensuring(Effect.promise(() => sql.end({ timeout: 5 }))),
+  ),
 );
