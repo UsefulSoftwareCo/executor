@@ -168,7 +168,7 @@ const stubAutumn = Layer.succeed(AutumnService)({
  * single org-owned key. Revoked ids land in `revoked` so "no delete happened"
  * is assertable, not merely inferred from the error.
  */
-const providerWith = (accountId: string) => {
+const providerWith = (accountId: string, adminVerified = true) => {
   const revoked: string[] = [];
   const stubApiKeys = Layer.succeed(ApiKeyService)({
     validate: () => Effect.die("revoke test does not validate keys"),
@@ -196,7 +196,7 @@ const providerWith = (accountId: string) => {
             stubDirectory,
             stubApiKeys,
             stubAutumn,
-            Layer.succeed(AccountCaller)({ session: session(accountId) }),
+            Layer.succeed(AccountCaller)({ session: session(accountId), adminVerified }),
           ),
         ),
       ),
@@ -216,6 +216,17 @@ describe("revokeOrgApiKey · provider boundary", () => {
 
       expect(result).toEqual({ success: true });
       expect(revoked, "the revoke reached the key service").toEqual([ORG_KEY]);
+    }),
+  );
+
+  it.effect("an admin without MFA cannot revoke an organization key", () =>
+    Effect.gen(function* () {
+      const { provider, revoked } = providerWith(ADMIN, false);
+      const account = yield* provider;
+      expect(yield* Effect.flip(account.revokeOrgApiKey(orgHeaders, ORG_KEY))).toBeInstanceOf(
+        AccountForbidden,
+      );
+      expect(revoked).toEqual([]);
     }),
   );
 

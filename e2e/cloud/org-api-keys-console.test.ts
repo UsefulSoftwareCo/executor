@@ -20,6 +20,7 @@ import { Effect } from "effect";
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
 import { forBrowser, joinOrg } from "./support/session";
+import { verifyAdminInBrowser } from "./support/admin-mfa";
 import { visit } from "../src/surfaces/browser";
 
 declare global {
@@ -53,6 +54,19 @@ scenario(
         slug = new URL(page.url()).pathname.split("/").filter(Boolean)[0] ?? "";
         await page.getByRole("link", { name: "API keys" }).click();
         await page.waitForURL((url) => url.pathname === `/${slug}/api-keys`, { timeout: 30_000 });
+      });
+
+      await step("Verify before managing organization keys", async () => {
+        await page.getByRole("heading", { name: "Personal keys", exact: true }).waitFor();
+        await page
+          .getByRole("heading", { name: "Unlock organization keys", exact: true })
+          .waitFor();
+        expect(await page.getByRole("button", { name: "New org key" }).count()).toBe(0);
+        await page.getByRole("button", { name: "Continue", exact: true }).waitFor();
+        await page.getByRole("heading", { name: "No API keys", exact: true }).waitFor();
+      });
+      await step("Enroll an authenticator and unlock organization keys", async () => {
+        await verifyAdminInBrowser(page);
       });
 
       await step("The admin is offered the Organization keys section", async () => {
