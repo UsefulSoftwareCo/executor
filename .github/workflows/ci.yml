@@ -122,6 +122,42 @@ jobs:
 
       - run: bun run lint
 
+  changesets:
+    name: Changesets
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Cache Bun package cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-1.3.11-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-1.3.11-
+
+      - run: bun install --frozen-lockfile --ignore-scripts
+
+      # `changeset status` assembles the same release plan that `changeset
+      # version` builds on main, so it rejects a mixed changeset (one that names
+      # a package from the config `ignore` list next to a publishable one)
+      # before it can break the release workflow. Release only runs on push to
+      # main, so that error used to surface only after the merge.
+      #
+      # After the plan, `status` diffs HEAD against `baseBranch` (main) to
+      # demand a changeset for every changed package. This repo does not require
+      # that, and a pull request checkout has no local `main` ref at all, so the
+      # diff errors out. Point `main` at HEAD (a no-op on push to main) so the
+      # diff is empty and the job checks only the release plan.
+      - run: git update-ref refs/heads/main HEAD
+
+      - run: bun run changeset status
+
   typecheck:
     name: Typecheck
     runs-on: blacksmith-4vcpu-ubuntu-2404
