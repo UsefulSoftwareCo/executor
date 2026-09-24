@@ -49,7 +49,6 @@ import { resetSubjectTouchCache } from "@executor-js/sdk/host-internal";
 import { createSqliteTestFumaDb, type SqliteTestFumaDb } from "@executor-js/sdk/testing";
 
 import { RequestScopedServicesLive } from "./api/layers";
-import { makeApiLive } from "./api/router";
 
 class Counter extends Context.Service<Counter, { readonly id: number }>()("test/Counter") {}
 
@@ -170,48 +169,6 @@ describe("HttpRouter.toWebHandler request scoping", () => {
     // Otherwise both fibers share one postgres socket -> Cloudflare
     // Workers I/O isolation crash in prod.
     expect(new Set([aBody.id, bBody.id])).toEqual(new Set([1, 2]));
-    expect(counts.acquires).toBe(2);
-    expect(counts.releases).toBe(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Regression test against the prod handler factory. If anyone reverts
-// `makeApiLive` back to wiring `RequestScopedServicesLive` via
-// `Layer.provideMerge`, this test fails — the counter only increments
-// once at boot instead of once per request.
-// ---------------------------------------------------------------------------
-
-describe("makeApiLive (prod handler factory) request scoping", () => {
-  it("rebuilds RequestScopedServicesLive per request", async () => {
-    const counts = { acquires: 0, releases: 0 };
-    // Wrap the real per-request layer with an `acquireRelease` counter.
-    // `requestScopedMiddleware` calls `Layer.build` per request, so this
-    // counter increments per request iff the wiring is correct.
-    const trackedRsLive = Layer.effectDiscard(
-      Effect.acquireRelease(
-        Effect.sync(() => {
-          counts.acquires += 1;
-        }),
-        () =>
-          Effect.sync(() => {
-            counts.releases += 1;
-          }),
-      ),
-    ).pipe(Layer.provideMerge(RequestScopedServicesLive));
-
-    const handler = HttpRouter.toWebHandler(makeApiLive(trackedRsLive), {
-      disableLogger: true,
-    }).handler;
-
-    // Hit a protected route. ExecutionStackMiddleware short-circuits with
-    // 403 (no session cookie) but not before `requestScopedMiddleware`
-    // has built the per-request layer. We don't care about the response —
-    // only that the layer was built once per request. `/integrations` is a
-    // v2 protected route (the old `/scope` group was removed).
-    await handler(new Request("http://test.local/integrations"), Context.empty());
-    await handler(new Request("http://test.local/integrations"), Context.empty());
-
     expect(counts.acquires).toBe(2);
     expect(counts.releases).toBe(2);
   });

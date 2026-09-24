@@ -6,7 +6,7 @@
 //   - the WorkOS session routes (login / callback / me / organizations /
 //     switch-organization / invitations / MCP-approval) — `NonProtectedApi`.
 //   - the cloud-only WorkOS domain-verification routes — `OrgHttpApi`.
-//   - Swagger UI + the OpenAPI JSON for the full cloud spec.
+//   - Swagger UI + the OpenAPI JSON for the full cloud spec (lazy).
 //   - the Autumn billing proxy (`/api/billing/*`) — billing-as-extension (the
 //     `extensions.routes` SEAM, but served under `/api` like everything else).
 //   - the WorkOS webhook (`/api/webhooks/workos`) — signature-verified poke of
@@ -24,8 +24,7 @@
 import { env, waitUntil } from "cloudflare:workers";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpApiSwagger, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi";
 
 import { AccountApi, AdminUsersApi } from "@executor-js/api";
 import { requestScopedMiddleware, type MemberDirectory } from "@executor-js/api/server";
@@ -59,15 +58,93 @@ const apiPrefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
   Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed("/api")),
 );
 
-// The full cloud OpenAPI spec, prefixed so the served paths match `/api/*`.
-const CloudOpenApi = ProtectedCloudApi.add(CloudAuthPublicApi)
-  .add(CloudAuthApi)
-  .add(OrgApi)
-  .add(AccountApi)
-  .add(AdminUsersApi)
-  .prefix("/api");
+// ---------------------------------------------------------------------------
+// Docs, built on demand.
+//
+// Nothing below runs until someone asks for `/api/docs` or `/api/openapi.json`.
+// Both were previously built at module scope, so every cold isolate paid for
+// two routes almost nobody calls: `OpenApi.fromApi` walks all ~91 endpoints,
+// and effect's Swagger UI bundle is a single ~2 MB string literal that the
+// isolate had to evaluate before serving any request. The bundle now arrives
+// through a dynamic import, which keeps it out of the app plane's static
+// closure entirely.
+//
+// Each step is memoized for the life of the isolate, so a second docs request
+// is as cheap as the old module-scope version.
+// ---------------------------------------------------------------------------
 
-const spec = OpenApi.fromApi(CloudOpenApi);
+/** Build `build()` at most once per isolate. */
+const once = <A>(build: () => A): (() => A) => {
+  let cell: { readonly value: A } | undefined;
+  return () => (cell ??= { value: build() }).value;
+};
+
+// The full cloud OpenAPI spec, prefixed so the served paths match `/api/*`.
+const cloudOpenApi = once(() =>
+  ProtectedCloudApi.add(CloudAuthPublicApi)
+    .add(CloudAuthApi)
+    .add(OrgApi)
+    .add(AccountApi)
+    .add(AdminUsersApi)
+    .prefix("/api"),
+);
+
+const openApiSpec = once(() => OpenApi.fromApi(cloudOpenApi()));
+
+// The two escapes effect applies before interpolating into the page. Copied
+// rather than imported because they live in an internal module; they are three
+// lines and their behaviour is fixed by the HTML they guard.
+const escapeHtml = (value: string) =>
+  value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const escapeSpecJson = (value: unknown) =>
+  JSON.stringify(value)
+    .replace(/<\/script>/gi, "<\\/script>")
+    .replace(/[\u2028\u2029]/g, (c) => (c === "\u2028" ? "\\u2028" : "\\u2029"));
+
+let docsHtml: string | undefined;
+
+/**
+ * The Swagger UI page. Mirrors what `HttpApiSwagger.layer` renders — same
+ * shell, same inlined bundle, same inlined spec — so the served page is
+ * byte-identical to the layer this route replaced.
+ */
+const renderDocsHtml = async () => {
+  if (docsHtml !== undefined) return docsHtml;
+  // The ~2 MB Swagger UI bundle. Loaded here so it never enters the statically
+  // reachable module graph of a cold isolate.
+  const swaggerUi =
+    (await import("effect/unstable/httpapi/internal/httpApiSwagger")) as unknown as {
+      readonly css: string;
+      readonly javascript: string;
+    };
+  const spec = openApiSpec();
+  docsHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(spec.info.title)} Documentation</title>
+  <style>${swaggerUi.css}</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script id="swagger-spec" type="application/json">
+    ${escapeSpecJson(spec)}
+  </script>
+  <script>
+    ${swaggerUi.javascript}
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        spec: JSON.parse(document.getElementById("swagger-spec").textContent),
+        dom_id: "#swagger-ui",
+      });
+    };
+  </script>
+</body>
+</html>`;
+  return docsHtml;
+};
 
 /**
  * Build cloud's app-only extension routes. `rsLive` is the per-request DB layer
@@ -104,10 +181,22 @@ export const makeCloudExtensionRoutes = (
   );
 
   // Swagger UI at /api/docs + the OpenAPI JSON at /api/openapi.json, over the
-  // `/api`-prefixed spec (so the served paths match).
+  // `/api`-prefixed spec (so the served paths match). Both bodies are built on
+  // the first request that asks for them — see the block above.
   const DocsRoutes = Layer.mergeAll(
-    HttpApiSwagger.layer(CloudOpenApi, { path: "/api/docs" }),
-    HttpRouter.add("GET", "/api/openapi.json", Effect.succeed(HttpServerResponse.jsonUnsafe(spec))),
+    HttpRouter.add(
+      "GET",
+      "/api/docs",
+      Effect.map(
+        Effect.promise(() => renderDocsHtml()),
+        (html) => HttpServerResponse.html(html),
+      ),
+    ),
+    HttpRouter.add(
+      "GET",
+      "/api/openapi.json",
+      Effect.sync(() => HttpServerResponse.jsonUnsafe(openApiSpec())),
+    ),
   );
 
   const BillingRoutes = AutumnRoutesLive.pipe(Layer.provide(requestScopedMiddleware(rsLive).layer));
