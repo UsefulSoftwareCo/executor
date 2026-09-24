@@ -26,6 +26,7 @@ import {
   aesGcmCredentials as credentials,
   OAuthSetupFailed,
   OAuthCompletionFailed,
+  type HostOAuthClient,
 } from "@executor-js/sdk/core";
 import { accountSignIn } from "../../../apps/local/server/src/implementation/account-status.ts";
 
@@ -299,6 +300,7 @@ async function setup(
     urlPolicy?: UrlPolicy;
     /** Provider method options declared by the app. */
     method?: { tokenEndpointAuthMethod?: "client_secret_basic"; scopes?: string[] };
+    hostClients?: ReadonlyArray<HostOAuthClient>;
   } = {},
 ) {
   const scope = Effect.runSync(Scope.make());
@@ -377,6 +379,7 @@ async function setup(
       clientName: "Executor test",
       urlPolicy: settings.urlPolicy ?? defaultUrlPolicy,
       ...(mode === "cimd" ? { clientMetadataUrl: "https://client.example/oauth.json" } : {}),
+      ...(settings.hostClients === undefined ? {} : { hostClients: settings.hostClients }),
     },
   };
   const executor = await createExecutor(options);
@@ -493,6 +496,59 @@ const rejection = (operation: Promise<unknown>) =>
     () => assert.fail("expected the operation to fail"),
     (error: unknown) => error,
   );
+
+test("host OAuth clients serve only their exact endpoints and are never saved for an owner", async () => {
+  const client = {
+    client_id: "manual-client",
+    client_secret: "synthetic-client-secret",
+    token_endpoint_auth_method: "client_secret_basic" as const,
+  };
+  const f = await setup("manual", "path", false, {
+    hostClients: [
+      {
+        authorizationEndpoint: `${issuerUrl}/authorize`,
+        tokenEndpoint: `${issuerUrl}/token`,
+        client,
+      },
+    ],
+  });
+  try {
+    const owner = OwnerId.make("alice");
+    const check = { owner, provider: f.provider, method: "oauth", redirectUri };
+    assert.equal((await f.executor.accountConnections.oauthSetup(check)).mode, "automatic");
+    const signIn = await f.startOAuth({ ...check, label: "Work" });
+    assert.equal(new URL(signIn.authorizationUrl).searchParams.get("client_id"), "manual-client");
+    await f.complete({ callbackUrl: f.service.callback(signIn.authorizationUrl) });
+    assert.equal(f.service.exchanges, 1);
+    assert.equal(f.service.registrations, 0);
+    assert.equal((await f.executor.accountConnections.oauthSetup(check)).mode, "automatic");
+  } finally {
+    await f.close();
+  }
+  const elsewhere = await setup("manual", "path", false, {
+    hostClients: [
+      {
+        authorizationEndpoint: "https://github.com/login/oauth/authorize",
+        tokenEndpoint: "https://github.com/login/oauth/access_token",
+        client,
+      },
+    ],
+  });
+  try {
+    const check = {
+      owner: OwnerId.make("alice"),
+      provider: elsewhere.provider,
+      method: "oauth",
+      redirectUri,
+    };
+    assert.equal(
+      (await elsewhere.executor.accountConnections.oauthSetup(check)).mode,
+      "client-required",
+    );
+  } finally {
+    await elsewhere.close();
+  }
+});
 
 test("remote HTTP discovery and token endpoints are rejected before OAuth network requests", async () => {
   const f = await setup("dcr");

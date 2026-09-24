@@ -34,7 +34,11 @@ export const startCloudEnvironment = (input: {
     const directory = path.resolve(input.directory);
     const stage = `e2e-${randomBytes(8).toString("hex")}`;
     const container = `executor-${stage}`;
-    const fixture = yield* createEmulatorFixture(input.origin);
+    // In dev, account sign-in returns to the API server's local address.
+    const fixture = yield* createEmulatorFixture(
+      input.origin,
+      `http://127.0.0.1:${input.apiPort}/api/oauth/callback`,
+    );
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
         Object.values(Redacted.value(fixture).services),

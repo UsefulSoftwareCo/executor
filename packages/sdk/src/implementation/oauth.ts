@@ -58,6 +58,11 @@ import { ownedAccount } from "./accounts.ts";
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new StorageError()));
 
+const sameUrl = (expected: string, actual: string | undefined) => {
+  const href = URL.parse(expected)?.href;
+  return href !== undefined && URL.parse(actual ?? "")?.href === href;
+};
+
 /** Apply the authored output schema after removing host-only token material. */
 const project = (response: JsonObject, fields: unknown) =>
   Effect.gen(function* () {
@@ -284,6 +289,16 @@ export const makeOAuth = (
           client = registered;
       }
       const savedClient = client !== undefined;
+      const { authorization_endpoint, token_endpoint } = discovered.server;
+      const hostClient =
+        automatic && !savedClient && discovered.grant === "authorization_code"
+          ? options.hostClients?.find(
+              (host) =>
+                sameUrl(host.authorizationEndpoint, authorization_endpoint) &&
+                sameUrl(host.tokenEndpoint, token_endpoint),
+            )?.client
+          : undefined;
+      client ??= hostClient;
       if (
         automatic &&
         discovered.grant === "authorization_code" &&
@@ -298,7 +313,15 @@ export const makeOAuth = (
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
       }
-      return { method, redirect, discovered, clientId, client, savedClient };
+      return {
+        method,
+        redirect,
+        discovered,
+        clientId,
+        client,
+        savedClient,
+        hostClient: hostClient !== undefined,
+      };
     });
   const oauthSetup = (input: typeof CheckOAuthSetup.Type) =>
     resolveSetup(input, true).pipe(
@@ -343,6 +366,7 @@ export const makeOAuth = (
         discovered,
         clientId,
         client: availableClient,
+        hostClient,
       } = yield* resolveSetup(input, input.client === undefined);
       const now = yield* Clock.currentTimeMillis;
       let client: OAuthRegistration | undefined;
@@ -464,7 +488,7 @@ export const makeOAuth = (
       }
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
-      if (input.client === undefined) yield* saveClient(db);
+      if (input.client === undefined && !hostClient) yield* saveClient(db);
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
