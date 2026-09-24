@@ -1,4 +1,4 @@
-import { ProviderError } from "apps/contracts";
+import { ApiErrorResponse, ProviderError } from "apps/contracts";
 import { ProfileId } from "./shared.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
@@ -196,7 +196,13 @@ export class InputInvalid extends Schema.TaggedError<InputInvalid>()(
 /** A tool failed after starting; its external effects may already have occurred. */
 export class ToolCallFailed extends Schema.TaggedError<ToolCallFailed>()(
   "ToolCallFailed",
-  { app: AppId, deployment: DeploymentId, tool: ToolName, reason: Schema.String },
+  {
+    app: AppId,
+    deployment: DeploymentId,
+    tool: ToolName,
+    reason: Schema.String,
+    response: Schema.optional(ApiErrorResponse),
+  },
   {
     httpApiStatus: 502,
     description: "The tool failed. The reason is sanitized; retry safety is not implied.",

@@ -11,7 +11,7 @@ import {
   type Tool as AppTool,
 } from "@executor-js/sdk/core";
 import { Clock, Effect, Schema, Semaphore } from "effect";
-import { diagnostic } from "./diagnostics.ts";
+import { diagnostic, executionDiagnostic } from "./diagnostics.ts";
 import type { McpTarget } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import {
@@ -330,7 +330,10 @@ export function executeProgram(
             toolCalls.push({ name });
             observe({ name });
           }),
-      }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(CodeMode.Result)));
+      }).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(CodeMode.Result)),
+        Effect.map(executionDiagnostic),
+      );
       yield* Effect.annotateCurrentSpan("executor.outcome", execution.ok ? "completed" : "failed");
       return { execution, unavailableApps };
     }).pipe(

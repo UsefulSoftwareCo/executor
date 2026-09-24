@@ -1,4 +1,5 @@
 import { parseProviderError } from "./provider-error.ts";
+import { OpenapiResponseError } from "../contracts/api-response-error.ts";
 import { toPromise } from "./authoring.ts";
 import type { WorkflowControls, WorkflowReads } from "../contracts/workflows.ts";
 import {
@@ -532,13 +533,20 @@ function dispatch(
               if (Cause.hasInterrupts(cause)) return Effect.interrupt;
               const error = Cause.squash(cause);
               const provider = parseProviderError(error);
+              const response = Schema.decodeUnknownOption(OpenapiResponseError)(error);
               const failure = Schema.decodeUnknownOption(ElicitationFailed)(error);
               return Effect.fail(
                 Option.isSome(provider)
                   ? provider.value
-                  : Option.isSome(failure)
-                    ? failure.value
-                    : new HostOperationFailed(),
+                  : Option.isSome(response)
+                    ? new OpenapiResponseError({
+                        code: response.value.code,
+                        status: response.value.status,
+                        message: response.value.message,
+                      })
+                    : Option.isSome(failure)
+                      ? failure.value
+                      : new HostOperationFailed(),
               );
             }),
             Effect.withSpan("app.operation.execute", {
@@ -586,6 +594,7 @@ function dispatch(
 const errorStatus = Match.type<HostError>().pipe(
   Match.tagsExhaustive({
     ProviderError: () => 502,
+    OpenapiResponseError: () => 502,
     WorkflowFailure: () => 422,
     HostRequestInvalid: () => 400,
     HostAccountsInvalid: () => 422,

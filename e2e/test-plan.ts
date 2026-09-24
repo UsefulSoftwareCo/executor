@@ -445,6 +445,15 @@ export const scenarios = {
       local: na("Local has no organizations or groups."),
     },
   },
+  openapiErrors: {
+    file: "openapi-errors.spec.ts",
+    title: "OpenAPI errors preserve declared details through MCP without leaking response bodies",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a controlled loopback HTTP API through the shared Worker runtime."),
+      local: na("The shared OpenAPI and MCP error path is covered on self-host."),
+    },
+  },
   providerErrors: {
     file: "provider-errors.spec.ts",
     title: "Provider failures retain safe reasons and account recovery across protocols",

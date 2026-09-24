@@ -18,7 +18,8 @@ import type { Effect } from "effect";
  * authorization on every operation; an owner filter alone is not authority.
  * Create hosted adapters per request, never cache them across callers.
  * Preserve native errors. Schema error identifiers become public diagnostics at the MCP
- * response boundary; messages, fields and causes remain private.
+ * response boundary. Declared API errors have a bounded safe projection; other
+ * messages, fields and causes remain private.
  */
 export interface McpBackend<E extends Error> {
   /** Authorize static metadata without evaluating the app or requiring connected accounts. */

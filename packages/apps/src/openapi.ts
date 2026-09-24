@@ -5,10 +5,15 @@ import type { OpenapiToolsOptions } from "./contracts/openapi.ts";
 import { openapiToolsEffect } from "./implementation/openapi.ts";
 export {
   OpenapiError,
+  isOpenapiTextMedia,
+  openapiBinaryResultSchema,
+  OpenapiErrorResponse,
   type OpenapiToolsOptions,
   type OpenapiOperation,
   type CredentialBinding,
-  type RequestParameter,
+  OpenapiParameter,
+  OpenapiRequestBody,
+  openapiMediaKind,
 } from "./contracts/openapi.ts";
 
 /** Discover operations for the selected account. Kinds override uncertain upstream read-only hints. */

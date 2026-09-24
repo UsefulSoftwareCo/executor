@@ -3,7 +3,7 @@ import { CodeMode } from "@opencode-ai/codemode";
 import { Schema } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { McpSchema, Tool as McpTool } from "effect/unstable/ai";
-import { ElicitationResponse } from "apps/contracts";
+import { ApiErrorResponse, ElicitationResponse } from "apps/contracts";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";
 export * from "./interactions.ts";
 import { NativeElicitationFailed } from "./elicitation.ts";
@@ -41,7 +41,16 @@ export const UnavailableApp = Schema.Struct({
 });
 /** Program result plus apps that could not expose a live catalog during this execution. */
 export const ExecuteResult = Schema.Struct({
-  execution: CodeMode.Result,
+  execution: Schema.Union([
+    CodeMode.Success,
+    Schema.Struct({
+      ...CodeMode.Failure.fields,
+      error: Schema.Struct({
+        ...CodeMode.Diagnostic.fields,
+        response: Schema.optionalKey(ApiErrorResponse),
+      }),
+    }),
+  ]),
   unavailableApps: Schema.Array(UnavailableApp),
 });
 /** MCP execution may return a live pause; completed program results retain the existing fields. */

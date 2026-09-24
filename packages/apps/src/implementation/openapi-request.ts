@@ -1,15 +1,79 @@
+import "../contracts/swagger-client.ts";
+import SwaggerClient from "swagger-client";
 import { httpProviderError, accountProviderError } from "./provider-error.ts";
 import { ProviderError } from "../contracts/provider-error.ts";
-/** HTTP serialization for normalized OpenAPI operations. */
-import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+/** Swagger constructs requests; Effect owns HTTP policy and bounded results. */
+import { Effect, Encoding, Option, Schema, Stream } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  type HttpClientResponse,
+} from "effect/unstable/http";
+import {
+  OpenapiResponseError,
+  ApiErrorResponse,
+  defaultOpenapiErrorLimits,
+} from "../contracts/api-response-error.ts";
 
 import {
   OpenapiError,
+  defaultOpenapiResponseLimits,
+  isOpenapiTextMedia,
+  openapiMediaKind,
   type CredentialBinding,
   type OpenapiOperation,
   type OpenapiAccount,
+  type OpenapiErrorResponse,
 } from "../contracts/openapi.ts";
+
+type DeclaredError = OpenapiErrorResponse & { readonly decoder: Schema.Decoder<Schema.Json> };
+
+// Read once with byte/time bounds. Unsupported or invalid responses retain the generic failure.
+function responseError(
+  response: HttpClientResponse.HttpClientResponse,
+  errors: readonly DeclaredError[],
+) {
+  return Effect.gen(function* () {
+    const candidates = errors.filter((error) => error.status === response.status);
+    if (
+      candidates.length === 0 ||
+      !/^application\/(?:[\w.-]+\+)?json$/i.test(
+        response.headers["content-type"]?.split(";")[0]?.trim() ?? "",
+      )
+    )
+      return;
+    const length = response.headers["content-length"];
+    if (length !== undefined && Number(length) > defaultOpenapiErrorLimits.maxBodyBytes) return;
+    const json = yield* response.stream.pipe(
+      Stream.mapError(() => new OpenapiError({ reason: "request", status: response.status })),
+      Stream.limitBytes(defaultOpenapiErrorLimits.maxBodyBytes, () =>
+        Stream.fail(new OpenapiError({ reason: "request", status: response.status })),
+      ),
+      Stream.decodeText,
+      Stream.mkString,
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))),
+      Effect.timeout(defaultOpenapiErrorLimits.readTimeoutMs),
+    );
+    for (const candidate of candidates) {
+      const parsed = yield* Schema.decodeUnknownEffect(candidate.decoder)(json).pipe(Effect.option);
+      if (Option.isSome(parsed)) {
+        const message =
+          candidate.message.source === "schema"
+            ? Option.some({ message: candidate.message.value })
+            : Schema.decodeUnknownOption(
+                Schema.Struct({ message: ApiErrorResponse.fields.message }),
+              )(parsed.value);
+        if (Option.isNone(message)) continue;
+        return new OpenapiResponseError({
+          code: candidate.code,
+          status: response.status,
+          message: message.value.message,
+        });
+      }
+    }
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+}
 
 const object = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown));
 function scalar(value: unknown): string {
@@ -17,111 +81,137 @@ function scalar(value: unknown): string {
     return String(value);
   throw new Error("This parameter requires scalar values");
 }
-function pairs(value: unknown): readonly (readonly [string, string])[] {
-  return Object.entries(object(value)).map(([key, item]) => [key, scalar(item)] as const);
-}
-function simple(value: unknown, explode: boolean, encode: boolean): string {
-  const token = (value: unknown) => (encode ? encodeURIComponent(scalar(value)) : scalar(value));
-  if (Array.isArray(value)) return value.map(token).join(",");
-  if (typeof value === "object" && value !== null)
-    return pairs(value)
-      .map(([key, item]) => token(key) + (explode ? "=" : ",") + token(item))
-      .join(",");
-  return token(value);
-}
+const swaggerRequest = Schema.decodeUnknownSync(
+  Schema.Struct({
+    url: Schema.String,
+    method: Schema.String,
+    headers: Schema.Record(Schema.String, Schema.String),
+    body: Schema.optional(
+      Schema.Union([Schema.String, Schema.instanceOf(Blob), Schema.instanceOf(FormData)]),
+    ),
+  }),
+);
+const bytes = (value: unknown) =>
+  Uint8Array.from(atob(scalar(value)), (char) => char.charCodeAt(0));
 /** Create request helpers from credential-free generated authentication metadata. */
 export function createRequest(config: {
   readonly methods: Readonly<Record<string, readonly CredentialBinding[]>>;
   readonly oauth: readonly string[];
 }) {
   const { methods, oauth } = config;
-  function schemes(method: string | undefined): string[] {
-    if (method === undefined) return [];
-    if (oauth.includes(method)) return [method];
-    const bindings = Object.hasOwn(methods, method) ? methods[method] : undefined;
-    return bindings?.map((binding) => binding.scheme) ?? [];
-  }
-  function selectedSecurity(
-    op: OpenapiOperation,
-    method: string | undefined,
-  ): readonly string[] | undefined {
+  function selectedCredentials(op: OpenapiOperation, account: OpenapiAccount | undefined) {
     if (op.streaming === true) return undefined;
-    if (!op.security.length) return [];
-    const supported = schemes(method);
-    return op.security.find((keys) => keys.every((key) => supported.includes(key)));
+    const authorized: Record<string, unknown> = {};
+    if (account !== undefined) {
+      if (oauth.includes(account.method)) {
+        const token = account.fields.access_token;
+        if (typeof token === "string" && token.length > 0)
+          authorized[account.method] = { token: { access_token: token } };
+      } else if (Object.hasOwn(methods, account.method)) {
+        const bindings = methods[account.method] ?? [];
+        for (const scheme of new Set(bindings.map((binding) => binding.scheme))) {
+          const parts = bindings.filter((binding) => binding.scheme === scheme);
+          if (
+            parts.some(
+              ({ field }) =>
+                typeof account.fields[field] !== "string" || account.fields[field] === "",
+            )
+          )
+            continue;
+          for (const { part, field, prefix } of parts) {
+            const value = scalar(account.fields[field]);
+            authorized[scheme] =
+              part === "value"
+                ? prefix + value
+                : { ...object(authorized[scheme] ?? {}), [part]: value };
+          }
+        }
+      }
+    }
+    const security = op.request.security;
+    const keys =
+      security.length === 0
+        ? []
+        : security
+            .map(Object.keys)
+            .find((keys) => keys.every((key) => Object.hasOwn(authorized, key)));
+    return keys === undefined
+      ? undefined
+      : Object.fromEntries(keys.map((key) => [key, authorized[key]]));
   }
-  const call = (op: OpenapiOperation, input: unknown, account: OpenapiAccount | undefined) =>
+  const call = (
+    op: OpenapiOperation,
+    input: unknown,
+    account: OpenapiAccount | undefined,
+    errors: readonly DeclaredError[],
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         const prepared = yield* Effect.try({
           try: () => {
             const args = object(input);
-            const security = selectedSecurity(op, account?.method);
-            if (security === undefined)
+            const authorized = selectedCredentials(op, account);
+            if (authorized === undefined)
               throw new Error("The selected account cannot call this tool");
-            let path = op.path;
-            const query = new URLSearchParams();
-            const headers = new Headers();
-            for (const p of op.parameters) {
+            const parameters: Record<string, unknown> = {};
+            for (const p of op.request.parameters) {
               const group = args[p.in === "header" ? "headers" : p.in];
-              const value = group === undefined ? undefined : object(group)[p.name];
-              if (value === undefined) continue;
-              if (p.in === "path")
-                path = path.replaceAll("{" + p.name + "}", simple(value, p.explode, true));
-              else if (p.in === "header") headers.set(p.name, simple(value, p.explode, false));
-              else if (p.style === "deepObject") {
-                for (const [key, item] of pairs(value))
-                  query.append(p.name + "[" + key + "]", item);
-              } else if (Array.isArray(value)) {
-                if (p.explode && p.style === "form")
-                  for (const item of value) query.append(p.name, scalar(item));
-                else
-                  query.append(
-                    p.name,
-                    value
-                      .map(scalar)
-                      .join(
-                        p.style === "spaceDelimited"
-                          ? " "
-                          : p.style === "pipeDelimited"
-                            ? "|"
-                            : ",",
-                      ),
-                  );
-              } else if (typeof value === "object" && value !== null) {
-                if (p.style !== "form") throw new Error("Unsupported object parameter style");
-                if (p.explode) for (const [key, item] of pairs(value)) query.append(key, item);
-                else query.append(p.name, pairs(value).flat().join(","));
-              } else query.append(p.name, scalar(value));
+              if (group !== undefined) parameters[`${p.in}.${p.name}`] = object(group)[p.name];
             }
-            if (/{[^}]+}/.test(path)) throw new Error("A required path parameter is missing");
-            const url = new URL(op.baseUrl + path);
-            if (account && Object.hasOwn(methods, account.method)) {
-              for (const binding of methods[account.method] ?? []) {
-                if (!security.includes(binding.scheme)) continue;
-                const credential = binding.prefix + scalar(account.fields[binding.field]);
-                if (binding.in === "header") headers.set(binding.name, credential);
-                else query.set(binding.name, credential);
-              }
-            } else if (
-              account &&
-              oauth.includes(account.method) &&
-              security.includes(account.method)
-            ) {
-              headers.set("Authorization", "Bearer " + scalar(account.fields.access_token));
-            }
-            url.search = query.toString();
-            let body: string | Uint8Array<ArrayBuffer> | undefined;
-            if (args.body !== undefined) {
-              if (op.body === "json") {
-                headers.set("Content-Type", "application/json");
-                body = JSON.stringify(args.body);
-              } else if (op.body === "base64") {
-                headers.set("Content-Type", "application/octet-stream");
-                body = Uint8Array.from(atob(scalar(args.body)), (char) => char.charCodeAt(0));
+            const content = op.request.requestBody?.content ?? {};
+            const contentType =
+              args.contentType === undefined ? Object.keys(content)[0] : scalar(args.contentType);
+            const media = contentType === undefined ? undefined : content[contentType];
+            let body: unknown = args.body;
+            if (body !== undefined && media !== undefined && contentType !== undefined) {
+              const kind = openapiMediaKind(contentType);
+              if (kind === "json") body = JSON.stringify(body);
+              else if (kind === "binary") body = new Blob([bytes(body)]);
+              else if (kind === "multipart") {
+                const fields = { ...object(body) };
+                for (const [name, property] of Object.entries(
+                  object(media.schema?.properties ?? {}),
+                )) {
+                  const shape = object(property);
+                  if (
+                    shape.type === "string" &&
+                    shape.format === "binary" &&
+                    fields[name] !== undefined
+                  )
+                    fields[name] = new File([bytes(fields[name])], name);
+                }
+                body = fields;
               }
             }
-            return { url, headers, body, method: op.method };
+            const prepared = swaggerRequest(
+              SwaggerClient.buildRequest({
+                spec: {
+                  openapi: op.openapi,
+                  servers: [{ url: op.baseUrl }],
+                  components: { securitySchemes: op.securitySchemes },
+                  paths: {
+                    [op.path]: {
+                      [op.method.toLowerCase()]: { ...op.request, operationId: op.name },
+                    },
+                  },
+                },
+                operationId: op.name,
+                pathName: op.path,
+                method: op.method.toLowerCase(),
+                parameters,
+                securities: { authorized },
+                ...(contentType === undefined ? {} : { requestContentType: contentType }),
+                ...(body === undefined ? {} : { requestBody: body }),
+              }),
+            );
+            // The account is authorized for the pinned API origin only. Redirects
+            // stay manual so a provider cannot forward credentials to another host.
+            const url = new URL(prepared.url);
+            if (url.origin !== new URL(op.baseUrl).origin || url.username || url.password)
+              throw new Error("The request escaped its API origin");
+            const headers = new Headers(prepared.headers);
+            if (prepared.body instanceof FormData) headers.delete("content-type");
+            return { ...prepared, url, headers };
           },
           catch: () => new OpenapiError({ reason: "invalid_input" }),
         });
@@ -138,15 +228,37 @@ export function createRequest(config: {
           catch: () => new OpenapiError({ reason: "invalid_input" }),
         });
         const response = yield* HttpClient.withScope(client).execute(request);
-        if (response.status < 200 || response.status >= 300)
+        if (response.status < 200 || response.status >= 300) {
+          const provider = httpProviderError(response.status, response.headers);
+          if (provider !== undefined) return yield* provider;
+          const declared = yield* responseError(response, errors);
           return yield* (
-            httpProviderError(response.status, response.headers) ??
-              new OpenapiError({ reason: "request", status: response.status })
+            declared ?? new OpenapiError({ reason: "request", status: response.status })
           );
+        }
         if (response.status === 204 || prepared.method === "HEAD") return null;
-        return yield* (
-          response.headers["content-type"]?.includes("json") ? response.json : response.text
-        ).pipe(Effect.withSpan("provider.http.response.read"));
+        const contentType = response.headers["content-type"] ?? "text/plain";
+        const chunks = yield* response.stream.pipe(
+          Stream.mapError(() => new OpenapiError({ reason: "request" })),
+          Stream.limitBytes(defaultOpenapiResponseLimits.maxBodyBytes, () =>
+            Stream.fail(new OpenapiError({ reason: "request" })),
+          ),
+          Stream.runCollect,
+          Effect.timeout(defaultOpenapiResponseLimits.readTimeoutMs),
+          Effect.withSpan("provider.http.response.read"),
+        );
+        const data = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0));
+        let offset = 0;
+        for (const chunk of chunks) {
+          data.set(chunk, offset);
+          offset += chunk.length;
+        }
+        if (!isOpenapiTextMedia(contentType))
+          return { base64: Encoding.encodeBase64(data), contentType };
+        const text = new TextDecoder().decode(data);
+        return contentType.includes("json") && !contentType.includes("ndjson")
+          ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(text)
+          : text;
       }),
     ).pipe(
       Effect.withSpan("provider.openapi.call", {
@@ -157,14 +269,16 @@ export function createRequest(config: {
       Effect.mapError((error) =>
         error instanceof ProviderError && account?.id !== undefined
           ? accountProviderError(error, account.id)
-          : error instanceof OpenapiError || error instanceof ProviderError
+          : error instanceof OpenapiError ||
+              error instanceof OpenapiResponseError ||
+              error instanceof ProviderError
             ? error
             : new OpenapiError({ reason: "request" }),
       ),
     );
   return {
-    available: (op: OpenapiOperation, method: string | undefined) =>
-      selectedSecurity(op, method) !== undefined,
+    available: (op: OpenapiOperation, account: OpenapiAccount | undefined) =>
+      selectedCredentials(op, account) !== undefined,
     call,
   };
 }

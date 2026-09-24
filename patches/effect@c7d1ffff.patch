@@ -1,0 +1,79 @@
+diff --git a/src/JsonSchema.ts b/src/JsonSchema.ts
+--- a/src/JsonSchema.ts
++++ b/src/JsonSchema.ts
+@@ -31,0 +32,15 @@
++}
++
++/**
++ * Options for converting OpenAPI schemas to Draft 2020-12.
++ *
++ * @category decoding
++ * @since 4.0.0
++ */
++export interface FromOpenApiOptions {
++  /**
++   * Observe each reference in schema positions before its URI is rewritten.
++   * Reference targets are not followed. Examples, defaults and ignored OpenAPI
++   * 3.0 reference siblings are not visited. Callback exceptions propagate.
++   */
++  readonly onReference?: ((reference: string) => void) | undefined
+@@ -371 +386 @@
+-export function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12"> {
++export function fromSchemaOpenApi3_1(js: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12"> {
+@@ -373,0 +389,2 @@
++    if (typeof schema.$ref === "string") options?.onReference?.(schema.$ref)
++    if (typeof schema.$dynamicRef === "string") options?.onReference?.(schema.$dynamicRef)
+@@ -432,2 +449,2 @@
+-export function fromSchemaOpenApi3_0(schema: JsonSchema): Document<"draft-2020-12"> {
+-  return fromSchemaDraft2020_12(convertOpenApi30(schema))
++export function fromSchemaOpenApi3_0(schema: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12"> {
++  return fromSchemaDraft2020_12(convertOpenApi30(schema, options))
+@@ -1307 +1324 @@
+-function convertOpenApi30(root: JsonSchema): JsonSchema {
++function convertOpenApi30(root: JsonSchema, options?: FromOpenApiOptions): JsonSchema {
+@@ -1311,0 +1329 @@
++      options?.onReference?.(source.$ref)
+diff --git a/dist/JsonSchema.js b/dist/JsonSchema.js
+--- a/dist/JsonSchema.js
++++ b/dist/JsonSchema.js
+@@ -218 +218 @@
+-export function fromSchemaOpenApi3_1(js) {
++export function fromSchemaOpenApi3_1(js, options) {
+@@ -220,0 +221,2 @@
++    if (typeof schema.$ref === "string") options?.onReference?.(schema.$ref);
++    if (typeof schema.$dynamicRef === "string") options?.onReference?.(schema.$dynamicRef);
+@@ -278,2 +280,2 @@
+-export function fromSchemaOpenApi3_0(schema) {
+-  return fromSchemaDraft2020_12(convertOpenApi30(schema));
++export function fromSchemaOpenApi3_0(schema, options) {
++  return fromSchemaDraft2020_12(convertOpenApi30(schema, options));
+@@ -928 +930 @@
+-function convertOpenApi30(root) {
++function convertOpenApi30(root, options) {
+@@ -931,0 +934 @@
++      options?.onReference?.(source.$ref);
+diff --git a/dist/JsonSchema.d.ts b/dist/JsonSchema.d.ts
+--- a/dist/JsonSchema.d.ts
++++ b/dist/JsonSchema.d.ts
+@@ -17,0 +18,15 @@
++}
++
++/**
++ * Options for converting OpenAPI schemas to Draft 2020-12.
++ *
++ * @category decoding
++ * @since 4.0.0
++ */
++export interface FromOpenApiOptions {
++  /**
++   * Observe each reference in schema positions before its URI is rewritten.
++   * Reference targets are not followed. Examples, defaults and ignored OpenAPI
++   * 3.0 reference siblings are not visited. Callback exceptions propagate.
++   */
++  readonly onReference?: ((reference: string) => void) | undefined
+@@ -323 +338 @@
+-export declare function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12">;
++export declare function fromSchemaOpenApi3_1(js: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12">;
+@@ -367 +382 @@
+-export declare function fromSchemaOpenApi3_0(schema: JsonSchema): Document<"draft-2020-12">;
++export declare function fromSchemaOpenApi3_0(schema: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12">;

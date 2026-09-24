@@ -1,4 +1,6 @@
 import { ProviderError } from "./provider-error.ts";
+import { OpenapiResponseError } from "./api-response-error.ts";
+export { ApiErrorResponse, OpenapiResponseError } from "./api-response-error.ts";
 export { ProviderError } from "./provider-error.ts";
 import {
   WorkflowCommand,
@@ -233,6 +235,7 @@ export const HostInspectError = Schema.Union([
 ]);
 /** Tool invocation adds lookup, input, execution and output failures to inspection. */
 export const HostCallError = Schema.Union([
+  OpenapiResponseError,
   WorkflowFailure,
   HostInspectError,
   HostToolNotFound,
@@ -250,6 +253,7 @@ export const HostDataError = HostCallError;
 
 /** Safe error envelope; no author exception, source, account fields or stack is serialized. */
 export const HostError = Schema.Union([
+  OpenapiResponseError,
   ProviderError,
   WorkflowFailure,
   HostRequestInvalid,
