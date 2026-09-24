@@ -133,7 +133,6 @@
   },
   "patchedDependencies": {
     "effect@https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d": "patches/effect@c7d1ffff.patch",
-    "bun@1.3.11": "patches/bun@1.3.11.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
     "alchemy@2.0.0-beta.79": "patches/alchemy@2.0.0-beta.79.patch",
@@ -145,7 +144,10 @@
     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
     "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
-    "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch"
+    "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
+    "bun@1.4.2": "patches/bun@1.4.2.patch",
+    "tree-sitter@0.21.1": "patches/tree-sitter@0.21.1.patch",
+    "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch"
   },
   "trustedDependencies": [
     "bun",

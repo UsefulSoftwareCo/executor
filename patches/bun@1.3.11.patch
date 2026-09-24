@@ -1,8 +1,0 @@
-diff --git a/install.js b/install.js
---- a/install.js
-+++ b/install.js
-@@ -265,1 +265,3 @@
--var os2 = process.platform, arch = os2 === "darwin" && process.arch === "x64" && isRosetta2() ? "arm64" : process.arch, avx2 = arch === "x64" && (os2 === "linux" && isLinuxAVX2() || os2 === "darwin" && isDarwinAVX2() || os2 === "win32" && isWindowsAVX2()), abi = os2 === "linux" && isLinuxMusl() ? "musl" : void 0, platforms = [
-+// Keep the selected execution architecture when building Intel artifacts under Rosetta.
-+// The dependency resolver installed optional binaries for process.arch, not the host CPU.
-+var os2 = process.platform, arch = process.arch, avx2 = arch === "x64" && (os2 === "linux" && isLinuxAVX2() || os2 === "darwin" && isDarwinAVX2() || os2 === "win32" && isWindowsAVX2()), abi = os2 === "linux" && isLinuxMusl() ? "musl" : void 0, platforms = [
