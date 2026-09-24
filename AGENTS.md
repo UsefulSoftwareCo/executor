@@ -68,9 +68,10 @@ a `workflow_call` workflow, so another repository can call the same jobs.
 It finishes the active run and coalesces pending pushes. The functional job runs
 before the separate MCP memory soak job; manual deployed jobs share the same
 non-cancelling concurrency group. Each job owns a disposable Neon staging environment.
-The soak job keeps three full-duration probes, runs them in parallel on its own stage,
-and preserves their 20-minute deadlines. Functional scenarios retain 60-second
-deadlines. Both jobs own their teardown and evidence artifacts. These post-merge
+The soak job keeps three full-duration probes and preserves their 20-minute deadlines.
+The shared-session and distributed-session probes are temporarily skipped while their
+unexpected stream endings remain unresolved; the reconnect-burst probe stays enabled.
+Functional scenarios retain 60-second deadlines. Both jobs own their teardown and evidence artifacts. These post-merge
 checks are not required PR checks. Agents can run targeted deployments through
 the same SDK and CLI on demand.
 
