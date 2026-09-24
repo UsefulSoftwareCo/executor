@@ -20,7 +20,7 @@ return JSON.stringify(created);
 `;
 
 scenario(
-  "MCP workspace writes · a member session is denied while an admin session succeeds",
+  "MCP workspace writes · both member and admin tokens are denied workspace writes",
   { timeout: 180_000 },
   Effect.gen(function* () {
     const target = yield* Target;
@@ -67,14 +67,14 @@ scenario(
         if (allowed.text.includes("Execution paused")) {
           allowed = yield* adminSession.approvePaused(allowed.text);
         }
-        expect(allowed.ok, "the admin's MCP workspace-write call succeeds").toBe(true);
-        expect(allowed.text, "the created policy is returned over the MCP session").toContain(
-          pattern,
-        );
+        expect(
+          allowed.text,
+          "even an MFA-verified admin's machine token has no workspace write access",
+        ).toMatch(/OrgWriteDenied|administrator|admin/i);
         expect(
           (yield* adminClient.policies.list()).some((policy) => policy.pattern === pattern),
-          "the admin's MCP call persisted the Workspace policy",
-        ).toBe(true);
+          "the admin's denied MCP call persisted no Workspace policy",
+        ).toBe(false);
       }),
       cleanup,
     );

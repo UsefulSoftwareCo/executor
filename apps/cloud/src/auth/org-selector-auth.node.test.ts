@@ -99,6 +99,7 @@ const stubWorkOS = Layer.succeed(
             userId: MEMBER,
             email: "u@e2e.test",
             organizationId: SESSION_ORG,
+            adminVerified: true,
           });
       }
       // Membership is read from the mirror, never from WorkOS: any WorkOS

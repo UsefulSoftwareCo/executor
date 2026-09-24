@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Context, Data, Effect, Layer, Option, Predicate, Ref, Schema, Scope } from "effect";
 import { createHash, randomUUID } from "node:crypto";
@@ -355,7 +356,9 @@ const serveOAuthTestHttpApp = (
       Layer.fresh(
         HttpServer.serve(
           HttpServerRequest.HttpServerRequest.asEffect().pipe(Effect.flatMap(handler)),
-        ).pipe(Layer.provideMerge(NodeHttpServer.layerTest)),
+        ).pipe(
+          Layer.provideMerge(NodeHttpServer.layer(createServer, { port: 0, host: "127.0.0.1" })),
+        ),
       ),
     ).pipe(Effect.mapError((address) => new OAuthTestServerAddressError({ address })));
     const server = Context.get(context, HttpServer.HttpServer);

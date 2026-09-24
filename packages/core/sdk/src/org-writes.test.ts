@@ -319,7 +319,7 @@ describe("orgWrites: denied", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("rechecks workspace authorization before persisting OAuth callback tokens", () =>
+  it.effect("keeps the OAuth code redeemable until workspace access is restored", () =>
     Effect.gen(function* () {
       const server = yield* serveOAuthTestServer({ scopes: [] });
       const { admin, member } = yield* setup();
@@ -353,6 +353,14 @@ describe("orgWrites: denied", () => {
       );
       expect(yield* member.connections.list({ owner: "org" })).toEqual([]);
       expect(yield* member.providers.items(ProviderKey.make("memory"))).toEqual(beforeItems);
+      expect((yield* server.requests).filter((request) => request.path === "/token")).toHaveLength(
+        0,
+      );
+      const connection = yield* admin.oauth.complete({ state: started.state, code: callback.code });
+      expect(connection.owner).toBe("org");
+      expect((yield* server.requests).filter((request) => request.path === "/token")).toHaveLength(
+        1,
+      );
     }).pipe(Effect.scoped),
   );
 });

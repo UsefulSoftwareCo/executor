@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { scenario } from "../src/scenario";
 import { Target } from "../src/services";
 import { workspaceWritePermissions } from "../src/workspace-write-permissions";
+import { verifyAdmin } from "./support/admin-mfa";
 import { joinOrg } from "./support/session";
 
 scenario(
@@ -14,5 +15,16 @@ scenario(
     const invitee = yield* target.newIdentity({ org: false });
     const member = yield* joinOrg(target, admin, invitee);
     yield* workspaceWritePermissions(target, admin, member);
+  }),
+);
+
+scenario(
+  "Workspace writes · an administrator without MFA keeps Personal access only",
+  { timeout: 180_000 },
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const locked = yield* target.newIdentity({ adminMfa: false });
+    const unlocked = yield* verifyAdmin(target.baseUrl, locked);
+    yield* workspaceWritePermissions(target, unlocked, locked);
   }),
 );

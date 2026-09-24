@@ -1,7 +1,9 @@
+import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Context, Data, Effect, Layer, Predicate, Schedule, Scope as EffectScope } from "effect";
 import {
+  FetchHttpClient,
   HttpClient,
   HttpRouter,
   HttpServer,
@@ -93,6 +95,17 @@ export const serveTestHttpServerLayer = (
   EffectScope.Scope
 > => makeTestHttpServer(serverLayer);
 
+// Bind the same address family returned below. On macOS an IPv6 wildcard
+// can share a port with an unrelated IPv4 listener, sending tests to that service.
+const testServerLayer = HttpServer.layerTestClient.pipe(
+  Layer.provide(
+    FetchHttpClient.layer.pipe(
+      Layer.provide(Layer.succeed(FetchHttpClient.RequestInit)({ keepalive: false })),
+    ),
+  ),
+  Layer.provideMerge(NodeHttpServer.layer(createServer, { port: 0, host: "127.0.0.1" })),
+);
+
 const makeTestHttpServer = (
   serverLayer: Layer.Layer<never, any, any>,
 ): Effect.Effect<
@@ -102,7 +115,7 @@ const makeTestHttpServer = (
 > =>
   Effect.gen(function* () {
     const context = yield* Layer.build(
-      Layer.fresh(serverLayer.pipe(Layer.provideMerge(NodeHttpServer.layerTest))),
+      Layer.fresh(serverLayer.pipe(Layer.provideMerge(testServerLayer))),
     ).pipe(Effect.mapError((cause) => new TestHttpServerServeError({ cause })));
     const server = Context.get(context, HttpServer.HttpServer);
     const address = server.address;

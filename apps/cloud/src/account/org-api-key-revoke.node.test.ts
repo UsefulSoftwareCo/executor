@@ -59,6 +59,7 @@ const session = (accountId: string) => ({
   name: null,
   avatarUrl: null,
   organizationId: ORG,
+  adminVerified: true,
   sealedSession: "sealed",
   refreshedSession: null,
 });

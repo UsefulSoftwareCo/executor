@@ -74,7 +74,7 @@ const provide = (
 ): Layer.Layer<AuthContext | OrgMemberRole | WorkOSClient> =>
   Layer.mergeAll(
     Layer.succeed(AuthContext)(adminAuth),
-    Layer.succeed(OrgMemberRole)({ memberRole }),
+    Layer.succeed(OrgMemberRole)({ memberRole, adminVerified: true }),
     stubWorkOS(workosOverrides),
   );
 
@@ -82,6 +82,12 @@ describe("Org domain handlers", () => {
   describe("requireAdmin", () => {
     it.effect("passes for an admin caller", () =>
       requireAdmin.pipe(Effect.provide(provide("admin"))),
+    );
+
+    it.effect("rejects an admin without a verified second factor", () =>
+      Effect.gen(function* () {
+        expect(yield* Effect.flip(requireAdmin)).toBeInstanceOf(Forbidden);
+      }).pipe(Effect.provideService(OrgMemberRole, { memberRole: "admin", adminVerified: false })),
     );
 
     it.effect("rejects a non-admin caller with Forbidden", () =>
@@ -239,6 +245,7 @@ const workosForCaller = (deleted: string[]) =>
     authenticateSealedSession: () =>
       Effect.succeed({
         userId: CALLER,
+        adminVerified: true,
         email: "caller@placeholder.test",
         organizationId: ORG,
       }),

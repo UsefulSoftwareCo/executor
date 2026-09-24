@@ -10,6 +10,7 @@ import { Effect } from "effect";
 
 import { connectEmulator } from "@executor-js/emulate";
 
+import { verifyAdmin } from "../cloud/support/admin-mfa";
 import { e2ePort } from "../src/ports";
 import type { Identity, Target } from "../src/target";
 
@@ -71,7 +72,7 @@ export const cloudTarget = (): Target => ({
       });
       await workos.seed({ oauth: { default_access_token_ttl_seconds: seconds } });
     }),
-  newIdentity: ({ org = true } = {}) =>
+  newIdentity: ({ org = true, adminMfa = true } = {}) =>
     Effect.promise(async (): Promise<Identity> => {
       const label = `user-${randomUUID().slice(0, 8)}`;
       const email = `${label}@e2e.test`;
@@ -96,7 +97,7 @@ export const cloudTarget = (): Target => ({
         orgSlug = ((await response.json()) as { slug?: string }).slug ?? null;
       }
       const [name, value] = session.split(/=(.*)/s);
-      return {
+      const identity: Identity = {
         label: email,
         // The org selector header rides along exactly as the web client sends
         // it from the console URL's slug: org-scoped API reads fail closed
@@ -108,6 +109,9 @@ export const cloudTarget = (): Target => ({
         cookies: [{ name: name!, value: value! }],
         credentials: { email, password: "emulated" },
       };
+      return org && adminMfa
+        ? await Effect.runPromise(verifyAdmin(CLOUD_BASE_URL, identity))
+        : identity;
     }),
   // MCP OAuth against the emulator's authorization server: complete the
   // hosted flow headlessly as this identity.

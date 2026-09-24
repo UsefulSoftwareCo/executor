@@ -165,7 +165,9 @@ describe("cloud MCP org-authorization classification", () => {
       expect(principal?.accountId).toBe(ACCOUNT_ID);
       expect(principal?.organizationId).toBe(ORG_ID);
       expect(principal?.orgRoleModel).toBe("organization");
-      expect(principal?.orgRole, "the live membership role reaches the MCP session").toBe("admin");
+      expect(principal?.orgRole, "machine tokens never grant workspace administration").toBe(
+        "member",
+      );
       const legacyAccess = principal
         ? orgWriteAccessForPrincipal(
             (({ orgRole: _orgRole, ...legacyMissingRole }) => legacyMissingRole)(principal),
