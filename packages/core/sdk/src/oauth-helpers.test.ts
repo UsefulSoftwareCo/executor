@@ -28,6 +28,7 @@ import {
   optionalScopesFromAuthorizationUrl,
   refreshAccessToken,
   shouldRefreshToken,
+  shouldUsePkce,
 } from "./oauth-helpers";
 import { serveTestHttpApp } from "./testing";
 
@@ -225,6 +226,22 @@ describe("providerAuthorizeExtras (provider authorization quirks)", () => {
   });
 });
 
+describe("shouldUsePkce", () => {
+  it("disables PKCE only for confidential clients on LinkedIn's standard web endpoint", () => {
+    const linkedin = "https://www.linkedin.com/oauth/v2/authorization";
+    expect(shouldUsePkce(linkedin, "client-secret")).toBe(false);
+    expect(shouldUsePkce(linkedin, "")).toBe(true);
+    expect(
+      shouldUsePkce("https://www.linkedin.com/oauth/native-pkce/authorization", "secret"),
+    ).toBe(true);
+    expect(shouldUsePkce("http://www.linkedin.com/oauth/v2/authorization", "secret")).toBe(true);
+    expect(shouldUsePkce("https://www.linkedin.com:8443/oauth/v2/authorization", "secret")).toBe(
+      true,
+    );
+    expect(shouldUsePkce("https://accounts.google.com/o/oauth2/v2/auth", "secret")).toBe(true);
+  });
+});
+
 describe("buildAuthorizationUrl", () => {
   const baseInput = {
     authorizationUrl: "https://example.com/authorize",
@@ -247,6 +264,23 @@ describe("buildAuthorizationUrl", () => {
     expect(url.searchParams.get("code_challenge")).toBe(
       "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
     );
+  });
+
+  it("omits PKCE params when no challenge is supplied", () => {
+    const { codeChallenge: _, ...withoutPkce } = baseInput;
+    const url = new URL(
+      buildAuthorizationUrl({
+        ...withoutPkce,
+        authorizationUrl:
+          "https://example.com/authorize?code_challenge=stale&code_challenge_method=S256",
+        extraParams: {
+          code_challenge: "also-stale",
+          code_challenge_method: "plain",
+        },
+      }),
+    );
+    expect(url.searchParams.has("code_challenge_method")).toBe(false);
+    expect(url.searchParams.has("code_challenge")).toBe(false);
   });
 
   it("supports a custom scope separator (e.g. comma for legacy providers)", () => {
@@ -329,6 +363,23 @@ describe("buildAuthorizationUrl", () => {
 });
 
 describe("exchangeAuthorizationCode", () => {
+  it.effect("omits the PKCE verifier for a confidential flow that does not use PKCE", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          redirectUrl: "https://app.example.com/cb",
+          code: "abc",
+        });
+        const call = (yield* calls)[0]!;
+        expect(call.body.get("client_secret")).toBe("csecret");
+        expect(call.body.has("code_verifier")).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("supports JSON token exchange with HTTP Basic client authentication", () =>
     withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
       Effect.gen(function* () {
