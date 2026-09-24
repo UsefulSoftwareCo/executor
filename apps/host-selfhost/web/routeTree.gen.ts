@@ -15,6 +15,7 @@ import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolsRouteImport
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteImport } from './../../../packages/react/src/routes/toolkits'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRouteImport } from './../../../packages/react/src/routes/secrets'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport } from './../../../packages/react/src/routes/policies'
+import { Route as ConnectedClientsRouteImport } from './routes/app/connected-clients'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteImport } from './../../../packages/react/src/routes/artifacts'
 import { Route as ApiKeysRouteImport } from './routes/app/api-keys'
 import { Route as AdminRouteImport } from './routes/app/admin'
@@ -64,6 +65,11 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute =
     path: '/{-$orgSlug}/policies',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ConnectedClientsRoute = ConnectedClientsRouteImport.update({
+  id: '/{-$orgSlug}/connected-clients',
+  path: '/{-$orgSlug}/connected-clients',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute =
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteImport.update({
     id: '/{-$orgSlug}/artifacts',
@@ -157,6 +163,7 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/admin': typeof AdminRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  '/{-$orgSlug}/connected-clients': typeof ConnectedClientsRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -177,6 +184,7 @@ export interface FileRoutesByTo {
   '/{-$orgSlug}/admin': typeof AdminRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  '/{-$orgSlug}/connected-clients': typeof ConnectedClientsRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -198,6 +206,7 @@ export interface FileRoutesById {
   '/{-$orgSlug}/admin': typeof AdminRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  '/{-$orgSlug}/connected-clients': typeof ConnectedClientsRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -220,6 +229,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/admin'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/connected-clients'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -240,6 +250,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/admin'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/connected-clients'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -260,6 +271,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/admin'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/connected-clients'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -281,6 +293,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   ApiKeysRoute: typeof ApiKeysRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  ConnectedClientsRoute: typeof ConnectedClientsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -337,6 +350,13 @@ declare module '@tanstack/react-router' {
       path: '/{-$orgSlug}/policies'
       fullPath: '/{-$orgSlug}/policies'
       preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/{-$orgSlug}/connected-clients': {
+      id: '/{-$orgSlug}/connected-clients'
+      path: '/{-$orgSlug}/connected-clients'
+      fullPath: '/{-$orgSlug}/connected-clients'
+      preLoaderRoute: typeof ConnectedClientsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/artifacts': {
@@ -462,6 +482,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiKeysRoute: ApiKeysRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren,
+  ConnectedClientsRoute: ConnectedClientsRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute:
