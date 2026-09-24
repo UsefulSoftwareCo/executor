@@ -20,6 +20,7 @@ import {
   type InProcessBrowserApprovalStore,
 } from "./browser-approval-store";
 import { jsonRpcErrorBody, preInitializeMethodNotFound } from "./envelope";
+import { withMcpSseHeartbeat } from "./sse-heartbeat";
 import {
   McpSessionStore,
   MCP_ORG_WRITE_ACCESS_HEADER,
@@ -372,6 +373,7 @@ export const makeInMemoryMcpSessionStore = (
             transport.handleRequest(withOrgWriteAccess(request, orgWriteAccess)),
           );
     return handle.pipe(
+      Effect.map((response) => withMcpSseHeartbeat(request, response)),
       Effect.tap(() => Effect.sync(finish)),
       Effect.catchCause((cause) =>
         Effect.sync(() => {
