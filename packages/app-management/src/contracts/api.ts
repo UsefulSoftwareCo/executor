@@ -1,4 +1,8 @@
-import { SourceDisplayQuery } from "./source-display.ts";
+import {
+  SourceDisplayEntries,
+  SourceDisplayFile,
+  SourceDisplayFileQuery,
+} from "./source-display.ts";
 /** Shared app wire contracts; browser imports never load HTTP route or Git adapters. */
 import { Context, Schema } from "effect";
 import {
@@ -11,7 +15,7 @@ import {
   AccountNotFound,
   AccountSelectionInvalid,
   DeploymentBuildFailed,
-  SkillDefinitionInvalid,
+  BuildMemoryExceeded,
   sourceErrors,
   SourceSnapshot,
   StorageError,
@@ -39,7 +43,7 @@ export const appOperationErrors = [
   AccountNotFound,
   AccountSelectionInvalid,
   DeploymentBuildFailed,
-  SkillDefinitionInvalid,
+  BuildMemoryExceeded,
 ] as const;
 /** Wire errors remain typed in browser, CLI, and agent clients. */
 export const AppOperationError = Schema.Union(appOperationErrors);
@@ -54,11 +58,16 @@ export const AppAuthoringMetadata = Schema.Struct({
   ...authoringFields,
   canPublish: Schema.Boolean,
 });
-/** Working source and authoring metadata. Explicit display reads format files without changing the revision. */
+/** Working source and authoring metadata, with exact stored file contents for editing. */
 export const AppSourceView = Schema.Struct({
   ...SourceSnapshot.fields,
   ...authoringFields,
   publication: Schema.NullOr(PublicationReadiness),
+});
+/** Working source for read-only inspection. Large files are listed without contents. */
+export const AppSourceDisplay = Schema.Struct({
+  ...AppSourceView.fields,
+  files: SourceDisplayEntries,
 });
 
 import {
@@ -148,12 +157,28 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
         }),
         HttpApiEndpoint.get("source", "/apps/:app/workspace", {
           params: app,
-          query: SourceDisplayQuery,
           success: AppSourceView,
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Read private working source and its Git revision. Read this before editing. Returns source permissions and authenticated clone metadata. Use format=display only for read-only inspection; omit it when editing to retain exact source bytes.",
+          "Read private working source and its Git revision. Read this before editing. Returns exact source bytes, source permissions and authenticated clone metadata.",
+        ),
+        HttpApiEndpoint.get("sourceDisplay", "/apps/:app/workspace/display", {
+          params: app,
+          success: AppSourceDisplay,
+          error: appOperationErrors,
+        }).annotate(
+          OpenApi.Description,
+          "Read working source formatted for read-only inspection. Every file lists its path and stored size; large files omit content. Never edit from this view.",
+        ),
+        HttpApiEndpoint.get("sourceDisplayFile", "/apps/:app/commits/:commit/display/file", {
+          params: Schema.Struct({ ...app.fields, commit: SourceCommit }),
+          query: SourceDisplayFileQuery,
+          success: SourceDisplayFile,
+          error: appOperationErrors,
+        }).annotate(
+          OpenApi.Description,
+          "Read one file of a Git commit formatted for read-only inspection. Never edit from this view.",
         ),
         HttpApiEndpoint.post("commit", "/apps/:app/commits", {
           params: app,

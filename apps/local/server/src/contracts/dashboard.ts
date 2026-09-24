@@ -1,4 +1,8 @@
-import { SourceDisplayQuery } from "@executor-js/app-management/contracts/source-display";
+import {
+  DeploymentDisplay,
+  SourceDisplayFile,
+  SourceDisplayFileQuery,
+} from "@executor-js/app-management/contracts/source-display";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Profile } from "@executor-js/sdk/core";
 import { DashboardAppBrowser } from "./app-browser.ts";
@@ -48,6 +52,7 @@ import {
   AppNameTaken,
   AppSlugTaken,
   DeploymentBuildFailed,
+  BuildMemoryExceeded,
   SkillDefinitionInvalid,
   OAuthClientInput,
   OAuthClientSetup,
@@ -340,10 +345,32 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.get("source", "/dashboard/api/apps/:app/deployments/:deployment", {
         params: { app: AppId, deployment: DeploymentId },
-        query: SourceDisplayQuery,
         success: Deployment,
         error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
       }),
+    )
+    .add(
+      HttpApiEndpoint.get(
+        "sourceDisplay",
+        "/dashboard/api/apps/:app/deployments/:deployment/display",
+        {
+          params: { app: AppId, deployment: DeploymentId },
+          success: DeploymentDisplay,
+          error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
+        },
+      ),
+    )
+    .add(
+      HttpApiEndpoint.get(
+        "sourceDisplayFile",
+        "/dashboard/api/apps/:app/deployments/:deployment/display/file",
+        {
+          params: { app: AppId, deployment: DeploymentId },
+          query: SourceDisplayFileQuery,
+          success: SourceDisplayFile,
+          error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound, ...sourceErrors],
+        },
+      ),
     )
     .add(
       HttpApiEndpoint.get("tools", "/dashboard/api/apps/:app/tools", {
@@ -389,6 +416,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           StorageError,
           ...sourceErrors,
           DeploymentBuildFailed,
+          BuildMemoryExceeded,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,
@@ -408,6 +436,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           StorageError,
           ...sourceErrors,
           DeploymentBuildFailed,
+          BuildMemoryExceeded,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,

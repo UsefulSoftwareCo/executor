@@ -1,6 +1,5 @@
 import { authorizeApp, authorizeTool } from "./authorization.ts";
 import { permitsTool } from "@executor-js/authorization";
-import { requireAppAccess } from "./resource-policy.ts";
 import { ExecutionAdmission } from "../contracts/execution-admission.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
 import { ToolApprovalRequired, type Executor } from "@executor-js/sdk/core";
@@ -14,7 +13,6 @@ import { currentOwner, selectedApp } from "./access.ts";
 export const listTools = (input: Parameters<Executor["tools"]["list"]>[0]) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
-    yield* requireAppAccess(input.app, "use");
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* selectedApp(executor, owner, input.app, input.profile);
@@ -29,7 +27,6 @@ export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
   Effect.flatMap(currentOwner, (owner) =>
     Effect.gen(function* () {
       yield* authorizeTool(input.app, input.tool);
-      yield* requireAppAccess(input.app, "use");
       const executor = yield* Effect.flatten(HostedExecutor);
       yield* selectedApp(executor, owner, input.app, input.profile);
       yield* (yield* ExecutionAdmission)((yield* CurrentOrganization).organization);

@@ -148,6 +148,8 @@ await writeFile(
         "mcp",
         "graphql",
         "openapi",
+        "skills",
+        "skills/effect",
         "operations/approval",
       ],
       [],

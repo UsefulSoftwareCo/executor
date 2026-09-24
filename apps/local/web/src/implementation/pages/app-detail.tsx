@@ -218,15 +218,6 @@ export function AppDetailPage({
       )}
       <QueryResult result={query.result} Failure={Failure} retry={query.refresh} pending={pending}>
         {(current) => {
-          if (tab === "skills")
-            return (
-              <AppSkills
-                canEdit
-                app={current.app}
-                bindings={appBrowserBindings(current.app)}
-                Failure={Failure}
-              />
-            );
           if (tab === "settings")
             return (
               <AppSettings
@@ -291,6 +282,18 @@ export function AppDetailPage({
                   accountContexts(current.app, entries, true),
                   profile,
                 );
+                if (tab === "skills")
+                  return context === undefined ? (
+                    empty
+                  ) : (
+                    <AppSkills
+                      key={context.key}
+                      canEdit
+                      app={current.app}
+                      bindings={appBrowserBindings(current.app, context.profile)}
+                      Failure={Failure}
+                    />
+                  );
                 if (tab === "tools")
                   return context === undefined ? (
                     empty
@@ -332,7 +335,7 @@ export function AppDetailPage({
                       entries={
                         <AppOverviewEntries
                           app={current.app}
-                          bindings={appBrowserBindings(current.app)}
+                          bindings={appBrowserBindings(current.app, context?.profile)}
                           workflows={
                             <AppWorkflowPreview
                               empty={previewEmpty}

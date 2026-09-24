@@ -31,7 +31,7 @@ const files = (version: string) => [
   {
     path: "index.ts",
     content:
-      'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, async () => { throw new Error("No evaluation for skills"); });',
+      'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, async () => ({}));',
   },
   {
     path: "skills/app-authoring/SKILL.md",
@@ -74,10 +74,8 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
           session.send("DELETE", `/v1/apps/${copy.id}`, undefined, headers).pipe(Effect.orDie),
         );
         const client = yield* mcp.connect(target.apiKey, "local-skills");
-        const index = yield* client.use(
-          "Discover local app skills without evaluating either app",
-          (client, signal) =>
-            client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
+        const index = yield* client.use("Discover local app skills", (client, signal) =>
+          client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
         );
         const entries = (yield* Schema.decodeUnknownEffect(Index)(index.structuredContent)).skills;
         const guide = entries.find(
@@ -182,9 +180,10 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
           yield* session.send("GET", `/v1/apps/${guide.app.id}/source`, undefined, headers),
         );
         expect(source.id).toBe(guideDocument.deployment);
-        expect(
-          source.files.find((file) => file.path === "skills/app-authoring/SKILL.md")?.content,
-        ).toBe(guideDocument.content);
+        expect(source.files.some((file) => file.path.startsWith("skills/"))).toBe(false);
+        expect(source.files.find((file) => file.path === "index.ts")?.content).toContain(
+          "wellKnownSkills",
+        );
         expect(
           (yield* session.send(
             "POST",

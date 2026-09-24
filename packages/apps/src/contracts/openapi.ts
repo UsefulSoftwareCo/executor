@@ -1,16 +1,46 @@
 import type { ProviderError } from "./provider-error.ts";
-/** Normalized OpenAPI metadata retained with app source; no compiler or protocol client is required. */
+/** Credential-free OpenAPI request declarations and validation schemas retained with app source. */
 import { Schema, type Effect } from "effect";
 import { AccountId, HttpUrl, JsonObject } from "./schema.ts";
+import { ApiErrorResponse, type OpenapiResponseError } from "./api-response-error.ts";
 
-/** One parameter's HTTP placement and serialization. */
-export const RequestParameter = Schema.Struct({
-  name: Schema.String,
-  in: Schema.Literals(["path", "query", "header"]),
-  style: Schema.String,
-  explode: Schema.Boolean,
+/** Tagged error shapes retain an explicit source for their public message. */
+export const OpenapiErrorResponse = Schema.Struct({
+  code: ApiErrorResponse.fields.code,
+  status: ApiErrorResponse.fields.status,
+  message: Schema.Union([
+    Schema.Struct({ source: Schema.Literal("body") }),
+    Schema.Struct({ source: Schema.Literal("schema"), value: ApiErrorResponse.fields.message }),
+  ]),
+  schema: JsonObject,
 });
-export type RequestParameter = typeof RequestParameter.Type;
+/** A retained declaration used to validate an HTTP failure before exposing its code. */
+export type OpenapiErrorResponse = typeof OpenapiErrorResponse.Type;
+
+/** Resolved OpenAPI parameter shared by import validation and request construction. */
+export const OpenapiParameter = Schema.Struct({
+  name: Schema.String,
+  in: Schema.Literals(["path", "query", "header", "cookie"]),
+  required: Schema.optionalKey(Schema.Boolean),
+  schema: Schema.optionalKey(JsonObject),
+  style: Schema.optionalKey(Schema.String),
+  explode: Schema.optionalKey(Schema.Boolean),
+  allowReserved: Schema.optionalKey(Schema.Boolean),
+  allowEmptyValue: Schema.optionalKey(Schema.Boolean),
+  content: Schema.optionalKey(JsonObject),
+});
+export type OpenapiParameter = typeof OpenapiParameter.Type;
+/** Preserve media schemas and Encoding Objects for Swagger request construction. */
+export const OpenapiRequestBody = Schema.Struct({
+  required: Schema.optionalKey(Schema.Boolean),
+  content: Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      schema: Schema.optionalKey(JsonObject),
+      encoding: Schema.optionalKey(JsonObject),
+    }),
+  ),
+});
 
 /** Credential-free operation data emitted by the OpenAPI importer. */
 export const OpenapiOperation = Schema.Struct({
@@ -19,22 +49,28 @@ export const OpenapiOperation = Schema.Struct({
   method: Schema.Literals(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]),
   path: Schema.String,
   baseUrl: HttpUrl,
-  parameters: Schema.Array(RequestParameter),
-  body: Schema.Literals(["json", "base64", "none"]),
+  openapi: Schema.String,
+  securitySchemes: Schema.Record(Schema.String, JsonObject),
+  /** The resolved OpenAPI Operation Object; Executor schemas remain separate. */
+  request: Schema.Struct({
+    parameters: Schema.Array(OpenapiParameter),
+    requestBody: Schema.optionalKey(OpenapiRequestBody),
+    security: Schema.Array(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+    responses: Schema.Record(Schema.String, JsonObject),
+  }),
   /** Streams remain in the metadata but cannot run through a single-result tool call. */
   streaming: Schema.optionalKey(Schema.Literal(true)),
-  security: Schema.Array(Schema.Array(Schema.String)),
   input: JsonObject,
   outputSchema: Schema.optionalKey(JsonObject),
+  errorResponses: Schema.optionalKey(Schema.Array(OpenapiErrorResponse)),
 });
 export type OpenapiOperation = typeof OpenapiOperation.Type;
 
-/** One field's placement, potentially combined with other fields in an authentication method. */
+/** Map a selected account field to one Swagger credential value. */
 export const CredentialBinding = Schema.Struct({
   scheme: Schema.String,
   field: Schema.String,
-  in: Schema.Literals(["header", "query"]),
-  name: Schema.String,
+  part: Schema.Literals(["value", "username", "password"]),
   prefix: Schema.String,
 });
 export type CredentialBinding = typeof CredentialBinding.Type;
@@ -78,7 +114,40 @@ export interface OpenapiTool {
   readonly run: (
     context: unknown,
     input: Schema.Json,
-  ) => Effect.Effect<unknown, OpenapiError | ProviderError>;
+  ) => Effect.Effect<unknown, OpenapiError | OpenapiResponseError | ProviderError>;
 }
 /** Executable operations keyed by their generated names. */
 export type OpenapiTools = Readonly<Record<string, OpenapiTool>>;
+
+/** Tool calls buffer one bounded result; live event streams require an authored subscription. */
+export const defaultOpenapiResponseLimits = {
+  maxBodyBytes: 16_777_216,
+  readTimeoutMs: 30_000,
+} as const;
+/** Media returned as text rather than a base64 file. NDJSON remains an unparsed text result. */
+export const isOpenapiTextMedia = (type: string): boolean =>
+  /^(?:text\/|application\/(?:[\w.-]+\+)?(?:json|xml)|application\/(?:javascript|x-ndjson|x-www-form-urlencoded))/i.test(
+    type,
+  );
+/** JSON-safe binary result, independent of the host's file storage. */
+export const openapiBinaryResultSchema: JsonObject = {
+  type: "object",
+  properties: {
+    base64: { type: "string", contentEncoding: "base64" },
+    contentType: { type: "string" },
+  },
+  required: ["base64", "contentType"],
+  additionalProperties: false,
+};
+
+/** Classify request media for JSON-safe tool arguments; Swagger owns wire serialization. */
+export const openapiMediaKind = (type: string) =>
+  type.includes("json") && !type.includes("ndjson")
+    ? "json"
+    : type === "application/x-www-form-urlencoded"
+      ? "form"
+      : type === "multipart/form-data"
+        ? "multipart"
+        : isOpenapiTextMedia(type)
+          ? "text"
+          : "binary";

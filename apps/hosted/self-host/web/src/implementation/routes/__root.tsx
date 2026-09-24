@@ -1,3 +1,6 @@
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { clearSessionDisplay, sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { ExecutorDevtools } from "@executor-js/devtools";
 import { createRootRoute, Outlet } from "@tanstack/react-router";
 import { PageError, PageNotFound } from "@executor-js/hosted-web/route-fallbacks";
@@ -15,9 +18,8 @@ export const Route = createRootRoute({
 });
 
 function Root() {
-  const { pathname, searchStr } = useLocation();
-  const devtoolsPath =
-    pathname === "/login" ? (new URLSearchParams(searchStr).get("redirect") ?? pathname) : pathname;
+  const session = useAtomValue(sessionAtom);
+  const { pathname } = useLocation();
   return (
     <DocumentTitleProvider
       fallbackTitle={productTitle(
@@ -30,7 +32,8 @@ function Root() {
         </OrganizationResumeBoundary>
       </AuthBoundary>
       <ExecutorDevtools
-        organization={devtoolsPath.startsWith("/org/") ? devtoolsPath.split(/[/?#]/)[2] : undefined}
+        onSessionChange={clearSessionDisplay}
+        identity={AsyncResult.isSuccess(session) && !session.waiting ? session.value : null}
       />
     </DocumentTitleProvider>
   );

@@ -39,8 +39,7 @@
     "tailwindcss": "4.3.3",
     "tailwindcss-iso": "1.0.7",
     "tar": "7.5.22",
-    "ws": "8.21.0",
-    "yaml": "^2.8.2"
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260729.1",

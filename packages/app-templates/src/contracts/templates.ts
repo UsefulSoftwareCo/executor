@@ -38,6 +38,8 @@ export class TemplateError extends Schema.TaggedError<TemplateError>()("Template
 
 /** Credential-free provider declaration and API key placement. */
 export interface RemoteAuth {
+  /** Offer an explicit credential-free connection alongside sign-in methods; never selected automatically. */
+  readonly public?: true;
   readonly oauth?:
     | { readonly discover: string }
     | {

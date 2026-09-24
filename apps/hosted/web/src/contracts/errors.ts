@@ -66,12 +66,15 @@ const errorMessage = Match.type<HostedError>().pipe(
         ? "The source changed elsewhere. Reload it before saving again."
         : "The app source could not be saved or loaded. Check its files and try again.",
     AppNotFound: () => "This app is no longer available in this organization.",
+    SkillRevisionChanged: () =>
+      "Skills changed. Reload the skill to read its current instructions and references.",
     AppSkillNotFound: () => "This skill file is no longer available. Reload the app's skills.",
     DeploymentNotFound: () =>
       "This deployment is no longer available. Reload the app and try again.",
     SkillDefinitionInvalid: ({ file }) => `Fix the skill definition in ${file} and deploy again.`,
     DeploymentBuildFailed: () =>
       "The app could not be built. Check its source or try a different catalog entry.",
+    BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
     CatalogImportFailed: () =>
       "The app could not be imported. Check its source or try a different catalog entry.",
     AccountRequired: () => "Connect an account to load this app’s tools.",

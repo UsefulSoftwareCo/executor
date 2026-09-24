@@ -175,6 +175,7 @@ test(
                   }),
                 workflow: () => Effect.die("Unexpected workflow invocation"),
                 webhook: () => Effect.die("Unexpected webhook invocation"),
+                skills: () => Effect.die("This fixture does not load skills"),
                 inspect: () => Effect.succeed([]),
                 call: () => Effect.succeed(null),
                 query: () => Effect.succeed(null),

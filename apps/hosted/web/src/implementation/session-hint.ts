@@ -4,7 +4,14 @@ import { Option, Schema } from "effect";
 import { Cookies } from "effect/unstable/http";
 
 const Hint = Schema.Struct({
-  session: BrowserSession,
+  session: Schema.Struct({
+    user: Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      email: Schema.String,
+      image: Schema.NullOr(Schema.String),
+    }),
+  }),
   expiresAt: Schema.Number,
   lastOrganization: Schema.optionalKey(OrganizationId),
 });
@@ -53,7 +60,14 @@ export const writeSessionHint = (session: typeof BrowserSession.Type): void => {
   if (session === null) return clearSessionHint();
   const previous = readLastOrganization(session.user.id);
   writeHint({
-    session,
+    session: {
+      user: {
+        id: session.user.id,
+        name: session.user.name,
+        email: session.user.email,
+        image: session.user.image,
+      },
+    },
     expiresAt: Date.now() + lifetime * 1000,
     ...(previous === undefined ? {} : { lastOrganization: previous }),
   });

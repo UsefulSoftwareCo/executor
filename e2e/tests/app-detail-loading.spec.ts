@@ -51,10 +51,10 @@ export default defineApp({ accounts: {} }, async () => ({
             (reference) => `/api/organizations/${reference}/inventory`,
           ),
           tools: paths.map((path) => `${path}/tools`),
-          workspace: paths.map((path) => `${path}/workspace`),
+          workspace: paths.map((path) => `${path}/workspace/display`),
           history: paths.map((path) => `${path}/history`),
           deployments: paths.map((path) => `${path}/deployments`),
-          source: paths.map((path) => `${path}/source`),
+          source: paths.map((path) => `${path}/source/display`),
         });
       }),
     ),

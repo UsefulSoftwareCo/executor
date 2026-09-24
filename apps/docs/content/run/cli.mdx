@@ -1,0 +1,67 @@
+---
+title: Command line
+description: "Install Executor on your machine. Keep your apps, accounts and data local."
+---
+
+The local server runs Executor on one machine for one person. It holds your
+accounts, runs your apps, and serves an MCP endpoint for your agents.
+
+## Install and start
+
+<ReleaseCommand product="cli" />
+
+`executor` starts the server and opens the dashboard in your browser. The
+package includes its runtime and dashboard; no source checkout or Bun install
+is needed.
+
+On first launch, Executor saves its API and encryption keys in macOS Keychain,
+Windows Credential Manager, or Linux Secret Service. Linux needs a persistent
+Secret Service such as GNOME Keyring. Unlock the credential store and allow
+Executor access when asked.
+
+| Command | Purpose |
+| --- | --- |
+| `executor` | Start the server and open the dashboard. |
+| `executor serve` | Start without opening a browser. |
+| `executor pair` | Print a new connection link for the running server. |
+
+## Configure it
+
+| Variable | Purpose |
+| --- | --- |
+| `EXECUTOR_PORT` | Port, default `4312`. |
+| `EXECUTOR_DATA_DIR` | Data directory, default `~/.executor/v2/cli`. |
+| `EXECUTOR_BROWSER_ORIGIN` | Exact HTTPS origin for generated browser links. |
+| `EXECUTOR_WEBHOOK_ORIGIN` | Exact HTTPS origin that receives webhooks. |
+
+For a new headless installation without an OS credential store, supply both
+`EXECUTOR_API_KEY` (at least 32 characters) and `EXECUTOR_ENCRYPTION_KEY`
+(exactly 64 hexadecimal characters) from a secret manager. Keep these same keys
+for every start. Executor does not save supplied keys. A directory keeps its
+chosen key source across upgrades.
+
+## Connect an agent
+
+Use the dashboard's **Connect** card to add the local MCP endpoint to your
+agent. See [Add an MCP client](/mcp-clients) for Claude Code, Cursor and Codex.
+Keep Executor running while the client is connected.
+
+## Back up and update
+
+Back up the data directory, including `installation.json`, and its matching
+OS credential. The credential service is `com.usefulsoftware.executor.v2`;
+its account ID is in `installation.json`. Copying only the database to another
+machine is not enough to restore it. If you supplied keys, back them up in
+your secret manager.
+
+Missing keys stop startup. Executor will not generate replacements for an
+existing installation. Restore the original keys to recover access.
+
+Run the install command again to update. The v2 data directory stays the same
+when beta becomes stable. Uninstalling the package does not delete data or keys.
+
+The desktop app uses the same local server with a separate
+profile. Automatic desktop updates are not enabled; install a newer version
+over the existing application to update it.
+
+<ReleaseDesktopLink />

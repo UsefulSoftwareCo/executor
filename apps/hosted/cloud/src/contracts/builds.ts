@@ -2,6 +2,7 @@
 import type { RuntimeBuildFailed, SourceFiles } from "@executor-js/sdk/core";
 import { WorkerBundle as CloudBundle } from "@executor-js/sdk/workerd";
 import { Schema, type Effect } from "effect";
+import type { RpcCallError } from "alchemy/Rpc";
 export { CloudBundle };
 export { RetainedWorkerBuild as RetainedCloudBuild } from "@executor-js/sdk/workerd";
 
@@ -19,10 +20,10 @@ export const CompiledCloudApp = Schema.Struct({
   ),
 });
 
-/** A private Worker owns compiler initialization; API requests only hold its service binding. */
+/** Compiler binding calls include Alchemy transport failures as well as declared build failures. */
 export type CloudCompiler = {
   readonly compile: (
     files: SourceFiles,
     headers: Readonly<Record<string, string>>,
-  ) => Effect.Effect<typeof CompiledCloudApp.Type, RuntimeBuildFailed>;
+  ) => Effect.Effect<typeof CompiledCloudApp.Type, RuntimeBuildFailed | RpcCallError>;
 };

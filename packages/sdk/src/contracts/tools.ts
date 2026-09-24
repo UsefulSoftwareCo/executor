@@ -1,4 +1,4 @@
-import { ProviderError } from "apps/contracts";
+import { ApiErrorResponse, ProviderError } from "apps/contracts";
 import { ProfileId } from "./shared.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
@@ -119,6 +119,16 @@ export const AppProviderFailed = UserFacingError.define({
     const instructions =
       "Use the selected app and profile. Inspect only safe status codes and documented provider error codes. Do not print credentials or raw responses, switch accounts, or change authentication methods automatically. Verify tool discovery and a safe read after the repair. Before repeating a failed operation, check whether it already made changes.";
     switch (reason) {
+      case "unavailable":
+        return {
+          title: "Service temporarily unavailable",
+          description: `${service} returned a server error${http}.`,
+          recovery: {
+            action: "Try again. If this continues, check the service’s status and server address.",
+            instructions: `The upstream returned a server error. Do not replace credentials or change authentication to address a service outage. ${instructions}`,
+          },
+          retryable: true,
+        };
       case "unauthorized":
         return {
           title: "Authentication failed",
@@ -186,7 +196,13 @@ export class InputInvalid extends Schema.TaggedError<InputInvalid>()(
 /** A tool failed after starting; its external effects may already have occurred. */
 export class ToolCallFailed extends Schema.TaggedError<ToolCallFailed>()(
   "ToolCallFailed",
-  { app: AppId, deployment: DeploymentId, tool: ToolName, reason: Schema.String },
+  {
+    app: AppId,
+    deployment: DeploymentId,
+    tool: ToolName,
+    reason: Schema.String,
+    response: Schema.optional(ApiErrorResponse),
+  },
   {
     httpApiStatus: 502,
     description: "The tool failed. The reason is sanitized; retry safety is not implied.",

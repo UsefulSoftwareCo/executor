@@ -21,6 +21,7 @@ import {
   Effect,
   Exit,
   Match,
+  Option,
   Queue,
   Schema,
   Scope,
@@ -245,10 +246,20 @@ export const makeExecutions = (
         ) => Deferred.succeed(response, value).pipe(Effect.asVoid),
       ) =>
         Effect.gen(function* () {
+          // Propagate only trace parentage across the broker, never captured authority.
+          const parent = yield* Effect.currentSpan.pipe(Effect.option);
+          const queued = yield* Clock.currentTimeMillis;
           const response = yield* Deferred.make<A, Error>();
           const cancelled = yield* Deferred.make<void>();
           const handle: Work = (backend, operation) =>
-            work(backend, operation).pipe(
+            Effect.gen(function* () {
+              yield* Effect.annotateCurrentSpan(
+                "executor.dispatch.wait_ms",
+                (yield* Clock.currentTimeMillis) - queued,
+              );
+              return yield* work(backend, operation);
+            }).pipe(
+              Effect.withSpan("mcp.backend.dispatch", { parent: Option.getOrUndefined(parent) }),
               Effect.flatMap((value) => deliver(value, response)),
               Effect.catch((error) => Deferred.fail(response, error)),
               Effect.catchCause((cause) =>

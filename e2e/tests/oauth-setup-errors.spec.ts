@@ -88,7 +88,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
           [
             "unavailable",
             "discovery_unavailable",
-            "Sign-in temporarily unavailable",
+            "The connected service’s sign-in is unavailable",
             "Try again.",
             true,
           ],

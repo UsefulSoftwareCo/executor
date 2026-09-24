@@ -6,7 +6,7 @@ import { toolsAtom } from "../../contracts/api.ts";
 import { DeploymentId } from "@executor-js/sdk";
 import type { DashboardApp } from "@executor-js/local-server/contracts";
 import { useMemo, useState } from "react";
-import { sourceAtom } from "../../contracts/api.ts";
+import { sourceAtom, sourceFileAtom } from "../../contracts/api.ts";
 import { AppDeployments as SharedAppDeployments } from "@executor-js/ui/dashboard/app-deployments";
 import { Failure } from "../components/common.tsx";
 
@@ -31,6 +31,7 @@ export function AppDeployments({ data }: { readonly data: DashboardApp }) {
       deployment={deployment}
       onDeploymentChange={setSelectedDeployment}
       query={query}
+      file={(deployment, path) => sourceFileAtom({ app: data.app.id, deployment, path })}
       Failure={Failure}
     />
   );

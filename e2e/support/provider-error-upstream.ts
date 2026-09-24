@@ -7,18 +7,19 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import { createServer } from "node:http";
-import { templateUpstream } from "./template-upstream.ts";
+import { publicTemplateUpstream, templateUpstream } from "./template-upstream.ts";
 
 /** The fake provider deliberately puts this private value in unsafe response fields. */
 export const providerSecretMarker = "synthetic-private-provider-detail";
 /** Provider behavior is controlled outside the real Executor server and app runtime. */
-export const providerErrorUpstream = Effect.gen(function* () {
-  const healthy = yield* templateUpstream;
+const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof templateUpstream) {
+  const healthy = yield* healthyUpstream;
   type Failure = {
     readonly status: number;
     readonly phase?: "call" | "discover";
     readonly headers?: Record<string, string>;
     readonly code?: string;
+    readonly accounts?: "all";
   };
   const state = yield* Ref.make<Failure | undefined>(undefined);
   const routes = Layer.mergeAll(
@@ -65,8 +66,9 @@ export const providerErrorUpstream = Effect.gen(function* () {
               : "discover";
           const failure = yield* Ref.get(state);
           if (
-            request.headers.authorization === "Bearer synthetic-personal" &&
             failure !== undefined &&
+            (failure.accounts === "all" ||
+              request.headers.authorization === "Bearer synthetic-personal") &&
             (failure.phase === undefined || failure.phase === phase)
           )
             return yield* HttpServerResponse.json(
@@ -82,7 +84,9 @@ export const providerErrorUpstream = Effect.gen(function* () {
               method: request.method,
               headers: {
                 "content-type": "application/json",
-                authorization: request.headers.authorization ?? "",
+                ...(request.headers.authorization === undefined
+                  ? {}
+                  : { authorization: request.headers.authorization }),
               },
               ...(text === undefined ? {} : { body: text }),
               signal,
@@ -105,3 +109,6 @@ export const providerErrorUpstream = Effect.gen(function* () {
     configure: (value: Failure | undefined) => Ref.set(state, value),
   };
 });
+
+export const providerErrorUpstream = makeProviderErrorUpstream(templateUpstream);
+export const publicProviderErrorUpstream = makeProviderErrorUpstream(publicTemplateUpstream);

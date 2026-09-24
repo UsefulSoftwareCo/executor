@@ -121,15 +121,17 @@ function AccountView({
             onClick={async () => {
               setPending(true);
               setError(undefined);
-              const result = await reconnect({ params });
+              const result = await reconnect(params);
               setPending(false);
               if (Exit.isFailure(result)) {
                 setError(result.cause);
                 return;
               }
+              // Open the dialog over this page; the handoff route would unmount it.
               await navigate({
-                to: "/org/$organizationSlug/connections/$connectionId",
-                params: { organizationSlug, connectionId: result.value.id },
+                to: "/org/$organizationSlug/accounts/$accountId",
+                params: { organizationSlug, accountId: account },
+                search: { connection: result.value.id },
               });
             }}
           >

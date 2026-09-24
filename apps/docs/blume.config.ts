@@ -2,6 +2,8 @@ import type { AstroIntegration } from "astro";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
 import { defineConfig } from "blume";
 import { siteOrigin } from "@executor-js/marketing/site-origin";
+import { releaseCommandMarkdown } from "./release-commands.ts";
+import { release } from "../../scripts/releases/config.ts";
 
 // Analytics settings come from the deployment, never from this file. The Site
 // build command in apps/hosted/cloud/src/main.ts binds the PostHog stack
@@ -121,6 +123,11 @@ export default defineConfig({
   // .md variant of every page. Ask AI and the hosted MCP server need server
   // output and are a follow-up; see README.md.
   ai: {
+    markdownComponents: {
+      ReleaseCommand: ({ props }) => releaseCommandMarkdown(props.product),
+      ReleaseDesktopLink: () =>
+        `[Download the desktop installer.](${release.cloudOrigin}/#install)`,
+    },
     llmsTxt: {
       enabled: true,
       details: [

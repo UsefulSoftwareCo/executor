@@ -27,13 +27,15 @@ the framework. An app's installed name is separate from its source definition.
 For a new UI with storage, start with `starter.md`. It links to the topics
 needed to adapt the example. For an existing app, read its current source and
 the reference for the part being changed.
-Load files through the MCP `skills` tool using the returned app slug and deployment:
+Load files through the MCP `skills` tool using the returned app slug, profile, deployment and content revision:
 
 ```json
 {
   "app": "executor",
   "name": "app-authoring",
   "deployment": "<returned deployment>",
+  "profile": "<returned profile>",
+  "revision": "<returned revision>",
   "file": "ui.md"
 }
 ```

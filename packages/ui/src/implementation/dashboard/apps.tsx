@@ -184,7 +184,9 @@ function AppsList({
                           </span>
                         </span>
                       ) : ids.length === 0 ? (
-                        <span className="muted text-muted-foreground">No account required</span>
+                        <span className="muted text-muted-foreground">
+                          {provider === undefined ? "No account required" : "No accounts selected"}
+                        </span>
                       ) : (
                         <span>
                           {needsSignIn || unavailable ? (

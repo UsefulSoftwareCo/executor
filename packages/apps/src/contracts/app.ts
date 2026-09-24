@@ -1,3 +1,4 @@
+import type { AppSkillSource, SkillFile } from "./skills.ts";
 import type { DatabaseDefinition } from "./storage.ts";
 /** Native app contracts; factories and handlers compose in the host's Effect runtime. */
 import { type Effect, Schema } from "effect";
@@ -12,6 +13,8 @@ type Handler<Context> = (context: Context, input: never) => Effect.Effect<unknow
 
 /** App capabilities share one account context. Package metadata belongs in package.json. */
 export interface AppDefinition<Context> {
+  /** Omission reads packaged skills/. An explicit catalog replaces that default, including []. */
+  readonly skills?: readonly AppSkillSource[];
   readonly workflows?: Readonly<Record<string, AppWorkflow>>;
   readonly schedules?: Readonly<
     Record<string, Omit<OperationSchedule, "name"> & { readonly tool: string }>
@@ -44,6 +47,8 @@ type AccountsFor<Slot> =
 
 /** Current credentials for one invocation. Never retained in source or build output. */
 export interface BoundContext<Slots extends AccountSlots> {
+  /** Text files retained in this deployment. Paths are package-relative, never host filesystem paths. */
+  readonly files: readonly SkillFile[];
   /** Read-only run management, bound to this configured app. */
   readonly workflows: WorkflowReads;
   /** Ask for user input during this tool call. Unavailable during discovery and after the invocation closes. */

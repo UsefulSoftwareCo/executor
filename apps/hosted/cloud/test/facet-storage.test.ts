@@ -45,7 +45,7 @@ test(
               namespace: "generated",
             }));
             build.onLoad({ filter: /.*/, namespace: "generated" }, () => ({
-              contents: appBridge,
+              contents: appBridge([]),
               resolveDir: root,
               loader: "ts",
             }));

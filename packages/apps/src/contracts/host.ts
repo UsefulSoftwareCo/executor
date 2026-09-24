@@ -1,4 +1,8 @@
+export * from "./skills.ts";
+import type { SkillFile } from "./skills.ts";
 import { ProviderError } from "./provider-error.ts";
+import { OpenapiResponseError } from "./api-response-error.ts";
+export { ApiErrorResponse, OpenapiResponseError } from "./api-response-error.ts";
 export { ProviderError } from "./provider-error.ts";
 import {
   WorkflowCommand,
@@ -73,6 +77,8 @@ export type DeclaredProvider = typeof DeclaredProvider.Type;
 
 /** Account slots available without binding accounts or evaluating the app factory. */
 export const DeclaredRequirements = Schema.Struct({
+  /** Protocol support of this retained framework build, not an author-declared requirement. */
+  capabilities: Schema.optionalKey(Schema.Struct({ skills: Schema.Literal(true) })),
   database: Schema.optionalKey(DatabaseSchema),
   accounts: Schema.Record(
     Schema.NonEmptyString,
@@ -111,6 +117,8 @@ export type TrustedToolApproval = typeof TrustedToolApproval.Type;
 
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
+  /** Packaged app text files supplied by the build bridge. Direct hosts may omit them for an empty package. */
+  readonly files?: readonly SkillFile[];
   /** Private delivery capability. It is never accepted in public request JSON or stored in a build. */
   readonly workflowControls?: WorkflowHostControls;
   readonly workflow?: WorkflowExecution;
@@ -144,6 +152,7 @@ export const HostRequest = Schema.Union([
   WebhookCommand,
   Schema.Struct({ operation: Schema.Literal("requirements") }),
   Schema.Struct({ operation: Schema.Literal("inspect") }),
+  Schema.Struct({ operation: Schema.Literal("skills") }),
   Schema.Struct({
     operation: Schema.Literal("query"),
     name: Schema.NonEmptyString,
@@ -233,6 +242,7 @@ export const HostInspectError = Schema.Union([
 ]);
 /** Tool invocation adds lookup, input, execution and output failures to inspection. */
 export const HostCallError = Schema.Union([
+  OpenapiResponseError,
   WorkflowFailure,
   HostInspectError,
   HostToolNotFound,
@@ -250,6 +260,7 @@ export const HostDataError = HostCallError;
 
 /** Safe error envelope; no author exception, source, account fields or stack is serialized. */
 export const HostError = Schema.Union([
+  OpenapiResponseError,
   ProviderError,
   WorkflowFailure,
   HostRequestInvalid,

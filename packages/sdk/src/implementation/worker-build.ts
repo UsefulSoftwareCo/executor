@@ -24,6 +24,8 @@ const frameworkExports = [
   "apps/mcp",
   "apps/graphql",
   "apps/openapi",
+  "apps/skills",
+  "apps/skills/effect",
   "apps/operations/approval",
 ];
 const frameworkModules = (framework: WorkerFramework["server"]) => ({
@@ -76,7 +78,7 @@ export const compileWorkerApp = (files: SourceFiles, framework: WorkerFramework)
       return yield* new RuntimeBuildFailed({ stage: "source" });
     const filesystem = new InMemoryFileSystem({
       ...Object.fromEntries(files.map((file) => [file.path, file.content])),
-      "__executor_worker.ts": appBridge,
+      "__executor_worker.ts": appBridge(files),
     });
     const dependencies = yield* workerDependencies(filesystem);
     const selected = (yield* dependencies.framework)

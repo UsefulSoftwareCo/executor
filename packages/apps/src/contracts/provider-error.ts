@@ -8,7 +8,7 @@ import { AccountId } from "./schema.ts";
  * `rejected`; `forbidden` requires explicit evidence of insufficient permission.
  */
 export class ProviderError extends Schema.TaggedError<ProviderError>()("ProviderError", {
-  reason: Schema.Literals(["unauthorized", "forbidden", "rate_limited", "rejected"]),
+  reason: Schema.Literals(["unauthorized", "forbidden", "rate_limited", "unavailable", "rejected"]),
   status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
   accountId: Schema.optional(AccountId),
 }) {}

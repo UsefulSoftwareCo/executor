@@ -17,6 +17,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let postChallenge = false;
   let challenge = true;
   let probes = 0;
+  let mcpStatus: 520 | undefined;
   let expiresAt = 0;
   let registrationStatus: 200 | 201 | 400 = 201;
   let malformedRegistration = false;
@@ -175,6 +176,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       "GET",
       "/mcp",
       Effect.gen(function* () {
+        probes++;
+        if (mcpStatus !== undefined) return HttpServerResponse.empty({ status: mcpStatus });
         if (postChallenge) return HttpServerResponse.empty({ status: 405 });
         if (discovery === "no-oauth") return HttpServerResponse.empty({ status: 200 });
         const origin = yield* Deferred.await(address);
@@ -191,6 +194,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       "/mcp",
       Effect.gen(function* () {
         probes++;
+        if (mcpStatus !== undefined) return HttpServerResponse.empty({ status: mcpStatus });
         const origin = yield* Deferred.await(address);
         return HttpServerResponse.empty({
           status: 401,
@@ -301,12 +305,15 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly invalidNonce?: boolean;
       readonly postChallenge?: boolean;
       readonly challenge?: boolean;
+      readonly mcpStatus?: 520 | null;
       readonly expiresAt?: number;
       readonly discovery?: typeof discovery;
       readonly scopes?: readonly string[];
       readonly authMethods?: readonly string[];
     }) =>
       Effect.sync(() => {
+        if (input.mcpStatus !== undefined)
+          mcpStatus = input.mcpStatus === null ? undefined : input.mcpStatus;
         if (input.postChallenge !== undefined) postChallenge = input.postChallenge;
         if (input.challenge !== undefined) challenge = input.challenge;
         if (input.idTokenAlgorithms !== undefined) idTokenAlgorithms = input.idTokenAlgorithms;

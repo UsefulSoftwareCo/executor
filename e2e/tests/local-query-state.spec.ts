@@ -97,7 +97,10 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
           (yield* session.send("DELETE", `/v1/accounts/${first.id}`, undefined, headers)).status,
         ).toBe(200);
         yield* browser.use("The live account query reports removal", (page) =>
-          page.locator(".setup-page .error-state").waitFor({ state: "visible" }),
+          page
+            .locator(".setup-page")
+            .getByRole("alert", { name: "Account no longer available", exact: true })
+            .waitFor({ state: "visible" }),
         );
         expect(
           yield* browser.use("The failed live read keeps the editor", (page) =>
@@ -138,7 +141,7 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
         yield* browser.use("The live app query reports removal", (page) =>
           page
             .getByRole("dialog", { name: "Choose accounts", exact: true })
-            .getByText("App not found", { exact: true })
+            .getByRole("alert", { name: "App no longer available", exact: true })
             .waitFor({ state: "visible" }),
         );
         expect(

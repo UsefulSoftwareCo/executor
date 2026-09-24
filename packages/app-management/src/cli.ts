@@ -19,6 +19,7 @@ import {
   AppDeploymentChanged,
   SourceError,
   DeploymentBuildFailed,
+  BuildMemoryExceeded,
 } from "@executor-js/sdk/core";
 import { RegistryError } from "@executor-js/app-registry";
 import { RegistryOrigin, registryLogin, registrySession } from "./implementation/node-auth.ts";
@@ -124,6 +125,7 @@ export const appCommandFailure = (error: unknown): string | undefined => {
       ? "The source changed. Read the latest commit before saving or deploying."
       : "The Git source could not be read or saved. Check the repository and retry.";
   if (Schema.is(DeploymentBuildFailed)(error)) return error.reason;
+  if (Schema.is(BuildMemoryExceeded)(error)) return `${error.description} ${error.recovery.action}`;
   if (Schema.is(RegistryError)(error))
     return error.reason === "conflict"
       ? "That publishing name is used by another app. Choose another name."

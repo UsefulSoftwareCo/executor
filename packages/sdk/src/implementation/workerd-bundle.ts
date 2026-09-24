@@ -46,6 +46,8 @@ export const bundleWorkerdHost = Effect.gen(function* () {
       mcp: "apps/mcp",
       graphql: "apps/graphql",
       openapi: "apps/openapi",
+      skills: "apps/skills",
+      "skills/effect": "apps/skills/effect",
       "operations/approval": "apps/operations/approval",
     },
     [],

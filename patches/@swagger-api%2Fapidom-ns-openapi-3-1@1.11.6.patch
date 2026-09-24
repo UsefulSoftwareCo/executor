@@ -1,0 +1,13 @@
+diff --git a/package.json b/package.json
+index bb09df2485a7f89701d0965493f963959ca50945..b172bceb9e4f042495721f4dead051a9a46bcad7 100644
+--- a/package.json
++++ b/package.json
+@@ -9,6 +9,8 @@
+   },
+   "type": "module",
+   "sideEffects": [
++    "./src/index.mjs",
++    "./src/index.cjs",
+     "./src/refractor/registration.mjs",
+     "./src/refractor/registration.cjs"
+   ],

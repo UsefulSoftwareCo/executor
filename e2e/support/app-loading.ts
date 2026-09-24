@@ -140,9 +140,15 @@ export const checkAppLoading = (input: {
               page.goto(`${input.url}?view=overview`),
             );
             yield* inventory.requested;
-            yield* browser.use("Accounts stays a card while inventory loads", (page) =>
-              page.getByRole("status", { name: "Loading accounts preview", exact: true }).waitFor(),
+            yield* browser.use(
+              "Known empty requirements stay visible while inventory loads",
+              (page) => page.getByText("No accounts required.", { exact: true }).waitFor(),
             );
+            expect(
+              yield* browser.use("No invented account rows appear", (page) =>
+                page.getByRole("status", { name: "Loading accounts preview", exact: true }).count(),
+              ),
+            ).toBe(0);
             yield* browser.use("Manager navigation resolves while inventory is held", (page) =>
               page.getByRole("link", { name: "Source", exact: true }).waitFor(),
             );
@@ -156,10 +162,8 @@ export const checkAppLoading = (input: {
             );
             yield* browser.checkpoint(`${viewport.width} overview inventory pending`);
             yield* inventory.release;
-            yield* browser.use("Account card loading ends", (page) =>
-              page
-                .getByRole("status", { name: "Loading accounts preview", exact: true })
-                .waitFor({ state: "hidden" }),
+            yield* browser.use("The loaded card confirms the empty requirements", (page) =>
+              page.getByRole("heading", { name: "No accounts required", exact: true }).waitFor(),
             );
             expect(
               yield* browser.use("Partial overview retains the card layout", (page) =>

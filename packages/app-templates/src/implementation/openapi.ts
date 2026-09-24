@@ -1,7 +1,15 @@
 /** Compile an API document into ordinary app source, never a second execution engine. */
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { JsonObject, SourceFiles, type Json } from "@executor-js/sdk";
 import { jsonSchema } from "apps";
+import {
+  OpenapiErrorResponse,
+  openapiMediaKind,
+  isOpenapiTextMedia,
+  openapiBinaryResultSchema,
+} from "apps/openapi";
+import "../../../apps/src/contracts/swagger-client.ts";
+import SwaggerClient from "swagger-client";
 import { TemplateError } from "../contracts/templates.ts";
 import type { OpenApiImport } from "../contracts/openapi.ts";
 import {
@@ -14,13 +22,12 @@ import {
   type GeneratedSecrets,
 } from "../contracts/openapi.ts";
 import { packageFile, sourceFiles } from "./files.ts";
+import { openApiDocument, type OpenApiDocument } from "./openapi-document.ts";
 
 function fail(code: TemplateError["code"], reason: string): never {
   throw new TemplateError({ code, reason });
 }
 const record = (value: unknown): JsonObject => Schema.decodeUnknownSync(JsonObject)(value);
-const own = (value: JsonObject, key: string): Json | undefined =>
-  Object.hasOwn(value, key) ? value[key] : undefined;
 const serialize = (value: unknown) => JSON.stringify(value, null, 2);
 const identifier = (name: string) => name.replace(/[^a-zA-Z0-9_]/g, "_");
 function absolute(value: string): string {
@@ -31,24 +38,32 @@ function absolute(value: string): string {
     fail("server_url", "This API needs a configured server URL before import.");
   return url.href.replace(/\/$/, "");
 }
-function resolve(root: JsonObject, value: JsonObject, visited = new Set<string>()): JsonObject {
-  const ref = value.$ref;
-  if (ref === undefined) return value;
-  if (typeof ref !== "string" || !ref.startsWith("#/"))
-    fail("external_reference", "External OpenAPI references are not supported yet.");
-  if (visited.has(ref))
-    fail("circular_reference", "A circular OpenAPI object reference cannot be imported.");
-  let found: unknown = root;
-  for (const part of ref.slice(2).split("/"))
-    found = own(record(found), part.replace(/~1/g, "/").replace(/~0/g, "~"));
-  return resolve(root, record(found), new Set([...visited, ref]));
+function serverAddress(
+  server: { readonly url: string; readonly variables?: JsonObject | undefined },
+  connectUrl: string | undefined,
+): string {
+  const request = record(
+    SwaggerClient.buildRequest({
+      spec: {
+        openapi: "3.1.0",
+        servers: [server],
+        paths: { "/": { get: { operationId: "server" } } },
+      },
+      operationId: "server",
+    }),
+  );
+  return absolute(new URL(Schema.decodeUnknownSync(Schema.String)(request.url), connectUrl).href);
 }
+const binaryInput: JsonObject = {
+  type: "string",
+  description: "File bytes encoded as base64.",
+  contentEncoding: "base64",
+};
 /** Preserve every documented success shape. Missing schemas remain unknown rather than invented. */
 function responseSchema(
-  root: JsonObject,
+  document: OpenApiDocument,
   operation: Operation,
   method: string,
-  schemas: Readonly<Record<string, JsonObject>>,
 ): JsonObject | undefined {
   if (method === "HEAD") return { type: "null" };
   const success = Object.entries(operation.responses ?? {}).filter(([status]) =>
@@ -61,13 +76,13 @@ function responseSchema(
       shapes.push({ type: "null" });
       continue;
     }
-    const content = resolve(root, response).content;
+    const content = document.resolve(response).content;
     if (content === undefined) return undefined;
     const media = Object.entries(record(content));
     if (media.length === 0) return undefined;
     for (const [type, body] of media) {
       if (!type.includes("json")) {
-        shapes.push({ type: "string" });
+        shapes.push(isOpenapiTextMedia(type) ? { type: "string" } : openapiBinaryResultSchema);
         continue;
       }
       const schema = record(body).schema;
@@ -75,133 +90,132 @@ function responseSchema(
       shapes.push(record(schema));
     }
   }
-  return schemaDocument({ anyOf: shapes }, schemas);
+  return document.schema({ anyOf: shapes });
 }
-function schemaDocument(
-  input: JsonObject,
-  schemas: Readonly<Record<string, JsonObject>>,
-): JsonObject {
-  const definitions = new Map<string, JsonObject>();
-  const convert = (value: Json): Json => {
-    if (typeof value === "boolean") return value;
-    const output: Record<string, Json> = { ...record(value) };
-    for (const key of ["properties", "patternProperties", "$defs", "dependentSchemas"]) {
-      if (output[key] !== undefined)
-        output[key] = Object.fromEntries(
-          Object.entries(record(output[key])).map(([name, schema]) => [name, convert(schema)]),
-        );
-    }
-    for (const key of ["allOf", "anyOf", "oneOf", "prefixItems"]) {
-      const items = output[key];
-      if (items !== undefined) {
-        if (!Array.isArray(items))
-          fail("schema_keyword", "An API schema keyword has an invalid value.");
-        output[key] = items.map(convert);
+/** Unsupported response references cannot prevent importing otherwise executable calls. */
+function errorContent(document: OpenApiDocument, response: JsonObject): Json | undefined {
+  try {
+    return document.resolve(response).content;
+  } catch (error) {
+    if (!(error instanceof TemplateError) && !Schema.isSchemaError(error)) throw error;
+    return undefined;
+  }
+}
+
+/** Keep tagged errors, including response/component refs and anyOf alternatives.
+ * Public text comes from a declared string message or the schema's static description.
+ */
+function errorResponses(document: OpenApiDocument, operation: Operation): OpenapiErrorResponse[] {
+  const errors: OpenapiErrorResponse[] = [];
+  const tagged = Schema.Struct({
+    description: Schema.optionalKey(Schema.String),
+    required: Schema.Array(Schema.String),
+    properties: Schema.Record(Schema.String, JsonObject),
+  });
+  const visit = (
+    status: number,
+    input: Json,
+    visited = new Set<string>(),
+    parents: readonly JsonObject[] = [],
+  ) => {
+    const object = Schema.decodeUnknownOption(JsonObject)(input);
+    if (Option.isNone(object)) return;
+    const value = object.value;
+    try {
+      if (typeof value.$ref === "string" && visited.has(value.$ref)) return;
+      const next = typeof value.$ref === "string" ? new Set([...visited, value.$ref]) : visited;
+      const shape = document.resolve(value);
+      const variants = shape.anyOf;
+      if (Array.isArray(variants)) {
+        // Validate both the selected branch and its parents, including reference siblings.
+        for (const variant of variants) visit(status, variant, next, [...parents, value]);
+        return;
       }
+      const parsed = Schema.decodeUnknownOption(tagged)(shape);
+      if (Option.isNone(parsed) || !parsed.value.required.includes("_tag")) return;
+      const tag = parsed.value.properties._tag;
+      if (tag === undefined) return;
+      const code =
+        typeof tag.const === "string"
+          ? tag.const
+          : Array.isArray(tag.enum) && tag.enum.length === 1
+            ? tag.enum[0]
+            : undefined;
+      const message = parsed.value.properties.message;
+      const messageShape = message === undefined ? undefined : document.resolve(message);
+      const hasMessage =
+        messageShape !== undefined &&
+        (messageShape.type === "string" ||
+          typeof messageShape.const === "string" ||
+          (Array.isArray(messageShape.enum) &&
+            messageShape.enum.length > 0 &&
+            messageShape.enum.every((value) => typeof value === "string")));
+      const declaration = Schema.decodeUnknownOption(OpenapiErrorResponse)({
+        code,
+        status,
+        message: hasMessage
+          ? { source: "body" }
+          : { source: "schema", value: parsed.value.description },
+        schema: document.schema({ allOf: [...parents, value] }),
+      });
+      if (Option.isSome(declaration)) errors.push(declaration.value);
+    } catch (error) {
+      // Unsupported error declarations must not prevent otherwise supported API calls.
+      if (!(error instanceof TemplateError) && !Schema.isSchemaError(error)) throw error;
     }
-    for (const key of [
-      "items",
-      "additionalProperties",
-      "unevaluatedProperties",
-      "not",
-      "if",
-      "then",
-      "else",
-      "contains",
-      "propertyNames",
-    ]) {
-      if (output[key] !== undefined) output[key] = convert(output[key]);
-    }
-    if (typeof output.$ref === "string") {
-      const match = /^#\/components\/schemas\/([^/]+)$/.exec(output.$ref);
-      if (!match?.[1])
-        fail("schema_reference", "Only local component schema references are supported.");
-      const name = match[1].replace(/~1/g, "/").replace(/~0/g, "~");
-      const definition = schemas[name];
-      if (definition === undefined)
-        fail("missing_component", "An input schema references a missing component.");
-      output.$ref = `#/$defs/${match[1]}`;
-      if (!definitions.has(name)) {
-        definitions.set(name, {});
-        definitions.set(name, record(convert(definition)));
-      }
-    }
-    if (output.nullable === true) {
-      delete output.nullable;
-      return { anyOf: [output, { type: "null" }] };
-    }
-    delete output.nullable;
-    if (typeof output.exclusiveMinimum === "boolean") {
-      if (output.exclusiveMinimum && typeof output.minimum === "number") {
-        output.exclusiveMinimum = output.minimum;
-        delete output.minimum;
-      } else delete output.exclusiveMinimum;
-    }
-    if (typeof output.exclusiveMaximum === "boolean") {
-      if (output.exclusiveMaximum && typeof output.maximum === "number") {
-        output.exclusiveMaximum = output.maximum;
-        delete output.maximum;
-      } else delete output.exclusiveMaximum;
-    }
-    // OpenAPI formats describe wire representations, not additional JSON validation.
-    if (output.format === "binary" || output.format === "byte") delete output.format;
-    return output;
   };
-  const converted = record(convert(input));
-  return {
-    ...converted,
-    $defs: Object.fromEntries(definitions),
-    $schema: "https://json-schema.org/draft/2020-12/schema",
-  };
+  for (const [status, response] of Object.entries(operation.responses ?? {})) {
+    if (!/^[45][0-9]{2}$/.test(status)) continue;
+    const content = errorContent(document, response);
+    if (content === undefined) continue;
+    for (const [type, body] of Object.entries(record(content))) {
+      if (
+        !type
+          .split(";")[0]
+          ?.trim()
+          .match(/^application\/(?:[\w.-]+\+)?json$/i)
+      )
+        continue;
+      const schema = record(body).schema;
+      if (schema !== undefined) visit(Number(status), schema);
+    }
+  }
+  return errors;
 }
 /** Parse and generate once at import; API calls only use retained source and selected account fields. */
 const generateDefinition = (
   entry: OpenApiImport,
-  document: unknown,
+  inputDocument: unknown,
   options: { readonly baseUrl?: string } = {},
 ) =>
-  Effect.try({
-    try: () => {
-      const root = record(document);
-      const spec = Schema.decodeUnknownSync(Specification)(root);
-      if (!/^3\.[01]\./.test(spec.openapi))
-        fail(
-          "openapi_version",
-          "This importer supports OpenAPI 3.0 and 3.1. Swagger 2 needs conversion first.",
-        );
-      const schemes = spec.components?.securitySchemes ?? {};
-      const bindings = new Map<string, CredentialBinding>();
-      const cookieSchemes = new Set<string>();
+  Effect.tryPromise({
+    try: async () => {
+      const document = await openApiDocument(inputDocument);
+      const { spec } = document;
+      const schemes = { ...spec.components?.securitySchemes };
+      const bindings = new Map<string, readonly CredentialBinding[]>();
       const oauth: Array<{ name: string; declaration: string }> = [];
       for (const [name, source] of Object.entries(schemes)) {
-        const scheme = resolve(root, source);
-        if (scheme.type === "http" && scheme.scheme === "bearer") {
-          bindings.set(name, {
-            scheme: name,
-            field: "token",
-            in: "header",
-            name: "Authorization",
-            prefix: "Bearer ",
-          });
-        } else if (
-          scheme.type === "apiKey" &&
-          (scheme.in === "header" || scheme.in === "query") &&
-          typeof scheme.name === "string"
+        const scheme = document.resolve(source);
+        if (
+          (scheme.type === "http" && scheme.scheme === "bearer") ||
+          (scheme.type === "apiKey" &&
+            (scheme.in === "header" || scheme.in === "query" || scheme.in === "cookie") &&
+            typeof scheme.name === "string")
         ) {
-          bindings.set(name, {
-            scheme: name,
-            field: "token",
-            in: scheme.in,
-            name: scheme.name,
-            prefix: "",
-          });
-        } else if (
-          scheme.type === "apiKey" &&
-          scheme.in === "cookie" &&
-          typeof scheme.name === "string"
-        ) {
-          // Retain cookie security requirements; the tool helper has no cookie credential binding.
-          cookieSchemes.add(name);
+          bindings.set(name, [
+            {
+              scheme: name,
+              field: "token",
+              part: "value",
+              prefix: "",
+            },
+          ]);
+        } else if (scheme.type === "http" && scheme.scheme === "basic") {
+          bindings.set(name, [
+            { scheme: name, field: "username", part: "username", prefix: "" },
+            { scheme: name, field: "password", part: "password", prefix: "" },
+          ]);
         } else if (scheme.type === "oauth2") {
           const code = record(scheme.flows).authorizationCode;
           if (code !== undefined) {
@@ -226,7 +240,7 @@ const generateDefinition = (
           }
         }
       }
-      let fallback: readonly (readonly string[])[] | undefined;
+      let fallback: GeneratedOperation["request"]["security"] | undefined;
       if (
         bindings.size === 0 &&
         Object.keys(schemes).length === 0 &&
@@ -237,14 +251,16 @@ const generateDefinition = (
         );
         if (!header?.[1] || header[2] === undefined)
           fail("auth_helper", "This catalog entry needs a custom authentication helper.");
-        bindings.set("apiKey", {
-          scheme: "apiKey",
-          field: "token",
-          in: "header",
-          name: header[1],
-          prefix: header[2],
-        });
-        fallback = [["apiKey"]];
+        bindings.set("apiKey", [
+          {
+            scheme: "apiKey",
+            field: "token",
+            part: "value",
+            prefix: header[2],
+          },
+        ]);
+        schemes.apiKey = { type: "apiKey", in: "header", name: header[1] };
+        fallback = [{ apiKey: [] }];
       }
       if (
         !fallback &&
@@ -261,15 +277,16 @@ const generateDefinition = (
       // Every credential-bearing operation of one app addresses one origin. A document-,
       // path- or operation-level `servers` override that names another host would send the
       // connected account's key there, so the first resolved origin pins the rest.
-      const rootServer = options.baseUrl ?? spec.servers?.[0]?.url;
+      const rootServer =
+        options.baseUrl === undefined ? spec.servers?.[0] : { url: options.baseUrl };
       let pinnedOrigin =
         rootServer === undefined
           ? undefined
-          : new URL(absolute(new URL(rootServer, entry.connectUrl).href)).origin;
+          : new URL(serverAddress(rootServer, entry.connectUrl)).origin;
       for (const [path, source] of Object.entries(spec.paths)) {
         if (!path.startsWith("/") || path.includes("?") || path.includes("#"))
           fail("operation_path", "An operation has an invalid API path.");
-        const item = resolve(root, source);
+        const item = document.resolve(source);
         for (const method of [
           "GET",
           "POST",
@@ -281,7 +298,7 @@ const generateDefinition = (
         ] as const) {
           if (item[method.toLowerCase()] === undefined) continue;
           const operation = Schema.decodeUnknownSync(Operation)(
-            resolve(root, record(item[method.toLowerCase()])),
+            document.resolve(record(item[method.toLowerCase()])),
           );
           const name = identifier(operation.operationId ?? `${method.toLowerCase()}_${path}`);
           if (operations.some((op) => op.name === name))
@@ -299,7 +316,10 @@ const generateDefinition = (
           const serverUrl = options.baseUrl ?? server?.url;
           if (serverUrl === undefined)
             fail("server_missing", "The API has no server URL. Set an API base URL and try again.");
-          const baseUrl = absolute(new URL(serverUrl, entry.connectUrl).href);
+          const baseUrl = serverAddress(
+            options.baseUrl === undefined && server !== undefined ? server : { url: serverUrl },
+            entry.connectUrl,
+          );
           pinnedOrigin ??= new URL(baseUrl).origin;
           if (new URL(baseUrl).origin !== pinnedOrigin)
             fail(
@@ -312,35 +332,21 @@ const generateDefinition = (
           ];
           const parameters = new Map<string, Parameter>();
           for (const parameter of combined) {
-            const p = Schema.decodeUnknownSync(Parameter)(resolve(root, record(parameter)));
+            const p = Schema.decodeUnknownSync(Parameter)(document.resolve(record(parameter)));
             parameters.set(`${p.in}:${p.name}`, p);
           }
           const groups = new Map<
             string,
             { properties: Record<string, Json>; required: string[] }
           >();
-          const requestParameters: GeneratedOperation["parameters"][number][] = [];
           for (const p of parameters.values()) {
-            if (p.in === "cookie" || p.content !== undefined || p.allowReserved)
-              fail("parameter_encoding", `Tool ${name} uses unsupported parameter encoding.`);
-            const style = p.style ?? (p.in === "query" ? "form" : "simple");
-            if (
-              (p.in === "query" &&
-                !["form", "spaceDelimited", "pipeDelimited", "deepObject"].includes(style)) ||
-              (p.in !== "query" && style !== "simple")
-            )
-              fail("parameter_style", `Tool ${name} uses unsupported parameter style.`);
             const key = p.in === "header" ? "headers" : p.in;
             const group = groups.get(key) ?? { properties: {}, required: [] };
-            group.properties[p.name] = p.schema ?? {};
+            const content = p.content === undefined ? undefined : Object.values(p.content)[0];
+            group.properties[p.name] =
+              p.schema ?? (content === undefined ? {} : (record(content).schema ?? {}));
             if (p.required || p.in === "path") group.required.push(p.name);
             groups.set(key, group);
-            requestParameters.push({
-              name: p.name,
-              in: p.in,
-              style,
-              explode: p.explode ?? style === "form",
-            });
           }
           const properties: Record<string, Json> = {};
           const required: string[] = [];
@@ -348,61 +354,80 @@ const generateDefinition = (
             properties[key] = { type: "object", ...group, additionalProperties: false };
             if (group.required.length) required.push(key);
           }
-          let body: GeneratedOperation["body"] = "none";
+          const bodyVariants: JsonObject[] = [];
+          let retainedBody: GeneratedOperation["request"]["requestBody"];
           if (operation.requestBody) {
             const request = Schema.decodeUnknownSync(RequestBody)(
-              resolve(root, operation.requestBody),
+              document.resolve(operation.requestBody),
             );
-            if (request.content["application/json"]) {
-              body = "json";
-              properties.body = request.content["application/json"].schema ?? {};
-            } else if (request.content["application/octet-stream"]) {
-              body = "base64";
-              properties.body = { type: "string", description: "File bytes encoded as base64." };
-            } else
-              fail(
-                "request_body",
-                `Tool ${name} uses an unsupported request body. JSON and binary files are supported.`,
-              );
+            const retainedContent: Record<string, (typeof RequestBody.Type.content)[string]> = {};
+            for (const [contentType, content] of Object.entries(request.content)) {
+              const kind = openapiMediaKind(contentType);
+              let schema = document.resolve(content.schema ?? {});
+              let inputSchema: JsonObject =
+                kind === "binary"
+                  ? binaryInput
+                  : kind === "text"
+                    ? { type: "string" }
+                    : (content.schema ?? {});
+              if (kind === "multipart") {
+                const fields = { ...record(schema.properties ?? {}) };
+                for (const [key, field] of Object.entries(fields)) {
+                  const shape = document.resolve(record(field));
+                  if (shape.type === "string" && shape.format === "binary") {
+                    fields[key] = binaryInput;
+                    // Retain the resolved file shape for runtime base64 conversion.
+                    schema = {
+                      ...schema,
+                      properties: { ...record(schema.properties ?? {}), [key]: shape },
+                    };
+                  }
+                }
+                inputSchema = { ...schema, properties: fields };
+              }
+              retainedContent[contentType] = { ...content, schema };
+              bodyVariants.push({
+                properties: { contentType: { enum: [contentType] }, body: inputSchema },
+                ...(bodyVariants.length === 0 ? {} : { required: ["contentType"] }),
+              });
+            }
+            retainedBody = { ...request, content: retainedContent };
+            if (!bodyVariants.length)
+              fail("request_body", `Tool ${name} has no request media types.`);
+            properties.body = {};
+            properties.contentType = {
+              type: "string",
+              enum: Object.keys(request.content),
+              description: "Request media type. Defaults to the first declared type.",
+            };
             if (request.required) required.push("body");
           }
-          const security =
-            operation.security === undefined && spec.security === undefined && fallback
-              ? fallback
-              : (operation.security ?? spec.security ?? []).map((requirement) =>
-                  Object.keys(requirement).sort(),
-                );
-          for (const keys of security) {
+          const security = operation.security ?? spec.security ?? fallback ?? [];
+          for (const requirement of security) {
+            const keys = Object.keys(requirement).sort();
             if (!keys.length) continue;
-            if (keys.some((key) => cookieSchemes.has(key))) continue;
-            if (keys.some((key) => oauth.some((method) => method.name === key))) {
-              if (keys.length !== 1)
-                fail(
-                  "combined_oauth",
-                  `Tool ${name} combines OAuth with another credential and needs a custom helper.`,
-                );
-              continue;
-            }
-            const parts = keys.map(
-              (key) =>
-                bindings.get(key) ??
-                fail("auth_method", `Tool ${name} uses an unsupported authentication method.`),
-            );
+            // Each selected account supplies one complete supported alternative.
+            // Unsupported alternatives do not hide a usable key or public alternative.
+            if (!keys.every((key) => bindings.has(key))) continue;
+            const parts = keys.flatMap((key) => bindings.get(key) ?? []);
             const methodName =
-              bindings.size === 1 && parts.length === 1 ? "apiKey" : keys.join("_and_");
+              bindings.size === 1 && keys.length === 1 ? "apiKey" : keys.join("_and_");
             methods.set(methodName, {
               name: methodName,
               label: parts.length === 1 ? "API key" : keys.join(" + "),
               bindings: parts.map((part) => ({
                 ...part,
-                field: parts.length === 1 ? "token" : identifier(part.scheme),
+                field: keys.length === 1 ? part.field : `${identifier(part.scheme)}_${part.field}`,
               })),
             });
           }
-          const input = schemaDocument(
-            { type: "object", properties, required, additionalProperties: false },
-            spec.components?.schemas ?? {},
-          );
+          const input = document.schema({
+            type: "object",
+            properties,
+            required,
+            ...(bodyVariants.length ? { anyOf: bodyVariants } : {}),
+            additionalProperties: false,
+          });
           try {
             jsonSchema(input);
           } catch {
@@ -411,14 +436,9 @@ const generateDefinition = (
               `Tool ${name} has an input schema this importer cannot preserve yet.`,
             );
           }
-          const outputSchema = responseSchema(
-            root,
-            operation,
-            method.toUpperCase(),
-            spec.components?.schemas ?? {},
-          );
+          const outputSchema = responseSchema(document, operation, method);
           const streaming = Object.values(operation.responses ?? {}).some((response) => {
-            const content = resolve(root, response).content;
+            const content = errorContent(document, response);
             return content !== undefined && Object.hasOwn(record(content), "text/event-stream");
           });
           operations.push({
@@ -428,11 +448,39 @@ const generateDefinition = (
             method,
             path,
             baseUrl,
-            parameters: requestParameters,
-            body,
-            security,
+            openapi: spec.openapi,
+            securitySchemes: Object.fromEntries(
+              [...new Set(security.flatMap(Object.keys))].map((key) => [
+                key,
+                schemes[key] ??
+                  fail("auth_method", "A security requirement names a missing scheme."),
+              ]),
+            ),
+            request: {
+              parameters: [...parameters.values()],
+              ...(retainedBody === undefined ? {} : { requestBody: retainedBody }),
+              security,
+              responses: Object.fromEntries(
+                Object.entries(operation.responses ?? {}).flatMap(([status, response]) => {
+                  const content = errorContent(document, response);
+                  return content === undefined
+                    ? []
+                    : [
+                        [
+                          status,
+                          {
+                            content: Object.fromEntries(
+                              Object.keys(record(content)).map((type) => [type, {}]),
+                            ),
+                          },
+                        ],
+                      ];
+                }),
+              ),
+            },
             input,
             ...(outputSchema === undefined ? {} : { outputSchema }),
+            errorResponses: errorResponses(document, operation),
           });
         }
       }
@@ -441,12 +489,14 @@ const generateDefinition = (
         !operations.some(
           (operation) =>
             operation.streaming !== true &&
-            (operation.security.length === 0 ||
-              operation.security.some((keys) =>
-                keys.every(
-                  (key) => bindings.has(key) || oauth.some((method) => method.name === key),
-                ),
-              )),
+            (operation.request.security.length === 0 ||
+              operation.request.security.some((requirement) => {
+                const keys = Object.keys(requirement);
+                return (
+                  keys.every((key) => bindings.has(key)) ||
+                  (keys.length === 1 && oauth.some((method) => method.name === keys[0]))
+                );
+              })),
         )
       )
         fail(

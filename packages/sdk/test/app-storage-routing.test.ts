@@ -37,6 +37,7 @@ for (const database of [undefined, {}]) {
                 }),
               workflow: () => Effect.die("Unexpected workflow invocation"),
               webhook: () => Effect.die("Unexpected webhook invocation"),
+              skills: () => Effect.die("This fixture does not load skills"),
               inspect: () => Effect.succeed([]),
               call: () => Effect.succeed(null),
               mutate: () => Effect.succeed(null),
@@ -89,6 +90,7 @@ for (const versioned of [false, true])
                 }),
               workflow: () => Effect.die("Unexpected workflow invocation"),
               webhook: () => Effect.die("Unexpected webhook invocation"),
+              skills: () => Effect.die("This fixture does not load skills"),
               inspect: () => Effect.succeed([]),
               call: () => Effect.succeed(null),
               query: ({ observeRevision }) =>

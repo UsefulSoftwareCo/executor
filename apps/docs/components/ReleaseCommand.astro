@@ -1,0 +1,7 @@
+---
+import { releaseCommands, type ReleaseCommandProduct } from "../release-commands.ts";
+interface Props { product: typeof ReleaseCommandProduct.Type }
+const { description, command } = releaseCommands[Astro.props.product];
+---
+<p>{description}</p>
+<pre><code>{command}</code></pre>

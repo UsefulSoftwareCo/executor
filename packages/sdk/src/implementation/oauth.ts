@@ -289,7 +289,11 @@ export const makeOAuth = (
             discovered.scopes,
             method.tokenEndpointAuthMethod,
           )
-          .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "registration" })));
+          .pipe(
+            Effect.mapError(
+              () => new OAuthSetupFailed({ reason: "registration", callbackUrl: redirect.href }),
+            ),
+          );
       }
       if (client === undefined) return yield* new OAuthClientUnavailable(input);
       if (

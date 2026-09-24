@@ -1,4 +1,4 @@
-/** Import and sign-in must both consume the challenge on the actual MCP response. */
+/** Import is offline; account setup consumes the challenge on the actual MCP response. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -21,6 +21,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
         const prefix = `/api/organizations/${actors.organization.id}`;
         for (const postChallenge of [true, false]) {
           yield* issuer.configure({ postChallenge });
+          const probes = (yield* issuer.metrics).probes;
           const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
             source: {
               kind: "mcp",
@@ -29,7 +30,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
               auth: { type: "auto" },
             },
           });
-          expect(response.status, "Automatic import recognizes the OAuth challenge").toBe(200);
+          expect(response.status, "Import saves the app without contacting the server").toBe(200);
+          expect((yield* issuer.metrics).probes).toBe(probes);
           const app = yield* body(Resource, response);
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
@@ -65,7 +67,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
         }
         expect((yield* issuer.metrics).probes).toBeGreaterThanOrEqual(2);
         yield* issuer.configure({ postChallenge: true, challenge: false });
-        const rejected = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
+        const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
           source: {
             kind: "mcp",
             name: `No challenge ${randomUUID().slice(0, 8)}`,
@@ -73,8 +75,18 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
             auth: { type: "auto" },
           },
         });
-        expect(rejected.status).toBe(422);
-        expect(rejected.body).toMatchObject({ _tag: "CatalogImportFailed" });
+        expect(imported.status).toBe(200);
+        const unresolved = yield* body(Resource, imported);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${unresolved.id}`).pipe(Effect.orDie),
+        );
+        const saved = yield* body(
+          Schema.Struct({
+            requirements: Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.Unknown) }),
+          }),
+          imported,
+        );
+        expect(Object.keys(saved.requirements.accounts)).toEqual(["service"]);
       }),
     ),
   );

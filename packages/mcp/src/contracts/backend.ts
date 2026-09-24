@@ -18,10 +18,11 @@ import type { Effect } from "effect";
  * authorization on every operation; an owner filter alone is not authority.
  * Create hosted adapters per request, never cache them across callers.
  * Preserve native errors. Schema error identifiers become public diagnostics at the MCP
- * response boundary; messages, fields and causes remain private.
+ * response boundary. Declared API errors have a bounded safe projection; other
+ * messages, fields and causes remain private.
  */
 export interface McpBackend<E extends Error> {
-  /** Authorize static metadata without evaluating the app or requiring connected accounts. */
+  /** Authorize app and profile access before evaluating skill metadata. */
   readonly listSkills: (
     input: Parameters<Executor["skills"]["list"]>[0],
   ) => Effect.Effect<AppSkillCatalog, E>;
@@ -42,7 +43,7 @@ export interface McpBackend<E extends Error> {
   readonly listApps: (
     input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids">,
   ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug">>, E>;
-  /** Enumerate only the caller's execution targets; static skills still belong to the real app. */
+  /** Enumerate only the caller's execution targets; skills use the same app and account authority. */
   readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
   /** Authorize the app and its selected accounts before evaluating each catalog page. */
   readonly listTools: (

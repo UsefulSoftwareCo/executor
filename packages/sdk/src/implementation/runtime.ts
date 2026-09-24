@@ -6,6 +6,7 @@ import {
   type HostContext,
   type AppStorage,
   type HostedTool,
+  type AppSkillSource,
   type ResolvedAccountsInput,
 } from "apps/contracts";
 import type { BuiltApp, Runtime, RuntimeAsset } from "../contracts/runtime.ts";
@@ -27,6 +28,11 @@ export interface ResolvedAppRuntime {
     readonly build: BuildId;
     readonly path: string;
   }) => Promise<RuntimeAsset | undefined>;
+  readonly skills: (input: {
+    readonly app: string;
+    readonly build: BuildId;
+    readonly accounts: ResolvedAccountsInput;
+  }) => Promise<readonly AppSkillSource[]>;
   readonly inspect: (input: {
     readonly app: string;
     readonly build: BuildId;
@@ -92,6 +98,12 @@ export const createAppRuntime = (options: {
     ...(asset === undefined
       ? {}
       : { asset: (input: { build: BuildId; path: string }) => Effect.runPromise(asset(input)) }),
+    skills: ({ accounts, ...input }) =>
+      Effect.runPromise(
+        context(accounts).pipe(
+          Effect.flatMap((context) => runtime.skills({ ...input, ...context })),
+        ),
+      ),
     inspect: ({ accounts, ...input }) =>
       Effect.runPromise(
         context(accounts).pipe(
@@ -152,6 +164,7 @@ export const toEffectRuntime = (definition: AppRuntime, blobs: BlobStorage): Run
     ...(asset === undefined
       ? {}
       : { asset: (input: Parameters<typeof asset>[0]) => asset(input).pipe(provide) }),
+    skills: (input) => runtime.skills(input).pipe(provide),
     inspect: (input) => runtime.inspect(input).pipe(provide),
     query: (input) => runtime.query(input).pipe(provide),
     mutate: (input) => runtime.mutate(input).pipe(provide),

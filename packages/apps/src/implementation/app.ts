@@ -56,7 +56,9 @@ export type EffectDefinition<Def> = {
         ? Readonly<Record<string, import("../contracts/operations.ts").AppOperation>>
         : Key extends "webhooks"
           ? NonNullable<NativeDefinition<WebhookContext>["webhooks"]>
-          : Def[Key];
+          : Key extends "skills"
+            ? NonNullable<NativeDefinition<unknown>["skills"]>
+            : Def[Key];
 };
 
 const InternalApp = Symbol("apps.App");

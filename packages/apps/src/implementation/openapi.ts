@@ -15,11 +15,17 @@ export const openapiToolsEffect = (
     );
     const request = createRequest(config);
     const entries = yield* Effect.forEach(
-      config.operations.filter((op) => request.available(op, config.account?.method)),
+      config.operations.filter((op) => request.available(op, config.account)),
       (op) =>
         Effect.gen(function* () {
           const input = yield* jsonSchemaDecoder(op.input).pipe(
             Effect.mapError(() => new OpenapiError({ reason: "invalid_definition" })),
+          );
+          const errors = yield* Effect.forEach(op.errorResponses ?? [], (response) =>
+            jsonSchemaDecoder(response.schema).pipe(
+              Effect.map((decoder) => ({ ...response, decoder })),
+              Effect.mapError(() => new OpenapiError({ reason: "invalid_definition" })),
+            ),
           );
           const tool: OpenapiTools[string] = {
             description: op.description,
@@ -31,7 +37,7 @@ export const openapiToolsEffect = (
                 Effect.mapError(() => new OpenapiError({ reason: "invalid_input" })),
                 Effect.flatMap((parsed) =>
                   request
-                    .call(op, parsed, config.account)
+                    .call(op, parsed, config.account, errors)
                     .pipe(
                       Effect.provideService(
                         FetchHttpClient.Fetch,

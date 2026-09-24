@@ -1,8 +1,10 @@
-/** Generated app entry point preserves trace context and returns safe telemetry to its host. */
-export const appBridge = `
+import type { SourceFile } from "../contracts/deployment.ts";
+/** Retain package files in the server entry point and preserve invocation context across isolation. */
+export const appBridge = (files: readonly SourceFile[]) => `
 import app from "./index.ts";
 import { createIsolatedAppHandler, hostContext, isolatedElicitation, isolatedWorkflowExecution, isolatedWorkflowControls } from "apps/host";
 const handler = createIsolatedAppHandler(app);
+const files = ${JSON.stringify(files)};
 export default {
   async fetch(request, env) {
     // This entry point has no public route or host bindings. Only the trusted loader calls it.
@@ -13,7 +15,7 @@ export default {
     try {
       return await handler(new Request("https://app.internal/dispatch", {
         method: "POST", headers: { "content-type": "application/json", traceparent: request.headers.get("traceparent") ?? "" }, body: JSON.stringify(command), signal: AbortSignal.any([request.signal, lifetime.signal])
-      }), { ...hostContext(accounts, approval), ...(replay === undefined ? {} : { replay }), ...(env?.WORKFLOW && workflowRun ? { workflow: isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
+      }), { ...hostContext(accounts, approval), files, ...(replay === undefined ? {} : { replay }), ...(env?.WORKFLOW && workflowRun ? { workflow: isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
     } finally { lifetime.abort(); }
   }
 };`;

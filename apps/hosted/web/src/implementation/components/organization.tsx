@@ -460,19 +460,18 @@ export function OrganizationEntry({ allowCreate = true }: { readonly allowCreate
             ))}
           </div>
         )}
-        {allowCreate ? (
-          <CreateOrganization
-            onCreated={({ slug }) =>
-              navigate({ to: "/org/$organizationSlug/apps", params: { organizationSlug: slug } })
-            }
-          />
-        ) : (
-          organizations.value.length === 0 && (
+        {organizations.value.length === 0 &&
+          (allowCreate ? (
+            <CreateOrganization
+              onCreated={({ slug }) =>
+                navigate({ to: "/org/$organizationSlug/apps", params: { organizationSlug: slug } })
+              }
+            />
+          ) : (
             <EmptyState size="compact" title="No organization access">
               Your account has no access to this instance. Contact an administrator.
             </EmptyState>
-          )
-        )}
+          ))}
       </div>
     </HostedEntry>
   );

@@ -66,6 +66,12 @@ const check = Effect.gen(function* () {
           // This adapter observes the real OS store, never an application implementation.
           if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
             return;
+          // This external upstream fixture generates its contract with Effect, not product code.
+          if (
+            label === `support${path.sep}openapi-error-upstream.ts` &&
+            specifier === "effect/unstable/httpapi"
+          )
+            return;
           if (label.startsWith(`viewer${path.sep}`) && specifier === "media-chrome/react") return;
           if (
             specifier.startsWith(".") &&

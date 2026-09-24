@@ -1,3 +1,4 @@
+import { publishedSkillRoutes, readExecutorSkills } from "@executor-js/app-templates/executor";
 import { localAppBrowserHandlers } from "./app-browser.ts";
 import { startupPhase } from "./startup-diagnostics.ts";
 import { startScheduleWorker, defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
@@ -247,7 +248,9 @@ export const localApi = (
         registry,
         blobs,
       });
+      const publicSkills = yield* readExecutorSkills;
       const productRoutes = Layer.mergeAll(
+        publishedSkillRoutes(publicSkills),
         HttpApiBuilder.layer(LocalWebhookSetupApi).pipe(
           Layer.provide(localWebhookSetupHandlers(executor, config, auth)),
         ),

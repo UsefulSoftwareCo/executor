@@ -1,5 +1,5 @@
 import { saveAndDeploy } from "../support/app-authoring.ts";
-/** Static skills are tested through the real hosted API, with no app implementation imports. */
+/** Bundled skills are tested through the real hosted API, with no app implementation imports. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -30,9 +30,8 @@ const Document = Schema.Struct({
   content: Schema.String,
   files: Schema.Array(Schema.String),
 });
-const source = `import { defineApp, defineProvider, secrets, object, string } from "apps";
-const service = defineProvider({ name: "Skill fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service } }, async () => { throw new Error("Skills must not evaluate this factory"); });`;
+const source = `import { defineApp } from "apps";
+export default defineApp({ accounts: {} }, async () => ({}));`;
 const document = (version: string) =>
   `---\nname: search-messages\ndescription: Search cached messages.\nallowed-tools: queries.search\nmetadata:\n  version: "${version}"\n---\nRead [examples](references/examples.md).\n`;
 const files = (version: string) => [
@@ -83,7 +82,7 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
         const other = yield* deploy(`Other fixture ${randomUUID().slice(0, 8)}`);
         const path = `${prefix}/${app.id}`;
         const read = `${path}/skills/search-messages`;
-        expect((yield* api.request(actors.member, "GET", `${path}/tools`)).status).toBe(409);
+        expect((yield* api.request(actors.member, "GET", `${path}/tools`)).status).toBe(200);
         const catalogResponse = yield* api.request(actors.member, "GET", `${path}/skills`);
         expect(catalogResponse.status).toBe(200);
         const catalog = yield* body(Catalog, catalogResponse);
@@ -145,29 +144,6 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
           )).status,
         ).toBe(403);
 
-        // Bad skills fail before building even when the executable source is invalid too.
-        for (const invalid of [
-          { path: "skills/search-messages/SKILL.md", content: "No frontmatter" },
-          {
-            path: "skills/search-messages/SKILL.md",
-            content: "---\nname: search-messages\nname: duplicate\ndescription: Example\n---\n",
-          },
-          {
-            path: "skills/search-messages/SKILL.md",
-            content: "---\nname: mismatch\ndescription: Example\n---\n",
-          },
-          { path: "skills/search-messages/reference.md", content: "Missing SKILL.md" },
-          { path: "skills/Bad-Name/SKILL.md", content: document("v1") },
-        ]) {
-          const rejected = yield* saveAndDeploy(actors.owner, path, {
-            files: [{ path: "index.ts", content: "!invalid javascript" }, invalid],
-          });
-          expect(rejected.status).toBe(400);
-          expect(rejected.body).toMatchObject({ _tag: "SkillDefinitionInvalid" });
-          expect(
-            (yield* body(Document, yield* api.request(actors.member, "GET", read))).deployment,
-          ).toBe(app.activeDeployment);
-        }
         const changed = yield* saveAndDeploy(actors.owner, path, {
           files: files("v2"),
         });

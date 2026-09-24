@@ -1,5 +1,5 @@
 /** Author schema facade. Internals use the native decoder retained by each value. */
-import { Effect, Schema as EffectSchema, SchemaIssue, SchemaParser } from "effect";
+import { Effect, Schema as EffectSchema, SchemaGetter, SchemaIssue, SchemaParser } from "effect";
 import { dereference, validate } from "@cfworker/json-schema";
 import { ValidationError, type JsonObject, type JsonValue } from "../contracts/schema.ts";
 
@@ -140,9 +140,20 @@ export function object<const F extends Fields>(fields: F): ObjectSchema<F> {
   );
   // SAFETY: each key retains its own decoder and optional/default metadata.
   // Object.fromEntries erases the mapped key association represented by ObjectValue.
-  const decoder = EffectSchema.Struct(Object.fromEntries(entries)) as EffectSchema.Decoder<
-    ObjectValue<F>
-  >;
+  const decoder = (
+    entries.length === 0
+      ? withJsonSchemaDocument(
+          // Native Struct({}) accepts every non-null value and retains undeclared fields.
+          EffectSchema.Record(EffectSchema.String, EffectSchema.Unknown).pipe(
+            EffectSchema.decodeTo(EffectSchema.Record(EffectSchema.String, EffectSchema.Never), {
+              decode: SchemaGetter.transform(() => ({})),
+              encode: SchemaGetter.transform((value) => value),
+            }),
+          ),
+          { type: "object", properties: {}, additionalProperties: false },
+        )
+      : EffectSchema.Struct(Object.fromEntries(entries))
+  ) as EffectSchema.Decoder<ObjectValue<F>>;
   return { ...wrap(decoder, false), fields: Object.freeze({ ...fields }) };
 }
 

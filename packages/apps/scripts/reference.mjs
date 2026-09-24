@@ -15,6 +15,7 @@ const modules = {
   "apps/mcp/stdio": ["src/mcp-stdio.ts", "integrations.md"],
   "apps/graphql": ["src/graphql.ts", "integrations.md"],
   "apps/openapi": ["src/openapi.ts", "integrations.md"],
+  "apps/skills": ["src/skills.ts", "tools.md"],
 };
 const methods = [
   ["OptimisticLocalStore", "src/contracts/optimistic.ts", "OptimisticLocalStore", "ui.md"],

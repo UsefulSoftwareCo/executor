@@ -47,28 +47,17 @@ Keep `<BETTER_AUTH_URL>/api/oauth/callback` reachable; connecting a provider
 account by OAuth uses it. The SSO callback is
 `<BETTER_AUTH_URL>/api/auth/callback/sso`.
 
-Tracing is configured separately and is off until you set an endpoint. See
+The bundled Motel collector records traces by default. You can export to your own collector instead. See
 [Tracing](/run/tracing).
 
 ## Run it
 
-Use `ghcr.io/usefulsoftwareco/executor-selfhost:beta` for Executor v2 on Linux
-amd64 or arm64. The `latest` tag still serves v1. Start with a new volume;
-this image does not migrate an existing v1 database.
+<ReleaseCommand product="docker" />
 
-For a local installation, run:
+Open `http://localhost:4400` and complete the first-run setup.
+The volume retains your data and keys across container restarts.
 
-```bash
-docker pull ghcr.io/usefulsoftwareco/executor-selfhost:beta
-docker run --detach --name executor-v2 --init --restart unless-stopped \
-  --publish 127.0.0.1:4400:4400 \
-  --volume executor-v2-data:/app/data \
-  ghcr.io/usefulsoftwareco/executor-selfhost:beta
-```
-
-Open `http://localhost:4400`. For a server outside Railway, set `BETTER_AUTH_URL`
-to its exact HTTPS origin. Add `--env NAME` for any settings above.
-To pin a release, replace `beta` with `beta-<full Git commit SHA>`.
+<ReleaseCommand product="docker-channel" />
 
 The container publishes port `4400` on loopback only, as
 `127.0.0.1:4400`. Put your own TLS terminator in front of it and forward to that
@@ -87,15 +76,16 @@ have configured it.
 
 ## Deploy on Railway
 
-1. Create a service from `ghcr.io/usefulsoftwareco/executor-selfhost:beta`.
-2. Attach a new persistent volume at `/app/data`.
-3. Generate a public domain in the service's networking settings. Route it to port `8080`, which Railway supplies through `PORT`. If you override `PORT`, use that value.
-4. Set the Railway healthcheck path to `/health`, with a startup timeout of 120 seconds.
-5. Deploy (or redeploy if the service already started). This loads the new public domain into the server. Open that domain to create the first administrator.
+<ReleaseCommand product="docker-image" />
+
+1. Attach a new persistent volume at `/app/data`.
+2. Generate a public domain in the service's networking settings. Route it to port `8080`, which Railway supplies through `PORT`. If you override `PORT`, use that value.
+3. Set the Railway healthcheck path to `/health`, with a startup timeout of 120 seconds.
+4. Deploy (or redeploy if the service already started). This loads the new public domain into the server. Open that domain to create the first administrator.
 
 No database service or secret variables are needed. Executor reads
 `RAILWAY_PUBLIC_DOMAIN` and `PORT`. The container prepares the root-owned volume,
-then runs the server as the unprivileged `node` user. You do not need
+then runs the server as the unprivileged `executor` user. You do not need
 `RAILWAY_RUN_UID=0` or a custom start command. Keep one replica per volume.
 
 For a custom domain, set `BETTER_AUTH_URL` to that exact HTTPS origin. App web
@@ -106,8 +96,12 @@ and MCP endpoint use the service domain.
 
 Everything that must survive a restart lives in the named volume `executor-v2-data`,
 mounted at `/app/data`. This includes the database, app source and builds, app
-data, diagnostics, and generated keys (`auth-secret.key` and `encryption.key`).
+data and generated keys (`auth-secret.key` and `encryption.key`).
 The key files are readable only by the server user. Back up the whole volume.
+
+Motel stores telemetry separately at `/app/motel-data`. Replacing the container
+discards that telemetry by default. Mount a separate volume there if you need
+to retain it.
 
 If you supply keys through environment variables, keep those values in your
 secret manager as well; Executor does not save those overrides to disk. Keep
@@ -122,13 +116,7 @@ run command with the same volume and secrets.
 
 ## Build from source
 
-The public repository also includes a Compose setup that builds locally:
-
-```bash
-git clone --depth 1 --branch v2 https://github.com/UsefulSoftwareCo/executor.git executor-v2
-cd executor-v2
-docker compose -f apps/hosted/self-host/compose.yaml up --build -d
-```
+<ReleaseCommand product="source" />
 
 Compose also works without environment variables. This setup uses a separate named
 volume, `pglite-data`; do not confuse it with the published-image example above.
@@ -143,14 +131,15 @@ proxy:
 EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
 ```
 
-Each page is served at `<app-slug>.<organization-slug>.<base>`, forwarded to
+Each page is served at `<app-slug>--<organization-slug>.<base>`, forwarded to
 container port 4400. That whole first label must fit in 63 characters, so keep
 app and organization slugs short. On localhost the origin is derived for you and
 you do not need to set this.
 
 ## Running without Docker
 
-You can run the same server directly with Node. Data persists under
+The source checkout includes a native development server that runs with Bun.
+The published Docker image uses workerd. Native development data persists under
 `.local/hosted`; set `EXECUTOR_DATA_DIR` to choose a different parent directory.
 `HOST` defaults to `0.0.0.0` and `PORT` to `4400`.
 

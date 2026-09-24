@@ -579,6 +579,15 @@ excluded by the deployed runner's default filter. A filter that executes no
 scenarios is a failure. See [test stages](../notes/test-stages.md) for retained
 previews, shared infrastructure, background pause/resume, and cleanup.
 
+Scenarios declaring `runtime: "attached"` require a deployed Cloud target.
+The compiler memory scenario uses large, pinned npm dependencies to exceed the
+real compiler Worker's memory limit. It checks the typed error, the unchanged
+active deployment, and a subsequent successful build. Local workerd does not
+enforce that memory limit, so its report marks this scenario N/A.
+Run it alone with `bun run e2e:deployed --test-name 'Cloud compiler memory failures' --workers 1`.
+The default deployed filter excludes it because exhausting the shared compiler
+can interrupt other scenarios' builds.
+
 ### Installed CLI artifact
 
 To verify the installed CLI artifact through the same local scenarios, set

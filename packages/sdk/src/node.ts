@@ -24,6 +24,7 @@ export const nodeRuntime = (options: NodeRuntimeOptions): AppRuntime => {
           asset: (input: Parameters<NonNullable<typeof runtime.asset>>[0]) =>
             asset(input).pipe(provideNode),
         }),
+    skills: (input) => runtime.skills(input).pipe(provideNode),
     inspect: (input) => runtime.inspect(input).pipe(provideNode),
     query: (input) => runtime.query(input).pipe(provideNode),
     mutate: (input) => runtime.mutate(input).pipe(provideNode),

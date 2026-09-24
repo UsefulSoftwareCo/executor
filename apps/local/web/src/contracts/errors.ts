@@ -39,6 +39,10 @@ const unavailable = () =>
   message("Could not reach Executor", "Check that the local server is running, then retry.");
 const errorMessage = Match.type<DashboardError>().pipe(
   Match.tagsExhaustive({
+    SkillRevisionChanged: () => ({
+      title: "Skills changed",
+      description: "Reload the skill to read its current instructions and references.",
+    }),
     AppSkillNotFound: () =>
       message("Skill file unavailable", "Reload this app’s skills and choose the file again."),
     WorkflowFailure: () =>
@@ -198,6 +202,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
           ? "Check its source and dependencies, then try again. The running version is unchanged."
           : error.reason,
       ),
+    BuildMemoryExceeded: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
     CatalogImportFailed: (error) => message("App could not be imported", error.reason),
     HttpClientError: unavailable,
     SchemaError: () =>

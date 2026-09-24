@@ -113,17 +113,19 @@ export const OAuthSetupFailed = UserFacingError.define({
       "token_exchange",
       "unsupported",
     ]),
+    /** Executor's own public callback, which some services must approve before sign-in. */
+    callbackUrl: Schema.optional(HttpUrl),
   },
-  presentation: ({ reason }) =>
+  presentation: ({ reason, callbackUrl }) =>
     (
       ({
         discovery_unavailable: {
-          title: "Sign-in temporarily unavailable",
+          title: "The connected service’s sign-in is unavailable",
           description:
-            "We could not load the service’s OAuth sign-in settings. The service may be unavailable, busy, or unreachable.",
+            "Executor could not load sign-in settings from this app’s service. The service may be down, busy, or unreachable. This affects the service connection, not your Executor sign-in.",
           recovery: {
             action:
-              "Try again. If this continues, copy the fix prompt into your agent to check the service and connection settings.",
+              "Try again. If this continues, check the service’s status or copy the fix prompt to investigate its server address and connection settings.",
             instructions:
               "Inspect the current app’s provider definition and OAuth discovery URL. Check reachability and service status, and distinguish a temporary outage from an incorrect endpoint. Fix incorrect configuration only when the evidence supports it; retry a temporary failure.",
           },
@@ -163,15 +165,18 @@ export const OAuthSetupFailed = UserFacingError.define({
           },
         },
         registration: {
-          title: "OAuth registration failed",
-          description: "We could not register an OAuth client for this connection.",
+          title: "Service did not accept Executor",
+          description: "Some services accept only apps that they have approved.",
+          ...(callbackUrl === undefined
+            ? {}
+            : { detail: { label: "Callback URL", value: callbackUrl } }),
           recovery: {
-            action:
-              "Try again. If registration still fails, copy the fix prompt into your agent to review the OAuth client setup.",
+            action: "Ask the service to approve Executor’s callback URL, then try again.",
             instructions:
-              "Inspect the service’s client registration support and the app’s OAuth configuration. Distinguish a temporary registration failure from a service that requires a pre-registered client. Use the supported registration or saved-client path without repeatedly creating clients.",
+              "Find out why the service did not accept Executor as an OAuth client. Some services, such as Vercel, accept registration or sign-in only from approved apps and redirect URLs; their sign-in page can report an invalid redirect URL. If so, identify the service’s approval or allowlist process and prepare a request that includes Executor’s callback URL. Also compare the registration response with the request, including a changed token endpoint authentication method, and distinguish a temporary failure from a service that requires a pre-registered client. Do not repeatedly create clients.",
           },
           retryable: true,
+          agentFixable: false,
         },
         invalid_client: {
           title: "OAuth client not accepted",

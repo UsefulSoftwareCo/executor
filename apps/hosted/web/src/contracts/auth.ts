@@ -214,3 +214,6 @@ export const mcpAuthorization = (options: { headers: Readonly<Record<string, str
       },
     ),
 });
+
+/** Discard the previous identity and destination before a full-page session switch. */
+export const clearSessionDisplay = clearSessionHint;

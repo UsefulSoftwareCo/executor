@@ -80,6 +80,7 @@ test("inventory and MCP reads succeed without invoking a failing default provisi
             build: () => Effect.fail(new RuntimeBuildFailed({ stage: "compile" })),
             workflow: () => Effect.die("Unexpected workflow invocation"),
             webhook: () => Effect.die("Unexpected webhook invocation"),
+            skills: () => Effect.die("This fixture does not load skills"),
             inspect: () => Effect.die("No build should be available"),
             call: () => Effect.die("No build should be available"),
             query: () => Effect.die("No build should be available"),

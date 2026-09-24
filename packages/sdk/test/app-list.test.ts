@@ -89,6 +89,7 @@ const fixture = (count: number) =>
       credentials: yield* aesGcmCredentials(Redacted.make("ab".repeat(32)), crypto),
       runtime: runtimeAdapter({
         build: () => Effect.die("List must not build code"),
+        skills: () => Effect.die("This fixture does not load skills"),
         inspect: () => Effect.die("List must not evaluate code"),
         call: () => Effect.die("List must not run tools"),
         query: () => Effect.die("List must not run queries"),

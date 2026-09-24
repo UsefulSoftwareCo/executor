@@ -1,4 +1,4 @@
-import { sourceDisplay } from "./implementation/source-display.ts";
+import { sourceDisplay, sourceDisplayFile } from "./implementation/source-display.ts";
 import {
   AppAccessDenied,
   AppIdentity,
@@ -136,6 +136,27 @@ const authoring = (id: AppId) =>
       },
     };
   });
+/** Publication preview always checks the complete stored files, never a display listing. */
+const workspaceSource = (id: AppId) =>
+  Effect.gen(function* () {
+    const { app, host, metadata } = yield* authoring(id);
+    const source = yield* host.executor.apps.workspace({ owner: app.owner, app: id });
+    const { canPublish, ...fields } = metadata;
+    return {
+      ...source,
+      ...fields,
+      publication:
+        canPublish && host.publisher !== undefined && metadata.namespace !== null
+          ? yield* host.publisher.preview({
+              owner: app.owner,
+              namespace: metadata.namespace,
+              app: app.id,
+              name: app.name,
+              files: source.files,
+            })
+          : null,
+    };
+  });
 /** Routes call existing SDK app operations; authoring never creates another project identity. */
 export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id extends string>(
   api: ReturnType<typeof appManagementApi<I, S>>,
@@ -170,28 +191,16 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
       .handle("authoring", ({ params }) =>
         authoring(params.app).pipe(Effect.map(({ metadata }) => metadata)),
       )
-      .handle("source", ({ params, query }) =>
+      .handle("source", ({ params }) => workspaceSource(params.app))
+      .handle("sourceDisplay", ({ params }) =>
+        workspaceSource(params.app).pipe(Effect.flatMap(sourceDisplay)),
+      )
+      .handle("sourceDisplayFile", ({ params, query }) =>
         Effect.gen(function* () {
-          const { app, host, metadata } = yield* authoring(params.app);
-          const source = yield* host.executor.apps.workspace({
-            owner: app.owner,
-            app: params.app,
-          });
-          const { canPublish, ...fields } = metadata;
-          return {
-            ...(yield* sourceDisplay(source, query.format)),
-            ...fields,
-            publication:
-              canPublish && host.publisher !== undefined && metadata.namespace !== null
-                ? yield* host.publisher.preview({
-                    owner: app.owner,
-                    namespace: metadata.namespace,
-                    app: app.id,
-                    name: app.name,
-                    files: source.files,
-                  })
-                : null,
-          };
+          const { app, host } = yield* authoring(params.app);
+          // The commit pins the listed revision; the app's own code lineage pins its repository.
+          const files = yield* host.sources.read({ code: app.code, commit: params.commit });
+          return yield* sourceDisplayFile(files, query.path);
         }),
       )
       .handle("commit", ({ params, payload }) =>

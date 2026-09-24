@@ -296,7 +296,11 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     Effect.gen(function* () {
       // Inspect only headers: a successful MCP GET may open an endless SSE stream.
       const advertised = yield* probeOAuthChallenge(endpoint, options.httpClient).pipe(
-        Effect.map((response) => response.resourceMetadata),
+        Effect.flatMap((response) =>
+          response.status === 429 || response.status >= 500
+            ? Effect.fail(new OAuthProtocolFailed({ reason: "request" }))
+            : Effect.succeed(response.resourceMetadata),
+        ),
         Effect.mapError(failure),
       );
       const metadataUrl = advertised === undefined ? undefined : yield* secureUrl(advertised);

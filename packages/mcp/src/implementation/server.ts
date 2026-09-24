@@ -9,11 +9,12 @@ import {
   Layer,
   Match,
   Schema,
+  Stream,
   Tracer,
   type Scope,
 } from "effect";
 import { McpServer } from "effect/unstable/ai";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { ElicitationMode } from "../contracts/elicitation.ts";
 import {
   McpToolkit,
@@ -89,6 +90,29 @@ const observeExecution =
 const query = Schema.Struct({ elicitation_mode: Schema.optionalKey(ElicitationMode) });
 const identity = (product: string, mode: ElicitationMode, session: string) =>
   JSON.stringify([product, mode, session]);
+
+const withSseHeartbeat = (response: HttpServerResponse.HttpServerResponse) => {
+  const body = response.body;
+  const contentType = response.headers["content-type"];
+  if (
+    !(body instanceof HttpBody.Stream) ||
+    contentType?.split(";")[0]?.trim() !== "text/event-stream"
+  )
+    return response;
+  // A quiet SSE connection may not report a remote disconnect until another
+  // write. Comments keep that transport active so abandoned subscriptions can
+  // release their scopes. Ending the protocol stream also stops the heartbeat.
+  const comment = new TextEncoder().encode(": keep-alive\n\n");
+  const heartbeat = Stream.tick("5 seconds").pipe(
+    Stream.drop(1),
+    Stream.map(() => comment),
+  );
+  return HttpServerResponse.setBody(
+    response,
+    HttpBody.stream(Stream.merge(body.stream, heartbeat, { haltStrategy: "left" }), contentType),
+  );
+};
+
 const withLink = (
   result: McpExecutionResult,
   sessionId: string,
@@ -259,7 +283,7 @@ export const makeMcp = (options: McpOptions) =>
               ),
         }),
       );
-    });
+    }).pipe(Effect.map(withSseHeartbeat));
     const approvals: BrowserApprovals = {
       get: (product, address) =>
         executions.browserView(identity(product, "browser", address.sessionId), address.requestId),

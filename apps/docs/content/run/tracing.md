@@ -19,9 +19,9 @@ Where it writes depends on where you run:
 | Deployment | Diagnostics directory                                                       |
 | ---------- | --------------------------------------------------------------------------- |
 | Local      | `<EXECUTOR_DATA_DIR>/diagnostics`, by default `.local/executor/diagnostics` |
-| Self-host  | `/app/data/diagnostics`, inside the persistent volume                       |
+| Self-host Docker | `/app/motel-data`, separate from the product volume                  |
 
-The directory holds:
+The local diagnostics directory holds:
 
 - `collector.json` — the collector's state, process ID, query URL and database
   path.
@@ -32,15 +32,18 @@ The directory holds:
 Motel keeps seven days and targets 1 GiB. Each log file keeps four rotated
 archives at about 10 MiB each.
 
-In self-host the collector binds to container loopback and publishes no port.
-Read it from inside the container:
+In self-host Docker, Motel runs inside workerd and stores its data separately
+from `/app/data`. Replacing the container discards telemetry by default. Mount
+a separate volume at `/app/motel-data` to retain it. The container does not
+include Node or Bun. Product process logs go to the container log.
+
+The collector binds to container loopback on port 4318 and publishes no port.
+For the container named `executor-v2` in the [self-host instructions](/run/self-host),
+query it with a temporary container that shares its network:
 
 ```bash
-docker compose -f apps/hosted/self-host/compose.yaml exec -T server node -e '
-const fs = require("node:fs");
-const { url } = JSON.parse(fs.readFileSync("/app/data/diagnostics/collector.json", "utf8"));
-fetch(url + "/api/traces?limit=20").then(r => r.json()).then(x => console.log(JSON.stringify(x, null, 2)));
-'
+docker run --rm --network container:executor-v2 curlimages/curl \
+  --fail --silent --show-error 'http://127.0.0.1:4318/api/traces?limit=20'
 ```
 
 The collector serves `/api/health`, `/api/traces`,

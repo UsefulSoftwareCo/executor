@@ -6,7 +6,7 @@ import type { Target } from "./report-model.ts";
 export const TargetPlan = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("scheduled"),
-    runtime: Schema.optional(Schema.Literal("managed")),
+    runtime: Schema.optional(Schema.Literals(["managed", "attached"])),
   }),
   Schema.Struct({ status: Schema.Literal("not-applicable"), reason: Schema.NonEmptyString }),
   Schema.Struct({ status: Schema.Literal("not-run"), reason: Schema.NonEmptyString }),
@@ -30,6 +30,42 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  cloudImpersonation: {
+    file: "cloud-impersonation.spec.ts",
+    title: "Platform admin impersonation uses the shared widget and restores the original session",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud platform operator controls"),
+      local: na("Local has browser pairing instead of hosted identities"),
+    },
+  },
+  mcpMemoryBurst: {
+    file: "mcp-memory.spec.ts",
+    title: "MCP subscriptions survive a reconnect burst",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloudflare Durable Object memory investigation"),
+      local: na("Cloudflare Durable Object memory investigation"),
+    },
+  },
+  mcpMemoryShared: {
+    file: "mcp-memory.spec.ts",
+    title: "MCP subscriptions survive concurrent clients on one session",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloudflare Durable Object memory investigation"),
+      local: na("Cloudflare Durable Object memory investigation"),
+    },
+  },
+  mcpMemory: {
+    file: "mcp-memory.spec.ts",
+    title: "MCP subscriptions survive idle sessions and reconnect churn",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Cloudflare Durable Object memory investigation"),
+      local: na("Cloudflare Durable Object memory investigation"),
+    },
+  },
   toolsErrorState: {
     file: "tools-error-state.spec.ts",
     title: "Tools errors explain discovery failures and preserve retry on desktop and mobile",
@@ -244,7 +280,7 @@ export const scenarios = {
   },
   devtoolsMembers: {
     file: "devtools-members.spec.ts",
-    title: "Dev tools list and switch to actual organization members",
+    title: "Local dev tools bootstrap an operator and use native impersonation",
     targets: {
       "self-host": scheduled,
       cloud: na(
@@ -409,6 +445,15 @@ export const scenarios = {
       local: na("Local has no organizations or groups."),
     },
   },
+  openapiErrors: {
+    file: "openapi-errors.spec.ts",
+    title: "OpenAPI errors preserve declared details through MCP without leaking response bodies",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a controlled loopback HTTP API through the shared Worker runtime."),
+      local: na("The shared OpenAPI and MCP error path is covered on self-host."),
+    },
+  },
   providerErrors: {
     file: "provider-errors.spec.ts",
     title: "Provider failures retain safe reasons and account recovery across protocols",
@@ -445,6 +490,15 @@ export const scenarios = {
       local: na("This scenario exercises the Cloud compiler dependency resolver."),
     },
   },
+  cloudCompilerMemory: {
+    file: "cloud-compiler.spec.ts",
+    title: "Cloud compiler memory failures preserve the active deployment",
+    targets: {
+      cloud: { status: "scheduled", runtime: "attached" },
+      "self-host": na("This scenario requires Cloudflare's compiler Worker memory limit."),
+      local: na("This scenario requires Cloudflare's compiler Worker memory limit."),
+    },
+  },
   requestTiming: {
     file: "request-timing.spec.ts",
     title: "Cloud request timings correlate browser resources with the server trace",
@@ -475,11 +529,22 @@ export const scenarios = {
   },
   mcpAuthDiscovery: {
     file: "mcp-auth-discovery.spec.ts",
-    title: "MCP imports and OAuth setup honor POST authentication challenges",
+    title: "MCP imports defer discovery and OAuth setup honors POST authentication challenges",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback MCP issuer."),
       local: na("Exercises the shared import and OAuth implementation through hosted APIs."),
+    },
+  },
+  mcpDeferredSetup: {
+    file: "mcp-deferred-setup.spec.ts",
+    title: "MCP outages preserve added apps and recover in account setup and tools",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses controlled loopback MCP and OAuth servers through shared product code."),
+      local: na(
+        "Shared import, connection, and error views are verified through the hosted product.",
+      ),
     },
   },
   oauthUrlPolicy: {
@@ -930,6 +995,17 @@ export const scenarios = {
       local: na("Local uses its instance credential."),
     },
   },
+  patMcpInFlight: {
+    file: "pat-mcp-in-flight.spec.ts",
+    title: "Revocation between tool calls stops an already running MCP execute",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The controlled upstream is loopback-only; hosted request authorization is shared.",
+      ),
+      local: na("Local uses its instance credential."),
+    },
+  },
   namedApiKeys: {
     file: "named-api-keys.spec.ts",
     title: "Personal access tokens inherit user permissions and support expiry and revocation",
@@ -1116,9 +1192,31 @@ export const scenarios = {
       ),
     },
   },
+  skillFolder: {
+    file: "skill-folder.spec.ts",
+    title: "skill folders share one loader and respect explicit catalogs",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "Shared runtime behavior is covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
+  dynamicSkills: {
+    file: "dynamic-skills.spec.ts",
+    title: "dynamic skills refresh remote publications without redeployment",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Shared runtime and HTTP behavior are covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
   appSkills: {
     file: "app-skills.spec.ts",
-    title: "app skills remain static, authorized and pinned across deployments",
+    title: "bundled app skills remain authorized and pinned across deployments",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -1345,14 +1443,16 @@ export const scenariosForSuite = (
           scenario.targets.cloud.status === "scheduled"),
     )
     .map((scenario) =>
-      cloudMode === "attached" &&
-      "runtime" in scenario.targets.cloud &&
-      scenario.targets.cloud.runtime === "managed"
+      "runtime" in scenario.targets.cloud && scenario.targets.cloud.runtime !== cloudMode
         ? {
             ...scenario,
             targets: {
               ...scenario.targets,
-              cloud: na("Requires the managed local Cloud target and its local collectors."),
+              cloud: na(
+                scenario.targets.cloud.runtime === "managed"
+                  ? "Requires the managed local Cloud target and its local collectors."
+                  : "Requires a deployed Cloud target with Cloudflare's memory limit.",
+              ),
             },
           }
         : scenario,

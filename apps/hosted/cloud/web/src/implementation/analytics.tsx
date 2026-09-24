@@ -11,6 +11,9 @@ import { dashboardReplay, replayPageAllowed } from "./analytics-replay.ts";
 
 let started = false;
 let identified = false;
+let recorder: Promise<unknown> | undefined;
+
+const replayAllowed = () => identified && replayPageAllowed(new URL(location.href));
 
 /** Stop before route changes so login, consent and private settings never enter the recorder. */
 export const pauseReplay = () => {
@@ -18,8 +21,22 @@ export const pauseReplay = () => {
 };
 const updateReplay = () => {
   if (!started) return;
-  if (identified && replayPageAllowed(new URL(location.href))) posthog.startSessionRecording();
-  else posthog.stopSessionRecording();
+  if (!replayAllowed()) {
+    posthog.stopSessionRecording();
+    return;
+  }
+  // The bundled recorder must be registered first, or the SDK fetches its blockable script.
+  recorder ??= import("./replay-runtime.ts").catch((error: unknown) => {
+    recorder = undefined;
+    throw error;
+  });
+  recorder.then(
+    () => {
+      // Navigation or sign-out can happen while the chunk loads.
+      if (replayAllowed()) posthog.startSessionRecording();
+    },
+    () => console.warn("Could not load session replay"),
+  );
 };
 
 /** URL fingerprints are kept out of PostHog on every property channel, not just events. */

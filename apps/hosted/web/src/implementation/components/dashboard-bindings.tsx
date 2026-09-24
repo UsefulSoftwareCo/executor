@@ -1,6 +1,8 @@
 import { AppProviderFailed } from "@executor-js/sdk";
 import { Cause, Option, Schema } from "effect";
 import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-notice";
+import { ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { parseAppSearch } from "../../contracts/navigation.ts";
 import type { ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
@@ -62,6 +64,15 @@ export function HostedFailure({ cause, retry, retrying }: FailureProps<HostedErr
       <ProviderErrorNotice
         error={error.value}
         context="While using this app and selected profile."
+        retry={retry}
+        retrying={retrying}
+      />
+    );
+  if (Option.isSome(error) && UserFacingError.is(error.value))
+    return (
+      <ErrorNotice
+        error={error.value}
+        context="While completing this action in Executor."
         retry={retry}
         retrying={retrying}
       />

@@ -87,9 +87,11 @@ export const platformPackage = (target: Platform): string =>
 export const platformArchive = (target: Platform): string =>
   `executor-${platformVersion(target)}.tgz`;
 
-/** Desktop asset names are used by both electron-builder and the public site. */
-export const desktopAsset = (target: Platform): string =>
-  `${release.desktop.artifactPrefix}-${release.version}-${target.desktopOs}-${target.arch}.${target.extension}`;
+/** Primary downloads follow electron-builder's target-specific architecture names. */
+export const desktopAsset = (target: Platform): string => {
+  const arch = target.extension === "AppImage" && target.arch === "x64" ? "x86_64" : target.arch;
+  return `${release.desktop.artifactPrefix}-${release.version}-${target.desktopOs}-${arch}.${target.extension}`;
+};
 
 /** Public download for this exact release, never the legacy latest release. */
 export const desktopDownload = (target: Platform): string =>

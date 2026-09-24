@@ -80,6 +80,8 @@ export const hostedAppAccess = Layer.effect(
           ? "discover"
           : endpoint.identifier === "authoring" ||
               endpoint.identifier === "source" ||
+              endpoint.identifier === "sourceDisplay" ||
+              endpoint.identifier === "sourceDisplayFile" ||
               endpoint.identifier === "history" ||
               endpoint.identifier === "published"
             ? "read"

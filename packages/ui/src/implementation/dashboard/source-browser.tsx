@@ -1,7 +1,12 @@
 import { Skeleton } from "../components/skeleton.tsx";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ComponentType, ReactNode } from "react";
 import { useMemo, useState } from "react";
-import type { SourceFiles } from "@executor-js/sdk";
+import type {
+  SourceDisplayEntries,
+  SourceDisplayFile,
+} from "@executor-js/app-management/contracts/source-display";
+import { Option } from "effect";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowRight01Icon,
@@ -17,6 +22,8 @@ import {
   SelectValue,
 } from "../components/select.tsx";
 import { Code } from "./code.tsx";
+import { QueryResult, useQuery } from "./context.tsx";
+import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import { cn } from "../lib/utils.ts";
 
 type FileNode = { readonly kind: "file"; readonly name: string; readonly path: string };
@@ -28,7 +35,10 @@ type FolderNode = {
 };
 type SourceNode = FileNode | FolderNode;
 
-function sourceTree(files: SourceFiles, prefix = ""): readonly SourceNode[] {
+function sourceTree(
+  files: ReadonlyArray<{ readonly path: string }>,
+  prefix = "",
+): readonly SourceNode[] {
   const folders = new Set<string>();
   const nodes: SourceNode[] = [];
   for (const file of files) {
@@ -132,17 +142,41 @@ function SourceFolder({
   );
 }
 
+/** Reads a listed file whose contents the display listing did not inline. */
+export type SourceFileQuery<E> = (path: string) => Query<SourceDisplayFile, E>;
+
 /** Inspect server-prepared display files; selection, line counts and copying use that same text. */
-export function SourceBrowser({
+export function SourceBrowser<E>({
   files,
+  file: readFile,
+  Failure,
   className,
 }: {
-  readonly files: SourceFiles;
+  readonly files: typeof SourceDisplayEntries.Type;
+  readonly file: SourceFileQuery<E>;
+  readonly Failure: ComponentType<FailureProps<E>>;
   readonly className?: string;
 }) {
   const [selected, setSelected] = useState("index.ts");
   const file = files.find((file) => file.path === selected) ?? files[0];
   const tree = useMemo(() => sourceTree(files), [files]);
+  const picker = (
+    <Select value={file.path} onValueChange={setSelected}>
+      <SelectTrigger
+        aria-label="Source file"
+        className="max-w-full border-0 bg-transparent px-0 shadow-none"
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {files.map((file) => (
+          <SelectItem key={file.path} value={file.path}>
+            {file.path}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
   return (
     <SourceFrame aria-label="Source browser" className={className}>
       <nav
@@ -154,43 +188,92 @@ export function SourceBrowser({
           <span className="font-normal tabular-nums text-muted-foreground">{files.length}</span>
         </div>
         <div className="min-h-0 flex-1 overflow-auto p-2">
-          <SourceTree nodes={tree} selected={file?.path} onSelect={setSelected} />
+          <SourceTree nodes={tree} selected={file.path} onSelect={setSelected} />
         </div>
       </nav>
-      <div className="source-file flex min-h-0 min-w-0 flex-col">
-        <div className="flex min-h-12 shrink-0 items-center gap-3 border-b px-4 max-md:px-3">
-          <span
-            className="min-w-0 flex-1 truncate font-mono text-xs max-md:hidden"
-            title={file?.path}
-          >
-            {file?.path}
-          </span>
-          <div className="min-w-0 flex-1 md:hidden">
-            <Select value={file?.path ?? ""} onValueChange={setSelected}>
-              <SelectTrigger
-                aria-label="Source file"
-                className="max-w-full border-0 bg-transparent px-0 shadow-none"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {files.map((file) => (
-                  <SelectItem key={file.path} value={file.path}>
-                    {file.path}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <span className="text-xs tabular-nums text-muted-foreground max-md:hidden">
-            {(file?.content ?? "").split("\n").length} lines
-          </span>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto [&_.code-view]:min-h-full [&_.code-view]:bg-transparent [&_.code-view]:py-4 [&_.code-view]:text-xs [&_.code-view]:leading-6">
-          {file && <Code code={file.content} path={file.path} copyable copyLabel="Copy source" />}
-        </div>
-      </div>
+      {file.content === undefined ? (
+        <RemoteSourceFile
+          key={file.path}
+          path={file.path}
+          query={readFile(file.path)}
+          Failure={Failure}
+          picker={picker}
+        />
+      ) : (
+        <SourceFilePane path={file.path} content={file.content} picker={picker}>
+          <Code code={file.content} path={file.path} copyable copyLabel="Copy source" />
+        </SourceFilePane>
+      )}
     </SourceFrame>
+  );
+}
+
+/** Load a large file only when it is selected; the header and file picker stay in place. */
+function RemoteSourceFile<E>({
+  path,
+  query,
+  Failure,
+  picker,
+}: {
+  readonly path: string;
+  readonly query: Query<SourceDisplayFile, E>;
+  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+  readonly picker: ReactNode;
+}) {
+  const { result, refresh } = useQuery(query);
+  return (
+    <SourceFilePane
+      path={path}
+      content={Option.getOrUndefined(AsyncResult.value(result))?.content}
+      picker={picker}
+    >
+      <QueryResult
+        result={result}
+        Failure={(props) => (
+          <div className="p-4">
+            <Failure {...props} />
+          </div>
+        )}
+        retry={refresh}
+        pending={<SourceCodeLoading label={`Loading ${path}`} />}
+      >
+        {(file) => <Code code={file.content} path={file.path} copyable copyLabel="Copy source" />}
+      </QueryResult>
+    </SourceFilePane>
+  );
+}
+
+function SourceFilePane({
+  path,
+  content,
+  picker,
+  children,
+}: {
+  readonly path: string;
+  /** Absent while the selected file is loading. */
+  readonly content: string | undefined;
+  readonly picker: ReactNode;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div className="source-file flex min-h-0 min-w-0 flex-col">
+      <div className="flex min-h-12 shrink-0 items-center gap-3 border-b px-4 max-md:px-3">
+        <span className="min-w-0 flex-1 truncate font-mono text-xs max-md:hidden" title={path}>
+          {path}
+        </span>
+        <div className="min-w-0 flex-1 md:hidden">{picker}</div>
+        {content === undefined ? (
+          <Skeleton className="h-3 w-12 max-md:hidden" />
+        ) : (
+          <span className="text-xs tabular-nums text-muted-foreground max-md:hidden">
+            {content.split("\n").length} lines
+          </span>
+        )}
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto [&_.code-view]:min-h-full [&_.code-view]:bg-transparent [&_.code-view]:py-4 [&_.code-view]:text-xs [&_.code-view]:leading-6">
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -232,16 +315,32 @@ export function SourceBrowserLoading({ className }: { readonly className?: strin
           <Skeleton className="h-3 w-32" />
           <Skeleton className="h-3 w-12 max-md:hidden" />
         </div>
-        <div className="min-h-0 flex-1 overflow-hidden px-4 py-4">
-          {["w-3/5", "w-1/3", "w-4/5", "w-2/5", "w-3/4", "w-1/2"].map((width, index) => (
-            <div key={width} className="flex h-6 items-center gap-4">
-              <Skeleton className="h-2.5 w-3 shrink-0" />
-              <Skeleton className={cn("h-2.5", width, index === 1 && "opacity-0")} />
-            </div>
-          ))}
-        </div>
+        <SourceCodeLines />
       </div>
       <span className="sr-only">Loading files…</span>
     </SourceFrame>
+  );
+}
+
+function SourceCodeLines() {
+  return (
+    <div className="min-h-0 flex-1 overflow-hidden px-4 py-4">
+      {["w-3/5", "w-1/3", "w-4/5", "w-2/5", "w-3/4", "w-1/2"].map((width, index) => (
+        <div key={width} className="flex h-6 items-center gap-4">
+          <Skeleton className="h-2.5 w-3 shrink-0" />
+          <Skeleton className={cn("h-2.5", width, index === 1 && "opacity-0")} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Match the code viewport while one selected file is read. */
+function SourceCodeLoading({ label }: { readonly label: string }) {
+  return (
+    <div role="status" aria-label={label} className="flex h-full flex-col">
+      <SourceCodeLines />
+      <span className="sr-only">{label}…</span>
+    </div>
   );
 }

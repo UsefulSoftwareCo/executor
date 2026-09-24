@@ -1,3 +1,4 @@
+import { AppSkills } from "apps/contracts";
 import { invocationWorkflow, invocationWorkflowControls } from "../implementation/workflow-rpc.ts";
 /** Cloud apps use account-isolated cached Workers; explicitly declared databases run in facets. */
 import { appRpcBridge, appFacetBridge } from "../implementation/app-bridge.ts";
@@ -13,6 +14,7 @@ import {
   Json,
   type RuntimeBuildUnavailable,
   RuntimeBuildFailed,
+  BuildMemoryExceeded,
   RuntimeProtocolFailed,
   runtimeAdapter,
 } from "@executor-js/sdk/core";
@@ -353,6 +355,15 @@ export const cloudRuntime = Effect.fn(function* (
         Effect.gen(function* () {
           const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
           const { bundle, ui } = yield* compiler.compile(files, headers).pipe(
+            Effect.catchTag("RpcCallError", (error) => {
+              const cause = error.cause;
+              const failure =
+                cause instanceof Error && /^Worker exceeded memory limit\.?$/.test(cause.message)
+                  ? new BuildMemoryExceeded()
+                  : new RuntimeBuildFailed({ stage: "compile" });
+              causes.set(failure, describe(error));
+              return Effect.fail(failure);
+            }),
             Effect.flatMap(Schema.decodeUnknownEffect(CompiledCloudApp)),
             Effect.catchTag("SchemaError", (cause) => Effect.fail(failed("compile", cause))),
             Effect.withSpan("runtime.cloud.compiler.request"),
@@ -383,12 +394,29 @@ export const cloudRuntime = Effect.fn(function* (
           // The failing stage and its cause belong on the span; the public error stays small.
           Effect.tapError((error) =>
             Effect.annotateCurrentSpan({
-              "build.stage": error.stage,
+              "build.stage": Schema.is(BuildMemoryExceeded)(error) ? "compile" : error.stage,
               "build.cause": causeOf(error),
             }),
           ),
           Effect.withSpan("runtime.cloud.build"),
         ),
+      skills: ({ app, build, ...context }) =>
+        Effect.gen(function* () {
+          const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
+          yield* Effect.annotateCurrentSpan({
+            "executor.runtime.mode": "worker",
+            "executor.worker.identity": identity,
+          });
+          return yield* dispatch(
+            load(build),
+            { operation: "skills" },
+            context,
+            AppSkills,
+            HostInspectError,
+            build,
+            identity,
+          );
+        }).pipe(Effect.withSpan("runtime.cloud.skills")),
       inspect: ({ app, build, ...context }) =>
         Effect.gen(function* () {
           const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;

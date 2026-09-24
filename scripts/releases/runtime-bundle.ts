@@ -91,6 +91,14 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
           {
             name: "local-runtime-resources",
             setup(builder) {
+              // jsonc-parser's `main` is a UMD build that requires ./impl/* at runtime,
+              // which bundling leaves unresolvable. Its ESM build bundles statically.
+              builder.onResolve({ filter: /^jsonc-parser$/ }, (args) =>
+                builder.resolve("jsonc-parser/lib/esm/main.js", {
+                  kind: args.kind,
+                  resolveDir: args.resolveDir,
+                }),
+              );
               builder.onLoad(
                 { filter: /sdk[/\\]src[/\\]implementation[/\\]workerd-bundle\.ts$/ },
                 () => ({

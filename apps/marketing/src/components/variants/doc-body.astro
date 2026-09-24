@@ -1,5 +1,6 @@
 ---
 // Start with a useful tool, then reveal the software an agent can build around it.
+import { release, platforms, desktopDownload } from "../../../../../scripts/releases/config.ts";
 import Testimonials from "./testimonials.astro";
 import IntroSteps from "./intro-steps.astro";
 import { heroHeadlines, heroVariants, type HeroVariant } from "../../content/hero-experiment";
@@ -20,7 +21,7 @@ interface Props {
   gh: string;
   variant?: HeroVariant;
 }
-const { gh, variant = heroVariants[0] } = Astro.props;
+const { variant = heroVariants[0] } = Astro.props;
 ---
 
 <article class="doc max-w-180 [margin-inline:auto] [padding:4rem_1.5rem_6rem] overflow-x-clip min-[640px]:[padding:4.5rem_2.5rem_7rem] min-[1024px]:max-w-none min-[1024px]:[margin-inline:0] min-[1024px]:[padding-inline:0] max-[719.98px]:[padding:2.25rem_1.25rem_4rem]">
@@ -31,7 +32,7 @@ const { gh, variant = heroVariants[0] } = Astro.props;
       <p class="mb-6 max-w-[48ch] text-[18px] leading-[1.65] tracking-[-0.01em] text-[#777] max-[719.98px]:text-[17px] max-[1023.98px]:mx-auto">{introduction}</p>
       ) : <IntroSteps variant="build" />}
       <div class="doc__actions flex flex-wrap items-center gap-[0.6rem_0.9rem] mb-[1.1rem] max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[1023.98px]:justify-center">
-        <a data-hero-cta href="/login" class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
+        <a data-hero-cta href={`${release.cloudOrigin}/login`} class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
         <CopyPrompt />
       </div>
       <p class="doc__subhead doc__subhead--fine mb-[1.5rem] max-[719.98px]:text-[16px] text-[15px] [color:var(--color-ink-3)] max-w-[52ch] [&_a]:[color:var(--color-ink-2)] [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:text-ink">
@@ -73,22 +74,23 @@ const { gh, variant = heroVariants[0] } = Astro.props;
   <section id="install" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
     <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">Run it where you want</h2>
     <p>
-      Use Executor Cloud, or run the same setup on your own machine or server.
+      Use Executor Cloud, or run Executor {release.version} on your own machine or server.
     </p>
     <div class="doc__ways [&_li]:grid [&_li]:grid-cols-[2.5rem_1fr] [&_li]:gap-[0.5rem] [&_li]:py-[0.85rem] [&_li]:px-0 [&_li]:border-t [&_li]:border-t-rule [&_li]:text-[15.5px] [&_li]:leading-[1.55] [&_li]:[color:var(--color-ink-2)] [&_li:last-child]:border-b [&_li:last-child]:border-b-rule [&_strong]:text-ink [&_strong]:font-semibold [&_a]:ml-[0.4rem] [&_code]:ml-[0.4rem] [&_code]:font-mono [&_code]:text-[12.5px] [&_code]:[background:var(--color-surface-2)] [&_code]:border [&_code]:border-rule [&_code]:rounded-[5px] [&_code]:py-[0.1rem] [&_code]:px-[0.4rem] [&_code]:text-ink grid gap-0.25 bg-rule border border-rule rounded-[12px] overflow-hidden mt-[1.25rem] min-[720px]:grid-cols-2 max-[719.98px]:grid-cols-[1fr]">
       <div class="doc__way doc__way--rec relative flex flex-col gap-[0.4rem] [padding:1.25rem_1.3rem_1.35rem] bg-surface before:[content:''] before:absolute before:inset-[0_0_auto_0] before:h-0.5 before:bg-ink">
         <span class="doc__way-k text-[16px] font-semibold text-ink">Cloud</span>
         <span class="doc__way-d text-[14px] leading-[1.55] [color:var(--color-ink-2)] flex-1">Deploy your apps. We handle the hosting.</span>
-        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><a href="/login" class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Deploy an app</a></span>
+        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><a href={`${release.cloudOrigin}/login`} class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Deploy an app</a></span>
       </div>
       <div class="doc__way relative flex flex-col gap-[0.4rem] [padding:1.25rem_1.3rem_1.35rem] bg-surface">
         <span class="doc__way-k text-[16px] font-semibold text-ink">Desktop</span>
         <span class="doc__way-d text-[14px] leading-[1.55] [color:var(--color-ink-2)] flex-1">Run Executor on your computer, with local apps and private app pages.</span>
         <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><span class="doc__dl [&>.hidden]:hidden inline-flex flex-wrap items-center gap-[0.5rem_0.75rem] [.doc\_\_ways_&]:ml-[0.4rem] [.doc\_\_ways_&_a]:ml-0 max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:flex max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[719.98px]:[&_>_a]:w-full max-[719.98px]:[&_>_a]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:w-full" data-download>
-            <a data-os="mac-arm64" href={`${gh}/releases/latest/download/executor-desktop-mac-arm64.dmg`} class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Download for Mac</a>
-            <a data-os="mac-x64" href={`${gh}/releases/latest/download/executor-desktop-mac-x64.dmg`} class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Download for Mac (Intel)</a>
-            <a data-os="win-x64" href={`${gh}/releases/latest/download/executor-desktop-win-x64.exe`} class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Download for Windows</a>
-            <a data-os="linux-x64" href={`${gh}/releases/latest/download/executor-desktop-linux-x86_64.AppImage`} class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Download for Linux</a>
+            {platforms.map((target) => (
+              <a data-os={`${target.desktopOs}-${target.arch}`} href={desktopDownload(target)} class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">
+                {target.platform === "darwin" ? (target.arch === "arm64" ? "Download for Mac" : "Download for Mac (Intel)") : target.platform === "win32" ? "Download for Windows" : `Download for Linux (${target.arch === "arm64" ? "ARM64" : "x64"})`}
+              </a>
+            ))}
             <details class="download-other doc__dl-other hidden relative [&_>_summary]:[list-style:none] [&_>_summary]:cursor-pointer [&_>_summary]:select-none [&_>_summary]:[color:var(--color-ink-3)] [&_>_summary]:[transition:color_0.15s_ease] [&_>_summary::-webkit-details-marker]:hidden [&_>_summary:hover]:[color:var(--color-ink-2)] [&[open]_>_summary]:text-ink [&_>_summary]:text-[13px] [&.hidden]:hidden max-[719.98px]:self-center" data-download-other>
               <summary>Other platforms ▾</summary>
               <div class="download-other-list [.download-other_&]:absolute [.download-other_&]:top-[calc(100%_+_0.5rem)] [.download-other_&]:left-[50%] [.download-other_&]:[transform:translateX(-50%)] [.download-other_&]:bg-white [.download-other_&]:border [.download-other_&]:border-rule [.download-other_&]:rounded-[12px] [.download-other_&]:p-[0.45rem] [.download-other_&]:min-w-[16rem] [.download-other_&]:[box-shadow:0_4px_16px_-6px_rgba(13,_13,_16,_0.12),_0_1px_3px_rgba(13,_13,_16,_0.04)] [.download-other_&]:z-20 [.download-other_&]:flex [.download-other_&]:flex-col [.download-other_&]:gap-0.25 [.download-other_&_a]:block [.download-other_&_a]:py-[0.55rem] [.download-other_&_a]:px-[0.8rem] [.download-other_&_a]:rounded-[8px] [.download-other_&_a]:text-[13.5px] [.download-other_&_a]:[color:var(--color-ink-2)] [.download-other_&_a]:text-left [.download-other_&_a]:[transition:color_0.15s_ease,_background_0.15s_ease] [.download-other_&_a:hover]:text-ink [.download-other_&_a:hover]:[background:var(--color-surface-2)] [.doc\_\_dl_&]:left-0 [.doc\_\_dl_&]:[transform:none] max-[719.98px]:[.doc\_\_dl_&]:left-[50%] max-[719.98px]:[.doc\_\_dl_&]:[transform:translateX(-50%)]" data-download-other-list></div>
@@ -98,7 +100,7 @@ const { gh, variant = heroVariants[0] } = Astro.props;
       <div class="doc__way relative flex flex-col gap-[0.4rem] [padding:1.25rem_1.3rem_1.35rem] bg-surface">
         <span class="doc__way-k text-[16px] font-semibold text-ink">CLI</span>
         <span class="doc__way-d text-[14px] leading-[1.55] [color:var(--color-ink-2)] flex-1">Run the local server from your terminal.</span>
-        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><code class="doc__cmd font-mono text-[12.5px] [background:var(--color-surface-2)] border border-rule rounded-[6px] py-[0.55rem] px-[0.75rem] text-ink [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center">npm i -g executor</code></span>
+        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><code class="doc__cmd font-mono text-[12.5px] [background:var(--color-surface-2)] border border-rule rounded-[6px] py-[0.55rem] px-[0.75rem] text-ink [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center">{release.npmInstall}</code></span>
       </div>
       <div class="doc__way relative flex flex-col gap-[0.4rem] [padding:1.25rem_1.3rem_1.35rem] bg-surface">
         <span class="doc__way-k text-[16px] font-semibold text-ink">Self-hosted</span>
@@ -158,8 +160,8 @@ const { gh, variant = heroVariants[0] } = Astro.props;
 
 <script>
   // Show one download button for the visitor's OS and tuck the rest behind
-  // "Other platforms". Without JS or on an unknown OS, all four stay visible.
-  type DownloadOs = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64";
+  // "Other platforms". Without JS or on an unknown OS, all platforms stay visible.
+  type DownloadOs = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64" | "linux-arm64";
   type UserAgentData = {
     readonly platform: string;
     readonly getHighEntropyValues?: (
@@ -171,7 +173,15 @@ const { gh, variant = heroVariants[0] } = Astro.props;
     const platform = (uad?.platform ?? navigator.platform ?? "").toLowerCase();
     const ua = navigator.userAgent.toLowerCase();
     if (platform.includes("win") || ua.includes("windows")) return "win-x64";
-    if (platform.includes("linux") || ua.includes("linux")) return "linux-x64";
+    if (platform.includes("linux") || ua.includes("linux")) {
+      if (uad?.getHighEntropyValues) {
+        try {
+          const h = await uad.getHighEntropyValues(["architecture"]);
+          if (h.architecture === "arm") return "linux-arm64";
+        } catch {}
+      }
+      return ua.includes("aarch64") ? "linux-arm64" : "linux-x64";
+    }
     if (platform.includes("mac") || ua.includes("mac")) {
       if (uad?.getHighEntropyValues) {
         try {

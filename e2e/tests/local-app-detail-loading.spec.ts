@@ -63,9 +63,9 @@ export default defineApp({ accounts: {} }, async () => ({
           metadata: [`/dashboard/api/live/apps/${app.id}`],
           coldInventory: ["/dashboard/api/live/overview"],
           tools: [`/dashboard/api/live/apps/${app.id}/tools`],
-          workspace: [`/api/apps/${app.id}/workspace`],
+          workspace: [`/api/apps/${app.id}/workspace/display`],
           history: [`/api/apps/${app.id}/history`],
-          source: [`/dashboard/api/apps/${app.id}/deployments/${deployment.id}`],
+          source: [`/dashboard/api/apps/${app.id}/deployments/${deployment.id}/display`],
         });
       }),
     ),

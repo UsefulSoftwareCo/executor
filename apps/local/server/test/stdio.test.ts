@@ -169,7 +169,6 @@ test(
                 );
                 const source = await Effect.runPromise(
                   dashboard.source({
-                    query: {},
                     params: { app: app.id, deployment: app.activeDeployment },
                   }),
                 );

@@ -39,6 +39,12 @@ class SourceKey extends Data.Class<{
   readonly app: AppId;
   readonly deployment: DeploymentId;
 }> {}
+class SourceFileKey extends Data.Class<{
+  readonly organization: OrganizationReference;
+  readonly app: AppId;
+  readonly deployment: DeploymentId;
+  readonly path: string;
+}> {}
 class ConnectionKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly connection: AccountConnectionId;
@@ -73,10 +79,16 @@ const deploymentsQuery = Atom.family((key: AppKey) =>
   HostedClient.query("apps", "deployments", { params: key }).pipe(Atom.refreshOnWindowFocus),
 );
 const sourceQuery = Atom.family((key: SourceKey) =>
-  HostedClient.query("apps", "source", {
+  HostedClient.query("apps", "sourceDisplay", {
     params: { organization: key.organization, app: key.app },
-    query: { deployment: key.deployment, format: "display" },
+    query: { deployment: key.deployment },
   }),
+);
+const sourceFileQuery = Atom.family((key: SourceFileKey) =>
+  HostedClient.query("apps", "sourceDisplayFile", {
+    params: { organization: key.organization, app: key.app, deployment: key.deployment },
+    query: { path: key.path },
+  }).pipe(Atom.setIdleTTL("5 minutes")),
 );
 /** One page evaluates the current app/account catalog. */
 class ToolKey extends Data.Class<{
@@ -390,6 +402,13 @@ export const sourceAtom = (key: {
   readonly app: AppId;
   readonly deployment: DeploymentId;
 }) => sourceQuery(new SourceKey(key));
+/** One display file of a retained deployment, read when the listing did not inline it. */
+export const sourceFileAtom = (key: {
+  readonly organization: OrganizationReference;
+  readonly app: AppId;
+  readonly deployment: DeploymentId;
+  readonly path: string;
+}) => sourceFileQuery(new SourceFileKey(key));
 /** History remains separate from the inexpensive app metadata query. */
 export const deploymentsAtom = (key: {
   readonly organization: OrganizationReference;

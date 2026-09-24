@@ -8,6 +8,11 @@ import { acknowledge, acknowledgedQuery } from "./mutations.ts";
 
 class OwnedCopy extends Data.Class<{ readonly app: AppId }> {}
 class PublicCopy extends Data.Class<{ readonly package: string; readonly commit: string }> {}
+class SourceFileKey extends Data.Class<{
+  readonly app: AppId;
+  readonly commit: string;
+  readonly path: string;
+}> {}
 
 const api = appManagementApi("/api", AppAccess);
 type WireClient = HttpApiClient.ForApi<typeof api>["appManagement"];
@@ -40,12 +45,21 @@ export const makeAppManagementAtoms = <R, E>(
   );
   const source = Atom.family((app: AppId) =>
     runtime
+      .atom(Effect.flatMap(client, (api) => api.sourceDisplay({ params: { ...params, app } })))
+      .pipe(Atom.refreshOnWindowFocus, (source) => acknowledgedQuery(source, retainFailure)),
+  );
+  // A commit is immutable, so a loaded file never needs a refresh.
+  const sourceFiles = Atom.family((key: SourceFileKey) =>
+    runtime
       .atom(
         Effect.flatMap(client, (api) =>
-          api.source({ params: { ...params, app }, query: { format: "display" } }),
+          api.sourceDisplayFile({
+            params: { ...params, app: key.app, commit: key.commit },
+            query: { path: key.path },
+          }),
         ),
       )
-      .pipe(Atom.refreshOnWindowFocus, (source) => acknowledgedQuery(source, retainFailure)),
+      .pipe(Atom.setIdleTTL("5 minutes")),
   );
   const history = Atom.family((app: AppId) =>
     runtime
@@ -118,6 +132,9 @@ export const makeAppManagementAtoms = <R, E>(
     published,
     authoring,
     source,
+    /** One display file of a listed revision, for files the listing does not inline. */
+    sourceFile: (key: ConstructorParameters<typeof SourceFileKey>[0]) =>
+      sourceFiles(new SourceFileKey(key)),
     history,
     deploy,
     copy: (from: typeof CopyApp.Type.from) =>

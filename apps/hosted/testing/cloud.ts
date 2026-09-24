@@ -5,7 +5,7 @@ import { Config, Effect, Layer, Schema, Redacted } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
 import { cloudSessionCookiePrefix } from "../cloud/src/contracts/browser.ts";
-import { DevtoolsOperatorId, TestAccountFailed, TestOrigin, testAccountAuth } from "./accounts.ts";
+import { TestAccountFailed, TestOrigin, testAccountAuth } from "./accounts.ts";
 import { hostedDevtools } from "./hosted-tools.ts";
 
 /** Acquire a local Postgres pool for the dev web lifetime and mount account shortcuts. */
@@ -30,7 +30,6 @@ export const cloudDevtools = Effect.gen(function* () {
     origin,
     organization: "agent-tests",
     auth: testAccountAuth({
-      adminUserIds: [DevtoolsOperatorId],
       origin,
       database,
       secret: settings.secret,
@@ -39,6 +38,6 @@ export const cloudDevtools = Effect.gen(function* () {
   });
   return Layer.mergeAll(
     HttpRouter.add("GET", "/api/devtools", handlers.status),
-    HttpRouter.add("POST", "/api/devtools/account", handlers.signIn),
+    HttpRouter.add("POST", "/api/devtools/operator", handlers.signIn),
   );
 });

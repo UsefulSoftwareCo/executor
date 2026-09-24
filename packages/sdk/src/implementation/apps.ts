@@ -22,6 +22,7 @@ import {
   Deployment,
   DeploymentMetadata,
   DeploymentBuildFailed,
+  BuildMemoryExceeded,
   DeploymentNotFound,
   DeploymentSummary,
   SourceFiles,
@@ -39,7 +40,6 @@ import {
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { identifyProvider } from "./provider.ts";
-import { prepareAppSkills } from "./skill-source.ts";
 import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
 
 import type { BlobStorage } from "../contracts/blobs.ts";
@@ -82,7 +82,7 @@ export const lockApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]
 /** Read a deployment from this app's lineage, including its retained source and requirements. */
 export const storedDeployment = (
   db: Query,
-  app: StoredApp,
+  app: Pick<StoredApp, "id" | "code" | "activeDeployment">,
   deployment: DeploymentId | null = app.activeDeployment,
   deploymentOwner?: OwnerId,
 ) =>
@@ -226,18 +226,18 @@ export const makeApps = (
             }),
         ),
       );
-      yield* prepareAppSkills(files);
       const built = yield* runtime.build({ files }).pipe(
-        Effect.mapError(
-          (error) =>
-            new DeploymentBuildFailed({
-              owner: input.owner,
-              name: deployName,
-              reason:
-                Schema.is(RuntimeBuildFailed)(error) && error.dependency !== undefined
-                  ? `Add ${error.dependency} to package.json dependencies.`
-                  : "App build failed",
-            }),
+        Effect.mapError((error) =>
+          Schema.is(BuildMemoryExceeded)(error)
+            ? error
+            : new DeploymentBuildFailed({
+                owner: input.owner,
+                name: deployName,
+                reason:
+                  Schema.is(RuntimeBuildFailed)(error) && error.dependency !== undefined
+                    ? `Add ${error.dependency} to package.json dependencies.`
+                    : "App build failed",
+              }),
         ),
       );
       const entries = yield* Effect.forEach(
@@ -248,6 +248,9 @@ export const makeApps = (
           ),
       );
       const requirements: AppRequirements = {
+        ...(built.requirements.capabilities === undefined
+          ? {}
+          : { capabilities: built.requirements.capabilities }),
         ...(built.requirements.database === undefined
           ? {}
           : { database: built.requirements.database }),

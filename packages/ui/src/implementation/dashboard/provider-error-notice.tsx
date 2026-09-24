@@ -17,7 +17,9 @@ export function ProviderErrorNotice({
       {...props}
       error={error}
       action={
-        error.account !== undefined && error.reason !== "rate_limited" ? (
+        error.account !== undefined &&
+        error.reason !== "rate_limited" &&
+        error.reason !== "unavailable" ? (
           <AccountLink
             account={error.account.id}
             className={buttonVariants({ size: "sm", variant: "default" })}

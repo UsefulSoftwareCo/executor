@@ -14,6 +14,7 @@ export function httpProviderError(
   status: number,
   headers: Readonly<Record<string, string>> = {},
 ): ProviderError | undefined {
+  if (status >= 500 && status <= 599) return new ProviderError({ reason: "unavailable", status });
   if (status === 401) return new ProviderError({ reason: "unauthorized", status });
   if (status === 429) return new ProviderError({ reason: "rate_limited", status });
   if (status !== 403) return undefined;

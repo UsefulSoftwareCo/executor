@@ -136,8 +136,10 @@ export const dispatchHostedMcp = <E, R>(
     const services = yield* Effect.context<HostedExecutor | GroupDatabase>().pipe(
       Effect.map(Context.pick(HostedExecutor, GroupDatabase)),
     );
-    // Native elicitation can wait inside this HTTP request. Recheck the grant and
-    // membership before each dispatch, including calls following the approved one.
+    // Discovery uses this HTTP request's authenticated identity. Resource policies
+    // are still checked by the hosted backend. Never retain this adapter in the session.
+    // Calls and elicitation can run after a wait, so recheck token/grant/membership
+    // before executing or releasing them, including calls after an approved one.
     const current = authentication
       .authenticate(new Headers(request.headers), mode, organization)
       .pipe(Effect.flatMap(scoped), Effect.provideContext(services));
@@ -145,9 +147,7 @@ export const dispatchHostedMcp = <E, R>(
       ...backend,
       listSkills: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input))),
       readSkill: (input) => current.pipe(Effect.flatMap((fresh) => fresh.readSkill(input))),
-      listApps: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listApps(input))),
-      listTargets: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listTargets(input))),
-      listTools: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listTools(input))),
+
       authorizeElicitation: (input) =>
         current.pipe(
           Effect.flatMap((fresh) => fresh.authorizeElicitation(input)),
