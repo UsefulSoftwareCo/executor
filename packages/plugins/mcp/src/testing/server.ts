@@ -699,6 +699,16 @@ export const makeAnnotationsMcpServer = () => {
   );
 
   server.registerTool(
+    "create_titled",
+    {
+      description: "An additive tool with a title annotation",
+      inputSchema: { name: z.string() },
+      annotations: { readOnlyHint: false, destructiveHint: false, title: "Create dataset" },
+    },
+    async () => ({ content: [] }),
+  );
+
+  server.registerTool(
     "list",
     {
       description: "A read-only tool",
