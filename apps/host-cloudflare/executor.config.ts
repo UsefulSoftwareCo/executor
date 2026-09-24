@@ -1,3 +1,4 @@
+import { wsdlHttpPlugin } from "@executor-js/plugin-wsdl/api";
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -31,6 +32,7 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: false }),
       graphqlHttpPlugin(),
+      wsdlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       encryptedSecretsPlugin({ key: process.env.EXECUTOR_SECRET_KEY ?? "build-time-placeholder" }),
     ] as const,
