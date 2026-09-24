@@ -28,17 +28,16 @@ export const accountOAuthRedirectUri = (
 
 export const accountOAuthClientMetadataPath = "/api/oauth/client-id-metadata/default.json";
 
-/** Providers fetch the default document themselves, so it only applies on public HTTPS hosts. */
+/**
+ * A configured document wins. Otherwise this host serves its own, but only on public HTTPS
+ * origins, since providers must be able to fetch it.
+ */
 export const clientMetadataUrls = (origin: string, configured?: string) => {
-  const clientMetadataUrl = configured?.trim();
-  const defaultClientMetadataUrl = parseDestination(
-    new URL(accountOAuthClientMetadataPath, origin).href,
-    httpsOnlyUrlPolicy,
-  )?.href;
-  return {
-    ...(clientMetadataUrl ? { clientMetadataUrl } : {}),
-    ...(defaultClientMetadataUrl === undefined ? {} : { defaultClientMetadataUrl }),
-  };
+  const clientMetadataUrl =
+    configured?.trim() ||
+    parseDestination(new URL(accountOAuthClientMetadataPath, origin).href, httpsOnlyUrlPolicy)
+      ?.href;
+  return clientMetadataUrl === undefined ? {} : { clientMetadataUrl };
 };
 
 /** Providers reject the document unless `client_id` matches the URL it was fetched from. */

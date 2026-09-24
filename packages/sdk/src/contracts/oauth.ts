@@ -154,12 +154,8 @@ export interface OAuthOptions {
   readonly clientName: string;
   /** Host transport policy for callbacks, discovery and every token request. */
   readonly urlPolicy: UrlPolicy;
+  /** Public HTTPS client metadata document; used only with providers that advertise CIMD. */
   readonly clientMetadataUrl?: string;
-  /**
-   * Fallback metadata document when `clientMetadataUrl` is unset. Unlike `clientMetadataUrl`,
-   * it is not part of saved-client identity, so enabling it keeps existing registered clients.
-   */
-  readonly defaultClientMetadataUrl?: string;
 }
 
 /** OAuth setup failed without exposing upstream bodies, URLs containing codes, or secrets. */

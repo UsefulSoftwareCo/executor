@@ -465,10 +465,7 @@ async function setup(
   return {
     executor,
     secondExecutor,
-    withClientMetadata: (metadata: {
-      clientMetadataUrl?: string;
-      defaultClientMetadataUrl?: string;
-    }) =>
+    withClientMetadata: (metadata: { clientMetadataUrl?: string }) =>
       createExecutor({
         ...options,
         oauth: {
@@ -785,13 +782,13 @@ for (const mode of ["cimd", "manual"] as const)
     }
   });
 
-test("an implicit CIMD default preserves saved clients for other providers", async () => {
+test("enabling a metadata URL preserves saved clients for other providers", async () => {
   const f = await setup("manual");
   try {
     const first = await f.start();
     await f.complete({ callbackUrl: f.service.callback(first.authorizationUrl) });
     const upgraded = await f.withClientMetadata({
-      defaultClientMetadataUrl: "https://v2.executor.sh/api/oauth/client-id-metadata/default.json",
+      clientMetadataUrl: "https://v2.executor.sh/api/oauth/client-id-metadata/default.json",
     });
     const input = {
       owner: OwnerId.make("alice"),
@@ -808,7 +805,7 @@ test("an implicit CIMD default preserves saved clients for other providers", asy
   }
 });
 
-test("an implicit CIMD default keeps using a previously saved public client", async () => {
+test("enabling a metadata URL keeps using a previously saved public client", async () => {
   const f = await setup("cimd");
   try {
     const input = {
@@ -829,7 +826,7 @@ test("an implicit CIMD default keeps using a previously saved public client", as
     assert.ok(oldClient);
 
     const upgraded = await f.withClientMetadata({
-      defaultClientMetadataUrl: "https://v2.executor.sh/api/oauth/client-id-metadata/default.json",
+      clientMetadataUrl: "https://v2.executor.sh/api/oauth/client-id-metadata/default.json",
     });
     assert.equal((await upgraded.accountConnections.oauthSetup(input)).mode, "saved");
     const reused = await f.startOAuth(input, upgraded);
@@ -843,34 +840,6 @@ test("an implicit CIMD default keeps using a previously saved public client", as
       clients.map((row) => row.id),
       [oldClient.id],
     );
-  } finally {
-    await f.close();
-  }
-});
-
-test("CIMD uses the hosted default unless an explicit client URL is configured", async () => {
-  const f = await setup("cimd");
-  try {
-    const defaultUrl = "https://v2.executor.sh/api/oauth/client-id-metadata/default.json";
-    const input = {
-      owner: OwnerId.make("alice"),
-      provider: f.provider,
-      method: "oauth",
-      label: "Alice",
-      redirectUri,
-    };
-    const hosted = await f.withClientMetadata({ defaultClientMetadataUrl: defaultUrl });
-    assert.equal((await hosted.accountConnections.oauthSetup(input)).mode, "automatic");
-    const signIn = await f.startOAuth(input, hosted);
-    assert.equal(new URL(signIn.authorizationUrl).searchParams.get("client_id"), defaultUrl);
-
-    const explicitUrl = "https://custom.example/client.json";
-    const custom = await f.withClientMetadata({
-      clientMetadataUrl: explicitUrl,
-      defaultClientMetadataUrl: defaultUrl,
-    });
-    const customSignIn = await f.startOAuth(input, custom);
-    assert.equal(new URL(customSignIn.authorizationUrl).searchParams.get("client_id"), explicitUrl);
   } finally {
     await f.close();
   }
@@ -893,7 +862,7 @@ test("a metadata client is never saved, so a changed metadata URL applies to the
     assert.deepEqual(await Effect.runPromise(db.findMany("oauthClients", {})), []);
 
     const movedUrl = "https://moved.executor.sh/api/oauth/client-id-metadata/default.json";
-    const moved = await f.withClientMetadata({ defaultClientMetadataUrl: movedUrl });
+    const moved = await f.withClientMetadata({ clientMetadataUrl: movedUrl });
     assert.equal((await moved.accountConnections.oauthSetup(input)).mode, "automatic");
     const next = await f.startOAuth(input, moved);
     assert.equal(new URL(next.authorizationUrl).searchParams.get("client_id"), movedUrl);

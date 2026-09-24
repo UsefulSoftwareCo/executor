@@ -256,7 +256,8 @@ export const makeOAuth = (
         return yield* new OAuthSetupFailed({ reason: "unsupported" });
       }
       // A client registered for fewer scopes cannot be assumed to allow new ones.
-      // The hosted default stays out of this key so enabling it keeps existing saved clients.
+      // Metadata clients are never saved, so the metadata URL no longer identifies a row. The
+      // slot stays as the `null` an unset URL always serialized to, keeping existing keys stable.
       const clientId = OAuthClientId.make(
         `client_${yield* hash(
           JSON.stringify([
@@ -265,7 +266,7 @@ export const makeOAuth = (
             input.method,
             redirect?.href,
             discovered.server.issuer,
-            options.clientMetadataUrl,
+            null,
             [...discovered.scopes].sort(),
           ]),
         )}`,
@@ -285,7 +286,7 @@ export const makeOAuth = (
           client = registered;
       }
       let source: "saved" | "metadata" | undefined = client === undefined ? undefined : "saved";
-      const metadataUrl = options.clientMetadataUrl ?? options.defaultClientMetadataUrl;
+      const metadataUrl = options.clientMetadataUrl;
       if (
         automatic &&
         discovered.grant === "authorization_code" &&

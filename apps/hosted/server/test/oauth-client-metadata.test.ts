@@ -6,7 +6,7 @@ const origin = "https://v2.executor.sh";
 const defaultClientMetadataUrl = `${origin}/api/oauth/client-id-metadata/default.json`;
 
 test("hosted OAuth defaults to a metadata URL only on public HTTPS hosts", () => {
-  assert.deepEqual(clientMetadataUrls(origin), { defaultClientMetadataUrl });
+  assert.deepEqual(clientMetadataUrls(origin), { clientMetadataUrl: defaultClientMetadataUrl });
   for (const privateOrigin of [
     "http://127.0.0.1:4400",
     "https://executor.localhost",
@@ -17,10 +17,14 @@ test("hosted OAuth defaults to a metadata URL only on public HTTPS hosts", () =>
 });
 
 test("a configured metadata URL takes precedence over the hosted default", () => {
-  assert.deepEqual(clientMetadataUrls(origin, "  "), { defaultClientMetadataUrl });
+  assert.deepEqual(clientMetadataUrls(origin, "  "), {
+    clientMetadataUrl: defaultClientMetadataUrl,
+  });
   assert.deepEqual(clientMetadataUrls(origin, " https://custom.example/c.json "), {
     clientMetadataUrl: "https://custom.example/c.json",
-    defaultClientMetadataUrl,
+  });
+  assert.deepEqual(clientMetadataUrls("http://127.0.0.1:4400", "https://custom.example/c.json"), {
+    clientMetadataUrl: "https://custom.example/c.json",
   });
 });
 
