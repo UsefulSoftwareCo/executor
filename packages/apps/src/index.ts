@@ -57,6 +57,7 @@ export {
 export { defineProvider } from "./implementation/provider.ts";
 export { accountOperations } from "./implementation/account-operations.ts";
 export { dynamicTools } from "./implementation/dynamic-tools.ts";
+export { dynamicSkills } from "./implementation/dynamic-skills.ts";
 export type { HostedTool as OperationDescription } from "./contracts/host.ts";
 
 /** A secrets declaration inferred from an author schema. */

@@ -333,13 +333,21 @@ function dispatch(
         Effect.withSpan("app.evaluate"),
       );
       if (request.operation === "skills") {
-        const skills =
-          definition.skills === undefined
-            ? yield* folderSkillsEffect({ files }).pipe(
-                Effect.mapError(() => new HostDeclarationInvalid()),
-              )
-            : definition.skills;
-        return yield* Schema.decodeUnknownEffect(AppSkills)(skills).pipe(
+        const declared =
+          definition.skills ??
+          (yield* folderSkillsEffect({ files }).pipe(
+            Effect.mapError(() => new HostDeclarationInvalid()),
+          ));
+        // Dynamic skills fail like evaluation and join the static catalog. Other operations never
+        // call them. A repeated name fails the catalog check below.
+        const source = definition.dynamicSkills;
+        const dynamic =
+          source === undefined
+            ? []
+            : yield* evaluationSafe(Effect.suspend(source.list)).pipe(
+                Effect.withSpan("app.skills.load"),
+              );
+        return yield* Schema.decodeUnknownEffect(AppSkills)([...declared, ...dynamic]).pipe(
           Effect.mapError(() => new HostDeclarationInvalid()),
         );
       }

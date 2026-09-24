@@ -60,7 +60,9 @@ export type EffectDefinition<Def> = {
             ? NonNullable<NativeDefinition<WebhookContext>["webhooks"]>
             : Key extends "skills"
               ? NonNullable<NativeDefinition<unknown>["skills"]>
-              : Def[Key];
+              : Key extends "dynamicSkills"
+                ? NonNullable<NativeDefinition<unknown>["dynamicSkills"]>
+                : Def[Key];
 };
 
 const InternalApp = Symbol("apps.App");

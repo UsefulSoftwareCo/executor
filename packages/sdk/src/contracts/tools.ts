@@ -85,7 +85,7 @@ export type ToolPage = typeof ToolPage.Type;
 const evaluationInstructions =
   "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
 const skillInstructions =
-  "The app loads skills from a remote source each time Executor evaluates it, so tools and skills both fail when that load fails. Read the app source to find the skill loader and its options. Do not print credentials or raw responses, and do not change accounts. To stop depending on the remote source, the app can bundle its skill folders and read them with folderSkills. Verify that the Skills and Tools pages load after the repair.";
+  "The app loads skills from a remote source. Read the app source to find the skill loader and its options. Do not print credentials or raw responses, and do not change accounts. If the factory awaits the loader, tools and skills both fail when that load fails. Declare it with dynamicSkills instead, such as dynamicSkills: dynamicSkills({ list: () => githubSkills(...) }), so only skill reads call it. To stop depending on the remote source, the app can bundle its skill folders and read them with folderSkills. Verify that the Skills and Tools pages load after the repair.";
 
 /** Present a skill load failure with the loader's own message. */
 const skillPresentation = ({
@@ -110,7 +110,7 @@ const skillPresentation = ({
   return {
     title:
       reason === "rate_limited" ? "Skill source rate limit reached" : "Skills could not be loaded",
-    description: `${message || "The app could not load its skills."} The app’s tools and skills are unavailable until the load succeeds.`,
+    description: message || "The app could not load its skills.",
     recovery: { action, instructions: skillInstructions },
     retryable,
   };

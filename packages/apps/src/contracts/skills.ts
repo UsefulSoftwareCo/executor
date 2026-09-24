@@ -131,6 +131,11 @@ export interface GitHubSkillsOptions extends SkillTransport {
   readonly repo: string;
   readonly path?: string;
   readonly ref?: string;
+  /**
+   * Pass `ctx.cache` to keep each commit's skill file list. Content at a commit never changes,
+   * so later reads of the same commit skip the tree fetch. The ref is still resolved each read.
+   */
+  readonly cache?: import("./cache.ts").AppCache;
 }
 /** A published directory index, including its listed skill documents and text references. */
 export interface WellKnownSkillsOptions extends SkillTransport {

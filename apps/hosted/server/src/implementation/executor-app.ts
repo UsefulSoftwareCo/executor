@@ -19,7 +19,10 @@ export const executorCatalogEntry = (origin: string) =>
   });
 
 /** The catalog retains the ordinary OAuth connection for explicitly installed copies. */
-const managementIndex = (origin: string, apiKey = false) => `import { defineApp } from "apps";
+const managementIndex = (
+  origin: string,
+  apiKey = false,
+) => `import { defineApp, dynamicSkills } from "apps";
 import { liveOpenapiOperations } from "apps/openapi";
 import { wellKnownSkills } from "apps/skills";
 import { provider } from "./provider.ts";
@@ -47,8 +50,8 @@ export default defineApp({ accounts: { service: provider } }, async (context) =>
     }
     ...(context.signal === undefined ? {} : { signal: context.signal }),
   });
-  const skills = await wellKnownSkills({ url: ${JSON.stringify(`${origin}/.well-known/agent-skills/index.json`)}, fetch: context.fetch, signal: context.signal });
-  return { ...operations, skills, queries: { ...operations.queries, ...frameworkQueries(reference) } };
+  const skills = dynamicSkills({ list: () => wellKnownSkills({ url: ${JSON.stringify(`${origin}/.well-known/agent-skills/index.json`)}, fetch: context.fetch, signal: context.signal }) });
+  return { ...operations, dynamicSkills: skills, queries: { ...operations.queries, ...frameworkQueries(reference) } };
 });
 `;
 

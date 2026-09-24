@@ -16,7 +16,7 @@ export const executorAppSource = () =>
         SourceFiles.make([
           {
             path: "index.ts",
-            content: `import { defineApp } from "apps";
+            content: `import { defineApp, dynamicSkills } from "apps";
 import { liveOpenapiOperations } from "apps/openapi";
 import { wellKnownSkills } from "apps/skills";
 import { executor } from "./provider.ts";
@@ -38,8 +38,8 @@ export default defineApp({ accounts: { executor } }, async (context) => {
     fetch: context.fetch,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
   });
-  const skills = await wellKnownSkills({ url: context.accounts.executor.fields.baseUrl + "/.well-known/agent-skills/index.json", fetch: context.fetch, signal: context.signal });
-  return { ...operations, skills, queries: { ...operations.queries, ...frameworkQueries(reference) } };
+  const skills = dynamicSkills({ list: () => wellKnownSkills({ url: baseUrl + "/.well-known/agent-skills/index.json", fetch: context.fetch, signal: context.signal }) });
+  return { ...operations, dynamicSkills: skills, queries: { ...operations.queries, ...frameworkQueries(reference) } };
 });
 `,
           },

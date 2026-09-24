@@ -52,11 +52,11 @@ test("a GitHub rate limit names GitHub for skills and tool inspection", async ()
 });
 
 test("rejected and unreachable GitHub requests keep no response content", async () => {
-  assert.deepEqual(await hostError(github, () => new Response("private body", { status: 404 })), {
+  assert.deepEqual(await hostError(github, () => new Response("private body", { status: 500 })), {
     _tag: "SkillLoadFailed",
     reason: "request",
-    message: "GitHub returned HTTP 404 while loading skills.",
-    status: 404,
+    message: "GitHub returned HTTP 500 while loading skills.",
+    status: 500,
   });
   assert.deepEqual(
     await hostError(github, () => {

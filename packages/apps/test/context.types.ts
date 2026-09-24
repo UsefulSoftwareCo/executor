@@ -2,6 +2,7 @@
 import {
   defineApp,
   defineDatabase,
+  dynamicSkills,
   defineProvider,
   secrets,
   table,
@@ -108,3 +109,17 @@ const namedDefinition = { name: "Wrong source", queries: { read } };
 defineApp(requirements, namedDefinition);
 // @ts-expect-error Dynamic factories cannot supply a package name either.
 defineApp(requirements, async () => namedDefinition);
+
+// Skills may be resolved or returned by a loader that runs only for skill reads.
+defineApp({ accounts: {} }, { skills: [] });
+defineApp({ accounts: {} }, { dynamicSkills: dynamicSkills({ list: () => [] }) });
+defineApp({ accounts: {} }, async () => ({
+  skills: [],
+  dynamicSkills: dynamicSkills({ list: async () => [] }),
+}));
+// @ts-expect-error Static skills are resolved; load remote skills with dynamicSkills.
+defineApp({ accounts: {} }, { skills: () => [] });
+// @ts-expect-error dynamicSkills is built with the dynamicSkills helper.
+defineApp({ accounts: {} }, { dynamicSkills: () => [] });
+// @ts-expect-error A dynamic skills list must return skills.
+dynamicSkills({ list: () => "skills" });
