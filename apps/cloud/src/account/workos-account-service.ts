@@ -31,7 +31,7 @@ import {
 // the same `WorkOSClient.authenticateSealedSession` the rest of cloud uses.
 export class AccountCaller extends Context.Service<
   AccountCaller,
-  { readonly session: Session | null }
+  { readonly session: Session | null; readonly adminVerified?: boolean }
 >()("@executor-js/cloud/AccountCaller") {}
 
 // ---------------------------------------------------------------------------
@@ -145,6 +145,18 @@ export const workosAccountProvider: Layer.Layer<
     // reconciler has landed the change.
     const requireAdmin = (org: { readonly memberRole: "admin" | "member" }) =>
       org.memberRole === "admin" ? Effect.void : Effect.fail(new AccountForbidden());
+
+    // Only organization key management requires an interactive second factor.
+    // Using issued keys and all other admin operations retain their existing contract.
+    const requireKeyManagement = (org: { readonly memberRole: "admin" | "member" }) =>
+      Effect.gen(function* () {
+        yield* requireAdmin(org);
+        if (caller.adminVerified !== true) {
+          return yield* new AccountForbidden({
+            message: "Verify your identity to manage organization API keys.",
+          });
+        }
+      });
 
     // Ownership check so an admin can't mutate a membership id from another
     // org: the id must name a row the mirror holds for THIS org (any status —
@@ -298,7 +310,7 @@ export const workosAccountProvider: Layer.Layer<
       listOrgApiKeys: (headers) =>
         Effect.gen(function* () {
           const { org } = yield* requireOrganization(headers);
-          yield* requireAdmin(org);
+          yield* requireKeyManagement(org);
           const keys = yield* apiKeys
             .listOrgKeys({ organizationId: org.id })
             .pipe(Effect.catchTag("ApiKeyManagementError", toAccountError));
@@ -308,7 +320,7 @@ export const workosAccountProvider: Layer.Layer<
       createOrgApiKey: (headers, name) =>
         Effect.gen(function* () {
           const { org } = yield* requireOrganization(headers);
-          yield* requireAdmin(org);
+          yield* requireKeyManagement(org);
           const trimmed = name.trim().slice(0, MAX_API_KEY_NAME_LENGTH);
           if (!trimmed) {
             return yield* new AccountError({
@@ -330,7 +342,7 @@ export const workosAccountProvider: Layer.Layer<
       revokeOrgApiKey: (headers, apiKeyId) =>
         Effect.gen(function* () {
           const { org } = yield* requireOrganization(headers);
-          yield* requireAdmin(org);
+          yield* requireKeyManagement(org);
           yield* apiKeys.revokeOrgKey({ organizationId: org.id, keyId: apiKeyId }).pipe(
             Effect.catchTag("ApiKeyManagementError", toAccountError),
             Effect.catchTag("OrgApiKeyNotFound", () =>
