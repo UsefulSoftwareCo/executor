@@ -1,6 +1,5 @@
 /** Self-host storage configuration shared by the database, retained builds and diagnostics. */
 import { AppUiBaseUrl } from "@executor-js/hosted-server/app-ui/contracts";
-import { isPrivateHostname } from "@executor-js/utils/url-policy";
 import { Config, Effect, Option, Schema } from "effect";
 
 /** One persistent root; Docker supplies /app/data and source development uses .local/hosted. */
@@ -21,23 +20,10 @@ export const appUiBaseUrl = (dashboardOrigin: string) =>
   });
 
 /**
- * App isolates reach only public addresses, the same as Executor Cloud. The bundled Executor
- * app calls the dashboard origin from inside an isolate, so an instance served on loopback, a
- * private address or a single-label name cannot use its own tools under that rule. Derive the
- * default from the same destination rule `parseDestination` applies. An explicit setting wins.
+ * App isolates reach only public addresses, the same as Executor Cloud. Requests for the
+ * dashboard origin reach the product without the network, so the bundled Executor app does not
+ * need this. Operators opt in to let app code reach other private destinations.
  */
-export const allowPrivateAppFetch = (dashboardOrigin: string) =>
-  Effect.gen(function* () {
-    const configured = yield* Config.Boolean("EXECUTOR_APPS_ALLOW_PRIVATE_FETCH").pipe(
-      Config.option,
-    );
-    if (Option.isSome(configured)) return configured.value;
-    const dashboard = URL.parse(dashboardOrigin);
-    // A malformed origin already fails startup elsewhere. Never widen the network because of it.
-    if (dashboard === null || !isPrivateHostname(dashboard.hostname)) return false;
-    yield* Effect.logInfo(
-      `Private app fetch is enabled because the dashboard origin ${dashboardOrigin} is not public.` +
-        " App code can reach this network. Set EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=false to refuse it.",
-    );
-    return true;
-  });
+export const allowPrivateAppFetch = Config.Boolean("EXECUTOR_APPS_ALLOW_PRIVATE_FETCH").pipe(
+  Config.withDefault(false),
+);

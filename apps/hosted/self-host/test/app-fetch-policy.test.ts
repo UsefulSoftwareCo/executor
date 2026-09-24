@@ -3,38 +3,24 @@ import { test } from "node:test";
 import { ConfigProvider, Effect } from "effect";
 import { allowPrivateAppFetch } from "../src/contracts/config.ts";
 
-const decide = (origin: string, environment: Record<string, string> = {}) =>
+const decide = (environment: Record<string, string> = {}) =>
   Effect.runSync(
-    allowPrivateAppFetch(origin).pipe(
+    allowPrivateAppFetch.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(environment)),
     ),
   );
 
-test("a public dashboard origin keeps app code off private address space", () => {
-  for (const origin of ["https://executor.example.com", "https://apps.example.com:8443"])
-    assert.equal(decide(origin), false);
-});
-
-test("a dashboard origin the destination rule refuses enables private app fetch", () => {
+test("app code stays off private address space unless the operator opts in", () => {
+  // The dashboard origin no longer matters: requests to it never use the network.
   for (const origin of [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://192.168.1.10:3000",
-    "http://10.1.2.3",
-    "http://executor:3000",
-    "http://executor.internal:3000",
-    "https://[::1]:3000",
+    "http://localhost:4400",
+    "http://192.168.1.10",
+    "https://executor.example.com",
   ])
-    assert.equal(decide(origin), true);
+    assert.equal(decide({ BETTER_AUTH_URL: origin }), false);
 });
 
-test("an explicit setting wins over the derived default", () => {
-  assert.equal(
-    decide("http://localhost:3000", { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" }),
-    false,
-  );
-  assert.equal(
-    decide("https://executor.example.com", { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "true" }),
-    true,
-  );
+test("an explicit setting decides private app fetch", () => {
+  assert.equal(decide({ EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "true" }), true);
+  assert.equal(decide({ EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" }), false);
 });

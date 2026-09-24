@@ -63,6 +63,8 @@ interface Environment {
   readonly DASHBOARD: HttpBinding;
   readonly PUBLIC_FETCH: HttpBinding;
   readonly PRIVATE_FETCH: HttpBinding;
+  /** This product's own `SelfOrigin` entrypoint, for requests to the dashboard origin. */
+  readonly SELF: HttpBinding;
   readonly APPS: Fetcher;
 }
 
@@ -126,7 +128,10 @@ const prepare = (state: DurableObjectState, env: Environment) =>
       const policy = yield* urlPolicyConfig;
       const egress = {
         policy,
-        client: yield* bindingHttpClient(policy, env.PUBLIC_FETCH, env.PRIVATE_FETCH),
+        client: yield* bindingHttpClient(policy, env.PUBLIC_FETCH, env.PRIVATE_FETCH, {
+          origin: yield* Config.String("BETTER_AUTH_URL"),
+          binding: env.SELF,
+        }),
       };
       const blobs = bindingBlobStore(env.BLOBS);
       const directory = yield* Config.NonEmptyString("EXECUTOR_REPOSITORIES_DIR");
@@ -227,6 +232,19 @@ export class ExecutorProduct extends DurableObject<Environment> implements Produ
 export class WorkflowCallbacks extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     return this.env.PRODUCT.getByName("product").workflow(request);
+  }
+}
+
+/**
+ * Requests this instance sends to its own dashboard origin, from app isolates or host egress.
+ * They never cross the network, so they carry a fixed internal source instead of any client
+ * address header the sender supplied.
+ */
+export class SelfOrigin extends WorkerEntrypoint<Environment> {
+  async fetch(request: Request): Promise<Response> {
+    const internal = new Request(request);
+    internal.headers.set("x-executor-client-ip", "127.0.0.1");
+    return this.env.PRODUCT.getByName("product").fetch(internal);
   }
 }
 

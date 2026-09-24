@@ -82,6 +82,8 @@ export const startManagedServer = (
         ? {
             EXECUTOR_OAUTH_CALLBACK_URL: `http://account-picker.localhost:${port}/api/oauth/callback?tenant=fixture`,
             EXECUTOR_URL_ALLOW_HTTP_ORIGINS: '["http://oauth.internal:8080"]',
+            // Fixture providers listen on loopback, which the product default refuses to app code.
+            EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "true",
           }
         : {}),
       EXECUTOR_ENVIRONMENT: "e2e",

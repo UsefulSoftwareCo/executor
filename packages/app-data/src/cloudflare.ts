@@ -64,8 +64,8 @@ export const makeFacetSupervisor = (
   loader: Pick<WorkerLoader, "get">,
   /**
    * Network the facet's global `fetch` uses. Cloudflare has no private network to reach, so it
-   * passes nothing and relies on the compatibility flag. A local workerd host passes a
-   * public-only network service, which the flag cannot express there.
+   * passes nothing and relies on the compatibility flag. A local workerd host passes its own
+   * outbound entrypoint, which applies a rule the flag cannot express there.
    */
   globalOutbound?: Fetcher,
 ) =>

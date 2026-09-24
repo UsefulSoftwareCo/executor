@@ -1,5 +1,5 @@
 /** Trusted workerd host. App modules get isolated Workers/facets, never this environment. */
-import { DurableObject, WorkflowEntrypoint } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type {
   DurableObjectState,
@@ -86,12 +86,19 @@ const NativeStep = Schema.declare(
     "sleepUntil" in value &&
     typeof value.sleepUntil === "function",
 );
+interface HttpService {
+  fetch(request: Request): Promise<Response>;
+}
 interface Environment {
   readonly AUTH: string;
   /** Host decision, not an app capability: apps never see or change this binding. */
   readonly APPS_PRIVATE_FETCH: boolean;
   /** workerd network service that refuses private, loopback and link-local destinations. */
-  readonly PUBLIC_FETCH: Fetcher;
+  readonly PUBLIC_FETCH: HttpService;
+  /** This instance's own dashboard origin, or empty when the host serves none. */
+  readonly SELF_ORIGIN: string;
+  /** Reaches the product that serves `SELF_ORIGIN` without the network. */
+  readonly SELF?: HttpService;
   readonly LOADER: WorkerLoader;
   readonly DATA: { getByName(name: string): DataEntrypoint };
   readonly RUNS: Workflow<{ run: string }>;
@@ -99,13 +106,32 @@ interface Environment {
 }
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 /**
- * Where an app isolate's global `fetch` goes. `global_fetch_strictly_public` cannot do this
- * here: it routes global fetch through workerd's `internet` service, which this runtime
- * configures to allow private addresses. An explicit outbound to the public-only network
- * service is the control. Omitting it leaves the isolate on the default network.
+ * Every app isolate's global `fetch`. `global_fetch_strictly_public` cannot do this here: it
+ * routes global fetch through workerd's `internet` service, which this runtime configures to
+ * allow private addresses. Requests for this instance's own dashboard origin go to the product
+ * through a service binding, so the bundled Executor app works when that origin resolves to a
+ * private address. Everything else uses the public-only network service unless the operator
+ * allows private fetch. Redirects return to the isolate, which sends each hop back here.
  */
-const appOutbound = (env: Environment): Fetcher | undefined =>
-  env.APPS_PRIVATE_FETCH ? undefined : env.PUBLIC_FETCH;
+export class AppOutbound extends WorkerEntrypoint<Environment> {
+  async fetch(request: Request): Promise<Response> {
+    const self = URL.parse(this.env.SELF_ORIGIN)?.origin;
+    if (this.env.SELF !== undefined && new URL(request.url).origin === self)
+      return this.env.SELF.fetch(request);
+    return this.env.APPS_PRIVATE_FETCH ? fetch(request) : this.env.PUBLIC_FETCH.fetch(request);
+  }
+}
+const OutboundExports = Schema.Struct({
+  AppOutbound: Schema.declare(
+    (value): value is Fetcher =>
+      ((typeof value === "object" && value !== null) || typeof value === "function") &&
+      "fetch" in value &&
+      typeof value.fetch === "function",
+  ),
+});
+/** The loopback binding to `AppOutbound` that workerd supplies on every context's exports. */
+const appOutbound = (context: { readonly exports: unknown }): Fetcher =>
+  Schema.decodeUnknownSync(OutboundExports)(context.exports).AppOutbound;
 const rpcOptions = { onSendError: () => new Error("App runtime request failed") };
 const json = Schema.decodeUnknownSync(Schema.Json);
 const hostRequest = (env: Environment, command: WorkflowHostCommand) =>
@@ -127,6 +153,7 @@ const hostRequest = (env: Environment, command: WorkflowHostCommand) =>
 /** Run a single authorized invocation through the same generated protocol as Cloud. */
 const invoke = (
   env: Environment,
+  outbound: Fetcher,
   input: WorkerInvocation,
   signal: AbortSignal,
   elicit: Callback | null,
@@ -195,7 +222,6 @@ const invoke = (
           ),
         );
       }
-      const outbound = appOutbound(env);
       const worker = env.LOADER.get(
         `${input.app}:${execution?.runId ?? "call"}:${identity}`,
         () => ({
@@ -206,7 +232,7 @@ const invoke = (
           },
           compatibilityDate: "2026-07-30",
           compatibilityFlags: ["nodejs_compat"],
-          ...(outbound === undefined ? {} : { globalOutbound: outbound }),
+          globalOutbound: outbound,
         }),
       );
       const entry = yield* Schema.decodeUnknownEffect(AppRpcEntrypoint)(worker.getEntrypoint());
@@ -253,9 +279,9 @@ const invoke = (
 class AppApi extends RpcTarget {
   readonly #env: Environment;
   readonly #lifetime = new AbortController();
-  readonly #context: Pick<ExecutionContext, "waitUntil">;
+  readonly #context: Pick<ExecutionContext, "waitUntil" | "exports">;
   #active: Promise<unknown> | undefined;
-  constructor(env: Environment, context: Pick<ExecutionContext, "waitUntil">) {
+  constructor(env: Environment, context: Pick<ExecutionContext, "waitUntil" | "exports">) {
     super();
     this.#env = env;
     this.#context = context;
@@ -293,6 +319,7 @@ class AppApi extends RpcTarget {
         const build = crypto.randomUUID();
         const response = yield* invoke(
           this.#env,
+          appOutbound(this.#context),
           {
             app: `declaration:${build}`,
             build,
@@ -324,6 +351,7 @@ class AppApi extends RpcTarget {
         Effect.flatMap((input) =>
           invoke(
             this.#env,
+            appOutbound(this.#context),
             input,
             this.#lifetime.signal,
             async (input) =>
@@ -349,7 +377,7 @@ export class AppDataSupervisor extends DurableObject<Environment> {
   readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
   constructor(ctx: DurableObjectState, env: Environment) {
     super(ctx, env);
-    this.#supervisor = Effect.runPromise(makeFacetSupervisor(ctx, env.LOADER, appOutbound(env)));
+    this.#supervisor = Effect.runPromise(makeFacetSupervisor(ctx, env.LOADER, appOutbound(ctx)));
   }
   async invoke(
     input: typeof FacetInvocation.Type,
@@ -459,6 +487,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
             );
           const result = yield* invoke(
             this.env,
+            appOutbound(this.ctx),
             {
               app: seed.app,
               build: seed.build,

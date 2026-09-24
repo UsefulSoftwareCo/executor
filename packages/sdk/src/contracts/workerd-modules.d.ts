@@ -11,6 +11,7 @@ declare module "cloudflare:workers" {
     constructor(ctx: import("@cloudflare/workers-types").DurableObjectState, env: Env);
   }
   export abstract class WorkflowEntrypoint<Env, Payload> {
+    protected readonly ctx: import("@cloudflare/workers-types").ExecutionContext;
     protected readonly env: Env;
     constructor(ctx: import("@cloudflare/workers-types").ExecutionContext, env: Env);
     abstract run(event: Readonly<{ payload: Payload }>, step: unknown): Promise<unknown>;

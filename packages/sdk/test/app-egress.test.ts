@@ -32,6 +32,7 @@ const probe = (options: {
   readonly allowPrivateAppFetch: boolean;
   readonly database: boolean;
   readonly url: string;
+  readonly selfOrigin?: { readonly origin: string; readonly address: string };
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -44,6 +45,7 @@ const probe = (options: {
         // No workflow runs here; the host executor is never asked for one.
         executor: Effect.never,
         allowPrivateAppFetch: options.allowPrivateAppFetch,
+        ...(options.selfOrigin === undefined ? {} : { selfOrigin: options.selfOrigin }),
       });
       const apps = createAppRuntime({ runtime, blobs });
       return yield* Effect.promise(async () => {
@@ -88,3 +90,43 @@ for (const database of [false, true]) {
     },
   );
 }
+
+test(
+  "an app isolate reaches the dashboard origin through the host when private app fetch is off",
+  { timeout: 180_000 },
+  async (t) => {
+    const hosts: string[] = [];
+    const server = createServer((request, response) => {
+      hosts.push(request.headers.host ?? "");
+      response.writeHead(204).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    assert.ok(address !== null && typeof address === "object");
+    // A public-looking name that no resolver answers, like a tailnet name outside the tailnet.
+    const selfOrigin = {
+      origin: "https://nexus.example.ts.net",
+      address: `127.0.0.1:${address.port}`,
+    };
+
+    for (const database of [false, true])
+      assert.equal(
+        await probe({
+          allowPrivateAppFetch: false,
+          database,
+          selfOrigin,
+          url: "https://nexus.example.ts.net/api/viewer",
+        }),
+        "reached:204",
+      );
+    assert.deepEqual(hosts, ["nexus.example.ts.net", "nexus.example.ts.net"]);
+    const other = await probe({
+      allowPrivateAppFetch: false,
+      database: false,
+      selfOrigin,
+      url: `http://127.0.0.1:${address.port}/`,
+    });
+    assert.match(other, /^refused:/, `the isolate reached another private origin: ${other}`);
+  },
+);

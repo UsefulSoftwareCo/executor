@@ -200,7 +200,19 @@ non-root execution, generated key permissions, and refusal to replace missing ke
 The explicit-settings scenario also checks allowed internal imports, preserved Host
 headers, and DNS rejection before any connection, including redirected imports.
 It clones and pushes app source through the image's Git HTTP server, then checks
-the committed files through the workspace API before and after replacement:
+the committed files through the workspace API before and after replacement.
+
+A separate case serves the image at a tailnet-style origin. It creates a Docker
+network in `100.64.0.0/10`, gives the container a fixed address there and maps
+`nexus.example.ts.net` to that address inside the container. `BETTER_AUTH_URL`
+uses that name, and `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` is unset. After
+first-admin setup, an API key calls the built-in Executor app through `/mcp`. An
+authored app then checks that it cannot fetch the container's private address.
+The runner reaches the server through a port published on `127.0.0.1` in the
+range 4431-4439. It sends each request with the tailnet `Host` header through
+`node:http`, because Node's `fetch` replaces that header. This works with Docker
+Desktop, OrbStack and Linux Docker. The case removes its container, network and
+anonymous volume:
 
 ```sh
 EXECUTOR_E2E_DOCKER_IMAGE=<image-tag> EXECUTOR_E2E_DOCKER_ARCH=arm64 \
