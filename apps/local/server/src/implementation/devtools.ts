@@ -26,7 +26,7 @@ export const localDevtools = (auth: LocalAuth, settings: ServerConfig) => {
     return yield* HttpServerResponse.json({
       kind: "pairing",
       host: "local",
-      paired: yield* auth.valid(current.cookies[sessionCookie(settings.port)]),
+      paired: yield* auth.valid(current.cookies[sessionCookie(settings)]),
     }).pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
   }).pipe(
     Effect.catchTag("AuthForbidden", () =>
@@ -40,7 +40,7 @@ export const localDevtools = (auth: LocalAuth, settings: ServerConfig) => {
     const session = yield* auth.exchange(grant.token);
     return yield* HttpServerResponse.json({ status: true }).pipe(
       Effect.flatMap(
-        HttpServerResponse.setCookie(sessionCookie(settings.port), Redacted.value(session), {
+        HttpServerResponse.setCookie(sessionCookie(settings), Redacted.value(session), {
           httpOnly: true,
           sameSite: "strict",
           path: "/",

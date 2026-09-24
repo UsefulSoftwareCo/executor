@@ -143,8 +143,14 @@ export const makeLocalAuth = (crypto: Crypto, directory: string) =>
   });
 /** The local auth store is shared by HTTP access checks and the startup handoff. */
 export type LocalAuth = Effect.Success<ReturnType<typeof makeLocalAuth>>;
-/** Port-specific cookie avoids accidental collision between local Executor instances. */
-export const sessionCookie = (port: number) => `executor_session_${port}`;
+/**
+ * Cookies are shared across ports on one host, so the name carries the browser-facing port.
+ * Behind a configured origin that port is stable, so sessions survive a new listening port.
+ */
+export const sessionCookie = (config: Pick<ServerConfig, "port" | "browserOrigin">) =>
+  `executor_session_${
+    config.browserOrigin === undefined ? config.port : new URL(config.browserOrigin).port || "443"
+  }`;
 /** Bootstrap credentials remain in URL fragments, outside HTTP logs and referrers. */
 export const pairingUrl = (base: string, token: Redacted.Redacted<string>) =>
   Redacted.make(`${base}/#pair=${Redacted.value(token)}`);
@@ -173,20 +179,30 @@ export const localRequest = (port: number, browserOrigin?: string) =>
     return request;
   });
 
-/** Choose only a configured origin; proxy forwarding headers never establish trust. */
+/**
+ * Choose only a configured origin; proxy forwarding headers never establish trust.
+ * A loopback proxy speaking HTTP/2 sends the listener address as Host and the public host in
+ * X-Forwarded-Host. That header only selects the configured origin, and only on a request
+ * whose Host is this loopback listener, which a foreign or rebinding page cannot send.
+ */
 export const requestOrigin = (
   config: ServerConfig,
   request: HttpServerRequest.HttpServerRequest,
-) =>
-  config.browserOrigin !== undefined &&
-  (request.headers.origin === config.browserOrigin ||
-    request.headers.host === new URL(config.browserOrigin).host)
+) => {
+  if (config.browserOrigin === undefined) return `http://127.0.0.1:${config.port}`;
+  const browser = new URL(config.browserOrigin);
+  return request.headers.origin === config.browserOrigin ||
+    request.headers.host === browser.host ||
+    (request.headers.host === `127.0.0.1:${config.port}` &&
+      request.headers["x-forwarded-host"] === browser.host &&
+      request.headers["x-forwarded-proto"] === "https")
     ? config.browserOrigin
     : `http://127.0.0.1:${config.port}`;
+};
 
 /** Pair another browser from an authenticated dashboard or a programmatic bearer client. */
 export const authHandlers = (auth: LocalAuth, config: ServerConfig) => {
-  const name = sessionCookie(config.port);
+  const name = sessionCookie(config);
   const options = { httpOnly: true, sameSite: "strict" as const, path: "/" };
   const response = (authenticated: boolean) =>
     HttpServerResponse.jsonUnsafe(

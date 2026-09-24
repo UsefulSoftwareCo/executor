@@ -26,25 +26,28 @@ Effect's Node runtime handles signals and shuts down the listener and database.
 
 ## Run
 
-Use Node 22.23 or newer and an authenticated 1Password CLI. The repository launch
-commands inject configuration through `op run` using the ignored
-`.env.development.op` reference file. Run from the repository root:
+Use Node 22.23 or newer. Run from the repository root:
 
 ```sh
 bun run server
 ```
 
-The default address is `http://127.0.0.1:4312`. For example:
+The repository scripts need no configuration. `scripts/local-dev.ts` keeps data
+and a development key pair in the checkout's ignored `.local/dev/`. `bun run server`
+and `bun run dev` listen behind the shared Portless proxy at
+`https://local.executor.localhost:5394`, or `https://local.<checkout>.executor.localhost:5394`
+in another checkout. `bun run executor` listens on `http://127.0.0.1:4312`.
+Variables that you set win over these defaults. For example:
 
 ```sh
-bun run with:local sh -c \
-  'curl -H "Authorization: Bearer $EXECUTOR_API_KEY" http://127.0.0.1:4312/v1/apps'
+curl -H "Authorization: Bearer $(node -p 'require("./.local/dev/keys.json").apiKey')" \
+  https://local.executor.localhost:5394/v1/apps
 ```
 
 Press Ctrl+C to stop. Package-level `bun run start` reads its existing process
-environment; the repository scripts own 1Password injection. Relative data paths
-are resolved from the process working directory. See [configuration](../../../README.md#development-configuration)
-for the vault setup. The server itself does not depend on 1Password.
+environment only. Relative data paths are resolved from the process working
+directory. `bun run with:local …` loads 1Password values instead; see
+[configuration](../../../README.md#development-configuration).
 
 ## Configuration
 
@@ -76,12 +79,12 @@ only the configured loopback origin when an `Origin` header is present.
 ## Local dashboard
 
 For UI development, run `bun run dev` from the repository root. It starts the
-same local server at `http://127.0.0.1:4312` with Vite middleware and React Fast
-Refresh. UI changes update without rebuilding or refreshing the page. The HMR
-WebSocket listens separately on loopback port 24678. API requests, session
-cookies, pairing and OAuth callbacks keep the product server's origin. Stop
-an existing server on that port before starting dev mode. Server code changes
-still require a restart.
+same local server behind the Portless origin above, with Vite middleware and
+React Fast Refresh. UI changes update without rebuilding or refreshing the page.
+The HMR WebSocket listens separately on a free loopback port. API requests,
+session cookies, pairing and OAuth callbacks use the Portless origin, which stays
+the same across restarts, so the browser stays paired. Server code changes still
+require a restart.
 
 Build the dashboard from the repository root, then start the server:
 

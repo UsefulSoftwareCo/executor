@@ -6,8 +6,11 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { createServer } from "vite-plus";
 import { DevelopmentWebFailed } from "../contracts/development.ts";
 
-/** Return native dashboard HTML and the Vite fallback; only the dedicated listener receives HMR upgrades. */
-export const developmentDashboard = (root: string, server: Server, origin: URL) =>
+/**
+ * Return native dashboard HTML and the Vite fallback; only the dedicated listener receives HMR upgrades.
+ * `hmrOrigin` is the scheme and hostname the browser uses to reach that listener.
+ */
+export const developmentDashboard = (root: string, server: Server, hmrOrigin: URL) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -23,9 +26,9 @@ export const developmentDashboard = (root: string, server: Server, origin: URL) 
               middlewareMode: true,
               ws: {
                 server,
-                host: origin.hostname,
+                host: hmrOrigin.hostname,
                 clientPort: address.port,
-                protocol: origin.protocol === "https:" ? "wss" : "ws",
+                protocol: hmrOrigin.protocol === "https:" ? "wss" : "ws",
               },
             },
           }),

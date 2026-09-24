@@ -18,7 +18,7 @@ Standalone builds default to `https://v2.executor.sh`; malformed overrides fail 
 Cloud dashboard docs links stay on the current origin. Local and self-host dashboards
 use the public v2 docs because they do not serve the cloud documentation assets.
 
-Cloud development at `https://127.0.0.1:5395` serves the static marketing build
+Cloud development (`bun run hosted:cloud:dev`) serves the static marketing build
 beside the dashboard's Vite server. Rebuild marketing after edits and reload the
 page; dashboard hot reload is unchanged.
 

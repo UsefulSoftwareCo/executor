@@ -1,5 +1,5 @@
 /** Scoped Vite adapter shared by browser and desktop development hosts. */
-import type { Server } from "node:http";
+import { createServer as createHttpServer } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import { Effect, Path } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -8,19 +8,40 @@ import type { ServerConfig } from "../contracts/config.ts";
 import { StartupFailed } from "../contracts/startup.ts";
 import type { LocalWeb } from "../node.ts";
 
+/** Options for one development host. Separate hosts keep separate Vite dependency caches. */
+export type DevelopmentWebOptions = {
+  /** Vite cache directory relative to the repository root; Vite's default when omitted. */
+  readonly cacheDir?: string;
+};
+
 /** Serve UI assets and HMR beside the authenticated local API; closes Vite with the host. */
-export const developmentWeb = (settings: ServerConfig, hmrServer?: Server) =>
+export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOptions = {}) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const root = yield* path.fromFileUrl(new URL("../../../web/", import.meta.url));
-    const address = hmrServer?.address();
-    if (
-      hmrServer !== undefined &&
-      (address === null || address === undefined || typeof address === "string")
-    ) {
-      return yield* new StartupFailed({ stage: "dev-server" });
-    }
-    const socketPort = typeof address === "object" && address !== null ? address.port : 24678;
+    // HMR gets its own loopback listener on a free port, so concurrent checkouts never collide
+    // and Vite upgrades stay separate from the Effect HTTP server upgrade handler.
+    const hmrServer = yield* Effect.acquireRelease(
+      Effect.sync(() => createHttpServer()),
+      (server) =>
+        Effect.sync(() => {
+          server.closeAllConnections();
+          server.close();
+        }),
+    );
+    const socketPort = yield* Effect.callback<number, StartupFailed>((resume) => {
+      const failed = () => resume(Effect.fail(new StartupFailed({ stage: "dev-server" })));
+      hmrServer.once("error", failed);
+      hmrServer.listen({ host: "127.0.0.1", port: 0 }, () => {
+        const address = hmrServer.address();
+        resume(
+          address === null || typeof address === "string"
+            ? Effect.fail(new StartupFailed({ stage: "dev-server" }))
+            : Effect.succeed(address.port),
+        );
+      });
+      return Effect.sync(() => hmrServer.removeListener("error", failed));
+    });
     const vite = yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () =>
@@ -28,9 +49,9 @@ export const developmentWeb = (settings: ServerConfig, hmrServer?: Server) =>
             root,
             logLevel: "error",
             appType: "mpa",
-            ...(hmrServer === undefined
+            ...(options.cacheDir === undefined
               ? {}
-              : { cacheDir: path.join(root, "../../../.local/vite-desktop") }),
+              : { cacheDir: path.join(root, "../../..", options.cacheDir) }),
             server: {
               middlewareMode: true,
               // T3 Code warms the entry graph before the first Electron request.
@@ -39,13 +60,12 @@ export const developmentWeb = (settings: ServerConfig, hmrServer?: Server) =>
                 settings.browserOrigin === undefined
                   ? []
                   : [new URL(settings.browserOrigin).hostname],
-              // Keep Vite upgrades separate from the Effect HTTP server upgrade handler.
               ws: {
                 host: "127.0.0.1",
                 port: socketPort,
                 clientPort: socketPort,
                 protocol: "ws",
-                ...(hmrServer === undefined ? {} : { server: hmrServer }),
+                server: hmrServer,
               },
             },
           }),

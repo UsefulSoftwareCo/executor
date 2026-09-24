@@ -114,7 +114,7 @@ export default defineApp({accounts:{service}},async()=>({webhooks:{events:{accou
         });
         const issued = yield* auth.issue();
         const session = yield* auth.exchange(issued.token);
-        const cookie = { cookie: `${sessionCookie(config.port)}=${Redacted.value(session)}` };
+        const cookie = { cookie: `${sessionCookie(config)}=${Redacted.value(session)}` };
         const read = yield* request(path, cookie);
         assert.equal(read.status, 200);
         assert.equal(read.headers.get("cache-control"), "no-store");

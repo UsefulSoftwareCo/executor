@@ -50,7 +50,7 @@ export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
         Effect.mapError(() => new DashboardForbidden()),
       );
       const bearer = request.headers.authorization === `Bearer ${Redacted.value(config.apiKey)}`;
-      const session = yield* auth.valid(request.cookies[sessionCookie(config.port)]);
+      const session = yield* auth.valid(request.cookies[sessionCookie(config)]);
       if (!bearer && !session) return yield* Effect.fail(new DashboardUnauthorized());
       return (yield* response).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
     }),
@@ -176,7 +176,7 @@ export const dashboard = (
         Effect.mapError(() => new DashboardForbidden()),
       );
       const bearer = request.headers.authorization === `Bearer ${Redacted.value(config.apiKey)}`;
-      const cookie = request.cookies[sessionCookie(config.port)];
+      const cookie = request.cookies[sessionCookie(config)];
       const authorize: LiveAccess = bearer
         ? Effect.void
         : auth

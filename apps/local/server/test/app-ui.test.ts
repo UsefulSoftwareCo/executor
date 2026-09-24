@@ -317,7 +317,7 @@ test(
             const token = cookie.slice(cookie.indexOf("=") + 1);
             assert.match(token, /^[a-f0-9]{64}$/);
             // A restricted token remains restricted even if placed in the dashboard's cookie.
-            const copied = `${sessionCookie(port)}=${token}`;
+            const copied = `${sessionCookie({ port })}=${token}`;
             assert.equal(
               (await send("/dashboard/api/overview", { headers: { cookie: copied, origin: base } }))
                 .status,

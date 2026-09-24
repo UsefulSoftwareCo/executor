@@ -133,8 +133,8 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
         const credential = cookies
           .split(";")
           .map((part) => part.trim())
-          .find((part) => part.startsWith(`${sessionCookie(config.port)}=`))
-          ?.slice(sessionCookie(config.port).length + 1);
+          .find((part) => part.startsWith(`${sessionCookie(config)}=`))
+          ?.slice(sessionCookie(config).length + 1);
         if (!(yield* pairing.valid(credential))) return yield* new LocalMcpUnauthorized();
         const cookie = yield* semaphore.withPermits(1)(
           Effect.gen(function* () {
@@ -175,7 +175,7 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
       headers.delete("cookie");
       if (
         request.headers.authorization === undefined &&
-        (yield* pairing.valid(request.cookies[sessionCookie(config.port)]))
+        (yield* pairing.valid(request.cookies[sessionCookie(config)]))
       ) {
         const verified = yield* browserHeaders(new Headers(web.headers));
         headers.set("cookie", verified.get("cookie") ?? "");

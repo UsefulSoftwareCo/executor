@@ -203,7 +203,7 @@ export const appAuthentication = (
               Effect.mapError(() => new UiForbidden()),
             );
             const parent = yield* auth
-              .identify(request.cookies[sessionCookie(config.port)])
+              .identify(request.cookies[sessionCookie(config)])
               .pipe(Effect.mapError(unavailable));
             if (parent === undefined) return yield* new UiUnauthorized();
             const entry = yield* active(payload.request);

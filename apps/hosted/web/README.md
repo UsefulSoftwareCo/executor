@@ -27,10 +27,10 @@ routes and not-found views. API, Git, docs and asset paths keep their own handli
 The combined site build puts fixed redirects first and rejects files over
 Cloudflare's 2,000 static / 100 dynamic rule limits before Worker upload.
 
-Run `bun run hosted:self-host:web:dev` from the repository root for self-host HMR
-on port 4410, proxying to Docker on port 4400. Run `bun run hosted:cloud:web:dev`
+Run `bun run hosted:dev` from the repository root for self-host HMR; it starts the
+API and Vite together behind this checkout's Portless origin. Run `bun run hosted:cloud:web:dev`
 for cloud HMR on port 4412, proxying to the local Alchemy Worker on port 4411.
-Both accept `HOSTED_API_URL` as an override.
-Set the server's `BETTER_AUTH_URL` to the frontend origin when using HMR.
+The cloud dashboard accepts `HOSTED_API_URL` as an override. Set its server's
+`BETTER_AUTH_URL` to the frontend origin when using HMR.
 
 See [hosted deployment](../README.md) for build and deployment commands.

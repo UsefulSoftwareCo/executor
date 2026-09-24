@@ -24,7 +24,7 @@ export const localWebhookSetupHandlers = (
           new URL(request.headers.origin).host !== request.headers.host)
       )
         return yield* new AuthForbidden();
-      if (!(yield* auth.valid(request.cookies[sessionCookie(config.port)])))
+      if (!(yield* auth.valid(request.cookies[sessionCookie(config)])))
         return yield* new DashboardUnauthorized();
       return (yield* response).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
     }),

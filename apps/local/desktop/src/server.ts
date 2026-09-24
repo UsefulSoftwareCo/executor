@@ -1,5 +1,4 @@
 /** Desktop backend composition edge. The Electron parent owns this process and both private pipes. */
-import { createServer } from "node:http";
 import { createWriteStream } from "node:fs";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,26 +29,11 @@ const server = Effect.gen(function* () {
   );
   const development =
     process.env.EXECUTOR_DESKTOP_DEV === "1"
-      ? yield* Effect.gen(function* () {
-          const hmrServer = yield* Effect.acquireRelease(
-            Effect.sync(() => createServer()),
-            (server) =>
-              Effect.sync(() => {
-                server.closeAllConnections();
-                server.close();
-              }),
-          );
-          yield* Effect.callback<void, DesktopFailed>((resume) => {
-            const failed = () => resume(Effect.fail(new DesktopFailed({ stage: "start" })));
-            hmrServer.once("error", failed);
-            hmrServer.listen({ host: "127.0.0.1", port: 0 }, () => resume(Effect.void));
-            return Effect.sync(() => hmrServer.removeListener("error", failed));
-          });
-          const { developmentWeb } = yield* Effect.promise(
-            () => import("../../server/src/implementation/development.ts"),
-          );
-          return yield* developmentWeb(settings, hmrServer);
-        })
+      ? yield* Effect.promise(() => import("../../server/src/implementation/development.ts")).pipe(
+          Effect.flatMap(({ developmentWeb }) =>
+            developmentWeb(settings, { cacheDir: ".local/vite-desktop" }),
+          ),
+        )
       : undefined;
   const oauthCallback: LocalOAuthCallback = (origin) => (page) =>
     Effect.gen(function* () {

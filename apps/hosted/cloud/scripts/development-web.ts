@@ -4,7 +4,7 @@ import { createServer as createHttpServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { Config, Console, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { HttpRouter, HttpClient, HttpServerRequest, FetchHttpClient } from "effect/unstable/http";
 import { CloudEntry } from "../src/contracts/entry.ts";
 import { cloudEntryDocument } from "../src/implementation/entry.ts";
@@ -73,14 +73,16 @@ const main = Effect.scoped(
     const marketingRoot = path.resolve(root, "../../../marketing");
     const configuration = yield* cloudDevelopment;
     const origin = new URL(configuration.origin);
+    // Behind the local proxy the origin's TLS ends at the proxy; this process serves plain HTTP.
+    const proxied = Option.isSome(configuration.webPort);
     const tls =
-      origin.protocol === "https:"
+      origin.protocol === "https:" && !proxied
         ? {
             cert: Buffer.from(yield* fs.readFile(path.join(home, ".portless/server.pem"))),
             key: Buffer.from(yield* fs.readFile(path.join(home, ".portless/server-key.pem"))),
           }
         : null;
-    const listenHost = origin.hostname === "[::1]" ? "::1" : "127.0.0.1";
+    const listenHost = !proxied && origin.hostname === "[::1]" ? "::1" : "127.0.0.1";
     const socket = yield* Effect.sync(() =>
       tls === null ? createHttpServer() : createServer(tls),
     );
@@ -89,7 +91,12 @@ const main = Effect.scoped(
       tls === null ? createHttpServer() : createServer(tls),
     );
     yield* Layer.build(NodeHttpServer.layerServer(() => hmrSocket, { host: listenHost, port: 0 }));
-    const dashboard = yield* developmentDashboard(root, hmrSocket, origin);
+    // The proxy routes whole hostnames, so a proxied HMR client connects to its loopback listener.
+    const dashboard = yield* developmentDashboard(
+      root,
+      hmrSocket,
+      proxied ? new URL(`http://${listenHost}`) : origin,
+    );
     const marketing = yield* marketingFiles(path.join(marketingRoot, "dist"));
     const routes = Layer.mergeAll(
       yield* cloudDevtools,
@@ -105,7 +112,7 @@ const main = Effect.scoped(
         Layer.provide(
           NodeHttpServer.layer(() => socket, {
             host: listenHost,
-            port: Number(origin.port),
+            port: Option.getOrElse(configuration.webPort, () => Number(origin.port)),
             gracefulShutdownTimeout: 1_000,
           }),
         ),

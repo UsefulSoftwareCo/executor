@@ -1625,7 +1625,7 @@ test(
           auth.issue().pipe(Effect.flatMap((grant) => auth.exchange(grant.token))),
         );
         const browser = await reader(url, {
-          cookie: `${sessionCookie(port)}=${Redacted.value(session)}`,
+          cookie: `${sessionCookie({ port })}=${Redacted.value(session)}`,
         });
         await Effect.runPromise(
           Effect.scoped(

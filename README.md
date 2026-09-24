@@ -49,13 +49,25 @@ Worker and disposable Postgres with hosted emulators. It needs Docker, Playwrigh
 Chromium and ffmpeg, but no account secrets, saved Alchemy profile or 1Password.
 See [recorded E2E tests](e2e/README.md) for the evidence viewer and attached stages.
 
+## Local development
+
+`bun run dev` needs no environment variables or 1Password. It serves the local
+product with UI hot reload at `https://local.executor.localhost:5394`, or
+`https://local.<checkout>.executor.localhost:5394` in another checkout, and prints
+a one-use connect link. Any number of checkouts can run at once. Data and a
+development key pair live in the checkout's ignored `.local/dev/`; delete it to
+start fresh. `bun run server`, `bun run executor` and the desktop scripts use the
+same defaults. Set `EXECUTOR_*` variables to override them; behind the proxy, the
+port and browser origin always come from Portless. To use the 1Password values,
+run `bun run with:local bun run dev`.
+
 ## Development configuration
 
 Authenticate the 1Password CLI, then use the normal repository launch commands.
 The `with:local`, `with:cloud`, `with:cloud:dev`, and `with:self-host` scripts in `package.json`
 load 1Password references from ignored files through `op run`:
 
-- `.env.development.op` for local development.
+- `.env.development.op` for optional local development overrides.
 - `.env.production.op` for cloud.
 - `.env.cloud-development.op` for the cloud Worker running locally.
 - `.env.self-host.op` for Docker and standalone hosted Node.
@@ -69,9 +81,11 @@ process. Keep encryption/signing keys stable.
 
 Cloud uses Alchemy's PlanetScale database, role, and Hyperdrive resources.
 `bun run hosted:cloud:dev` starts the cloud Worker, local Postgres, migrations,
-and frontend through Alchemy. Configure `CLOUD_DEV_DATABASE_PASSWORD` in 1Password
-and use `BETTER_AUTH_URL=https://127.0.0.1:5395` for cloud development. Alchemy
-derives the local connection URL; no development `DATABASE_URL` is needed.
+and frontend through Alchemy with service emulators and no credentials.
+`bun run hosted:cloud:dev:1password` uses `.env.cloud-development.op` instead;
+configure `CLOUD_DEV_DATABASE_PASSWORD` in 1Password and use
+`BETTER_AUTH_URL=https://127.0.0.1:5395`. See
+[local cloud development](apps/hosted/README.md#local-cloud-development).
 Self-host uses embedded PGlite with a persistent data volume. Add the required
 references to the matching ignored file. Never put literal credentials there.
 See [hosted configuration](apps/hosted/README.md#cloudflare) for PlanetScale settings.
