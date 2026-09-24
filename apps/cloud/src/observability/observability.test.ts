@@ -409,3 +409,51 @@ describe("Durable Object platform reset noise", () => {
     expect(options.beforeSend(event)).toBeNull();
   });
 });
+
+describe("Sentry privacy boundary", () => {
+  it("strips secrets from auto-captured errors while retaining diagnostic locations", () => {
+    const secret = "SYNTHETIC_PRIVATE_MARKER";
+    const sent = cloudSentryOptions({
+      SENTRY_DSN: "https://public@example.invalid/1",
+    } as Env).beforeSend({
+      type: undefined,
+      event_id: "safe-event-id",
+      message: secret,
+      user: { email: secret },
+      request: {
+        url: `https://example.test/?token=${secret}`,
+        headers: { authorization: secret },
+        data: secret,
+      },
+      extra: { cause: secret },
+      breadcrumbs: [{ message: secret }],
+      tags: { token: secret, otel_trace_id: traceId },
+      exception: {
+        values: [
+          {
+            type: "TypeError",
+            value: secret,
+            stacktrace: {
+              frames: [
+                {
+                  filename: `/assets/example.js?token=${secret}`,
+                  function: "handleRequest",
+                  lineno: 42,
+                  vars: { secret },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(sent)).not.toContain(secret);
+    expect(sent?.event_id).toBe("safe-event-id");
+    expect(sent?.tags?.otel_trace_id).toBe(traceId);
+    expect(sent?.exception?.values?.[0]?.stacktrace?.frames?.[0]).toMatchObject({
+      filename: "/assets/example.js",
+      function: "handleRequest",
+      lineno: 42,
+    });
+  });
+});

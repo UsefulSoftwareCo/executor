@@ -151,7 +151,7 @@ describe("access token expiry and identity boundaries", () => {
         }),
       );
     }
-    it.effect(`${kind} accepts a token issued more than a day ago that has not expired`, () =>
+    it.effect(`${kind} rejects a token issued more than a day ago even when exp is later`, () =>
       Effect.gen(function* () {
         const { publicKey, privateKey } = yield* Effect.promise(() => generateKeyPair("RS256"));
         const jwk = yield* Effect.promise(() => exportJWK(publicKey));
@@ -169,10 +169,13 @@ describe("access token expiry and identity boundaries", () => {
             .setProtectedHeader({ alg: "RS256", kid: "expiry-key" })
             .sign(privateKey),
         );
-        const verified = yield* kind === "mcp"
-          ? verifyMcpAccessToken(token, jwks, { issuer, audience: resource })
-          : verifyWorkosUserManagementToken(token, jwks);
-        expect(verified).toEqual({ accountId: "user_test", organizationId: "org_test" });
+        const error = yield* Effect.flip(
+          kind === "mcp"
+            ? verifyMcpAccessToken(token, jwks, { issuer, audience: resource })
+            : verifyWorkosUserManagementToken(token, jwks),
+        );
+        expect(error).toBeInstanceOf(McpJwtVerificationError);
+        expect(error.reason).toBe("expired");
       }),
     );
     it.effect(`${kind} rejects a non-string organization claim`, () =>
