@@ -1,10 +1,10 @@
 import type { JWTVerifyOptions } from "jose";
 
-/**
- * Require expiring WorkOS tokens. Token lifetime is controlled by WorkOS via
- * `exp`; do not cap the age locally, since AuthKit issues MCP access tokens
- * that live for several days.
- */
+/** WorkOS credentials may authorize a request for at most 24 hours after issuance. */
+export const WORKOS_ACCESS_TOKEN_MAX_AGE_SECONDS = 24 * 60 * 60;
+
+/** Require signed, expiring tokens and cap their effective lifetime even if the issuer sets a later exp. */
 export const workosAccessTokenOptions: JWTVerifyOptions = {
   requiredClaims: ["exp", "iat"],
+  maxTokenAge: WORKOS_ACCESS_TOKEN_MAX_AGE_SECONDS,
 };

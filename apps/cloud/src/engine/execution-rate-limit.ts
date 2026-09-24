@@ -132,7 +132,7 @@ const failOpen = (
       "rate_limit.check.error_tag": outcome.errorTag,
     });
     yield* Effect.sync(() => {
-      console.warn("[rate-limit] execution rate limit check failed open:", error);
+      console.warn("[rate-limit] execution rate limit check failed open");
     });
     if (!outcome.timedOut) yield* captureCauseEffect(error);
     return { blocked: false } as const satisfies GateDecision;
@@ -303,7 +303,6 @@ export const makeExecutionRateLimiter = (
                 `[rate-limit] exemption lookup failed for ${organizationId}; treating as ${
                   cached ? "last known" : "not exempt"
                 }:`,
-                error,
               );
             });
             yield* captureCauseEffect(error);

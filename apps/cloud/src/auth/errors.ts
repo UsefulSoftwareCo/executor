@@ -228,7 +228,7 @@ export const withServiceLogging = <A, E, R>(
   effect: Effect.Effect<A, unknown, R>,
 ): Effect.Effect<A, E, R> =>
   effect.pipe(
-    Effect.tapCause((cause) => Effect.logError(`${name} failed`, cause)),
+    Effect.tapCause(() => Effect.logError(`${name} failed`)),
     Effect.mapError(publicError),
     Effect.withSpan(name),
   ) as Effect.Effect<A, E, R>;

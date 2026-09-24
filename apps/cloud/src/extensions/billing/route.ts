@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { Cause, Effect } from "effect";
+import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { autumnHandler } from "autumn-js/backend";
 
@@ -138,7 +138,7 @@ const handler = Effect.gen(function* () {
   );
 
   if (statusCode >= 400) {
-    console.error("[autumn] upstream error:", statusCode, response);
+    console.error("[autumn] upstream error", { status: statusCode });
     return yield* new HttpResponseError({
       status: statusCode,
       code: "billing_request_failed",
@@ -150,7 +150,7 @@ const handler = Effect.gen(function* () {
 }).pipe(
   Effect.catchCause((err) => {
     if (isServerError(err)) {
-      console.error("[autumn] request failed:", Cause.pretty(err));
+      console.error("[autumn] request failed", { status: 500 });
     }
     return toErrorServerResponseEffect(err);
   }),

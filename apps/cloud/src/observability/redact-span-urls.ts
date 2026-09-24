@@ -110,6 +110,10 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
       if (name !== event.name) event.name = name;
       if (event.attributes === undefined) continue;
       for (const [key, value] of Object.entries(event.attributes)) {
+        if (key === "exception.message" || key === "exception.stacktrace") {
+          event.attributes[key] = "[REDACTED]";
+          continue;
+        }
         // Event attributes permit string[] exactly as span attributes do, so
         // array elements get the same free-text scrub, in place.
         if (Array.isArray(value)) {
@@ -124,8 +128,7 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
 
     const message = span.status.message;
     if (typeof message === "string") {
-      const redacted = redactUrlsInText(message);
-      if (redacted !== message) span.status.message = redacted;
+      span.status.message = "[REDACTED]";
     }
   }
 }

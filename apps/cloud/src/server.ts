@@ -10,6 +10,7 @@ import {
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
+import { limitRequestBody } from "./request-limits";
 import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
@@ -304,7 +305,9 @@ const prewarmAppPlane = (ctx: ExecutionContext): void => {
 };
 
 const cloudflareHandler: ExportedHandler<Env> = {
-  fetch: async (request, env, ctx) => {
+  fetch: async (incoming, env, ctx) => {
+    const request = await limitRequestBody(incoming);
+    if (request instanceof Response) return request;
     isolateRequestSeq += 1;
 
     // Public pages must not enter TanStack Start: its first-request dynamic
