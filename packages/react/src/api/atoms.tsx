@@ -156,6 +156,69 @@ export const pausedExecutionAtom = (executionId: string) =>
     timeToLive: "5 seconds",
   });
 
+// ---------------------------------------------------------------------------
+// Tool call log — the audit trail. Read-only, so there is no mutation atom and
+// no optimistic wrapper: rows appear because calls happened.
+// ---------------------------------------------------------------------------
+
+/** The Activity page size. One extra row is fetched to know whether a next
+ *  page exists — same trick as `ADMIN_USERS_PAGE_SIZE`. */
+export const TOOL_CALLS_PAGE_SIZE = 25;
+
+export type ToolCallOutcomeFilter = "all" | "ok" | "fail" | "blocked" | "declined" | "error";
+
+export interface ToolCallsPageKey {
+  readonly offset: number;
+  readonly outcome: ToolCallOutcomeFilter;
+  /** Integration slug, or "" for all. */
+  readonly integration: string;
+  /** Client name ("Claude Code"), or "" for all. */
+  readonly client: string;
+  readonly search: string;
+}
+
+/**
+ * One page of the tool call log, newest first.
+ *
+ * Short TTL on purpose: this is the page someone opens while an agent is
+ * running, to watch what it just did. `Atom.family` needs a primitive key, so
+ * the filter set travels as `offset|outcome|integration|client|search` —
+ * paging back within the same filters is then instant while the front page
+ * stays fresh. Split on the first four pipes only: the search text is
+ * free-form and may contain one. The client name is free-form too (an OAuth
+ * client names itself), so it travels URI-encoded and cannot contain a pipe.
+ */
+export const toolCallsPageAtom = Atom.family((key: string) => {
+  const firstPipe = key.indexOf("|");
+  const secondPipe = key.indexOf("|", firstPipe + 1);
+  const thirdPipe = key.indexOf("|", secondPipe + 1);
+  const fourthPipe = key.indexOf("|", thirdPipe + 1);
+  const offset = Number(key.slice(0, firstPipe)) || 0;
+  const outcome = key.slice(firstPipe + 1, secondPipe) as ToolCallOutcomeFilter;
+  const integration = key.slice(secondPipe + 1, thirdPipe);
+  const client = decodeURIComponent(key.slice(thirdPipe + 1, fourthPipe));
+  const search = key.slice(fourthPipe + 1);
+  return ExecutorApiClient.query("toolCalls", "list", {
+    query: {
+      limit: TOOL_CALLS_PAGE_SIZE + 1,
+      ...(offset > 0 ? { offset } : {}),
+      ...(outcome !== "all" ? { outcome } : {}),
+      ...(integration !== "" ? { integration } : {}),
+      ...(client !== "" ? { client } : {}),
+      ...(search !== "" ? { search } : {}),
+    },
+    timeToLive: "5 seconds",
+  });
+});
+
+export const toolCallsPageKey = (key: ToolCallsPageKey): string =>
+  `${key.offset}|${key.outcome}|${key.integration}|${encodeURIComponent(key.client)}|${key.search}`;
+
+/** The clients seen in the log, for the Activity page's client filter. */
+export const toolCallClientsAtom = ExecutorApiClient.query("toolCalls", "clients", {
+  timeToLive: "30 seconds",
+});
+
 export const artifactsAtom = ExecutorApiClient.query("artifacts", "list", {
   timeToLive: "30 seconds",
   reactivityKeys: [ReactivityKey.artifacts],
