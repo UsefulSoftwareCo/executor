@@ -13,7 +13,13 @@
  * Deliberately dependency-free: a tiny promise-chain queue, not a library.
  */
 
-const MAX_CONCURRENT_BUILDS = 4;
+/**
+ * Exported for the one consumer outside this module that has to agree with
+ * it: the cap-eviction e2e scenario (e2e/cloud/mcp-session-cap-eviction.test.ts)
+ * holds its own request concurrency to exactly this width, so nothing it
+ * opens ever waits in the queue below.
+ */
+export const MAX_CONCURRENT_BUILDS = 4;
 
 /**
  * Max time a build waits in the FIFO queue for a slot before proceeding

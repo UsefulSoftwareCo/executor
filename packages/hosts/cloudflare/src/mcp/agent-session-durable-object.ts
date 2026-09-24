@@ -356,6 +356,21 @@ export abstract class McpAgentSessionDOBase<
    * second time.
    */
   private disposingRuntime: Promise<void> | null = null;
+  /**
+   * Set the instant `destroy()` begins, before it wipes anything, and never
+   * cleared: this instance is on its way out and every answer it still gives
+   * must say so.
+   *
+   * The durable `cf_agents_destroy_pending` marker is not enough on its own.
+   * The agents SDK's `destroy()` drops its own tables and `deleteAll()`s
+   * storage — taking that marker with it — and only then aborts the isolate,
+   * from a `setTimeout(0)` after an `await`. A request that reaches this
+   * instance in that gap sees no marker, still holds the cached session meta,
+   * finds no runtime, and tries to restore one — which the SDK's `onStart`
+   * begins by reading a table that no longer exists, so the request dies as
+   * an unclassified `no such table` error instead of the reconnect verdict.
+   */
+  private destroying = false;
   private onStartPromise: Promise<void> | null = null;
   private lastActivityMs = 0;
   private resolvedSessionName: string | undefined = undefined;
@@ -1378,11 +1393,58 @@ export abstract class McpAgentSessionDOBase<
       const sessionMeta = yield* self.loadSessionMeta();
       if (!sessionMeta) return false;
 
-      yield* Effect.promise(() => self.onStart()).pipe(
-        Effect.withSpan("McpSessionDO.restore_runtime_for_approval"),
-      );
+      yield* self
+        .restoreRuntimeForRpc()
+        .pipe(Effect.withSpan("McpSessionDO.restore_runtime_for_approval"));
       return self.initialized && !!self.engine;
     }).pipe(Effect.withSpan("McpSessionDO.ensure_runtime_for_approval"));
+  }
+
+  /**
+   * Bring the runtime back for a request that entered through one of this
+   * class's own RPC methods rather than through the agents SDK's fetch path.
+   *
+   * PartyServer runs `onStart` exactly once per Durable Object instance, from
+   * inside `blockConcurrencyWhile`, and remembers that it did in private
+   * state this class cannot read. Every SDK entry point (`fetch`, `alarm`,
+   * `setName`, the SDK's own RPC methods) goes through that gate first. A
+   * direct `this.onStart()` from an RPC method restores the runtime but
+   * leaves PartyServer's state at "never started" — so on a FRESH instance
+   * (the object evicted from memory after its idle disposal, then woken by
+   * this RPC) the very next `fetch` for the same session re-enters the gate,
+   * finds the instance unstarted, and runs `onStart` again: tearing down the
+   * runtime this RPC just built and rebuilding it with the object's input gate
+   * held for the whole build. That second build is the confirmed defect:
+   * every restore through an RPC on a fresh instance paid for two cold
+   * builds, the second with the object's input gate closed. The CI runs that
+   * surfaced it also showed builds reset at the platform's 30s
+   * `blockConcurrencyWhile` limit; that stall is observed alongside it, not
+   * explained by it — most likely the cloud app's build-semaphore hand-off,
+   * tracked in https://github.com/UsefulSoftwareCo/executor/issues/2063.
+   *
+   * So a fresh instance is initialized the way the SDK initializes its own
+   * RPC entry points — `__unsafe_ensureInitialized`, PartyServer's escape
+   * hatch for exactly this — which runs `onStart` under the gate once and
+   * marks the instance started. On an instance PartyServer already started
+   * whose runtime was since disposed in place, that call is a no-op, and the
+   * runtime is restored directly as before; no later gate re-runs it.
+   */
+  private restoreRuntimeForRpc(): Effect.Effect<void> {
+    const self = this;
+    return Effect.gen(function* () {
+      yield* Effect.promise(() => self.ensurePartyServerInitialized());
+      if (self.initialized) return;
+      yield* Effect.promise(() => self.onStart());
+    });
+  }
+
+  /**
+   * PartyServer's own initialization gate — see {@link restoreRuntimeForRpc}.
+   * A seam only so a unit harness built without PartyServer's private state
+   * can stand in for it; production never overrides this.
+   */
+  protected ensurePartyServerInitialized(): Promise<void> {
+    return this.__unsafe_ensureInitialized();
   }
 
   private startRuntimeFromOnStart(props?: McpSessionProps): Effect.Effect<void> {
@@ -1626,7 +1688,11 @@ export abstract class McpAgentSessionDOBase<
         const destroyPending = yield* Effect.promise(() =>
           self.ctx.storage.get<boolean>(AGENTS_DESTROY_PENDING_KEY),
         );
-        if (destroyPending === true) return "terminated" as const;
+        // Both signals, because they cover different halves of the teardown:
+        // the durable marker covers the second before the destroy alarm
+        // fires, the in-memory flag covers the alarm's own run — after the
+        // marker has been wiped, before the isolate is aborted.
+        if (destroyPending === true || self.destroying) return "terminated" as const;
         const sessionMeta = yield* self.loadSessionMeta();
         if (!sessionMeta) return "not_found" as const;
         if (self.initialized) {
@@ -1634,9 +1700,9 @@ export abstract class McpAgentSessionDOBase<
             .bestEffortBookkeeping("validate_owner.mark_activity", () => self.markActivity())
             .pipe(Effect.withSpan("McpSessionDO.markActivity"));
         } else {
-          yield* Effect.promise(() => self.onStart()).pipe(
-            Effect.withSpan("McpSessionDO.restore_transport_runtime"),
-          );
+          yield* self
+            .restoreRuntimeForRpc()
+            .pipe(Effect.withSpan("McpSessionDO.restore_transport_runtime"));
         }
         const ownerMatches =
           identity.accountId === sessionMeta.userId &&
@@ -1793,6 +1859,9 @@ export abstract class McpAgentSessionDOBase<
   }
 
   override async destroy(): Promise<void> {
+    // Before any await: an owner check that lands during the teardown below
+    // must already read this as terminated (see `destroying`).
+    this.destroying = true;
     await this.cleanup();
     await super.destroy();
   }
