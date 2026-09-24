@@ -12,7 +12,7 @@ import type { ExecutorDbHandle } from "@executor-js/api/server";
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
-  type McpApprovalOwner,
+  type McpModelResumeCaller,
   type McpSessionModelResumeResult,
   type McpSessionInit,
   type SessionMeta,
@@ -95,7 +95,7 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
 
   protected override forwardModelResumeToOwner(
     owner: McpExecutionOwnerRoute,
-    identity: McpApprovalOwner,
+    identity: McpModelResumeCaller,
     executionId: string,
     response: ResumeResponse,
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {

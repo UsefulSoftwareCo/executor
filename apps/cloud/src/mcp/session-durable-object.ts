@@ -33,6 +33,7 @@ import {
   type BuiltMcpServer,
   type IncomingTraceHeaders,
   type McpApprovalOwner,
+  type McpModelResumeCaller,
   type McpSessionModelResumeResult,
   type McpSessionInit,
   type SessionMeta,
@@ -235,7 +236,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
 
   protected override forwardModelResumeToOwner(
     owner: McpExecutionOwnerRoute,
-    identity: McpApprovalOwner,
+    identity: McpModelResumeCaller,
     executionId: string,
     response: ResumeResponse,
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
