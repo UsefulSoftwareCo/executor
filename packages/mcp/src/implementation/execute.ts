@@ -10,7 +10,7 @@ import {
   type DeploymentId,
   type Tool as AppTool,
 } from "@executor-js/sdk/core";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema, Semaphore } from "effect";
 import { diagnostic } from "./diagnostics.ts";
 import type { McpTarget } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
@@ -99,7 +99,26 @@ function listTools<E extends Error>(backend: McpBackend<E>, app: AppId, target: 
 
 function catalog(backend: McpBackend<Error>) {
   return Effect.gen(function* () {
-    const apps = yield* backend.listApps();
+    const concurrency = defaultMcpRuntimeLimits.discoveryConcurrency;
+    const slots = yield* Semaphore.make(concurrency);
+    const discover = <A, E, R>(name: string, work: Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        const queued = yield* Clock.currentTimeMillis;
+        return yield* slots.withPermits(1)(
+          Effect.gen(function* () {
+            yield* Effect.annotateCurrentSpan(
+              "executor.discovery.wait_ms",
+              (yield* Clock.currentTimeMillis) - queued,
+            );
+            return yield* work;
+          }),
+        );
+      }).pipe(Effect.withSpan(name));
+    const apps = yield* backend.listApps().pipe(Effect.withSpan("mcp.discovery.apps"));
+    yield* Effect.annotateCurrentSpan({
+      "executor.discovery.apps": apps.length,
+      "executor.discovery.concurrency": concurrency,
+    });
     const counts = new Map<string, number>();
     for (const app of apps) counts.set(app.slug, (counts.get(app.slug) ?? 0) + 1);
     const discovered = yield* Effect.forEach(
@@ -112,25 +131,28 @@ function catalog(backend: McpBackend<Error>) {
               targets: [],
               error: !Schema.is(AppSlug)(app.slug) ? "AppSlugInvalid" : "AppSlugAmbiguous",
             };
-          return yield* backend.listTargets({ app: app.id }).pipe(
+          return yield* discover(
+            "mcp.discovery.targets",
+            backend.listTargets({ app: app.id }),
+          ).pipe(
             Effect.flatMap((targets) =>
               Effect.forEach(
                 targets,
                 (target) =>
-                  listTools(backend, app.id, target).pipe(
+                  discover("mcp.discovery.tools", listTools(backend, app.id, target)).pipe(
                     Effect.map((catalog) => ({ target, catalog, error: undefined })),
                     Effect.catch((error) =>
                       Effect.succeed({ target, catalog: undefined, error: diagnostic(error) }),
                     ),
                   ),
-                { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
+                { concurrency: "unbounded" },
               ),
             ),
             Effect.map((targets) => ({ app, targets, error: undefined })),
             Effect.catch((error) => Effect.succeed({ app, targets: [], error: diagnostic(error) })),
           );
         }),
-      { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
+      { concurrency: "unbounded" },
     );
     const tools: Catalog = Object.create(null);
     const unavailableApps: Array<typeof UnavailableApp.Type> = [];
@@ -202,6 +224,14 @@ function catalog(backend: McpBackend<Error>) {
       }
       tools[app.slug] = Object.fromEntries(entries);
     }
+    yield* Effect.annotateCurrentSpan({
+      "executor.discovery.targets": discovered.reduce((sum, app) => sum + app.targets.length, 0),
+      "executor.discovery.tools": Object.values(tools).reduce(
+        (sum, entries) => sum + Object.keys(entries).length,
+        0,
+      ),
+      "executor.discovery.unavailable": unavailableApps.length,
+    });
     return { tools, unavailableApps };
   });
 }

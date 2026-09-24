@@ -5,19 +5,14 @@ import { authorizeTool, authorizeApp } from "./authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
-import {
-  visibleApps,
-  visibleAccounts,
-  currentResourceAuthority,
-  requireAppAccess,
-} from "./resource-policy.ts";
+import { visibleApps, visibleAccounts, requireAppAccess } from "./resource-policy.ts";
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
 import { appTargets, type McpBackend } from "@executor-js/mcp";
-import { ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
+import { AppNotFound, ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
 import { Context, Effect, Option } from "effect";
 import { currentOwner, selectedApp, ownProfile, checkInvocationAccounts } from "./access.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { CurrentOrganization } from "../contracts/organization.ts";
+import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { listTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
@@ -53,6 +48,34 @@ export const hostedMcpBackend = Effect.gen(function* () {
         Effect.provideContext(context),
       );
     });
+  // Resolve account labels once per request, even when target discovery fans out.
+  // These records never authorize a tool call; selectedApp and SDK lifecycle checks do.
+  const discoveryAccounts = yield* Effect.cached(
+    Effect.flatMap(sdk, (executor) =>
+      executor.accounts.list({ owner: organization.owner }).pipe(Effect.flatMap(visibleAccounts)),
+    ).pipe(Effect.provideContext(context)),
+  );
+  // A single metadata snapshot feeds this request's catalog. Inspection still
+  // verifies the selected profile revision and current app/account permissions.
+  const discoveryApps = yield* Effect.cached(
+    Effect.flatMap(sdk, (executor) =>
+      executor.apps
+        .list({ ids: permittedAppIds(policy), owner: organization.owner })
+        .pipe(Effect.flatMap(visibleApps)),
+    ).pipe(Effect.provideContext(context)),
+  );
+  const discoveryProfiles = yield* Effect.cached(
+    Effect.gen(function* () {
+      if (user === undefined) return yield* new OrganizationForbidden();
+      const apps = yield* discoveryApps;
+      const executor = yield* sdk;
+      return yield* executor.apps.profiles.listMany({
+        apps: apps.map((app) => app.id),
+        owner: organization.owner,
+        subject: user,
+      });
+    }).pipe(Effect.provideContext(context)),
+  );
   const backend = {
     listSkills: (input) => observe("listSkills", listAppSkills(input)),
     readSkill: (input) => observe("readSkill", readAppSkill(input)),
@@ -60,7 +83,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* authorizeTool(input.app, input.tool);
         const owner = yield* currentOwner;
-        yield* requireAppAccess(input.app, "use");
         const executor = yield* sdk;
         yield* selectedApp(executor, owner, input.app, input.profile);
         if (input.profile !== undefined && input.expectedProfileRevision !== undefined) {
@@ -78,27 +100,22 @@ export const hostedMcpBackend = Effect.gen(function* () {
         }),
       ),
     listApps: (input = {}) =>
-      Effect.flatMap(sdk, (executor) =>
-        executor.apps
-          .list({ ids: permittedAppIds(policy, input.ids), owner: organization.owner })
-          .pipe(Effect.flatMap(visibleApps), Effect.provideContext(context)),
-      ).pipe((work) => observe("listApps", work)),
+      discoveryApps.pipe(
+        Effect.map((apps) => {
+          if (input.ids === undefined) return apps;
+          const requested = new Set(input.ids);
+          return apps.filter((app) => requested.has(app.id));
+        }),
+        (work) => observe("listApps", work),
+      ),
     listTargets: (input) =>
       Effect.gen(function* () {
         yield* authorizeApp(input.app);
         yield* requireAppAccess(input.app, "use");
-        const actor = yield* currentResourceAuthority,
-          owner = yield* currentOwner,
-          executor = yield* sdk;
-        const app = yield* executor.apps.get({ ...input, owner });
-        const profiles = yield* executor.apps.profiles.list({
-          ...input,
-          owner,
-          subject: actor.user,
-        });
-        const accounts = yield* executor.accounts
-          .list({ owner })
-          .pipe(Effect.flatMap(visibleAccounts));
+        const app = (yield* discoveryApps).find((app) => app.id === input.app);
+        if (app === undefined) return yield* new AppNotFound({ app: input.app });
+        const profiles = (yield* discoveryProfiles).filter((profile) => profile.app === input.app);
+        const accounts = yield* discoveryAccounts;
         return appTargets(app, profiles, accounts);
       }).pipe((work) => observe("listTargets", work)),
     listTools: (input) => observe("listTools", listTools(input)),
@@ -106,7 +123,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* authorizeTool(input.app, input.tool);
         const owner = yield* currentOwner;
-        yield* requireAppAccess(input.app, "use");
         const executor = yield* sdk;
         yield* selectedApp(executor, owner, input.app, input.profile);
         return yield* executor.tools.call(input, options);

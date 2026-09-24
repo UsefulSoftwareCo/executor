@@ -51,8 +51,8 @@ const AppPolicy = Schema.Struct({
   groups: Schema.Array(GroupId),
   granted: Schema.Boolean,
 });
-/** Resolve the configured app's own policy without evaluating its code. */
-export const applicationAccess = (app: AppId, actor: ResourceAuthority) =>
+/** Resolve app policies in one read, retaining tenant and group checks for every row. */
+const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
     const rows = yield* sql`select p.id as app, p.creator_id as creator, p.audience, p.revision,
@@ -60,27 +60,39 @@ export const applicationAccess = (app: AppId, actor: ResourceAuthority) =>
     exists(select 1 from hosted_app_groups g join hosted_group_members m on m.group_id = g.group_id
       where g.app_id = p.id and m.member_id = ${actor.member}) as granted
     from hosted_app_access p join executor_apps a on a.id = p.id
-    where p.id = ${app} and p.organization_id = ${actor.organization}
+    where ${sql.in("p.id", apps)} and p.organization_id = ${actor.organization}
       and a.owner = ${`organization:${actor.organization}`}`;
-    const found = (yield* Schema.decodeUnknownEffect(Schema.Array(AppPolicy))(rows))[0];
-    if (found === undefined) return yield* new OrganizationForbidden();
-    const audience: typeof AppAudience.Type =
-      found.audience === "groups"
-        ? { kind: "groups", groups: found.groups }
-        : { kind: found.audience };
-    return {
-      app: found.app,
-      creator: found.creator,
-      audience,
-      revision: found.revision,
-      canManage: actor.role !== "member" || found.creator === actor.user,
-      canUse:
-        found.audience === "private"
-          ? found.creator === actor.user
-          : found.audience === "everyone" || found.granted,
-    } satisfies typeof AppAccess.Type;
+    const policies = yield* Schema.decodeUnknownEffect(Schema.Array(AppPolicy))(rows);
+    return policies.map((found) => {
+      const audience: typeof AppAudience.Type =
+        found.audience === "groups"
+          ? { kind: "groups", groups: found.groups }
+          : { kind: found.audience };
+      return {
+        app: found.app,
+        creator: found.creator,
+        audience,
+        revision: found.revision,
+        canManage: actor.role !== "member" || found.creator === actor.user,
+        canUse:
+          found.audience === "private"
+            ? found.creator === actor.user
+            : found.audience === "everyone" || found.granted,
+      } satisfies typeof AppAccess.Type;
+    });
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+  );
+
+/** Resolve one app's policy without evaluating its code; missing policies deny access. */
+export const applicationAccess = (app: AppId, actor: ResourceAuthority) =>
+  applicationAccesses([app], actor).pipe(
+    Effect.flatMap((policies) => {
+      const access = policies[0];
+      return access === undefined
+        ? Effect.fail(new OrganizationForbidden())
+        : Effect.succeed(access);
+    }),
   );
 
 const AccountPolicy = Schema.Struct({
@@ -93,8 +105,8 @@ const AccountPolicy = Schema.Struct({
   groups: Schema.Array(GroupId),
   granted: Schema.Boolean,
 });
-/** Metadata and use of a personal account remain private even from organization administrators. */
-export const accountAccess = (account: AccountId, actor: ResourceAuthority) =>
+/** Read account policies together; personal accounts remain private even from administrators. */
+const accountAccesses = (accounts: readonly AccountId[], actor: ResourceAuthority) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
     const rows = yield* sql`select p.account_id as account, p.creator_id as creator, p.kind,
@@ -103,34 +115,51 @@ export const accountAccess = (account: AccountId, actor: ResourceAuthority) =>
     exists(select 1 from hosted_account_groups g join hosted_group_members m on m.group_id = g.group_id
       where g.account_id = p.account_id and m.member_id = ${actor.member}) as granted
     from hosted_account_access p join executor_accounts a on a.id = p.account_id
-    where p.account_id = ${account} and p.organization_id = ${actor.organization}
+    where ${sql.in("p.account_id", accounts)} and p.organization_id = ${actor.organization}
       and a.owner = ${`organization:${actor.organization}`}`;
-    const found = (yield* Schema.decodeUnknownEffect(Schema.Array(AccountPolicy))(rows))[0];
-    if (found === undefined) return yield* new OrganizationForbidden();
-    if (found.kind === "personal") {
-      if (found.personalUser === null) return yield* new StorageError();
-      return {
-        account,
-        creator: found.creator,
-        revision: found.revision,
-        ownership: { kind: "personal", user: found.personalUser },
-        canManage: found.personalUser === actor.user,
-        canUse: found.personalUser === actor.user,
-      } satisfies typeof AccountAccess.Type;
-    }
-    if (found.audience === null) return yield* new StorageError();
-    const audience: typeof SharedAudience.Type =
-      found.audience === "groups" ? { kind: "groups", groups: found.groups } : { kind: "everyone" };
-    return {
-      account,
-      creator: found.creator,
-      revision: found.revision,
-      ownership: { kind: "shared", audience },
-      canManage: actor.role !== "member" || found.creator === actor.user,
-      canUse: found.audience === "everyone" || found.granted,
-    } satisfies typeof AccountAccess.Type;
+    const policies = yield* Schema.decodeUnknownEffect(Schema.Array(AccountPolicy))(rows);
+    return yield* Effect.forEach(policies, (found) =>
+      Effect.gen(function* () {
+        const account = found.account;
+        if (found.kind === "personal") {
+          if (found.personalUser === null) return yield* new StorageError();
+          return {
+            account,
+            creator: found.creator,
+            revision: found.revision,
+            ownership: { kind: "personal", user: found.personalUser },
+            canManage: found.personalUser === actor.user,
+            canUse: found.personalUser === actor.user,
+          } satisfies typeof AccountAccess.Type;
+        }
+        if (found.audience === null) return yield* new StorageError();
+        const audience: typeof SharedAudience.Type =
+          found.audience === "groups"
+            ? { kind: "groups", groups: found.groups }
+            : { kind: "everyone" };
+        return {
+          account,
+          creator: found.creator,
+          revision: found.revision,
+          ownership: { kind: "shared", audience },
+          canManage: actor.role !== "member" || found.creator === actor.user,
+          canUse: found.audience === "everyone" || found.granted,
+        } satisfies typeof AccountAccess.Type;
+      }),
+    );
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+  );
+
+/** Resolve one account's policy; missing policies deny access. */
+export const accountAccess = (account: AccountId, actor: ResourceAuthority) =>
+  accountAccesses([account], actor).pipe(
+    Effect.flatMap((policies) => {
+      const access = policies[0];
+      return access === undefined
+        ? Effect.fail(new OrganizationForbidden())
+        : Effect.succeed(access);
+    }),
   );
 
 /** Read access may include management; management never authorizes execution. */
@@ -200,22 +229,23 @@ export const requireAccountAccess = (account: AccountId, action: "read" | "manag
 export const visibleAccounts = (accounts: readonly Account[]) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
-    return yield* Effect.filter(accounts, (account) =>
-      accountAccess(account.id, actor).pipe(
-        Effect.map((access) => access.canUse),
-        Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
-      ),
+    const policies = yield* accountAccesses(
+      accounts.map((account) => account.id),
+      actor,
     );
+    const usable = new Set(
+      policies.filter((access) => access.canUse).map((access) => access.account),
+    );
+    return accounts.filter((account) => usable.has(account.id));
   });
 /** Normal app lists contain usable apps, not every app that an admin can manage. */
 export const visibleApps = (apps: readonly App[]) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
-    const visible = yield* Effect.filter(apps, (app) =>
-      applicationAccess(app.id, actor).pipe(
-        Effect.map((access) => access.canUse),
-        Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
-      ),
+    const policies = yield* applicationAccesses(
+      apps.map((app) => app.id),
+      actor,
     );
-    return visible;
+    const usable = new Set(policies.filter((access) => access.canUse).map((access) => access.app));
+    return apps.filter((app) => usable.has(app.id));
   });

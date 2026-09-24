@@ -173,6 +173,25 @@ export const makeProfiles = (db: Query, crypto: Crypto.Crypto) => {
           Effect.mapError(() => new StorageError()),
         );
       }),
+    listMany: (input: Parameters<Executor["apps"]["profiles"]["listMany"]>[0]) =>
+      Effect.gen(function* () {
+        if (input.apps.length === 0) return [];
+        const rows = yield* query(() =>
+          db.findMany("profiles", {
+            where: (b) =>
+              b.and(
+                b("app", "in", input.apps),
+                b("owner", "=", input.owner),
+                b("subject", "=", input.subject),
+                b("status", "!=", "removed"),
+              ),
+            orderBy: ["createdAt", "asc"],
+          }),
+        );
+        return yield* Schema.decodeUnknownEffect(Schema.Array(Profile))(rows).pipe(
+          Effect.mapError(() => new StorageError()),
+        );
+      }),
     update: (input: Parameters<Executor["apps"]["profiles"]["update"]>[0]) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {

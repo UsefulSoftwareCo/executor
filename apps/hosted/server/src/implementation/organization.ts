@@ -1,4 +1,4 @@
-import { StorageError } from "@executor-js/sdk/core";
+import { type Profile } from "@executor-js/sdk/core";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
 import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
@@ -202,11 +202,20 @@ export const inventory = (owner: OwnerId) =>
       ? yield* executor.accounts.list({ owner }).pipe(Effect.flatMap(visibleAccounts))
       : [];
     const user = yield* CurrentUserId;
-    const profiles = (yield* Effect.forEach(apps, (app) =>
-      executor.apps.profiles
-        .list({ app: app.id, owner, subject: user })
-        .pipe(Effect.mapError(() => new StorageError())),
-    )).flat();
+    if (user === undefined) return yield* new OrganizationForbidden();
+    const listedProfiles = yield* executor.apps.profiles.listMany({
+      apps: apps.map((app) => app.id),
+      owner,
+      subject: user,
+    });
+    // Keep inventory's app-first ordering while reading all profile rows together.
+    const byApp = new Map<AppId, Profile[]>();
+    for (const profile of listedProfiles) {
+      const existing = byApp.get(profile.app);
+      if (existing === undefined) byApp.set(profile.app, [profile]);
+      else existing.push(profile);
+    }
+    const profiles = apps.flatMap((app) => byApp.get(app.id) ?? []);
     if (policy.tools.kind === "all") return { apps, accounts, profiles };
     const selected = new Set(
       profiles.flatMap((profile) =>

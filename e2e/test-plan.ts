@@ -986,6 +986,17 @@ export const scenarios = {
       local: na("Local uses its instance credential."),
     },
   },
+  patMcpInFlight: {
+    file: "pat-mcp-in-flight.spec.ts",
+    title: "Revocation between tool calls stops an already running MCP execute",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The controlled upstream is loopback-only; hosted request authorization is shared.",
+      ),
+      local: na("Local uses its instance credential."),
+    },
+  },
   namedApiKeys: {
     file: "named-api-keys.spec.ts",
     title: "Personal access tokens inherit user permissions and support expiry and revocation",

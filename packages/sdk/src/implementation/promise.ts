@@ -103,6 +103,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
         create: (input) => run(ProfileInputs.create, input, executor.apps.profiles.create),
         get: (input) => run(ProfileInputs.get, input, executor.apps.profiles.get),
         list: (input) => run(ProfileInputs.list, input, executor.apps.profiles.list),
+        listMany: (input) => run(ProfileInputs.listMany, input, executor.apps.profiles.listMany),
         update: (input) => run(ProfileInputs.update, input, executor.apps.profiles.update),
         setEnabled: (input) =>
           run(ProfileInputs.setEnabled, input, executor.apps.profiles.setEnabled),

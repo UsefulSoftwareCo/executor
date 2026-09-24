@@ -14,6 +14,7 @@ export const executorHandlers = (executor: Executor) =>
         )
         .handle("get", ({ params, query }) => executor.apps.profiles.get({ ...params, ...query }))
         .handle("list", ({ params, query }) => executor.apps.profiles.list({ ...params, ...query }))
+        .handle("listMany", ({ payload }) => executor.apps.profiles.listMany(payload))
         .handle("update", ({ params, payload }) =>
           executor.apps.profiles.update({ ...params, ...payload }),
         )

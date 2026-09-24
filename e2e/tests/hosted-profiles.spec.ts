@@ -89,6 +89,18 @@ layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
         installed.push({ actor: actors.member, id: alice.id }, { actor: actors.admin, id: bob.id });
         expect(alice.subject).toBe(aliceId);
         expect(bob.subject).toBe(bobId);
+        const inventoryProfiles = (actor: Session) =>
+          api.request(actor, "GET", `${prefix}/inventory`).pipe(
+            Effect.flatMap((response) =>
+              body(Schema.Struct({ profiles: Schema.Array(Profile) }), response),
+            ),
+            Effect.map((inventory) => inventory.profiles.map((profile) => profile.id)),
+          );
+        expect(yield* inventoryProfiles(actors.member)).toContain(alice.id);
+        expect(yield* inventoryProfiles(actors.member)).not.toContain(bob.id);
+        expect(yield* inventoryProfiles(actors.admin)).toContain(bob.id);
+        expect(yield* inventoryProfiles(actors.owner)).not.toContain(alice.id);
+
         expect(alice.id).not.toBe(bob.id);
         const connect = (actor: Session, profile: string, label: string, shared = false) =>
           Effect.gen(function* () {
@@ -303,6 +315,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted profiles", (it) => {
           })).status,
         ).toBe(200);
         expect((yield* call(actors.member, alice.id)).status).toBe(403);
+        expect(yield* inventoryProfiles(actors.member)).not.toContain(alice.id);
         expect(
           (yield* api.request(actors.member, "DELETE", `${path}/profiles/${alice.id}`)).status,
         ).toBe(200);

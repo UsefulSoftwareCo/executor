@@ -19,7 +19,7 @@ export type McpRuntimeLimits = typeof McpRuntimeLimits.Type;
 export const defaultMcpRuntimeLimits = McpRuntimeLimits.make({
   maxCodeChars: 65_536,
   maxExecutions: 64,
-  discoveryConcurrency: 4,
+  discoveryConcurrency: 8,
 });
 
 /** A product denied admission before a program started. The message is safe for the caller. */

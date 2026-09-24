@@ -102,6 +102,12 @@ export const ProfileInputs = {
     owner: Schema.optional(OwnerId),
     subject: Schema.optional(Schema.NonEmptyString),
   }),
+  /** List existing profiles across explicit apps; absent apps contribute no rows. */
+  listMany: Schema.Struct({
+    apps: Schema.Array(AppId),
+    owner: OwnerId,
+    subject: Schema.NonEmptyString,
+  }),
   update: Schema.Struct({
     ...target,
     expectedRevision: ProfileRevision,
@@ -147,6 +153,13 @@ export const AppProfilesGroup = HttpApiGroup.make("appProfiles")
       query: { owner: Schema.optional(OwnerId), subject: Schema.optional(Schema.NonEmptyString) },
       success: Schema.Array(Profile),
       error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("listMany", "/v1/profiles/list", {
+      payload: ProfileInputs.listMany,
+      success: Schema.Array(Profile),
+      error: [StorageError],
     }),
   )
   .add(
