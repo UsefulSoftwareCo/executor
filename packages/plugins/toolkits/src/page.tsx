@@ -618,6 +618,9 @@ function AddToolkitCard(props: { owner: Owner; showOwnerLabels: boolean; onClick
 function ToolkitSection(props: {
   owner: Owner;
   title?: string;
+  /** Who a toolkit on this shelf belongs to — the same distinction, and the
+   *  same words, the connection owner picker uses. */
+  subtitle?: string;
   showOwnerLabels: boolean;
   toolkits: readonly ToolkitResponse[];
   onCreate: (input: { owner: Owner; name: string }) => Promise<void>;
@@ -632,6 +635,9 @@ function ToolkitSection(props: {
           <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
             {props.title}
           </h2>
+          {props.subtitle ? (
+            <p className="mt-1 text-xs text-muted-foreground">{props.subtitle}</p>
+          ) : null}
         </div>
       ) : null}
 
@@ -687,6 +693,7 @@ function ToolkitGrid(props: {
           owner="org"
           showOwnerLabels
           title="Workspace"
+          subtitle="Shared with everyone in this workspace."
           toolkits={workspaceToolkits}
           onCreate={props.onCreate}
         />
@@ -694,6 +701,7 @@ function ToolkitGrid(props: {
           owner="user"
           showOwnerLabels
           title="Personal"
+          subtitle="Saved only for your account."
           toolkits={personalToolkits}
           onCreate={props.onCreate}
         />
@@ -1415,7 +1423,7 @@ export function ToolkitsPage(props: PluginPageProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {selectedToolkitSlug === null ? (
-        <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border bg-background/95 px-4 backdrop-blur-sm">
+        <div className="shrink-0 border-b border-border bg-background/95 px-4 py-3 backdrop-blur-sm">
           <div className="flex min-w-0 items-center gap-3">
             <h1 className="truncate text-sm font-semibold text-foreground">Toolkits</h1>
             {AsyncResult.isSuccess(toolkits) && (
@@ -1424,6 +1432,13 @@ export function ToolkitsPage(props: PluginPageProps) {
               </span>
             )}
           </div>
+          {/* Every other console page says what it is for in a line under its
+              title; this one had only the title, which left the feature to be
+              guessed at from an empty grid. */}
+          <p className="mt-0.5 max-w-3xl text-xs text-muted-foreground">
+            A named set of tools with its own MCP endpoint. Point an agent at a toolkit and it sees
+            only those tools, under the toolkit&apos;s own policies and connections.
+          </p>
         </div>
       ) : null}
 
