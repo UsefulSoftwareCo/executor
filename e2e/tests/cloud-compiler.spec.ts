@@ -226,6 +226,55 @@ export default defineApp({accounts:{}}, {queries:{
       }),
     ),
   );
+  it.effect(scenarios.cloudGmailInstall.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser,
+          actors = yield* Actors,
+          api = yield* Api;
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open Add app", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/add`),
+        );
+        yield* browser.use("Find Gmail", (page) =>
+          page.getByPlaceholder("Search apps…").fill("Gmail"),
+        );
+        yield* browser.use("Choose the published Gmail definition", (page) =>
+          page.getByRole("button", { name: /Gmail.*OpenAPI/ }).click(),
+        );
+        yield* browser.checkpoint("Gmail catalog install form");
+        yield* browser.use("Install Gmail", (page) =>
+          page.getByRole("button", { name: "Add app", exact: true }).click(),
+        );
+        yield* browser.use("Wait for the installed app", (page) =>
+          page.waitForURL("**/apps/*?view=accounts"),
+        );
+        const pathname = yield* browser.use("Read the installed app location", (page) =>
+          page.evaluate(() => location.pathname),
+        );
+        const id = yield* Schema.decodeUnknownEffect(Schema.String)(
+          /^\/org\/[^/]+\/apps\/([^/]+)$/.exec(pathname)?.[1],
+        );
+        const path = `/api/organizations/${actors.organization.id}/apps/${id}`;
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
+        );
+        const app = yield* body(App, yield* api.request(actors.owner, "GET", path));
+        expect(app.name).toBe("Gmail");
+        const source = yield* body(
+          Schema.Struct({
+            files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+          }),
+          yield* api.request(actors.owner, "GET", `${path}/source`),
+        );
+        expect(source.files.find((file) => file.path === "operations.json")?.content).toContain(
+          "https://gmail.googleapis.com",
+        );
+        yield* browser.checkpoint("Gmail installed and ready for account setup");
+      }),
+    ),
+  );
   it.effect(scenarios.cloudCompilerDependencies.title, (context) =>
     withHostedCase(
       context,

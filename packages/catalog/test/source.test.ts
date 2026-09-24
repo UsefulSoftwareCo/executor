@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createServer, type Server } from "node:http";
 import { Effect, Exit } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { safeHttpClient, type AddressLookup } from "@executor-js/utils/safe-fetch";
 import {
   defaultUrlPolicy,
   httpsOnlyUrlPolicy,
   type UrlPolicy,
 } from "@executor-js/utils/url-policy";
-import { readApiDocument } from "../src/implementation/source.ts";
+import { catalogSource, readApiDocument } from "../src/implementation/source.ts";
 
 const spec = JSON.stringify({ openapi: "3.1.0", paths: {} });
 
@@ -51,6 +52,28 @@ test("a loopback definition loads when the deployment allows loopback", async ()
     response.end(spec);
   });
   assert.ok(Exit.isSuccess(await read(`${origin}/openapi.json`, defaultUrlPolicy)));
+});
+
+test("catalog feed labels do not override the definition URL", async () => {
+  const requested: string[] = [];
+  const client = HttpClient.make((request) =>
+    Effect.sync(() => {
+      requested.push(request.url);
+      return HttpClientResponse.fromWeb(request, Response.json({ openapi: "3.1.0" }));
+    }),
+  );
+  const entry = {
+    id: "curated/google-gmail",
+    kind: "openapi" as const,
+    name: "Gmail",
+    description: "Mail",
+    domain: "gmail.com",
+    feeds: ["curated"],
+    connectUrl: "https://integrations.sh/specs/google/google-gmail.json",
+  };
+  const result = await Effect.runPromise(catalogSource(client).document(entry));
+  assert.deepEqual(result, { openapi: "3.1.0" });
+  assert.deepEqual(requested, [entry.connectUrl]);
 });
 
 test("the same definition is refused when the deployment is public-only", async () => {

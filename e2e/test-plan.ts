@@ -481,6 +481,17 @@ export const scenarios = {
       local: na("This scenario measures the Cloud catalog installation path."),
     },
   },
+  cloudGmailInstall: {
+    file: "cloud-compiler.spec.ts",
+    title: "Cloud catalog installs Gmail from its published definition",
+    targets: {
+      cloud: scheduled,
+      "self-host": na(
+        "The reported failure is on Cloud; the shared importer is covered separately.",
+      ),
+      local: na("Cloud deployment is required to verify the reported failure."),
+    },
+  },
   cloudCompilerDependencies: {
     file: "cloud-compiler.spec.ts",
     title: "Cloud compiler installs imported packages and preserves source manifests",
