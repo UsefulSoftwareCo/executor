@@ -20,7 +20,11 @@ export const CurrentTelemetryClient = Context.Reference<HttpClient.HttpClient | 
 const selectedClient = Layer.unwrap(
   CurrentTelemetryClient.pipe(
     Effect.map((client) =>
-      client === undefined ? FetchHttpClient.layer : Layer.succeed(HttpClient.HttpClient, client),
+      // Export-only RequestInit options, such as browser keepalive, must not
+      // enter product clients that share the page's Layer memo map.
+      client === undefined
+        ? Layer.fresh(FetchHttpClient.layer)
+        : Layer.succeed(HttpClient.HttpClient, client),
     ),
   ),
 );

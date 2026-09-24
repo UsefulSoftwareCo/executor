@@ -1040,6 +1040,16 @@ export const scenarios = {
       local: na("This journey checks hosted app metadata requests."),
     },
   },
+  organizationIcon: {
+    fixtures: "actors",
+    file: "organization-icon.spec.ts",
+    title: "Organization icon uploads and survives a settings reload",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Organization settings are hosted only."),
+    },
+  },
   settingsLoading: {
     fixtures: "actors",
     file: "settings-loading.spec.ts",
