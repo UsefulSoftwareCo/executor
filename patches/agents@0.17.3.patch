@@ -95,7 +95,7 @@ index c8fad448e8797b89690a99d93490d1363851b225..d80f66f1532c29dda0a0477dc1ec9ef5
    McpAgent,
    type McpAuthContext,
 diff --git a/dist/mcp/index.js b/dist/mcp/index.js
-index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c28786cca392 100644
+index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..012ca5d0ad52384804f06feabf0654e2ceca8237 100644
 --- a/dist/mcp/index.js
 +++ b/dist/mcp/index.js
 @@ -28,13 +28,60 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
@@ -1059,7 +1059,31 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  		if (standalone) this.writeSSEEvent(standalone, message, eventId);
  	}
  	/**
-@@ -861,12 +1466,10 @@ var StreamableHTTPServerTransport = class {
+@@ -819,6 +1424,23 @@ var StreamableHTTPServerTransport = class {
+ 		const agent = this._agent;
+ 		const context = getCurrentAgent();
+ 		const originatingConnection = context.agent === agent ? context.connection : void 0;
++		// Callers that share one session can have the same JSON-RPC id in
++		// flight on several streams at once. So when the stream that carried
++		// this request is known and still owns the id, the message goes to
++		// that stream only: to the GET that resumed it, to its POST connection,
++		// or, with neither left, into its own event log for its own
++		// Last-Event-ID recovery. Never to another stream that merely holds
++		// the same id.
++		if (originatingConnection) {
++			const streamId = originatingConnection.state?.streamId ?? originatingConnection.id;
++			const connections = Array.from(agent.getConnections());
++			const liveConnection = connections.find((conn) => conn.id !== streamId && conn.state?.streamId === streamId) ?? connections.find((conn) => conn.id === streamId) ?? null;
++			const relatedIds = liveConnection?.state?.requestIds ?? await agent.getStreamRequestIds(streamId);
++			if (relatedIds?.includes(requestId)) {
++				await this.sendOnStream(agent, streamId, relatedIds, liveConnection, message, requestId);
++				return;
++			}
++		}
+ 		const matchingConnections = Array.from(agent.getConnections()).filter((conn) => conn.state?.requestIds?.includes(requestId));
+ 		const liveConnection = matchingConnections.find((conn) => conn.id === originatingConnection?.id) ?? (matchingConnections.length === 1 ? matchingConnections[0] : null);
+ 		if (!liveConnection && matchingConnections.length > 1) {
+@@ -861,12 +1483,10 @@ var StreamableHTTPServerTransport = class {
  *
  * ## Lifecycle
  *
@@ -1076,7 +1100,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  *
  * Standalone GET stream events (`_GET_stream`) are *not* cleared
  * automatically; they accumulate for the lifetime of the DO. Bounded
-@@ -893,12 +1496,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -893,12 +1513,34 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  	}
  	async storeEvent(streamId, message) {
  		if (streamId.includes(":")) throw new Error(`DurableObjectEventStore: streamId must not contain ':' (got ${JSON.stringify(streamId)})`);
@@ -1111,7 +1135,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  		return eventId;
  	}
  	async getStreamIdForEventId(eventId) {
-@@ -915,9 +1540,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
+@@ -915,9 +1557,59 @@ var DurableObjectEventStore = class DurableObjectEventStore {
  			start: startKey,
  			limit: DurableObjectEventStore.REPLAY_LIMIT
  		});
@@ -1172,7 +1196,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  	/**
  	* Drop the event log for a single stream. Called by the transport
  	* immediately after a POST's final response has been written to the
-@@ -973,6 +1648,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
+@@ -973,6 +1665,13 @@ DurableObjectEventStore.EVENT_KEY_PREFIX = "__mcp_event__:";
  DurableObjectEventStore.SEQ_PAD = 16;
  DurableObjectEventStore.DELETE_CHUNK = 128;
  DurableObjectEventStore.REPLAY_LIMIT = 1e3;
@@ -1186,7 +1210,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  //#endregion
  //#region src/mcp/client-transports.ts
  /**
-@@ -1355,6 +2037,26 @@ function experimental_createMcpHandler(server, options = {}) {
+@@ -1355,6 +2054,26 @@ function experimental_createMcpHandler(server, options = {}) {
  }
  //#endregion
  //#region src/mcp/index.ts
@@ -1213,7 +1237,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  var McpAgent = class McpAgent extends Agent {
  	constructor(..._args) {
  		super(..._args);
-@@ -1369,18 +2071,121 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1369,18 +2088,121 @@ var McpAgent = class McpAgent extends Agent {
  	async getInitializeRequest() {
  		return this.ctx.storage.get("initializeRequest");
  	}
@@ -1338,7 +1362,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  	/**
  	* Reverse lookup: find which POST stream a given `requestId` belongs
  	* to, and return the stream's full `requestIds` list in the same
-@@ -1407,10 +2212,14 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1407,10 +2229,14 @@ var McpAgent = class McpAgent extends Agent {
  			limit: STREAM_REQS_SCAN_LIMIT
  		});
  		if (rows.size === STREAM_REQS_SCAN_LIMIT) console.warn(`McpAgent: getStreamForRequestId hit the ${STREAM_REQS_SCAN_LIMIT}-key scan cap; stale __mcp_stream_reqs__ entries may be accumulating from abandoned POSTs`);
@@ -1357,7 +1381,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  	}
  	/** Read the transport type for this agent.
  	* This relies on the naming scheme being `sse:${sessionId}`,
-@@ -1498,6 +2307,12 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1498,6 +2324,12 @@ var McpAgent = class McpAgent extends Agent {
  	}
  	/** Sets up the MCP transport and server every time the Agent is started.*/
  	async onStart(props) {
@@ -1370,7 +1394,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  		if (props) await this.updateProps(props);
  		else this.props = await this.ctx.storage.get("props");
  		await this.init();
-@@ -1516,23 +2331,36 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1516,23 +2348,36 @@ var McpAgent = class McpAgent extends Agent {
  					return;
  				}
  				break;
@@ -1422,7 +1446,7 @@ index 1edcf0c8c9e67aa211ae515e7672cdf79912101e..231220c26b995a48e40dba993773c287
  			}
  		}
  	}
-@@ -1697,7 +2525,9 @@ var McpAgent = class McpAgent extends Agent {
+@@ -1697,7 +2542,9 @@ var McpAgent = class McpAgent extends Agent {
  	}
  };
  McpAgent.STREAM_REQS_KEY_PREFIX = "__mcp_stream_reqs__:";
