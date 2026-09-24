@@ -278,6 +278,8 @@ export function createRequest(config: {
             )
               throw new Error("The request escaped its API origin");
             const headers = new Headers(prepared.headers);
+            // GitHub requires this header; Workers do not supply one by default.
+            if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             if (prepared.body instanceof FormData) headers.delete("content-type");
             return { ...prepared, url, headers };
           },

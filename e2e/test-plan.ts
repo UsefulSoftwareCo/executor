@@ -475,6 +475,16 @@ export const scenarios = {
       local: na("This scenario exercises the hosted import API."),
     },
   },
+  openapiUserAgent: {
+    fixtures: "actors",
+    file: "openapi-user-agent.spec.ts",
+    title: "Imported OpenAPI PAT calls supply User-Agent and preserve explicit client headers",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker OpenAPI transport."),
+      local: na("Exercises the hosted import and account connection APIs."),
+    },
+  },
   templateAccounts: {
     fixtures: "actors",
     file: "template-accounts.spec.ts",
