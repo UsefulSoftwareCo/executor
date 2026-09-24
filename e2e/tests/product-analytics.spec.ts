@@ -136,6 +136,7 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         );
         yield* interact();
         yield* recordedAfter(0);
+        expect(capture.requests.filter((path) => path.includes("recorder"))).toEqual([]);
         yield* browser.use("Wait for the embedded stylesheet recording", () =>
           expect
             .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })

@@ -28,7 +28,7 @@ const unpack = (value: Schema.Json): Effect.Effect<Schema.Json, DriverFailed> =>
     }
     return value;
   });
-/** Intercept only the synthetic ingestion path; real SDK recorder code runs in the product page. */
+/** Intercept only the synthetic ingestion path; the bundled SDK recorder runs in the product page. */
 export const captureBrowserAnalytics = (page: Page) => {
   const events: Schema.Json[] = [];
   const failures: string[] = [];
@@ -50,18 +50,9 @@ export const captureBrowserAnalytics = (page: Page) => {
             return;
           }
           if (path.includes("/static/")) {
-            const name = path.split("/").pop()?.split(".")[0];
-            if (!["lazy-recorder", "recorder", "recorder-v2"].includes(name ?? "")) {
-              yield* driver("respond to ingestion", () =>
-                route.fulfill({ status: 404, body: "Unknown test asset" }),
-              );
-              return;
-            }
-            yield* driver("respond to ingestion", () =>
-              route.fulfill({
-                path: `apps/hosted/cloud/web/node_modules/posthog-js/dist/${name}.js`,
-                contentType: "application/javascript",
-              }),
+            // The dashboard bundles its recorder; ad blockers reject SDK script names like posthog-recorder.js.
+            yield* driver("reject SDK script", () =>
+              route.fulfill({ status: 404, body: "Blocked SDK script" }),
             );
             return;
           }
