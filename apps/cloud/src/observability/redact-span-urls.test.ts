@@ -216,13 +216,13 @@ describe("UrlRedactingSpanProcessor", () => {
       span.setStatus({ code: SpanStatusCode.ERROR, message });
     });
 
-    // Non-vacuous: the exception event exists and kept its scrubbed URL.
+    // The exception event and classification survive without raw error text.
     const events = JSON.stringify(exported?.events);
     expect(events).toContain("exception");
-    expect(events).toContain("https://api.test/graphql");
+    expect(events).toContain("[REDACTED]");
     expect(events).not.toContain("synthetic-userinfo-secret");
     expect(events).not.toContain("synthetic-key-secret");
-    expect(exported?.status.message).toBe("Transport: fetch failed (GET https://api.test/graphql)");
+    expect(exported?.status.message).toBe("[REDACTED]");
   });
 });
 
@@ -283,4 +283,23 @@ describe("credential canary — no export channel carries the secret", () => {
       }).pipe(Effect.provide(Layer.mergeAll(FetchHttpClient.layer, tracerLayer)));
     },
   );
+});
+
+describe("non-URL secrets in exceptions", () => {
+  it("does not export a provider response or SQL values as error text", () => {
+    const secret = "synthetic-plain-secret";
+    const exported = exportSpanWith({ "http.response.status_code": "500" }, (span) => {
+      span.recordException({
+        name: "ProviderError",
+        message: `Failed query values: ${secret}`,
+        stack: `at provider: ${secret}`,
+      });
+      span.setStatus({ code: SpanStatusCode.ERROR, message: secret });
+    });
+    expect(JSON.stringify({ events: exported?.events, status: exported?.status })).not.toContain(
+      secret,
+    );
+    expect(exported?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(exported?.events[0]?.attributes?.["exception.type"]).toBe("ProviderError");
+  });
 });

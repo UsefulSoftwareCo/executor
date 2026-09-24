@@ -59,6 +59,7 @@ const signAccessToken = (
     readonly organizationId?: string;
     readonly sessionId?: string;
     readonly expiresIn?: string | number;
+    readonly issuedAt?: number;
   } = {},
 ) => {
   const jwt = new SignJWT({
@@ -67,7 +68,7 @@ const signAccessToken = (
   })
     .setProtectedHeader({ alg: "RS256", kid: keypair.kid })
     .setSubject(claims.subject ?? USER.id)
-    .setIssuedAt();
+    .setIssuedAt(claims.issuedAt);
 
   return (
     typeof claims.expiresIn === "number"
@@ -314,6 +315,21 @@ describe("authenticateSealedSession", () => {
         refresh_token: "refresh_expired",
         organization_id: "org_test",
       });
+    });
+  });
+
+  it("refreshes a token beyond the local age limit even when WorkOS exp is later", async () => {
+    const keypair = await generateKeypair("k_old");
+    await withWorkOSStub(keypair, async (stub) => {
+      const now = Math.floor(Date.now() / 1000);
+      const token = await signAccessToken(keypair, {
+        issuedAt: now - 86401,
+        expiresIn: now + 86400,
+      });
+      const result = await runAuthenticate(await sealSession(token), stub.baseUrl);
+      expect(result?.sessionId).toBe("session_refreshed");
+      expect(result?.refreshedSession).toEqual(expect.any(String));
+      expect(stub.requests()[1]?.body).toMatchObject({ grant_type: "refresh_token" });
     });
   });
 

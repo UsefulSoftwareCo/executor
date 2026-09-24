@@ -31,7 +31,8 @@ const ENDPOINT = "https://graph.example.test/graphql";
  *  live `message` getter, which is the exact path the leak took. */
 const capturingLogger = (sink: Array<string>) =>
   Logger.make<unknown, void>((options) => {
-    sink.push(String(options.message));
+    // Preserve structured log fields so the secret check covers them too.
+    sink.push(JSON.stringify(options.message));
     sink.push(Cause.pretty(options.cause));
   });
 
