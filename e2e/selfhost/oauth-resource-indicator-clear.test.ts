@@ -212,15 +212,13 @@ scenario(
       expect(saved, "the browser-registered app is in the catalog").toBeDefined();
       expect(saved?.resource ?? null, "a cleared resource persists as absent").toBeNull();
 
-      // Reopening the form: the cleared field STAYS empty. A DCR-capable method
-      // only shows the app picker after automatic setup falls back, so take the
-      // same path a returning user would.
+      // Reopening the form: the cleared field STAYS empty. The saved app is
+      // available immediately, without repeating automatic registration.
       yield* browser.session(identity, async ({ page, step }) => {
-        await step("Reach the app picker again through the failed automatic setup", async () => {
+        await step("Reopen the saved app without repeating automatic registration", async () => {
           await visit(page, `/integrations/${String(slug)}`);
           await page.getByRole("button", { name: "Add connection" }).first().click();
           await page.getByRole("heading", { name: /Add connection/ }).waitFor();
-          await page.getByRole("button", { name: "Connect", exact: true }).click();
           await page
             .getByRole("button", { name: `Actions for ${appName}` })
             .waitFor({ timeout: 30_000 });

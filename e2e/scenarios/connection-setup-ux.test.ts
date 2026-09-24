@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { composePluginApi } from "@executor-js/api/server";
 import { connectEmulator } from "@executor-js/emulate";
+import { mcpHttpPlugin } from "@executor-js/plugin-mcp/api";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import { IntegrationSlug, OAuthClientSlug } from "@executor-js/sdk/shared";
 import { variable } from "@executor-js/sdk/http-auth";
@@ -12,6 +13,10 @@ import { Api, Browser, Target } from "../src/services";
 import { hydrated, visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
+const decodeRegisteredClient = Schema.decodeUnknownSync(
+  Schema.Struct({ client_id: Schema.String, client_secret: Schema.String }),
+);
+
 // Each journey has its own real provider state, OAuth app, user and integration.
 const connectionFixture = (registerClient: boolean) =>
   Effect.gen(function* () {
@@ -262,6 +267,7 @@ scenario(
         await step("Add a connection with both a token and a registered sign-in app", async () => {
           await visit(page, `/integrations/${slug}?addAccount=1`);
           await page.getByRole("tab", { name: "OAuth2", exact: true }).waitFor();
+          await page.getByRole("tab", { name: "OAuth2", exact: true, selected: true }).waitFor();
           expect(
             await page
               .getByRole("tab", { name: "OAuth2", exact: true })
@@ -288,3 +294,126 @@ scenario(
     }),
   ),
 );
+for (const origin of ["integration", "workspace"] as const) {
+  scenario(
+    origin === "integration"
+      ? "Connection setup · a saved MCP app opens sign-in on the first click"
+      : "Connection setup · discovery reuses a workspace OAuth app without another click",
+    {},
+    Effect.scoped(
+      Effect.gen(function* () {
+        const target = yield* Target;
+        const browser = yield* Browser;
+        const { client: makeClient } = yield* Api;
+        const identity = yield* target.newIdentity();
+        const client = yield* makeClient(composePluginApi([mcpHttpPlugin()] as const), identity);
+        const base = yield* createEmulatorInstance("mcp", "saved-app");
+        const emulator = yield* Effect.promise(() => connectEmulator({ baseUrl: base }));
+        const slug = IntegrationSlug.make(`saved-app-${randomBytes(4).toString("hex")}`);
+        const app = OAuthClientSlug.make(`${slug}-client`);
+        const registered = yield* Effect.promise(async () => {
+          const response = await fetch(`${base}/register`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              client_name: "Saved app",
+              redirect_uris: [new URL("/api/oauth/callback", target.baseUrl).toString()],
+              grant_types: ["authorization_code", "refresh_token"],
+              response_types: ["code"],
+              token_endpoint_auth_method: "client_secret_post",
+            }),
+          });
+          expect(response.status).toBe(201);
+          return decodeRegisteredClient(await response.json());
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            const connections = yield* client.connections.list({ query: { integration: slug } });
+            for (const connection of connections) {
+              yield* client.connections
+                .remove({
+                  params: { owner: connection.owner, integration: slug, name: connection.name },
+                })
+                .pipe(Effect.ignore);
+            }
+            yield* client.mcp.removeServer({ params: { slug } }).pipe(Effect.ignore);
+            yield* client.oauth
+              .removeClient({ params: { slug: app }, payload: { owner: "org" } })
+              .pipe(Effect.ignore);
+          }).pipe(Effect.ignore),
+        );
+        yield* client.mcp.addServer({
+          payload: {
+            transport: "remote",
+            slug,
+            name: "Team MCP",
+            endpoint: `${base}/mcp`,
+            authenticationTemplate: [{ kind: "oauth2" }],
+          },
+        });
+        yield* client.oauth.createClient({
+          payload: {
+            owner: "org",
+            slug: app,
+            grant: "authorization_code",
+            clientId: registered.client_id,
+            clientSecret: registered.client_secret,
+            authorizationUrl: `${base}/authorize`,
+            tokenUrl: `${base}/token`,
+            resource: base,
+            ...(origin === "integration" ? { originIntegration: slug } : {}),
+          },
+        });
+        yield* Effect.promise(() => emulator.ledger.clear());
+        yield* browser.session(identity, async ({ page, step }) => {
+          await step("Open an integration that already has a saved OAuth app", async () => {
+            await visit(page, `/integrations/${slug}?addAccount=1`);
+            await page.getByRole("tab", { name: "OAuth", exact: true }).waitFor();
+          });
+          await step("Connect once using the saved app", async () => {
+            const opened = page.waitForEvent("popup");
+            await page.getByRole("button", { name: /^Connect(?: with OAuth)?$/ }).click();
+            const popup = await opened;
+            await popup.waitForURL(/\/authorize/);
+            expect(
+              new URL(popup.url()).searchParams.get("client_id"),
+              "the existing app is reused without another registration step",
+            ).toBe(registered.client_id);
+          });
+          await step("Approve provider sign-in and save the connection", async () => {
+            const popup = page
+              .context()
+              .pages()
+              .find((candidate) => candidate !== page);
+            if (!popup) throw new Error("Provider sign-in window was not open");
+            // The published MCP consent form omits its selected user's login.
+            // Keep the real provider exchange; forward the identity clicked below.
+            await popup.route(`${base}/authorize/approve`, (route) => {
+              const body = new URLSearchParams(route.request().postData() ?? "");
+              body.set("login", "admin");
+              return route.continue({ postData: body.toString() });
+            });
+            await popup.getByRole("button", { name: /admin/ }).click();
+            await page
+              .getByRole("heading", { name: /Add connection/ })
+              .waitFor({ state: "hidden", timeout: 30_000 });
+          });
+        });
+        const connections = yield* client.connections.list({ query: { integration: slug } });
+        expect(connections, "provider consent saves the connection").toHaveLength(1);
+        expect(connections[0]?.owner, "a shared app keeps the connection personal").toBe("user");
+        const savedClients = yield* client.oauth.listClients({});
+        expect(savedClients.find((saved) => saved.slug === app)?.origin).toEqual(
+          origin === "integration"
+            ? { kind: "manual", integration: slug }
+            : { kind: "manual", integration: null },
+        );
+        const ledger = yield* Effect.promise(() => emulator.ledger.list());
+        expect(
+          ledger.filter((entry) => entry.method === "POST" && entry.path === "/register"),
+          "connecting must reuse the saved app",
+        ).toHaveLength(0);
+      }),
+    ),
+  );
+}

@@ -1505,3 +1505,67 @@ describe("preferredMethodId", () => {
     expect(preferredMethodId([], [], integration)).toBe("");
   });
 });
+
+describe("discovered saved OAuth apps", () => {
+  const cases = [
+    {
+      variation: "shared",
+      outcome: { kind: "started", flow: "byo" },
+      calls: [{ client: "saved", owner: "org", reservation: RESERVED }],
+    },
+    { variation: "other-owner", outcome: { kind: "fallback" }, calls: [] },
+    { variation: "other-endpoint", outcome: { kind: "fallback" }, calls: [] },
+    { variation: "other-resource", outcome: { kind: "fallback" }, calls: [] },
+  ] as const;
+  for (const { variation, outcome: expectedOutcome, calls } of cases) {
+    it(`handles a ${variation} app without changing the connection owner`, async () => {
+      const started: StartArgs[] = [];
+      const outcome = await runAutomaticOAuthConnect(
+        {
+          ...popupSpy(),
+          isActive: () => true,
+          probe: async () => ({
+            authorizationUrl: "https://auth.example/authorize",
+            tokenUrl: "https://auth.example/token",
+            resource: "https://api.example/mcp",
+          }),
+          createCimdClient: async () => null,
+          register: async () => null,
+          start: (args) => {
+            started.push(args);
+          },
+        },
+        {
+          owner: variation === "other-owner" ? "org" : "user",
+          integration: TEST_INTEGRATION,
+          discoveryUrl: "https://api.example/mcp",
+          registeredClients: [
+            {
+              owner: variation === "other-owner" ? "user" : "org",
+              slug: OAuthClientSlug.make("saved"),
+              grant: "authorization_code",
+              clientId: "client",
+              origin: { kind: "manual", integration: null },
+              authorizationUrl: "https://auth.example/authorize",
+              tokenUrl:
+                variation === "other-endpoint"
+                  ? "https://other.example/token"
+                  : "https://auth.example/token",
+              resource:
+                variation === "other-resource"
+                  ? "https://other.example/mcp"
+                  : "https://api.example/mcp",
+            },
+          ],
+          cimd: {
+            integrationName: "MCP",
+            clientIdMetadataDocumentUrl: "https://app.example/client.json",
+            existingClients: [],
+          },
+        },
+      );
+      expect(outcome).toMatchObject(expectedOutcome);
+      expect(started).toEqual(calls);
+    });
+  }
+});
