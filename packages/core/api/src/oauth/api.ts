@@ -311,6 +311,13 @@ export const OAuthApi = HttpApiGroup.make("oauth")
     }),
   )
   .add(
+    HttpApiEndpoint.get("setup", "/oauth/setup", {
+      query: Schema.Struct({ state: Schema.String }),
+      success: HtmlResponse,
+      error: InternalError,
+    }),
+  )
+  .add(
     HttpApiEndpoint.post("complete", "/oauth/complete", {
       payload: CompletePayload,
       success: ConnectionResponse,

@@ -2088,33 +2088,8 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ),
         );
 
-      yield* deps.fuma.use("oauth_session.create", (db) =>
-        looseDb(db).create("oauth_session", {
-          tenant: keys.tenant,
-          owner: keys.owner,
-          subject: keys.subject,
-          state: String(state),
-          client_slug: String(input.client),
-          integration: String(input.integration),
-          name: String(name),
-          template: String(input.template),
-          redirect_url: flowRedirectUri,
-          pkce_verifier: verifier,
-          identity_label: input.identityLabel ?? null,
-          // Persist the requested scope set (declared ∪ client, filtered to the
-          // authorization-code flow) so `complete`'s recorded-scope fallback
-          // reflects exactly what was requested when the AS omits `scope`,
-          // without re-resolving the integration's declared scopes at completion.
-          payload: {
-            owner: input.owner,
-            clientOwner: input.clientOwner,
-            requestedScopes: completeRequestedScopes,
-          },
-          expires_at: expiresAt,
-          created_at: now,
-        }),
-      );
-
+      // Build before persisting: setup must resume this exact authorization
+      // request, including its PKCE challenge and organization-scoped state.
       const authorizationUrl = yield* Effect.try({
         try: () =>
           buildAuthorizationUrl({
@@ -2145,7 +2120,71 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           }),
       });
 
+      if (firstParty?.authorizationSetup !== undefined && redirectUri === null) {
+        return yield* new OAuthStartError({
+          message: "OAuth setup requires a configured host redirectUri.",
+        });
+      }
+
+      yield* deps.fuma.use("oauth_session.create", (db) =>
+        looseDb(db).create("oauth_session", {
+          tenant: keys.tenant,
+          owner: keys.owner,
+          subject: keys.subject,
+          state: String(state),
+          client_slug: String(input.client),
+          integration: String(input.integration),
+          name: String(name),
+          template: String(input.template),
+          redirect_url: flowRedirectUri,
+          pkce_verifier: verifier,
+          identity_label: input.identityLabel ?? null,
+          // Persist the requested scope set (declared ∪ client, filtered to the
+          // authorization-code flow) so `complete`'s recorded-scope fallback
+          // reflects exactly what was requested when the AS omits `scope`,
+          // without re-resolving the integration's declared scopes at completion.
+          payload: {
+            owner: input.owner,
+            clientOwner: input.clientOwner,
+            requestedScopes: completeRequestedScopes,
+            ...(firstParty?.authorizationSetup !== undefined ? { authorizationUrl } : {}),
+          },
+          expires_at: expiresAt,
+          created_at: now,
+        }),
+      );
+
+      if (firstParty?.authorizationSetup !== undefined && redirectUri !== null) {
+        const setupUrl = new URL("setup", redirectUri);
+        setupUrl.searchParams.set("state", providerState);
+        return { status: "redirect", authorizationUrl: setupUrl.toString(), state } as const;
+      }
+
       return { status: "redirect", authorizationUrl, state } as const;
+    });
+
+  const getSetup: OAuthService["getSetup"] = (state) =>
+    Effect.gen(function* () {
+      const row = yield* deps.fuma.use("oauth_session.setup", (db) =>
+        looseDb(db).findFirst("oauth_session", {
+          where: (b: any) => b("state", "=", String(state)),
+        }),
+      );
+      if (!row || Number(row.expires_at) <= Date.now()) {
+        return yield* new OAuthSessionNotFoundError({ state });
+      }
+      const setup = firstPartyBySlug.get(String(row.client_slug))?.authorizationSetup;
+      const payload = row.payload;
+      if (
+        setup === undefined ||
+        typeof payload !== "object" ||
+        payload === null ||
+        !("authorizationUrl" in payload) ||
+        typeof payload.authorizationUrl !== "string"
+      ) {
+        return yield* new OAuthSessionNotFoundError({ state });
+      }
+      return { setup, authorizationUrl: payload.authorizationUrl };
     });
 
   // -----------------------------------------------------------------------
@@ -2579,6 +2618,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     registerDynamicClient,
     listClients,
     start,
+    getSetup,
     complete,
     cancel,
     probe,

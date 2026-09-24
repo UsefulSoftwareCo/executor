@@ -323,6 +323,8 @@ export {
   firstPartyOAuthClientSlug,
   isFirstPartyOAuthClientSlug,
   type FirstPartyOAuthClientConfig,
+  type OAuthAuthorizationSetup,
+  type OAuthSetupResult,
   type OAuthClientOrigin,
   type OAuthGrant,
   type OAuthAuthentication,

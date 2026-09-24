@@ -89,6 +89,8 @@ declare global {
       // production (the real github.com endpoints are the defaults).
       FIRST_PARTY_GITHUB_AUTHORIZE_URL?: string;
       FIRST_PARTY_GITHUB_TOKEN_URL?: string;
+      // Override when deploying with a different GitHub App registration.
+      FIRST_PARTY_GITHUB_INSTALLATION_URL?: string;
       FIRST_PARTY_GITLAB_CLIENT_ID?: string;
       FIRST_PARTY_GITLAB_CLIENT_SECRET?: string;
       FIRST_PARTY_GOOGLE_CLIENT_ID?: string;

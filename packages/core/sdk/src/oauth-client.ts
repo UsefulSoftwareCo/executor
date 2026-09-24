@@ -185,6 +185,19 @@ export const isFirstPartyOAuthClientSlug = (slug: string): boolean =>
 export const firstPartyOAuthClientSlug = (name: string): OAuthClientSlug =>
   OAuthClientSlug.make(`${FIRST_PARTY_OAUTH_CLIENT_PREFIX}${name}`);
 
+/** Host-provided guidance for access that must be configured separately from OAuth consent. */
+export interface OAuthAuthorizationSetup {
+  readonly title: string;
+  readonly description: string;
+  readonly actionLabel: string;
+  readonly actionUrl: string;
+}
+
+export interface OAuthSetupResult {
+  readonly setup: OAuthAuthorizationSetup;
+  readonly authorizationUrl: string;
+}
+
 /** A first-party OAuth app the HOST declares at composition time — the
  *  deployment operator's own registered app for a provider. The secret comes
  *  from host env/config and stays in memory: it is never written to a
@@ -211,6 +224,10 @@ export interface FirstPartyOAuthClientConfig {
    *  GitHub Apps, whose capabilities are configured on the app and whose OAuth
    *  user-token flow does not use scopes. Omit for normal OAuth clients. */
   readonly authorizationScopes?: readonly string[];
+  /** Show host-provided installation guidance before authorization. The HTTP
+   *  host must serve the shared /oauth/setup route beside its callback. This
+   *  guides consent; opening the setup link does not prove installation. */
+  readonly authorizationSetup?: OAuthAuthorizationSetup;
   /** Scopes the host always adds to the integration-declared set. Use this for
    *  provider lifecycle scopes such as Atlassian and Microsoft
    *  `offline_access`; unlike `authorizationScopes`, this preserves the
@@ -540,6 +557,11 @@ export interface OAuthService {
   readonly start: (
     input: OAuthStartInput,
   ) => Effect.Effect<ConnectResult, OAuthStartError | OrgWriteDeniedError | StorageFailure>;
+  /** Resolve setup guidance and the original provider URL for a live,
+   *  owner-scoped session. Never accepts a caller-supplied continuation URL. */
+  readonly getSetup: (
+    state: OAuthState,
+  ) => Effect.Effect<OAuthSetupResult, OAuthSessionNotFoundError | StorageFailure>;
   readonly complete: (
     input: OAuthCompleteInput,
     options?: OAuthCompleteOptions,
