@@ -1278,6 +1278,15 @@ export const scenarios = {
       local: na("This scenario uses hosted deployment and app authentication."),
     },
   },
+  authObservability: {
+    file: "auth-observability.spec.ts",
+    title: "Cloud OAuth callbacks report safe failures and verified sessions with stage traces",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud social sign-in instrumentation."),
+      local: na("Cloud social sign-in instrumentation."),
+    },
+  },
   observabilityOutcomes: {
     fixtures: "actors",
     file: "observability-outcomes.spec.ts",

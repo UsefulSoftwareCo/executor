@@ -1,5 +1,6 @@
 import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
 import { HostedAppSessions, hostedAppSessions } from "@executor-js/hosted-server/app-ui";
+import { authObservability } from "../implementation/auth-observability.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APIError } from "better-auth/api";
 import { OrganizationId } from "@executor-js/hosted-server";
@@ -62,6 +63,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
         signal: current.signal,
       });
     };
+    const observation = authObservability();
     const options = cloudAuthOptions(
       settings,
       ["cf-connecting-ip"],
@@ -82,7 +84,10 @@ export const cloudAuth = (send: SendAuthEmail) =>
           ),
       },
       (userId) => runCallback(recordCloudSignup(userId)),
-      (userId) => runCallback(recordCloudLogin(userId)),
+      (userId) => {
+        observation.sessionCreated();
+        return runCallback(recordCloudLogin(userId));
+      },
       (usage) =>
         runCallback(
           recordUsage("product_operation_completed", {
@@ -99,6 +104,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
     );
     const auth = yield* BetterAuth({
       ...options,
+      plugins: [...options.plugins, observation.plugin],
       // Cookies use hostnames, not ports; cloud dev must not replace self-host sessions.
       advanced: {
         ...options.advanced,
@@ -248,10 +254,12 @@ export const cloudAuth = (send: SendAuthEmail) =>
           ),
         ).pipe(Effect.flatten),
     );
-    const handler = requestHandler.pipe(
-      Effect.flatMap(clearHeroIdentityOnSignOut),
-      Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
-    );
+    const handler = observation
+      .observe(requestHandler)
+      .pipe(
+        Effect.flatMap(clearHeroIdentityOnSignOut),
+        Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
+      );
     return {
       browserSession: (headers: Headers) =>
         auth.api
