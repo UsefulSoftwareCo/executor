@@ -51,6 +51,13 @@ import {
  * waiting for input.
  */
 export const MCP_ACTIVE_WORK_TIMEOUT_MS = 60_000;
+
+/** An integration's `toolTimeoutMs` when it is a usable duration, otherwise
+ *  the default. A stored config is not trusted to be positive or finite. */
+export const resolveActiveWorkTimeout = (timeoutMs: number | undefined): number =>
+  timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : MCP_ACTIVE_WORK_TIMEOUT_MS;
 const MCP_SDK_TIMEOUT_BACKSTOP_MS = 2_147_483_647;
 
 export type ActiveWorkDeadline = {
@@ -361,10 +368,11 @@ const useConnection = (
   args: Record<string, unknown>,
   elicit: Elicit,
   onToolListChanged: (() => void) | undefined,
+  activeWorkTimeoutMs: number | undefined,
 ): Effect.Effect<unknown, McpInvocationError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
     const deadline = yield* Effect.acquireRelease(
-      Effect.sync(() => makeActiveWorkDeadline()),
+      Effect.sync(() => makeActiveWorkDeadline(resolveActiveWorkTimeout(activeWorkTimeoutMs))),
       (activeWork) => Effect.sync(activeWork.dispose),
     );
     installElicitationHandler(connection.client, elicit, deadline);
@@ -452,6 +460,9 @@ export interface InvokeMcpToolInput {
    *  the call window. Synchronous and non-throwing by contract; the caller
    *  uses it to mark the persisted catalog stale. */
   readonly onToolListChanged?: () => void;
+  /** Active-work deadline for this call, from the integration's
+   *  `toolTimeoutMs`. Absent or invalid means `MCP_ACTIVE_WORK_TIMEOUT_MS`. */
+  readonly activeWorkTimeoutMs?: number;
 }
 
 export const invokeMcpTool = (
@@ -463,7 +474,14 @@ export const invokeMcpTool = (
   Effect.gen(function* () {
     const args = argsRecord(input.args);
     const use = (connection: McpConnection) =>
-      useConnection(connection, input.toolName, args, input.elicit, input.onToolListChanged);
+      useConnection(
+        connection,
+        input.toolName,
+        args,
+        input.elicit,
+        input.onToolListChanged,
+        input.activeWorkTimeoutMs,
+      );
 
     if (input.connectionPool && input.connectionPoolKey) {
       return yield* input.connectionPool.withConnection(

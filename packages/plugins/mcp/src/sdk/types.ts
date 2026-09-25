@@ -237,6 +237,11 @@ export const McpRemoteIntegrationConfig = Schema.Struct({
    *  proposal while emitting 2024-era results, which the modern client
    *  rightly rejects. */
   versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
+  /** Active-work deadline for each tool call, in milliseconds. Absent means
+   *  `MCP_ACTIVE_WORK_TIMEOUT_MS` (60s). Raise it for servers whose tools
+   *  legitimately run longer, such as ones that drive a browser. Time spent
+   *  waiting on an elicitation never counts against it. */
+  toolTimeoutMs: Schema.optional(Schema.Number),
 });
 export type McpRemoteIntegrationConfig = typeof McpRemoteIntegrationConfig.Type;
 
@@ -267,6 +272,11 @@ export const McpStdioIntegrationConfig = Schema.Struct({
    *  this only for a server that genuinely depends on fresh-process
    *  semantics, e.g. one that re-reads state at boot and never afterwards. */
   spawnPerCall: Schema.optional(Schema.Boolean),
+  /** Active-work deadline for each tool call, in milliseconds. Absent means
+   *  `MCP_ACTIVE_WORK_TIMEOUT_MS` (60s). Raise it for servers whose tools
+   *  legitimately run longer, such as ones that drive a browser. Time spent
+   *  waiting on an elicitation never counts against it. */
+  toolTimeoutMs: Schema.optional(Schema.Number),
   /** Present when the spawned command is `codex app-server` rather than an
    *  MCP server itself: the connector then bridges MCP to the Codex
    *  app-server protocol in process, and `server` names the MCP server
