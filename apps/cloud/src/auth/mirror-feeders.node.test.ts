@@ -1,3 +1,4 @@
+import { verifiedSettingsCookie } from "../../test-stubs/verified-settings";
 // ---------------------------------------------------------------------------
 // The membership mirror's FEEDERS, end to end through the code that runs in
 // production, against the real PGlite Postgres every cloud unit test runs on
@@ -594,6 +595,7 @@ describe("session handlers read membership from the mirror", () => {
             authenticateSealedSession: () =>
               Effect.succeed({
                 userId,
+                sessionId: "test-settings-session",
                 email: `${userId}@placeholder.test`,
                 organizationId: null,
               } as never),
@@ -710,11 +712,11 @@ describe("session handlers read membership from the mirror", () => {
     return slug;
   };
 
-  const deleteOrganizationRequest = (org: string) =>
+  const deleteOrganizationRequest = async (org: string, userId: string) =>
     new Request("http://test.local/auth/delete-organization", {
       method: "POST",
       headers: {
-        cookie: "wos-session=sealed",
+        cookie: `wos-session=sealed; ${await verifiedSettingsCookie(userId)}`,
         "content-type": "application/json",
         [ORG_SELECTOR_HEADER]: org,
       },
@@ -761,7 +763,7 @@ describe("session handlers read membership from the mirror", () => {
     // requires an ACTIVE membership, so the invite grants no deletion right.
     await seedMembership(userId, org, "pending", "admin");
 
-    const response = await sessionHandler(userId)(deleteOrganizationRequest(org));
+    const response = await sessionHandler(userId)(await deleteOrganizationRequest(org, userId));
 
     // The selector resolves no active membership, so the request fails at the
     // org check (NoOrganization) — the handler never reaches the WorkOS
@@ -775,7 +777,7 @@ describe("session handlers read membership from the mirror", () => {
     const org = freshId("org");
     await seedMembership(userId, org, "active", "member");
 
-    const response = await sessionHandler(userId)(deleteOrganizationRequest(org));
+    const response = await sessionHandler(userId)(await deleteOrganizationRequest(org, userId));
 
     expect(response.status).toBe(403);
     expect(
@@ -805,7 +807,7 @@ describe("session handlers read membership from the mirror", () => {
           }),
       },
     });
-    const first = await failing(deleteOrganizationRequest(org));
+    const first = await failing(await deleteOrganizationRequest(org, admin));
     expect(first.status, "the failed purge is surfaced, not hidden").toBe(500);
     expect(workosDeletes).toEqual([org]);
     expect(purges).toEqual(["deleteOrganizationCascade"]);
@@ -825,7 +827,7 @@ describe("session handlers read membership from the mirror", () => {
         deleteOrganization: () => Effect.fail(new WorkOSError({ status: 404 })),
       },
     });
-    const second = await retry(deleteOrganizationRequest(org));
+    const second = await retry(await deleteOrganizationRequest(org, admin));
     expect(second.status, "the admin's own membership still admits the retry").toBe(200);
     expect(await second.json()).toEqual({ success: true });
     expect(
@@ -879,7 +881,7 @@ describe("session handlers read membership from the mirror", () => {
       },
     });
 
-    const first = await handler(deleteOrganizationRequest(org));
+    const first = await handler(await deleteOrganizationRequest(org, admin));
     expect(first.status, "the failed billing cancel is surfaced, not hidden").toBe(500);
     expect(await first.json()).toMatchObject({
       _tag: "OrganizationDeletionIncomplete",
@@ -894,7 +896,7 @@ describe("session handlers read membership from the mirror", () => {
     ).toEqual([admin, member].sort());
     expect(await authorized(member, org), "yet nobody is authorized: the mark stands").toBe(false);
 
-    const second = await handler(deleteOrganizationRequest(org));
+    const second = await handler(await deleteOrganizationRequest(org, admin));
     expect(second.status, "the admin's own membership row still admits the retry").toBe(200);
     expect(await second.json()).toEqual({ success: true });
     expect(workosDeletes, "WorkOS is asked once billing is cancelled").toEqual([org]);
@@ -920,7 +922,7 @@ describe("session handlers read membership from the mirror", () => {
       services: servicesWithFailingPurge(purges),
       autumn: deletingAutumn,
       workos: { deleteOrganization: () => Effect.void },
-    })(deleteOrganizationRequest(org));
+    })(await deleteOrganizationRequest(org, admin));
     expect(first.status).toBe(500);
     expect(purges).toEqual(["deleteOrganizationCascade"]);
 
@@ -933,7 +935,7 @@ describe("session handlers read membership from the mirror", () => {
         deleteOrganization: () => Effect.fail(new WorkOSError({ status: 404 })),
       },
     });
-    const second = await retry(deleteOrganizationRequest(org));
+    const second = await retry(await deleteOrganizationRequest(org, admin));
     expect(second.status, "the retry is admitted from the mirror").toBe(200);
     expect(await second.json()).toEqual({ success: true });
     expect(await readMembers(org), "and the purge ran").toEqual([]);
@@ -1158,7 +1160,7 @@ describe("account service writes through to the mirror", () => {
           workos,
           stubApiKeys,
           options.autumn ?? stubAutumn,
-          Layer.succeed(AccountCaller)({ session: session(ADMIN) }),
+          Layer.succeed(AccountCaller)({ session: session(ADMIN), adminVerified: true }),
         ),
       ),
       Layer.provideMerge(stores),

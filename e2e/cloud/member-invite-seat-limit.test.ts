@@ -1,3 +1,4 @@
+import { verifyAdminInBrowser } from "./support/admin-mfa";
 // Cloud-only (billing): the free plan advertises "Up to 3 members", 3
 // INCLUSIVE. A fresh org's admin holds seat 1, so two invites fill seats 2 and
 // 3; at that point "Invite member" opens an upgrade prompt (linking to billing)
@@ -40,6 +41,7 @@ scenario(
 
     // A fresh user who owns a brand-new free org: the admin holds seat 1.
     const identity = yield* target.newIdentity();
+    let verifiedCookie = "";
     const client = yield* apiClient(AccountHttpApi, identity);
 
     yield* browser.session(identity, async ({ page, step }) => {
@@ -56,6 +58,10 @@ scenario(
 
       await step("Open the organization members page", async () => {
         await visit(page, `/${slug}/org`);
+        await verifyAdminInBrowser(page);
+        verifiedCookie = (await page.context().cookies())
+          .map(({ name, value }) => `${name}=${value}`)
+          .join("; ");
         await page.getByRole("button", { name: "Invite member" }).waitFor();
       });
 
@@ -114,7 +120,11 @@ scenario(
     const refused = yield* Effect.promise(() =>
       fetch(new URL("/api/account/members/invite", target.baseUrl), {
         method: "POST",
-        headers: { ...(identity.headers ?? {}), "content-type": "application/json" },
+        headers: {
+          ...(identity.headers ?? {}),
+          cookie: verifiedCookie,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ email: "over-the-cap@example.com" }),
       }),
     );

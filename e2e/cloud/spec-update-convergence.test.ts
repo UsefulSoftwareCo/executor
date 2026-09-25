@@ -1,3 +1,4 @@
+import { verifyAdmin } from "./support/admin-mfa";
 // Cloud-only (needs real multi-user organizations): when one member refreshes
 // a shared integration's spec, a DIFFERENT member's OWN connection converges to
 // the new tool catalog on that member's next read — not just the editor's.
@@ -150,7 +151,8 @@ const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
   Effect.gen(function* () {
     const adminSelector = admin.headers?.[ORG_SELECTOR_HEADER];
     if (!adminSelector) throw new Error("admin identity carries no org selector header");
-    const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
+    const verifiedAdmin = yield* verifyAdmin(target.baseUrl, admin);
+    const inviteResponse = yield* postJson(target, "/api/account/members/invite", verifiedAdmin, {
       email: member.credentials?.email,
     });
     const invitation = (yield* Effect.promise(() => inviteResponse.json())) as { id: string };

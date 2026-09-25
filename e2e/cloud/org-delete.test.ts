@@ -1,3 +1,4 @@
+import { verifyAdminInBrowser } from "./support/admin-mfa";
 // Cloud-specific (browser): an admin permanently deletes their organization.
 // A fresh user creates an org through onboarding, opens Organization settings,
 // and uses the danger-zone "Delete organization" flow — which requires
@@ -40,6 +41,7 @@ scenario(
 
       await step("Open Organization settings and find the danger zone", async () => {
         await visit(page, `/${slug}/org`);
+        await verifyAdminInBrowser(page);
         // The admin-only danger zone renders (a member would not see it).
         await page.getByText("Permanently delete this organization").waitFor();
       });

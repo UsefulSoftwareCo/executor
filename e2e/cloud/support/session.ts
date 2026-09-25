@@ -1,3 +1,4 @@
+import { verifyAdmin } from "./admin-mfa";
 // Cloud session + membership helpers shared by the scenarios that need MORE
 // than one identity in an org.
 //
@@ -127,7 +128,8 @@ export const joinOrg = (
   options: { readonly roleSlug?: string } = {},
 ): Effect.Effect<Identity> =>
   Effect.gen(function* () {
-    const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
+    const verifiedAdmin = yield* verifyAdmin(target.baseUrl, admin);
+    const inviteResponse = yield* postJson(target, "/api/account/members/invite", verifiedAdmin, {
       email: member.credentials?.email,
       ...(options.roleSlug === undefined ? {} : { roleSlug: options.roleSlug }),
     });
