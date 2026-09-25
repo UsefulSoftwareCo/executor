@@ -7,7 +7,10 @@ import {
   ToolName,
   ToolResult,
   authToolFailure,
+  botChallengeMessage,
+  botChallengeToolFailure,
   classifyProbeResponse,
+  detectBotChallenge,
   detectInsufficientScope,
   sortHealthCheckCandidatesByIdentity,
   extractIdentity,
@@ -774,6 +777,18 @@ export const invokeOpenApiBackedTool = (input: {
     const result = invocation.result;
     const ok = result.status >= 200 && result.status < 300;
     if (!ok) {
+      // A bot-protection challenge is served by the edge before the request
+      // reaches the API, whatever status it carries (403 for a managed
+      // challenge, 503 for older JS challenges), so it is classified ahead
+      // of the credential branch: the key was never evaluated.
+      const botChallenge = detectBotChallenge({ headers: result.headers });
+      if (botChallenge) {
+        return botChallengeToolFailure({
+          integration: { id: integration, scope: input.credential.owner },
+          status: result.status,
+          detection: botChallenge,
+        });
+      }
       if (result.status === 401 || result.status === 403) {
         // A 403 naming a scope shortfall (RFC 6750 insufficient_scope,
         // Google's ACCESS_TOKEN_SCOPE_INSUFFICIENT) cannot be fixed by
@@ -1009,6 +1024,24 @@ export const checkHealthOpenApi = (input: {
         checkedAt,
         detail: scrubSecrets(`Health check request failed: ${probe.failure.message}`),
         reason: "probe_failed",
+      } satisfies HealthCheckResult;
+    }
+
+    // A bot-protection challenge never reached the API, so it says nothing
+    // about the credential: degraded, not expired.
+    const probeOk = probe.result.status >= 200 && probe.result.status < 300;
+    const botChallenge = probeOk ? null : detectBotChallenge({ headers: probe.result.headers });
+    if (botChallenge) {
+      return {
+        status: "degraded",
+        httpStatus: probe.result.status,
+        checkedAt,
+        detail: botChallengeMessage({
+          integration: String(input.integration.slug),
+          status: probe.result.status,
+          detection: botChallenge,
+        }),
+        reason: "upstream_status",
       } satisfies HealthCheckResult;
     }
 

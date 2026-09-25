@@ -685,6 +685,60 @@ describe("graphqlPlugin real protocol server", () => {
       }),
   );
 
+  it.effect(
+    "classifies a Cloudflare challenge as upstream_bot_challenge, not an auth failure",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* serveTestHttpApp((request) =>
+          Effect.gen(function* () {
+            const webRequest = yield* HttpServerRequest.toWeb(request);
+            const body = yield* Effect.promise(() => webRequest.text());
+            if (body.includes("__schema")) {
+              return HttpServerResponse.jsonUnsafe({ data: introspectionResult });
+            }
+            return HttpServerResponse.text("<!DOCTYPE html><title>Just a moment...</title>", {
+              status: 403,
+              headers: {
+                "content-type": "text/html",
+                "cf-mitigated": "challenge",
+                "cf-ray": "8f1a2b3c4d5e6f70-SJC",
+              },
+            });
+          }),
+        );
+        const executor = yield* makeExecutor();
+
+        yield* executor.graphql.addIntegration({
+          endpoint: server.url("/graphql"),
+          slug: "challenged_graph",
+        });
+        yield* createOrgConnection(executor, {
+          integration: "challenged_graph",
+          name: "main",
+          template: "none",
+        });
+
+        const result = yield* executor.execute(
+          toolAddr("challenged_graph", "main", "query.hello"),
+          {
+            name: "Ada",
+          },
+        );
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: {
+            code: "upstream_bot_challenge",
+            status: 403,
+            details: {
+              category: "upstream_protection",
+              upstream: { rayId: "8f1a2b3c4d5e6f70-SJC" },
+            },
+          },
+        });
+      }),
+  );
+
   it.effect("invokes OAuth-backed integrations with a rendered bearer token", () =>
     Effect.gen(function* () {
       const server = yield* serveGraphqlTestServer({

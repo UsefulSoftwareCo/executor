@@ -529,6 +529,12 @@ export {
   insufficientScopeFromEmbeddedJson,
   type InsufficientScopeDetection,
 } from "./insufficient-scope";
+export {
+  botChallengeMessage,
+  botChallengeToolFailure,
+  detectBotChallenge,
+  type BotChallengeDetection,
+} from "./upstream-bot-challenge";
 
 // Endpoint sanitization for span attributes — plugins stamping a user-supplied
 // endpoint must strip its credential-bearing parts first.
