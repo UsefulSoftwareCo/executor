@@ -10,6 +10,10 @@ before writing a test. Follow the project's [engineering guidance](../../../note
 Keep verification proportional to the requested change; respect explicit prototype
 or discussion-only limits.
 
+The only tests in this repository live in `e2e/`. Unit tests are banned; never
+add a test file or `test/` directory anywhere else. Write or extend an E2E
+scenario instead.
+
 ## Choose what the test must prove
 
 Trace the changed behavior to a real user journey or public API caller. Identify

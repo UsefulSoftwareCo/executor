@@ -1,9 +1,10 @@
 import type { BetterAuthPlugin } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { Option, Schema } from "effect";
 import {
   OrganizationDetailsUpdate,
   OrganizationId,
+  OrganizationRole,
   OrganizationSlug,
 } from "../contracts/organization.ts";
 
@@ -22,6 +23,14 @@ const Creation = Schema.Struct({
   slug: OrganizationSlug,
 });
 const Invitation = Schema.Struct({ invitationId: Schema.NonEmptyString });
+const InviteMember = Schema.Struct({
+  ...Target.fields,
+  email: Schema.NonEmptyString,
+  resend: Schema.optionalKey(Schema.Boolean),
+  role: Schema.Literals(["admin", "member"]),
+});
+const Membership = Schema.Struct({ role: OrganizationRole });
+const StoredInvitation = Schema.Struct({ role: InviteMember.fields.role });
 
 /**
  * Constrain the native organization's HTTP surface to Executor's explicit operations.
@@ -56,18 +65,73 @@ export const explicitOrganizationAuth = {
             case "/organization/create":
               return require(Creation, context.body);
             case "/organization/list-members":
-            case "/organization/list-invitations":
-            case "/organization/get-full-organization":
               return require(Target, context.query);
+            case "/organization/list-invitations":
+            case "/organization/get-full-organization": {
+              const target = Schema.decodeUnknownOption(Target)(context.query);
+              if (Option.isNone(target))
+                throw new APIError("BAD_REQUEST", {
+                  message: "An explicit organization target is required.",
+                });
+              const session = await getSessionFromCtx(context);
+              if (session === null) throw new APIError("UNAUTHORIZED");
+              // Invitation IDs are bearer credentials for self-host signup. Native
+              // Better Auth reads check membership only, including the composite read.
+              const member = Schema.decodeUnknownOption(Membership)(
+                await context.context.adapter.findOne({
+                  model: "member",
+                  where: [
+                    { field: "userId", value: session.user.id },
+                    { field: "organizationId", value: target.value.organizationId },
+                  ],
+                  select: ["role"],
+                }),
+              );
+              if (Option.isNone(member) || member.value.role === "member")
+                throw new APIError("FORBIDDEN", {
+                  message: "Only organization administrators can read invitations.",
+                });
+              return;
+            }
             case "/organization/update":
               return require(Update, context.body, true);
             case "/organization/update-member-role":
               return require(MemberRole, context.body, true);
-            case "/organization/invite-member":
+            case "/organization/invite-member": {
+              const invitation = Schema.decodeUnknownOption(InviteMember)(context.body);
+              if (Option.isNone(invitation))
+                throw new APIError("BAD_REQUEST", {
+                  message:
+                    "Provide an organization and either the admin or member invitation role.",
+                });
+              return { context: { body: invitation.value } };
+            }
             case "/organization/remove-member":
               return require(Target, context.body);
-            case "/organization/accept-invitation":
-              return require(Invitation, context.body);
+            case "/organization/accept-invitation": {
+              const invitation = Schema.decodeUnknownOption(Invitation)(context.body);
+              if (Option.isNone(invitation))
+                throw new APIError("BAD_REQUEST", { message: "An invitation is required." });
+              const session = await getSessionFromCtx(context);
+              if (session === null) throw new APIError("UNAUTHORIZED");
+              // Old pending invitations can predate the request role guard. Native
+              // acceptance copies their stored role directly into a new membership.
+              const stored = Schema.decodeUnknownOption(StoredInvitation)(
+                await context.context.adapter.findOne({
+                  model: "invitation",
+                  where: [
+                    { field: "id", value: invitation.value.invitationId },
+                    { field: "email", value: session.user.email.toLowerCase() },
+                  ],
+                  select: ["role"],
+                }),
+              );
+              if (Option.isNone(stored))
+                throw new APIError("BAD_REQUEST", {
+                  message: "This invitation is invalid. Ask an administrator for a new invitation.",
+                });
+              return { context: { body: invitation.value } };
+            }
             // The invitation identifies the organization; Better Auth checks its current membership and cancel permission.
             case "/organization/cancel-invitation":
               return require(Invitation, context.body, true);

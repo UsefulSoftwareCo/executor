@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "cd ../../.. && bun run dev",
     "build": "vp build",
-    "typecheck": "tsc --noEmit",
-    "test:routing": "NODE_ENV=test TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx --test src/implementation/router.test.tsx src/contracts/bootstrap.test.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
@@ -36,7 +35,6 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.0",
     "tailwindcss": "^4.2.1",
-    "tsx": "^4.23.13",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
     "vite-plus": "0.3.3"
   }

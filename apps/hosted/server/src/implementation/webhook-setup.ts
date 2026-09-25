@@ -4,7 +4,6 @@ import type { WebhookId } from "@executor-js/sdk/core";
 /** Private setup shares SDK state without making secret exchange available to MCP credentials. */
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerRequest } from "effect/unstable/http";
 import type { AppId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { Authentication, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
@@ -20,10 +19,9 @@ const authorized = (
   permission: "read" | "use" = "use",
 ) =>
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
     const organization = yield* auth.organization(input.organization);
-    const membership = yield* auth.membership(new Headers(request.headers), organization);
     const principal = yield* CurrentPrincipal;
+    const membership = yield* auth.membership(principal, organization);
     const access = { organization, role: membership.role, owner: organizationOwner(organization) };
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* executor.apps.get({ owner: organizationOwner(organization), app: input.app });

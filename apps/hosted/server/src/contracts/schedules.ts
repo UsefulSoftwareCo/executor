@@ -29,7 +29,7 @@ export class ScheduledAuthority extends Context.Service<
   ScheduledAuthority,
   (target: ScheduleAuthority) => Effect.Effect<void, Error>
 >()("hosted/ScheduledAuthority") {}
-/** Node polling supplies a no-op; Cloudflare binds an immediate durable coordinator wake. */
+/** Hosts wake pending setup after writes; periodic polling remains the recovery path. */
 export const ScheduleWakeup = Context.Reference<Effect.Effect<void>>("hosted/ScheduleWakeup", {
   defaultValue: () => Effect.void,
 });

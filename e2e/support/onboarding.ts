@@ -9,6 +9,9 @@ import { Target, driver } from "./platform.ts";
 const Organizations = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }),
 );
+const AuthFailure = Schema.Struct({
+  code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/)),
+});
 class OnboardingFailed extends Schema.TaggedError<OnboardingFailed>()("OnboardingFailed", {
   operation: Schema.String,
 }) {
@@ -25,6 +28,51 @@ const make = Effect.gen(function* () {
     yield* browser.omitNetworkTrace;
     yield* browser.use("Open Cloud sign-in", (page) => page.goto("/login"));
   });
+  const chooseSocial = (provider: "google" | "github") =>
+    Effect.gen(function* () {
+      const submit = browser.use(`Choose ${provider} sign-in`, (page) =>
+        Promise.all([
+          page.waitForResponse((response) => {
+            const url = new URL(response.url());
+            return (
+              url.origin === target.metadata.origin && url.pathname === "/api/auth/sign-in/social"
+            );
+          }),
+          page
+            .getByRole("button", {
+              name: provider === "google" ? "Continue with Google" : "Continue with GitHub",
+              exact: true,
+            })
+            .click(),
+        ]).then(([response]) =>
+          (response.status() >= 400 &&
+          response.headers()["content-type"]?.includes("application/json")
+            ? response.json()
+            : Promise.resolve(undefined)
+          ).then((failure: unknown) => ({
+            status: response.status(),
+            failure,
+            retryAfter: response.headers()["x-retry-after"],
+          })),
+        ),
+      );
+      let response = yield* submit;
+      if (response.status === 429) {
+        // Managed Cloud scenarios share an IP. Respect the real auth rate limit
+        // when another scenario has used the current sign-in allowance.
+        const seconds = yield* Schema.decodeUnknownEffect(
+          Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(60)),
+        )(Number(response.retryAfter));
+        yield* Effect.sleep(seconds * 1000);
+        response = yield* submit;
+      }
+      if (response.status !== 200) {
+        const failure = Schema.decodeUnknownOption(AuthFailure)(response.failure);
+        return yield* new OnboardingFailed({
+          operation: `${provider} sign-in returned HTTP ${response.status}${failure._tag === "Some" ? ` (${failure.value.code})` : ""}`,
+        });
+      }
+    });
   const organizations = browser
     .use("Read teams through the public session", (page) =>
       page.evaluate(() =>
@@ -76,6 +124,7 @@ const make = Effect.gen(function* () {
       );
     });
   return {
+    chooseSocial,
     organizations,
     emailSignIn,
     freshEmail: Effect.sync(() => `onboarding-${randomUUID()}@example.test`),
@@ -87,14 +136,7 @@ const make = Effect.gen(function* () {
         );
         yield* openLogin;
         const memberships = yield* holdOrganizationEntry;
-        yield* browser.use(`Choose ${provider} sign-in`, (page) =>
-          page
-            .getByRole("button", {
-              name: provider === "google" ? "Continue with Google" : "Continue with GitHub",
-              exact: true,
-            })
-            .click(),
-        );
+        yield* chooseSocial(provider);
         const document = yield* browser.use(
           `Choose the identity on the ${provider} emulator`,
           (page) =>
@@ -118,6 +160,7 @@ const make = Effect.gen(function* () {
         );
         if (document.status !== 200)
           return yield* new OnboardingFailed({ operation: "Sign-in document did not load" });
+        yield* evidence.json("entry-document-check.json", document);
         if (!document.prepared || !document.private)
           return yield* new OnboardingFailed({
             operation: "Sign-in document must contain private server-prepared team setup",
@@ -368,9 +411,10 @@ const make = Effect.gen(function* () {
             page.getByRole("button", { name: "Create a passkey", exact: true }).click(),
           );
           yield* browser.use("Passkey enrollment finishes", (page) =>
-            page
-              .getByRole("heading", { name: "Create a passkey", exact: true })
-              .waitFor({ state: "hidden" }),
+            page.waitForURL(
+              (url) => url.origin === target.metadata.origin && url.pathname === "/create",
+              { waitUntil: "domcontentloaded" },
+            ),
           );
           const result = yield* driver("Read virtual authenticator registrations", () =>
             session.send("WebAuthn.getCredentials", {

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
@@ -59,7 +60,17 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
                 page.getByRole("region", { name: "App tools preview", exact: true }).waitFor(),
               );
               const reference = yield* frame("Overview");
-              const metadata = yield* holdQuery(paths, "continue", { allRequests: true });
+              // Inventory can supply the same metadata before the app read completes.
+              const metadata = yield* holdQuery(
+                [
+                  ...paths,
+                  ...[actors.organization.id, actors.organization.slug].map(
+                    (organization) => `/api/organizations/${organization}/inventory`,
+                  ),
+                ],
+                "continue",
+                { allRequests: true },
+              );
               const settings = yield* holdQuery(
                 paths.map((path) => `${path}/schedules`),
                 "continue",
@@ -379,9 +390,18 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
           page.getByRole("button", { name: "Pause", exact: true }).waitFor(),
         );
         yield* browser.checkpoint("01 Hosted schedule controls");
-        yield* browser.use("Request a run", (page) =>
-          page.getByRole("button", { name: "Run now", exact: true }).click(),
-        );
+        expect(
+          yield* browser.use("Request a run and wait for acceptance", (page) =>
+            Promise.all([
+              page.waitForResponse(
+                (response) =>
+                  response.request().method() === "POST" &&
+                  new URL(response.url()).pathname.endsWith("/schedules/digest/run"),
+              ),
+              page.getByRole("button", { name: "Run now", exact: true }).click(),
+            ]).then(([response]) => response.status()),
+          ),
+        ).toBe(200);
         yield* browser.use("Open approvals", (page) =>
           page.getByRole("link", { name: "Approvals", exact: true }).click(),
         );
@@ -409,14 +429,32 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
             .waitFor(),
         );
         yield* browser.checkpoint("04 Approval saved");
+        const evidence = yield* Evidence;
         yield* api.request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`).pipe(
           Effect.flatMap((response) =>
-            body(Schema.Array(Schema.Struct({ status: Schema.String })), response),
+            body(
+              Schema.Array(
+                Schema.Struct({
+                  id: Schema.String,
+                  status: Schema.String,
+                  failure: Schema.NullOr(Schema.String),
+                }),
+              ),
+              response,
+            ),
           ),
           Effect.flatMap((runs) =>
-            runs.some((run) => run.status === "succeeded")
-              ? Effect.void
-              : Effect.fail(new Pending()),
+            Effect.gen(function* () {
+              yield* evidence.json("approved-schedule-runs.json", runs);
+              const completed = runs.find(
+                (run) => !["ready", "running", "awaiting-approval"].includes(run.status),
+              );
+              if (completed === undefined) return yield* new Pending();
+              expect(
+                completed,
+                "The approved run must complete; terminal failures are not slow runs",
+              ).toMatchObject({ status: "succeeded", failure: null });
+            }),
           ),
           Effect.retry({
             while: (error) => error instanceof Pending,

@@ -18,6 +18,7 @@ const modules = {
   "apps/skills": ["src/skills.ts", "tools.md"],
 };
 const methods = [
+  ["AppCache", "src/contracts/cache.ts", "AppCache", "tools.md"],
   ["OptimisticLocalStore", "src/contracts/optimistic.ts", "OptimisticLocalStore", "ui.md"],
   ["AppMutation", "src/contracts/optimistic.ts", "AppMutation", "ui.md"],
   ["Schema", "src/implementation/schema.ts", "Schema", "tools.md"],

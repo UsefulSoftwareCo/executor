@@ -14,18 +14,19 @@ const cloudMode = Schema.decodeUnknownSync(Schema.Literals(["managed", "attached
 export default defineConfig({
   test: {
     name: target,
+    setupFiles: ["e2e/setup.ts"],
     include: filesForTarget(target, suite, cloudMode, process.env.E2E_TEST_NAME ?? ""),
     fileParallelism: true,
     maxWorkers: Schema.decodeUnknownSync(
       Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 32 })),
     )(Number(process.env.E2E_WORKERS)),
-    testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : 180000,
+    testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : 60000,
     hookTimeout: 60000,
     teardownTimeout: 30000,
     retry: 0,
     reporters: [
       "verbose",
-      ["html", { outputDir: `${directory}/report/diagnostics`, singleFile: true }],
+      ["json", { outputFile: `${directory}/report/diagnostics/results.json` }],
     ],
   },
 });

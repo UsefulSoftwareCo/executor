@@ -1,4 +1,5 @@
 import { AppSkills } from "apps/contracts";
+import { CacheCommand } from "@executor-js/app-cache/contracts";
 import { invocationWorkflow, invocationWorkflowControls } from "../implementation/workflow-rpc.ts";
 /** Cloud apps use account-isolated cached Workers; explicitly declared databases run in facets. */
 import { appRpcBridge, appFacetBridge } from "../implementation/app-bridge.ts";
@@ -24,6 +25,10 @@ import {
   HostCallError,
   DeclaredRequirements,
   HostedTool,
+  HostedToolSummary,
+  indexCommand,
+  inspectCommand,
+  selectTools,
   HostResponse,
   ToolResultObservation,
   type HostContext,
@@ -31,7 +36,7 @@ import {
 } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Option, Redacted, Result, Schema } from "effect";
+import { Effect, Exit, FiberSet, Option, Redacted, Result, Schema } from "effect";
 import { facetIdentity, FacetResult } from "@executor-js/app-data/cloudflare";
 import type { AppDataSupervisor } from "./app-data.ts";
 import { dataChanges } from "../implementation/data-changes.ts";
@@ -97,6 +102,10 @@ export const cloudRuntime = Effect.fn(function* (
       yield* Schema.decodeUnknownEffect(NativeFetcher)(environment.AppOutbound).pipe(Effect.orDie),
     );
     const forward = yield* makeTelemetryForwarder;
+    const background = yield* FiberSet.make();
+    yield* Effect.addFinalizer(() =>
+      FiberSet.awaitEmpty(background).pipe(Effect.timeoutOption("35 seconds"), Effect.asVoid),
+    );
     const collect = (body: unknown, build?: BuildId) =>
       Effect.gen(function* () {
         // Telemetry is an additive transport field. Retained builds keep their original protocol.
@@ -118,6 +127,7 @@ export const cloudRuntime = Effect.fn(function* (
       error: Schema.Decoder<E>,
       build: BuildId,
       identity: string,
+      app?: string,
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -148,6 +158,7 @@ export const cloudRuntime = Effect.fn(function* (
             .pipe(Effect.withSpan("runtime.cloud.worker.load"));
           // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
           const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
+          const services = yield* Effect.context<never>();
           // Native RPC carries the live callback; the fetch payload remains the existing portable protocol.
           const entrypoint = yield* Schema.decodeUnknownEffect(AppRpcEntrypoint)(
             worker.getEntrypoint().raw,
@@ -169,6 +180,7 @@ export const cloudRuntime = Effect.fn(function* (
                     accounts: Redacted.value(context.accounts),
                     approval: context.approval,
                     replay: context.replay,
+                    deadline: context.deadline,
                     workflowRun: context.workflow?.runId,
                   }),
                   headers,
@@ -177,6 +189,19 @@ export const cloudRuntime = Effect.fn(function* (
                     : invocationElicitation(context.elicitation, lifetime.signal),
                   context.workflow === undefined ? null : workflow,
                   context.workflowControls === undefined ? null : controls,
+                  app === undefined
+                    ? null
+                    : (command) =>
+                        Effect.runPromiseWith(services)(
+                          Effect.gen(function* () {
+                            const parsed = yield* Schema.decodeUnknownEffect(CacheCommand)(command);
+                            yield* Effect.annotateCurrentSpan("cache.operation", parsed.operation);
+                            return yield* databases.getByName(app).cache(build, parsed);
+                          }).pipe(
+                            Effect.provide(RuntimeContext.phantom),
+                            Effect.withSpan("runtime.cloud.cache"),
+                          ),
+                        ),
                 ),
               catch: protocolFailed,
             }).pipe(
@@ -187,17 +212,25 @@ export const cloudRuntime = Effect.fn(function* (
               ),
               Effect.withSpan("runtime.cloud.rpc.start"),
             ),
-            (call) =>
-              Effect.promise(async () => {
+            (call, exit) => {
+              const release = Effect.promise(async () => {
                 try {
-                  await call.cancel();
+                  if (Exit.isSuccess(exit)) await call.drain?.();
                 } finally {
-                  call[Symbol.dispose]();
+                  try {
+                    await call.cancel();
+                  } finally {
+                    call[Symbol.dispose]();
+                  }
                 }
               }).pipe(
                 Effect.withSpan("runtime.cloud.rpc.release"),
                 Effect.catchCause(() => Effect.void),
-              ),
+              );
+              return Exit.isSuccess(exit)
+                ? FiberSet.run(background, release).pipe(Effect.asVoid)
+                : release;
+            },
           );
           const body = yield* Effect.tryPromise({
             try: () => invocation.result(),
@@ -276,6 +309,7 @@ export const cloudRuntime = Effect.fn(function* (
               HostCallError,
               input.build,
               `${input.app}:${identity}`,
+              input.app,
             );
           const lifetime = yield* Effect.acquireRelease(
             Effect.sync(() => new AbortController()),
@@ -293,6 +327,7 @@ export const cloudRuntime = Effect.fn(function* (
               {
                 id,
                 identity,
+                cacheNamespace: input.build,
                 write:
                   ["mutate", "webhook-register", "webhook-handle", "webhook-unregister"].includes(
                     command.operation,
@@ -302,6 +337,7 @@ export const cloudRuntime = Effect.fn(function* (
                   command,
                   approval: input.approval,
                   replay: input.replay,
+                  deadline: input.deadline,
                   accounts: Redacted.value(input.accounts),
                 }),
                 headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
@@ -415,9 +451,30 @@ export const cloudRuntime = Effect.fn(function* (
             HostInspectError,
             build,
             identity,
+            app,
           );
         }).pipe(Effect.withSpan("runtime.cloud.skills")),
-      inspect: ({ app, build, ...context }) =>
+      inspect: ({ app, build, tools, ...context }) =>
+        Effect.gen(function* () {
+          const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
+          yield* Effect.annotateCurrentSpan({
+            "executor.runtime.mode": "worker",
+            "executor.worker.identity": identity,
+          });
+          return selectTools(tools)(
+            yield* dispatch(
+              load(build),
+              inspectCommand(tools),
+              context,
+              Schema.Array(HostedTool),
+              HostInspectError,
+              build,
+              identity,
+              app,
+            ),
+          );
+        }).pipe(Effect.withSpan("runtime.cloud.inspect")),
+      index: ({ app, build, ...context }) =>
         Effect.gen(function* () {
           const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
           yield* Effect.annotateCurrentSpan({
@@ -426,14 +483,15 @@ export const cloudRuntime = Effect.fn(function* (
           });
           return yield* dispatch(
             load(build),
-            { operation: "inspect" },
+            indexCommand,
             context,
-            Schema.Array(HostedTool),
+            Schema.Array(HostedToolSummary),
             HostInspectError,
             build,
             identity,
+            app,
           );
-        }).pipe(Effect.withSpan("runtime.cloud.inspect")),
+        }).pipe(Effect.withSpan("runtime.cloud.index")),
       workflow: ({ app, build, command, ...context }) =>
         Effect.gen(function* () {
           const identity = `${app}:workflow:${context.workflow?.runId ?? "inspect"}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
@@ -445,6 +503,7 @@ export const cloudRuntime = Effect.fn(function* (
             HostCallError,
             build,
             identity,
+            app,
           );
         }).pipe(
           Effect.withSpan("runtime.cloud.workflow", {

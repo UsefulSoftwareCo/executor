@@ -26,9 +26,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* browser.use("Return to Google sign-in without saved organization history", (page) =>
           page.goto("/login"),
         );
-        yield* browser.use("Sign in again with Google", (page) =>
-          page.getByRole("button", { name: "Continue with Google", exact: true }).click(),
-        );
+        yield* onboarding.chooseSocial("google");
         yield* browser.use("Select the existing synthetic Google identity", (page) =>
           page.getByRole("button").filter({ hasText: identity.email }).click(),
         );

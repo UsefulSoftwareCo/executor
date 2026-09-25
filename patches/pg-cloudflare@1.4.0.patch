@@ -1,0 +1,180 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index a779d149eeca6cf1c3d58e9c79e900a94b92fcca..270248bd2bbd8e780ddb770052eb8c64761d0c3b 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -15,15 +15,22 @@ export declare class CloudflareSocket extends EventEmitter {
+     private _cfSocket;
+     private _cfWriter;
+     private _cfReader;
++    private _corked;
++    private _corkedChunks;
++    private _corkedCallbacks;
+     constructor(ssl: boolean);
+     setNoDelay(): this;
+     setKeepAlive(): this;
+     ref(): this;
+     unref(): this;
++    cork(): void;
++    uncork(): void;
+     connect(port: number, host: string, connectListener?: (...args: unknown[]) => void): Promise<this | undefined>;
+     _listen(): Promise<void>;
+     _listenOnce(): Promise<void>;
+     write(data: Uint8Array | string, encoding?: BufferEncoding, callback?: (...args: unknown[]) => void): true | void;
++    _flushCorked(): void;
++    _send(data: Uint8Array, callbacks: Array<(...args: unknown[]) => void>): void;
+     end(data?: Buffer, encoding?: BufferEncoding, callback?: (...args: unknown[]) => void): this;
+     destroy(reason: string): this;
+     startTls(options: TlsOptions): void;
+diff --git a/dist/index.js b/dist/index.js
+index 7f0933ec1b3a5f3ce4a0d7d5b8fa00f9a1fe553e..8748ffc589541ce1922ed3bb4325b0c3912ea2dd 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -16,6 +16,11 @@ class CloudflareSocket extends events_1.EventEmitter {
+         this._cfSocket = null;
+         this._cfWriter = null;
+         this._cfReader = null;
++        // node-postgres corks around each extended-protocol query. Buffering those
++        // frames into one socket write avoids a delayed-ACK stall per message.
++        this._corked = 0;
++        this._corkedChunks = [];
++        this._corkedCallbacks = [];
+     }
+     setNoDelay() {
+         return this;
+@@ -29,6 +34,16 @@ class CloudflareSocket extends events_1.EventEmitter {
+     unref() {
+         return this;
+     }
++    cork() {
++        this._corked++;
++    }
++    uncork() {
++        if (this._corked === 0)
++            return;
++        this._corked--;
++        if (this._corked === 0)
++            this._flushCorked();
++    }
+     async connect(port, host, connectListener) {
+         try {
+             log('connecting');
+@@ -81,18 +96,39 @@ class CloudflareSocket extends events_1.EventEmitter {
+             return callback();
+         if (typeof data === 'string')
+             data = Buffer.from(data, encoding);
++        if (this._corked > 0) {
++            this._corkedChunks.push(data);
++            this._corkedCallbacks.push(callback);
++            return true;
++        }
++        this._send(data, [callback]);
++        return true;
++    }
++    _flushCorked() {
++        const chunks = this._corkedChunks;
++        const callbacks = this._corkedCallbacks;
++        this._corkedChunks = [];
++        this._corkedCallbacks = [];
++        if (chunks.length === 0)
++            return;
++        this._send(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks), callbacks);
++    }
++    _send(data, callbacks) {
+         log('sending data direct:', data);
+         this._cfWriter.write(data).then(() => {
+             log('data sent');
+-            callback();
++            for (const callback of callbacks)
++                callback();
+         }, (err) => {
+             log('send error', err);
+-            callback(err);
++            for (const callback of callbacks)
++                callback(err);
+         });
+-        return true;
+     }
+     end(data = Buffer.alloc(0), encoding = 'utf8', callback = () => { }) {
+         log('ending CF socket');
++        this._corked = 0;
++        this._flushCorked();
+         this.write(data, encoding, (err) => {
+             this._cfSocket.close();
+             if (callback)
+diff --git a/src/index.ts b/src/index.ts
+index 9b1e517ba3881462144cd1f9ecb825b957094327..05c4987432d1e08126170d5680a77a2099ccb2fb 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -13,6 +13,11 @@ export class CloudflareSocket extends EventEmitter {
+   private _cfSocket: Socket | null = null
+   private _cfWriter: WritableStreamDefaultWriter | null = null
+   private _cfReader: ReadableStreamDefaultReader | null = null
++  // node-postgres corks around each extended-protocol query. Buffering those
++  // frames into one socket write avoids a delayed-ACK stall per message.
++  private _corked = 0
++  private _corkedChunks: Uint8Array[] = []
++  private _corkedCallbacks: Array<(...args: unknown[]) => void> = []
+ 
+   constructor(readonly ssl: boolean) {
+     super()
+@@ -30,6 +35,14 @@ export class CloudflareSocket extends EventEmitter {
+   unref() {
+     return this
+   }
++  cork() {
++    this._corked++
++  }
++  uncork() {
++    if (this._corked === 0) return
++    this._corked--
++    if (this._corked === 0) this._flushCorked()
++  }
+ 
+   async connect(port: number, host: string, connectListener?: (...args: unknown[]) => void) {
+     try {
+@@ -90,22 +103,42 @@ export class CloudflareSocket extends EventEmitter {
+     if (data.length === 0) return callback()
+     if (typeof data === 'string') data = Buffer.from(data, encoding)
+ 
++    if (this._corked > 0) {
++      this._corkedChunks.push(data)
++      this._corkedCallbacks.push(callback)
++      return true
++    }
++    this._send(data, [callback])
++    return true
++  }
++
++  _flushCorked() {
++    const chunks = this._corkedChunks
++    const callbacks = this._corkedCallbacks
++    this._corkedChunks = []
++    this._corkedCallbacks = []
++    if (chunks.length === 0) return
++    this._send(chunks.length === 1 ? chunks[0] : Buffer.concat(chunks), callbacks)
++  }
++
++  _send(data: Uint8Array, callbacks: Array<(...args: unknown[]) => void>) {
+     log('sending data direct:', data)
+     this._cfWriter!.write(data).then(
+       () => {
+         log('data sent')
+-        callback()
++        for (const callback of callbacks) callback()
+       },
+       (err) => {
+         log('send error', err)
+-        callback(err)
++        for (const callback of callbacks) callback(err)
+       }
+     )
+-    return true
+   }
+ 
+   end(data = Buffer.alloc(0), encoding: BufferEncoding = 'utf8', callback: (...args: unknown[]) => void = () => {}) {
+     log('ending CF socket')
++    this._corked = 0
++    this._flushCorked()
+     this.write(data, encoding, (err) => {
+       this._cfSocket!.close()
+       if (callback) callback(err)

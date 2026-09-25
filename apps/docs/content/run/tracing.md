@@ -19,7 +19,7 @@ Where it writes depends on where you run:
 | Deployment | Diagnostics directory                                                       |
 | ---------- | --------------------------------------------------------------------------- |
 | Local      | `<EXECUTOR_DATA_DIR>/diagnostics`, by default `.local/executor/diagnostics` |
-| Self-host Docker | `/app/motel-data`, separate from the product volume                  |
+| Self-host Docker | `EXECUTOR_MOTEL_DATA_DIR`, by default `/app/motel-data`              |
 
 The local diagnostics directory holds:
 
@@ -32,10 +32,19 @@ The local diagnostics directory holds:
 Motel keeps seven days and targets 1 GiB. Each log file keeps four rotated
 archives at about 10 MiB each.
 
-In self-host Docker, Motel runs inside workerd and stores its data separately
-from `/app/data`. Replacing the container discards telemetry by default. Mount
-a separate volume at `/app/motel-data` to retain it. The container does not
-include Node or Bun. Product process logs go to the container log.
+In self-host Docker, Motel runs inside workerd and keeps its SQLite files in
+the `motel` folder of `EXECUTOR_MOTEL_DATA_DIR`. This directory must be
+separate from `/app/data`. Replacing the container discards telemetry by
+default. Mount a separate volume at the Motel directory to retain it. The
+container does not include Node or Bun.
+
+Motel also stores the log records that Executor writes. A record written
+during a request has the trace ID of that request. Executor does not write a
+log record for each request, so most requests produce only a trace. Warnings,
+errors, and app page requests produce log records. An empty `/api/logs/search`
+result does not mean that log export is broken. The search covers the last
+hour by default. Set `lookback`, for example `lookback=24h`, to search further
+back. Each log record also goes to the container log.
 
 The collector binds to container loopback on port 4318 and publishes no port.
 For the container named `executor-v2` in the [self-host instructions](/run/self-host),

@@ -18,12 +18,7 @@
     "./session-hint": "./src/implementation/session-hint.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test:routing": "NODE_ENV=test TSX_TSCONFIG_PATH=tsconfig.test.json node --import tsx --import ./test/browser.ts --test test/organization-routing.test.tsx",
-    "test": "bun run test:atoms && bun run test:views",
-    "test:atoms": "TSX_TSCONFIG_PATH=tsconfig.test.json node --conditions=development --import tsx --test --test-concurrency=1 test/*.test.ts",
-    "test:views": "TSX_TSCONFIG_PATH=tsconfig.test.json node --conditions=development --import tsx --import ./test/browser.ts --test --test-concurrency=1 test/*.test.tsx",
-    "test:cloud": "TSX_TSCONFIG_PATH=../cloud/web/tsconfig.test.json node --conditions=development --import tsx --import ./test/browser.ts --test --test-concurrency=1 ../cloud/web/test/*.test.tsx"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@better-auth/oauth-provider": "1.7.5",
@@ -55,7 +50,6 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.0",
     "tailwindcss": "^4.2.1",
-    "tsx": "^4.23.13",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
     "vite-plus": "0.3.3"
   }

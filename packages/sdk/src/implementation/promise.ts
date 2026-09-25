@@ -156,6 +156,8 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
     },
     tools: {
       list: (input) => run(Schema.toType(ToolInputs.list), input, executor.tools.list),
+      index: (input) => run(Schema.toType(ToolInputs.index), input, executor.tools.index),
+      get: (input) => run(Schema.toType(ToolInputs.get), input, executor.tools.get),
       call: (input, options) =>
         run(ToolInputs.call, input, (value) =>
           executor.tools.call(value, invocationOptions(options)),

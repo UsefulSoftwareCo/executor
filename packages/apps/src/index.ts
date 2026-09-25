@@ -1,4 +1,6 @@
 export { ProviderError } from "./contracts/provider-error.ts";
+export type { AppCache, CacheLoadContext, CacheGetOptions } from "./contracts/cache.ts";
+export { CacheError } from "@executor-js/app-cache/contracts";
 /**
  * Public author API. Native contracts live in contracts/; this boundary
  * exposes ordinary declarations, schema helpers and Promise operations.
@@ -54,6 +56,9 @@ export {
 } from "./contracts/provider.ts";
 export { defineProvider } from "./implementation/provider.ts";
 export { accountOperations } from "./implementation/account-operations.ts";
+export { dynamicTools } from "./implementation/dynamic-tools.ts";
+export { dynamicSkills } from "./implementation/dynamic-skills.ts";
+export type { HostedTool as OperationDescription } from "./contracts/host.ts";
 
 /** A secrets declaration inferred from an author schema. */
 export type SecretsMethod<Shape extends ObjectSchema<Fields>> = NativeSecretsMethod<

@@ -1,5 +1,7 @@
 /** Edit a skill file in place from working source and save it as a Git commit. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Settings05Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { App } from "@executor-js/sdk";
 import { Exit, type Cause } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -15,6 +17,12 @@ import {
 import type { AppAcknowledgement, AppManagementAtoms } from "../../contracts/app-management.ts";
 import type { FailureProps } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../components/dropdown-menu.tsx";
 import { Textarea } from "../components/textarea.tsx";
 import {
   joinSkillDocument,
@@ -27,6 +35,52 @@ import {
 const VisualEditor = lazy(() =>
   import("./markdown-editor.tsx").then((module) => ({ default: module.VisualEditor })),
 );
+const VimEditor = lazy(() =>
+  import("./vim-editor.tsx").then((module) => ({ default: module.VimEditor })),
+);
+
+const vimKey = "executor:skill-editor:vim";
+
+/** A per-browser preference: people who use Vim keys want them in every file. */
+function useVimMode() {
+  const [enabled, setEnabled] = useState(() => localStorage.getItem(vimKey) === "on");
+  const set = (next: boolean) => {
+    localStorage.setItem(vimKey, next ? "on" : "off");
+    setEnabled(next);
+  };
+  return [enabled, set] as const;
+}
+
+/** A settings menu row with a switch; the menu stays open so several settings can change. */
+function SwitchItem({
+  checked,
+  onToggle,
+  children,
+}: {
+  readonly checked: boolean;
+  readonly onToggle: () => void;
+  readonly children: ReactNode;
+}) {
+  return (
+    <DropdownMenuItem
+      role="menuitemcheckbox"
+      aria-checked={checked}
+      onSelect={(event) => {
+        event.preventDefault();
+        onToggle();
+      }}
+    >
+      {children}
+      <span
+        aria-hidden
+        data-on={checked || undefined}
+        className="group ml-auto flex h-4 w-7 items-center rounded-full bg-input p-0.5 transition-colors data-on:bg-primary"
+      >
+        <span className="size-3 rounded-full bg-background shadow-sm transition-transform group-data-on:translate-x-3" />
+      </span>
+    </DropdownMenuItem>
+  );
+}
 
 /** A commit made by the editor, and whether the person asked to deploy it. */
 export interface Committed {
@@ -77,7 +131,11 @@ export function SkillFileEditor<E>({
   const [description, setDescription] = useState(() => skillDescription(parts.frontmatter));
   const [body, setBody] = useState(parts.body);
   const markdown = /\.md$/i.test(path);
-  const [mode, setMode] = useState<"visual" | "markdown">(markdown ? "visual" : "markdown");
+  const [vimMode, setVimMode] = useVimMode();
+  // Vim keys edit the Markdown source, so Vim users open files there.
+  const [mode, setMode] = useState<"visual" | "markdown">(
+    markdown && !vimMode ? "visual" : "markdown",
+  );
   // Each visual session keeps bytes relative to the text it loaded.
   const [session, setSession] = useState({ id: 0, original: parts.body });
   const commit = useAtomSet(editing.atoms.commitFile(app.id), { mode: "promiseExit" });
@@ -143,20 +201,40 @@ export function SkillFileEditor<E>({
     <div className="flex min-w-0 flex-col">
       {header(
         <>
-          {markdown && (
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-pressed={mode === "markdown"}
-              className="text-muted-foreground aria-pressed:text-foreground"
-              onClick={() => {
-                if (mode === "markdown") setSession({ id: session.id + 1, original: body });
-                setMode(mode === "visual" ? "markdown" : "visual");
-              }}
-            >
-              Markdown
-            </Button>
-          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Editor settings"
+                className="text-muted-foreground"
+              >
+                <HugeiconsIcon icon={Settings05Icon} strokeWidth={2} />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              {markdown && (
+                <SwitchItem
+                  checked={mode === "markdown"}
+                  onToggle={() => {
+                    if (mode === "markdown") setSession({ id: session.id + 1, original: body });
+                    setMode(mode === "visual" ? "markdown" : "visual");
+                  }}
+                >
+                  Markdown
+                </SwitchItem>
+              )}
+              <SwitchItem
+                checked={vimMode}
+                onToggle={() => {
+                  setVimMode(!vimMode);
+                  if (!vimMode) setMode("markdown");
+                }}
+              >
+                Vim mode
+              </SwitchItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {dirty && (
             <Button
               variant="ghost"
@@ -209,6 +287,17 @@ export function SkillFileEditor<E>({
             label={label}
             placeholder={placeholder}
             original={session.original}
+            onChange={setBody}
+            onSave={save}
+          />
+        </Suspense>
+      ) : vimMode ? (
+        <Suspense fallback={null}>
+          <VimEditor
+            key={session.id}
+            label={label}
+            placeholder={placeholder}
+            value={body}
             onChange={setBody}
             onSave={save}
           />

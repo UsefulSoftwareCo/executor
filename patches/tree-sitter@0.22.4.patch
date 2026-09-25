@@ -1,0 +1,27 @@
+--- a/binding.gyp
++++ b/binding.gyp
+@@ -25,13 +25,13 @@
+         "NAPI_VERSION=<(napi_build_version)",
+       ],
+       "cflags_cc": [
+-        "-std=c++17"
++        "-std=c++20"
+       ],
+       "conditions": [
+         ["OS=='mac'", {
+           "xcode_settings": {
+             "GCC_SYMBOLS_PRIVATE_EXTERN": "YES", # -fvisibility=hidden
+-            "CLANG_CXX_LANGUAGE_STANDARD": "c++17",
++            "CLANG_CXX_LANGUAGE_STANDARD": "c++20",
+             "MACOSX_DEPLOYMENT_TARGET": "10.9",
+           },
+         }],
+@@ -39,7 +39,7 @@
+           "msvs_settings": {
+             "VCCLCompilerTool": {
+               "AdditionalOptions": [
+-                "/std:c++17",
++                "/std:c++20",
+               ],
+               "RuntimeLibrary": 0,
+             },

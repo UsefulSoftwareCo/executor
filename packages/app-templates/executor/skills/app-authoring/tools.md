@@ -35,22 +35,32 @@ checks HTTP status and parses a JSON response.
 
 ## Ship instructions with your app
 
-Return resolved skills in the second argument to `defineApp`, beside queries,
-mutations and workflows. Load a published GitHub directory inside the factory:
+Return skills in the second argument to `defineApp`, beside queries, mutations
+and workflows. Load remote skills with `dynamicSkills({ list })`, like
+`dynamicTools({ list, resolve })` for tools. Executor calls `list` only when
+skills are read:
 
 ```ts
-import { defineApp } from "apps";
+import { defineApp, dynamicSkills } from "apps";
 import { githubSkills } from "apps/skills";
 
 export default defineApp({ accounts: {} }, async (ctx) => ({
-  skills: await githubSkills({
-    repo: "planetscale/database-skills",
-    path: "skills",
-    fetch: ctx.fetch,
-    signal: ctx.signal,
+  dynamicSkills: dynamicSkills({
+    list: () =>
+      githubSkills({
+        repo: "planetscale/database-skills",
+        path: "skills",
+        fetch: ctx.fetch,
+        signal: ctx.signal,
+        cache: ctx.cache,
+      }),
   }),
 }));
 ```
+
+Tool listing and calls then never fetch remote skills, and a skill source
+failure does not break tools. `skills` is the static catalog: an array of
+resolved skills. Dynamic skills are added to it.
 
 Each resolved skill has `name`, `description` and `files: {path, content}[]`.
 Files are relative to the skill directory and include the full `SKILL.md` with
@@ -60,38 +70,24 @@ Names match their directories. Names are at most 64 characters, descriptions
 1024, and compatibility 500. Duplicate names or invalid resources fail the read.
 
 `githubSkills` resolves `ref` (default `HEAD`) once per call and reads all files
-from that commit. `wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
+from that commit. With `cache: ctx.cache`, it keeps each commit's file list, so
+later reads of an unchanged commit skip the file listing. `wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
 loads a site's `/.well-known/agent-skills/index.json`. Its directory index is
 `{skills: [{name, version?, files: ["SKILL.md", "references/example.md"]}]}`.
 Files live beneath the named directory beside that index. Helpers return complete
-UTF-8 text bundles, refuse redirects, and keep no persistent cache. Limits are
+UTF-8 text bundles and refuse redirects. Limits are
 1,000 files, 2 MB per response, and 20 MB total.
 
 Omit `skills` to load packaged `skills/<name>/SKILL.md` and its text resources.
 An explicit `skills` value replaces that default; `skills: []` disables it.
-To combine packaged and remote skills, use the same folder loader explicitly:
-
-```ts
-import { defineApp } from "apps";
-import { folderSkills, githubSkills } from "apps/skills";
-
-export default defineApp({ accounts: {} }, async (ctx) => ({
-  skills: [
-    ...(await folderSkills({ files: ctx.files })),
-    ...(await githubSkills({
-      repo: "planetscale/database-skills",
-      path: "skills",
-      fetch: ctx.fetch,
-      signal: ctx.signal,
-    })),
-  ],
-}));
-```
+`dynamicSkills` adds to whichever static catalog applies, so packaged and remote
+skills combine without extra code. A name in both fails the read.
 
 `folderSkills({ files: ctx.files, path: "guides" })` selects another packaged
-folder. Its immediate subdirectories must be skill directories. A missing folder
-returns `[]`. `ctx.files` contains this deployment's text files on every runtime;
-it never reads host files. All sources use one parser. Only selected folders are
+folder. Its immediate subdirectories must be skill directories. Loose files
+beside them, such as `README.md`, are ignored. A missing folder returns `[]`.
+`ctx.files` contains this deployment's text files on every runtime; it never
+reads host files. All sources use one parser. Only selected folders are
 parsed, when the skills load. Invalid selected folders fail the read.
 
 The MCP `skills` tool lists summaries with `{}` or `{app: "installed-slug"}`.
@@ -101,7 +97,8 @@ reading a reference with `file`. Deployment pins code; revision detects remote
 content changes. A changed revision requires a fresh read. The dashboard bundle
 keeps its documents and references together in one response.
 
-Skill reads evaluate the factory and require the selected accounts. Current app,
+Skill reads evaluate the factory, call `dynamicSkills.list` and require the
+selected accounts. Current app,
 profile and account access is checked. Use an account-free app for instructions
 that must be readable before setup. The Executor app loads this guide through the
 same public helper; discover its slug with `skills({})`.
@@ -171,3 +168,43 @@ Resume waits briefly; if it returns the same pending request, wait and collect
 again. If it returns a new link, show that link too. The original program and
 running tool continue without replay. An unavailable request may have expired,
 been consumed, or been lost on restart; do not rerun the source automatically.
+
+## Cache and lazy operation sources
+
+Use `ctx.cache.get({ key, schema, freshFor, staleFor, load })` for shared JSON.
+Put every result dependency in the key. Use `ctx.cache.forAccount(account)` for
+private results; the host also scopes entries to current credentials. Use the
+loader's `fetch`, `signal`, and `cache` so stale refreshes can finish after the
+request. Errors are not cached. `invalidate(key)` also fences pending loaders.
+
+Use `dynamicTools({ list, resolve })` for large or remote catalogs. List
+qualified tool metadata separately from resolving one query or mutation.
+`accountOperations` preserves lazy resolution. Resolving a tool does not require
+listing all tools. Input validation and approvals still run on each call.
+
+Assign the resolver to the app's `dynamicTools` field. The helper returns only
+`list` and `resolve`, never static query or mutation maps. Both static maps are
+optional, so an app can contain only dynamic tools.
+
+```ts
+export default defineApp(
+  { accounts: {} },
+  {
+    dynamicTools: dynamicTools({
+      list: async () => [
+        {
+          name: "queries.ping",
+          description: "Return pong",
+          inputSchema: { type: "object", properties: {} },
+          readOnly: true,
+        },
+      ],
+      resolve: async (name) =>
+        name === "queries.ping" ? query({ input: object({}) }, async () => "pong") : undefined,
+    }),
+  },
+);
+```
+
+Names include `queries.` or `mutations.`. `list` describes available tools;
+`resolve` returns the matching query or mutation declaration.

@@ -26,3 +26,9 @@ export const openapiOperations = (options: OpenapiToolsOptions, kinds: Operation
   );
 
 export type { OperationKinds } from "./implementation/protocol-operations.ts";
+
+export * from "./contracts/openapi-compile.ts";
+export {
+  liveOpenapiOperations,
+  type OpenapiSourceOptions,
+} from "./implementation/openapi-source.ts";

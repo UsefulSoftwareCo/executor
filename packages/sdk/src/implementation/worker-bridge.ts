@@ -2,20 +2,21 @@ import type { SourceFile } from "../contracts/deployment.ts";
 /** Retain package files in the server entry point and preserve invocation context across isolation. */
 export const appBridge = (files: readonly SourceFile[]) => `
 import app from "./index.ts";
-import { createIsolatedAppHandler, hostContext, isolatedElicitation, isolatedWorkflowExecution, isolatedWorkflowControls } from "apps/host";
+import { createIsolatedAppHandler, hostContext, isolatedElicitation, isolatedWorkflowExecution, isolatedWorkflowControls, isolatedCacheSession } from "apps/host";
 const handler = createIsolatedAppHandler(app);
 const files = ${JSON.stringify(files)};
 export default {
+  cacheSession: isolatedCacheSession,
   async fetch(request, env) {
     // This entry point has no public route or host bindings. Only the trusted loader calls it.
-    const { command, accounts, approval, replay, workflowRun } = await request.json();
+    const { command, accounts, approval, replay, deadline, workflowRun } = await request.json();
     const lifetime = new AbortController();
     const delivery = env?.ELICITATION;
     const elicitation = delivery == null ? undefined : isolatedElicitation((prompt) => delivery(prompt), lifetime);
     try {
       return await handler(new Request("https://app.internal/dispatch", {
         method: "POST", headers: { "content-type": "application/json", traceparent: request.headers.get("traceparent") ?? "" }, body: JSON.stringify(command), signal: AbortSignal.any([request.signal, lifetime.signal])
-      }), { ...hostContext(accounts, approval), files, ...(replay === undefined ? {} : { replay }), ...(env?.WORKFLOW && workflowRun ? { workflow: isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
+      }), { ...hostContext(accounts, approval), files, ...(env?.CACHE === undefined ? {} : { cache: env.CACHE }), ...(replay === undefined ? {} : { replay }), ...(deadline === undefined ? {} : { deadline }), ...(env?.WORKFLOW && workflowRun ? { workflow: isolatedWorkflowExecution(workflowRun, env.WORKFLOW, lifetime.signal) } : {}), ...(env?.WORKFLOW_CONTROLS ? { workflowControls: isolatedWorkflowControls(env.WORKFLOW_CONTROLS) } : {}), ...(elicitation === undefined ? {} : { elicitation }), ...(env?.STORAGE === undefined ? {} : { storage: env.STORAGE }) });
     } finally { lifetime.abort(); }
   }
 };`;
@@ -27,21 +28,26 @@ import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
 class Invocation extends RpcTarget {
   #controller = new AbortController();
   #result;
-  constructor(body, headers, elicitation, workflow, controls) {
+  #cache;
+  #cacheCallback;
+  constructor(body, headers, elicitation, workflow, controls, cache) {
     super();
+    this.#cacheCallback = cache == null ? null : cache.dup();
+    this.#cache = this.#cacheCallback == null ? undefined : bridge.cacheSession?.(this.#cacheCallback);
     const delivery = elicitation == null ? null : elicitation.dup();
     const execution = workflow == null ? null : workflow.dup();
     const management = controls == null ? null : controls.dup();
     this.#result = bridge.fetch(new Request("https://app.internal/dispatch", {
       method: "POST", headers: { ...headers, "content-type": "application/json" }, body, signal: this.#controller.signal
-    }), { ELICITATION: delivery, WORKFLOW: execution, WORKFLOW_CONTROLS: management }).then(response => response.json()).then(value => ({ ok: true, value }), error => ({ ok: false, error })).finally(() => { delivery?.[Symbol.dispose](); execution?.[Symbol.dispose](); management?.[Symbol.dispose](); });
+    }), { ELICITATION: delivery, WORKFLOW: execution, WORKFLOW_CONTROLS: management, CACHE: this.#cache?.cache }).then(response => response.json()).then(value => ({ ok: true, value }), error => ({ ok: false, error })).finally(() => { delivery?.[Symbol.dispose](); execution?.[Symbol.dispose](); management?.[Symbol.dispose](); });
   }
   async result() { const result = await this.#result; if (!result.ok) throw result.error; return result.value; }
-  async cancel() { this.#controller.abort(); await this.#result; }
+  async drain() { await this.#result; await this.#cache?.drain(); this.#cacheCallback?.[Symbol.dispose](); this.#cacheCallback = null; }
+  async cancel() { this.#controller.abort(); await this.#cache?.cancel(); await this.drain(); }
   [Symbol.dispose]() { this.#controller.abort(); }
 }
 export default class extends WorkerEntrypoint {
-  start(body, headers, elicitation, workflow = null, controls = null) { return new Invocation(body, headers, elicitation, workflow, controls); }
+  start(body, headers, elicitation, workflow = null, controls = null, cache = null) { return new Invocation(body, headers, elicitation, workflow, controls, cache); }
 }`;
 
 /** A dynamic class receives only its own SQLite storage, with no platform bindings. */
@@ -52,16 +58,20 @@ import { facetStorage } from "apps/storage/facet";
 export class ExecutorAppData extends DurableObject {
   #storage = facetStorage(this.ctx.storage);
   #calls = new Map();
+  #caches = new Map();
   fetch(request) { return bridge.fetch(request, { STORAGE: this.#storage }); }
-  async invoke(id, body, headers, elicitation, workflows) {
+  async invoke(id, body, headers, elicitation, workflows, cache) {
+    const session = cache == null ? undefined : bridge.cacheSession?.(cache);
+    if (session) this.#caches.set(id, session);
     const controller = new AbortController();
     this.#calls.set(id, controller);
     try {
       const response = await bridge.fetch(new Request("https://app.internal/dispatch", {
         method: "POST", headers: { ...headers, "content-type": "application/json" }, body, signal: controller.signal
-      }), { STORAGE: this.#storage, ELICITATION: elicitation, WORKFLOW_CONTROLS: workflows });
+      }), { STORAGE: this.#storage, ELICITATION: elicitation, WORKFLOW_CONTROLS: workflows, CACHE: session?.cache });
       return await response.json();
     } finally { this.#calls.delete(id); }
   }
-  cancel(id) { this.#calls.get(id)?.abort(); }
+  async finish(id) { try { await this.#caches.get(id)?.drain(); } finally { this.#caches.delete(id); } }
+  async cancel(id) { this.#calls.get(id)?.abort(); await this.#caches.get(id)?.cancel(); this.#caches.delete(id); }
 }`;

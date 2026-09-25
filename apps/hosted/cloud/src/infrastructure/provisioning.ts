@@ -105,7 +105,15 @@ export const dispatchProvisioning = Effect.gen(function* () {
   const binding = yield* Schema.decodeUnknownEffect(NativeProvisioning)(environment.Provisioning);
   const sql = yield* Effect.flatten(GroupDatabase);
   const jobs =
-    yield* sql`select id from hosted_provisioning where status = 'queued' or (status = 'running' and updated_at < now() - interval '30 minutes') order by available_at limit 50`.pipe(
+    // Claim a short dispatch lease in one statement. Concurrent request finalizers
+    // must not each submit the same queued jobs to the provider. A lost dispatch
+    // becomes eligible again; the workflow ID remains the durable identity.
+    yield* sql`with candidates as (
+      select id from hosted_provisioning where available_at <= now() and
+        (status = 'queued' or (status = 'running' and updated_at < now() - interval '30 minutes'))
+      order by available_at for update skip locked limit 50
+    ) update hosted_provisioning job set available_at = now() + interval '30 seconds'
+      from candidates where job.id = candidates.id returning job.id`.pipe(
       Effect.flatMap(
         Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
       ),

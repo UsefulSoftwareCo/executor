@@ -20,6 +20,7 @@ import {
 import {
   OpenapiError,
   defaultOpenapiResponseLimits,
+  isOpenapiFileSchema,
   isOpenapiTextMedia,
   openapiMediaKind,
   type CredentialBinding,
@@ -134,6 +135,33 @@ function reservedPathValue(value: unknown): string {
     throw new Error("This path value would change the request path");
   return encoded;
 }
+/** Match the whole operation after serialization, including nonempty parameter expansions.
+ * A prefix check alone permits an empty item ID to reach a collection endpoint.
+ * Reserved resource names may span segments; ordinary values must stay in one segment.
+ */
+function operationPath(op: OpenapiOperation): RegExp {
+  const template = op.baseUrl.replace(/\/$/, "") + op.path;
+  // Keep real template parameters distinct from literal percent-encoded braces.
+  let marker = "executorPathParameter";
+  while (template.includes(marker)) marker += "_";
+  const expansions: { token: string; pattern: string }[] = [];
+  const address = template.replace(/\{[^{}]+\}/g, (placeholder) => {
+    const parameter = op.request.parameters.find(
+      (p) => p.in === "path" && p.name === placeholder.slice(1, -1),
+    );
+    if (parameter === undefined) throw new Error("A path parameter is not declared");
+    const token = `${marker}_${expansions.length}_`;
+    expansions.push({
+      token,
+      pattern: parameter.allowReserved === true && parameter.content === undefined ? ".+" : "[^/]+",
+    });
+    return token;
+  });
+  let pattern = new URL(address).pathname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const expansion of expansions)
+    pattern = pattern.replaceAll(expansion.token, expansion.pattern);
+  return new RegExp("^" + pattern + "$");
+}
 const bytes = (value: unknown) =>
   Uint8Array.from(atob(scalar(value)), (char) => char.charCodeAt(0));
 /** Create request helpers from credential-free generated authentication metadata. */
@@ -224,12 +252,7 @@ export function createRequest(config: {
                 for (const [name, property] of Object.entries(
                   object(media.schema?.properties ?? {}),
                 )) {
-                  const shape = object(property);
-                  if (
-                    shape.type === "string" &&
-                    shape.format === "binary" &&
-                    fields[name] !== undefined
-                  )
+                  if (isOpenapiFileSchema(object(property)) && fields[name] !== undefined)
                     fields[name] = new File([bytes(fields[name])], name);
                 }
                 body = fields;
@@ -263,21 +286,22 @@ export function createRequest(config: {
             // The account is authorized for the pinned API origin only. Redirects
             // stay manual so a provider cannot forward credentials to another host.
             // Parameter values also cannot add dot segments, which Swagger leaves unescaped,
-            // or leave the operation's fixed path prefix.
+            // or remove an item segment to reach a collection endpoint.
             const pathname = prepared.url.replace(/^[^:]+:\/\/[^/]*/, "").split(/[?#]/)[0] ?? "";
             if (pathname.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment)))
               throw new Error("This path value would change the request path");
             const url = new URL(prepared.url);
-            const brace = op.path.indexOf("{");
-            const prefix = new URL(op.baseUrl + (brace < 0 ? op.path : op.path.slice(0, brace)));
+            const origin = new URL(op.baseUrl).origin;
             if (
-              url.origin !== prefix.origin ||
-              !url.pathname.startsWith(prefix.pathname) ||
+              url.origin !== origin ||
+              !operationPath(op).test(url.pathname) ||
               url.username ||
               url.password
             )
-              throw new Error("The request escaped its API origin");
+              throw new Error("The request escaped its API operation");
             const headers = new Headers(prepared.headers);
+            // GitHub requires this header; Workers do not supply one by default.
+            if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             if (prepared.body instanceof FormData) headers.delete("content-type");
             return { ...prepared, url, headers };
           },

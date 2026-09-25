@@ -4,10 +4,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Layer, Schedule, Schema } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { FetchHttpClient } from "effect/unstable/http";
-import { serveEnvironment } from "./sdk/control.ts";
 import { FixtureControl } from "./sdk/contracts.ts";
 import { fixtureRequest } from "./sdk/fixtures.ts";
-import { populations, DataShape } from "./sdk/data.ts";
 const handle = Flag.String("handle");
 const id = Flag.String("id");
 const role = Flag.Literals("role", ["owner", "admin", "member"]).pipe(Flag.withDefault("owner"));
@@ -30,7 +28,11 @@ const start = Command.make(
     headless: Flag.Boolean("headless").pipe(Flag.withDefault(false)),
     database: Flag.Literals("database", ["neon", "planetscale"]).pipe(Flag.withDefault("neon")),
   },
-  (input) => Effect.scoped(serveEnvironment(input)),
+  (input) =>
+    Effect.gen(function* () {
+      const { serveEnvironment } = yield* Effect.promise(() => import("./sdk/control.ts"));
+      yield* Effect.scoped(serveEnvironment(input));
+    }),
 );
 const create = Command.make(
   "create",
@@ -48,6 +50,7 @@ const seed = Command.make(
   },
   ({ handle, id, preset, shape }) =>
     Effect.gen(function* () {
+      const { populations, DataShape } = yield* Effect.promise(() => import("./sdk/data.ts"));
       const input =
         shape === ""
           ? populations[preset]

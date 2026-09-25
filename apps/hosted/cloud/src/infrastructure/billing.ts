@@ -11,7 +11,6 @@ import {
   BillingCatalog,
   billingCatalogDeclaration,
   type BillingEnvironment,
-  seededMonthlyExecutions,
 } from "../contracts/billing-catalog.ts";
 import { AutumnServerUrl } from "../contracts/autumn.ts";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
@@ -160,12 +159,8 @@ export const billingBindings = Effect.gen(function* () {
     serverUrl: Output.Output<Redacted.Redacted<string>>,
     secretKey: Output.Output<Redacted.Redacted<string>>,
   ) => {
-    // A throwaway instance belongs to one stage, so its free plan carries an allowance a test
-    // run cannot exhaust. The difference lives in the seed data, never in the product. A seeded
-    // instance never holds paid subscriptions, so its catalog declares the sandbox environment.
-    const declaration = billingCatalogDeclaration(stage, "sandbox", {
-      freeExecutions: seededMonthlyExecutions,
-    });
+    // A throwaway instance uses the same seat limits and prices in a sandbox catalog.
+    const declaration = billingCatalogDeclaration(stage, "sandbox");
     return {
       EXECUTOR_BILLING_CATALOG: Output.all(serverUrl, secretKey).pipe(
         Output.mapEffect(([url, key]) =>
@@ -216,11 +211,9 @@ export const billingBindings = Effect.gen(function* () {
         return JSON.stringify({
           environment: value.environment,
           namespace: value.namespace,
-          executions: value.executions,
           members: value.members,
           domainVerification: value.domainVerification,
           free: value.free,
-          payAsYouGo: value.payAsYouGo,
           team: value.team,
           enterprise: value.enterprise,
         } satisfies BillingCatalog);

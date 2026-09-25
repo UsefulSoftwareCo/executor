@@ -10,7 +10,13 @@ import { visibleApps, visibleAccounts, requireAppAccess } from "./resource-polic
 import { appTargets, type McpBackend } from "@executor-js/mcp";
 import { AppNotFound, ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
 import { Context, Effect, Option } from "effect";
-import { currentOwner, selectedApp, ownProfile, checkInvocationAccounts } from "./access.ts";
+import {
+  currentOwner,
+  selectedApp,
+  selectedActiveDeployment,
+  ownProfile,
+  checkInvocationAccounts,
+} from "./access.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { listTools } from "./tools.ts";
@@ -124,8 +130,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
         yield* authorizeTool(input.app, input.tool);
         const owner = yield* currentOwner;
         const executor = yield* sdk;
-        yield* selectedApp(executor, owner, input.app, input.profile);
-        return yield* executor.tools.call(input, options);
+        const deployment = yield* selectedActiveDeployment(executor, owner, input);
+        return yield* executor.tools.call({ ...input, deployment }, options);
       }).pipe((work) => observe("callTool", work)),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {

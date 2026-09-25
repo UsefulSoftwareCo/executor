@@ -182,3 +182,15 @@ const toolLists = Atom.family((key: ToolKey) =>
 /** Shared browser view for the selected profile. */
 export const toolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolLists(new ToolKey(key));
+class ToolDetailKey extends Data.Class<
+  ConstructorParameters<typeof ToolKey>[0] & { readonly tool: string }
+> {}
+const toolDetails = Atom.family(({ tool, ...key }: ToolDetailKey) =>
+  Atom.map(
+    toolLists(new ToolKey(key)),
+    AsyncResult.map((tools) => tools.find((candidate) => candidate.name === tool)),
+  ),
+);
+/** The live snapshot already carries schemas, so a selected tool reads from the same catalog. */
+export const toolDetailAtom = (key: ConstructorParameters<typeof ToolDetailKey>[0]) =>
+  toolDetails(new ToolDetailKey(key));

@@ -3,6 +3,15 @@ import { Schema } from "effect";
 /** Collision-free scenario identity; safe for paths, slugs and synthetic email addresses. */
 export const ScenarioId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
 
+/** Preparation failures belong to their scenario and remain native setup failures. */
+export const PreparedScenarios = Schema.Record(
+  Schema.NonEmptyString,
+  Schema.Struct({
+    id: ScenarioId,
+    status: Schema.Literals(["ready", "domain_unavailable"]),
+  }),
+);
+
 /** Serialized browser cookies are always wrapped as redacted values outside their driver. */
 export const BrowserCookies = Schema.Array(
   Schema.Struct({

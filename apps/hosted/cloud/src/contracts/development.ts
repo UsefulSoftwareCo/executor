@@ -10,6 +10,7 @@ export const cloudDevelopment = Config.all({
   origin: Config.String("BETTER_AUTH_URL"),
   apiPort: Config.Number("CLOUD_DEV_API_PORT").pipe(Config.withDefault(4411)),
   databasePort: Config.Number("CLOUD_DEV_DATABASE_PORT").pipe(Config.withDefault(5441)),
+  dashboard: Config.String("CLOUD_DEV_DASHBOARD").pipe(Config.withDefault("source")),
   // Set when a local TLS proxy serves the origin and forwards it to this plain-HTTP loopback port.
   webPort: Config.Number("CLOUD_DEV_WEB_PORT").pipe(Config.option),
 }).pipe(
@@ -34,8 +35,17 @@ export const cloudDevelopment = Config.all({
         ),
         apiPort: Port,
         databasePort: Port,
+        dashboard: Schema.Literals(["source", "built"]),
         webPort: Schema.Option(Port),
-      }),
+      }).check(
+        Schema.makeFilter(
+          (configuration) =>
+            configuration.dashboard === "source" ||
+            (new URL(configuration.origin).protocol === "http:" &&
+              Number(new URL(configuration.origin).port) === configuration.apiPort),
+          { message: "Built Cloud previews must use the HTTP Worker listener as their origin" },
+        ),
+      ),
     ),
   ),
 );

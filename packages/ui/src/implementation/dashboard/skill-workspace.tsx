@@ -123,7 +123,7 @@ export function SkillWorkspace<E>({
           {skills.map((skill) => {
             const expanded = !collapsed.has(skill.name);
             return (
-              <div key={skill.name} className="mb-2">
+              <div key={skill.name} role="group" aria-label={skill.name} className="mb-2">
                 <button
                   type="button"
                   aria-expanded={expanded}

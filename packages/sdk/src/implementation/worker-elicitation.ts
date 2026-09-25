@@ -40,6 +40,7 @@ export const invocationElicitation =
 
 interface Invocation {
   result(): Promise<unknown>;
+  drain?: () => Promise<void>;
   cancel(): Promise<void>;
   [Symbol.dispose](): void;
 }
@@ -61,6 +62,7 @@ interface AppRpcEntrypoint {
     elicitation: ReturnType<typeof invocationElicitation> | null,
     workflow?: import("apps/contracts").WorkflowRpc | null,
     controls?: ((input: unknown) => Promise<unknown>) | null,
+    cache?: ((input: unknown) => Promise<unknown>) | null,
   ): Promise<unknown>;
 }
 /** Generated entrypoint; each start returns a separate invocation capability. */

@@ -7,8 +7,8 @@ import { realpath } from "node:fs";
 import { promisify } from "node:util";
 
 const build = Effect.gen(function* () {
-  if (process.versions.bun !== "1.3.11")
-    return yield* Effect.die(new Error("Build the collector with Bun 1.3.11."));
+  if (process.versions.bun !== "1.4.2")
+    return yield* Effect.die(new Error("Build the collector with Bun 1.4.2."));
   const runtime = process.argv.includes("--workerd") ? "workerd" : "bun";
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

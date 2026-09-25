@@ -215,23 +215,6 @@ command remain separate work. Account creation validates the serialized provider
 schema; native app validation also runs on invocation. Serialized schemas retain
 the known Effect beta limitation around optional undefined/null values.
 
-## Verify
-
-From the repository root:
-
-```sh
-node --test apps/local/server/test/mcp.test.ts apps/local/server/test/auth.test.ts
-```
-
-This starts real loopback listeners with an isolated temporary database. The
-official MCP client reads the authoring skill and deploys its exact example,
-then connects two accounts and calls both copies of an account-based fixture,
-and reopens the host using the same data. It also checks live catalogs across
-pages, errors, bearer/origin enforcement, cancellation, and execution budgets.
-A raw July request complements the official client's November protocol test.
-The generated dashboard client also checks inventory, retained source, credential
-exclusion, deployment lineage and bearer/origin enforcement.
-
 ## Provider OAuth
 
 For a private HTTPS proxy such as Tailscale Serve, set `EXECUTOR_BROWSER_ORIGIN`

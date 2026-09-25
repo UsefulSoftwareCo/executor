@@ -85,24 +85,9 @@ const make = Effect.gen(function* () {
   const organization = orgs.find((org) => org.slug === "agent-tests");
   if (!organization) return yield* Effect.die("Missing isolated test organization");
   const customerId = `${namespace}:organization:${organization.id}`;
-  const balance = () =>
-    use("read sandbox balance", (signal) => autumn.customers.get({ customerId }, { signal })).pipe(
-      Effect.flatMap((value) => {
-        const balance = value.balances[`${namespace}-executions`];
-        return balance
-          ? Effect.succeed(balance)
-          : Effect.fail(
-              new BillingTestFailed({ operation: "missing execution feature", status: 0 }),
-            );
-      }),
-    );
-  const setRemaining = (remaining: number) =>
-    use("set synthetic allowance", (signal) =>
-      autumn.balances.update(
-        { customerId, featureId: `${namespace}-executions`, remaining },
-        { signal },
-      ),
-    );
+  const executionBalance = use("read sandbox customer", (signal) =>
+    autumn.customers.get({ customerId }, { signal }),
+  ).pipe(Effect.map((customer) => customer.balances[`${namespace}-executions`]));
   const connectMcp = Effect.gen(function* () {
     const verifier = randomBytes(32).toString("base64url");
     const redirect = "http://127.0.0.1:55494/callback";
@@ -190,8 +175,7 @@ const make = Effect.gen(function* () {
     anonymous,
     organization,
     namespace,
-    balance,
-    setRemaining,
+    executionBalance,
     connectMcp,
     json,
     seats: use("read sandbox seats", (signal) =>

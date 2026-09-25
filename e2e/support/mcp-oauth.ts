@@ -48,8 +48,8 @@ const Grants = Schema.Array(
 const ok = (operation: string, status: number) =>
   status >= 200 && status < 300 ? Effect.void : Effect.fail(new OAuthFailed({ operation, status }));
 
-// This is the client's loopback receiver, not an alternate Executor implementation.
-const callback = (state: string) =>
+/** Own the client loopback receiver, including browser preconnect sockets at shutdown. */
+export const oauthCallback = (state: string) =>
   Effect.gen(function* () {
     const received = yield* Deferred.make<Redacted.Redacted<string>>();
     const server = yield* Effect.acquireRelease(
@@ -77,9 +77,11 @@ const callback = (state: string) =>
         driver(
           "close OAuth callback",
           () =>
-            new Promise<void>((resolve, reject) =>
-              server.close((error) => (error ? reject(error) : resolve())),
-            ),
+            new Promise<void>((resolve, reject) => {
+              server.close((error) => (error ? reject(error) : resolve()));
+              // Chromium may leave a preconnect socket that never sends an HTTP request.
+              server.closeAllConnections();
+            }),
         ).pipe(Effect.orDie),
     );
     const port = yield* driver(
@@ -105,7 +107,7 @@ export const authorizeBrowserMcp = (page: Page, origin: string) =>
   Effect.gen(function* () {
     const state = randomBytes(24).toString("hex");
     const verifier = randomBytes(32).toString("base64url");
-    const receiver = yield* callback(state);
+    const receiver = yield* oauthCallback(state);
     const registration = yield* driver("register release MCP client", () =>
       fetch(`${origin}/api/auth/oauth2/register`, {
         method: "POST",
@@ -265,7 +267,7 @@ const make = Effect.gen(function* () {
         });
       const state = randomBytes(24).toString("hex"),
         verifier = randomBytes(32).toString("base64url");
-      const receiver = yield* callback(state);
+      const receiver = yield* oauthCallback(state);
       const unregistered = yield* api.session();
       const registered = yield* api.request(unregistered, "POST", "/api/auth/oauth2/register", {
         client_name: "Executor E2E client",

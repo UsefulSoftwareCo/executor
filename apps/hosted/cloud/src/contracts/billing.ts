@@ -24,9 +24,6 @@ export const BillingPlan = Schema.Struct({
 /** Current subscription state, never inferred from a checkout redirect. */
 export const BillingOverview = Schema.Struct({
   enterprise: Schema.Boolean,
-  usage: Schema.NullOr(
-    Schema.Struct({ used: Schema.Number, remaining: Schema.Number, unlimited: Schema.Boolean }),
-  ),
   plans: Schema.Array(BillingPlan),
   subscriptions: Schema.Array(Schema.Struct({ planId: Schema.String, status: Schema.String })),
 });

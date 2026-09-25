@@ -64,8 +64,7 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
 import { mcpOperations } from "apps/mcp";
 export default defineApp({ accounts: {} }, async () => {
   const remote = await mcpOperations({ url: ${JSON.stringify(`${upstream}/mcp`)} });
-  return { queries: {
-    ...remote.queries,
+  return { ...remote, queries: {
     lookalike: query({ input: object({}) }, async () => ({ isError: true, content: [] })),
     bulk: query({ input: object({}) }, async ({ fetch }) => {
       for (let index = 0; index < 340; index++) await (await fetch(${JSON.stringify(`${upstream}/ping`)})).text();

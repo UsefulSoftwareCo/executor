@@ -89,10 +89,11 @@ export const checkAppLoading = (input: {
   readonly history: readonly string[];
   readonly deployments?: readonly string[];
   readonly source: readonly string[];
+  readonly viewports?: readonly { readonly width: number; readonly height: number }[];
 }) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
-    for (const viewport of [
+    for (const viewport of input.viewports ?? [
       { width: 1440, height: 900 },
       { width: 390, height: 844 },
     ]) {

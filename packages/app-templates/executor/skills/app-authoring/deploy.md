@@ -35,9 +35,10 @@ their exact signatures first. They use ordinary app IDs, with route parameters
 under `path` and request payloads under `body`.
 
 Create the draft, read its working source, and save the complete file list with
-that source's expected Git commit. Deploy with both the expected source commit
-and current active deployment; use null for a draft's first deployment. Commits
-and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
+`expected: source.revision.commit` and a commit message. Deploy the returned
+`revision.commit` with `body: { commit }`, or deploy a complete file list with
+`body: { files }`. Supply exactly one. `appManagement_deploy` does not accept
+`expected` or `expectedDeployment`. Commits and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
 Running apps copy their deployed source and deploy the copy. Unfinished apps copy
 their working files and remain undeployed.
 
@@ -62,12 +63,19 @@ Other hosted operations include `organization_inventory`, `organization_catalog`
 `apps_remove`. Always read their discovered signatures before calling them.
 
 For hosted account setup, create a profile with `profiles_create` first.
-Pass its ID to the connection request:
+The host derives its owner and subject from the caller. Pass the returned ID to
+the connection request:
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].mutations.accounts_connect({
-  path: { organization: "<approved-organization-id>", app: "<app-id>" },
-  body: { profile: "<profile-id>", requirement: "vercel" },
+const executor = tools.executor.profiles["<management-profile-id>"];
+const path = { organization: "<approved-organization-id>", app: "<app-id>" };
+const profile = await executor.mutations.profiles_create({
+  path,
+  body: { accounts: {}, idempotencyKey: "vercel-setup" },
+});
+return await executor.mutations.accounts_connect({
+  path,
+  body: { profile: profile.id, requirement: "vercel" },
 });
 ```
 
@@ -96,9 +104,11 @@ return await executor.mutations.apps_deploy({
 });
 ```
 
-The response contains `app` and `deployment`. Deploying again with the same
-`owner` and `name` creates a new deployment and activates it after a successful
-build. Use relative file paths such as `index.ts` and `lib/client.ts`.
+The response contains `app` and `deployment`. Creating an app with the same
+`owner` and `name` again fails with `AppNameTaken`. To deploy an existing app,
+use `body: { owner, app: app.id, files }` or `body: { owner, app: app.id, commit }`.
+Deployment activates the new build after it succeeds and does not save working
+source. Use relative file paths such as `index.ts` and `lib/client.ts`.
 
 Discovery is prepared at the start of each `execute`. In a **new** execution,
 call the deployed app using its returned `app.slug`:
@@ -131,23 +141,48 @@ local path. Submit the actual contents through the available tool interface.
 
 ## Updating a hosted app
 
-Search the Executor management app for its source, deployments, update and
-activate operations. Read the app's current source before editing. Submit the
-complete file set to the update operation with the same app ID and
-`expectedDeployment` set to the source version you read. Do not use the
-create-only deploy operation to replace an installed app.
+Use the shared draft workflow to edit an existing app. `appManagement_source`
+reads working Git source; `apps_source` reads immutable deployed source. Saving
+one does not change the other. Read both when you need to compare pending edits
+with the running app.
 
-A successful update retains a new immutable deployment and activates it for
-that configured app. The name, app ID and selected accounts stay intact.
-Concurrent edits return `deployment_changed`; reread the current source and
-reconcile the edits before retrying. Incompatible account requirements fail
-without changing the active deployment or silently clearing saved selections.
+```js
+const executor = tools.executor.profiles["<management-profile-id>"];
+const path = { organization: "<approved-organization-id>", app: "<app-id>" };
+const source = await executor.queries.appManagement_source({ path });
+const entry = source.files.find((file) => file.path === "index.ts");
+if (!entry || entry.content.split("<exact old text>").length !== 2) {
+  throw new Error("Expected one match in index.ts; review the edit.");
+}
+const files = source.files.map((file) =>
+  file.path === entry.path
+    ? { ...file, content: file.content.replace("<exact old text>", "<replacement text>") }
+    : file,
+);
+const saved = await executor.mutations.appManagement_commit({
+  path,
+  body: { expected: source.revision.commit, files, message: "Update app" },
+});
+return await executor.mutations.appManagement_deploy({
+  path,
+  body: { commit: saved.revision.commit },
+});
+```
 
-The deployments operation lists retained versions, and source can read a
-specific version. Activation requires the current `expectedDeployment` too.
-It only changes which code runs; it does not reverse app data or changes made
-in external services. Hosted source and deployment operations require an
-organization admin. Discover tools again in a new execute after changing code.
+Commit sends the complete file list; omitted files are deleted. A stale
+`expected` returns `SourceError` with `reason: "conflict"`. Read working source
+again and reconcile the edits before retrying. Deployment returns `{ app,
+deployment }`, preserves the app ID and data, and never updates the Git branch.
+It has no expected-active-deployment argument. Check profiles after changing
+account requirements; saved selections can become incompatible with new code.
+
+`apps_deployments` lists retained versions. `apps_source` accepts an optional
+`query.deployment` to read a specific version. `apps_activate` requires
+`body: { deployment, expectedDeployment }`, where `expectedDeployment` is the
+app's current active deployment. A stale value returns `AppDeploymentChanged`.
+Activation only changes which code runs; it does not reverse app data or changes
+made in external services. Source reads and deployment writes follow the
+hosted product’s access rules. Discover tools again in a new execute after changing code.
 
 ## Dependencies and current boundaries
 

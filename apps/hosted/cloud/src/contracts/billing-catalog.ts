@@ -11,28 +11,18 @@ export type BillingEnvironment = typeof BillingEnvironment.Type;
 export const BillingCatalog = Schema.Struct({
   environment: BillingEnvironment,
   namespace: Schema.NonEmptyString,
-  executions: Schema.NonEmptyString,
   members: Schema.NonEmptyString,
   domainVerification: Schema.NonEmptyString,
   free: Schema.NonEmptyString,
-  payAsYouGo: Schema.NonEmptyString,
   team: Schema.NonEmptyString,
   enterprise: Schema.NonEmptyString,
 });
 /** One catalog is shared by the API and MCP runtime in the same deployment stage. */
 export type BillingCatalog = typeof BillingCatalog.Type;
 
-/** Free includes 100,000 monthly executions and three members. */
-export const freeMonthlyExecutions = 100_000;
+/** Free includes three members; Team costs USD 15 per active member per month. */
 export const freeMembers = 3;
-/** Team costs USD 15 per active member per month, billed in arrears. */
 export const teamMemberPrice = 15;
-/**
- * A private Autumn instance is provisioned for one throwaway stage, so its free plan carries an
- * allowance a test run cannot exhaust. Only the seeded declaration differs; the product applies
- * the same admission rules to every endpoint.
- */
-export const seededMonthlyExecutions = 100_000_000;
 
 /** An immutable metered or boolean feature. Changing a meaning requires a new ID. */
 export type BillingFeatureDeclaration = {
@@ -69,13 +59,11 @@ export interface BillingPlanDeclaration {
 export interface BillingCatalogDeclaration {
   readonly catalog: BillingCatalog;
   readonly features: {
-    readonly executions: BillingFeatureDeclaration;
     readonly members: BillingFeatureDeclaration;
     readonly domainVerification: BillingFeatureDeclaration;
   };
   readonly plans: {
     readonly free: BillingPlanDeclaration;
-    readonly payAsYouGo: BillingPlanDeclaration;
     readonly team: BillingPlanDeclaration;
     readonly enterprise: BillingPlanDeclaration;
   };
@@ -88,31 +76,21 @@ export interface BillingCatalogDeclaration {
 export const billingCatalogDeclaration = (
   stage: string,
   environment: BillingEnvironment,
-  options: { readonly freeExecutions?: number } = {},
 ): BillingCatalogDeclaration => {
   const namespace = `executor-next-${stage}`;
-  const executions = `${namespace}-executions`;
   const members = `${namespace}-members`;
   const domainVerification = `${namespace}-domain-verification`;
   return {
     catalog: {
       environment,
       namespace,
-      executions,
       members,
       domainVerification,
       free: `${namespace}-free`,
-      payAsYouGo: `${namespace}-free-pay-as-you-go`,
       team: `${namespace}-team`,
       enterprise: `${namespace}-enterprise`,
     },
     features: {
-      executions: {
-        featureId: executions,
-        name: `Executions (${stage})`,
-        type: "metered",
-        consumable: true,
-      },
       members: {
         featureId: members,
         name: `Members (${stage})`,
@@ -132,35 +110,7 @@ export const billingCatalogDeclaration = (
         group: namespace,
         name: `Free (${stage})`,
         freeTrial: null,
-        items: [
-          { featureId: members, included: freeMembers, unlimited: false },
-          {
-            featureId: executions,
-            included: options.freeExecutions ?? freeMonthlyExecutions,
-            unlimited: false,
-            reset: { interval: "month" },
-          },
-        ],
-      },
-      payAsYouGo: {
-        planId: `${namespace}-free-pay-as-you-go`,
-        group: namespace,
-        name: `Free Pay As You Go (${stage})`,
-        freeTrial: null,
-        items: [
-          {
-            featureId: executions,
-            included: freeMonthlyExecutions,
-            unlimited: false,
-            reset: { interval: "month" },
-            price: {
-              amount: 0.2,
-              billingUnits: 1000,
-              billingMethod: "usage_based",
-              interval: "month",
-            },
-          },
-        ],
+        items: [{ featureId: members, included: freeMembers, unlimited: false }],
       },
       team: {
         planId: `${namespace}-team`,
@@ -179,7 +129,6 @@ export const billingCatalogDeclaration = (
               interval: "month",
             },
           },
-          { featureId: executions, included: 0, unlimited: true, reset: { interval: "month" } },
           { featureId: domainVerification, included: 0, unlimited: false },
         ],
       },
@@ -191,7 +140,6 @@ export const billingCatalogDeclaration = (
         // V1's Enterprise plan is assigned manually; each contract sets its own price.
         items: [
           { featureId: members, included: 0, unlimited: true },
-          { featureId: executions, included: 0, unlimited: true, reset: { interval: "month" } },
           { featureId: domainVerification, included: 0, unlimited: false },
         ],
       },

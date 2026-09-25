@@ -43,7 +43,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud impersonation", (it) => 
           page.goto(`/org/${actors.organization.slug}/apps`),
         );
         yield* browser.use("Wait for the organization admin dashboard", (page) =>
-          page.getByRole("heading", { name: "Apps", exact: true }).waitFor(),
+          page.getByRole("heading", { name: /^Apps\s*\d+$/ }).waitFor(),
         );
         expect(
           yield* browser.use("Organization admins have no authenticated user picker", (page) =>

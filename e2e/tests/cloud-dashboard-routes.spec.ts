@@ -16,6 +16,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
         expect(shell.status()).toBe(200);
         const html = yield* browser.use("Read the dashboard document", () => shell.text());
         expect(html).toContain('id="root"');
+        expect(html).not.toContain("/@vite/client");
+        expect(html).not.toContain('src="/src/');
         for (const path of [
           "/org/routing-fixture",
           "/org/routing-fixture/apps",
