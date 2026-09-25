@@ -640,6 +640,16 @@ export const scenarios = {
       local: na("Local has no organizations or groups."),
     },
   },
+  openapiPaths: {
+    fixtures: "actors",
+    file: "openapi-paths.spec.ts",
+    title: "OpenAPI path parameters cannot escape a narrowed MCP tool grant",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a controlled loopback HTTP API through the shared Worker runtime."),
+      local: na("Hosted MCP grant narrowing is verified on self-host."),
+    },
+  },
   openapiErrors: {
     fixtures: "actors",
     file: "openapi-errors.spec.ts",

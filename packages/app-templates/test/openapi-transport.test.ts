@@ -600,3 +600,51 @@ test("a path value without allowReserved is escaped and cannot add dot segments"
   }
   assert.equal(f.received.length, 1);
 });
+
+test("serialized empty path segments cannot turn an item tool into its collection endpoint", async () => {
+  for (const [schema, input] of [
+    [{ type: "string" }, ""],
+    [{ type: "array", items: { type: "string" } }, []],
+    [{ type: "array", items: { type: "string" } }, [""]],
+    [{ type: "object", additionalProperties: { type: "string" } }, {}],
+  ]) {
+    const f = await fixture(
+      document({
+        "/projects/p/keys/{id}": {
+          delete: {
+            operationId: "removeKey",
+            responses: response,
+            parameters: [{ name: "id", in: "path", required: true, schema }],
+          },
+        },
+      }),
+    );
+    const result = await f.call("mutations.removeKey", { path: { id: input } });
+    assert.deepEqual(
+      result,
+      { ok: false, error: { _tag: "HostOperationFailed" } },
+      JSON.stringify(input),
+    );
+    assert.equal(f.received.length, 0);
+  }
+});
+
+test("path matching retains literal encoded braces, reserved names and static punctuation", async () => {
+  const f = await fixture(
+    document({
+      "/%7Bid%7D/executorPathParameter/records.v1/{id}": {
+        get: {
+          operationId: "literal",
+          responses: response,
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        },
+      },
+    }),
+  );
+  const result = await f.call("queries.literal", { path: { id: "a/b" } });
+  assert.deepEqual(result, { ok: true, value: { received: true } });
+  assert.equal(
+    f.received[0]?.url,
+    "https://eu.example.test/v2/%7Bid%7D/executorPathParameter/records.v1/a%2Fb",
+  );
+});
