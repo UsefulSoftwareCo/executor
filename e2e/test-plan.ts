@@ -33,6 +33,16 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  workflowReplayAccess: {
+    fixtures: "actors",
+    file: "workflow-replay-access.spec.ts",
+    title: "workflow replay checks retained account access after profile rebinding",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario exercises hosted account sharing and profile authorization."),
+    },
+  },
   graphqlPublicCache: {
     fixtures: "actors",
     file: "graphql-cache.spec.ts",
