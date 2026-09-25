@@ -360,6 +360,11 @@ async function setup(
         seen.push(Redacted.value(accounts));
         return [];
       }),
+    index: ({ accounts }) =>
+      Effect.sync(() => {
+        seen.push(Redacted.value(accounts));
+        return [];
+      }),
     call: ({ accounts }) =>
       Effect.sync(() => {
         seen.push(Redacted.value(accounts));

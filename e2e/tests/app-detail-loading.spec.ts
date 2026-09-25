@@ -55,7 +55,7 @@ export default defineApp({ accounts: {} }, async () => ({
             overviewInventory: [actors.organization.slug, actors.organization.id].map(
               (reference) => `/api/organizations/${reference}/inventory`,
             ),
-            tools: paths.map((path) => `${path}/tools`),
+            tools: paths.map((path) => `${path}/tools/index`),
             workspace: paths.map((path) => `${path}/workspace/display`),
             history: paths.map((path) => `${path}/history`),
             deployments: paths.map((path) => `${path}/deployments`),

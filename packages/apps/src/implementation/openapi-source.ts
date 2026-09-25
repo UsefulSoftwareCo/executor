@@ -5,7 +5,7 @@ import type { AppCache, CacheLoadContext } from "../contracts/cache.ts";
 import { OpenapiOperation, OpenapiError, type OpenapiToolsOptions } from "../contracts/openapi.ts";
 import { JsonObject, type JsonValue } from "../contracts/schema.ts";
 import type { DynamicTools } from "../contracts/dynamic-tools.ts";
-import type { HostedTool } from "../contracts/host.ts";
+import type { HostedTool, HostedToolSummary } from "../contracts/host.ts";
 import { compileOpenApiDocument } from "./openapi-compile.ts";
 import {
   openapiToolsEffect,
@@ -336,6 +336,40 @@ export const liveOpenapiOperations = (
     });
   const qualified = (op: OpenapiOperation) =>
     `${(options.kinds?.[op.name] ?? (["GET", "HEAD", "OPTIONS"].includes(op.method) ? "query" : "mutation")) === "query" ? "queries" : "mutations"}.${op.name}`;
+  const operationsFor = (manifest: typeof Manifest.Type) =>
+    Effect.gen(function* () {
+      const names = yield* namesFor(manifest);
+      if (names === undefined) return undefined;
+      const pages = yield* Effect.forEach(
+        Array.from({ length: Math.ceil(names.length / pageSize) }, (_, page) =>
+          names.slice(page * pageSize, (page + 1) * pageSize),
+        ),
+        (batch) => read(manifest.revision, "operation", batch, OpenapiOperation),
+        { concurrency: partConcurrency },
+      );
+      const all: OpenapiOperation[] = [];
+      for (const operations of pages) {
+        for (const operation of operations) {
+          if (operation === undefined) return undefined;
+          all.push(operation);
+        }
+      }
+      return all;
+    });
+  const summarize = (operation: OpenapiOperation): HostedToolSummary => {
+    const name = qualified(operation);
+    return { name, description: operation.description, readOnly: name.startsWith("queries.") };
+  };
+  const describe = (
+    operation: OpenapiOperation,
+    bundle: ReturnType<typeof bundler>,
+  ): HostedTool => ({
+    ...summarize(operation),
+    inputSchema: bundle(operation.input),
+    ...(operation.outputSchema === undefined
+      ? {}
+      : { outputSchema: bundle(operation.outputSchema) }),
+  });
   // Repair missing parts once. A missing operation is checked against the revision's name index.
   const withRevision = <A>(
     work: (manifest: typeof Manifest.Type) => Effect.Effect<{ value: A } | undefined, unknown>,
@@ -384,41 +418,54 @@ export const liveOpenapiOperations = (
       list: () =>
         withRevision((manifest) =>
           Effect.gen(function* () {
-            const names = yield* namesFor(manifest);
-            if (names === undefined) return undefined;
-            const all: OpenapiOperation[] = [];
-            const pages = yield* Effect.forEach(
-              Array.from({ length: Math.ceil(names.length / pageSize) }, (_, page) =>
-                names.slice(page * pageSize, (page + 1) * pageSize),
-              ),
-              (batch) => read(manifest.revision, "operation", batch, OpenapiOperation),
-              { concurrency: partConcurrency },
-            );
-            for (const operations of pages) {
-              for (const operation of operations) {
-                if (operation === undefined) return undefined;
-                all.push(operation);
-              }
-            }
+            const all = yield* operationsFor(manifest);
+            if (all === undefined) return undefined;
             const definitions = yield* definitionsFor(manifest.revision, all);
             if (definitions === undefined) return undefined;
             const bundle = bundler(definitions);
             const request = createRequest(options);
-            const result: HostedTool[] = all
-              .filter((op) => request.available(op, options.account))
-              .map((operation) => {
-                const name = qualified(operation);
-                return {
-                  name,
-                  description: operation.description,
-                  inputSchema: bundle(operation.input),
-                  readOnly: name.startsWith("queries."),
-                  ...(operation.outputSchema === undefined
-                    ? {}
-                    : { outputSchema: bundle(operation.outputSchema) }),
-                };
-              });
-            return { value: result };
+            return {
+              value: all
+                .filter((op) => request.available(op, options.account))
+                .map((operation) => describe(operation, bundle)),
+            };
+          }),
+        ),
+      summaries: () =>
+        withRevision((manifest) =>
+          Effect.gen(function* () {
+            const all = yield* operationsFor(manifest);
+            if (all === undefined) return undefined;
+            const request = createRequest(options);
+            return {
+              value: all
+                .filter((op) => request.available(op, options.account))
+                .map((operation) => summarize(operation)),
+            };
+          }),
+        ),
+      describe: (name) =>
+        withRevision((manifest) =>
+          Effect.gen(function* () {
+            const raw = name.replace(/^(queries|mutations)\./, "");
+            const operation = (yield* read(
+              manifest.revision,
+              "operation",
+              [raw],
+              OpenapiOperation,
+            ))[0];
+            if (operation === undefined) {
+              const names = yield* namesFor(manifest);
+              return names === undefined || names.includes(raw) ? undefined : { value: undefined };
+            }
+            if (
+              qualified(operation) !== name ||
+              !createRequest(options).available(operation, options.account)
+            )
+              return { value: undefined };
+            const definitions = yield* definitionsFor(manifest.revision, operation);
+            if (definitions === undefined) return undefined;
+            return { value: describe(operation, bundler(definitions)) };
           }),
         ),
     },

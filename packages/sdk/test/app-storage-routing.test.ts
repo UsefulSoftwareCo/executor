@@ -39,6 +39,7 @@ for (const database of [undefined, {}]) {
               webhook: () => Effect.die("Unexpected webhook invocation"),
               skills: () => Effect.die("This fixture does not load skills"),
               inspect: () => Effect.succeed([]),
+              index: () => Effect.succeed([]),
               call: () => Effect.succeed(null),
               mutate: () => Effect.succeed(null),
               query: () => Effect.succeed("fresh"),
@@ -92,6 +93,7 @@ for (const versioned of [false, true])
               webhook: () => Effect.die("Unexpected webhook invocation"),
               skills: () => Effect.die("This fixture does not load skills"),
               inspect: () => Effect.succeed([]),
+              index: () => Effect.succeed([]),
               call: () => Effect.succeed(null),
               query: ({ observeRevision }) =>
                 Effect.sync(() => {

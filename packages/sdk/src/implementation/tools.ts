@@ -283,47 +283,61 @@ export const makeTools = (
 ) => {
   const db = database(storage);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
+  /** Evaluate the selected profile's live catalog. Earlier builds may describe more than asked. */
+  const evaluate = <A, R>(
+    input: Parameters<Executor["tools"]["index"]>[0],
+    read: (
+      options: Parameters<typeof runtime.index>[0],
+    ) => Effect.Effect<A, Effect.Error<ReturnType<typeof runtime.index>>, R>,
+  ) =>
+    Effect.gen(function* () {
+      const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
+      const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
+        Effect.withSpan("sdk.accounts.resolve"),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "executor.app.id": state.app.id,
+        "executor.deployment.id": state.deployment.id,
+        "executor.build.id": state.deployment.build,
+      });
+      const value = yield* read({
+        app: state.app.id,
+        build: state.deployment.build,
+        ...context,
+        ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id, state) }),
+      }).pipe(
+        Effect.mapError((error) =>
+          Schema.is(ProviderError)(error)
+            ? appProviderFailure(state, error)
+            : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, error),
+        ),
+      );
+      const catalog = {
+        deployment: state.deployment.id,
+        ...(state.profile === undefined
+          ? {}
+          : {
+              profile: state.profile.id,
+              profileRevision: state.profile.revision,
+            }),
+      };
+      return { state, catalog, value };
+    });
   return {
     list: (input: Parameters<Executor["tools"]["list"]>[0]) =>
       Effect.gen(function* () {
-        const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
-        const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
-          Effect.withSpan("sdk.accounts.resolve"),
-        );
-        yield* Effect.annotateCurrentSpan({
-          "executor.app.id": state.app.id,
-          "executor.deployment.id": state.deployment.id,
-          "executor.build.id": state.deployment.build,
-        });
-        const tools = yield* runtime
-          .inspect({
-            app: state.app.id,
-            build: state.deployment.build,
-            ...context,
-            ...(workflows === undefined
-              ? {}
-              : { workflowControls: workflows(state.app.id, state) }),
-          })
-          .pipe(
-            Effect.mapError((error) =>
-              Schema.is(ProviderError)(error)
-                ? appProviderFailure(state, error)
-                : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, error),
-            ),
-          );
+        const {
+          state,
+          catalog,
+          value: tools,
+        } = yield* evaluate(input, (options) => runtime.inspect(options));
         const sorted = [...tools]
           .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
           .filter((tool) => input.cursor === undefined || tool.name > input.cursor);
         const selected = sorted.slice(0, input.limit ?? 2_000);
         const last = selected.at(-1);
         return {
-          deployment: state.deployment.id,
-          ...(state.profile === undefined
-            ? {}
-            : {
-                profile: state.profile.id,
-                profileRevision: state.profile.revision,
-              }),
+          ...catalog,
           items: selected.map((tool) => ({
             ...tool,
             app: state.app.id,
@@ -335,6 +349,44 @@ export const makeTools = (
             : {}),
         };
       }).pipe(Effect.withSpan("sdk.tools.list")),
+    index: (input: Parameters<Executor["tools"]["index"]>[0]) =>
+      Effect.gen(function* () {
+        const {
+          state,
+          catalog,
+          value: tools,
+        } = yield* evaluate(input, (options) => runtime.index(options));
+        return {
+          ...catalog,
+          items: [...tools]
+            .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+            .map((tool) => ({
+              ...tool,
+              app: state.app.id,
+              deployment: state.deployment.id,
+              name: ToolName.make(tool.name),
+            })),
+        };
+      }).pipe(Effect.withSpan("sdk.tools.index")),
+    get: (input: Parameters<Executor["tools"]["get"]>[0]) =>
+      Effect.gen(function* () {
+        const { state, value: tools } = yield* evaluate(input, (options) =>
+          runtime.inspect({ ...options, tools: [input.tool] }),
+        );
+        const tool = tools.find((tool) => tool.name === input.tool);
+        if (tool === undefined)
+          return yield* new ToolNotFound({
+            app: state.app.id,
+            deployment: state.deployment.id,
+            tool: input.tool,
+          });
+        return {
+          ...tool,
+          app: state.app.id,
+          deployment: state.deployment.id,
+          name: ToolName.make(tool.name),
+        };
+      }).pipe(Effect.withSpan("sdk.tools.get")),
     call: (input: Parameters<Executor["tools"]["call"]>[0], options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         if (yield* storage.reactivity.inTransaction) return yield* new RequestInvalid();

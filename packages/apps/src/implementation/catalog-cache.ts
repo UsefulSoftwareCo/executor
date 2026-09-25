@@ -16,14 +16,20 @@ export interface CatalogCacheOptions {
   readonly revalidate?: boolean;
 }
 const schema = <A>(decoder: Schema.Decoder<A>) => wrap(decoder, false);
-const Manifest = Schema.Struct({ revision: Schema.String, pages: Schema.Int });
+const Manifest = Schema.Struct({
+  revision: Schema.String,
+  pages: Schema.Int,
+  summaries: Schema.Int,
+});
 const invoke = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
 
-export const catalogCache = <A extends { readonly name: string }>(
+export const catalogCache = <A extends { readonly name: string }, S>(
   options: CatalogCacheOptions & {
     readonly prefix: readonly JsonValue[];
     readonly schema: Schema.Decoder<A>;
+    /** Schema-free projection stored beside the full pages, so browsing never reads schemas. */
+    readonly summary: { readonly schema: Schema.Decoder<S>; readonly of: (tool: A) => S };
     readonly load: (context?: CacheLoadContext) => Effect.Effect<readonly A[], unknown>;
   },
 ) =>
@@ -50,6 +56,9 @@ export const catalogCache = <A extends { readonly name: string }>(
         let pages = 0;
         let page: JsonObject[] = [];
         let pageBytes = 0;
+        let summaries = 0;
+        let summary: JsonObject[] = [];
+        let summaryBytes = 0;
         let batch: { key: JsonValue; value: JsonValue }[] = [];
         let batchBytes = 0;
         const flush = () =>
@@ -73,21 +82,34 @@ export const catalogCache = <A extends { readonly name: string }>(
             page = [];
             pageBytes = 0;
           });
+        const summaryOut = () =>
+          Effect.gen(function* () {
+            if (!summary.length) return;
+            yield* append({ key: part(revision, "summary", summaries++), value: summary });
+            summary = [];
+            summaryBytes = 0;
+          });
+        // Optional wire fields can decode to undefined; persisted values are strictly JSON.
+        const json = (value: unknown) =>
+          Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(JSON.stringify(value));
         for (const tool of tools) {
-          // Optional wire fields can decode to undefined; persisted values are strictly JSON.
-          const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
-            JSON.stringify(tool),
-          );
+          const value = yield* json(tool);
           const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
           if (page.length && (page.length >= 64 || pageBytes + bytes > 500_000)) yield* pageOut();
           yield* append({ key: part(revision, "tool", tool.name), value });
           page.push(value);
           pageBytes += bytes;
+          const brief = yield* json(options.summary.of(tool));
+          const briefBytes = new TextEncoder().encode(JSON.stringify(brief)).byteLength;
+          if (summary.length && summaryBytes + briefBytes > 500_000) yield* summaryOut();
+          summary.push(brief);
+          summaryBytes += briefBytes;
         }
         yield* pageOut();
+        yield* summaryOut();
         yield* flush();
         // The cache publishes this manifest only after all parts, under its fenced loader lease.
-        return { revision, pages };
+        return { revision, pages, summaries };
       });
     const getOptions = {
       key,
@@ -105,31 +127,56 @@ export const catalogCache = <A extends { readonly name: string }>(
       if (cache === undefined) yield* local;
       else yield* invoke(() => cache.revalidate(getOptions));
     }
+    const pages = <B>(
+      cache: NonNullable<CatalogCacheOptions["cache"]>,
+      revision: string,
+      kind: "page" | "summary",
+      count: number,
+      decoder: Schema.Decoder<B>,
+    ) =>
+      Effect.gen(function* () {
+        // Four pages fit the RPC byte budget even when a single tool is near the entry limit.
+        const batches = yield* Effect.forEach(
+          Array.from({ length: Math.ceil(count / 4) }, (_, batch) => batch * 4),
+          (offset) =>
+            invoke(() =>
+              cache.readMany(
+                Array.from({ length: Math.min(4, count - offset) }, (_, index) =>
+                  part(revision, kind, offset + index),
+                ),
+                schema(Schema.Array(decoder)),
+              ),
+            ),
+          { concurrency: "unbounded" },
+        );
+        const values: B[] = [];
+        for (const page of batches.flat()) {
+          if (page === undefined) return yield* new CacheError({ reason: "unavailable" });
+          values.push(...page);
+        }
+        return values;
+      });
     const metadata = () =>
       Effect.gen(function* () {
         if (cache === undefined) return yield* local;
         const manifest = yield* current();
-        const tools: A[] = [];
-        // Four pages fit the RPC byte budget even when a single tool is near the entry limit.
-        for (let offset = 0; offset < manifest.pages; offset += 4) {
-          const pages = yield* invoke(() =>
-            cache.readMany(
-              Array.from({ length: Math.min(4, manifest.pages - offset) }, (_, index) =>
-                part(manifest.revision, "page", offset + index),
-              ),
-              schema(Schema.Array(options.schema)),
-            ),
-          );
-          for (const page of pages) {
-            if (page === undefined) return yield* new CacheError({ reason: "unavailable" });
-            tools.push(...page);
-          }
-        }
-        return tools;
+        return yield* pages(cache, manifest.revision, "page", manifest.pages, options.schema);
       });
 
     return {
       list: metadata,
+      summaries: () =>
+        Effect.gen(function* () {
+          if (cache === undefined) return (yield* local).map((tool) => options.summary.of(tool));
+          const manifest = yield* current();
+          return yield* pages(
+            cache,
+            manifest.revision,
+            "summary",
+            manifest.summaries,
+            options.summary.schema,
+          );
+        }),
       resolve: (name: string) =>
         cache === undefined
           ? local.pipe(Effect.map((tools) => tools.find((tool) => tool.name === name)))

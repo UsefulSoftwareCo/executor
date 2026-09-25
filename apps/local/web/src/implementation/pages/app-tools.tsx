@@ -16,7 +16,7 @@ import { Cause, Option, Schema } from "effect";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Key01Icon } from "@hugeicons/core-free-icons";
-import { toolsAtom, toolListAtom } from "../../contracts/api.ts";
+import { toolDetailAtom, toolsAtom, toolListAtom } from "../../contracts/api.ts";
 import { appToolReadiness, accountSetupFailure } from "../../contracts/dashboard.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -118,13 +118,14 @@ function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<Dashb
 /** Browse the complete live tool catalog with a stable, separate schema inspector. */
 function LiveAppTools({ app, accounts, selected, profile, revision, selection }: AppToolsProps) {
   const navigate = useNavigate();
-  const atom = toolsAtom({
+  const catalog = {
     app: app.id,
     profile,
     revision,
     deployment: app.activeDeployment,
     accounts: JSON.stringify(selection),
-  });
+  };
+  const atom = toolsAtom(catalog);
   const result = useAtomValue(atom);
   const setup = AsyncResult.isFailure(result) ? accountSetupFailure(result.cause) : Option.none();
   if (Option.isSome(setup))
@@ -150,13 +151,8 @@ function LiveAppTools({ app, accounts, selected, profile, revision, selection }:
     <ToolBrowser
       Failure={Failure}
       key={`${app.id}:${app.activeDeployment}:${profile}:${revision}:${JSON.stringify(selection)}`}
-      query={toolListAtom({
-        app: app.id,
-        profile,
-        revision,
-        deployment: app.activeDeployment,
-        accounts: JSON.stringify(selection),
-      })}
+      query={toolListAtom(catalog)}
+      detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
       selected={selected}
       onSelect={(tool) => {
         void navigate({

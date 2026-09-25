@@ -9,6 +9,7 @@ import {
   ApprovalResponse,
   ElicitationFailed,
   HostedTool,
+  HostedToolSummary,
   type ElicitationHandler,
 } from "apps/contracts";
 import { StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
@@ -81,6 +82,26 @@ export const ToolPage = Schema.Struct({
 });
 
 export type ToolPage = typeof ToolPage.Type;
+
+/** One callable's name and description. Its schemas are read with tools.get. */
+export const ToolSummary = Schema.Struct({
+  ...HostedToolSummary.fields,
+  app: AppId,
+  deployment: DeploymentId,
+  name: ToolName,
+});
+
+export type ToolSummary = typeof ToolSummary.Type;
+
+/** The whole live catalog without schemas, evaluated using the named profile's saved selections. */
+export const ToolIndex = Schema.Struct({
+  profile: Schema.optional(ProfileId),
+  profileRevision: Schema.optional(ProfileRevision),
+  deployment: DeploymentId,
+  items: Schema.Array(ToolSummary),
+});
+
+export type ToolIndex = typeof ToolIndex.Type;
 
 const evaluationInstructions =
   "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
@@ -362,6 +383,19 @@ export const ToolInputs = {
     cursor: Schema.optional(Cursor),
     limit: Schema.optional(PageLimit),
   }),
+  index: Schema.Struct({
+    app: AppId,
+    profile: Schema.optional(ProfileId),
+    expectedProfileRevision: Schema.optional(ProfileRevision),
+    deployment: Schema.optional(DeploymentId),
+  }),
+  get: Schema.Struct({
+    app: AppId,
+    profile: Schema.optional(ProfileId),
+    expectedProfileRevision: Schema.optional(ProfileRevision),
+    deployment: Schema.optional(DeploymentId),
+    tool: ToolName,
+  }),
   call: Schema.Struct({
     app: AppId,
     profile: Schema.optional(ProfileId),
@@ -405,6 +439,53 @@ export const ToolsGroup = HttpApiGroup.make("tools")
     }).annotate(
       OpenApi.Description,
       "Inspect an app current tools. Returns the active deployment and a cursor for the next page.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("index", "/v1/tools/index", {
+      query: ToolInputs.index.fields,
+      success: ToolIndex,
+      error: [
+        ...ProfileErrors,
+        StorageError,
+        CredentialsError,
+        AppNotFound,
+        AppNotDeployed,
+        DeploymentNotFound,
+        AppEvaluationFailed,
+        AppProviderFailed,
+        AccountNotFound,
+        AccountRequired,
+        AccountSelectionInvalid,
+        OAuthReconnectRequired,
+      ],
+    }).annotate(
+      OpenApi.Description,
+      "List an app's current tools without their schemas. Read one tool's schemas with get.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("get", "/v1/tools/get", {
+      query: ToolInputs.get.fields,
+      success: Tool,
+      error: [
+        ...ProfileErrors,
+        StorageError,
+        CredentialsError,
+        AppNotFound,
+        AppNotDeployed,
+        DeploymentNotFound,
+        AppEvaluationFailed,
+        AppProviderFailed,
+        AccountNotFound,
+        AccountRequired,
+        AccountSelectionInvalid,
+        OAuthReconnectRequired,
+        ToolNotFound,
+      ],
+    }).annotate(
+      OpenApi.Description,
+      "Describe one of an app's current tools, including its schemas.",
     ),
   )
   .add(

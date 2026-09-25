@@ -91,6 +91,7 @@ const fixture = (count: number) =>
         build: () => Effect.die("List must not build code"),
         skills: () => Effect.die("This fixture does not load skills"),
         inspect: () => Effect.die("List must not evaluate code"),
+        index: () => Effect.die("List must not evaluate code"),
         call: () => Effect.die("List must not run tools"),
         query: () => Effect.die("List must not run queries"),
         mutate: () => Effect.die("List must not run mutations"),

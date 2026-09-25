@@ -155,6 +155,8 @@ export const executorHandlers = (executor: Executor) =>
     HttpApiBuilder.group(ExecutorApi, "tools", (handlers) =>
       handlers
         .handle("list", ({ query }) => executor.tools.list(query))
+        .handle("index", ({ query }) => executor.tools.index(query))
+        .handle("get", ({ query }) => executor.tools.get(query))
         .handle("call", ({ payload }) => executor.tools.call(payload))
         .handle("resume", ({ payload }) => executor.tools.resume(payload))
         .handle("pruneApprovals", ({ payload }) => executor.tools.pruneApprovals(payload)),

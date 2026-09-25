@@ -25,6 +25,10 @@ import {
   HostCallError,
   DeclaredRequirements,
   HostedTool,
+  HostedToolSummary,
+  indexCommand,
+  inspectCommand,
+  selectTools,
   HostResponse,
   ToolResultObservation,
   type HostContext,
@@ -450,7 +454,27 @@ export const cloudRuntime = Effect.fn(function* (
             app,
           );
         }).pipe(Effect.withSpan("runtime.cloud.skills")),
-      inspect: ({ app, build, ...context }) =>
+      inspect: ({ app, build, tools, ...context }) =>
+        Effect.gen(function* () {
+          const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
+          yield* Effect.annotateCurrentSpan({
+            "executor.runtime.mode": "worker",
+            "executor.worker.identity": identity,
+          });
+          return selectTools(tools)(
+            yield* dispatch(
+              load(build),
+              inspectCommand(tools),
+              context,
+              Schema.Array(HostedTool),
+              HostInspectError,
+              build,
+              identity,
+              app,
+            ),
+          );
+        }).pipe(Effect.withSpan("runtime.cloud.inspect")),
+      index: ({ app, build, ...context }) =>
         Effect.gen(function* () {
           const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
           yield* Effect.annotateCurrentSpan({
@@ -459,15 +483,15 @@ export const cloudRuntime = Effect.fn(function* (
           });
           return yield* dispatch(
             load(build),
-            { operation: "inspect" },
+            indexCommand,
             context,
-            Schema.Array(HostedTool),
+            Schema.Array(HostedToolSummary),
             HostInspectError,
             build,
             identity,
             app,
           );
-        }).pipe(Effect.withSpan("runtime.cloud.inspect")),
+        }).pipe(Effect.withSpan("runtime.cloud.index")),
       workflow: ({ app, build, command, ...context }) =>
         Effect.gen(function* () {
           const identity = `${app}:workflow:${context.workflow?.runId ?? "inspect"}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;

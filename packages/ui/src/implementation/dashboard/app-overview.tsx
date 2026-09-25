@@ -1,6 +1,6 @@
 import { OverviewCatalog } from "./overview-catalog.tsx";
 import type { AccountContext } from "./account-group.tsx";
-import type { App, ToolPage } from "@executor-js/sdk";
+import type { App, ToolSummary } from "@executor-js/sdk";
 import type { AppAuthoringMetadata } from "@executor-js/app-management/contracts";
 import type { ComponentType, ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -140,7 +140,7 @@ export function AppOverviewTools<E>({
   readonly app: App;
   readonly sources: readonly {
     readonly key: string;
-    readonly query: Query<Pick<ToolPage, "items" | "next">, E>;
+    readonly query: Query<{ readonly items: readonly ToolSummary[] }, E>;
   }[];
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly empty: ReactNode;

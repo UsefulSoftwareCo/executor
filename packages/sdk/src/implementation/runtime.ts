@@ -6,6 +6,7 @@ import {
   type HostContext,
   type AppStorage,
   type HostedTool,
+  type HostedToolSummary,
   type AppSkillSource,
   type ResolvedAccountsInput,
 } from "apps/contracts";
@@ -37,7 +38,13 @@ export interface ResolvedAppRuntime {
     readonly app: string;
     readonly build: BuildId;
     readonly accounts: ResolvedAccountsInput;
+    readonly tools?: readonly string[];
   }) => Promise<readonly HostedTool[]>;
+  readonly index: (input: {
+    readonly app: string;
+    readonly build: BuildId;
+    readonly accounts: ResolvedAccountsInput;
+  }) => Promise<readonly HostedToolSummary[]>;
   readonly query: (input: {
     readonly app: string;
     readonly build: BuildId;
@@ -110,6 +117,12 @@ export const createAppRuntime = (options: {
           Effect.flatMap((context) => runtime.inspect({ ...input, ...context })),
         ),
       ),
+    index: ({ accounts, ...input }) =>
+      Effect.runPromise(
+        context(accounts).pipe(
+          Effect.flatMap((context) => runtime.index({ ...input, ...context })),
+        ),
+      ),
     query: ({ accounts, ...input }) =>
       Effect.runPromise(
         context(accounts).pipe(
@@ -166,6 +179,7 @@ export const toEffectRuntime = (definition: AppRuntime, blobs: BlobStorage): Run
       : { asset: (input: Parameters<typeof asset>[0]) => asset(input).pipe(provide) }),
     skills: (input) => runtime.skills(input).pipe(provide),
     inspect: (input) => runtime.inspect(input).pipe(provide),
+    index: (input) => runtime.index(input).pipe(provide),
     query: (input) => runtime.query(input).pipe(provide),
     mutate: (input) => runtime.mutate(input).pipe(provide),
     workflow: (input) => runtime.workflow(input).pipe(provide),

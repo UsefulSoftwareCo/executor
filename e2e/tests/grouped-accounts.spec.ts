@@ -164,7 +164,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
         });
         const held = yield* holdQuery(
           [actors.organization.id, actors.organization.slug].map(
-            (id) => `/api/organizations/${id}/apps/${app.id}/tools`,
+            (id) => `/api/organizations/${id}/apps/${app.id}/tools/index`,
           ),
           "fail",
           { query: { profile: work.profile } },

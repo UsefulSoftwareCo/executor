@@ -1,11 +1,11 @@
 import { EmptyState } from "./empty-state.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import { useState, type ReactNode } from "react";
-import type { Tool } from "@executor-js/sdk";
+import type { Tool, ToolSummary } from "@executor-js/sdk";
 import { Option } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SidebarLeft01Icon, SourceCodeIcon } from "@hugeicons/core-free-icons";
-import type { QueryProps } from "../../contracts/dashboard.ts";
+import type { Query, QueryProps } from "../../contracts/dashboard.ts";
 import { QueryResult, useQuery } from "./context.tsx";
 import { Code, CopyButton } from "./code.tsx";
 import { ToolMarkdown } from "./markdown.tsx";
@@ -16,18 +16,22 @@ import { cn } from "../lib/utils.ts";
 
 /**
  * Stable list/inspector layout. Hosts choose navigation and any tool execution controls.
+ * The list carries no schemas; the selected tool's schemas are read through detail.
  * On phones the inspector fills the section and the list opens as a panel over it.
  */
 export function ToolBrowser<E>({
   query,
+  detail,
   Failure,
   selected,
   onSelect,
   renderAction,
-}: QueryProps<readonly Tool[], E> & {
+}: QueryProps<readonly ToolSummary[], E> & {
+  /** Undefined when the tool left the catalog after the list was read. */
+  readonly detail: (tool: ToolSummary) => Query<Tool | undefined, E>;
   readonly selected: string | undefined;
   readonly onSelect: (tool: string) => void;
-  readonly renderAction?: (tool: Tool) => ReactNode;
+  readonly renderAction?: (tool: ToolSummary) => ReactNode;
 }) {
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
@@ -155,28 +159,13 @@ export function ToolBrowser<E>({
                       </h2>
                       <CopyButton code={current.name} label="Copy tool name" inline />
                     </AppSectionHeader>
-                    <div className="min-h-0 flex-1 overflow-auto px-6 pb-6 max-[740px]:px-4">
-                      <ToolDescription key={current.name} description={current.description} />
-                      <div className="mb-2.5 mt-6 text-xs font-medium text-muted-foreground">
-                        Input schema
-                      </div>
-                      <Code
-                        code={JSON.stringify(current.inputSchema, null, 2)}
-                        copyable
-                        copyLabel="Copy input schema"
-                      />
-                      {current.outputSchema !== undefined && (
-                        <>
-                          <div className="mb-2.5 mt-6 text-xs font-medium text-muted-foreground">
-                            Output schema
-                          </div>
-                          <Code
-                            code={JSON.stringify(current.outputSchema, null, 2)}
-                            copyable
-                            copyLabel="Copy output schema"
-                          />
-                        </>
-                      )}
+                    {/* One key per tool: every part of the inspector remounts together. */}
+                    <div
+                      key={current.name}
+                      className="min-h-0 flex-1 overflow-auto px-6 pb-6 max-[740px]:px-4"
+                    >
+                      <ToolDescription description={current.description} />
+                      <ToolSchemas query={detail(current)} Failure={Failure} />
                       {renderAction?.(current)}
                     </div>
                   </>
@@ -190,6 +179,65 @@ export function ToolBrowser<E>({
           )
         }
       </QueryResult>
+    </div>
+  );
+}
+
+/** The selected tool's schemas, read on selection rather than with the list. */
+function ToolSchemas<E>({ query, Failure }: QueryProps<Tool | undefined, E>) {
+  const { result, refresh } = useQuery(query);
+  return (
+    <QueryResult
+      result={result}
+      Failure={Failure}
+      retry={refresh}
+      pending={
+        <div role="status" aria-label="Loading schema">
+          <div className="mb-2.5 mt-6 text-xs font-medium text-muted-foreground">Input schema</div>
+          <SchemaSkeleton />
+        </div>
+      }
+    >
+      {(tool) =>
+        tool === undefined ? (
+          <p className="mt-6 text-sm text-muted-foreground">
+            This tool is no longer in the app's catalog.
+          </p>
+        ) : (
+          <>
+            <div className="mb-2.5 mt-6 text-xs font-medium text-muted-foreground">
+              Input schema
+            </div>
+            <Code
+              code={JSON.stringify(tool.inputSchema, null, 2)}
+              copyable
+              copyLabel="Copy input schema"
+            />
+            {tool.outputSchema !== undefined && (
+              <>
+                <div className="mb-2.5 mt-6 text-xs font-medium text-muted-foreground">
+                  Output schema
+                </div>
+                <Code
+                  code={JSON.stringify(tool.outputSchema, null, 2)}
+                  copyable
+                  copyLabel="Copy output schema"
+                />
+              </>
+            )}
+          </>
+        )
+      }
+    </QueryResult>
+  );
+}
+
+function SchemaSkeleton() {
+  return (
+    <div aria-hidden className="space-y-3 rounded-lg bg-muted p-4">
+      <Skeleton className="h-3 w-2/3" />
+      <Skeleton className="h-3 w-1/2" />
+      <Skeleton className="h-3 w-3/5" />
     </div>
   );
 }
@@ -240,11 +288,7 @@ export function ToolBrowserLoading({
         <div aria-hidden className="min-w-0 px-6 pb-6 max-[740px]:px-4">
           <Skeleton className="mt-3.5 h-5 w-3/4" />
           <div className="mb-2.5 mt-6 text-xs font-medium text-muted-foreground">Input schema</div>
-          <div className="space-y-3 rounded-lg bg-muted p-4">
-            <Skeleton className="h-3 w-2/3" />
-            <Skeleton className="h-3 w-1/2" />
-            <Skeleton className="h-3 w-3/5" />
-          </div>
+          <SchemaSkeleton />
         </div>
       </div>
       <span className="sr-only">{label}…</span>

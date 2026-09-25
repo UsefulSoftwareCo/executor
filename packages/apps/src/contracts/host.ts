@@ -153,12 +153,36 @@ export const HostedTool = Schema.Struct({
 /** Parsed live tool description. */
 export type HostedTool = typeof HostedTool.Type;
 
+/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
+export const HostedToolSummary = HostedTool.mapFields(
+  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
+);
+export type HostedToolSummary = typeof HostedToolSummary.Type;
+
+/** Inspection commands. Earlier builds ignore detail and tools, so hosts reduce their results. */
+export const inspectCommand = (tools?: readonly string[]) =>
+  tools === undefined
+    ? ({ operation: "inspect" } as const)
+    : ({ operation: "inspect", tools: [...tools] } as const);
+export const indexCommand = { operation: "inspect", detail: "summary" } as const;
+/** Keep only the requested tools from an inspection that may have described every tool. */
+export const selectTools =
+  (tools?: readonly string[]) =>
+  <A extends { readonly name: string }>(all: readonly A[]): readonly A[] =>
+    tools === undefined ? all : all.filter((tool) => tools.includes(tool.name));
+
 /** Framework-owned dispatch, independent of app-authored HTTP routing. */
 export const HostRequest = Schema.Union([
   WorkflowCommand,
   WebhookCommand,
   Schema.Struct({ operation: Schema.Literal("requirements") }),
-  Schema.Struct({ operation: Schema.Literal("inspect") }),
+  Schema.Struct({
+    operation: Schema.Literal("inspect"),
+    /** Omit schemas. Earlier builds ignore this and return full tools, which hosts reduce. */
+    detail: Schema.optionalKey(Schema.Literal("summary")),
+    /** Describe only these tools. Earlier builds ignore this and hosts filter the full list. */
+    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  }),
   Schema.Struct({ operation: Schema.Literal("skills") }),
   Schema.Struct({
     operation: Schema.Literal("query"),

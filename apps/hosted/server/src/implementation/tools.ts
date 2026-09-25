@@ -2,7 +2,7 @@ import { authorizeApp, authorizeTool } from "./authorization.ts";
 import { permitsTool } from "@executor-js/authorization";
 import { ExecutionAdmission } from "../contracts/execution-admission.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
-import { ToolApprovalRequired, type Executor } from "@executor-js/sdk/core";
+import { ToolApprovalRequired, ToolNotFound, type Executor } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HostedApi } from "../contracts/api.ts";
@@ -21,6 +21,35 @@ export const listTools = (input: Parameters<Executor["tools"]["list"]>[0]) =>
       ...page,
       items: page.items.filter((tool) => permitsTool(policy, input.app, tool.name, "discover")),
     };
+  });
+/** Names and descriptions for browsing; schemas are read per tool. */
+export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
+  Effect.gen(function* () {
+    const policy = yield* authorizeApp(input.app);
+    const owner = yield* currentOwner;
+    const executor = yield* Effect.flatten(HostedExecutor);
+    yield* selectedApp(executor, owner, input.app, input.profile);
+    const index = yield* executor.tools.index(input);
+    return {
+      ...index,
+      items: index.items.filter((tool) => permitsTool(policy, input.app, tool.name, "discover")),
+    };
+  });
+/** One tool's schemas, hidden exactly like the tools discovery omits. */
+export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
+  Effect.gen(function* () {
+    const policy = yield* authorizeApp(input.app);
+    const owner = yield* currentOwner;
+    const executor = yield* Effect.flatten(HostedExecutor);
+    yield* selectedApp(executor, owner, input.app, input.profile);
+    const tool = yield* executor.tools.get(input);
+    if (!permitsTool(policy, input.app, tool.name, "discover"))
+      return yield* new ToolNotFound({
+        app: tool.app,
+        deployment: tool.deployment,
+        tool: tool.name,
+      });
+    return tool;
   });
 /** Execute only after this organization has passed the same account checks as discovery. */
 export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
@@ -45,5 +74,7 @@ export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
 export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (handlers) =>
   handlers
     .handle("list", ({ params, query }) => listTools({ app: params.app, ...query }))
+    .handle("index", ({ params, query }) => indexTools({ app: params.app, ...query }))
+    .handle("get", ({ params, query }) => getTool({ app: params.app, tool: params.tool, ...query }))
     .handle("call", ({ params, payload }) => callTool({ app: params.app, ...payload })),
 );
