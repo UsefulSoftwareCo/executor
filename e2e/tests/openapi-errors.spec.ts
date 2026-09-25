@@ -285,21 +285,40 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           const failure = (yield* Schema.decodeUnknownEffect(Failure)(result.structuredContent))
             .execution.error;
           expect(failure.kind).toBe("ToolFailure");
-          expect(failure.response).toBeUndefined();
-          expect(failure.message).toBe(
-            ["unauthorized", "forbidden", "limited"].includes(mode)
-              ? "AppProviderFailed"
-              : "ToolCallFailed",
-          );
           expect(JSON.stringify(result)).not.toContain(openapiSecretMarker);
           if (["unauthorized", "forbidden", "limited"].includes(mode)) {
-            const result = yield* api.request(
+            expect(failure.response).toMatchObject({
+              code: "AppProviderFailed",
+              status: 502,
+              message: expect.stringContaining(
+                mode === "unauthorized"
+                  ? "rejected the credentials"
+                  : mode === "limited"
+                    ? "limiting requests"
+                    : "refused the request",
+              ),
+              recovery: {
+                action: expect.stringContaining(
+                  mode === "unauthorized"
+                    ? "Check the account’s credentials"
+                    : mode === "limited"
+                      ? "Wait for the service’s rate limit"
+                      : "Check the service’s access requirements",
+                ),
+              },
+            });
+            expect(failure.message).toContain("Recovery:");
+            expect(failure.response?.message).toContain(
+              `(HTTP ${mode === "unauthorized" ? 401 : mode === "limited" ? 429 : 403})`,
+            );
+            yield* evidence.json(`mcp-provider-${mode}.json`, result);
+            const httpResult = yield* api.request(
               actors.owner,
               "POST",
               `${prefix}/${app.id}/tools/call`,
               { tool: "queries.fail", input: { query: { mode } } },
             );
-            expect(result.body).toMatchObject({
+            expect(httpResult.body).toMatchObject({
               _tag: "AppProviderFailed",
               message: expect.any(String),
               reason:
@@ -309,8 +328,67 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                     ? "rate_limited"
                     : "rejected",
             });
+          } else {
+            expect(failure.response).toBeUndefined();
+            expect(failure.message).toBe("ToolCallFailed");
           }
         }
+        const broken = yield* body(
+          App,
+          yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
+            name: "Evaluation error proof",
+            files: [
+              {
+                path: "index.ts",
+                content: `import { defineApp } from "apps";
+export default defineApp({ accounts: {} }, async () => {
+  throw new Error(${JSON.stringify(openapiSecretMarker)});
+});`,
+              },
+            ],
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/${broken.id}`).pipe(Effect.orDie),
+        );
+        const discovered = yield* client.use(
+          "Discover an app that cannot evaluate",
+          (client, signal) =>
+            client.callTool(
+              { name: "execute", arguments: { code: "return await tools.search({});" } },
+              undefined,
+              { signal },
+            ),
+        );
+        const discovery = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            unavailableApps: Schema.Array(
+              Schema.Struct({ app: Schema.String, reason: Schema.String }),
+            ),
+          }),
+        )(discovered.structuredContent);
+        const evaluation = discovery.unavailableApps.find((entry) => entry.app === broken.id);
+        expect(evaluation).toBeDefined();
+        const detail = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(
+            Schema.Struct({
+              code: Schema.String,
+              status: Schema.Number,
+              message: Schema.String,
+              recovery: Recovery,
+            }),
+          ),
+        )(evaluation?.reason);
+        expect(detail).toMatchObject({
+          code: "AppEvaluationFailed",
+          status: 502,
+          message: "Executor could not load this app’s tool definitions.",
+          recovery: {
+            instructions: expect.stringContaining("Do not assume an account needs reconnecting"),
+          },
+        });
+        expect(JSON.stringify(discovered)).not.toContain(openapiSecretMarker);
+        yield* evidence.json("mcp-evaluation-error.json", discovered);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

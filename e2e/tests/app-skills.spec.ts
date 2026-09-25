@@ -46,6 +46,34 @@ const files = (version: string) => [
   },
 ];
 
+const deploy = (name: string) =>
+  Effect.gen(function* () {
+    const api = yield* Api,
+      actors = yield* Actors;
+    const prefix = `/api/organizations/${actors.organization.id}/apps`;
+    const response = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
+      name,
+      files: files("v1"),
+    });
+    expect(response.status).toBe(200);
+    const app = yield* body(Deployed, response);
+    const access = yield* body(
+      Schema.Struct({ revision: Schema.String }),
+      yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/access`),
+    );
+    expect(
+      (yield* api.request(actors.owner, "PATCH", `${prefix}/${app.id}/access`, {
+        revision: access.revision,
+        audience: { kind: "everyone" },
+      })).status,
+    ).toBe(200);
+
+    yield* Effect.addFinalizer(() =>
+      api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
+    );
+    return app;
+  });
+
 layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
   it.effect(scenarios.appSkills.title, (context) =>
     withHostedCase(
@@ -54,32 +82,13 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
         const api = yield* Api,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
-        const deploy = (name: string) =>
-          Effect.gen(function* () {
-            const response = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
-              name,
-              files: files("v1"),
-            });
-            expect(response.status).toBe(200);
-            const app = yield* body(Deployed, response);
-            const access = yield* body(
-              Schema.Struct({ revision: Schema.String }),
-              yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/access`),
-            );
-            expect(
-              (yield* api.request(actors.owner, "PATCH", `${prefix}/${app.id}/access`, {
-                revision: access.revision,
-                audience: { kind: "everyone" },
-              })).status,
-            ).toBe(200);
-
-            yield* Effect.addFinalizer(() =>
-              api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
-            );
-            return app;
-          });
-        const app = yield* deploy(`Skill fixture ${randomUUID().slice(0, 8)}`);
-        const other = yield* deploy(`Other fixture ${randomUUID().slice(0, 8)}`);
+        const [app, other] = yield* Effect.all(
+          [
+            deploy(`Skill fixture ${randomUUID().slice(0, 8)}`),
+            deploy(`Other fixture ${randomUUID().slice(0, 8)}`),
+          ],
+          { concurrency: 2 },
+        );
         const path = `${prefix}/${app.id}`;
         const read = `${path}/skills/search-messages`;
         expect((yield* api.request(actors.member, "GET", `${path}/tools`)).status).toBe(200);
@@ -143,7 +152,19 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
             `/api/organizations/unrelated-organization/apps/${app.id}/skills`,
           )).status,
         ).toBe(403);
-
+      }),
+    ),
+  );
+  it.effect(scenarios.appSkillDeployments.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const app = yield* deploy(`Skill deployment ${randomUUID().slice(0, 8)}`);
+        const path = `/api/organizations/${actors.organization.id}/apps/${app.id}`;
+        const read = `${path}/skills/search-messages`;
+        const doc = yield* body(Document, yield* api.request(actors.member, "GET", read));
         const changed = yield* saveAndDeploy(actors.owner, path, {
           files: files("v2"),
         });

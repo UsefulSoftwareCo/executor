@@ -72,8 +72,6 @@ export { browserMcpRequest, hostedMcpApproval } from "./implementation/mcp-appro
 
 export { makeOrganizationIcons } from "./implementation/organization-icons.ts";
 
-export * from "./contracts/execution-admission.ts";
-
 export { resolveOrganizationReference } from "./implementation/organization-reference.ts";
 
 export * from "./contracts/schedules.ts";

@@ -87,14 +87,6 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
           </AlertDescription>
         </Alert>
       )}
-      {Option.isSome(data) && data.value.usage && (
-        <p className="text-sm text-muted-foreground my-4">
-          {data.value.usage.used.toLocaleString()} executions used this month
-          {data.value.usage.unlimited
-            ? " · Unlimited"
-            : ` · ${data.value.usage.remaining.toLocaleString()} remaining`}
-        </p>
-      )}
       {error && (
         <p role="alert" className="auth-error text-destructive text-[13px]">
           {error}

@@ -135,6 +135,25 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
             "Ten accounts need one joined app read, one profile read and one account batch",
           )
           .toBe(3);
+        const memberReads = yield* telemetry
+          .query(invocationTrace)
+          .pipe(
+            Effect.map(
+              (result) =>
+                result.data.filter(
+                  ({ span }) =>
+                    span.operationName === "sql.execute" &&
+                    String(span.tags["db.query.text"] ?? "").includes("from member where"),
+                ).length,
+            ),
+          );
+        yield* evidence.json("invocation-member-reads.json", {
+          traceId: invocationTrace,
+          count: memberReads,
+        });
+        expect
+          .soft(memberReads, "The app, profile and ten account checks share one membership read")
+          .toBe(1);
         expect(
           (yield* selectProfileAccounts(actors.owner, path, profile.id, {
             workspaces: [...selected, ...selected],

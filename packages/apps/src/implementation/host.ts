@@ -12,7 +12,7 @@ import {
 } from "../contracts/workflows.ts";
 import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
 /** Framework-owned dispatch. Each inspect/call binds accounts and evaluates afresh. */
-import { Cause, Effect, Match, Option, Redacted, Schema } from "effect";
+import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
 import {
   captureTelemetry,
   invocationFetch,
@@ -22,6 +22,7 @@ import type { AccountSlots, BoundContext } from "../contracts/app.ts";
 import {
   DeclaredProvider,
   DeclaredRequirements,
+  InvocationDeadline,
   ToolResultObservation,
   HostAccountsInvalid,
   HostDeclarationInvalid,
@@ -37,6 +38,7 @@ import {
   HostToolApprovalRequired,
   HostToolPolicyFailed,
   HostedTool,
+  HostedToolSummary,
   ResolvedAccounts,
   HostError,
   TrustedToolApproval,
@@ -57,6 +59,7 @@ import { OperationToolPrefixes } from "../contracts/operations.ts";
 import { dispatchWebhook } from "./webhooks.ts";
 import { authorDatabase, unavailableStorage } from "./storage.ts";
 import { isApp, toEffectApp } from "./app.ts";
+import { authorCache, unavailableCache } from "./cache.ts";
 
 function safe<A, E>(work: () => Effect.Effect<A, unknown>, failure: E): Effect.Effect<A, E> {
   return Effect.suspend(work).pipe(
@@ -65,6 +68,23 @@ function safe<A, E>(work: () => Effect.Effect<A, unknown>, failure: E): Effect.E
     ),
   );
 }
+
+const evaluationSafe = <A>(work: Effect.Effect<A, unknown>) =>
+  work.pipe(
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+      const error = Cause.squash(cause);
+      const provider = parseProviderError(error);
+      const skills = parseSkillLoadFailed(error);
+      return Effect.fail(
+        Option.isSome(provider)
+          ? provider.value
+          : Option.isSome(skills)
+            ? skills.value
+            : new HostEvaluationFailed(),
+      );
+    }),
+  );
 
 function jsonSchema(decoder: Schema.Decoder<unknown>) {
   const imported = importedJsonSchema(decoder);
@@ -122,7 +142,7 @@ function requirements(slots: AccountSlots, database?: typeof DeclaredRequirement
     }
     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
       accounts: Object.fromEntries(accounts),
-      capabilities: { skills: true },
+      capabilities: { skills: true, toolIndex: true },
       ...(database === undefined ? {} : { database }),
     }).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
   });
@@ -216,6 +236,31 @@ function dispatch(
         (controller) => Effect.sync(() => controller.abort()),
       );
       const invocationSignal = AbortSignal.any([signal, lifetime.signal]);
+      const deadline =
+        context.deadline === undefined
+          ? undefined
+          : yield* safe(
+              () => Schema.decodeUnknownEffect(InvocationDeadline)(context.deadline),
+              new HostInputInvalid(),
+            );
+      const withinDeadline = <A, E>(work: Effect.Effect<A, E>) =>
+        Effect.gen(function* () {
+          if (deadline === undefined) return yield* work;
+          const remaining = deadline - (yield* Clock.currentTimeMillis);
+          if (remaining <= 0)
+            return yield* new WorkflowFailure({ reason: "engine", retryable: true });
+          const result = yield* work.pipe(
+            Effect.timeout(remaining),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(new WorkflowFailure({ reason: "engine", retryable: true })),
+            ),
+          );
+          // Also reject a body that blocked the event loop past its deadline before
+          // the timer could run. This check remains inside the owning transaction.
+          if ((yield* Clock.currentTimeMillis) >= deadline)
+            return yield* new WorkflowFailure({ reason: "engine", retryable: true });
+          return result;
+        });
       let running: InvocationTelemetry | undefined;
       let transactionOpen = false;
       const delivery: ElicitationHandler = (request, signal) =>
@@ -271,6 +316,11 @@ function dispatch(
         context.files ?? [],
       ).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
       const bound = {
+        cache: authorCache(
+          context.cache ?? unavailableCache,
+          Redacted.value(context.accounts),
+          invocationSignal,
+        ),
         files,
         ...(yield* bindAccounts(native.accounts, declared, context).pipe(
           Effect.withSpan("app.accounts.bind"),
@@ -280,30 +330,25 @@ function dispatch(
         fetch: yield* invocationFetch(invocationSignal),
         elicit: makeElicit(delivery, invocationSignal),
       };
-      const definition = yield* native.evaluate(bound).pipe(
-        Effect.catchCause((cause) => {
-          if (Cause.hasInterrupts(cause)) return Effect.interrupt;
-          const error = Cause.squash(cause);
-          const provider = parseProviderError(error);
-          const skills = parseSkillLoadFailed(error);
-          return Effect.fail(
-            Option.isSome(provider)
-              ? provider.value
-              : Option.isSome(skills)
-                ? skills.value
-                : new HostEvaluationFailed(),
-          );
-        }),
+      const definition = yield* evaluationSafe(native.evaluate(bound)).pipe(
         Effect.withSpan("app.evaluate"),
       );
       if (request.operation === "skills") {
-        const skills =
-          definition.skills === undefined
-            ? yield* folderSkillsEffect({ files }).pipe(
-                Effect.mapError(() => new HostDeclarationInvalid()),
-              )
-            : definition.skills;
-        return yield* Schema.decodeUnknownEffect(AppSkills)(skills).pipe(
+        const declared =
+          definition.skills ??
+          (yield* folderSkillsEffect({ files }).pipe(
+            Effect.mapError(() => new HostDeclarationInvalid()),
+          ));
+        // Dynamic skills fail like evaluation and join the static catalog. Other operations never
+        // call them. A repeated name fails the catalog check below.
+        const source = definition.dynamicSkills;
+        const dynamic =
+          source === undefined
+            ? []
+            : yield* evaluationSafe(Effect.suspend(source.list)).pipe(
+                Effect.withSpan("app.skills.load"),
+              );
+        return yield* Schema.decodeUnknownEffect(AppSkills)([...declared, ...dynamic]).pipe(
           Effect.mapError(() => new HostDeclarationInvalid()),
         );
       }
@@ -356,6 +401,11 @@ function dispatch(
               );
               return {
                 ...accounts,
+                cache: authorCache(
+                  context.cache ?? unavailableCache,
+                  Redacted.value(current.accounts),
+                  signal,
+                ),
                 files,
                 fetch: yield* invocationFetch(signal),
                 signal,
@@ -381,17 +431,20 @@ function dispatch(
         );
       }
       if (request.operation === "inspect") {
-        const metadata: HostedTool[] = [];
+        const summary = request.detail === "summary";
+        const wanted = request.tools === undefined ? undefined : new Set(request.tools);
+        const metadata: (HostedTool | HostedToolSummary)[] = [];
         for (const [prefix, readOnly, catalog] of [
           [OperationToolPrefixes.query, true, definition.queries],
           [OperationToolPrefixes.mutate, false, definition.mutations],
         ] as const) {
           for (const [name, operation] of Object.entries(catalog ?? {})) {
+            if (wanted !== undefined && !wanted.has(`${prefix}${name}`)) continue;
             metadata.push(
               yield* safe(
                 () =>
                   Effect.gen(function* () {
-                    return yield* Schema.decodeUnknownEffect(HostedTool)({
+                    const fields = {
                       name: `${prefix}${name}`,
                       schedules: Object.entries(definition.schedules ?? {})
                         .filter(([, schedule]) => schedule.tool === `${prefix}${name}`)
@@ -399,20 +452,70 @@ function dispatch(
                       description:
                         operation.description ?? `${readOnly ? "Query" : "Mutate"} ${name}`,
                       ...(operation.title === undefined ? {} : { title: operation.title }),
+                      readOnly,
+                      annotations: { ...operation.annotations, readOnlyHint: readOnly },
+                    };
+                    if (summary)
+                      return yield* Schema.decodeUnknownEffect(HostedToolSummary)(fields);
+                    return yield* Schema.decodeUnknownEffect(HostedTool)({
+                      ...fields,
                       inputSchema: yield* jsonSchema(operation.input),
                       ...(operation.output === undefined
                         ? operation.outputSchema === undefined
                           ? {}
                           : { outputSchema: operation.outputSchema }
                         : { outputSchema: yield* jsonSchema(operation.output) }),
-                      readOnly,
-                      annotations: { ...operation.annotations, readOnlyHint: readOnly },
                       ...(operation._meta === undefined ? {} : { _meta: operation._meta }),
                     });
                   }),
                 new HostDeclarationInvalid(),
               ),
             );
+          }
+        }
+        const dynamic = definition.dynamicTools;
+        if (dynamic !== undefined && (wanted === undefined || metadata.length < wanted.size)) {
+          const declared = new Set(metadata.map((tool) => tool.name));
+          const discover = (): Effect.Effect<readonly unknown[], unknown> => {
+            if (summary && dynamic.summaries !== undefined) return dynamic.summaries();
+            if (wanted !== undefined && dynamic.describe !== undefined) {
+              const describe = dynamic.describe;
+              return Effect.forEach(
+                [...wanted].filter((name) => !declared.has(name)),
+                (name) => describe(name),
+                { concurrency: "unbounded" },
+              ).pipe(Effect.map((tools) => tools.filter((tool) => tool !== undefined)));
+            }
+            return dynamic.list();
+          };
+          const discovered = yield* evaluationSafe(discover()).pipe(
+            Effect.flatMap((value) =>
+              safe(
+                () =>
+                  summary
+                    ? Schema.decodeUnknownEffect(Schema.Array(HostedToolSummary))(value)
+                    : Schema.decodeUnknownEffect(Schema.Array(HostedTool))(value),
+                new HostDeclarationInvalid(),
+              ),
+            ),
+          );
+          const names = new Set(declared);
+          for (const tool of discovered) {
+            const readOnly = tool.name.startsWith(OperationToolPrefixes.query);
+            if (
+              (!readOnly && !tool.name.startsWith(OperationToolPrefixes.mutate)) ||
+              tool.name === OperationToolPrefixes.query ||
+              tool.name === OperationToolPrefixes.mutate ||
+              names.has(tool.name)
+            )
+              return yield* new HostDeclarationInvalid();
+            names.add(tool.name);
+            if (wanted !== undefined && !wanted.has(tool.name)) continue;
+            metadata.push({
+              ...tool,
+              readOnly,
+              annotations: { ...tool.annotations, readOnlyHint: readOnly },
+            });
           }
         }
         return metadata;
@@ -431,6 +534,7 @@ function dispatch(
             request,
             {
               files,
+              cache: bound.cache,
               accounts: bound.accounts,
               workflows: workflowControls,
               signal: bound.signal,
@@ -472,8 +576,16 @@ function dispatch(
           : request.name;
       const toolName = `${OperationToolPrefixes[kind]}${name}`;
       const catalog = kind === "query" ? definition.queries : definition.mutations;
-      const tool =
+      const declaredTool =
         catalog !== undefined && Object.hasOwn(catalog, name) ? catalog[name] : undefined;
+      const source = definition.dynamicTools;
+      const resolvedTool =
+        source === undefined || declaredTool !== undefined
+          ? undefined
+          : yield* evaluationSafe(source.resolve(toolName));
+      const tool = declaredTool ?? resolvedTool;
+      if (tool !== undefined && tool.kind !== (kind === "query" ? "query" : "mutation"))
+        return yield* new HostDeclarationInvalid();
       if (tool === undefined)
         return yield* request.operation === "call"
           ? new HostToolNotFound()
@@ -605,12 +717,14 @@ function dispatch(
               new HostInputInvalid(),
             );
       if (replay !== undefined && kind !== "mutate") return yield* new HostInputInvalid();
-      if (native.database === undefined) return yield* execute();
+      if (native.database === undefined) return yield* withinDeadline(execute());
       const storage = context.storage ?? unavailableStorage;
       return yield* storage[kind === "query" ? "read" : "mutate"](native.database.schema, (db) =>
-        replay === undefined
-          ? execute(db)
-          : db.once(replay.key, replay.fingerprint, () => execute(db)),
+        withinDeadline(
+          replay === undefined
+            ? execute(db)
+            : db.once(replay.key, replay.fingerprint, () => execute(db)),
+        ),
       ).pipe(
         Effect.catchTags({
           AppDatabaseError: () => Effect.fail(new HostOperationFailed()),

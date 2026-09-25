@@ -4,7 +4,7 @@ import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
 import { profileMutations } from "../../contracts/profiles.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
-import { Json, type App, type Tool, type Profile, type ProfileId } from "@executor-js/sdk";
+import { Json, type App, type ToolSummary, type Profile, type ProfileId } from "@executor-js/sdk";
 import { Cause, Exit, Option, Schema } from "effect";
 import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
 import { useId, useState } from "react";
@@ -20,7 +20,7 @@ import { ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
 import { AppSectionHeader, AppSectionTitle } from "@executor-js/ui/dashboard/app-section-header";
 import { Button } from "@executor-js/ui/components/button";
 import { Textarea } from "@executor-js/ui/components/textarea";
-import { appError, callToolAtom, toolListAtom } from "../../contracts/apps.ts";
+import { appError, callToolAtom, toolDetailAtom, toolListAtom } from "../../contracts/apps.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
 /** Discover and run tools using the selected profile's exact bindings and revision. */
@@ -44,6 +44,14 @@ export function AppTools({
       </p>
     );
   const readiness = appToolReadiness(app, profile?.accounts ?? {}, accounts);
+  const catalog = {
+    organization,
+    app: app.id,
+    profile: profile?.id,
+    expectedProfileRevision: profile?.revision,
+    deployment: app.activeDeployment ?? undefined,
+    accounts: JSON.stringify(profile?.accounts ?? {}),
+  };
   if (readiness.state === "not-deployed")
     return <p className="p-5 text-sm text-muted-foreground">Deploy this app to load its tools.</p>;
   if (readiness.state !== "ready")
@@ -71,14 +79,8 @@ export function AppTools({
       )}
       <ToolBrowser
         key={`${app.id}:${app.activeDeployment}:${profile?.id}:${profile?.revision}:${JSON.stringify(profile?.accounts ?? {})}`}
-        query={toolListAtom({
-          organization,
-          app: app.id,
-          profile: profile?.id,
-          expectedProfileRevision: profile?.revision,
-          deployment: app.activeDeployment ?? undefined,
-          accounts: JSON.stringify(profile?.accounts ?? {}),
-        })}
+        query={toolListAtom(catalog)}
+        detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
         Failure={ToolsFailure}
         selected={selected}
         onSelect={(tool) => {
@@ -137,7 +139,7 @@ function ToolRunner({
   revision,
 }: {
   readonly app: App;
-  readonly tool: Tool;
+  readonly tool: ToolSummary;
   readonly profile?: ProfileId | undefined;
   readonly revision?: number | undefined;
 }) {

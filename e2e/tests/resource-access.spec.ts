@@ -32,76 +32,194 @@ const singleSource = arraySource
     "ctx.accounts.service.fields.token",
   );
 
+const resourceFixture = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const prefix = `/api/organizations/${actors.organization.id}`;
+  const suffix = randomUUID().slice(0, 8);
+  const created: { apps: string[]; accounts: string[]; groups: string[] } = {
+    apps: [],
+    accounts: [],
+    groups: [],
+  };
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      for (const app of created.apps)
+        expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
+          200,
+        );
+      for (const account of created.accounts)
+        expect(
+          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
+        ).toBe(200);
+      for (const id of created.groups) {
+        const group = yield* body(
+          Group,
+          yield* api.request(actors.owner, "GET", `${prefix}/groups/${id}`),
+        );
+        expect(
+          (yield* api.request(actors.owner, "DELETE", `${prefix}/groups/${id}`, {
+            revision: group.revision,
+          })).status,
+        ).toBe(200);
+      }
+    }).pipe(Effect.orDie),
+  );
+  const members = yield* body(Groups, yield* api.request(actors.owner, "GET", `${prefix}/groups`));
+  const memberIdentity = yield* body(
+    Schema.Struct({ userId: Schema.String }),
+    yield* api.request(actors.member, "GET", "/api/viewer"),
+  );
+  const adminIdentity = yield* body(
+    Schema.Struct({ userId: Schema.String }),
+    yield* api.request(actors.admin, "GET", "/api/viewer"),
+  );
+  const member = members.members.find((item) => item.userId === memberIdentity.userId);
+  const admin = members.members.find((item) => item.userId === adminIdentity.userId);
+  if (!member || !admin) throw new Error("Missing synthetic group members");
+  const sales = yield* body(
+    Group,
+    yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
+      name: `Sales ${suffix}`,
+      description: "",
+      memberIds: [admin.id],
+    }),
+  );
+  const engineering = yield* body(
+    Group,
+    yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
+      name: `Engineering ${suffix}`,
+      description: "",
+      memberIds: [member.id],
+    }),
+  );
+  created.groups.push(sales.id, engineering.id);
+  return { api, actors, prefix, suffix, created, sales, engineering };
+});
+
+const arrayFixture = Effect.gen(function* () {
+  const { api, actors, prefix, suffix, created, sales } = yield* resourceFixture;
+  const call = { tool: "queries.identity", input: {} };
+  const array = yield* body(
+    App,
+    yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+      name: `Array ${suffix}`,
+      files: [
+        { path: "index.ts", content: arraySource },
+        {
+          path: "ui/index.html",
+          content:
+            "<!doctype html><html><head><title>Account protected UI</title></head><body><h1>Account protected UI</h1></body></html>",
+        },
+        {
+          path: "ui/public/probe.svg",
+          content: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>',
+        },
+      ],
+    }),
+  );
+  created.apps.push(array.id);
+  const arrayAccess = yield* body(
+    Access,
+    yield* api.request(actors.owner, "GET", `${prefix}/apps/${array.id}/access`),
+  );
+  expect(
+    (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${array.id}/access`, {
+      revision: arrayAccess.revision,
+      audience: { kind: "everyone" },
+    })).status,
+  ).toBe(200);
+  const arrayProfile = yield* createProfile(actors.owner, `${prefix}/apps/${array.id}`);
+  const arrayCall = { ...call, profile: arrayProfile.id };
+  const personalConnection = yield* body(
+    Resource,
+    yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/connections`, {
+      requirement: "service",
+      profile: arrayProfile.id,
+      destination: { kind: "personal" },
+    }),
+  );
+  const personal = yield* body(
+    Resource,
+    yield* api.request(
+      actors.owner,
+      "POST",
+      `${prefix}/connections/${personalConnection.id}/submit`,
+      { method: "key", label: "Personal fixture", fields: { token: "personal" } },
+    ),
+  );
+  created.accounts.push(personal.id);
+  const teamConnection = yield* body(
+    Resource,
+    yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/connections`, {
+      requirement: "service",
+      profile: arrayProfile.id,
+      destination: { kind: "shared", audience: { kind: "groups", groups: [sales.id] } },
+    }),
+  );
+  const team = yield* body(
+    Resource,
+    yield* api.request(actors.owner, "POST", `${prefix}/connections/${teamConnection.id}/submit`, {
+      method: "key",
+      label: "Sales fixture",
+      fields: { token: "team" },
+    }),
+  );
+  created.accounts.push(team.id);
+  expect((yield* api.request(actors.member, "GET", `${prefix}/accounts/${team.id}`)).status).toBe(
+    403,
+  );
+  expect(
+    (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${personal.id}`)).status,
+  ).toBe(403);
+  expect(
+    (yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/tools/call`, arrayCall))
+      .status,
+  ).toBe(403);
+  expect(
+    (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/tools/call`, arrayCall))
+      .status,
+  ).toBe(403);
+  const teamAccess = yield* body(
+    Access,
+    yield* api.request(actors.owner, "GET", `${prefix}/accounts/${team.id}/access`),
+  );
+  expect(
+    (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
+      revision: teamAccess.revision,
+      audience: { kind: "everyone" },
+    })).status,
+  ).toBe(200);
+  const allowed = yield* api.request(
+    actors.owner,
+    "POST",
+    `${prefix}/apps/${array.id}/tools/call`,
+    arrayCall,
+  );
+  expect(allowed.status).toBe(200);
+  expect(allowed.body).toEqual(["personal", "team"]);
+  return {
+    api,
+    actors,
+    prefix,
+    suffix,
+    created,
+    sales,
+    array,
+    arrayProfile,
+    arrayCall,
+    personal,
+    team,
+    call,
+  };
+});
+
 layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
   it.effect(scenarios.resourceAccess.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors;
-        const prefix = `/api/organizations/${actors.organization.id}`;
-        const suffix = randomUUID().slice(0, 8);
-        const created: { apps: string[]; accounts: string[]; groups: string[] } = {
-          apps: [],
-          accounts: [],
-          groups: [],
-        };
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            for (const app of created.apps)
-              expect(
-                (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status,
-              ).toBe(200);
-            for (const account of created.accounts)
-              expect(
-                (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
-                  .status,
-              ).toBe(200);
-            for (const id of created.groups) {
-              const group = yield* body(
-                Group,
-                yield* api.request(actors.owner, "GET", `${prefix}/groups/${id}`),
-              );
-              expect(
-                (yield* api.request(actors.owner, "DELETE", `${prefix}/groups/${id}`, {
-                  revision: group.revision,
-                })).status,
-              ).toBe(200);
-            }
-          }).pipe(Effect.orDie),
-        );
-        const members = yield* body(
-          Groups,
-          yield* api.request(actors.owner, "GET", `${prefix}/groups`),
-        );
-        const memberIdentity = yield* body(
-          Schema.Struct({ userId: Schema.String }),
-          yield* api.request(actors.member, "GET", "/api/viewer"),
-        );
-        const adminIdentity = yield* body(
-          Schema.Struct({ userId: Schema.String }),
-          yield* api.request(actors.admin, "GET", "/api/viewer"),
-        );
-        const member = members.members.find((item) => item.userId === memberIdentity.userId);
-        const admin = members.members.find((item) => item.userId === adminIdentity.userId);
-        if (!member || !admin) throw new Error("Missing synthetic group members");
-        const sales = yield* body(
-          Group,
-          yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
-            name: `Sales ${suffix}`,
-            description: "",
-            memberIds: [admin.id],
-          }),
-        );
-        const engineering = yield* body(
-          Group,
-          yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
-            name: `Engineering ${suffix}`,
-            description: "",
-            memberIds: [member.id],
-          }),
-        );
-        created.groups.push(sales.id, engineering.id);
+        const { api, actors, prefix, suffix, created, sales, engineering } = yield* resourceFixture;
         const deployment = yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
           name: `Private ${suffix}`,
           files: [{ path: "index.ts", content: identitySource }],
@@ -186,114 +304,15 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           (yield* api.request(actors.admin, "POST", `${prefix}/apps/${app.id}/tools/call`, call))
             .status,
         ).toBe(200);
-
-        const array = yield* body(
-          App,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-            name: `Array ${suffix}`,
-            files: [
-              { path: "index.ts", content: arraySource },
-              {
-                path: "ui/index.html",
-                content:
-                  "<!doctype html><html><head><title>Account protected UI</title></head><body><h1>Account protected UI</h1></body></html>",
-              },
-              {
-                path: "ui/public/probe.svg",
-                content: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"></svg>',
-              },
-            ],
-          }),
-        );
-        created.apps.push(array.id);
-        const arrayAccess = yield* body(
-          Access,
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${array.id}/access`),
-        );
-        expect(
-          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${array.id}/access`, {
-            revision: arrayAccess.revision,
-            audience: { kind: "everyone" },
-          })).status,
-        ).toBe(200);
-        const arrayProfile = yield* createProfile(actors.owner, `${prefix}/apps/${array.id}`);
-        const arrayCall = { ...call, profile: arrayProfile.id };
-        const personalConnection = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/connections`, {
-            requirement: "service",
-            profile: arrayProfile.id,
-            destination: { kind: "personal" },
-          }),
-        );
-        const personal = yield* body(
-          Resource,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            `${prefix}/connections/${personalConnection.id}/submit`,
-            { method: "key", label: "Personal fixture", fields: { token: "personal" } },
-          ),
-        );
-        created.accounts.push(personal.id);
-        const teamConnection = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${array.id}/connections`, {
-            requirement: "service",
-            profile: arrayProfile.id,
-            destination: { kind: "shared", audience: { kind: "groups", groups: [sales.id] } },
-          }),
-        );
-        const team = yield* body(
-          Resource,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            `${prefix}/connections/${teamConnection.id}/submit`,
-            { method: "key", label: "Sales fixture", fields: { token: "team" } },
-          ),
-        );
-        created.accounts.push(team.id);
-        expect(
-          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${team.id}`)).status,
-        ).toBe(403);
-        expect(
-          (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${personal.id}`)).status,
-        ).toBe(403);
-        expect(
-          (yield* api.request(
-            actors.owner,
-            "POST",
-            `${prefix}/apps/${array.id}/tools/call`,
-            arrayCall,
-          )).status,
-        ).toBe(403);
-        expect(
-          (yield* api.request(
-            actors.admin,
-            "POST",
-            `${prefix}/apps/${array.id}/tools/call`,
-            arrayCall,
-          )).status,
-        ).toBe(403);
-        const teamAccess = yield* body(
-          Access,
-          yield* api.request(actors.owner, "GET", `${prefix}/accounts/${team.id}/access`),
-        );
-        expect(
-          (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
-            revision: teamAccess.revision,
-            audience: { kind: "everyone" },
-          })).status,
-        ).toBe(200);
-        const allowed = yield* api.request(
-          actors.owner,
-          "POST",
-          `${prefix}/apps/${array.id}/tools/call`,
-          arrayCall,
-        );
-        expect(allowed.status).toBe(200);
-        expect(allowed.body).toEqual(["personal", "team"]);
+      }),
+    ),
+  );
+  it.effect(scenarios.arrayResourceAccess.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, sales, array, arrayProfile, arrayCall, team } =
+          yield* arrayFixture;
         const browser = yield* Browser;
         const appUrl = new URL(yield* waitForAppUrl(actors.owner, `${prefix}/apps/${array.id}/ui`));
         appUrl.searchParams.set("profile", arrayProfile.id);
@@ -359,6 +378,17 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
             arrayCall,
           )).status,
         ).toBe(403);
+      }),
+    ),
+  );
+  it.effect(scenarios.arrayResourceDeletion.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, suffix, created, array, arrayProfile, personal, team, call } =
+          yield* arrayFixture;
+        const browser = yield* Browser;
+        yield* browser.login(actors.admin);
         const workspace = yield* body(
           Schema.Struct({
             canEdit: Schema.Boolean,

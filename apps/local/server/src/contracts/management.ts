@@ -8,6 +8,7 @@ import { LocalWebhookSetupApi } from "./webhook-setup.ts";
 
 const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.apps)
+  .add(ExecutorApi.groups.appProfiles)
   .add(ExecutorApi.groups.skills)
   .add(ExecutorApi.groups.accounts)
   .add(ExecutorApi.groups.webhooks)

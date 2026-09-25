@@ -6,6 +6,7 @@ import {
   type HostCallError,
   type HostDataError,
   type HostedTool,
+  type HostedToolSummary,
   type AppSkillSource,
   type HostContext,
   type WebhookCommand,
@@ -75,10 +76,23 @@ export interface Runtime<Requirements = never> {
     RuntimeLoadError | typeof HostInspectError.Type,
     Requirements
   >;
+  /** Describe the current tools, or only the named ones. Unknown names are omitted. */
   readonly inspect: (
-    input: { readonly app: string; readonly build: BuildId } & HostContext,
+    input: {
+      readonly app: string;
+      readonly build: BuildId;
+      readonly tools?: readonly string[];
+    } & HostContext,
   ) => Effect.Effect<
     readonly HostedTool[],
+    RuntimeLoadError | typeof HostInspectError.Type,
+    Requirements
+  >;
+  /** List the current tools without their schemas. */
+  readonly index: (
+    input: { readonly app: string; readonly build: BuildId } & HostContext,
+  ) => Effect.Effect<
+    readonly HostedToolSummary[],
     RuntimeLoadError | typeof HostInspectError.Type,
     Requirements
   >;

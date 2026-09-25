@@ -40,7 +40,7 @@ import type { Executor } from "../contracts/executor.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
 import { connectedWorkerdApps, workerdHostHandler } from "./workerd-client.ts";
-import { bundleWorkerdHost } from "./workerd-bundle.ts";
+import { workerdHostModules } from "./workerd-bundle.ts";
 
 /** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
 export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
@@ -84,6 +84,23 @@ const publicEgressBinding: BindingHook = Effect.succeed({
   name: PUBLIC_EGRESS_BINDING,
   service: { name: PUBLIC_EGRESS_SERVICE },
 });
+/**
+ * The product's own listener, reached as a workerd external service rather than through a
+ * network service. App requests for the dashboard origin use it, so they never depend on what
+ * that origin's name resolves to.
+ */
+const SELF_ORIGIN_SERVICE = "executor:self-origin";
+class SelfOriginService extends AlchemyPlugin.Service<SelfOriginService>()(
+  "cloudflare-runtime/plugin/executor-self-origin",
+) {}
+const selfOriginService = (address: string) =>
+  Layer.succeed(SelfOriginService, {
+    services: [{ name: SELF_ORIGIN_SERVICE, external: { address, http: {} } }],
+  });
+const selfOriginBinding: BindingHook = Effect.succeed({
+  name: "SELF",
+  service: { name: SELF_ORIGIN_SERVICE },
+});
 
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
@@ -101,6 +118,12 @@ export const workerdApps = (options: {
    * 127.0.0.1. Self-host leaves it off unless an operator opts in for an internal service.
    */
   readonly allowPrivateAppFetch?: boolean;
+  /**
+   * The dashboard origin and the local address that serves it. App requests for that origin
+   * go straight to the address, so the bundled Executor app works when the origin's name
+   * resolves to a private address and private app fetch is off.
+   */
+  readonly selfOrigin?: { readonly origin: string; readonly address: string };
 }): Effect.Effect<
   { readonly runtime: ReturnType<typeof runtimeAdapter>; readonly workflows: WorkflowRuntime },
   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
@@ -117,8 +140,13 @@ export const workerdApps = (options: {
     const handler = yield* workerdHostHandler(options);
     const runtimeContext = yield* Layer.build(
       layerLocalRuntime({ directory: options.directory }).pipe(
-        // Registered as a runtime plugin so its service reaches the generated workerd config.
+        // Registered as runtime plugins so their services reach the generated workerd config.
         Layer.provide(publicEgress),
+        Layer.provide(
+          options.selfOrigin === undefined
+            ? Layer.empty
+            : selfOriginService(options.selfOrigin.address),
+        ),
         Layer.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
         Layer.provide(
           ConfigProvider.layer(
@@ -138,7 +166,7 @@ export const workerdApps = (options: {
         compatibilityDate: "2026-07-30",
         // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat"],
-        modules: yield* bundleWorkerdHost,
+        modules: yield* workerdHostModules,
         durableObjectNamespaces: [
           { className: "AppDataSupervisor", sql: true, uniqueKey: "executor-app-data" },
         ],
@@ -154,6 +182,8 @@ export const workerdApps = (options: {
           JsonBinding.local("AUTH", secret),
           JsonBinding.local("APPS_PRIVATE_FETCH", privateAppFetch),
           publicEgressBinding,
+          JsonBinding.local("SELF_ORIGIN", options.selfOrigin?.origin ?? ""),
+          ...(options.selfOrigin === undefined ? [] : [selfOriginBinding]),
           Loopback.local({ binding: "HOST", name: "executor-workflow-host", handler }),
         ],
         // Raw authored console output is not a host log. Apps return bounded telemetry through their protocol.

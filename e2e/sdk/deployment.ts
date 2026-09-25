@@ -33,6 +33,7 @@ export const startDeployment = ({
     // 128-bit base-36 slug in Cloudflare's 64-character wildcard certificate name.
     const slug = `e2e-${BigInt(`0x${randomBytes(8).toString("hex")}`).toString(36)}`;
     const origin = `https://${slug}.executor.engineering`;
+    const appUiBaseUrl = `https://${slug}.executor.website`;
     const directory = path.resolve(".local/deployed", slug);
     const cloud = path.resolve("apps/hosted/cloud");
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
@@ -85,7 +86,11 @@ export const startDeployment = ({
         ["run", "test-stage", "destroy", slug, "--no-input", "--yes"],
         { CI: "true" },
         cloud,
-      ).pipe(Effect.timeout("12 minutes"), Effect.orDie),
+      ).pipe(
+        Effect.andThen(fs.writeFileString(path.join(directory, "destroyed.json"), "{}")),
+        Effect.timeout("12 minutes"),
+        Effect.orDie,
+      ),
     );
     const fixture = yield* createEmulatorFixture(origin);
     yield* Effect.addFinalizer(() =>
@@ -130,14 +135,17 @@ export const startDeployment = ({
         CI: "true",
         EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
         TEST_STAGE_FIXTURE_CONTROL: fixtureControlEnvironment(fixtures),
-        EXECUTOR_APP_UI_BASE_URL: `https://${slug}.executor.website`,
+        EXECUTOR_APP_UI_BASE_URL: appUiBaseUrl,
       },
       cloud,
     );
     const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-    yield* http
-      .get(`${origin}/health`)
-      .pipe(Effect.retry(Schedule.spaced("2 seconds")), Effect.timeout("2 minutes"));
+    yield* http.get(`${origin}/health`).pipe(
+      Effect.flatMap((response) => response.json),
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ status: Schema.Literal("ok") }))),
+      Effect.retry(Schedule.spaced("2 seconds")),
+      Effect.timeout("2 minutes"),
+    );
     const axiomToken = yield* Config.Redacted("AXIOM_TOKEN");
     const axiomOrganization = yield* Config.NonEmptyString("AXIOM_ORG_ID");
     const axiom = http.pipe(
@@ -188,6 +196,7 @@ export const startDeployment = ({
       origin,
       directory,
       slug,
+      appUiBaseUrl,
       fixtures,
       emulators,
       axiom: {

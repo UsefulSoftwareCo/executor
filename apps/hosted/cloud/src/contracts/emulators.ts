@@ -24,9 +24,32 @@ const Provider = Schema.Struct({
   clientSecret: Schema.NonEmptyString,
 });
 
+const GoogleDiscovery = Schema.Struct({
+  issuer: BaseUrl,
+  authorization_endpoint: BaseUrl,
+  token_endpoint: BaseUrl,
+  userinfo_endpoint: BaseUrl,
+  jwks_uri: BaseUrl,
+  id_token_signing_alg_values_supported: Schema.Array(Schema.Literal("RS256")).check(
+    Schema.isMinLength(1),
+  ),
+});
+const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDiscovery }).check(
+  Schema.makeFilter(
+    ({ baseUrl, discovery }) =>
+      discovery.issuer === baseUrl &&
+      [
+        discovery.authorization_endpoint,
+        discovery.token_endpoint,
+        discovery.userinfo_endpoint,
+        discovery.jwks_uri,
+      ].every((endpoint) => endpoint.startsWith(`${baseUrl}/`)),
+  ),
+);
+
 /** External test services provisioned independently of Executor; never browser configuration. */
 export const EmulatedServices = Schema.Struct({
-  google: Provider,
+  google: GoogleProvider,
   github: Provider,
   mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
   company: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),

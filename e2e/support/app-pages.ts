@@ -35,8 +35,10 @@ export const waitForAppUrl = (session: Session, path: string) =>
         schedule: Schedule.spaced("2 seconds"),
         times: 120,
       }),
+      Effect.ensuring(
+        Effect.suspend(() => evidence.json("app-domain-readiness.json", { statuses })),
+      ),
     );
-    yield* evidence.json("app-domain-readiness.json", { statuses });
     return url;
   });
 
@@ -48,10 +50,19 @@ export const openPrivateApp = (url: string) =>
     const origin = destination.origin;
     yield* browser.use("A new app origin returns through its sign-in callback", (page) =>
       Promise.all([
-        page.waitForURL(
-          (value) => value.origin === origin && value.pathname === "/_executor/auth/callback",
-          { waitUntil: "domcontentloaded" },
-        ),
+        // A previous page can still be navigating when this starts. Observe the
+        // callback's committed main frame; an unrelated aborted navigation is
+        // not a failure of the new app's handshake.
+        page.waitForEvent("framenavigated", {
+          predicate: (frame) => {
+            const value = new URL(frame.url());
+            return (
+              frame === page.mainFrame() &&
+              value.origin === origin &&
+              value.pathname === "/_executor/auth/callback"
+            );
+          },
+        }),
         page.url() === destination.href ? page.reload() : page.goto(destination.href),
       ]),
     );

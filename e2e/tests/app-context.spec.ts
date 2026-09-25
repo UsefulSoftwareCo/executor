@@ -1,7 +1,7 @@
 import { createProfile } from "../support/profiles.ts";
 /** Real hosted HTTP checks for separately declared handlers and their invocation-owned context. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
@@ -74,7 +74,7 @@ export const messages = {
 import { requirements } from "./context.ts";
 import { list, save, broken, invalid, guarded, forbidden, messages } from "./handlers.ts";
 export default defineApp(requirements, {
-  queries: { list, forbidden }, mutations: { save, broken, invalid, guarded }, webhooks: { messages }
+  queries: { list, forbidden }, mutations: { save, broken, invalid, guarded }
 });`,
   },
 ];
@@ -95,17 +95,52 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const name = `Context ${randomUUID().slice(0, 8)}`;
-        const created: { app?: string; account?: string; subscription?: string } = {};
+        const created: { app?: string; account?: string; profile?: string } = {};
+        const settleProfile = (
+          expected:
+            | { readonly status: "ready"; readonly deployment: string }
+            | { readonly status: "removed" },
+        ) =>
+          Effect.gen(function* () {
+            const deadline = (yield* Clock.currentTimeMillis) + 15000;
+            for (;;) {
+              const response = yield* api.request(
+                actors.owner,
+                "POST",
+                `${prefix}/apps/${created.app}/profiles/${created.profile}/reconcile`,
+              );
+              expect(response.status).toBe(200);
+              const current = yield* body(
+                Schema.Struct({
+                  status: Schema.String,
+                  reconciledDeployment: Schema.NullOr(Schema.String),
+                }),
+                response,
+              );
+              if (
+                current.status === expected.status &&
+                (expected.status === "removed" ||
+                  current.reconciledDeployment === expected.deployment)
+              )
+                return;
+              expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(
+                deadline,
+              );
+              yield* Effect.sleep("100 millis");
+            }
+          });
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            if (created.subscription)
+            if (created.profile) {
               expect(
                 (yield* api.request(
                   actors.owner,
                   "DELETE",
-                  `${prefix}/apps/${created.app}/webhooks/${created.subscription}`,
+                  `${prefix}/apps/${created.app}/profiles/${created.profile}`,
                 )).status,
               ).toBe(200);
+              yield* settleProfile({ status: "removed" });
+            }
             if (created.app)
               expect(
                 (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created.app}`))
@@ -129,6 +164,7 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         const app = (yield* body(App, deployed)).id;
         created.app = app;
         const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app}`);
+        created.profile = profile.id;
         const connection = yield* api.request(
           actors.owner,
           "POST",
@@ -176,15 +212,38 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           { body: "before", source: "first" },
           { body: "after", source: "second" },
         ]);
-        const registered = yield* api.request(
-          actors.owner,
-          "POST",
-          `${prefix}/apps/${app}/webhooks`,
-          { name: "messages", key: name, config: {}, profile: profile.id },
+        // Introduce the webhook only after the mutation assertions. Profile setup
+        // owns registration; racing it with manual registration creates two hooks.
+        const updated = yield* api.request(actors.owner, "POST", `${prefix}/apps/${app}/deploy`, {
+          files: files.map((file) =>
+            file.path === "index.ts"
+              ? {
+                  ...file,
+                  content: file.content.replace(
+                    "mutations: { save, broken, invalid, guarded }",
+                    "mutations: { save, broken, invalid, guarded }, webhooks: { messages }",
+                  ),
+                }
+              : file,
+          ),
+        });
+        expect(updated.status).toBe(200);
+        const { activeDeployment } = yield* body(
+          Schema.Struct({ activeDeployment: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app}`),
         );
-        expect(registered.status).toBe(200);
-        const subscription = yield* body(Subscription, registered);
-        created.subscription = subscription.id;
+        yield* settleProfile({ status: "ready", deployment: activeDeployment });
+        const subscriptions = yield* body(
+          Schema.Array(Subscription),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/apps/${app}/webhooks?profile=${profile.id}`,
+          ),
+        );
+        expect(subscriptions).toHaveLength(1);
+        const subscription = subscriptions[0];
+        if (subscription === undefined) return yield* Effect.die(new Error("Webhook missing"));
         expect(subscription.status).toBe("active");
         const anonymous = yield* api.session();
         const callback = new URL(subscription.callbackUrl).pathname;

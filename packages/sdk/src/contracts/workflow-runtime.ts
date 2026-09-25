@@ -60,6 +60,7 @@ export interface WorkflowHost {
       readonly name: string;
       readonly input: typeof WorkflowValue.Type;
       readonly stepId: string;
+      readonly timeout: number;
     },
   ) => Effect.Effect<typeof WorkflowValue.Type, WorkflowFailure>;
   readonly execute: (

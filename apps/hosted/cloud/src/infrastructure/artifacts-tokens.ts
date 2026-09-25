@@ -24,6 +24,7 @@ import {
 } from "effect";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudTelemetry } from "./telemetry.ts";
+import { providerFailureCode } from "../implementation/provider-failure.ts";
 
 const tokenLifetimeSeconds = 31_536_000;
 const refreshBeforeExpiryMs = 5 * 60_000;
@@ -172,6 +173,20 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
             const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
             const created = yield* Effect.acquireRelease(
               binding.create(repository, { setDefaultBranch: "main" }).pipe(
+                Effect.tapError((error) =>
+                  Effect.annotateCurrentSpan(
+                    "source.repository.create.failure",
+                    providerFailureCode(error),
+                  ),
+                ),
+                // Creation is keyed by the same immutable repository ID. If an
+                // internal provider failure committed before its reply failed,
+                // ALREADY_EXISTS below reconciles the existing repository.
+                Effect.retry({
+                  while: (error) => providerFailureCode(error) === "internal",
+                  schedule: Schedule.exponential("1 second"),
+                  times: 2,
+                }),
                 Effect.withSpan("source.repository.create"),
                 Effect.catchTag("ArtifactsError", (error) =>
                   Option.isSome(
@@ -293,7 +308,16 @@ export const cloudArtifactsTokens = (
         Effect.gen(function* () {
           const raw = yield* coordinator
             .getByName(repository)
-            .acquire(repository, rejectedGeneration, yield* currentTraceContext);
+            .acquire(repository, rejectedGeneration, yield* currentTraceContext)
+            .pipe(
+              Effect.tapError((error) =>
+                Effect.annotateCurrentSpan(
+                  "source.repository.rpc.failure",
+                  providerFailureCode(error),
+                ),
+              ),
+              Effect.withSpan("source.repository.credentials.rpc"),
+            );
           const payload = yield* decrypt(repository, raw).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(credential)),
           );
@@ -303,7 +327,16 @@ export const cloudArtifactsTokens = (
         Effect.gen(function* () {
           const raw = yield* coordinator
             .getByName(repository)
-            .create(repository, yield* currentTraceContext);
+            .create(repository, yield* currentTraceContext)
+            .pipe(
+              Effect.tapError((error) =>
+                Effect.annotateCurrentSpan(
+                  "source.repository.rpc.failure",
+                  providerFailureCode(error),
+                ),
+              ),
+              Effect.withSpan("source.repository.initialize.rpc"),
+            );
           if (raw === null) return null;
           const payload = yield* decrypt(repository, raw).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(creation)),

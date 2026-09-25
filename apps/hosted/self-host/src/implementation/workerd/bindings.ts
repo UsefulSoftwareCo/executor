@@ -97,18 +97,24 @@ export const bindingRepositories = (binding: HttpBinding, directory: string) => 
   });
 };
 
-/** DNS restrictions are enforced by workerd's network service at connection time. */
+/**
+ * DNS restrictions are enforced by workerd's network service at connection time. Requests for
+ * this instance's own dashboard origin go to the product through a service binding instead,
+ * whatever that origin's name resolves to.
+ */
 export const bindingHttpClient = (
   policy: UrlPolicy,
   publicNetwork: HttpBinding,
   privateNetwork: HttpBinding,
+  self: { readonly origin: string; readonly binding: HttpBinding },
 ) =>
   Effect.gen(function* () {
+    const selfOrigin = new URL(self.origin).origin;
     const checkedFetch: typeof fetch = async (input, init) => {
-      const destination = parseDestination(
-        input instanceof Request ? input.url : String(input),
-        policy,
-      );
+      const url = input instanceof Request ? input.url : String(input);
+      if (URL.parse(url)?.origin === selfOrigin)
+        return self.binding.fetch(new Request(input, { ...init, redirect: "manual" }));
+      const destination = parseDestination(url, policy);
       if (destination === undefined) throw new Error("Requested destination refused");
       const network =
         (policy.allowLoopbackHttp && isLoopbackHostname(destination.hostname)) ||

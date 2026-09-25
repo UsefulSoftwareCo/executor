@@ -18,6 +18,7 @@ import {
   GraphqlIntrospection,
   GraphqlResponse,
   GraphqlToolsOptions,
+  type GraphqlToolDefinition,
   type GraphqlField,
   type GraphqlTools,
   type GraphqlTypeRef,
@@ -39,8 +40,10 @@ function typeName(type: GraphqlTypeRef): string {
   return type.name;
 }
 
-function fieldInput(field: GraphqlField, catalog: GraphqlIntrospection) {
-  const types = new Map(catalog.__schema.types.map((type) => [type.name, type]));
+function fieldInput(
+  field: GraphqlField,
+  types: ReadonlyMap<string, GraphqlIntrospection["__schema"]["types"][number]>,
+) {
   const definitions = new Map<string, JsonObject>();
   const convert = (ref: GraphqlTypeRef): JsonObject =>
     ref.kind === "NON_NULL" ? nonNull(wrapped(ref)) : { anyOf: [nonNull(ref), { type: "null" }] };
@@ -146,9 +149,7 @@ function selection(text: string): SelectionSetNode {
 }
 
 /** Resolve schema and calls per account evaluation; never cache credentials or tools globally. */
-export const graphqlToolsEffect = (
-  input: GraphqlToolsOptions,
-): Effect.Effect<GraphqlTools, GraphqlError | ProviderError> =>
+export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
   Effect.gen(function* () {
     const options = yield* Schema.decodeUnknownEffect(GraphqlToolsOptions)(input).pipe(
       Effect.mapError(() => new GraphqlError({ phase: "discover", reason: "invalid_input" })),
@@ -210,7 +211,7 @@ export const graphqlToolsEffect = (
               : new GraphqlError({ phase, reason: "request" }),
         ),
       );
-    const catalog = yield* request("discover", getIntrospectionQuery()).pipe(
+    const discover = request("discover", getIntrospectionQuery()).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(GraphqlIntrospection)),
       Effect.mapError((error) =>
         error instanceof GraphqlError || error instanceof ProviderError
@@ -218,106 +219,150 @@ export const graphqlToolsEffect = (
           : new GraphqlError({ phase: "discover", reason: "invalid_response" }),
       ),
     );
-    const roots = [
-      { kind: OperationTypeNode.QUERY, type: catalog.__schema.queryType },
-      { kind: OperationTypeNode.MUTATION, type: catalog.__schema.mutationType },
-    ].flatMap(({ kind, type }) =>
+    return { request, discover };
+  });
+
+/** Build serializable definitions once per introspection revision, without compiling validators. */
+export const graphqlDefinitions = (catalog: GraphqlIntrospection) =>
+  Effect.gen(function* () {
+    const types = new Map(catalog.__schema.types.map((type) => [type.name, type]));
+    const roots = (
+      [
+        { kind: OperationTypeNode.QUERY, type: catalog.__schema.queryType },
+        { kind: OperationTypeNode.MUTATION, type: catalog.__schema.mutationType },
+      ] as const
+    ).flatMap(({ kind, type }) =>
       (catalog.__schema.types.find((item) => item.name === type?.name)?.fields ?? []).map(
         (field) => ({ kind, field }),
       ),
     );
-    const entries = yield* Effect.forEach(roots, ({ kind, field }) =>
+    return yield* Effect.forEach(roots, ({ kind, field }) =>
       Effect.gen(function* () {
         const definition = yield* Effect.try({
-          try: () => fieldInput(field, catalog),
+          try: () => fieldInput(field, types),
           catch: () => new GraphqlError({ phase: "discover", reason: "invalid_response" }),
         });
-        const decoder = yield* jsonSchemaDecoder(definition.schema).pipe(
-          Effect.mapError(
-            () => new GraphqlError({ phase: "discover", reason: "invalid_response" }),
-          ),
-        );
-        const name = kind + "_" + field.name;
-        const tool: GraphqlTools[string] = {
-          description: field.description ?? field.name,
-          readOnly: kind === OperationTypeNode.QUERY,
-          input: decoder,
-          run: (_context, input) =>
-            Effect.gen(function* () {
-              const args = yield* Schema.decodeUnknownEffect(decoder)(input).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
-                Effect.mapError(() => new GraphqlError({ phase: "call", reason: "invalid_input" })),
-              );
-              const variables = yield* Schema.decodeUnknownEffect(JsonObject)(
-                args.arguments ?? {},
-              ).pipe(
-                Effect.mapError(() => new GraphqlError({ phase: "call", reason: "invalid_input" })),
-              );
-              const query = yield* Effect.try({
-                try: () => {
-                  const used = field.args.filter((arg) => Object.hasOwn(variables, arg.name));
-                  return print({
-                    kind: Kind.DOCUMENT,
-                    definitions: [
-                      {
-                        kind: Kind.OPERATION_DEFINITION,
-                        operation: kind,
-                        variableDefinitions: used.map((arg) => ({
-                          kind: Kind.VARIABLE_DEFINITION,
-                          variable: {
-                            kind: Kind.VARIABLE,
-                            name: { kind: Kind.NAME, value: arg.name },
-                          },
-                          type: parseType(typeName(arg.type)),
-                        })),
-                        selectionSet: {
-                          kind: Kind.SELECTION_SET,
-                          selections: [
-                            {
-                              kind: Kind.FIELD,
-                              name: { kind: Kind.NAME, value: field.name },
-                              arguments: used.map((arg) => ({
-                                kind: Kind.ARGUMENT,
-                                name: { kind: Kind.NAME, value: arg.name },
-                                value: {
-                                  kind: Kind.VARIABLE,
-                                  name: { kind: Kind.NAME, value: arg.name },
-                                },
-                              })),
-                              ...(definition.composite
-                                ? {
-                                    selectionSet: selection(
-                                      typeof args.select === "string"
-                                        ? args.select
-                                        : definition.selection,
-                                    ),
-                                  }
-                                : {}),
-                            },
-                          ],
-                        },
-                      },
-                    ],
-                  });
-                },
-                catch: () => new GraphqlError({ phase: "call", reason: "invalid_input" }),
-              });
-              const data = yield* request("call", query, variables);
-              const value = Object.hasOwn(data, field.name) ? data[field.name] : undefined;
-              if (value === undefined)
-                return yield* new GraphqlError({ phase: "call", reason: "invalid_response" });
-              return value;
-            }).pipe(
-              Effect.withSpan("provider.graphql.call", {
-                attributes: {
-                  "graphql.operation.type": kind,
-                  "executor.tool.name": name,
-                },
-              }),
-            ),
-        };
-        return [name, tool] as const;
+        return yield* Effect.try({
+          try: () => ({
+            name: kind + "_" + field.name,
+            kind,
+            field: field.name,
+            description: field.description ?? field.name,
+            arguments: field.args.map((arg) => ({ name: arg.name, type: typeName(arg.type) })),
+            inputSchema: definition.schema,
+            composite: definition.composite,
+            selection: definition.selection,
+          }),
+          catch: () => new GraphqlError({ phase: "discover", reason: "invalid_response" }),
+        });
       }),
     );
-    return Object.fromEntries(entries);
+  });
+
+/** Bind only the selected definition to current credentials and compile its input decoder. */
+export const adaptGraphqlTool = (
+  client: Effect.Success<ReturnType<typeof graphqlClientEffect>>,
+  definition: GraphqlToolDefinition,
+) =>
+  Effect.gen(function* () {
+    const decoder = yield* jsonSchemaDecoder(definition.inputSchema).pipe(
+      Effect.mapError(() => new GraphqlError({ phase: "discover", reason: "invalid_response" })),
+    );
+    const kind = definition.kind === "query" ? OperationTypeNode.QUERY : OperationTypeNode.MUTATION;
+    const name = definition.name;
+    const tool: GraphqlTools[string] = {
+      description: definition.description,
+      readOnly: kind === OperationTypeNode.QUERY,
+      input: decoder,
+      run: (_context, input) =>
+        Effect.gen(function* () {
+          const args = yield* Schema.decodeUnknownEffect(decoder)(input).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
+            Effect.mapError(() => new GraphqlError({ phase: "call", reason: "invalid_input" })),
+          );
+          const variables = yield* Schema.decodeUnknownEffect(JsonObject)(
+            args.arguments ?? {},
+          ).pipe(
+            Effect.mapError(() => new GraphqlError({ phase: "call", reason: "invalid_input" })),
+          );
+          const query = yield* Effect.try({
+            try: () => {
+              const used = definition.arguments.filter((arg) => Object.hasOwn(variables, arg.name));
+              return print({
+                kind: Kind.DOCUMENT,
+                definitions: [
+                  {
+                    kind: Kind.OPERATION_DEFINITION,
+                    operation: kind,
+                    variableDefinitions: used.map((arg) => ({
+                      kind: Kind.VARIABLE_DEFINITION,
+                      variable: {
+                        kind: Kind.VARIABLE,
+                        name: { kind: Kind.NAME, value: arg.name },
+                      },
+                      type: parseType(arg.type),
+                    })),
+                    selectionSet: {
+                      kind: Kind.SELECTION_SET,
+                      selections: [
+                        {
+                          kind: Kind.FIELD,
+                          name: { kind: Kind.NAME, value: definition.field },
+                          arguments: used.map((arg) => ({
+                            kind: Kind.ARGUMENT,
+                            name: { kind: Kind.NAME, value: arg.name },
+                            value: {
+                              kind: Kind.VARIABLE,
+                              name: { kind: Kind.NAME, value: arg.name },
+                            },
+                          })),
+                          ...(definition.composite
+                            ? {
+                                selectionSet: selection(
+                                  typeof args.select === "string"
+                                    ? args.select
+                                    : definition.selection,
+                                ),
+                              }
+                            : {}),
+                        },
+                      ],
+                    },
+                  },
+                ],
+              });
+            },
+            catch: () => new GraphqlError({ phase: "call", reason: "invalid_input" }),
+          });
+          const data = yield* client.request("call", query, variables);
+          const value = Object.hasOwn(data, definition.field) ? data[definition.field] : undefined;
+          if (value === undefined)
+            return yield* new GraphqlError({ phase: "call", reason: "invalid_response" });
+          return value;
+        }).pipe(
+          Effect.withSpan("provider.graphql.call", {
+            attributes: {
+              "graphql.operation.type": kind,
+              "executor.tool.name": name,
+            },
+          }),
+        ),
+    };
+    return tool;
+  });
+
+/** Low-level callers can still request a complete invocation-owned tool map. */
+export const graphqlToolsEffect = (
+  input: GraphqlToolsOptions,
+): Effect.Effect<GraphqlTools, GraphqlError | ProviderError> =>
+  Effect.gen(function* () {
+    const client = yield* graphqlClientEffect(input);
+    const definitions = yield* client.discover.pipe(Effect.flatMap(graphqlDefinitions));
+    return Object.fromEntries(
+      yield* Effect.forEach(definitions, (definition) =>
+        adaptGraphqlTool(client, definition).pipe(
+          Effect.map((tool) => [definition.name, tool] as const),
+        ),
+      ),
+    );
   });

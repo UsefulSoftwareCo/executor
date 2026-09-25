@@ -1,6 +1,6 @@
 {
   "extends": "../../../tsconfig.json",
   "compilerOptions": { "types": ["node", "electron"] },
-  "include": ["src", "test"],
+  "include": ["src"],
   "exclude": []
 }

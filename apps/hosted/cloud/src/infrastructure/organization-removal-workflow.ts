@@ -8,11 +8,13 @@ import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
  * all, so it needs no workflow here.
  */
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Cause, Effect, Layer } from "effect";
+import { Cause, Effect, Layer, Schema } from "effect";
+import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import {
   OrganizationBilling,
   OrganizationId,
   OrganizationRemovalFailed,
+  OrganizationRemovalUnavailable,
   removeOrganizationDurably,
   type OrganizationRemovalStepRunner,
 } from "@executor-js/hosted-server";
@@ -42,10 +44,17 @@ const runner =
     Cloudflare.Workflows.task(
       name,
       work.pipe(
+        Effect.withSpan("organization.removal.step", {
+          attributes: { "executor.organization.id": organization, "executor.removal.step": name },
+        }),
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.interrupt
-            : Effect.die(new OrganizationRemovalFailed({ organization, step: name })),
+            : Effect.logError("Organization removal step failed", cause).pipe(
+                Effect.andThen(
+                  Effect.die(new OrganizationRemovalFailed({ organization, step: name })),
+                ),
+              ),
         ),
       ),
       { retries },
@@ -86,3 +95,60 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
       });
   }).pipe(Effect.provide(cloudAuthDatabase)),
 ) {}
+
+/** Adopt the stable removal instance, including when a create response was lost. */
+export const startOrganizationRemoval = (organization: OrganizationId, instance: string) =>
+  Effect.gen(function* () {
+    const workflow = yield* OrganizationRemoval;
+    const status = workflow.get(instance).pipe(
+      Effect.flatMap((run) => run.status()),
+      Effect.map((state) => state.status),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed("unknown" as const),
+      ),
+    );
+    if ((yield* status) !== "unknown") return;
+    yield* workflow
+      .create({ id: instance, params: { organization } })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.flatMap(status, (current) =>
+                current === "unknown"
+                  ? Effect.fail(new OrganizationRemovalUnavailable())
+                  : Effect.void,
+              ),
+        ),
+      );
+  });
+
+/** Tombstones are the durable start journal; recover a provider refusal or process loss. */
+export const dispatchOrganizationRemovals = Effect.gen(function* () {
+  const sql = yield* Effect.flatten(GroupDatabase);
+  const pending = yield* sql`select organization_id, instance_id from hosted_organization_removal
+    where status = 'running' order by started_at limit 50`.pipe(
+    Effect.flatMap(
+      Schema.decodeUnknownEffect(
+        Schema.Array(
+          Schema.Struct({
+            organization_id: OrganizationId,
+            instance_id: Schema.NonEmptyString,
+          }),
+        ),
+      ),
+    ),
+  );
+  yield* Effect.forEach(
+    pending,
+    (record) =>
+      startOrganizationRemoval(record.organization_id, record.instance_id).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("Organization removal start remains pending", {
+            organization: record.organization_id,
+          }),
+        ),
+      ),
+    { concurrency: 2, discard: true },
+  );
+}).pipe(Effect.withSpan("job.organization-removal.dispatch"));

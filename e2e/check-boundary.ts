@@ -1,5 +1,6 @@
 /** Check every test/helper import using Effect's filesystem and scoped Node runtime. */
 import ts from "typescript";
+import { scenarios, type TestPlan } from "./test-plan.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema, type PlatformError } from "effect";
@@ -34,6 +35,7 @@ const check = Effect.gen(function* () {
   const path = yield* Path.Path;
   const root = path.resolve("e2e");
   const problems: string[] = [];
+  const plan = new Map<string, typeof TestPlan.Type>(Object.entries(scenarios));
   const walk = (directory: string): Effect.Effect<void, PlatformError.PlatformError> =>
     Effect.gen(function* () {
       for (const name of yield* fs.readDirectory(directory)) {
@@ -81,6 +83,30 @@ const check = Effect.gen(function* () {
           problems.push(`${label}: forbidden E2E import ${specifier}`);
         };
         const visit = (node: ts.Node) => {
+          if (
+            label.startsWith(`tests${path.sep}`) &&
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            node.expression.text === "withHostedCase"
+          ) {
+            // The case and native setup hook must agree before we start a server.
+            for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+              if (!ts.isCallExpression(parent)) continue;
+              const title = parent.arguments[0];
+              if (!title || !ts.isPropertyAccessExpression(title) || title.name.text !== "title")
+                continue;
+              const entry = title.expression;
+              if (
+                !ts.isPropertyAccessExpression(entry) ||
+                !ts.isIdentifier(entry.expression) ||
+                entry.expression.text !== "scenarios"
+              )
+                continue;
+              if (plan.get(entry.name.text)?.fixtures !== "actors")
+                problems.push(`${label}: scenarios.${entry.name.text} must declare actor fixtures`);
+              break;
+            }
+          }
           if (
             !label.startsWith(`viewer${path.sep}`) &&
             ts.canHaveModifiers(node) &&

@@ -1,6 +1,6 @@
 /** A control registry survives failed builds, stopped terminals, and failed cloud deletion. */
 import { Client } from "pg";
-import { Config, Effect, Redacted, Schema } from "effect";
+import { Config, Deferred, Effect, Redacted, Schema } from "effect";
 import {
   TestStageFailed,
   TestStageLease,
@@ -117,34 +117,41 @@ export const withStageAdmin = <A, E, R>(
         return yield* failed(
           "The staging control database needs a direct PlanetScale URL for postgres.",
         );
+      const disconnected = yield* Deferred.make<never, TestStageFailed>();
+      const lost = () => {
+        // Native socket events can arrive while scope finalizers are closing the client.
+        Deferred.doneUnsafe(
+          disconnected,
+          Effect.fail(
+            failed("The staging control connection closed. The operation was interrupted."),
+          ),
+        );
+      };
       const client = yield* Effect.acquireRelease(
-        Effect.sync(
-          () =>
-            new Client({
-              connectionString: Redacted.value(configured),
-              connectionTimeoutMillis: 15000,
-              query_timeout: 15000,
-              application_name: "executor-test-stage",
-            }),
-        ),
-        (client) => Effect.promise(() => client.end()).pipe(Effect.ignore),
-      );
-      const disconnected = Effect.callback<never, TestStageFailed>((resume) => {
-        const lost = () =>
-          resume(
-            Effect.fail(
-              failed("The staging control connection closed. The operation was interrupted."),
+        Effect.sync(() => {
+          const client = new Client({
+            connectionString: Redacted.value(configured),
+            connectionTimeoutMillis: 15000,
+            query_timeout: 15000,
+            application_name: "executor-test-stage",
+          });
+          client.on("error", lost);
+          client.on("end", lost);
+          return client;
+        }),
+        (client) =>
+          Effect.promise(() => client.end()).pipe(
+            Effect.ignore,
+            Effect.ensuring(
+              Effect.sync(() => {
+                client.off("error", lost);
+                client.off("end", lost);
+              }),
             ),
-          );
-        client.on("error", lost);
-        client.on("end", lost);
-        return Effect.sync(() => {
-          client.off("error", lost);
-          client.off("end", lost);
-        });
-      });
+          ),
+      );
       return yield* Effect.raceFirst(
-        disconnected,
+        Deferred.await(disconnected),
         Effect.gen(function* () {
           yield* Effect.tryPromise({
             try: () => client.connect(),

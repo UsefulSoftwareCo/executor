@@ -1,6 +1,6 @@
-/** One hosted MCP scenario, unchanged between Node self-host and Cloudflare. */
+/** Hosted MCP journeys use isolated grants and run against Node and Cloudflare. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -52,7 +52,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           }),
         );
         const { app, name, receipt } = yield* deployMcpApp;
-        const hidden = yield* deployMcpApp;
         yield* browser.login(actors.owner);
         const grant = yield* evidence.step(
           "Authorize an organization-bound MCP grant in the browser",
@@ -107,6 +106,75 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           (yield* Schema.decodeUnknownEffect(Completed)(call.structuredContent)).execution.value,
         ).toEqual({ message: "from MCP", receipt });
         yield* evidence.json("mcp-invocation.json", call.structuredContent);
+        // Narrow the persisted grant through its public browser API. The open MCP session must obey it immediately.
+        const grants = yield* body(
+          Schema.Array(
+            Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),
+          ),
+          yield* api.request(actors.owner, "GET", "/api/auth/mcp/grants"),
+        );
+        const granted = grants.find((item) => item.clientId === grant.clientId);
+        if (granted === undefined) return yield* Effect.die("The OAuth grant was not persisted");
+        const narrow = yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
+          id: granted.grant.id,
+          policy: {
+            kind: "tools",
+            approval: "client",
+            apps: [{ app: app.id, tools: { kind: "selected", names: ["mutations.echo"] } }],
+          },
+        });
+        expect(narrow.status).toBe(200);
+        const refreshed = yield* evidence.step("Refresh the OAuth grant", oauth.refresh(grant));
+        expect(
+          Redacted.value(refreshed.tokens).refresh_token ===
+            Redacted.value(grant.tokens).refresh_token,
+        ).toBe(false);
+        const renewed = yield* mcp.connect(
+          Redacted.make(Redacted.value(refreshed.tokens).access_token),
+          "refreshed",
+        );
+        const afterRefresh = yield* renewed.use(
+          "The refreshed grant can still execute",
+          (client, signal) =>
+            client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Completed)(afterRefresh.structuredContent)).execution
+            .value,
+        ).toEqual({ message: "from MCP", receipt });
+        yield* evidence.step(
+          "Revoking consent rejects access and refresh",
+          Effect.gen(function* () {
+            yield* oauth.revoke(refreshed);
+            const denied = yield* api.request(anonymous, "GET", "/mcp", undefined, {
+              authorization: `Bearer ${Redacted.value(refreshed.tokens).access_token}`,
+            });
+            expect(denied.status).toBe(401);
+            expect(yield* oauth.refreshStatus(refreshed)).toBe(400);
+          }),
+        );
+      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+    ),
+  );
+
+  it.effect(scenarios.mcpSkills.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          browser = yield* Browser,
+          oauth = yield* McpOAuth,
+          mcp = yield* McpClient;
+        const [{ app }, hidden] = yield* Effect.all([deployMcpApp, deployMcpApp], {
+          concurrency: 2,
+        });
+        yield* browser.login(actors.owner);
+        const grant = yield* oauth.authorize;
+        const client = yield* mcp.connect(
+          Redacted.make(Redacted.value(grant.tokens).access_token),
+          "skills",
+        );
         const skillIndex = Schema.Struct({
           skills: Schema.Array(
             Schema.Struct({
@@ -119,14 +187,27 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           content: Schema.String,
           deployment: Schema.String,
         });
-        const allSkills = yield* client.use(
-          "Discover the default Executor app's authoring skill",
-          (client, signal) =>
+        // The default app installs asynchronously after signup. Observe its public
+        // MCP catalog instead of depending on how long earlier test actions took.
+        const guide = yield* client
+          .use("Discover the default Executor app's authoring skill", (client, signal) =>
             client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
-        );
-        const guide = (yield* Schema.decodeUnknownEffect(skillIndex)(
-          allSkills.structuredContent,
-        )).skills.find((entry) => entry.app.slug === "executor" && entry.name === "app-authoring");
+          )
+          .pipe(
+            Effect.flatMap((result) =>
+              Schema.decodeUnknownEffect(skillIndex)(result.structuredContent),
+            ),
+            Effect.map((index) =>
+              index.skills.find(
+                (entry) => entry.app.slug === "executor" && entry.name === "app-authoring",
+              ),
+            ),
+            Effect.repeat({
+              schedule: Schedule.spaced("250 millis"),
+              until: (guide) => guide !== undefined,
+            }),
+            Effect.timeout("15 seconds"),
+          );
         if (guide === undefined)
           return yield* Effect.die("The installed Executor app must contain its authoring skill");
         const guideResponse = yield* client.use(
@@ -243,35 +324,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           (yield* Schema.decodeUnknownEffect(skillDocument)(stillAllowed.structuredContent))
             .deployment,
         ).toBe(doc.deployment);
-        const refreshed = yield* evidence.step("Refresh the OAuth grant", oauth.refresh(grant));
-        expect(
-          Redacted.value(refreshed.tokens).refresh_token ===
-            Redacted.value(grant.tokens).refresh_token,
-        ).toBe(false);
-        const renewed = yield* mcp.connect(
-          Redacted.make(Redacted.value(refreshed.tokens).access_token),
-          "refreshed",
-        );
-        const afterRefresh = yield* renewed.use(
-          "The refreshed grant can still execute",
-          (client, signal) =>
-            client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
-        );
-        expect(
-          (yield* Schema.decodeUnknownEffect(Completed)(afterRefresh.structuredContent)).execution
-            .value,
-        ).toEqual({ message: "from MCP", receipt });
-        yield* evidence.step(
-          "Revoking consent rejects access and refresh",
-          Effect.gen(function* () {
-            yield* oauth.revoke(refreshed);
-            const denied = yield* api.request(anonymous, "GET", "/mcp", undefined, {
-              authorization: `Bearer ${Redacted.value(refreshed.tokens).access_token}`,
-            });
-            expect(denied.status).toBe(401);
-            expect(yield* oauth.refreshStatus(refreshed)).toBe(400);
-          }),
-        );
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

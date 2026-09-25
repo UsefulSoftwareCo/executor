@@ -31,8 +31,9 @@ const currentAccess = (headers: Headers, organization: OrganizationId, app: AppD
       return grant.access;
     }
     const auth = yield* Authentication;
-    if ((yield* auth.current(headers)) === null) return yield* new Unauthorized();
-    const membership = yield* auth.membership(headers, organization);
+    const principal = yield* auth.current(headers);
+    if (principal === null) return yield* new Unauthorized();
+    const membership = yield* auth.membership(principal, organization);
     return { organization, owner: organizationOwner(organization), role: membership.role };
   });
 /** Check app ownership and selected accounts before invoking author code. */

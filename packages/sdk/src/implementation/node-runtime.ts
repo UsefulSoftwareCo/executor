@@ -1,8 +1,9 @@
+import { nodeCacheSession } from "./node-cache.ts";
 import { AppSkills } from "apps/contracts";
 /** Retained trusted-code builds using Effect platform services and direct handler invocation. */
 import { build as compile } from "esbuild";
 import { captureTelemetry, traceHeaders } from "@executor-js/telemetry";
-import { Crypto, Effect, FileSystem, Path, Redacted, Schema } from "effect";
+import { Crypto, Effect, Exit, FileSystem, Path, Redacted, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import {
   HostRequirementsError,
@@ -14,6 +15,10 @@ import {
   HostResponse,
   ToolResultObservation,
   HostedTool,
+  HostedToolSummary,
+  indexCommand,
+  inspectCommand,
+  selectTools,
   type HostContext,
   type ResolvedAccountsInput,
 } from "apps/contracts";
@@ -120,6 +125,42 @@ function dispatch<A, E>(
 
 /** Create native operations; the composition boundary supplies platform services. */
 export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeServices> => {
+  // Node has no request waitUntil. The runtime owns bounded sessions through their completion.
+  const refreshes = new Set<Promise<void>>();
+  const cachedDispatch = <A, E>(
+    handler: Handler,
+    command: HostRequest,
+    context: HostContext & { readonly app: string },
+    value: Schema.Decoder<A>,
+    error: Schema.Decoder<E>,
+    build: BuildId,
+  ) =>
+    Effect.gen(function* () {
+      const session = yield* nodeCacheSession(options.workDirectory, context.app, build).pipe(
+        Effect.mapError(() => new RuntimeProtocolFailed()),
+      );
+      return yield* dispatch(
+        handler,
+        command,
+        { ...context, cache: session.cache },
+        value,
+        error,
+      ).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            const work = (Exit.isSuccess(exit) ? session.drain() : session.cancel()).then(
+              () => {
+                refreshes.delete(work);
+              },
+              () => {
+                refreshes.delete(work);
+              },
+            );
+            refreshes.add(work);
+          }),
+        ),
+      );
+    });
   const load = (build: BuildId) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
@@ -401,29 +442,60 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
     skills: ({ build, ...context }) =>
       load(build).pipe(
         Effect.flatMap((handler) =>
-          dispatch(handler, { operation: "skills" }, context, AppSkills, HostInspectError),
+          cachedDispatch(
+            handler,
+            { operation: "skills" },
+            context,
+            AppSkills,
+            HostInspectError,
+            build,
+          ),
         ),
         Effect.withSpan("runtime.node.skills"),
       ),
-    inspect: ({ build, ...context }) =>
+    inspect: ({ build, tools, ...context }) =>
       load(build)
         .pipe(
           Effect.flatMap((handler) =>
-            dispatch(
+            cachedDispatch(
               handler,
-              { operation: "inspect" },
+              inspectCommand(tools),
               context,
               Schema.Array(HostedTool),
               HostInspectError,
+              build,
+            ),
+          ),
+          Effect.map(selectTools(tools)),
+        )
+        .pipe(Effect.withSpan("runtime.node.inspect")),
+    index: ({ build, ...context }) =>
+      load(build)
+        .pipe(
+          Effect.flatMap((handler) =>
+            cachedDispatch(
+              handler,
+              indexCommand,
+              context,
+              Schema.Array(HostedToolSummary),
+              HostInspectError,
+              build,
             ),
           ),
         )
-        .pipe(Effect.withSpan("runtime.node.inspect")),
+        .pipe(Effect.withSpan("runtime.node.index")),
     query: ({ build, name, input, ...context }) =>
       load(build)
         .pipe(
           Effect.flatMap((handler) =>
-            dispatch(handler, { operation: "query", name, input }, context, Json, HostDataError),
+            cachedDispatch(
+              handler,
+              { operation: "query", name, input },
+              context,
+              Json,
+              HostDataError,
+              build,
+            ),
           ),
         )
         .pipe(Effect.withSpan("runtime.node.query")),
@@ -431,25 +503,43 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
       load(build)
         .pipe(
           Effect.flatMap((handler) =>
-            dispatch(handler, { operation: "mutate", name, input }, context, Json, HostDataError),
+            cachedDispatch(
+              handler,
+              { operation: "mutate", name, input },
+              context,
+              Json,
+              HostDataError,
+              build,
+            ),
           ),
         )
         .pipe(Effect.withSpan("runtime.node.mutate")),
     workflow: ({ build, command, ...context }) =>
       load(build).pipe(
-        Effect.flatMap((handler) => dispatch(handler, command, context, Json, HostCallError)),
+        Effect.flatMap((handler) =>
+          cachedDispatch(handler, command, context, Json, HostCallError, build),
+        ),
         Effect.withSpan("runtime.node.workflow"),
       ),
     webhook: ({ build, command, ...context }) =>
       load(build).pipe(
-        Effect.flatMap((handler) => dispatch(handler, command, context, Json, HostCallError)),
+        Effect.flatMap((handler) =>
+          cachedDispatch(handler, command, context, Json, HostCallError, build),
+        ),
         Effect.withSpan("runtime.node.webhook"),
       ),
     call: ({ build, tool, input, ...context }) =>
       load(build)
         .pipe(
           Effect.flatMap((handler) =>
-            dispatch(handler, { operation: "call", tool, input }, context, Json, HostCallError),
+            cachedDispatch(
+              handler,
+              { operation: "call", tool, input },
+              context,
+              Json,
+              HostCallError,
+              build,
+            ),
           ),
         )
         .pipe(Effect.withSpan("runtime.node.call")),

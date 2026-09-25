@@ -109,6 +109,11 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
                 );
                 yield* probe.releaseMetadata;
                 yield* probe.releaseSession;
+                // Phones show the sidebar's organization switcher only in the Menu sheet.
+                if (viewport.width <= 740)
+                  yield* browser.use("Open the phone menu", (page) =>
+                    page.getByRole("button", { name: "Menu", exact: true }).click(),
+                  );
                 yield* browser.use(
                   "Sidebar metadata completes without replacing the page",
                   (page) =>
@@ -116,6 +121,14 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
                       .getByRole("button", { name: /^Organization:/ })
                       .waitFor({ state: "visible" }),
                 );
+                if (viewport.width <= 740) {
+                  yield* browser.use("Close the phone menu", (page) =>
+                    page.keyboard.press("Escape"),
+                  );
+                  yield* browser.use("The phone menu closes", (page) =>
+                    page.getByRole("dialog", { name: "Menu" }).waitFor({ state: "hidden" }),
+                  );
+                }
                 yield* browser.use("Content stays loaded", (page) =>
                   page
                     .getByRole("status", { name: `Loading ${section}`, exact: true })

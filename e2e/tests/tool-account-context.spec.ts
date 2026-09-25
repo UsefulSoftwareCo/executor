@@ -62,7 +62,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
           work,
           personal,
           catalogs: [actors.organization.id, actors.organization.slug].map(
-            (reference) => `/api/organizations/${reference}/apps/${app.id}/tools`,
+            (reference) => `/api/organizations/${reference}/apps/${app.id}/tools/index`,
           ),
           select: (ids) =>
             selectProfileAccounts(actors.owner, `${prefix}/apps/${app.id}`, profile.id, {

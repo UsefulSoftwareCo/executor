@@ -1,8 +1,8 @@
 /** HTTP MCP helpers. Requires the optional @modelcontextprotocol/sdk peer. */
-import { protocolOperations, type OperationKinds } from "./implementation/protocol-operations.ts";
+import type { OperationKinds } from "./implementation/protocol-operations.ts";
 import { Effect } from "effect";
-import type { McpToolsOptions } from "./contracts/mcp.ts";
-import { mcpToolsEffect } from "./implementation/mcp.ts";
+import { mcpCatalog, type McpCatalogOptions } from "./implementation/mcp-catalog.ts";
+export type { McpCatalogOptions } from "./implementation/mcp-catalog.ts";
 export {
   McpError,
   type McpToolContext,
@@ -11,9 +11,9 @@ export {
 } from "./contracts/mcp.ts";
 
 /** Discover operations for the selected account. Kinds override uncertain upstream read-only hints. */
-export const mcpOperations = (options: McpToolsOptions, kinds: OperationKinds = {}) =>
+export const mcpOperations = (options: McpCatalogOptions, kinds: OperationKinds = {}) =>
   Effect.runPromise(
-    mcpToolsEffect(options).pipe(Effect.map((operations) => protocolOperations(operations, kinds))),
+    mcpCatalog(options, kinds),
     options.signal === undefined ? {} : { signal: options.signal },
   );
 

@@ -107,7 +107,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization API keys", (it) =
               page.waitForResponse(
                 (response) =>
                   response.request().method() === "DELETE" &&
-                  new URL(response.url()).pathname === prefix,
+                  [prefix, `/api/organizations/${slug}`].includes(new URL(response.url()).pathname),
               ),
               page
                 .getByRole("dialog")
@@ -118,11 +118,12 @@ layer(HostedLive, { excludeTestServices: true })("Organization API keys", (it) =
         expect(status).toBe(200);
         removed = true;
         yield* evidence.step(
-          "Wait for the durable removal to delete native memberships",
-          api.request(actors.owner, "GET", "/api/auth/organization/list").pipe(
-            Effect.flatMap((response) => body(Schema.Array(Organization), response)),
+          "Wait for durable removal to delete the organization's keys",
+          // The organization list hides tombstones immediately. It cannot prove that
+          // the durable deletion workflow has reached its auth-record step.
+          list.pipe(
             Effect.flatMap((remaining) =>
-              remaining.some((item) => item.id === organization.id)
+              remaining.apiKeys.some((item) => item.metadata?.organization === organization.id)
                 ? Effect.fail(new Pending())
                 : Effect.void,
             ),

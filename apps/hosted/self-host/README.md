@@ -141,10 +141,10 @@ set `EXECUTOR_APP_UI_BASE_URL` to a separate HTTPS base such as
 same server, with a matching TLS certificate. App addresses take the form
 `<app-slug>--<organization-slug>.apps.example.com`.
 
-When the dashboard origin is private, app code can reach private network
-addresses by default. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=false` to block
-that access. This also blocks the built-in Executor app from calling a private
-dashboard origin.
+App code can reach only public addresses. Requests to the dashboard origin go
+straight to the server, so the built-in Executor app works when that origin
+resolves to a private address. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true` to
+let app code reach other private network addresses.
 
 Optional OIDC SSO and observability settings are listed in [compose.yaml](compose.yaml).
 

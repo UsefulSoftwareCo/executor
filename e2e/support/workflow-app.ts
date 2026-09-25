@@ -18,7 +18,8 @@ const service = defineProvider({ name: "Workflow fixture", auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
 export const requirements = { accounts: { service }, database: defineDatabase({
-  events: table({ label: string(), source: string() })
+  events: table({ label: string(), source: string() }),
+  checkpoints: table({ label: string() })
 }) };
 export type QueryCtx = QueryContext<typeof requirements>;
 export type MutationCtx = MutationContext<typeof requirements>;
@@ -44,6 +45,12 @@ export const save = mutation({ input: object({ label: string() }) }, async (ctx:
   await new Promise((resolve) => setTimeout(resolve, 10));
   return row;
 });
+export const release = mutation({ input: object({ label: string() }) }, async (ctx: MutationCtx, input) => {
+  await ctx.db.checkpoints.insert(input);
+  return null;
+});
+export const released = query({ input: object({ label: string() }) }, async (ctx: QueryCtx, input) =>
+  (await ctx.db.checkpoints.withIndex("by_creation").collect()).some(row => row.label === input.label));
 export const denied = mutation({ input: object({}), approval: () => "denied" }, async () => "unreachable");
 export const approval = mutation({ input: object({}), approval: () => "user-approval" }, async () => "unreachable");
 export const interactive = query({ input: object({}) }, async (ctx) => {
@@ -63,7 +70,7 @@ export const history = query({ input: object({}) }, async (ctx: QueryCtx) => ctx
   {
     path: "workflows.ts",
     content: `import { workflow, object, string, NonRetryableError } from "apps";
-import { rows, save, denied, approval, interactive, timeoutWrite } from "./operations.ts";
+import { rows, save, released, denied, approval, interactive, timeoutWrite } from "./operations.ts";
 import type { WorkflowCtx } from "./context.ts";
 export const process = workflow({ input: object({ label: string() }) }, async (ctx: WorkflowCtx, input) => {
   if ("db" in ctx || "accounts" in ctx || "elicit" in ctx) throw new NonRetryableError("Invalid body context");
@@ -77,7 +84,9 @@ export const process = workflow({ input: object({ label: string() }) }, async (c
     return { source: step.accounts.service.fields.token, attempts, key };
   });
   await ctx.step.runMutation("save", save, { label: input.label + ":before" });
-  await ctx.step.sleep("hold", "12 seconds");
+  while (!(await ctx.step.runQuery("released", released, { label: input.label }))) {
+    await ctx.step.sleep("hold", "100 milliseconds");
+  }
   const after = await ctx.step.do("credential", async (step) => step.accounts.service.fields.token);
   await Promise.all(["left", "right"].map((name) => ctx.step.runMutation("save", save, { label: input.label + ":" + name })));
   const stored = await ctx.step.runQuery("read", rows, {});
@@ -109,10 +118,10 @@ export const fatal = workflow({ input: object({}) }, async (ctx: WorkflowCtx) =>
     path: "index.ts",
     content: `import { defineApp } from "apps";
 import { requirements } from "./context.ts";
-import { rows, save, denied, approval, interactive, timeoutWrite, launch, history, isolation } from "./operations.ts";
+import { rows, save, release, released, denied, approval, interactive, timeoutWrite, launch, history, isolation } from "./operations.ts";
 import * as workflows from "./workflows.ts";
 export default defineApp(requirements, {
-  queries: { rows, interactive, history, isolation }, mutations: { save, denied, approval, timeoutWrite, launch }, workflows
+  queries: { rows, released, interactive, history, isolation }, mutations: { save, release, denied, approval, timeoutWrite, launch }, workflows
 });`,
   },
 ];

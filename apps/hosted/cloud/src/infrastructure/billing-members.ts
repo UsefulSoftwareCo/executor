@@ -1,16 +1,13 @@
-/** Request-owned database reads for billing. No identity or email fields leave this adapter. */
+/** Billing's own database connection for jobs and billing routes. No identity or email fields leave it. */
 import { PgClient } from "@effect/sql-pg";
-import { OrganizationId } from "@executor-js/hosted-server";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer } from "effect";
+import { SqlClient } from "effect/unstable/sql";
 import { cloudDatabaseConnection } from "./database.ts";
 import { BillingUnavailable } from "../contracts/billing.ts";
 
-const Counts = Schema.Array(
-  Schema.Struct({ organization: OrganizationId, count: Schema.NumberFromString }),
-);
-/** Each read takes a fresh authoritative member count; pending invitations are not seats. */
+/** Run billing statements on one connection per invocation; any failure is BillingUnavailable. */
 export const billingMembers = Effect.gen(function* () {
   const connection = yield* cloudDatabaseConnection;
   const sql = yield* makeExecutionMemo(
@@ -22,20 +19,14 @@ export const billingMembers = Effect.gen(function* () {
           prepare: false,
         }),
       );
-      return yield* PgClient.PgClient.pipe(Effect.provideContext(services));
+      return yield* SqlClient.SqlClient.pipe(Effect.provideContext(services));
     }),
   );
-  const read = (organization?: OrganizationId) =>
-    Effect.gen(function* () {
-      const db = yield* sql;
-      const rows =
-        organization === undefined
-          ? yield* db`select o.id as organization, count(m.id)::text as count from organization o left join member m on m."organizationId" = o.id group by o.id`
-          : yield* db`select o.id as organization, count(m.id)::text as count from organization o left join member m on m."organizationId" = o.id where o.id = ${organization} group by o.id`;
-      return yield* Schema.decodeUnknownEffect(Counts)(rows);
-    }).pipe(
+  const use = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    sql.pipe(
+      Effect.flatMap((db) => Effect.provideService(effect, SqlClient.SqlClient, db)),
       Effect.provide(RuntimeContext.phantom),
       Effect.mapError(() => new BillingUnavailable()),
     );
-  return { read };
+  return { use };
 });

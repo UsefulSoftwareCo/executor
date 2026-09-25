@@ -64,6 +64,18 @@ export default defineApp({accounts:{service}},{queries:{ready:query({input:objec
             yield* api.request(actors.owner, "DELETE", path);
           }).pipe(Effect.orDie),
         );
+        // Exercise a new account selection after the first setup attempt failed.
+        // It must not inherit that attempt's provider retry delay.
+        yield* Effect.gen(function* () {
+          for (;;) {
+            const current = yield* body(
+              Schema.Struct({ status: Schema.String }),
+              yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`),
+            );
+            if (current.status === "needs-setup") break;
+            yield* Effect.sleep("50 millis");
+          }
+        }).pipe(Effect.timeout("10 seconds"));
         const connection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", `${path}/connections`, {
@@ -85,7 +97,7 @@ export default defineApp({accounts:{service}},{queries:{ready:query({input:objec
             `/org/${actors.organization.slug}/apps/${app.id}?view=tools&profile=${profile.id}`,
           ),
         );
-        yield* provider.requested;
+        yield* provider.requested.pipe(Effect.timeout("10 seconds"));
         yield* browser.use("Tools remain usable during setup", (page) =>
           page.getByRole("button", { name: "queries.ready", exact: true }).waitFor(),
         );

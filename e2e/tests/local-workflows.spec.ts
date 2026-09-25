@@ -202,6 +202,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           files: workflowFiles("v2"),
         });
         expect(updated.status).toBe(200);
+        yield* call("mutations.release", { label: "pinned" });
         const complete = yield* wait(run.id, "complete");
         expect(complete.deployment).toBe(app.activeDeployment);
         expect(complete.output).toMatchObject({

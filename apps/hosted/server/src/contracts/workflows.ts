@@ -14,7 +14,6 @@ import {
   ListWorkflowRuns,
   WorkflowErrors,
 } from "@executor-js/sdk/core";
-import { ExecutionLimitReached, ExecutionAdmissionUnavailable } from "./execution-admission.ts";
 import {
   OrganizationReference,
   OrganizationForbidden,
@@ -43,7 +42,7 @@ export const HostedWorkflows = HttpApiGroup.make("workflows")
       params: app,
       payload: StartWorkflow.mapFields(({ app: _app, ...fields }) => fields),
       success: WorkflowRun,
-      error: [...errors, ExecutionLimitReached, ExecutionAdmissionUnavailable],
+      error: errors,
     }),
   )
   .add(

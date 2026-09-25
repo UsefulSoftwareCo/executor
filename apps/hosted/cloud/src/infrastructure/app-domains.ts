@@ -4,19 +4,20 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import * as Output from "alchemy/Output";
 import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Credentials";
-import { listCertificatePacks } from "@distilled.cloud/cloudflare/ssl";
+import { appDomainCertificates } from "../implementation/app-domain-inventory.ts";
+import { appDomainHttpClient } from "../implementation/app-domain-http.ts";
 import { PgClient } from "@effect/sql-pg";
 import { AppUiAddressInvalid } from "@executor-js/hosted-server/app-ui/contracts";
 import { OrganizationId, OrganizationSlug } from "@executor-js/hosted-server";
 import { UiFailed } from "apps/ui/contracts";
-import { Cause, Clock, Effect, Layer, Redacted, Schema, Semaphore, Stream } from "effect";
+import { Cause, Clock, Effect, Layer, Redacted, Schema, Semaphore } from "effect";
 import { SqlClient } from "effect/unstable/sql";
-import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { timingSafeEqual } from "node:crypto";
 import { cloudAppUiBase } from "../contracts/app-ui.ts";
 import { appDomainState } from "../implementation/app-domain-state.ts";
 import { reconcileAppDomainStack } from "../implementation/app-domain-stack.ts";
-import { sharedAppDomainZone } from "./app-domain-zone.ts";
+import { appDomainControllerToken, sharedAppDomainZone } from "./app-domain-zone.ts";
 import { cloudDatabaseConnection } from "./database.ts";
 import { appDomainControlSecret } from "./app-domain-control.ts";
 import { AppDomainZoneSettings } from "../contracts/app-domains.ts";
@@ -69,7 +70,7 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
     Effect.flatMap(Schema.decodeUnknownEffect(AppDomainZoneSettings)),
   );
   const tokenBinding = yield* Output.named(
-    zone.pipe(Output.map((value) => value.controllerToken)),
+    yield* appDomainControllerToken,
     "AppDomainControllerToken",
   );
   const secret = tokenBinding.pipe(
@@ -96,12 +97,16 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
           stage: suffix,
           accountId: zone.accountId,
           zoneId: zone.id,
+          zoneName: zone.domain,
           suffix,
           credentials: apiTokenCredentials({ apiToken: Redacted.value(apiToken) }),
           teams,
           state: appDomainState(state.raw.storage, "executor-team-domains", suffix),
         });
-      }).pipe(Effect.tapCause((cause) => observeDomainFailure("dns", cause)));
+      }).pipe(
+        Effect.withSpan("app_domains.dns", { attributes: { "app_domains.teams": teams.length } }),
+        Effect.tapCause((cause) => observeDomainFailure("dns", cause)),
+      );
     const reconcile = lock.withPermits(1)(
       Effect.scoped(
         Effect.gen(function* () {
@@ -123,20 +128,23 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
             }),
           ).pipe(Effect.tapCause((cause) => observeDomainFailure("database", cause)));
           const valid = teams.filter((team) => `*.${team.slug}.${suffix}`.length <= 64);
+          yield* Effect.annotateCurrentSpan("app_domains.teams", teams.length);
           const apiToken = yield* secret;
           yield* applyTeams(valid);
-          const certificates = yield* listCertificatePacks
-            .items({ zoneId: zone.id, status: "all", perPage: 50 })
-            .pipe(
-              Stream.runCollect,
-              Effect.provideService(
-                Credentials,
-                Effect.succeed(apiTokenCredentials({ apiToken: Redacted.value(apiToken) })),
-              ),
-              Effect.provide(FetchHttpClient.layer),
-              Effect.tapCause((cause) => observeDomainFailure("certificates", cause)),
-            );
+          const certificates =
+            valid.length === 0
+              ? []
+              : yield* appDomainCertificates(zone.id).pipe(
+                  Effect.provideService(
+                    Credentials,
+                    Effect.succeed(apiTokenCredentials({ apiToken: Redacted.value(apiToken) })),
+                  ),
+                  Effect.provide(appDomainHttpClient),
+                  Effect.withSpan("app_domains.certificates"),
+                  Effect.tapCause((cause) => observeDomainFailure("certificates", cause)),
+                );
           const now = yield* Clock.currentTimeMillis;
+          yield* Effect.annotateCurrentSpan("app_domains.certificates", certificates.length);
           let pending = false;
           for (const team of teams) {
             const hostname = `*.${team.slug}.${suffix}`;
@@ -178,6 +186,10 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
           yield* arm(pending ? 15_000 : 300_000);
         }),
       ).pipe(
+        // A provider can wait five minutes after HTTP 429. Release the lock so
+        // a deployment can stop this controller and drain its durable journal.
+        Effect.timeout("60 seconds"),
+        Effect.withSpan("app_domains.reconcile"),
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             yield* observeDomainFailure("reconcile", cause);
@@ -203,22 +215,23 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
             observation.slug !== team.slug ||
             observation.checkedAt + 300_000 < (yield* Clock.currentTimeMillis)
           ) {
-            yield* arm(1);
+            // Coalesce concurrent first visits before reading and applying the desired set.
+            yield* arm(1_000);
             if (yield* state.storage.get<boolean>("reconcileError")) return "failed" as const;
             return "pending" as const;
           }
           if (observation.status !== "ready") yield* arm(15_000);
           return observation.status;
         }),
-      wake: () => arm(1),
+      wake: () => arm(1_000),
       drain: () =>
-        lock.withPermits(1)(
-          Effect.gen(function* () {
-            yield* state.storage.put("stopped", true);
-            yield* state.storage.deleteAlarm();
-            yield* applyTeams([]);
-          }),
-        ),
+        Effect.gen(function* () {
+          // Stop new work before waiting for an in-flight reconciliation.
+          // Queued alarms must not win the lock and start provisioning again.
+          yield* state.storage.put("stopped", true);
+          yield* state.storage.deleteAlarm();
+          yield* lock.withPermits(1)(applyTeams([]));
+        }),
       resume: () =>
         lock.withPermits(1)(
           Effect.gen(function* () {

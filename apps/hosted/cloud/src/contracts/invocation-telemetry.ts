@@ -12,6 +12,7 @@ export const CloudInvocation = Schema.Struct({
   event: Schema.Unknown,
   truncated: Schema.Boolean,
   logs: Schema.Array(Schema.Struct({ message: Schema.Array(Schema.Unknown) })),
+  exceptions: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.String }))),
 });
 
 /** Fixed bridge phases have no product data and remain distinct from platform CPU measurements. */

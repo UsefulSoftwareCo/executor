@@ -23,13 +23,6 @@ and the corresponding text lock entry were generated directly. Keep the key
 aligned with the package URL when upgrading, and remove this patch if upstream
 adds equivalent connection tracing.
 
-Verify the real driver's public pool/connection APIs against a synthetic TCP
-startup peer:
-
-```sh
-node --test apps/hosted/cloud/test/sql-connect.test.ts
-```
-
 ## Statement wire timing
 
 The patch also adds `sql.wire` for the driver's single-statement path, including

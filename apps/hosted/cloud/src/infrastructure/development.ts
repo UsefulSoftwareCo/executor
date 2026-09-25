@@ -59,10 +59,13 @@ export const developmentDatabase = Effect.gen(function* () {
   return migrations.hash.pipe(Output.map(() => origin));
 });
 
-/** Alchemy owns Vite directly; it serves HTTPS using the existing trusted certificate. */
+/** Use native Worker assets for built previews; Alchemy owns Vite for source development. */
 export const developmentWeb = (apiUrl: Output.Output<string | undefined>) =>
   Effect.gen(function* () {
     const configuration = yield* cloudDevelopment.pipe(Effect.orDie);
+    // Built previews use the Worker's asset routing and server-resolved entry pages.
+    // The caller binds the API listener to this origin; no second web server is needed.
+    if (configuration.dashboard === "built") return configuration.origin;
     const password = yield* Config.Redacted("CLOUD_DEV_DATABASE_PASSWORD");
     const site = yield* cloudSite;
     yield* Command.Dev("DevelopmentWeb", {

@@ -1,5 +1,5 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
-import { Option, Schema, type Effect } from "effect";
+import { Option, Schema, SchemaGetter, type Effect } from "effect";
 import { SkippedOperation, TemplateErrorCode } from "@executor-js/app-templates";
 import { DeployedApp, JsonObject, SourceFiles } from "@executor-js/sdk";
 import { ImportAuth, ImportUrl, type CustomAppInput } from "./imports.ts";
@@ -95,6 +95,9 @@ export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>
         "mcp_auth_header",
         "document_size",
         "document_fetch",
+        "document_http",
+        "document_timeout",
+        "document_redirect",
         "document_json",
         "document_yaml",
         "document_kind",
@@ -102,9 +105,24 @@ export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>
       ]),
     ]),
     reason: Schema.String,
+    // Optional on the wire for older clients; restored from safe fields on decode.
+    message: Schema.optionalKey(Schema.String).pipe(
+      Schema.decodeTo(Schema.optionalKey(Schema.String), {
+        decode: SchemaGetter.omit(),
+        encode: SchemaGetter.passthrough(),
+      }),
+    ),
+    /** Observed unsuccessful download status; absent for transport, parse and generation failures. */
+    httpStatus: Schema.optional(Schema.Int),
   },
   { httpApiStatus: 422 },
 ) {}
+// Imported OpenAPI tools only forward a declared message, not arbitrary body fields.
+Object.defineProperty(CatalogImportFailed.prototype, "message", {
+  get(this: CatalogImportFailed) {
+    return `${this.reason} [${this.code}${this.httpStatus === undefined ? "" : `; HTTP ${this.httpStatus}`}]`;
+  },
+});
 /** Remote catalog availability is separate from the local app inventory. */
 export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()(
   "CatalogUnavailable",

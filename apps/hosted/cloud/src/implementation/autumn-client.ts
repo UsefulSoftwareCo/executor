@@ -17,6 +17,9 @@ export const autumnLive = (options: AutumnOptions) =>
     AutumnClient,
     Effect.gen(function* () {
       const http = yield* HttpClient.HttpClient;
+      // The instance path is a capability. Traces record only the host and the operation route.
+      const server = URL.parse(Redacted.value(options.serverUrl));
+      if (server === null) return yield* Effect.die(new Error("The Autumn server URL is invalid."));
       const post =
         <I, A>(
           operation: AutumnRequestFailed["operation"],
@@ -48,26 +51,44 @@ export const autumnLive = (options: AutumnOptions) =>
                 HttpClientRequest.bodyJson(body),
                 Effect.mapError((cause) => failed("request", cause)),
               );
-              const response = yield* HttpClient.withScope(http)
-                .execute(request)
-                .pipe(Effect.mapError((cause) => failed("transport", cause)));
-              yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
-              // Autumn's 202 check response can represent fail-open admission. Require a confirmed result.
-              if (response.status !== 200)
+              // One client span per round trip separates network and Autumn time from local work.
+              const exchange = yield* Effect.gen(function* () {
+                const response = yield* HttpClient.withScope(http)
+                  .execute(request)
+                  .pipe(Effect.mapError((cause) => failed("transport", cause)));
+                yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+                // Require confirmed provider responses, never queued or fail-open answers.
+                if (response.status !== 200) return { status: response.status } as const;
+                const json = yield* response.json.pipe(
+                  Effect.mapError((cause) => failed("response", cause, response.status)),
+                );
+                return { status: 200, json } as const;
+              }).pipe(
+                Effect.withSpan("autumn.http", {
+                  kind: "client",
+                  attributes: {
+                    "http.request.method": "POST",
+                    "server.address": server.host,
+                    // The route below the private instance prefix, never the full path.
+                    "autumn.path": `/v1/${path}`,
+                  },
+                }),
+              );
+              yield* Effect.annotateCurrentSpan("http.response.status_code", exchange.status);
+              if (exchange.status !== 200)
                 return yield* new AutumnRequestFailed({
                   operation,
                   reason: "status",
-                  status: response.status,
+                  status: exchange.status,
                 });
-              return yield* response.json.pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(output)),
-                Effect.mapError((cause) => failed("response", cause, response.status)),
+              return yield* Schema.decodeUnknownEffect(output)(exchange.json).pipe(
+                Effect.mapError((cause) => failed("response", cause, exchange.status)),
               );
             }),
           ).pipe(
             Effect.timeout(autumnTimeout),
             Effect.catchTag("TimeoutError", (cause) => Effect.fail(failed("timeout", cause))),
-            // Emit only the operation span: a private instance path carries a capability.
+            // Replace the generic HTTP span: a private instance path carries a capability.
             Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
             Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
             Effect.withSpan(`autumn.${operation}`),
@@ -86,7 +107,6 @@ export const autumnLive = (options: AutumnOptions) =>
           AutumnRequests.listPlans,
           AutumnResponses.listPlans,
         ),
-        check: post("check", "balances.check", AutumnRequests.check, AutumnResponses.check),
         updateBalance: post(
           "updateBalance",
           "balances.update",

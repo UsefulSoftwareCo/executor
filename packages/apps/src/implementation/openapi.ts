@@ -1,13 +1,18 @@
 /** Evaluate normalized metadata into ordinary tools, with account-specific security filtering. */
 import { Effect, JsonPointer, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
-import { OpenapiError, OpenapiToolsOptions, type OpenapiTools } from "../contracts/openapi.ts";
+import {
+  OpenapiError,
+  OpenapiToolsOptions,
+  type OpenapiTools,
+  type OpenapiOperation,
+} from "../contracts/openapi.ts";
 import type { JsonObject, JsonValue } from "../contracts/schema.ts";
 import { lazyJsonSchemaDecoder, once } from "./schema.ts";
 import { createRequest } from "./openapi-request.ts";
 
 /** Names of shared definitions a JSON value references directly as `#/$defs/<name>`. */
-function references(value: JsonValue, found = new Set<string>()): Set<string> {
+export function references(value: JsonValue, found = new Set<string>()): Set<string> {
   if (Array.isArray(value)) for (const item of value) references(item, found);
   else if (value !== null && typeof value === "object")
     for (const [key, item] of Object.entries(value)) {
@@ -25,7 +30,7 @@ function references(value: JsonValue, found = new Set<string>()): Set<string> {
  * references to the same definition. A missing definition stays unresolved and fails when
  * the schema compiles. The schema's own `$defs` keep precedence.
  */
-const bundler = (definitions: Readonly<Record<string, JsonObject>>) => {
+export const bundler = (definitions: Readonly<Record<string, JsonObject>>) => {
   const direct = new Map<string, ReadonlySet<string>>();
   return (schema: JsonObject): JsonObject => {
     const reached = new Map<string, JsonObject>();
@@ -50,32 +55,45 @@ const bundler = (definitions: Readonly<Record<string, JsonObject>>) => {
   };
 };
 
+/** Account-free validators can be reused inside a Worker for one immutable revision. */
+export const prepareOpenapiOperation = (
+  op: OpenapiOperation,
+  definitions: Readonly<Record<string, JsonObject>>,
+) =>
+  Effect.gen(function* () {
+    const bundle = bundler(definitions);
+    const input = yield* lazyJsonSchemaDecoder(() => bundle(op.input));
+    const errors = yield* Effect.forEach(op.errorResponses ?? [], (response) =>
+      lazyJsonSchemaDecoder(() => bundle(response.schema)).pipe(
+        Effect.map((decoder) => ({ ...response, decoder })),
+      ),
+    );
+    return {
+      input,
+      errors,
+      output: once(() => (op.outputSchema === undefined ? undefined : bundle(op.outputSchema))),
+    };
+  });
+export type PreparedOpenapiOperation = Effect.Success<ReturnType<typeof prepareOpenapiOperation>>;
+
 /** Decode retained metadata and expose only operations supported by the selected account. */
 export const openapiToolsEffect = (
   options: OpenapiToolsOptions,
+  prepared?: ReadonlyMap<string, PreparedOpenapiOperation>,
 ): Effect.Effect<OpenapiTools, OpenapiError> =>
   Effect.gen(function* () {
     const config = yield* Schema.decodeUnknownEffect(OpenapiToolsOptions)(options).pipe(
       Effect.mapError(() => new OpenapiError({ reason: "invalid_definition" })),
     );
     const request = createRequest(config);
-    // Apps generated before shared definitions already carry self-contained schemas.
-    const bundle =
-      config.definitions === undefined
-        ? (schema: JsonObject) => schema
-        : bundler(config.definitions);
     const entries = yield* Effect.forEach(
       config.operations.filter((op) => request.available(op, config.account)),
       (op) =>
         Effect.gen(function* () {
-          // Definitions are attached when a call validates or a listing describes the tool.
-          // Building every self-contained schema up front would copy the API for each tool.
-          const input = yield* lazyJsonSchemaDecoder(() => bundle(op.input));
-          const errors = yield* Effect.forEach(op.errorResponses ?? [], (response) =>
-            lazyJsonSchemaDecoder(() => bundle(response.schema)).pipe(
-              Effect.map((decoder) => ({ ...response, decoder })),
-            ),
-          );
+          const schemas =
+            prepared?.get(op.name) ??
+            (yield* prepareOpenapiOperation(op, config.definitions ?? {}));
+          const { input, errors } = schemas;
           const tool: OpenapiTools[string] = {
             description: op.description,
             readOnly: ["GET", "HEAD", "OPTIONS"].includes(op.method),
@@ -99,7 +117,7 @@ export const openapiToolsEffect = (
           if (output !== undefined)
             Object.defineProperty(tool, "outputSchema", {
               enumerable: true,
-              get: once(() => bundle(output)),
+              get: schemas.output,
             });
           return [op.name, tool] as const;
         }),

@@ -15,6 +15,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { randomBytes } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { driver } from "../support/platform.ts";
 import { authorizeBrowserMcp } from "../support/mcp-oauth.ts";
@@ -837,3 +838,303 @@ const result=await pg.query('SELECT name FROM "user"');await pg.close();process.
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
+
+// A tailnet name such as nexus.<tailnet>.ts.net resolves into 100.64.0.0/10. App isolates
+// may reach only public addresses, so the built-in Executor app must reach its own dashboard
+// origin without the network. The runner reaches the published port and sends the tailnet
+// Host header, so the same case works with Docker Desktop, OrbStack and Linux Docker.
+it.live("released image serves management tools at a tailnet origin with private fetch off", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
+      const run = (args: readonly string[], env: Record<string, string> = {}) =>
+        processes.string(
+          ChildProcess.make("docker", args, {
+            env,
+            extendEnv: true,
+            stderr: args[0] === "logs" ? "pipe" : "inherit",
+          }),
+          { includeStderr: args[0] === "logs" },
+        );
+      const id = `selfhost-e2e-${randomBytes(6).toString("hex")}`;
+      // Shared CGNAT space, the same range Tailscale assigns. Vary the subnet per run.
+      const subnet = `100.64.${64 + (randomBytes(1).readUInt8(0) % 190)}`;
+      const address = `${subnet}.10`;
+      const containerPort = 8080;
+      const hostname = "nexus.example.ts.net";
+      const origin = `http://${hostname}:${containerPort}`;
+      const port = yield* Effect.scoped(
+        Effect.gen(function* () {
+          for (let candidate = 4431; candidate <= 4439; candidate++) {
+            const listener = createServer();
+            const free = yield* driver(
+              "probe release port",
+              () =>
+                new Promise<boolean>((resolve) => {
+                  listener.once("error", () => resolve(false));
+                  listener.listen(candidate, "127.0.0.1", () =>
+                    listener.close(() => resolve(true)),
+                  );
+                }),
+            );
+            if (free) return candidate;
+          }
+          return yield* Effect.fail(new Error("Ports 4431-4439 are all in use"));
+        }),
+      );
+      yield* Effect.acquireRelease(
+        run(["network", "create", "--subnet", `${subnet}.0/24`, id]),
+        () => run(["network", "rm", id]).pipe(Effect.orDie),
+      );
+      const environment: Record<string, string> = {
+        PORT: String(containerPort),
+        BETTER_AUTH_URL: origin,
+        BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+      };
+      yield* Effect.acquireRelease(
+        run(
+          [
+            "run",
+            "--detach",
+            "--name",
+            id,
+            "--init",
+            "--network",
+            id,
+            "--ip",
+            address,
+            "--add-host",
+            `${hostname}:${address}`,
+            "--publish",
+            `127.0.0.1:${port}:${containerPort}`,
+            // EXECUTOR_APPS_ALLOW_PRIVATE_FETCH stays unset: the default is under test.
+            ...Object.keys(environment).flatMap((name) => ["--env", name]),
+            image,
+          ],
+          environment,
+        ),
+        // An anonymous data volume is removed with the container.
+        () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
+      );
+      yield* Effect.addFinalizer((exit) =>
+        Exit.isFailure(exit)
+          ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+          : Effect.void,
+      );
+      // Node's fetch replaces a Host header, so send requests through node:http instead.
+      const hostFetch: typeof fetch = (input, init) => {
+        const outgoing = new Request(input, init);
+        const url = new URL(outgoing.url);
+        const sent: Record<string, string> = {};
+        outgoing.headers.forEach((value, name) => {
+          sent[name] = value;
+        });
+        return outgoing.arrayBuffer().then(
+          (body) =>
+            new Promise<Response>((resolve, reject) => {
+              const pending = httpRequest(
+                {
+                  host: "127.0.0.1",
+                  port,
+                  method: outgoing.method,
+                  path: `${url.pathname}${url.search}`,
+                  headers: { ...sent, host: url.host },
+                  signal: outgoing.signal,
+                },
+                (incoming) => {
+                  const status = incoming.statusCode;
+                  if (status === undefined) return reject(new Error("Response has no status"));
+                  const headers = new Headers();
+                  for (const [name, value] of Object.entries(incoming.headers))
+                    for (const item of typeof value === "string" ? [value] : (value ?? []))
+                      headers.append(name, item);
+                  const empty = status === 204 || status === 304 || outgoing.method === "HEAD";
+                  if (empty) incoming.resume();
+                  resolve(
+                    new Response(
+                      empty
+                        ? null
+                        : new ReadableStream<Uint8Array>({
+                            start(controller) {
+                              incoming.on("data", (chunk: Buffer) =>
+                                controller.enqueue(new Uint8Array(chunk)),
+                              );
+                              incoming.once("end", () => controller.close());
+                              incoming.once("error", (error) => controller.error(error));
+                            },
+                            cancel() {
+                              incoming.destroy();
+                            },
+                          }),
+                      { status, headers },
+                    ),
+                  );
+                },
+              );
+              pending.once("error", reject);
+              pending.end(body.byteLength === 0 ? undefined : Buffer.from(body));
+            }),
+        );
+      };
+      const request = (route: string, data?: unknown, cookie?: string) =>
+        driver("tailnet image HTTP request", () =>
+          hostFetch(`${origin}${route}`, {
+            method: data === undefined ? "GET" : "POST",
+            headers: {
+              origin,
+              "content-type": "application/json",
+              ...(cookie === undefined ? {} : { cookie }),
+            },
+            ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+          }),
+        );
+      yield* request("/health").pipe(
+        Effect.flatMap((r) => (r.status === 200 ? Effect.void : Effect.fail("not ready"))),
+        Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 200 }),
+      );
+      const setup = yield* request("/api/auth/self-host/setup", {
+        name: "Tailnet Owner",
+        email: "tailnet@example.test",
+        password: "Synthetic-tailnet-password-123!",
+        organizationName: "Tailnet lab",
+      });
+      expect(setup.status).toBe(200);
+      const cookie = setup.headers
+        .getSetCookie()
+        .map((part) => part.split(";")[0])
+        .join("; ");
+      const organizations = yield* request("/api/auth/organization/list", undefined, cookie);
+      expect(organizations.status).toBe(200);
+      const [organization] = yield* Schema.decodeUnknownEffect(
+        Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
+      )(yield* driver("organization response", () => organizations.json()));
+      const prefix = `/api/organizations/${organization.id}`;
+      const deployed = yield* request(
+        `${prefix}/apps/deploy`,
+        {
+          name: "Egress probe",
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, query, object, string } from "apps";
+export default defineApp({ accounts: {} }, async () => ({
+  queries: {
+    probe: query({ input: object({ url: string() }) }, async (_ctx, input) => {
+      try { return "reached:" + (await fetch(input.url)).status; }
+      catch (error) { return "refused:" + (error instanceof Error ? error.message : String(error)); }
+    })
+  }
+}));`,
+            },
+          ],
+        },
+        cookie,
+      );
+      expect(deployed.status, yield* driver("deploy probe", () => deployed.clone().text())).toBe(
+        200,
+      );
+      const app = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ id: Schema.String, slug: Schema.String }),
+      )(yield* driver("probe app", () => deployed.json()));
+      const created = yield* request(
+        `${prefix}/apps/${app.id}/profiles`,
+        { accounts: {}, idempotencyKey: randomUUID() },
+        cookie,
+      );
+      expect(created.status).toBe(200);
+      const probeProfile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+        yield* driver("probe profile", () => created.json()),
+      );
+      // Setup provisions the built-in Executor app in the background.
+      const executorProfile = yield* Effect.gen(function* () {
+        const inventory = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+          }),
+        )(
+          yield* request(`${prefix}/inventory`, undefined, cookie).pipe(
+            Effect.flatMap((response) => driver("inventory", () => response.json())),
+          ),
+        );
+        const executor = inventory.apps.find((item) => item.slug === "executor");
+        if (executor === undefined) return yield* Effect.fail("Executor app pending");
+        const profiles = yield* Schema.decodeUnknownEffect(
+          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
+        )(
+          yield* request(`${prefix}/apps/${executor.id}/profiles`, undefined, cookie).pipe(
+            Effect.flatMap((response) => driver("Executor profiles", () => response.json())),
+          ),
+        );
+        return profiles[0];
+      }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }));
+      const keyResponse = yield* request(
+        "/api/auth/api-key/create",
+        { name: "Tailnet MCP check" },
+        cookie,
+      );
+      expect(keyResponse.status).toBe(200);
+      const key = yield* Schema.decodeUnknownEffect(
+        Schema.Struct({ key: Schema.RedactedFromValue(Schema.String) }),
+      )(yield* driver("MCP key", () => keyResponse.json()));
+      const client = yield* Effect.acquireRelease(
+        Effect.sync(() => new Client({ name: "tailnet-release", version: "1" })),
+        (client) => driver("close tailnet MCP client", () => client.close()).pipe(Effect.orDie),
+      );
+      const transport: Omit<StreamableHTTPClientTransport, "sessionId"> =
+        new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+          requestInit: {
+            headers: {
+              authorization: `Bearer ${Redacted.value(key.key)}`,
+              "x-executor-organization": organization.id,
+            },
+          },
+          fetch: hostFetch,
+        });
+      yield* driver("connect to the tailnet image over MCP", () => client.connect(transport));
+      const execute = (operation: string, code: string) =>
+        driver(operation, (signal) =>
+          client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+        ).pipe(
+          Effect.flatMap((result) =>
+            Schema.decodeUnknownEffect(
+              Schema.Struct({
+                status: Schema.Literal("completed"),
+                execution: Schema.Struct({
+                  ok: Schema.Boolean,
+                  value: Schema.optional(Schema.Unknown),
+                  error: Schema.optional(Schema.Unknown),
+                }),
+              }),
+            )(result.structuredContent),
+          ),
+          Effect.map(({ execution }) => execution),
+        );
+      const source = yield* execute(
+        "read app source through the built-in Executor app",
+        `return await tools.executor.profiles[${JSON.stringify(executorProfile.id)}].queries.appManagement_source(${JSON.stringify({ path: { organization: organization.id, app: app.id } })})`,
+      );
+      expect(
+        source,
+        `the built-in Executor app reaches its own dashboard at a private-resolving origin: ${JSON.stringify(source.error)}`,
+      ).toMatchObject({
+        ok: true,
+        value: { files: expect.arrayContaining([expect.objectContaining({ path: "index.ts" })]) },
+      });
+      const probe = (url: string) =>
+        execute(
+          `authored app fetches ${url}`,
+          `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(probeProfile.id)}].queries.probe(${JSON.stringify({ url })})`,
+        );
+      // The same listener on its private address is not the dashboard origin.
+      const refused = yield* probe(`http://${address}:${containerPort}/health`);
+      expect(refused.ok).toBe(true);
+      expect(refused.value, "private app fetch stays off by default").toMatch(/^refused:/);
+      expect(yield* probe(`${origin}/health`), "authored apps reach the dashboard origin").toEqual({
+        ok: true,
+        value: "reached:200",
+      });
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);

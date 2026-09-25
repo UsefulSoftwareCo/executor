@@ -58,31 +58,25 @@ export type TelemetryBatch = typeof TelemetryBatch.Type;
 /** Collect one invocation into memory, flush before returning, and never contact a remote collector. */
 export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
-    const traces: string[] = [];
-    const logs: string[] = [];
+    const traces = recordPacker('{"resourceSpans":[{"scopeSpans":[{"spans":[', "]}]}]}");
+    const logs = recordPacker('{"resourceLogs":[{"scopeLogs":[{"logRecords":[', "]}]}]}");
     let dropped = 0;
     const capture: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
       const body = await request.text();
       if (new URL(request.url).pathname === "/v1/traces") {
         const payload = Schema.decodeUnknownSync(TracePayload)(body);
-        dropped += packRecords(
+        dropped += traces.append(
           payload.resourceSpans.flatMap((resource) =>
             resource.scopeSpans.flatMap((scope) => scope.spans),
           ),
-          traces,
-          '{"resourceSpans":[{"scopeSpans":[{"spans":[',
-          "]}]}]}",
         );
       } else {
         const payload = Schema.decodeUnknownSync(LogPayload)(body);
-        dropped += packRecords(
+        dropped += logs.append(
           payload.resourceLogs.flatMap((resource) =>
             resource.scopeLogs.flatMap((scope) => scope.logRecords),
           ),
-          logs,
-          '{"resourceLogs":[{"scopeLogs":[{"logRecords":[',
-          "]}]}]}",
         );
       }
       return Response.json({});
@@ -103,45 +97,49 @@ export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       ),
       Effect.provideService(FetchHttpClient.Fetch, capture),
     );
-    return { value, telemetry: { traces, logs, dropped } };
+    return { value, telemetry: { traces: traces.finish(), logs: logs.finish(), dropped } };
   });
 
-// Native exporters can emit a thousand records at once. Split complete records,
-// not JSON text, and preserve the existing four-envelope memory bound per signal.
-// Resource identity is deliberately assigned by the parent, never the isolate.
-const packRecords = (
-  records: ReadonlyArray<Schema.Json>,
-  target: string[],
-  prefix: string,
-  suffix: string,
-): number => {
+// Native exporters split an invocation into several batches. Keep its last
+// envelope open across batches so a partial envelope does not consume a slot.
+// Both the four-envelope memory bound and 1,000-record decode bound still apply.
+const recordPacker = (prefix: string, suffix: string) => {
+  const target: string[] = [];
   let parts: string[] = [];
   const overhead = encoder.encode(prefix + suffix).byteLength;
   let bytes = overhead;
-  let dropped = 0;
   const flush = () => {
     if (parts.length === 0) return;
     target.push(prefix + parts.join(",") + suffix);
     parts = [];
     bytes = overhead;
   };
-  for (const record of records) {
-    const encoded = JSON.stringify(record);
-    const size = encoder.encode(encoded).byteLength;
-    if (size + overhead > payloadBytes || target.length >= 4) {
-      dropped++;
-      continue;
-    }
-    if (bytes + size + (parts.length > 0 ? 1 : 0) > payloadBytes) flush();
-    if (target.length >= 4) {
-      dropped++;
-      continue;
-    }
-    bytes += size + (parts.length > 0 ? 1 : 0);
-    parts.push(encoded);
-  }
-  flush();
-  return dropped;
+  return {
+    append(records: ReadonlyArray<Schema.Json>): number {
+      let dropped = 0;
+      for (const record of records) {
+        const encoded = JSON.stringify(record);
+        const size = encoder.encode(encoded).byteLength;
+        if (size + overhead > payloadBytes || target.length >= 4) {
+          dropped++;
+          continue;
+        }
+        if (parts.length >= 1000 || bytes + size + (parts.length > 0 ? 1 : 0) > payloadBytes)
+          flush();
+        if (target.length >= 4) {
+          dropped++;
+          continue;
+        }
+        bytes += size + (parts.length > 0 ? 1 : 0);
+        parts.push(encoded);
+      }
+      return dropped;
+    },
+    finish(): string[] {
+      flush();
+      return target;
+    },
+  };
 };
 
 const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
@@ -201,55 +199,62 @@ export const forwardTelemetry = (
     if (batch.dropped > 0) yield* recordExportFailure("app", "capacity", batch.dropped);
     for (const signal of ["traces", "logs"] as const) {
       const target = config[signal];
-      if (target === undefined) continue;
-      for (const body of batch[signal]) {
-        const data =
-          signal === "traces"
-            ? yield* Schema.decodeUnknownEffect(TracePayload)(body).pipe(
-                Effect.map((payload) => ({
-                  resourceSpans: [
-                    {
-                      resource,
-                      scopeSpans: [
-                        {
-                          scope: { name: service },
-                          spans: payload.resourceSpans
-                            .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
-                            .filter((span) => traceId === undefined || span.traceId === traceId),
-                        },
-                      ],
-                    },
-                  ],
-                })),
-              )
-            : yield* Schema.decodeUnknownEffect(LogPayload)(body).pipe(
-                Effect.map((payload) => ({
-                  resourceLogs: [
-                    {
-                      resource,
-                      scopeLogs: [
-                        {
-                          scope: { name: service },
-                          logRecords: payload.resourceLogs
-                            .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
-                            .filter((log) => traceId === undefined || log.traceId === traceId),
-                        },
-                      ],
-                    },
-                  ],
-                })),
-              );
-        yield* client
-          .pipe(HttpClient.filterStatusOk)
-          .execute(
-            HttpClientRequest.post(target.url).pipe(
-              HttpClientRequest.setHeaders(
-                target.headers === undefined ? {} : Redacted.value(target.headers),
-              ),
-              HttpClientRequest.bodyJsonUnsafe(data),
+      if (target === undefined || batch[signal].length === 0) continue;
+      // The isolate return channel is already bounded to four 256 KiB envelopes.
+      // Send each signal once instead of serializing four network acknowledgements
+      // inside the same three-second drain budget.
+      const data =
+        signal === "traces"
+          ? yield* Effect.forEach(batch.traces, (body) =>
+              Schema.decodeUnknownEffect(TracePayload)(body),
+            ).pipe(
+              Effect.map((payloads) => ({
+                resourceSpans: [
+                  {
+                    resource,
+                    scopeSpans: [
+                      {
+                        scope: { name: service },
+                        spans: payloads
+                          .flatMap((payload) => payload.resourceSpans)
+                          .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
+                          .filter((span) => traceId === undefined || span.traceId === traceId),
+                      },
+                    ],
+                  },
+                ],
+              })),
+            )
+          : yield* Effect.forEach(batch.logs, (body) =>
+              Schema.decodeUnknownEffect(LogPayload)(body),
+            ).pipe(
+              Effect.map((payloads) => ({
+                resourceLogs: [
+                  {
+                    resource,
+                    scopeLogs: [
+                      {
+                        scope: { name: service },
+                        logRecords: payloads
+                          .flatMap((payload) => payload.resourceLogs)
+                          .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
+                          .filter((log) => traceId === undefined || log.traceId === traceId),
+                      },
+                    ],
+                  },
+                ],
+              })),
+            );
+      yield* client
+        .pipe(HttpClient.filterStatusOk)
+        .execute(
+          HttpClientRequest.post(target.url).pipe(
+            HttpClientRequest.setHeaders(
+              target.headers === undefined ? {} : Redacted.value(target.headers),
             ),
-          );
-      }
+            HttpClientRequest.bodyJsonUnsafe(data),
+          ),
+        );
     }
   }).pipe(
     Effect.provide(telemetryHttpClient),

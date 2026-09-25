@@ -77,9 +77,13 @@ export class RegistryError extends Schema.TaggedError<RegistryError>()(
       "invalid-manifest",
       "unsupported-dependencies",
       "storage",
-      "registry",
+      "network",
+      "status",
+      "invalid-response",
       "limit",
     ]),
+    /** The remote registry's HTTP status, for a `status` failure. */
+    status: Schema.optional(Schema.Int),
   },
   { httpApiStatus: 400 },
 ) {}

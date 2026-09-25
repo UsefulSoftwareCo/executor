@@ -19,7 +19,6 @@ class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStar
 export const startCloudEnvironment = (input: {
   readonly directory: string;
   readonly origin: string;
-  readonly apiPort: number;
   readonly appPort: number;
   readonly databasePort: number;
   readonly commit: string;
@@ -37,7 +36,7 @@ export const startCloudEnvironment = (input: {
     // In dev, account sign-in returns to the API server's local address.
     const fixture = yield* createEmulatorFixture(
       input.origin,
-      `http://127.0.0.1:${input.apiPort}/api/oauth/callback`,
+      `http://127.0.0.1:${new URL(input.origin).port}/api/oauth/callback`,
     );
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
@@ -90,7 +89,10 @@ export const startCloudEnvironment = (input: {
       VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
       VITE_EXECUTOR_ENVIRONMENT: "test-local",
       VITE_EXECUTOR_RELEASE: input.commit,
-      CLOUD_DEV_API_PORT: String(input.apiPort),
+      // Serve the same built assets and routing as a deployed stage. Vite's
+      // on-demand source transforms must not compete with timed scenarios.
+      CLOUD_DEV_DASHBOARD: "built",
+      CLOUD_DEV_API_PORT: new URL(input.origin).port,
       CLOUD_DEV_APP_UI_PORT: String(input.appPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${input.appPort}`,
       CLOUD_DEV_DATABASE_PORT: String(input.databasePort),
@@ -178,6 +180,11 @@ export const startCloudEnvironment = (input: {
           "--env",
           "POSTGRES_PASSWORD",
           "postgres:17",
+          // Local Hyperdrive is a TCP passthrough, without the deployed pooler.
+          // Parallel browser requests and their background jobs each own SQL
+          // connections; PostgreSQL's default 100 slots rejects startup bursts.
+          "-c",
+          "max_connections=512",
         ],
         {
           env: {

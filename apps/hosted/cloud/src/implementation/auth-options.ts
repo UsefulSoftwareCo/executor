@@ -8,7 +8,7 @@ import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { authOptions } from "@executor-js/hosted-server";
 import { HttpUrl } from "@executor-js/sdk/core";
-import { cloudOrigin } from "../infrastructure/stage.ts";
+import { cloudAuthRateLimit, cloudOrigin } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { organization } from "better-auth/plugins/organization";
@@ -56,6 +56,7 @@ const OAuthProxySettings = Schema.Struct({
 /** Require both cloud social providers and reject blank credentials at startup. */
 export const cloudAuthSettings = Effect.gen(function* () {
   const url = yield* cloudOrigin;
+  const rateLimitEnabled = yield* cloudAuthRateLimit;
   const emulators = yield* cloudEmulators;
   const oauthRedirectUri = yield* Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(
     Config.option,
@@ -115,7 +116,15 @@ export const cloudAuthSettings = Effect.gen(function* () {
       });
     },
   });
-  return { url, oauthRedirectUri, oauthProxy, trustedOrigins, emulators, ...social };
+  return {
+    url,
+    oauthRedirectUri,
+    oauthProxy,
+    trustedOrigins,
+    emulators,
+    rateLimitEnabled,
+    ...social,
+  };
 });
 
 /** Promise boundary used by Better Auth's organization lifecycle. */
@@ -136,6 +145,7 @@ export const cloudAuthOptions = (
   const base = authOptions(settings, ipAddressHeaders);
   return {
     ...base,
+    rateLimit: { ...base.rateLimit, enabled: settings.rateLimitEnabled },
     account: { ...base.account, storeStateStrategy: "database" as const },
     advanced: {
       ...base.advanced,

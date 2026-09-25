@@ -211,7 +211,9 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
           page
             .getByRole("button", { name: "Try again", exact: true })
             .click()
-            .then(() => page.getByText("queries.identity", { exact: true }).first().waitFor()),
+            .then(() =>
+              page.getByRole("heading", { name: "queries.identity", exact: true }).waitFor(),
+            ),
         );
         expect(
           (yield* api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`)).status,
