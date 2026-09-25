@@ -1537,13 +1537,22 @@ const makePluginStorageFacade = (input: {
   const tenant = String(input.owner.tenant);
 
   const whereFor =
-    (collection: string, key?: string): CoreWhere =>
+    (collection: string, key?: string, keyPrefix?: string): CoreWhere =>
     (b: AnyCb) =>
       b.and(
         b("plugin_id", "=", input.pluginId),
         b("collection", "=", collection),
         key === undefined ? true : b("key", "=", key),
+        keyPrefix === undefined ? true : b("key", "starts with", keyPrefix),
       );
+
+  // `starts with` compiles to an unescaped LIKE on SQL adapters (and a
+  // case-insensitive one on SQLite), so the pushed-down prefix only narrows
+  // the read to a superset; `list` still applies the exact `startsWith`. A
+  // backslash is Postgres LIKE's default escape character and could turn the
+  // superset into a subset, so such prefixes are filtered in JS only.
+  const sqlKeyPrefix = (keyPrefix: string | undefined): string | undefined =>
+    keyPrefix === undefined || keyPrefix.includes("\\") ? undefined : keyPrefix;
 
   const whereOwner = (owner: Owner, collection: string, key: string): CoreWhere => {
     const os = ownerSubject(owner);
@@ -1752,7 +1761,7 @@ const makePluginStorageFacade = (input: {
       if (validationError) return yield* validationError;
 
       const rows = yield* input.core.findMany("plugin_storage", {
-        where: whereFor(definition.name),
+        where: whereFor(definition.name, undefined, sqlKeyPrefix(queryInput?.keyPrefix)),
       });
       const filtered = sortByOwnerPrecedence(rows)
         .filter((row) =>
@@ -1828,7 +1837,7 @@ const makePluginStorageFacade = (input: {
     list: (storageInput) =>
       Effect.gen(function* () {
         const rows = yield* input.core.findMany("plugin_storage", {
-          where: whereFor(storageInput.collection),
+          where: whereFor(storageInput.collection, undefined, sqlKeyPrefix(storageInput.keyPrefix)),
         });
         return sortByOwnerPrecedence(rows)
           .filter((row) =>

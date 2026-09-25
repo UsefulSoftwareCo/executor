@@ -1,4 +1,4 @@
-import { Effect, Option, Predicate, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import {
   type PluginStorageEntry,
@@ -84,11 +84,17 @@ const stableKeyHash = (value: string): string => {
   return hash.toString(36).padStart(13, "0");
 };
 
+/** Every current-scheme key for an integration starts with this. */
+const operationKeyPrefix = (integration: string): string =>
+  `${OPERATION_KEY_VERSION}.${stableKeyHash(integration)}.`;
+
 const operationKey = (integration: string, toolName: string): string =>
-  `${OPERATION_KEY_VERSION}.${stableKeyHash(integration)}.${stableKeyHash(toolName)}`;
+  `${operationKeyPrefix(integration)}${stableKeyHash(toolName)}`;
+
+const legacyOperationKeyPrefix = (integration: string): string => `${integration}.`;
 
 const legacyOperationKey = (integration: string, toolName: string): string =>
-  `${integration}.${toolName}`;
+  `${legacyOperationKeyPrefix(integration)}${toolName}`;
 
 /** Blob key for a spec's content hash. Content-addressed so re-puts are
  *  idempotent and identical specs share one blob per partition. */
@@ -147,21 +153,35 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
     ...(operation.description !== undefined ? { description: operation.description } : {}),
   });
 
-  const listRows = (integration: string) =>
-    pluginStorage
-      .list({ collection: OPERATION_COLLECTION })
-      .pipe(
-        Effect.map((rows: readonly PluginStorageEntry[]) =>
-          rows.filter((row) => rowToOperation(row)?.integration === integration),
-        ),
-      );
+  // Reads only this integration's rows: both key schemes carry the
+  // integration as a prefix, so storage narrows the read instead of loading
+  // every integration's operations into memory. Each row is decoded once; the
+  // `integration` check drops prefix over-matches (a hash-prefix collision, or
+  // a legacy `<integration>.` prefix that is also a prefix of another slug's
+  // keys) so the result is exact.
+  const listEntries = (integration: string) =>
+    Effect.gen(function* () {
+      const prefixes = [operationKeyPrefix(integration), legacyOperationKeyPrefix(integration)];
+      const seen = new Set<string>();
+      const entries: { readonly key: string; readonly operation: StoredOperation }[] = [];
+      for (const keyPrefix of prefixes) {
+        const rows = yield* pluginStorage.list({ collection: OPERATION_COLLECTION, keyPrefix });
+        for (const row of rows) {
+          if (seen.has(row.key)) continue;
+          seen.add(row.key);
+          const operation = rowToOperation(row);
+          if (operation?.integration === integration) entries.push({ key: row.key, operation });
+        }
+      }
+      return entries;
+    });
 
   const removeOperations = (integration: string) =>
     Effect.gen(function* () {
-      const rows = yield* listRows(integration);
+      const entries = yield* listEntries(integration);
       yield* pluginStorage.removeMany({
         owner: STORE_OWNER,
-        entries: rows.map((row) => ({ collection: OPERATION_COLLECTION, key: row.key })),
+        entries: entries.map((entry) => ({ collection: OPERATION_COLLECTION, key: entry.key })),
       });
     });
 
@@ -201,8 +221,8 @@ export const makeDefaultOpenapiStore = ({ pluginStorage, blobs }: StorageDeps): 
       }),
 
     listOperations: (integration) =>
-      listRows(integration).pipe(
-        Effect.map((rows) => rows.map(rowToOperation).filter(Predicate.isNotNull)),
+      listEntries(integration).pipe(
+        Effect.map((entries) => entries.map((entry) => entry.operation)),
       ),
 
     removeOperations,

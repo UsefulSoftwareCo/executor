@@ -79,6 +79,8 @@ const executionHistoryPlugin = definePlugin(() => ({
         owner,
         entries: keys.map((key) => ({ collection: toolCalls.name, key })),
       }),
+    listByPrefix: (keyPrefix: string) =>
+      ctx.pluginStorage.list({ collection: toolCalls.name, keyPrefix }),
     get: (key: string) => ctx.storage.toolCalls.get({ key }),
     getForOwner: (owner: Owner, key: string) => ctx.storage.toolCalls.getForOwner({ owner, key }),
     query: (input?: PluginStorageCollectionQueryInput<typeof toolCalls>) =>
@@ -155,6 +157,39 @@ const failPluginStorageBulkWriteAfterFirstRow = (db: FumaDb): FumaDb => {
             );
           };
           return upsertMany;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+  return wrap(db);
+};
+
+// Records how many `plugin_storage` rows each adapter read hands back, so a
+// test can tell a prefix applied in SQL from one applied after loading every
+// row of the collection into memory.
+const countPluginStorageReads = (db: FumaDb, rowCounts: number[]): FumaDb => {
+  const wrap = (source: FumaDb): FumaDb =>
+    new Proxy(source, {
+      get(target, property, receiver) {
+        if (property === "withContext") {
+          const withContext = target.withContext;
+          return withContext === undefined
+            ? undefined
+            : (context: unknown) => wrap(withContext(context));
+        }
+        if (property === "transaction") {
+          const transaction: FumaDb["transaction"] = (run) =>
+            target.transaction((transactionDb) => run(wrap(transactionDb)));
+          return transaction;
+        }
+        if (property === "findMany") {
+          const findMany: FumaDb["findMany"] = async (table, options) => {
+            const rows = await target.findMany(table, options);
+            if (table === "plugin_storage") rowCounts.push(rows.length);
+            return rows;
+          };
+          return findMany;
         }
         return Reflect.get(target, property, receiver);
       },
@@ -522,6 +557,74 @@ describe("plugin storage collections", () => {
         message:
           'Plugin storage collection "toolCalls" cannot query field "durationMs" because it is not declared as an index',
       });
+    }),
+  );
+
+  it.effect("narrows key-prefix reads in storage and keeps the result exact", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({
+        backend: "sqlite",
+        plugins: [executionHistoryPlugin] as const,
+      });
+      const rowCounts: number[] = [];
+      const executor = yield* Effect.acquireRelease(
+        createExecutor({ ...config, db: countPluginStorageReads(config.db, rowCounts) }),
+        (instance) =>
+          instance
+            .close()
+            .pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.promise(() => config.testDb.close()).pipe(Effect.ignore)),
+            ),
+      );
+
+      const keys = [
+        "op.abc.1",
+        "op.abc.2",
+        "op.abd.3",
+        // `_` and `%` are LIKE wildcards and SQLite LIKE ignores ASCII case, so
+        // each exact key below has look-alikes a naive pushdown would return.
+        "cloudflare_com.a",
+        "cloudflareXcom.b",
+        "CLOUDFLARE_COM.c",
+        "cloudflare%com.d",
+        "cloudflare-com.e",
+        // A backslash is Postgres LIKE's default escape character.
+        "back\\slash.f",
+        "backslash.g",
+        ...Array.from({ length: 40 }, (_, index) => `filler-${String(index).padStart(2, "0")}`),
+      ];
+      yield* executor.executionHistory.recordMany(
+        "org",
+        keys.map((key, index) => ({
+          key,
+          data: call({
+            runId: "run-prefix",
+            toolId: key,
+            status: "ok",
+            startedAt: new Date(Date.UTC(2026, 4, 29, 13, 0, index)).toISOString(),
+          }),
+        })),
+      );
+
+      const listed = (keyPrefix: string) =>
+        executor.executionHistory
+          .listByPrefix(keyPrefix)
+          .pipe(Effect.map((rows) => rows.map((row) => row.key).sort()));
+
+      rowCounts.length = 0;
+      expect(yield* listed("op.abc.")).toEqual(["op.abc.1", "op.abc.2"]);
+      // Only the matching rows left storage; the other 48 were never loaded.
+      expect(rowCounts).toEqual([2]);
+
+      expect(yield* listed("cloudflare_com.")).toEqual(["cloudflare_com.a"]);
+      expect(yield* listed("cloudflare%com.")).toEqual(["cloudflare%com.d"]);
+      expect(yield* listed("back\\slash.")).toEqual(["back\\slash.f"]);
+
+      rowCounts.length = 0;
+      const queried = yield* executor.executionHistory.query({ keyPrefix: "op.abc." });
+      expect(queried.map((entry) => entry.key).sort()).toEqual(["op.abc.1", "op.abc.2"]);
+      expect(rowCounts).toEqual([2]);
     }),
   );
 });
