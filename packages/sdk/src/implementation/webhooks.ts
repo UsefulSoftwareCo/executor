@@ -30,7 +30,7 @@ import type { Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
-import { snapshot, resolve } from "./tools.ts";
+import { snapshot, resolve, type InvocationSnapshot } from "./tools.ts";
 import { storedProfile } from "./profiles.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
@@ -57,10 +57,7 @@ export const makeWebhooks = (
   crypto: Crypto.Crypto,
   origin?: string,
   appStorage?: AppDatabases,
-  workflows?: (
-    app: AppId,
-    state?: Effect.Success<ReturnType<typeof snapshot>>,
-  ) => WorkflowHostControls,
+  workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
@@ -103,7 +100,7 @@ export const makeWebhooks = (
           database: state.deployment.requirements.database !== undefined,
           ...context,
           ...(yield* bindAppStorage(appStorage, row.app)),
-          ...(workflows === undefined ? {} : { workflowControls: workflows(row.app, state) }),
+          ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
           command,
         })
         .pipe(

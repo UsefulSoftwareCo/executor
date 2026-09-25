@@ -181,9 +181,10 @@ export function resolve(
   }).pipe(Effect.provideService(CurrentProfile, state.profile));
 }
 
-type Snapshot = Effect.Success<ReturnType<typeof snapshot>>;
+/** One resolved invocation: app, pinned deployment, optional profile and account selection. */
+export type InvocationSnapshot = Effect.Success<ReturnType<typeof snapshot>>;
 
-function invocation(state: Snapshot, tool: ToolName, input: Json) {
+function invocation(state: InvocationSnapshot, tool: ToolName, input: Json) {
   return Schema.decodeUnknownEffect(ToolInvocation)({
     app: state.app.id,
     owner: state.app.owner,
@@ -230,7 +231,7 @@ export const evaluationFailure = (
 
 const runtimeFailure = (
   identity: { app: AppId; deployment: DeploymentId; tool: ToolName },
-  state: Snapshot,
+  state: InvocationSnapshot,
 ) =>
   Match.type<
     Effect.Error<ReturnType<Runtime["call"] | Runtime["query"] | Runtime["mutate"]>>
@@ -288,10 +289,7 @@ export const makeTools = (
   credentials: Credentials,
   crypto: Crypto.Crypto,
   appStorage?: AppDatabases,
-  workflows?: (
-    app: AppId,
-    state?: Effect.Success<ReturnType<typeof snapshot>>,
-  ) => WorkflowHostControls,
+  workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
@@ -320,7 +318,7 @@ export const makeTools = (
           app: state.app.id,
           build: state.deployment.build,
           ...context,
-          ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id, state) }),
+          ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
         },
         state.deployment.requirements.capabilities?.toolIndex === true,
       ).pipe(
@@ -440,9 +438,7 @@ export const makeTools = (
           .call({
             app: state.app.id,
             ...(yield* bindAppStorage(appStorage, state.app.id)),
-            ...(workflows === undefined
-              ? {}
-              : { workflowControls: workflows(state.app.id, state) }),
+            ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
             build: state.deployment.build,
             database: state.deployment.requirements.database !== undefined,
             ...context,
@@ -537,7 +533,7 @@ export const makeTools = (
                       ...(yield* bindAppStorage(appStorage, saved.app)),
                       ...(workflows === undefined
                         ? {}
-                        : { workflowControls: workflows(saved.app) }),
+                        : { workflowControls: workflows(checked.success.state) }),
                       build: checked.success.state.deployment.build,
                       database:
                         checked.success.state.deployment.requirements.database !== undefined,

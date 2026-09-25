@@ -1676,6 +1676,16 @@ export const scenarios = {
       cloud: na("Hosted profile access has its own browser scenario."),
     },
   },
+  workflowProfiles: {
+    fixtures: "actors",
+    file: "workflow-profiles.spec.ts",
+    title: "approval-resumed workflow controls stay inside the caller's profile",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted profiles, API keys and MCP."),
+    },
+  },
   workflows: {
     fixtures: "actors",
     file: "workflows.spec.ts",
