@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { currentOwner, selectedApp } from "./access.ts";
+import { currentOwner, selectedActiveDeployment } from "./access.ts";
 
 /** Discover the current account-dependent catalog after checking its saved selection. */
 export const listTools = (input: Parameters<Executor["tools"]["list"]>[0]) =>
@@ -13,8 +13,8 @@ export const listTools = (input: Parameters<Executor["tools"]["list"]>[0]) =>
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app, input.profile);
-    const page = yield* executor.tools.list({ ...input, limit: 2000 });
+    const deployment = yield* selectedActiveDeployment(executor, owner, input);
+    const page = yield* executor.tools.list({ ...input, deployment, limit: 2000 });
     return {
       ...page,
       items: page.items.filter((tool) => permitsTool(policy, input.app, tool.name, "discover")),
@@ -26,8 +26,8 @@ export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app, input.profile);
-    const index = yield* executor.tools.index(input);
+    const deployment = yield* selectedActiveDeployment(executor, owner, input);
+    const index = yield* executor.tools.index({ ...input, deployment });
     return {
       ...index,
       items: index.items.filter((tool) => permitsTool(policy, input.app, tool.name, "discover")),
@@ -39,8 +39,8 @@ export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app, input.profile);
-    const tool = yield* executor.tools.get(input);
+    const deployment = yield* selectedActiveDeployment(executor, owner, input);
+    const tool = yield* executor.tools.get({ ...input, deployment });
     if (!permitsTool(policy, input.app, tool.name, "discover"))
       return yield* new ToolNotFound({
         app: tool.app,
@@ -55,8 +55,8 @@ export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
     Effect.gen(function* () {
       yield* authorizeTool(input.app, input.tool);
       const executor = yield* Effect.flatten(HostedExecutor);
-      yield* selectedApp(executor, owner, input.app, input.profile);
-      const result = yield* executor.tools.call(input);
+      const deployment = yield* selectedActiveDeployment(executor, owner, input);
+      const result = yield* executor.tools.call({ ...input, deployment });
       if (result.status === "approval-required")
         return yield* new ToolApprovalRequired({
           app: result.invocation.app,

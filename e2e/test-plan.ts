@@ -43,6 +43,18 @@ export const scenarios = {
       local: na("This scenario exercises hosted account sharing and profile authorization."),
     },
   },
+  activeDeploymentTools: {
+    fixtures: "actors",
+    file: "active-deployment-tools.spec.ts",
+    title: "Hosted new tool calls reject retired deployments and preserve active approval policy",
+    targets: { "self-host": scheduled, cloud: scheduled, local: na("Hosted authorization policy") },
+  },
+  activeDeploymentResume: {
+    fixtures: "actors",
+    file: "active-deployment-tools.spec.ts",
+    title: "Hosted MCP resumes pinned approvals after promotion with current authorization",
+    targets: { "self-host": scheduled, cloud: scheduled, local: na("Hosted authorization policy") },
+  },
   graphqlPublicCache: {
     fixtures: "actors",
     file: "graphql-cache.spec.ts",

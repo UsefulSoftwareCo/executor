@@ -1,4 +1,4 @@
-import { StorageError } from "@executor-js/sdk/core";
+import { AppNotDeployed, DeploymentNotFound, StorageError } from "@executor-js/sdk/core";
 import {
   requireAppAccess,
   requireAppAccessAs,
@@ -72,6 +72,21 @@ export const selectedApp = (executor: Executor, owner: OwnerId, app: AppId, prof
     }
     return current;
   });
+/** New tool discovery and calls use the active build; retained execution is reserved for saved invocations. */
+export const selectedActiveDeployment = (
+  executor: Executor,
+  owner: OwnerId,
+  input: Parameters<Executor["tools"]["list"]>[0],
+) =>
+  Effect.gen(function* () {
+    const app = yield* selectedApp(executor, owner, input.app, input.profile);
+    if (input.deployment !== undefined && input.deployment !== app.activeDeployment)
+      return yield* new DeploymentNotFound({ app: app.id, deployment: input.deployment });
+    if (app.activeDeployment === null) return yield* new AppNotDeployed({ app: app.id });
+    // Pin the authorized version so a concurrent promotion cannot silently change the call.
+    return app.activeDeployment;
+  });
+
 /** Setup identity remains private even when every selected account is shared. Allows own cleanup after revocation. */
 export const ownProfile = (executor: Executor, owner: OwnerId, app: AppId, profile: ProfileId) =>
   Effect.flatMap(currentResourceAuthority, (actor) =>
