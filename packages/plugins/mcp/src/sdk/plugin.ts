@@ -223,6 +223,9 @@ const McpRemoteServerInputSchema = Schema.Struct({
    *  2026-07-28 revision and then violate its response contract; the probe
    *  reports when it had to fall back, and the add flow passes that through. */
   versionNegotiation: Schema.optional(McpStdioVersionNegotiation),
+  /** Active-work deadline per tool call in ms; see
+   *  `McpStdioIntegrationConfig.toolTimeoutMs`. */
+  toolTimeoutMs: Schema.optional(Schema.Number),
 });
 
 const McpStdioServerInputSchema = Schema.Struct({
@@ -261,6 +264,9 @@ const McpStdioServerInputSchema = Schema.Struct({
   /** Opt out of process reuse — spawn a fresh child for every tool call (see
    *  `McpStdioIntegrationConfig.spawnPerCall`). */
   spawnPerCall: Schema.optional(Schema.Boolean),
+  /** Active-work deadline per tool call in ms; see
+   *  `McpStdioIntegrationConfig.toolTimeoutMs`. */
+  toolTimeoutMs: Schema.optional(Schema.Number),
   /** Reach the server through the Codex app-server bridge: the command spawns
    *  `codex app-server` and `server` names the MCP server inside Codex whose
    *  tools this integration exposes. Set by the Codex plugin add flow. */
@@ -481,6 +487,7 @@ export const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfig
       cwd: input.cwd,
       versionNegotiation: input.versionNegotiation,
       spawnPerCall: input.spawnPerCall,
+      toolTimeoutMs: input.toolTimeoutMs,
       appServer: input.appServer,
       authenticationTemplate:
         vars.length > 0
@@ -499,6 +506,7 @@ export const toIntegrationConfig = (input: McpServerInput): McpIntegrationConfig
       ? normalizeMcpAuthMethods(input.authenticationTemplate)
       : [mcpAuthMethodFromShorthand(input.auth ?? { kind: "none" })],
     versionNegotiation: input.versionNegotiation,
+    toolTimeoutMs: input.toolTimeoutMs,
   };
 };
 
@@ -1714,6 +1722,7 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
           onToolListChanged: () => {
             toolListChanged = true;
           },
+          activeWorkTimeoutMs: parsed.toolTimeoutMs,
         }).pipe(
           Effect.onExit(() =>
             toolListChanged
