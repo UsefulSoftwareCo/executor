@@ -1746,6 +1746,37 @@ export const scenarios = {
       local: na("This scenario uses hosted account and webhook management routes."),
     },
   },
+  invitationRoles: {
+    fixtures: "actors",
+    file: "invitation-roles.spec.ts",
+    title: "invitation roles cannot grant owner authority through native auth routes",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  invitationPrivacy: {
+    fixtures: "actors",
+    file: "invitation-security.spec.ts",
+    title: "invitation secrets are available only to current organization administrators",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  invitationRedemption: {
+    fixtures: "actors",
+    file: "invitation-redemption.spec.ts",
+    title:
+      "self-host invitation links admit the intended role exactly once without replacing accounts",
+    targets: {
+      local: na("Self-host invitation signup."),
+      "self-host": scheduled,
+      cloud: na("Cloud requires a verified recipient instead of password registration."),
+    },
+  },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
     title: "Self-host administrator setup opens the agent handoff before Apps",
