@@ -147,7 +147,8 @@
     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
     "bun@1.4.2": "patches/bun@1.4.2.patch",
     "tree-sitter@0.21.1": "patches/tree-sitter@0.21.1.patch",
-    "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch"
+    "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
+    "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch"
   },
   "trustedDependencies": [
     "bun",

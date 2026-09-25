@@ -27,13 +27,14 @@ import {
   ApiAuthentication,
   apiAuthenticationError,
 } from "@executor-js/hosted-server";
-import { BetterAuth } from "@alchemy.run/better-auth";
+import { BetterAuth, BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
 import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
 import { RuntimeContext } from "alchemy";
 import { Context, Effect, Layer, Option, Schema, type Scope } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { cloudSecrets } from "./secrets.ts";
+import { authQueryAdapter, bindAuthQueries } from "./auth-database.ts";
 
 /** Bind during initialization; database calls capture the current invocation only. */
 export const cloudAuth = (send: SendAuthEmail) =>
@@ -116,6 +117,28 @@ export const cloudAuth = (send: SendAuthEmail) =>
       secret: secrets.authSecret,
       migrate: false,
     });
+    // Better Auth work runs as Promise code. Bind it to the calling span so each
+    // auth SQL timing span is a child of the operation that issued the query.
+    const nativeCall = <A>(call: (instance: Effect.Success<typeof auth.auth>) => Promise<A>) =>
+      auth.auth.pipe(
+        Effect.provide(RuntimeContext.phantom),
+        Effect.flatMap((instance) =>
+          Effect.flatMap(bindAuthQueries, (bind) =>
+            Effect.tryPromise({ try: () => bind(() => call(instance)), catch: (error) => error }),
+          ),
+        ),
+        // The same failure contract as Alchemy's `auth.api` wrappers.
+        Effect.catch((error) =>
+          isAPIErrorLike(error)
+            ? Effect.fail(BetterAuthApiError.fromAPIError(error))
+            : Effect.die(error),
+        ),
+      );
+    const adapter = auth.auth.pipe(
+      Effect.provide(RuntimeContext.phantom),
+      Effect.flatMap((instance) => Effect.promise(() => instance.$context)),
+      Effect.flatMap((context) => authQueryAdapter(context.adapter)),
+    );
     const identity = Layer.effect(
       Authentication,
       Effect.gen(function* () {
@@ -124,10 +147,13 @@ export const cloudAuth = (send: SendAuthEmail) =>
           origin: settings.url,
           oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
           current: (headers) =>
-            auth.api
-              .getSession({ headers, query: { disableRefresh: true, disableCookieCache: true } })
+            nativeCall((instance) =>
+              instance.api.getSession({
+                headers,
+                query: { disableRefresh: true, disableCookieCache: true },
+              }),
+            )
               .pipe(
-                Effect.provide(RuntimeContext.phantom),
                 Effect.tapCause((cause) =>
                   Effect.annotateCurrentSpan({
                     "auth.failure.type": usageFailure(cause).error_type ?? "Interrupted",
@@ -138,41 +164,33 @@ export const cloudAuth = (send: SendAuthEmail) =>
               )
               .pipe(Effect.withSpan("auth.current")),
           organization: (reference) =>
-            auth.auth.pipe(
-              Effect.provide(RuntimeContext.phantom),
-              Effect.flatMap((native) => Effect.promise(() => native.$context)),
-              Effect.flatMap((context) => resolveOrganizationReference(context.adapter, reference)),
-            ),
+            adapter
+              .pipe(Effect.flatMap((adapter) => resolveOrganizationReference(adapter, reference)))
+              .pipe(Effect.withSpan("auth.organization")),
           organizationSlug: (headers, organizationId) =>
             auth.auth
               .pipe(
                 Effect.provide(RuntimeContext.phantom),
                 Effect.flatMap((native) =>
-                  lookupOrganizationSlug(() =>
-                    native.api.getOrganization({ headers, query: { organizationId } }),
+                  Effect.flatMap(bindAuthQueries, (bind) =>
+                    lookupOrganizationSlug(() =>
+                      bind(() =>
+                        native.api.getOrganization({ headers, query: { organizationId } }),
+                      ),
+                    ),
                   ),
                 ),
               )
               .pipe(Effect.withSpan("auth.organizationSlug")),
           membership: (principal, organizationId) =>
-            auth.auth
+            adapter
               .pipe(
-                Effect.provide(RuntimeContext.phantom),
-                Effect.flatMap((native) => Effect.promise(() => native.$context)),
-                Effect.flatMap((context) =>
-                  lookupMembership(context.adapter, principal, organizationId),
-                ),
+                Effect.flatMap((adapter) => lookupMembership(adapter, principal, organizationId)),
               )
               .pipe(Effect.withSpan("auth.membership")),
           removeOrganization: (organizationId) =>
-            auth.auth
-              .pipe(
-                Effect.provide(RuntimeContext.phantom),
-                Effect.flatMap((native) => Effect.promise(() => native.$context)),
-                Effect.flatMap((context) =>
-                  deleteOrganizationRecords(context.adapter, organizationId),
-                ),
-              )
+            adapter
+              .pipe(Effect.flatMap((adapter) => deleteOrganizationRecords(adapter, organizationId)))
               .pipe(Effect.withSpan("auth.removeOrganization")),
         });
       }),
@@ -187,10 +205,15 @@ export const cloudAuth = (send: SendAuthEmail) =>
               .pipe(
                 Effect.provide(RuntimeContext.phantom),
                 Effect.flatMap((native) =>
-                  Effect.tryPromise({
-                    try: () => native.api.getMcpAccess({ headers, query: { mode, organization } }),
-                    catch: mcpAuthenticationError,
-                  }),
+                  Effect.flatMap(bindAuthQueries, (bind) =>
+                    Effect.tryPromise({
+                      try: () =>
+                        bind(() =>
+                          native.api.getMcpAccess({ headers, query: { mode, organization } }),
+                        ),
+                      catch: mcpAuthenticationError,
+                    }),
+                  ),
                 ),
               )
               .pipe(Effect.withSpan("auth.authenticate")),
@@ -221,10 +244,13 @@ export const cloudAuth = (send: SendAuthEmail) =>
               .pipe(
                 Effect.provide(RuntimeContext.phantom),
                 Effect.flatMap((native) =>
-                  Effect.tryPromise({
-                    try: () => native.api.getApiAccess({ headers, query: { organization } }),
-                    catch: apiAuthenticationError,
-                  }),
+                  Effect.flatMap(bindAuthQueries, (bind) =>
+                    Effect.tryPromise({
+                      try: () =>
+                        bind(() => native.api.getApiAccess({ headers, query: { organization } })),
+                      catch: apiAuthenticationError,
+                    }),
+                  ),
                 ),
               )
               .pipe(Effect.withSpan("auth.authenticate")),

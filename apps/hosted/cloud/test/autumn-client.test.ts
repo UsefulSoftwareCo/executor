@@ -32,7 +32,7 @@ const input = {
   sendEvent: true,
 };
 
-test("seven operations preserve wire fields, API version and emulator path without exposing credentials in traces", async () => {
+test("seven operations preserve wire fields, API version and emulator path, and trace each round trip without credentials", async () => {
   const requests: Array<{ path: string; body: unknown }> = [];
   const spans: Tracer.NativeSpan[] = [];
   const responses: Record<string, unknown> = {
@@ -174,8 +174,30 @@ test("seven operations preserve wire fields, API version and emulator path witho
       body: { customer_id: "fixture", plan_id: "team", cancel_action: "cancel_immediately" },
     },
   ]);
-  assert.equal(spans.length, 7);
-  assert.ok(spans.every((span) => span.name.startsWith("autumn.")));
+  // Each operation span has one client span for its HTTP round trip.
+  const operations = spans.filter((span) => span.name !== "autumn.http");
+  const exchanges = spans.filter((span) => span.name === "autumn.http");
+  assert.equal(operations.length, 7);
+  assert.ok(operations.every((span) => span.name.startsWith("autumn.")));
+  assert.deepEqual(
+    exchanges.map((span) => ({
+      parent: operations.find(
+        (operation) => span.parent._tag === "Some" && operation.spanId === span.parent.value.spanId,
+      )?.name,
+      kind: span.kind,
+      attributes: Object.fromEntries(span.attributes),
+    })),
+    requests.map((request, index) => ({
+      parent: operations[index]?.name,
+      kind: "client",
+      attributes: {
+        "http.request.method": "POST",
+        "server.address": "fixture.test",
+        "autumn.path": `/v1/${request.path}`,
+        "http.response.status_code": 200,
+      },
+    })),
+  );
   const captured = JSON.stringify(
     spans.map((span) => ({ name: span.name, attributes: [...span.attributes] })),
   );

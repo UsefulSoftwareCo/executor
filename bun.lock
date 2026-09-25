@@ -783,6 +783,7 @@
     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
+    "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
     "alchemy@2.0.0-beta.79": "patches/alchemy@2.0.0-beta.79.patch",
     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
