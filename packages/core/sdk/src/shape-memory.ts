@@ -4,8 +4,9 @@
  *
  * Observed shapes live in the already-migrated `plugin_storage` table under a
  * reserved system plugin id: owner-scoped, tenant-partitioned, and untouched
- * by tool-catalog refresh (which deletes and recreates `tool` rows, so the
- * tool row itself is not a viable home). An in-memory read-through cache
+ * by tool-catalog refresh (which overwrites every `tool` row's columns and
+ * deletes rows the upstream stopped listing, so the tool row itself is not a
+ * viable home). An in-memory read-through cache
  * keeps the hot path off the database: within one executor instance a tool's
  * shape is loaded at most once, and a write happens only when a new
  * observation actually changes the merged shape — after a few calls a stable
