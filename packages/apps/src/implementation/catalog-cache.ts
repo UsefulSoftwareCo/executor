@@ -10,7 +10,7 @@ export interface CatalogCacheOptions {
   readonly cache?: AppCache;
   /** Reuse metadata for this duration. Defaults to five minutes. */
   readonly freshFor?: Duration.Input;
-  /** Serve retained metadata while refreshing. Defaults to five minutes. */
+  /** Serve retained metadata while refreshing. Defaults to one day. */
   readonly staleFor?: Duration.Input;
   /** Await a fresh revision at an explicit logical connection or refresh boundary. */
   readonly revalidate?: boolean;
@@ -43,7 +43,7 @@ export const catalogCache = <A extends { readonly name: string }, S>(
       name,
     ];
     const freshFor = options.freshFor ?? "5 minutes";
-    const staleFor = options.staleFor ?? "5 minutes";
+    const staleFor = options.staleFor ?? "1 day";
     const retention =
       Duration.toMillis(Duration.fromInputUnsafe(freshFor)) +
       Duration.toMillis(Duration.fromInputUnsafe(staleFor)) +
@@ -52,7 +52,13 @@ export const catalogCache = <A extends { readonly name: string }, S>(
     const refresh = (context: CacheLoadContext) =>
       Effect.gen(function* () {
         const tools = yield* options.load(context);
-        const revision = crypto.randomUUID();
+        // Content-addressed, so refreshing an unchanged catalog renews the same parts.
+        const digest = yield* invoke(() =>
+          crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(tools))),
+        );
+        const revision = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
         let pages = 0;
         let page: JsonObject[] = [];
         let pageBytes = 0;

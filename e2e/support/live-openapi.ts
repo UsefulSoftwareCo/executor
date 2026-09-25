@@ -15,7 +15,8 @@ import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
 import { createProfile } from "./profiles.ts";
 
-export const liveOpenapiFixture = (freshFor: number) =>
+/** Omit staleFor to use the framework default stale-while-revalidate window. */
+export const liveOpenapiFixture = (freshFor: number, options: { staleFor?: number } = {}) =>
   Effect.gen(function* () {
     let version = 1;
     let downloads = 0;
@@ -103,7 +104,7 @@ export const liveOpenapiFixture = (freshFor: number) =>
         path: "index.ts",
         content: `import { defineApp } from 'apps'; import { liveOpenapiOperations } from 'apps/openapi';
 export default defineApp({accounts:{}}, async ctx => liveOpenapiOperations({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
- source:{url:${JSON.stringify(origin + "/openapi.json")}}, allowedOrigin:${JSON.stringify(origin)}, freshFor:${freshFor}, staleFor:0,
+ source:{url:${JSON.stringify(origin + "/openapi.json")}}, allowedOrigin:${JSON.stringify(origin)}, freshFor:${freshFor},${options.staleFor === undefined ? "" : ` staleFor:${options.staleFor},`}
  securitySchemes:{token:{type:'apiKey',in:'header',name:'x-token'}}, methods:{apiKey:[{scheme:'token',field:'token',part:'value',prefix:''}]}, oauth:[],
  account:{method:'apiKey',fields:{token:'synthetic-live-key'}}
 }));`,

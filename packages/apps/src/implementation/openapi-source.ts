@@ -28,6 +28,14 @@ const invoke = <A>(work: () => Promise<A>) =>
 const invalid = () => new OpenapiError({ reason: "invalid_definition" });
 
 const pageSize = 64;
+
+/** SHA-256 of a string, as lowercase hex. */
+const sha256 = (text: string) =>
+  invoke(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))).pipe(
+    Effect.map((hash) =>
+      Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    ),
+  );
 const partConcurrency = 4;
 
 // Immutable, account-free data only. Neither credentials nor executable handlers enter this map.
@@ -167,8 +175,10 @@ export const liveOpenapiOperations = (
   readonly mutations: {};
   readonly dynamicTools: DynamicTools;
 } => {
+  // Specs change rarely and compiling a large one takes seconds. Idle visits serve the
+  // retained revision and refresh it in the background instead of waiting for a full load.
   const freshFor = options.freshFor ?? "5 minutes";
-  const staleFor = options.staleFor ?? "5 minutes";
+  const staleFor = options.staleFor ?? "1 day";
   const retention =
     Duration.toMillis(Duration.fromInputUnsafe(freshFor)) +
     Duration.toMillis(Duration.fromInputUnsafe(staleFor)) +
@@ -224,7 +234,9 @@ export const liveOpenapiOperations = (
           ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
         },
       );
-      const revision = crypto.randomUUID();
+      // Revisions are content-addressed: refreshing an unchanged document rewrites the
+      // same parts and renews their retention instead of storing another copy.
+      const revision = yield* sha256(JSON.stringify([yield* sourceId, document]));
       const names = compiled.operations.map((operation) => operation.name);
       const entries: { key: JsonValue; value: JsonValue }[] = [
         ...compiled.operations.map((operation) => ({

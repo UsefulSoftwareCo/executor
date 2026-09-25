@@ -10,7 +10,7 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const fixture = yield* liveOpenapiFixture(0);
+        const fixture = yield* liveOpenapiFixture(0, { staleFor: 0 });
         const { call, api, actors, path, profile } = fixture;
         const first = yield* call("old", "old");
         expect(first.status).toBe(200);
