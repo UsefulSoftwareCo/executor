@@ -297,15 +297,13 @@ describe("MCP tools/list pagination", () => {
 //
 // The fixture below refuses to answer any listing until the bound is reached,
 // which pins both edges at once: a serial refresh parks on the first listing
-// and never finishes, while an unbounded refresh puts more than
-// STALE_TOOLS_SYNC_CONCURRENCY listings in flight. The stale set is deliberately
-// one larger than the bound, so the last connection can only be served after an
-// earlier one completes.
+// and never finishes, while an unbounded refresh puts more than the bound
+// (STALE_TOOLS_SYNC_CONCURRENCY, or the host's `toolsSyncConcurrency`) in
+// flight. The stale set is deliberately one larger than the bound, so the last
+// connection can only be served after an earlier one completes.
 // ---------------------------------------------------------------------------
 
-const STALE_CONNECTIONS = STALE_TOOLS_SYNC_CONCURRENCY + 1;
-
-const serveLatchedListServer = () =>
+const serveLatchedListServer = (bound: number) =>
   Effect.gen(function* () {
     const armed = yield* Ref.make(false);
     const listings = yield* Ref.make(0);
@@ -341,7 +339,7 @@ const serveLatchedListServer = () =>
         // refresh parks on the first one and never reaches the bound.
         if (yield* Ref.get(armed)) {
           const arrived = yield* Ref.updateAndGet(listings, (n) => n + 1);
-          if (arrived >= STALE_TOOLS_SYNC_CONCURRENCY) {
+          if (arrived >= bound) {
             yield* Deferred.succeed(atLimit, undefined);
           }
           yield* Deferred.await(release);
@@ -361,67 +359,77 @@ const serveLatchedListServer = () =>
     } as const;
   });
 
+const expectBoundedStaleRefresh = (options: { readonly toolsSyncConcurrency?: number }) =>
+  Effect.gen(function* () {
+    const bound = options.toolsSyncConcurrency ?? STALE_TOOLS_SYNC_CONCURRENCY;
+    const staleConnections = bound + 1;
+    const fixture = yield* serveLatchedListServer(bound);
+    const executor = yield* createExecutor({
+      ...makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
+      // Everything is expired on every read, so a single tools read has the
+      // whole set to rebuild.
+      toolsSyncTtlMs: 0,
+      // Strict mode: the assertions below synchronize on the read fiber
+      // completing only after every rebuild has finished. With a grace
+      // budget the read would return early and `Fiber.join` would no longer
+      // order the final listing before the count assertion.
+      toolsSyncGraceMs: null,
+      ...options,
+    });
+
+    for (let index = 0; index < staleConnections; index++) {
+      const slug = IntegrationSlug.make(`latched_mcp_${index}`);
+      yield* executor.mcp.addServer({
+        name: `latched-mcp-${index}`,
+        endpoint: fixture.endpoint(index),
+        slug: String(slug),
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONNECTION,
+        integration: slug,
+        template: TEMPLATE,
+        value: "",
+      });
+    }
+
+    // Warm every catalog while the fixture still answers freely, so the
+    // latched read below is purely the stale-refresh fan-out.
+    yield* executor.tools.list();
+    yield* fixture.arm;
+
+    const readFiber = yield* Effect.forkChild(executor.tools.list());
+
+    // Timeouts are well inside the harness limit, so a broken fan-out fails
+    // on an assertion here rather than as an opaque test-runner timeout.
+    // A serial refresh never saturates the bound and fails on this line.
+    const saturated = yield* fixture.awaitLimit.pipe(Effect.timeoutOption("10 seconds"));
+    expect(Option.isSome(saturated)).toBe(true);
+
+    // The bound is reached and every one of those listings is still parked.
+    // Give an unbounded fan-out ample time to dial the remaining connection:
+    // it never may, because no permit has been given back yet.
+    yield* Effect.sleep("500 millis");
+    expect(yield* fixture.listings).toBe(bound);
+
+    // Releasing the parked listings frees permits, and only then does the
+    // last connection get dialled.
+    yield* fixture.release;
+    const refreshed = yield* Fiber.join(readFiber).pipe(Effect.timeoutOption("10 seconds"));
+    expect(Option.isSome(refreshed)).toBe(true);
+    expect(yield* fixture.listings).toBe(staleConnections);
+  });
+
 describe("MCP stale-catalog refresh", () => {
   // `it.live` (real clock): proving that nothing beyond the bound is dialled
   // means giving a real HTTP round trip a real window to happen in, and the
   // timeouts below must actually fire. The TestClock advances neither.
   it.live("rebuilds stale connections concurrently up to the bound, then queues the rest", () =>
-    Effect.gen(function* () {
-      const fixture = yield* serveLatchedListServer();
-      const executor = yield* createExecutor({
-        ...makeTestConfig({ plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const }),
-        // Everything is expired on every read, so a single tools read has the
-        // whole set to rebuild.
-        toolsSyncTtlMs: 0,
-        // Strict mode: the assertions below synchronize on the read fiber
-        // completing only after every rebuild has finished. With a grace
-        // budget the read would return early and `Fiber.join` would no longer
-        // order the final listing before the count assertion.
-        toolsSyncGraceMs: null,
-      });
+    expectBoundedStaleRefresh({}),
+  );
 
-      for (let index = 0; index < STALE_CONNECTIONS; index++) {
-        const slug = IntegrationSlug.make(`latched_mcp_${index}`);
-        yield* executor.mcp.addServer({
-          name: `latched-mcp-${index}`,
-          endpoint: fixture.endpoint(index),
-          slug: String(slug),
-        });
-        yield* executor.connections.create({
-          owner: "org",
-          name: CONNECTION,
-          integration: slug,
-          template: TEMPLATE,
-          value: "",
-        });
-      }
-
-      // Warm every catalog while the fixture still answers freely, so the
-      // latched read below is purely the stale-refresh fan-out.
-      yield* executor.tools.list();
-      yield* fixture.arm;
-
-      const readFiber = yield* Effect.forkChild(executor.tools.list());
-
-      // Timeouts are well inside the harness limit, so a broken fan-out fails
-      // on an assertion here rather than as an opaque test-runner timeout.
-      // A serial refresh never saturates the bound and fails on this line.
-      const saturated = yield* fixture.awaitLimit.pipe(Effect.timeoutOption("10 seconds"));
-      expect(Option.isSome(saturated)).toBe(true);
-
-      // The bound is reached and every one of those listings is still parked.
-      // Give an unbounded fan-out ample time to dial the remaining connection:
-      // it never may, because no permit has been given back yet.
-      yield* Effect.sleep("500 millis");
-      expect(yield* fixture.listings).toBe(STALE_TOOLS_SYNC_CONCURRENCY);
-
-      // Releasing the parked listings frees permits, and only then does the
-      // last connection get dialled.
-      yield* fixture.release;
-      const refreshed = yield* Fiber.join(readFiber).pipe(Effect.timeoutOption("10 seconds"));
-      expect(Option.isSome(refreshed)).toBe(true);
-      expect(yield* fixture.listings).toBe(STALE_CONNECTIONS);
-    }),
+  it.live("bounds the stale rebuild fan-out at the host's toolsSyncConcurrency", () =>
+    expectBoundedStaleRefresh({ toolsSyncConcurrency: 2 }),
   );
 });
 

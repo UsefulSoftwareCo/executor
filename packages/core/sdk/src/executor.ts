@@ -796,6 +796,16 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    */
   readonly toolsSyncGraceMs?: number | null;
   /**
+   * How many stale connection catalogs one tools read rebuilds at once.
+   * Defaults to {@link STALE_TOOLS_SYNC_CONCURRENCY}. Every in-flight rebuild
+   * holds its connection's resolved tool set and schema definitions in memory
+   * until its catalog write gets the single persist permit, so hosts with a
+   * small memory ceiling (Cloudflare Workers' 128MB isolate) lower it; hosts
+   * whose catalogs mostly come from slow remote listings keep the default so
+   * those listings overlap.
+   */
+  readonly toolsSyncConcurrency?: number;
+  /**
    * Host keep-alive for background work that outlives a request — the
    * platform `waitUntil` on Cloudflare Workers, where I/O started inside a
    * request is cancelled once the response settles unless a host holds the
@@ -5546,6 +5556,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const toolsSyncTtlMs =
       config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
 
+    // How many stale catalogs a tools read rebuilds at once
+    // (`ExecutorConfig.toolsSyncConcurrency`).
+    const toolsSyncConcurrency = config.toolsSyncConcurrency ?? STALE_TOOLS_SYNC_CONCURRENCY;
+
     // Rebuild any visible connection whose persisted tool catalog is stale.
     // Three triggers:
     //  - stale-marked: `tools_synced_at` is NULL (`connections.markToolsStale`
@@ -5681,15 +5695,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         if (deferred.length > 0) {
           const background = yield* Effect.forkDetach(
-            Effect.all(deferred, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY }),
+            Effect.all(deferred, { concurrency: toolsSyncConcurrency }),
           );
           config.waitUntil?.(
             new Promise<void>((resolve) => background.addObserver(() => resolve(undefined))),
           );
         }
-        yield* Effect.all(urgent, {
-          concurrency: STALE_TOOLS_SYNC_CONCURRENCY,
-        });
+        yield* Effect.all(urgent, { concurrency: toolsSyncConcurrency });
       });
 
     // How long a tools read waits for the stale sync before answering from
