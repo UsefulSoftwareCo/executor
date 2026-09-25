@@ -51,11 +51,19 @@ export const makeCloudflarePluginsProvider = (
       }),
   });
 
+// Two stale catalogs rebuild at once, not the SDK's ten: each in-flight
+// rebuild holds its resolved tools and schema definitions until its write
+// commits, and a full fan-out over a few large OpenAPI specs overruns the
+// 128MB Workers isolate. Writes are serialized anyway, so the narrower
+// fan-out costs little convergence time.
+const CLOUDFLARE_TOOLS_SYNC_CONCURRENCY = 2;
+
 export const makeCloudflareHostConfig = (config: CloudflareConfig): Layer.Layer<HostConfig> =>
   Layer.succeed(HostConfig)({
     allowLocalNetwork: config.allowLocalNetwork,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
+    toolsSyncConcurrency: CLOUDFLARE_TOOLS_SYNC_CONCURRENCY,
   });
 
 /**
