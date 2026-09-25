@@ -127,6 +127,13 @@ export interface HostConfigShape {
    */
   readonly toolsSyncTtlMs?: number | null;
   /**
+   * Forwarded verbatim to `ExecutorConfig.toolsSyncConcurrency`: how many
+   * stale tool catalogs one read rebuilds at once. Omit to take the SDK
+   * default; memory-constrained hosts lower it because every in-flight
+   * rebuild holds its resolved catalog until its write commits.
+   */
+  readonly toolsSyncConcurrency?: number;
+  /**
    * Forwarded to `ExecutorConfig.waitUntil`: the host's keep-alive
    * for background work that outlives a request (stale tool-catalog rebuilds
    * that keep running after a read stops waiting). Cloud supplies the
@@ -334,6 +341,9 @@ export const makeScopedExecutor = <
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
       ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
+      ...(config.toolsSyncConcurrency !== undefined
+        ? { toolsSyncConcurrency: config.toolsSyncConcurrency }
+        : {}),
       ...(waitUntil !== undefined ? { waitUntil } : {}),
       onElicitation: "accept-all",
       ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
