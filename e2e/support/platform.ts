@@ -3,7 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Context, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { RunMetadata } from "../report-model.ts";
-import { FixtureControl } from "../sdk/contracts.ts";
+import { FixtureControl, PreparedScenarios } from "../sdk/contracts.ts";
 
 /** Per-action capture delay; zero keeps unattended runs at full speed. */
 export const RecordingPaceMs = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3000 }));
@@ -22,6 +22,7 @@ export class Target extends Context.Service<
     readonly fixtures?: typeof FixtureControl.Type;
     readonly controlOrigin?: string;
     readonly evidenceDirectory?: string;
+    readonly preparedScenarios?: typeof PreparedScenarios.Type;
     readonly scenarioId?: string;
     readonly scenarioLabel?: string;
   }
@@ -51,6 +52,10 @@ export class Target extends Context.Service<
       return {
         metadata,
         directory,
+        preparedScenarios: yield* Config.String("E2E_PREPARED_SCENARIOS").pipe(
+          Config.withDefault("{}"),
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PreparedScenarios))),
+        ),
         apiKey,
         rows,
         recordingPaceMs,

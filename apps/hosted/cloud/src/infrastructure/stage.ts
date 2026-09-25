@@ -47,6 +47,13 @@ export const testStage = Effect.gen(function* () {
   return Option.some<TestStage>({ name: name.value, slug, origin: `https://${slug}.${domain}` });
 });
 
+/** Automated stages isolate product scenarios from shared-IP throttling; all other stages enforce it. */
+export const cloudAuthRateLimit = Effect.gen(function* () {
+  const stage = yield* testStage;
+  if (Option.isNone(stage) || !stage.value.slug.startsWith("e2e-")) return true;
+  return yield* Config.Boolean("TEST_STAGE_AUTH_RATE_LIMIT").pipe(Config.withDefault(false));
+});
+
 const Origin = Schema.String.check(
   Schema.makeFilter(
     (value) => {

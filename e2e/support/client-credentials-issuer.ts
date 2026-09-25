@@ -1,7 +1,7 @@
 /** A real loopback token service. It exposes protocol observations, never submitted secrets or access tokens. */
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Deferred, Effect, Encoding, Layer } from "effect";
+import { Clock, Deferred, Effect, Encoding, Layer } from "effect";
 import {
   HttpRouter,
   HttpServer,
@@ -26,7 +26,7 @@ export const clientCredentialsIssuer = Effect.gen(function* () {
     "client_secret_basic";
   let requests = 0;
   let generation = 0;
-  let token = "";
+  const tokens = new Map<string, { generation: number; expiresAt: number }>();
   let hold: { entered: Deferred.Deferred<void>; released: Deferred.Deferred<void> } | undefined;
   let observed:
     | {
@@ -88,7 +88,11 @@ export const clientCredentialsIssuer = Effect.gen(function* () {
           yield* Deferred.succeed(pending.entered, undefined);
           yield* Deferred.await(pending.released);
         }
-        token = `synthetic-access-${++generation}`;
+        const token = `synthetic-access-${++generation}`;
+        tokens.set(`Bearer ${token}`, {
+          generation,
+          expiresAt: (yield* Clock.currentTimeMillis) + expiresIn * 1000,
+        });
         return yield* HttpServerResponse.json({
           access_token: token,
           token_type: "Bearer",
@@ -101,9 +105,12 @@ export const clientCredentialsIssuer = Effect.gen(function* () {
       "/resource",
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
+        const issued = tokens.get(request.headers.authorization ?? "");
         return yield* HttpServerResponse.json({
-          authenticated: request.headers.authorization === `Bearer ${token}`,
-          generation,
+          // Issuing another token does not revoke an unexpired in-flight token.
+          authenticated:
+            issued !== undefined && issued.expiresAt > (yield* Clock.currentTimeMillis),
+          generation: issued?.generation ?? 0,
         });
       }),
     ),

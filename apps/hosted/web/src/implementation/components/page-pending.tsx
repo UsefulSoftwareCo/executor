@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ApiKeysPending } from "./api-keys-pending.tsx";
 import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
@@ -7,7 +8,10 @@ import { Link, useLocation } from "@tanstack/react-router";
 import { InventoryPageSkeleton, PageSkeleton } from "@executor-js/ui/dashboard/loading";
 
 /** Lazy pages load inside the existing organization layout with the destination's content shape. */
-export function PagePending({ pathname: destination }: { readonly pathname?: string } = {}) {
+export function PagePending({
+  pathname: destination,
+  organizationSettings,
+}: { readonly pathname?: string; readonly organizationSettings?: ReactNode } = {}) {
   const location = useLocation();
   const pathname = destination ?? location.pathname;
   const search = location.search;
@@ -18,6 +22,7 @@ export function PagePending({ pathname: destination }: { readonly pathname?: str
     return (
       <AppDetailPending
         view={selected.view ?? (selected.tool === undefined ? "overview" : "tools")}
+        actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
         selectedTool={selected.tool}
         back={
           <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
@@ -36,7 +41,8 @@ export function PagePending({ pathname: destination }: { readonly pathname?: str
     );
   if (/\/accounts\/?$/.test(pathname)) return <InventoryPageSkeleton kind="accounts" />;
   if (/\/api-keys\/?$/.test(pathname)) return <ApiKeysPending />;
-  if (/\/organization\/?$/.test(pathname)) return <OrganizationSettingsPending />;
+  if (/\/organization\/?$/.test(pathname))
+    return <OrganizationSettingsPending>{organizationSettings}</OrganizationSettingsPending>;
   const title = /\/apps\/add/.test(pathname)
     ? "Add app"
     : /\/accounts\//.test(pathname)

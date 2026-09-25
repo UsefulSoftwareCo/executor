@@ -99,8 +99,9 @@ class ToolKey extends Data.Class<{
   readonly expectedProfileRevision?: number | undefined;
   readonly accounts?: string | undefined;
 }> {}
+/** Browsing reads the schema-free index; one tool's schemas load when it is selected. */
 const toolsQuery = Atom.family((key: ToolKey) =>
-  HostedClient.query("tools", "list", {
+  HostedClient.query("tools", "index", {
     params: key,
     query: {
       deployment: key.deployment,
@@ -474,3 +475,29 @@ const toolLists = Atom.family((key: ToolKey) =>
 /** Shared browser view for the selected profile. */
 export const toolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolLists(new ToolKey(key));
+class ToolDetailKey extends Data.Class<
+  ConstructorParameters<typeof ToolKey>[0] & { readonly tool: ToolName }
+> {}
+const toolDetailQueries = Atom.family((key: ToolDetailKey) =>
+  HostedClient.query("tools", "get", {
+    params: { organization: key.organization, app: key.app, tool: key.tool },
+    query: {
+      deployment: key.deployment,
+      profile: key.profile,
+      expectedProfileRevision: key.expectedProfileRevision,
+    },
+  }),
+);
+const toolDetails = Atom.family((key: ToolDetailKey) =>
+  HostedClient.runtime
+    .atom((get) =>
+      get
+        .result(toolDetailQueries(key))
+        // A tool that left the catalog since the list was read is not a failure.
+        .pipe(Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined))),
+    )
+    .pipe(currentQuery),
+);
+/** One tool's schemas for the same catalog identity as the list. */
+export const toolDetailAtom = (key: ConstructorParameters<typeof ToolDetailKey>[0]) =>
+  toolDetails(new ToolDetailKey(key));

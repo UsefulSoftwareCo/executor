@@ -6,7 +6,7 @@ import type { AppDatabases } from "@executor-js/app-data";
 import { bindAppStorage } from "./app-database.ts";
 import { CompleteWebhookSetup, WebhookSetupView } from "../contracts/webhook-setup.ts";
 /** Persist intent before upstream work. Explicit reconciliation uses a bounded, compare-and-swap lease. */
-import { Clock, type Crypto, Effect, Redacted, Result, Schema } from "effect";
+import { Clock, type Crypto, Effect, Exit, Redacted, Result, Schema } from "effect";
 import {
   ManualWebhookDescriptor,
   HostedWebhook,
@@ -30,7 +30,7 @@ import type { Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
-import { snapshot, resolve } from "./tools.ts";
+import { snapshot, resolve, type InvocationSnapshot } from "./tools.ts";
 import { storedProfile } from "./profiles.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
@@ -57,10 +57,7 @@ export const makeWebhooks = (
   crypto: Crypto.Crypto,
   origin?: string,
   appStorage?: AppDatabases,
-  workflows?: (
-    app: AppId,
-    state?: Effect.Success<ReturnType<typeof snapshot>>,
-  ) => WorkflowHostControls,
+  workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
@@ -103,7 +100,7 @@ export const makeWebhooks = (
           database: state.deployment.requirements.database !== undefined,
           ...context,
           ...(yield* bindAppStorage(appStorage, row.app)),
-          ...(workflows === undefined ? {} : { workflowControls: workflows(row.app, state) }),
+          ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
           command,
         })
         .pipe(
@@ -147,83 +144,110 @@ export const makeWebhooks = (
         Effect.mapError(() => new RequestInvalid()),
       );
       const claim = yield* next;
-      const row = yield* transaction(db, () =>
-        Effect.gen(function* () {
-          const row = yield* read(parsed);
-          if (
-            row.status === "stopped" ||
-            (!remove && ["active", "setup-required", "disabled"].includes(row.status))
-          )
-            return row;
-          const manual = remove && (yield* decrypt(row)).setup !== undefined;
-          const now = yield* Clock.currentTimeMillis;
-          if (row.leaseUntil.getTime() > now) return yield* new WebhookConflict();
-          yield* query(() =>
-            db.updateMany("webhooks", {
-              where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
-              set: {
-                revision: claim,
-                leaseUntil: new Date(manual ? 0 : now + defaultWebhookLifecycleLimits.leaseMs),
-                ...(remove ? { status: manual ? "disabled" : "stopping" } : {}),
-              },
-            }),
-          );
-          const claimed = yield* read(parsed);
-          if (claimed.revision !== claim) return yield* new WebhookConflict();
-          return claimed;
-        }),
-      );
-      if (row.revision !== claim || row.status === "disabled") return yield* metadata(row);
-      const stopping = row.status === "stopping";
-      // The intent/lease commits before network I/O. A lost response leaves recoverable state.
-      const work = Effect.gen(function* () {
-        const saved = yield* decrypt(row);
-        const common = {
-          name: row.name,
-          config: saved.config,
-          secret: saved.secret,
-          callbackUrl: row.callbackUrl,
-          subscriptionId: row.id,
-          sourceAccount: row.sourceAccount,
-        };
-        const value = yield* invoke(
-          row,
-          stopping
-            ? { operation: "webhook-unregister", ...common, state: saved.state }
-            : { operation: "webhook-register", ...common },
-        );
-        return yield* credentials.encrypt(
-          row.id,
-          Redacted.make({
-            config: saved.config,
-            secret: saved.secret,
-            state: stopping ? null : value,
-          }),
-        );
-      }).pipe(Effect.timeout(defaultWebhookLifecycleLimits.lifecycleTimeoutMs), Effect.result);
-      const result = yield* work;
-      yield* transaction(db, () =>
-        Effect.gen(function* () {
-          yield* query(() =>
-            db.updateMany("webhooks", {
-              where: (b) => b.and(b("id", "=", row.id), b("revision", "=", claim)),
-              set: {
-                leaseUntil: new Date(0),
-                failure: Result.isFailure(result) ? (stopping ? "unregister" : "register") : null,
-                ...(Result.isSuccess(result)
-                  ? { status: stopping ? "stopped" : "active", encrypted: result.success }
-                  : {}),
-              },
-            }),
-          );
-          const current = yield* read(parsed);
-          if (current.revision === claim && current.status === "stopped")
+      return yield* Effect.acquireUseRelease(
+        transaction(db, () =>
+          Effect.gen(function* () {
+            const row = yield* read(parsed);
+            if (
+              row.status === "stopped" ||
+              (!remove && ["active", "setup-required", "disabled"].includes(row.status))
+            )
+              return row;
+            const manual = remove && (yield* decrypt(row)).setup !== undefined;
+            const now = yield* Clock.currentTimeMillis;
+            if (row.leaseUntil.getTime() > now) return yield* new WebhookConflict();
             yield* query(() =>
-              db.deleteMany("webhookAccounts", { where: (b) => b("subscription", "=", row.id) }),
+              db.updateMany("webhooks", {
+                where: (b) => b.and(b("id", "=", row.id), b("revision", "=", row.revision)),
+                set: {
+                  revision: claim,
+                  leaseUntil: new Date(manual ? 0 : now + defaultWebhookLifecycleLimits.leaseMs),
+                  ...(remove ? { status: manual ? "disabled" : "stopping" } : {}),
+                },
+              }),
             );
-        }),
+            const claimed = yield* read(parsed);
+            if (claimed.revision !== claim) return yield* new WebhookConflict();
+            return claimed;
+          }),
+        ),
+        (row) =>
+          Effect.gen(function* () {
+            if (row.revision !== claim || row.status === "disabled") return yield* metadata(row);
+            const stopping = row.status === "stopping";
+            // The intent/lease commits before network I/O. A lost response leaves recoverable state.
+            const work = Effect.gen(function* () {
+              const saved = yield* decrypt(row);
+              const common = {
+                name: row.name,
+                config: saved.config,
+                secret: saved.secret,
+                callbackUrl: row.callbackUrl,
+                subscriptionId: row.id,
+                sourceAccount: row.sourceAccount,
+              };
+              const value = yield* invoke(
+                row,
+                stopping
+                  ? { operation: "webhook-unregister", ...common, state: saved.state }
+                  : { operation: "webhook-register", ...common },
+              );
+              return yield* credentials.encrypt(
+                row.id,
+                Redacted.make({
+                  config: saved.config,
+                  secret: saved.secret,
+                  state: stopping ? null : value,
+                }),
+              );
+            }).pipe(
+              Effect.timeout(defaultWebhookLifecycleLimits.lifecycleTimeoutMs),
+              Effect.result,
+            );
+            const result = yield* work;
+            yield* transaction(db, () =>
+              Effect.gen(function* () {
+                yield* query(() =>
+                  db.updateMany("webhooks", {
+                    where: (b) => b.and(b("id", "=", row.id), b("revision", "=", claim)),
+                    set: {
+                      leaseUntil: new Date(0),
+                      failure: Result.isFailure(result)
+                        ? stopping
+                          ? "unregister"
+                          : "register"
+                        : null,
+                      ...(Result.isSuccess(result)
+                        ? { status: stopping ? "stopped" : "active", encrypted: result.success }
+                        : {}),
+                    },
+                  }),
+                );
+                const current = yield* read(parsed);
+                if (current.revision === claim && current.status === "stopped")
+                  yield* query(() =>
+                    db.deleteMany("webhookAccounts", {
+                      where: (b) => b("subscription", "=", row.id),
+                    }),
+                  );
+              }),
+            );
+            return yield* read(parsed).pipe(Effect.flatMap(metadata));
+          }),
+        (row, exit) =>
+          row.revision !== claim || Exit.isSuccess(exit)
+            ? Effect.void
+            : transaction(db, () =>
+                query(() =>
+                  db.updateMany("webhooks", {
+                    where: (b) => b.and(b("id", "=", row.id), b("revision", "=", claim)),
+                    // Preserve registration/removal intent while releasing only
+                    // this attempt's lease, including on interruption or defects.
+                    set: { leaseUntil: new Date(0) },
+                  }),
+                ),
+              ).pipe(Effect.orDie),
       );
-      return yield* read(parsed).pipe(Effect.flatMap(metadata));
     }).pipe(Effect.withSpan("sdk.webhooks.reconcile"));
   const webhooks = {
     get: (input: typeof WebhookTarget.Type) => read(input).pipe(Effect.flatMap(metadata)),

@@ -14,6 +14,7 @@ import {
   requestServices,
   HostedExecutor,
   ScheduledAuthority,
+  ScheduleWakeup,
   hostedOAuthCallback,
   hostedOAuthClientMetadata,
   accountOAuthClientMetadataPath,
@@ -64,10 +65,10 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Effect.provide(executorServices),
       Effect.forkScoped,
     );
-    yield* Effect.gen(function* () {
+    const scheduler = yield* Effect.gen(function* () {
       const executor = yield* Effect.flatten(HostedExecutor);
       const authorize = yield* ScheduledAuthority;
-      yield* startScheduleWorker(executor, authorize, {
+      return yield* startScheduleWorker(executor, authorize, {
         ...defaultScheduleWorkerOptions,
         runner: "self-host",
         concurrency: yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
@@ -169,6 +170,9 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     );
     const product = yield* HttpRouter.toHttpEffect(productRoutes).pipe(
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
+      Effect.map((handler) =>
+        handler.pipe(Effect.provideService(ScheduleWakeup, scheduler.wakeProfiles)),
+      ),
     );
     const routes = HttpRouter.add(
       "*",

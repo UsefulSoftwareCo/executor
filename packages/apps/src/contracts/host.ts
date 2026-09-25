@@ -78,7 +78,13 @@ export type DeclaredProvider = typeof DeclaredProvider.Type;
 /** Account slots available without binding accounts or evaluating the app factory. */
 export const DeclaredRequirements = Schema.Struct({
   /** Protocol support of this retained framework build, not an author-declared requirement. */
-  capabilities: Schema.optionalKey(Schema.Struct({ skills: Schema.Literal(true) })),
+  capabilities: Schema.optionalKey(
+    Schema.Struct({
+      skills: Schema.Literal(true),
+      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
+      toolIndex: Schema.optionalKey(Schema.Literal(true)),
+    }),
+  ),
   database: Schema.optionalKey(DatabaseSchema),
   accounts: Schema.Record(
     Schema.NonEmptyString,
@@ -115,8 +121,15 @@ export type ResolvedAccounts = typeof ResolvedAccounts.Type;
 export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
 export type TrustedToolApproval = typeof TrustedToolApproval.Type;
 
+/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
+export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
+  /** Trusted host deadline; never accepted in public operation JSON. */
+  readonly deadline?: typeof InvocationDeadline.Type;
+  /** Host-owned cache storage and refresh lifetime, separate from app database transactions. */
+  readonly cache?: import("./cache.ts").HostCache;
   /** Packaged app text files supplied by the build bridge. Direct hosts may omit them for an empty package. */
   readonly files?: readonly SkillFile[];
   /** Private delivery capability. It is never accepted in public request JSON or stored in a build. */
@@ -146,12 +159,36 @@ export const HostedTool = Schema.Struct({
 /** Parsed live tool description. */
 export type HostedTool = typeof HostedTool.Type;
 
+/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
+export const HostedToolSummary = HostedTool.mapFields(
+  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
+);
+export type HostedToolSummary = typeof HostedToolSummary.Type;
+
+/** Inspection commands. Send detail or tools only to builds that declare toolIndex. */
+export const inspectCommand = (tools?: readonly string[]) =>
+  tools === undefined
+    ? ({ operation: "inspect" } as const)
+    : ({ operation: "inspect", tools: [...tools] } as const);
+export const indexCommand = { operation: "inspect", detail: "summary" } as const;
+/** Keep only the requested tools from an inspection that may have described every tool. */
+export const selectTools =
+  (tools?: readonly string[]) =>
+  <A extends { readonly name: string }>(all: readonly A[]): readonly A[] =>
+    tools === undefined ? all : all.filter((tool) => tools.includes(tool.name));
+
 /** Framework-owned dispatch, independent of app-authored HTTP routing. */
 export const HostRequest = Schema.Union([
   WorkflowCommand,
   WebhookCommand,
   Schema.Struct({ operation: Schema.Literal("requirements") }),
-  Schema.Struct({ operation: Schema.Literal("inspect") }),
+  Schema.Struct({
+    operation: Schema.Literal("inspect"),
+    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
+    detail: Schema.optionalKey(Schema.Literal("summary")),
+    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
+    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  }),
   Schema.Struct({ operation: Schema.Literal("skills") }),
   Schema.Struct({
     operation: Schema.Literal("query"),

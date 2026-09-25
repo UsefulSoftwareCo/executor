@@ -35,7 +35,6 @@ export const startEnvironment = (input: {
               origin,
               commit,
               observeUI: false,
-              apiPort: yield* freePort,
               appPort: yield* freePort,
               databasePort: yield* freePort,
             })

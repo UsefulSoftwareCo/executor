@@ -64,7 +64,9 @@ export const folderSkillsEffect = (
     for (const file of files) {
       if (!file.path.startsWith(prefix)) continue;
       const [name, ...relative] = file.path.slice(prefix.length).split("/");
-      if (name === undefined || relative.length === 0 || !Schema.is(AppSkillName)(name))
+      // Loose files such as README.md beside the skill directories are not skills.
+      if (relative.length === 0) continue;
+      if (name === undefined || !Schema.is(AppSkillName)(name))
         return yield* new SkillDefinitionInvalid({ file: file.path, reason: "directory" });
       const resource = { path: relative.join("/"), content: file.content };
       const existing = directories.get(name);

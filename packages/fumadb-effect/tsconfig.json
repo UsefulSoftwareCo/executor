@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
-  "include": ["src", "test", "vitest.config.ts"],
+  "include": ["src"],
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",

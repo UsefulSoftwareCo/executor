@@ -9,6 +9,7 @@ import { Resource, Inventory } from "../support/contracts.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
 import { scenarios } from "../test-plan.ts";
 import { Browser } from "../support/browser.ts";
+import { managementApp } from "../support/management-app.ts";
 
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
@@ -167,12 +168,14 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
           actors = yield* Actors;
         const issuer = yield* clientCredentialsIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
+        // The inventory baseline must include the asynchronously provisioned personal account.
+        yield* managementApp(actors.owner);
         for (const authMethod of [
           "client_secret_basic",
           "client_secret_post",
           "client_secret_basic_raw",
         ] as const) {
-          yield* issuer.configure({ method: authMethod, expiresIn: 1, rejected: false });
+          yield* issuer.configure({ method: authMethod, expiresIn: 120, rejected: false });
           const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `Machine OAuth ${randomUUID().slice(0, 8)}`,
             files: [
@@ -265,6 +268,28 @@ export default defineApp({accounts:{service}},async({accounts})=>({queries:{read
               ),
             )).accounts.service,
           ).toBe(completed.account.id);
+          // Keep idempotency independent of background setup. Only the renewal
+          // phase issues a token inside the host's refresh window.
+          yield* issuer.configure({ expiresIn: 20 });
+          const expiringConnection = yield* body(
+            Resource,
+            yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/accounts/${completed.account.id}/connections`,
+            ),
+          );
+          const expiring = yield* body(
+            Completed,
+            yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/connections/${expiringConnection.id}/oauth/start`,
+              { method: "machine", label: "Unused renewal label" },
+            ),
+          );
+          expect(expiring.account).toEqual(completed.account);
+          const beforeRenewal = (yield* issuer.metrics).generation;
           const read = yield* api.request(
             actors.owner,
             "POST",
@@ -274,7 +299,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({queries:{read
           expect(read.status).toBe(200);
           const value = yield* body(Read, read);
           expect(value.authenticated).toBe(true);
-          expect(value.generation).toBeGreaterThan(issued);
+          expect(value.generation).toBeGreaterThan(beforeRenewal);
           expect((yield* issuer.metrics).observed?.scope).toBe("reports:read");
           yield* issuer.configure({ rejected: true });
           const failed = yield* api.request(

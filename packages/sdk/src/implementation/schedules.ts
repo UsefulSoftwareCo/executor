@@ -421,6 +421,27 @@ export const makeSchedules = (
         return finish(run, result.reason === "expired" ? "expired" : "failed", result.reason);
     }
   };
+  const activeProfiles = query(() =>
+    db.findMany("profiles", {
+      select: ["id"],
+      where: (b) =>
+        b.and(b("enabled", "=", true), b("status", "!=", "removing"), b("status", "!=", "removed")),
+    }),
+  );
+  // Retire only the scanned occurrence. A concurrent configuration or claim owns
+  // its newer revision and must not be paused by stale dispatch work.
+  const retireMissingTarget = (setting: ScheduleSettings) =>
+    query(() =>
+      db.updateMany("schedules", {
+        where: (b) =>
+          b.and(
+            b("id", "=", setting.id),
+            b("revision", "=", setting.revision),
+            b("activeRun", "is", null),
+          ),
+        set: { enabled: false, nextAt: null },
+      }),
+    ).pipe(Effect.as(null));
   const dispatcher: ScheduleDispatcher = {
     recover: (runner) =>
       Effect.gen(function* () {
@@ -433,9 +454,23 @@ export const makeSchedules = (
         for (const run of runs) yield* finish(run, "interrupted", "RunnerStopped");
       }),
     nextWake: Effect.gen(function* () {
+      const profiles = yield* activeProfiles;
       const settings = yield* query(() =>
         db.findFirst("schedules", {
-          where: (b) => b.and(b("enabled", "=", true), b("activeRun", "is", null)),
+          where: (b) =>
+            b.and(
+              b("enabled", "=", true),
+              b("activeRun", "is", null),
+              b("nextAt", "is not", null),
+              b.or(
+                b("profile", "is", null),
+                b(
+                  "profile",
+                  "in",
+                  profiles.map((item) => item.id),
+                ),
+              ),
+            ),
           orderBy: ["nextAt", "asc"],
         }),
       );
@@ -526,17 +561,7 @@ export const makeSchedules = (
             ),
           { concurrency: "unbounded" },
         );
-        const activeProfiles = yield* query(() =>
-          db.findMany("profiles", {
-            select: ["id"],
-            where: (b) =>
-              b.and(
-                b("enabled", "=", true),
-                b("status", "!=", "removing"),
-                b("status", "!=", "removed"),
-              ),
-          }),
-        );
+        const profiles = yield* activeProfiles;
         const due = yield* query(() =>
           db.findMany("schedules", {
             limit: maxCandidates,
@@ -550,7 +575,7 @@ export const makeSchedules = (
                   b(
                     "profile",
                     "in",
-                    activeProfiles.map((item) => item.id),
+                    profiles.map((item) => item.id),
                   ),
                 ),
               ),
@@ -619,8 +644,8 @@ export const makeSchedules = (
                   }),
                 ).pipe(
                   Effect.catchTags({
-                    AppNotFound: () => Effect.succeed(null),
-                    ProfileNotFound: () => Effect.succeed(null),
+                    AppNotFound: () => retireMissingTarget(setting),
+                    ProfileNotFound: () => retireMissingTarget(setting),
                   }),
                 );
                 if (claim === null) return;

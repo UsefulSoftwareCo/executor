@@ -119,7 +119,20 @@ function EditableSkills<E>({
   const { result, data, refresh } = useQuery<AppSkillBundle | undefined, E>(
     app.activeDeployment === null ? undeployedCatalog : bindings.bundle,
   );
-  const catalog = Option.getOrUndefined(data);
+  // The catalog atom is keyed by deployment, so every deploy (including the one after Save)
+  // starts a new atom at Initial. Keep the last loaded catalog until the new one arrives;
+  // replacing the workspace with the skeleton would remount the open editor.
+  const loaded = AsyncResult.isInitial(result)
+    ? undefined
+    : { catalog: Option.getOrUndefined(data) };
+  const [settled, setSettled] = useState(loaded);
+  if (loaded !== undefined && (settled === undefined || loaded.catalog !== settled.catalog))
+    setSettled(loaded);
+  // Deployed skills may exist only in the catalog. Until it first arrives, the list is incomplete
+  // and an app with only remote skills would look empty.
+  const shown = loaded ?? settled;
+  if (shown === undefined) return <SkillBrowserLoading />;
+  const catalog = shown.catalog;
   return (
     <>
       {AsyncResult.isFailure(result) && (

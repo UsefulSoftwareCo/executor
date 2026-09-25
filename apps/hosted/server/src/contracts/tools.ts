@@ -1,6 +1,5 @@
 import { ProfileErrors } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
-import { ExecutionLimitReached, ExecutionAdmissionUnavailable } from "./execution-admission.ts";
 /** Account-dependent discovery and execution within a configured app. */
 import {
   AccountNotFound,
@@ -28,8 +27,10 @@ import {
   ToolCallFailed,
   ToolElicitationFailed,
   ToolName,
+  ToolIndex,
   ToolNotFound,
   ToolPage,
+  Tool,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
@@ -71,6 +72,30 @@ export const HostedTools = HttpApiGroup.make("tools")
     }).annotate(RequiredAction, "discover"),
   )
   .add(
+    HttpApiEndpoint.get("index", `${prefix}/index`, {
+      params,
+      query: {
+        deployment: Schema.optional(DeploymentId),
+        profile: Schema.optional(ProfileId),
+        expectedProfileRevision: Schema.optional(ProfileRevision),
+      },
+      success: ToolIndex,
+      error: discoveryErrors,
+    }).annotate(RequiredAction, "discover"),
+  )
+  .add(
+    HttpApiEndpoint.get("get", `${prefix}/:tool`, {
+      params: { ...params, tool: ToolName },
+      query: {
+        deployment: Schema.optional(DeploymentId),
+        profile: Schema.optional(ProfileId),
+        expectedProfileRevision: Schema.optional(ProfileRevision),
+      },
+      success: Tool,
+      error: [...discoveryErrors, ToolNotFound],
+    }).annotate(RequiredAction, "discover"),
+  )
+  .add(
     HttpApiEndpoint.post("call", `${prefix}/call`, {
       params,
       payload: Schema.Struct({
@@ -92,8 +117,6 @@ export const HostedTools = HttpApiGroup.make("tools")
         ToolPolicyFailed,
         RequestInvalid,
         OrganizationForbidden,
-        ExecutionLimitReached,
-        ExecutionAdmissionUnavailable,
       ],
     }).annotate(RequiredAction, "run"),
   )

@@ -1,4 +1,4 @@
-import { PagePending } from "@executor-js/hosted-web/page-pending";
+import { CloudPagePending } from "./components/page-pending.tsx";
 import { PageError } from "@executor-js/hosted-web/route-fallbacks";
 import { createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen.ts";
@@ -8,7 +8,7 @@ export const createDashboardRouter = () =>
   createRouter({
     routeTree,
     defaultPreload: "intent",
-    defaultPendingComponent: PagePending,
+    defaultPendingComponent: CloudPagePending,
     defaultPendingMs: 100,
     defaultPendingMinMs: 0,
     defaultErrorComponent: PageError,

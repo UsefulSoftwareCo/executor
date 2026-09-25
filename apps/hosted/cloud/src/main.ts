@@ -7,10 +7,12 @@ import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { AppDomainCoordinatorLive, cloudAppDomains } from "./infrastructure/app-domains.ts";
 import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
 import { AppWorkflows } from "./infrastructure/workflows.ts";
-import { OrganizationRemoval } from "./infrastructure/organization-removal-workflow.ts";
+import {
+  OrganizationRemoval,
+  dispatchOrganizationRemovals,
+} from "./infrastructure/organization-removal-workflow.ts";
 import { HostedExecutor } from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
-import { ExecutionAdmission } from "@executor-js/hosted-server";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { registryRoutes, gitRoutes } from "@executor-js/app-management";
 import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
@@ -169,10 +171,19 @@ export default Api.make(
     const schedules = yield* cloudSchedules;
     const dispatch = dispatchProvisioning.pipe(
       Effect.provide(executor),
-      // A request finalizer runs after its SQL pool closes. The outbox dispatch
-      // owns a fresh scope so execution memos cannot reuse that closed pool.
+      // A request finalizer runs after its SQL pool closes. Dispatch owns a
+      // fresh scope so execution memos cannot reuse that closed pool.
       Effect.scoped,
+      Effect.withSpan("job.provisioning.dispatch"),
       Effect.catch(() => Effect.logWarning("Provisioning outbox unavailable")),
+    );
+    yield* Cloudflare.Workers.cron("* * * * *", () =>
+      dispatchOrganizationRemovals.pipe(
+        Effect.provide(executor),
+        Effect.scoped,
+        Effect.catch(() => Effect.logWarning("Organization removal journal unavailable")),
+        lifetime.background,
+      ),
     );
     yield* Cloudflare.Workers.cron("* * * * *", () => dispatch.pipe(lifetime.background));
     yield* Cloudflare.Workers.cron("* * * * *", () =>
@@ -194,7 +205,7 @@ export default Api.make(
     const billing = yield* billingLive.pipe(Effect.orDie);
     const meter = yield* BillingMeter.pipe(Effect.provide(billing));
     // One established schedule owns both independent background jobs. Each job
-    // reports its own failure so billing cannot prevent optional email delivery.
+    // reports its own failure so a workflow problem cannot prevent email delivery.
     yield* Cloudflare.Workers.cron("*/5 * * * *", () =>
       Effect.all(
         [
@@ -207,15 +218,20 @@ export default Api.make(
             Effect.withSpan("job.workflow.reconcile"),
             Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
           ),
-          meter.reconcileSeats.pipe(
-            reportErrors,
-            Effect.scoped,
-            Effect.withSpan("job.billing.reconcile"),
-            Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
-          ),
         ],
         { concurrency: 2, discard: true },
       ).pipe(lifetime.background),
+    );
+    // Membership changes sync seats through durable provisioning jobs. This daily
+    // pass only repairs what those jobs cannot see, such as edits made in Autumn.
+    yield* Cloudflare.Workers.cron("17 4 * * *", () =>
+      meter.reconcileSeats.pipe(
+        reportErrors,
+        Effect.scoped,
+        Effect.withSpan("job.billing.reconcile"),
+        Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
+        lifetime.background,
+      ),
     );
 
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
@@ -227,7 +243,6 @@ export default Api.make(
       HttpRouter.provideRequest(catalogLive(executorSkillFiles(authoring), document, egress)),
       Layer.provide(schedules),
       Layer.provide(billing),
-      Layer.provide(Layer.succeed(ExecutionAdmission, meter.consume)),
       Layer.provide(onboarding),
       Layer.provide(requireUserLive),
       Layer.provide(requireOrganizationLive),
@@ -318,12 +333,17 @@ export default Api.make(
     return {
       fetch: Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        // Alchemy closes this scope through waitUntil after returning the response.
+        // Streamed responses close their HTTP scope before delivering EOF.
+        // Dispatch has its own scope and must not hold that EOF until background work finishes.
         // Cron recovers dispatch if the request ends before this finalizer runs.
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method))
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+          const execution = yield* Cloudflare.WorkerExecutionContext;
           yield* Effect.addFinalizer(() =>
-            dispatch.pipe(lifetime.background, Effect.timeoutOption("10 seconds"), Effect.asVoid),
+            execution.waitUntil(
+              dispatch.pipe(lifetime.background, Effect.timeoutOption("10 seconds"), Effect.asVoid),
+            ),
           );
+        }
         return yield* handle;
       }).pipe(
         Effect.tapCause(reportCloudFailure),

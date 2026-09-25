@@ -48,17 +48,21 @@ export type AppDefinition<Requirements extends AppRequirements> = {
 
 /** Adapt operation and webhook catalogs without evaluating their handlers. */
 export type EffectDefinition<Def> = {
-  readonly [Key in keyof Def]: Key extends "workflows"
-    ? Readonly<Record<string, import("../contracts/workflows.ts").AppWorkflow>>
-    : Key extends "schedules"
-      ? NonNullable<NativeDefinition<unknown>["schedules"]>
-      : Key extends "queries" | "mutations"
-        ? Readonly<Record<string, import("../contracts/operations.ts").AppOperation>>
-        : Key extends "webhooks"
-          ? NonNullable<NativeDefinition<WebhookContext>["webhooks"]>
-          : Key extends "skills"
-            ? NonNullable<NativeDefinition<unknown>["skills"]>
-            : Def[Key];
+  readonly [Key in keyof Def]: Key extends "dynamicTools"
+    ? NonNullable<NativeDefinition<unknown>["dynamicTools"]>
+    : Key extends "workflows"
+      ? Readonly<Record<string, import("../contracts/workflows.ts").AppWorkflow>>
+      : Key extends "schedules"
+        ? NonNullable<NativeDefinition<unknown>["schedules"]>
+        : Key extends "queries" | "mutations"
+          ? Readonly<Record<string, import("../contracts/operations.ts").AppOperation>>
+          : Key extends "webhooks"
+            ? NonNullable<NativeDefinition<WebhookContext>["webhooks"]>
+            : Key extends "skills"
+              ? NonNullable<NativeDefinition<unknown>["skills"]>
+              : Key extends "dynamicSkills"
+                ? NonNullable<NativeDefinition<unknown>["dynamicSkills"]>
+                : Def[Key];
 };
 
 const InternalApp = Symbol("apps.App");

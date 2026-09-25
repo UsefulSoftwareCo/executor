@@ -1,8 +1,11 @@
-import { StorageError } from "@executor-js/sdk/core";
+import { AppNotDeployed, DeploymentNotFound, StorageError } from "@executor-js/sdk/core";
 import {
   requireAppAccess,
+  requireAppAccessAs,
   requireAccountAccess,
+  requireAccountAccessAs,
   currentResourceAuthority,
+  type ResourceAuthority,
 } from "./resource-policy.ts";
 import type {
   AppId,
@@ -37,29 +40,66 @@ export const adminOwner = Effect.map(
 
 /** Account use requires its independent sharing policy as well as the SDK tenant check. */
 export const checkAccounts = (executor: Executor, owner: OwnerId, accounts: SelectedAccounts) =>
+  Effect.flatMap(currentResourceAuthority, (actor) =>
+    checkAccountsAs(actor, executor, owner, accounts),
+  );
+const checkAccountsAs = (
+  actor: ResourceAuthority,
+  executor: Executor,
+  owner: OwnerId,
+  accounts: SelectedAccounts,
+) =>
   Effect.gen(function* () {
     for (const selection of Object.values(accounts)) {
       for (const account of typeof selection === "string" ? [selection] : selection) {
-        yield* requireAccountAccess(account, "use");
+        yield* requireAccountAccessAs(actor, account, "use");
         yield* executor.accounts.get({ owner, account });
       }
     }
   });
-/** Check both the configured app and every selected account before evaluating its code. */
+/**
+ * Check both the configured app and every selected account before evaluating its code.
+ * The actor's membership is read once for all of these checks in this operation.
+ */
 export const selectedApp = (executor: Executor, owner: OwnerId, app: AppId, profile?: ProfileId) =>
   Effect.gen(function* () {
-    yield* requireAppAccess(app, "use");
+    const actor = yield* currentResourceAuthority;
+    yield* requireAppAccessAs(actor, app, "use");
     const current = yield* executor.apps.get({ owner, app });
     if (profile !== undefined) {
-      const selected = yield* ownProfile(executor, owner, app, profile);
-      yield* checkAccounts(executor, owner, selected.accounts);
+      const selected = yield* ownProfileAs(actor, executor, owner, app, profile);
+      yield* checkAccountsAs(actor, executor, owner, selected.accounts);
     }
     return current;
   });
+/** New tool discovery and calls use the active build; retained execution is reserved for saved invocations. */
+export const selectedActiveDeployment = (
+  executor: Executor,
+  owner: OwnerId,
+  input: Parameters<Executor["tools"]["list"]>[0],
+) =>
+  Effect.gen(function* () {
+    const app = yield* selectedApp(executor, owner, input.app, input.profile);
+    if (input.deployment !== undefined && input.deployment !== app.activeDeployment)
+      return yield* new DeploymentNotFound({ app: app.id, deployment: input.deployment });
+    if (app.activeDeployment === null) return yield* new AppNotDeployed({ app: app.id });
+    // Pin the authorized version so a concurrent promotion cannot silently change the call.
+    return app.activeDeployment;
+  });
+
 /** Setup identity remains private even when every selected account is shared. Allows own cleanup after revocation. */
 export const ownProfile = (executor: Executor, owner: OwnerId, app: AppId, profile: ProfileId) =>
+  Effect.flatMap(currentResourceAuthority, (actor) =>
+    ownProfileAs(actor, executor, owner, app, profile),
+  );
+const ownProfileAs = (
+  actor: ResourceAuthority,
+  executor: Executor,
+  owner: OwnerId,
+  app: AppId,
+  profile: ProfileId,
+) =>
   Effect.gen(function* () {
-    const actor = yield* currentResourceAuthority;
     const selected = yield* executor.apps.profiles.get({ app, owner, profile }).pipe(
       Effect.catchTags({
         ProfileNotFound: () => new OrganizationForbidden(),

@@ -16,6 +16,7 @@ const Marker = Schema.Struct({ key: Schema.String, row: Schema.String });
 const fixture = Effect.gen(function* () {
   const api = yield* Api;
   const actors = yield* Actors;
+  const evidence = yield* Evidence;
   const root = `/api/organizations/${actors.organization.id}/apps`;
   const deployed = yield* api.request(actors.owner, "POST", `${root}/deploy`, {
     name: `Durability ${randomUUID()}`,
@@ -28,8 +29,11 @@ const fixture = Effect.gen(function* () {
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "GET", `${path}/workflow-runs`);
       expect(response.status).toBe(200);
+      const runs = yield* body(Page, response);
+      // Retain terminal states before cleanup can replace them with termination.
+      yield* evidence.json("workflow-durability-runs.json", runs);
       // Include the marker runs started inside mutations, even if an assertion failed early.
-      for (const run of (yield* body(Page, response)).items)
+      for (const run of runs.items)
         yield* api.request(actors.owner, "POST", `${path}/workflow-runs/${run.id}/terminate`);
       expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
     }).pipe(Effect.orDie),
@@ -85,11 +89,14 @@ const fixture = Effect.gen(function* () {
             `${path}/workflow-runs?workflow=inserted`,
           );
           expect(response.status).toBe(200);
-          for (const run of (yield* body(Page, response)).items) {
+          const runs = yield* body(Page, response);
+          for (const run of runs.items) {
             if (run.status !== "complete") continue;
             const marker = yield* Schema.decodeUnknownEffect(Marker)(run.output);
             if (marker.key === key) return { run: run.id, ...marker };
           }
+          if ((yield* Clock.currentTimeMillis) >= deadline)
+            yield* evidence.json(`missing-marker-${key}.json`, runs);
           expect(
             yield* Clock.currentTimeMillis,
             "No durable marker confirmed the insert",
@@ -137,61 +144,58 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
       }),
     ),
   );
-  it.effect(
-    scenarios.workflowSleep.title,
-    (context) =>
-      withHostedCase(
-        context,
-        Effect.gen(function* () {
-          const hold = yield* Config.Number("E2E_WORKFLOW_HOLD_MS").pipe(
-            Config.withDefault(1000),
-            Effect.flatMap(
-              Schema.decodeUnknownEffect(
-                Schema.Int.check(Schema.isBetween({ minimum: 1000, maximum: 300000 })),
-              ),
+  it.effect(scenarios.workflowSleep.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const hold = yield* Config.Number("E2E_WORKFLOW_HOLD_MS").pipe(
+          Config.withDefault(1000),
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.Int.check(Schema.isBetween({ minimum: 1000, maximum: 300000 })),
             ),
-          );
-          const app = yield* fixture;
-          const evidence = yield* Evidence;
-          const run = yield* app.start("sleep", { hold });
-          const deadline = (yield* Clock.currentTimeMillis) + 40000;
-          while ((yield* app.rows()).length === 0) {
-            expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
-            yield* Effect.sleep("250 millis");
-          }
-          yield* evidence.json("sleeping-workflow.json", {
-            app: app.app.id,
-            run: run.id,
-            deployment: app.app.activeDeployment,
-            hold,
-            observed: yield* Clock.currentTimeMillis,
-          });
-          yield* Effect.logInfo(`Workflow sleep window: ${run.id}`);
-          const completed = yield* app.wait(run.id, "complete", hold + 40000);
-          const output = yield* Schema.decodeUnknownEffect(
-            Schema.Struct({ before: Schema.String, after: Schema.String, deadline: Schema.Number }),
-          )(completed.output);
-          expect(completed.deployment).toBe(app.app.activeDeployment);
-          expect(yield* app.rows()).toEqual([
-            { id: output.before, label: "before" },
-            { id: output.after, label: "after" },
-          ]);
-          const fresh = yield* app.start("sleep", { hold: 1000 });
-          yield* app.wait(fresh.id, "complete");
-          expect((yield* app.rows()).map((row) => row.label)).toEqual([
-            "before",
-            "after",
-            "before",
-            "after",
-          ]);
-          yield* evidence.json("completed-workflow.json", {
-            app: app.app.id,
-            run: completed.id,
-            fresh: fresh.id,
-            output,
-          });
-        }),
-      ),
-    { timeout: 400000 },
+          ),
+        );
+        const app = yield* fixture;
+        const evidence = yield* Evidence;
+        const run = yield* app.start("sleep", { hold });
+        const deadline = (yield* Clock.currentTimeMillis) + 40000;
+        while ((yield* app.rows()).length === 0) {
+          expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
+          yield* Effect.sleep("250 millis");
+        }
+        yield* evidence.json("sleeping-workflow.json", {
+          app: app.app.id,
+          run: run.id,
+          deployment: app.app.activeDeployment,
+          hold,
+          observed: yield* Clock.currentTimeMillis,
+        });
+        yield* Effect.logInfo(`Workflow sleep window: ${run.id}`);
+        const completed = yield* app.wait(run.id, "complete", hold + 40000);
+        const output = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ before: Schema.String, after: Schema.String, deadline: Schema.Number }),
+        )(completed.output);
+        expect(completed.deployment).toBe(app.app.activeDeployment);
+        expect(yield* app.rows()).toEqual([
+          { id: output.before, label: "before" },
+          { id: output.after, label: "after" },
+        ]);
+        const fresh = yield* app.start("sleep", { hold: 1000 });
+        yield* app.wait(fresh.id, "complete");
+        expect((yield* app.rows()).map((row) => row.label)).toEqual([
+          "before",
+          "after",
+          "before",
+          "after",
+        ]);
+        yield* evidence.json("completed-workflow.json", {
+          app: app.app.id,
+          run: completed.id,
+          fresh: fresh.id,
+          output,
+        });
+      }),
+    ),
   );
 });

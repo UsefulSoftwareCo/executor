@@ -70,20 +70,24 @@ export function bindOrm<S extends AnySchema>(
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.provideService(effect, SqlClient.SqlClient, sql);
   const trackedTransaction = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    Effect.gen(function* () {
-      const connection = yield* Effect.serviceOption(sql.transactionService);
-      if (Option.isSome(connection) && !(yield* reactive.inTransaction)) {
-        return yield* new SqlError({
-          reason: new UnknownError({
-            cause: undefined,
-            message:
-              "Use the tracked ORM transaction boundary instead of wrapping it in an outer raw SQL transaction.",
-            operation: "transaction",
-          }),
-        });
-      }
-      return yield* reactive.transaction(sql.withTransaction(Effect.interruptible(effect)));
-    });
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const connection = yield* Effect.serviceOption(sql.transactionService);
+        if (Option.isSome(connection) && !(yield* reactive.inTransaction)) {
+          return yield* new SqlError({
+            reason: new UnknownError({
+              cause: undefined,
+              message:
+                "Use the tracked ORM transaction boundary instead of wrapping it in an outer raw SQL transaction.",
+              operation: "transaction",
+            }),
+          });
+        }
+        // Preserve the caller's cancellation policy. Cleanup transactions run in
+        // finalizers and must not be made interruptible by this adapter.
+        return yield* reactive.transaction(sql.withTransaction(restore(effect)));
+      }),
+    );
   const read = <A, E>(
     name: keyof S["tables"],
     joined: boolean,

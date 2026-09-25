@@ -101,13 +101,13 @@ export class Authentication extends Context.Service<
       headers: Headers,
       organization: OrganizationId,
     ) => Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>;
+    /** Read live membership for a principal already verified in this request. */
     readonly membership: (
-      headers: Headers,
+      principal: Principal,
       organization: OrganizationId,
     ) => Effect.Effect<
       {
         readonly role: typeof OrganizationRole.Type;
-        readonly headers: Headers;
       },
       AuthenticationUnavailable | OrganizationForbidden
     >;

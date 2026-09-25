@@ -1,6 +1,7 @@
 /** Synthetic apps and browser journeys exercise public products, never UI implementations. */
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
+import type { Page } from "playwright";
 import { Browser } from "./browser.ts";
 import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
 
@@ -49,9 +50,12 @@ export const checkAppBrowser = (input: {
   readonly name: string;
   readonly readPaths: readonly string[];
   readonly deployment: string;
+  /** Readers browse the deployed catalog; people who can manage the app edit its working source. */
+  readonly skills: "reader" | "editor";
 }) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
+    const skillList = input.skills === "reader" ? "Skills" : "Skill files";
     const catalog = yield* holdQuery(
       input.readPaths.map((path) => `${path}/skill-bundle`),
       "continue",
@@ -79,142 +83,9 @@ export const checkAppBrowser = (input: {
     ).toBe(true);
     yield* browser.checkpoint("Skills loading inside the app frame");
     yield* catalog.release;
-    yield* browser.use("The skill bundle has loaded", (page) =>
-      page.getByRole("navigation", { name: "Skills", exact: true }).waitFor({ state: "visible" }),
-    );
-    yield* Effect.scoped(
-      Effect.gen(function* () {
-        const guard = yield* holdQuery(
-          input.readPaths.flatMap((path) => [
-            `${path}/skill-bundle`,
-            `${path}/skills/report`,
-            `${path}/skills/other`,
-          ]),
-          "fail",
-          { allRequests: true },
-        );
-        yield* guard.release;
-        yield* browser.use("Choose the report skill", (page) =>
-          page
-            .getByRole("navigation", { name: "Skills", exact: true })
-            .getByRole("button")
-            .filter({ hasText: "report" })
-            .click(),
-        );
-        yield* browser.use("Read rendered instructions", (page) =>
-          page
-            .getByRole("heading", { name: "Prepare reports", exact: true })
-            .waitFor({ state: "visible" }),
-        );
-        yield* browser.use("Follow an in-skill reference", (page) =>
-          page.getByRole("button", { name: "the example", exact: true }).click(),
-        );
-        yield* browser.use("Read the reference", (page) =>
-          page
-            .getByRole("heading", { name: "Reference version one" })
-            .waitFor({ state: "visible" }),
-        );
-        expect(
-          yield* browser.use("Reference selection is retained", (page) =>
-            page.getByLabel("Current skill file").textContent(),
-          ),
-        ).toBe("example.md");
-        yield* browser.use("Switch to another already-loaded skill", (page) =>
-          page
-            .getByRole("navigation", { name: "Skills", exact: true })
-            .getByRole("button")
-            .filter({ hasText: "other" })
-            .click(),
-        );
-        yield* browser.use("The other document needs no request", (page) =>
-          page
-            .getByRole("heading", { name: "Another guide", exact: true })
-            .waitFor({ state: "visible" }),
-        );
-        yield* browser.use("Return to the report skill", (page) =>
-          page
-            .getByRole("navigation", { name: "Skills", exact: true })
-            .getByRole("button")
-            .filter({ hasText: "report" })
-            .click(),
-        );
-        yield* browser.use("Open a preloaded script", (page) =>
-          page.getByRole("button", { name: /^Files / }).click(),
-        );
-        yield* browser.use("Select the script", (page) =>
-          page.getByRole("menuitemradio", { name: "scripts/example.ts", exact: true }).click(),
-        );
-        yield* browser.use("The script is text without another read", (page) =>
-          page
-            .getByText("This script must never run", { exact: false })
-            .waitFor({ state: "visible" }),
-        );
-        yield* browser.use("Return to instructions", (page) =>
-          page.getByRole("button", { name: "Back to instructions" }).click(),
-        );
-        yield* browser.use("Restore the reference selection", (page) =>
-          page.getByRole("button", { name: "the example", exact: true }).click(),
-        );
-        expect(
-          yield* browser.use("Preloaded navigation has no read failure", (page) =>
-            page.getByRole("alert").count(),
-          ),
-        ).toBe(0);
-      }),
-    );
-    yield* Effect.scoped(
-      Effect.gen(function* () {
-        const failure = yield* holdQuery(
-          input.readPaths.map((path) => `${path}/skill-bundle`),
-          "fail",
-          { allRequests: true },
-        );
-        yield* refreshVisiblePage;
-        yield* failure.requested;
-        yield* browser.checkpoint("Reference remains visible during refresh");
-        yield* failure.release;
-        yield* browser.use("Show the read failure alongside the reference", (page) =>
-          page.getByRole("alert").first().waitFor({ state: "visible" }),
-        );
-        expect(
-          yield* browser.use("Failed refresh preserves the selected file", (page) =>
-            page.getByLabel("Current skill file").textContent(),
-          ),
-        ).toBe("example.md");
-        expect(
-          yield* browser.use("Failed refresh preserves the document", (page) =>
-            page.getByRole("heading", { name: "Reference version one" }).isVisible(),
-          ),
-        ).toBe(true);
-      }),
-    );
-    const recovery = yield* holdQuery(
-      input.readPaths.map((path) => `${path}/skill-bundle`),
-      "continue",
-      { allRequests: true },
-    );
-    yield* refreshVisiblePage;
-    yield* recovery.requested;
-    yield* recovery.release;
-    yield* browser.use("Read failure clears after recovery", (page) =>
-      page.getByRole("alert").first().waitFor({ state: "hidden" }),
-    );
-    yield* browser.use("Inspect a bundled script without running it", (page) =>
-      page.getByRole("button", { name: /^Files / }).click(),
-    );
-    yield* browser.use("Choose the script file", (page) =>
-      page.getByRole("menuitemradio", { name: "scripts/example.ts", exact: true }).click(),
-    );
-    yield* browser.use("The script is displayed as text", (page) =>
-      page.getByText("This script must never run", { exact: false }).waitFor({ state: "visible" }),
-    );
-    yield* browser.use("Return to the instructions", (page) =>
-      page.getByRole("button", { name: "Back to instructions" }).click(),
-    );
-    yield* browser.use("Open the reference again", (page) =>
-      page.getByRole("button", { name: "the example", exact: true }).click(),
-    );
-    yield* browser.checkpoint("Skill reference reader");
+    yield* input.skills === "reader"
+      ? readSkillCatalog(input.readPaths)
+      : editSkillWorkspace(input.readPaths);
     yield* browser.use("Open workflow definitions", (page) =>
       page
         .getByRole("navigation", { name: "App navigation" })
@@ -339,8 +210,8 @@ export const checkAppBrowser = (input: {
         .getByRole("link", { name: "View all", exact: true })
         .click(),
     );
-    yield* browser.use("Skills card opens the reader", (page) =>
-      page.getByRole("navigation", { name: "Skills", exact: true }).waitFor({ state: "visible" }),
+    yield* browser.use("Skills card opens the skill list", (page) =>
+      page.getByRole("navigation", { name: skillList, exact: true }).waitFor({ state: "visible" }),
     );
     yield* browser.use("Return to Overview", (page) =>
       page
@@ -385,11 +256,13 @@ export const checkAppBrowser = (input: {
         .click(),
     );
     yield* browser.use("Choose the report skill on mobile", (page) =>
-      page
-        .getByRole("navigation", { name: "Skills", exact: true })
-        .getByRole("button")
-        .filter({ hasText: "report" })
-        .click(),
+      input.skills === "reader"
+        ? page
+            .getByRole("navigation", { name: "Skills", exact: true })
+            .getByRole("button")
+            .filter({ hasText: "report" })
+            .click()
+        : skillFile(page, "report", "Instructions").click(),
     );
     yield* browser.use("Mobile reader loads", (page) =>
       page
@@ -402,4 +275,268 @@ export const checkAppBrowser = (input: {
       ),
     ).toBe(true);
     yield* browser.checkpoint("Mobile skill reader");
+  });
+
+/** The deployed catalog loads once; choosing skills and files never starts another read. */
+const readSkillCatalog = (readPaths: readonly string[]) =>
+  Effect.gen(function* () {
+    const browser = yield* Browser;
+    yield* browser.use("The skill bundle has loaded", (page) =>
+      page.getByRole("navigation", { name: "Skills", exact: true }).waitFor({ state: "visible" }),
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const guard = yield* holdQuery(
+          readPaths.flatMap((path) => [
+            `${path}/skill-bundle`,
+            `${path}/skills/report`,
+            `${path}/skills/other`,
+          ]),
+          "fail",
+          { allRequests: true },
+        );
+        yield* guard.release;
+        yield* browser.use("Choose the report skill", (page) =>
+          page
+            .getByRole("navigation", { name: "Skills", exact: true })
+            .getByRole("button")
+            .filter({ hasText: "report" })
+            .click(),
+        );
+        yield* browser.use("Read rendered instructions", (page) =>
+          page
+            .getByRole("heading", { name: "Prepare reports", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Follow an in-skill reference", (page) =>
+          page.getByRole("button", { name: "the example", exact: true }).click(),
+        );
+        yield* browser.use("Read the reference", (page) =>
+          page
+            .getByRole("heading", { name: "Reference version one" })
+            .waitFor({ state: "visible" }),
+        );
+        expect(
+          yield* browser.use("Reference selection is retained", (page) =>
+            page.getByLabel("Current skill file").textContent(),
+          ),
+        ).toBe("example.md");
+        yield* browser.use("Switch to another already-loaded skill", (page) =>
+          page
+            .getByRole("navigation", { name: "Skills", exact: true })
+            .getByRole("button")
+            .filter({ hasText: "other" })
+            .click(),
+        );
+        yield* browser.use("The other document needs no request", (page) =>
+          page
+            .getByRole("heading", { name: "Another guide", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Return to the report skill", (page) =>
+          page
+            .getByRole("navigation", { name: "Skills", exact: true })
+            .getByRole("button")
+            .filter({ hasText: "report" })
+            .click(),
+        );
+        yield* browser.use("Open a preloaded script", (page) =>
+          page.getByRole("button", { name: /^Files / }).click(),
+        );
+        yield* browser.use("Select the script", (page) =>
+          page.getByRole("menuitemradio", { name: "scripts/example.ts", exact: true }).click(),
+        );
+        yield* browser.use("The script is text without another read", (page) =>
+          page
+            .getByText("This script must never run", { exact: false })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Return to instructions", (page) =>
+          page.getByRole("button", { name: "Back to instructions" }).click(),
+        );
+        yield* browser.use("Restore the reference selection", (page) =>
+          page.getByRole("button", { name: "the example", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Preloaded navigation has no read failure", (page) =>
+            page.getByRole("alert").count(),
+          ),
+        ).toBe(0);
+      }),
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const failure = yield* holdQuery(
+          readPaths.map((path) => `${path}/skill-bundle`),
+          "fail",
+          { allRequests: true },
+        );
+        yield* refreshVisiblePage;
+        yield* failure.requested;
+        yield* browser.checkpoint("Reference remains visible during refresh");
+        yield* failure.release;
+        yield* browser.use("Show the read failure alongside the reference", (page) =>
+          page.getByRole("alert").first().waitFor({ state: "visible" }),
+        );
+        expect(
+          yield* browser.use("Failed refresh preserves the selected file", (page) =>
+            page.getByLabel("Current skill file").textContent(),
+          ),
+        ).toBe("example.md");
+        expect(
+          yield* browser.use("Failed refresh preserves the document", (page) =>
+            page.getByRole("heading", { name: "Reference version one" }).isVisible(),
+          ),
+        ).toBe(true);
+      }),
+    );
+    const recovery = yield* holdQuery(
+      readPaths.map((path) => `${path}/skill-bundle`),
+      "continue",
+      { allRequests: true },
+    );
+    yield* refreshVisiblePage;
+    yield* recovery.requested;
+    yield* recovery.release;
+    yield* browser.use("Read failure clears after recovery", (page) =>
+      page.getByRole("alert").first().waitFor({ state: "hidden" }),
+    );
+    yield* browser.use("Inspect a bundled script without running it", (page) =>
+      page.getByRole("button", { name: /^Files / }).click(),
+    );
+    yield* browser.use("Choose the script file", (page) =>
+      page.getByRole("menuitemradio", { name: "scripts/example.ts", exact: true }).click(),
+    );
+    yield* browser.use("The script is displayed as text", (page) =>
+      page.getByText("This script must never run", { exact: false }).waitFor({ state: "visible" }),
+    );
+    yield* browser.use("Return to the instructions", (page) =>
+      page.getByRole("button", { name: "Back to instructions" }).click(),
+    );
+    yield* browser.use("Open the reference again", (page) =>
+      page.getByRole("button", { name: "the example", exact: true }).click(),
+    );
+    yield* browser.checkpoint("Skill reference reader");
+  });
+
+const skillFile = (page: Page, skill: string, file: string) =>
+  page
+    .getByRole("navigation", { name: "Skill files", exact: true })
+    .getByRole("group", { name: skill, exact: true })
+    .getByRole("button", { name: file, exact: true });
+
+const selectedSkillFile = (page: Page) =>
+  page
+    .getByRole("navigation", { name: "Skill files", exact: true })
+    .locator("[aria-current=page]")
+    .textContent();
+
+/** Working source and the deployed catalog load together; selecting files starts no reads. */
+const editSkillWorkspace = (readPaths: readonly string[]) =>
+  Effect.gen(function* () {
+    const browser = yield* Browser;
+    yield* browser.use("The skill workspace has loaded", (page) =>
+      page
+        .getByRole("navigation", { name: "Skill files", exact: true })
+        .waitFor({ state: "visible" }),
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const guard = yield* holdQuery(
+          readPaths.flatMap((path) => [
+            `${path}/source`,
+            `${path}/skill-bundle`,
+            `${path}/skills/report`,
+            `${path}/skills/other`,
+          ]),
+          "fail",
+          { allRequests: true },
+        );
+        yield* guard.release;
+        yield* browser.use("Choose the report instructions", (page) =>
+          skillFile(page, "report", "Instructions").click(),
+        );
+        yield* browser.use("Read the report instructions", (page) =>
+          page
+            .getByRole("heading", { name: "Prepare reports", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Open the reference file", (page) =>
+          skillFile(page, "report", "references/example.md").click(),
+        );
+        yield* browser.use("Read the reference", (page) =>
+          page
+            .getByRole("heading", { name: "Reference version one" })
+            .waitFor({ state: "visible" }),
+        );
+        expect(
+          yield* browser.use("Reference selection is retained", (page) => selectedSkillFile(page)),
+        ).toBe("references/example.md");
+        yield* browser.use("Switch to another already-loaded skill", (page) =>
+          skillFile(page, "other", "Instructions").click(),
+        );
+        yield* browser.use("The other document needs no request", (page) =>
+          page
+            .getByRole("heading", { name: "Another guide", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Open a preloaded script", (page) =>
+          skillFile(page, "report", "scripts/example.ts").click(),
+        );
+        expect(
+          yield* browser.use("The script is text without another read", (page) =>
+            page.getByRole("textbox", { name: "Edit example.ts", exact: true }).inputValue(),
+          ),
+        ).toContain("This script must never run");
+        yield* browser.use("Restore the reference selection", (page) =>
+          skillFile(page, "report", "references/example.md").click(),
+        );
+        expect(
+          yield* browser.use("Preloaded navigation has no read failure", (page) =>
+            page.getByRole("alert").count(),
+          ),
+        ).toBe(0);
+      }),
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const failure = yield* holdQuery(
+          readPaths.map((path) => `${path}/skill-bundle`),
+          "fail",
+          { allRequests: true },
+        );
+        yield* refreshVisiblePage;
+        yield* failure.requested;
+        yield* browser.checkpoint("Reference remains visible during refresh");
+        yield* failure.release;
+        yield* browser.use("Show the read failure alongside the reference", (page) =>
+          page.getByRole("alert").first().waitFor({ state: "visible" }),
+        );
+        expect(
+          yield* browser.use("Failed refresh preserves the selected file", (page) =>
+            selectedSkillFile(page),
+          ),
+        ).toBe("references/example.md");
+        expect(
+          yield* browser.use("Failed refresh preserves the document", (page) =>
+            page.getByRole("heading", { name: "Reference version one" }).isVisible(),
+          ),
+        ).toBe(true);
+      }),
+    );
+    const recovery = yield* holdQuery(
+      readPaths.map((path) => `${path}/skill-bundle`),
+      "continue",
+      { allRequests: true },
+    );
+    yield* refreshVisiblePage;
+    yield* recovery.requested;
+    yield* recovery.release;
+    yield* browser.use("Read failure clears after recovery", (page) =>
+      page.getByRole("alert").first().waitFor({ state: "hidden" }),
+    );
+    expect(
+      yield* browser.use("Recovery keeps the selected file", (page) => selectedSkillFile(page)),
+    ).toBe("references/example.md");
+    yield* browser.checkpoint("Skill reference in the workspace");
   });

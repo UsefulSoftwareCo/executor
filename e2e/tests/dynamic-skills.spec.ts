@@ -11,6 +11,7 @@ import { Browser } from "../support/browser.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { skillUpstream } from "../support/skill-upstream.ts";
+import { createProfile } from "../support/profiles.ts";
 
 const Bundle = Schema.Struct({
   deployment: Schema.String,
@@ -39,17 +40,17 @@ layer(HostedLive, { excludeTestServices: true })("Dynamic skills", (it) => {
           files: [
             {
               path: "index.ts",
-              content: `import { defineApp } from "apps";
-import { folderSkills, githubSkills, wellKnownSkills } from "apps/skills";
+              content: `import { defineApp, dynamicSkills, query, object } from "apps";
+import { githubSkills, wellKnownSkills } from "apps/skills";
 export default defineApp({ accounts: {} }, async (ctx) => ({
-  skills: [
-    ...await folderSkills({ files: ctx.files }),
+  queries: { ping: query({ input: object({}) }, async () => "pong") },
+  dynamicSkills: dynamicSkills({ list: async () => [
     ...await wellKnownSkills({ url: ${JSON.stringify(upstream.url)}, fetch: ctx.fetch, signal: ctx.signal }),
     ...await githubSkills({ repo: "synthetic/skills", path: "skills", signal: ctx.signal, fetch: (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input);
       return ctx.fetch(${JSON.stringify(upstream.url)} + "/github" + url.pathname + url.search, init);
     } }),
-  ],
+  ] }),
 }));`,
             },
             {
@@ -66,6 +67,21 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
           api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
         );
         const base = `${prefix}/${app.id}`;
+        const profile = yield* createProfile(actors.owner, base);
+        const tools = yield* api.request(
+          actors.owner,
+          "GET",
+          `${base}/tools?profile=${profile.id}`,
+        );
+        expect(tools.status).toBe(200);
+        const ping = yield* api.request(actors.owner, "POST", `${base}/tools/call`, {
+          profile: profile.id,
+          tool: "queries.ping",
+          input: {},
+        });
+        expect(ping.status).toBe(200);
+        expect(ping.body).toBe("pong");
+        expect(yield* upstream.requests).toEqual([]);
         const firstResponse = yield* api.request(actors.owner, "GET", `${base}/skill-bundle`);
         expect(
           firstResponse.status,
@@ -82,9 +98,10 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
             .filter((skill) => skill.name !== "packaged-guide")
             .every((skill) => skill.files.some((file) => file.content.includes("Reference 1"))),
         ).toBe(true);
+        const firstCommit = yield* upstream.commit;
         expect(
           (yield* upstream.requests).some((path) =>
-            path.includes(`/synthetic/skills/${"1".repeat(40)}/skills/`),
+            path.includes(`/synthetic/skills/${firstCommit}/skills/`),
           ),
         ).toBe(true);
         yield* browser.login(actors.owner);
@@ -174,6 +191,12 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
         yield* browser.login(actors.owner);
         yield* browser.use("Read dynamic app instructions", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=skills`),
+        );
+        yield* browser.use("Select the remote skill's instructions", (page) =>
+          page
+            .getByRole("group", { name: "remote-guide", exact: true })
+            .getByRole("button", { name: "Instructions", exact: true })
+            .click(),
         );
         yield* browser.use("Latest instructions are visible", (page) =>
           page.getByRole("heading", { name: "Guide 3", exact: true }).waitFor({ state: "visible" }),

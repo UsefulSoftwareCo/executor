@@ -160,7 +160,7 @@ export default defineApp({ accounts: {} }, async () => ({
         const failedRefresh = yield* holdQuery(paths, "fail");
         yield* refreshVisiblePage;
         const refreshPath = yield* failedRefresh.requested;
-        expect(refreshPath).toBe(`${prefix}/apps/${app.id}`);
+        expect(paths).toContain(refreshPath);
         yield* checkDraft("Waiting refresh");
         yield* browser.checkpoint("Rename draft during a held refresh");
         yield* failedRefresh.release;

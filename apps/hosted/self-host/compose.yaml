@@ -20,6 +20,8 @@ services:
       EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
       EXECUTOR_OAUTH_CALLBACK_URL:
       EXECUTOR_OAUTH_CLIENT_METADATA_URL:
+      # Public app registry origin. The default is https://v2.executor.sh.
+      EXECUTOR_REGISTRY_URL:
       # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.
       EXECUTOR_APP_UI_BASE_URL:
       # Unset passthrough entries stay absent; the default is bundled Motel.

@@ -53,18 +53,6 @@ export const AutumnRequests = {
     autoEnablePlanId: Schema.optionalKey(Schema.String),
   }).pipe(Schema.encodeKeys({ ...customerKeys, autoEnablePlanId: "auto_enable_plan_id" })),
   listPlans: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
-  check: Schema.Struct({
-    ...customer,
-    featureId: Schema.String,
-    requiredBalance: Schema.Number,
-    sendEvent: Schema.Boolean,
-  }).pipe(
-    Schema.encodeKeys({
-      ...featureKeys,
-      requiredBalance: "required_balance",
-      sendEvent: "send_event",
-    }),
-  ),
   updateBalance: Schema.Struct({
     ...customer,
     featureId: Schema.String,
@@ -107,7 +95,6 @@ export const AutumnResponses = {
       }),
     ),
   }),
-  check: Schema.Struct({ allowed: Schema.Boolean, balance: Schema.NullOr(balance) }),
   updateBalance: Schema.Struct({ success: Schema.Literal(true) }),
   attach: Schema.Struct({ paymentUrl: Schema.NullOr(Schema.String) }).pipe(
     Schema.encodeKeys({ paymentUrl: "payment_url" }),
@@ -124,7 +111,6 @@ export class AutumnRequestFailed extends Schema.TaggedError<AutumnRequestFailed>
     operation: Schema.Literals([
       "getOrCreateCustomer",
       "listPlans",
-      "check",
       "updateBalance",
       "attach",
       "openCustomerPortal",

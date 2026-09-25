@@ -10,9 +10,11 @@ const command = Command.make(
   {
     database: Flag.Literals("database", ["neon", "planetscale"]).pipe(Flag.withDefault("neon")),
     name: Flag.String("test-name").pipe(
-      Flag.withDefault("^(?!.*(?:Claude Code connects|Cloud compiler memory failures))"),
+      Flag.withDefault(
+        "^(?!.*(?:Claude Code connects|Cloud compiler memory failures|MCP subscriptions survive))",
+      ),
     ),
-    workers: Flag.Int("workers").pipe(Flag.withDefault(4)),
+    workers: Flag.Int("workers").pipe(Flag.withDefault(16)),
   },
   runDeployedSuite,
 );

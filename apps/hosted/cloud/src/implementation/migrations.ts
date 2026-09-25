@@ -89,6 +89,21 @@ export const migrateWelcomeEmails = Effect.gen(function* () {
   );
 }).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
 
+/**
+ * The seat count last confirmed in Autumn, so membership jobs skip unchanged
+ * counts. Additive: the running server never reads it. No backfill; the first
+ * daily reconcile confirms every organization that has no row.
+ */
+export const migrateBillingSeats = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists cloud_billing_seats (
+    organization_id text primary key references organization(id) on delete cascade,
+    synced_count integer check (synced_count >= 0),
+    seat_plan boolean not null default false,
+    checked_at timestamptz
+  )`;
+}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+
 /** Apply Better Auth and product migrations, then close both database pools. */
 export const migrateCloudDatabase = Effect.scoped(
   Effect.gen(function* () {
@@ -107,6 +122,7 @@ export const migrateCloudDatabase = Effect.scoped(
       );
       yield* migrateProductSteps("private_cloud_migrations", {
         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
+        "2_billing_seats": migrateBillingSeats,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

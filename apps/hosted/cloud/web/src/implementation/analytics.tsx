@@ -99,8 +99,7 @@ export const startAnalytics = () => {
     ui_host: import.meta.env.VITE_POSTHOG_HOST,
     autocapture: false,
     // The managed loopback receiver exercises capture from an automated browser. Production keeps bot filtering.
-    opt_out_useragent_filter:
-      import.meta.env.DEV && import.meta.env.VITE_EXECUTOR_ENVIRONMENT === "test-local",
+    opt_out_useragent_filter: import.meta.env.VITE_EXECUTOR_ENVIRONMENT === "test-local",
     property_denylist: deniedUrlProperties,
     capture_pageview: false,
     capture_pageleave: false,

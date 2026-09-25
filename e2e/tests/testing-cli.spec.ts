@@ -3,6 +3,7 @@ import { Effect, FileSystem, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { TestLive, withCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
+import { Evidence } from "../support/evidence.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(TestLive, { excludeTestServices: true })("Testing CLI", (it) => {
@@ -12,33 +13,37 @@ layer(TestLive, { excludeTestServices: true })("Testing CLI", (it) => {
       Effect.gen(function* () {
         const target = yield* Target,
           fs = yield* FileSystem.FileSystem,
+          evidence = yield* Evidence,
           processes = yield* ChildProcessSpawner.ChildProcessSpawner;
         const handle = `${target.directory}/cli.json`;
         const cli = (args: readonly string[]) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const command = yield* processes.spawn(
-                ChildProcess.make("node", ["e2e/cli.ts", ...args, "--handle", handle], {
-                  stdout: "pipe",
-                  stderr: "inherit",
-                }),
-              );
-              const [text, code] = yield* Effect.all(
-                [
-                  command.stdout.pipe(
-                    Stream.decodeText(),
-                    Stream.runFold(
-                      () => "",
-                      (text, chunk) => text + chunk,
+          evidence.step(
+            `Testing CLI: ${args[0]}`,
+            Effect.scoped(
+              Effect.gen(function* () {
+                const command = yield* processes.spawn(
+                  ChildProcess.make("node", ["e2e/cli.ts", ...args, "--handle", handle], {
+                    stdout: "pipe",
+                    stderr: "inherit",
+                  }),
+                );
+                const [text, code] = yield* Effect.all(
+                  [
+                    command.stdout.pipe(
+                      Stream.decodeText(),
+                      Stream.runFold(
+                        () => "",
+                        (text, chunk) => text + chunk,
+                      ),
                     ),
-                  ),
-                  command.exitCode,
-                ],
-                { concurrency: 2 },
-              );
-              expect(Number(code), `CLI ${args[0]} exit code`).toBe(0);
-              return text;
-            }),
+                    command.exitCode,
+                  ],
+                  { concurrency: 2 },
+                );
+                expect(Number(code), `CLI ${args[0]} exit code`).toBe(0);
+                return text;
+              }),
+            ),
           );
         const child = yield* processes.spawn(
           ChildProcess.make(

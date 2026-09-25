@@ -14,6 +14,10 @@ import {
   HostCallError,
   HostDataError,
   HostedTool,
+  HostedToolSummary,
+  indexCommand,
+  inspectCommand,
+  selectTools,
   WorkflowFailure,
   WorkflowRpcResult,
   WorkflowRunId,
@@ -218,6 +222,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
               headers: trace,
               ...(input.approval === undefined ? {} : { approval: input.approval }),
               ...(input.replay === undefined ? {} : { replay: input.replay }),
+              ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
             };
             const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(WorkerInvocation))(
               request,
@@ -288,8 +293,12 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
         }).pipe(Effect.mapError(() => new RuntimeBuildFailed({ stage: "compile" }))),
       asset: ({ build, path }) => workerBuildAsset(build, path).pipe(provideBlobs),
       skills: (input) => dispatch(input, { operation: "skills" }, AppSkills, HostInspectError),
-      inspect: (input) =>
-        dispatch(input, { operation: "inspect" }, Schema.Array(HostedTool), HostInspectError),
+      inspect: ({ tools, ...input }) =>
+        dispatch(input, inspectCommand(tools), Schema.Array(HostedTool), HostInspectError).pipe(
+          Effect.map(selectTools(tools)),
+        ),
+      index: (input) =>
+        dispatch(input, indexCommand, Schema.Array(HostedToolSummary), HostInspectError),
       query: (input) =>
         dispatch(
           input,

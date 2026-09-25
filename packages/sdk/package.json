@@ -23,13 +23,14 @@
     "@distilled.cloud/cloudflare": "1.0.0-rc.12",
     "@effect/platform-browser": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-browser@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/app-cache": "workspace:*",
     "@executor-js/app-data": "workspace:*",
     "@executor-js/reactivity": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "ajv": "^8.17.1",
     "apps": "workspace:*",
-    "bun": "1.3.11",
+    "bun": "1.4.2",
     "capnweb": "0.12.0",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "esbuild": "0.28.2",
@@ -44,6 +45,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260729.1",
     "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "@executor-js/app-source": "workspace:*",
     "@types/ws": "8.18.1"
   }

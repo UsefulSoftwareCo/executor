@@ -118,7 +118,12 @@ export const authOptions = (
     hooks: { before: apiKeyManagement },
     session: { cookieCache: { enabled: false } },
     rateLimit: { enabled: true, storage: "database" },
-    advanced: { cookiePrefix: "executor-hosted", ipAddress: { ipAddressHeaders } },
+    advanced: {
+      cookiePrefix: "executor-hosted",
+      ipAddress: { ipAddressHeaders },
+      // Read a session and its user in one statement instead of one query each.
+      database: { joins: true },
+    },
   }) satisfies BetterAuthOptions;
 
 /** Project only identity fields; never expose Better Auth tokens as product identity. */

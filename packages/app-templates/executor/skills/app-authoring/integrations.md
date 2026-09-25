@@ -71,16 +71,18 @@ Use `graphqlOperations` from `apps/graphql` with the endpoint, selected account'
 headers, and optional cancellation signal. Declare `graphql` (currently
 `16.11.0`) in the app's dependencies.
 
-Use `openapiOperations` from `apps/openapi` with the generated `operations.json`,
-authentication metadata, and selected account. Custom Add generates these
-files from a specification. The runtime helper accepts normalized operations,
-not a raw specification, and needs no extra dependency. Swagger builds requests
-from retained per-operation declarations. It does not download the spec per call.
+Use `liveOpenapiOperations` from `apps/openapi` with `ctx.cache`, the generated
+`openapi.json` configuration, and the selected account. Custom Add retains the
+source URL, allowed origin, and static authentication bindings. The framework
+refreshes compiled revisions through the app cache. A call reads one operation
+and only the shared definitions it needs. Live metadata cannot move credentials
+to another origin or change their header placement. No extra dependency is needed.
+`openapiOperations` is the lower-level helper for normalized metadata.
 Use `contentType` to choose an alternate declared request media type. Binary
 request bodies and multipart binary fields take base64 strings. Binary responses
 return `{ base64, contentType }`; text and NDJSON return text. Success responses
 have a 16 MiB / 30-second read bound. Live SSE requires an authored subscription.
-Old imports must be regenerated before rebuilding with the new helper.
+Existing retained apps keep their source and bundled helper until redeployment.
 
 OpenAPI imports retain documented errors with an exact HTTP status, a required
 literal `_tag`, and either a declared string `message` or a schema description.
@@ -112,3 +114,44 @@ MCP or GraphQL. Optional dependencies must appear in the app's manifest and
 resolve from its own installation. A missing peer fails the deployment with
 the package to add. A declared `apps` version owns its framework dependencies;
 otherwise the host supplies them.
+
+MCP imports pass `ctx.cache.forAccount(account)` to `mcpOperations`. Public
+sources without account requirements can pass `ctx.cache`. The helper returns
+`{ dynamicTools }`; it lists metadata without compiling every tool, and resolves
+one executable for each call. Cached identity includes the server URL, normalized
+headers and account ID. Defaults are five minutes fresh plus five minutes stale.
+
+Set `revalidate: true` on a specific `mcpOperations` call to await a new catalog
+at a logical connection or explicit refresh boundary. Do not set it on every
+app evaluation unless every request must reload discovery. Each HTTP transport
+session is short-lived; opening that transport does not force a catalog refresh.
+A received `notifications/tools/list_changed` invalidates the retained manifest.
+There is no idle background connection, so TTL or explicit refresh covers changes
+made while disconnected. A failed explicit refresh retains the previous catalog.
+Only metadata is cached; credentials and executable handlers remain invocation-owned.
+Existing generated apps need the cache option added and a new deployment.
+
+GraphQL imports use the same cache policy through `graphqlOperations`:
+
+```ts
+await graphqlOperations({
+  url,
+  headers,
+  accountId: account.id,
+  cache: ctx.cache.forAccount(account),
+  signal: ctx.signal,
+});
+```
+
+The helper returns `{ dynamicTools }`. One introspection request creates a
+revision of per-tool definitions. Listing reads those definitions; execution
+loads and compiles only the selected query or mutation, without reading the
+full introspection schema. The current account supplies execution credentials.
+Public apps can use `ctx.cache`. Omitting the cache keeps discovery local to the
+current evaluation. Keys include the URL, normalized headers and account ID.
+
+`freshFor`, `staleFor`, and `revalidate: true` have the same meanings as MCP.
+GraphQL has no standard schema-change notification, so TTL or an explicit
+refresh discovers changed fields and input types. Failed refreshes retain the
+previous revision. Cached introspection never caches query or mutation results.
+Existing generated GraphQL apps need the cache option and redeployment.

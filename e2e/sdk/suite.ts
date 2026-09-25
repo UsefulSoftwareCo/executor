@@ -1,14 +1,14 @@
-/** CLI composition root: Effect owns server processes, Vitest, evidence export and target isolation. */
-import { Config, Clock, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
+/** CLI composition root: Effect owns server processes, Vitest, raw evidence and target isolation. */
+import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { randomBytes } from "node:crypto";
-import { patternForTarget, scenariosForSuite } from "../test-plan.ts";
-import { collectEvidence, writeEvidenceReport } from "../evidence-reporter.ts";
+import { patternForTarget, scenariosForSuite, type TestPlan } from "../test-plan.ts";
+import { readEvidence, combineEvidenceReports } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
-import { BrowserDriver } from "../support/browser.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
 import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
-import { Target, RecordingPaceMs } from "../support/platform.ts";
+import { RecordingPaceMs, Target } from "../support/platform.ts";
+import { prepareCloudScenarios } from "./prepare-scenarios.ts";
 
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
 import { freePort } from "../support/ports.ts";
@@ -30,7 +30,7 @@ const CloudOrigin = Schema.String.check(
 export const runSuite = ({
   target: selected,
   name = "",
-  workers = 4,
+  workers = 16,
   attachment,
 }: {
   readonly target: "self-host" | "local" | "cloud" | "all" | "hosted";
@@ -40,6 +40,7 @@ export const runSuite = ({
     readonly origin: string;
     readonly fixtures: typeof FixtureControl.Type;
     readonly emulators: string;
+    readonly appUiBaseUrl?: string;
     readonly axiom?: {
       readonly token: Redacted.Redacted<string>;
       readonly organization: string;
@@ -80,7 +81,6 @@ export const runSuite = ({
                 ),
               )
             : Option.none<string>();
-      const rows = yield* Config.Number("E2E_ROWS").pipe(Config.withDefault(1000));
       const interactive = yield* Config.Boolean("E2E_INTERACTIVE").pipe(Config.withDefault(false));
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       if (observeUI && (selected !== "cloud" || Option.isSome(cloud)))
@@ -88,9 +88,8 @@ export const runSuite = ({
           message:
             "UI observation is currently a managed Cloud development exploration. Use --target cloud without E2E_CLOUD_URL.",
         });
-      const ci = yield* Config.Boolean("CI").pipe(Config.withDefault(false));
       const recordingPaceMs = yield* Config.Number("E2E_RECORDING_PACE_MS").pipe(
-        Config.withDefault(ci ? 0 : 500),
+        Config.withDefault(0),
         Effect.flatMap(Schema.decodeUnknownEffect(RecordingPaceMs)),
       );
       yield* Console.log(
@@ -116,6 +115,22 @@ export const runSuite = ({
       const startedAt = new Date().toISOString();
       const cloudMode = Option.isSome(cloud) ? "attached" : "managed";
       const plan = scenariosForSuite(selected === "hosted" ? "hosted" : "all", cloudMode);
+      const filter = yield* Effect.try({
+        try: () => new RegExp(name),
+        catch: () =>
+          new RunFailed({ message: "The test-name filter is not a valid regular expression." }),
+      });
+      const empty = targets.filter(
+        (target) =>
+          !plan.some(
+            (scenario) =>
+              scenario.targets[target].status === "scheduled" && filter.test(scenario.title),
+          ),
+      );
+      if (empty.length > 0)
+        return yield* new RunFailed({
+          message: `No scheduled scenarios match for ${empty.join(", ")}. Check the test-name filter.`,
+        });
       const captures = yield* Effect.forEach(
         targets,
         (target) =>
@@ -146,17 +161,9 @@ export const runSuite = ({
                 dirty,
                 startedAt,
                 interactive,
-                diagnostics: "diagnostics/index.html",
+                diagnostics: "diagnostics/results.json",
               };
               const apiKey = Redacted.make(randomBytes(32).toString("hex"));
-              const config = Target.of({
-                metadata,
-                directory,
-                apiKey,
-                rows,
-                recordingPaceMs,
-                observeUI,
-              });
               yield* fs.writeFileString(`${directory}/run.json`, JSON.stringify(metadata, null, 2));
               yield* Console.log(
                 `Testing ${target}: ${target === "cloud" ? origin : target === "local" && Option.isSome(packagedEntry) ? `installed CLI at ${packagedEntry.value}` : "isolated server per scenario"}`,
@@ -167,13 +174,43 @@ export const runSuite = ({
                     ? yield* startCloudEnvironment({
                         directory,
                         origin,
-                        apiPort: yield* freePort,
                         appPort: yield* freePort,
                         databasePort: yield* freePort,
                         commit,
                         observeUI,
                       })
                     : undefined;
+                  const preparedScenarios =
+                    attachment?.appUiBaseUrl === undefined
+                      ? {}
+                      : yield* prepareCloudScenarios({
+                          target: Target.of({
+                            metadata,
+                            directory,
+                            apiKey,
+                            rows: 1000,
+                            recordingPaceMs,
+                            observeUI,
+                            fixtures: attachment.fixtures,
+                          }),
+                          appUiBaseUrl: attachment.appUiBaseUrl,
+                          workers,
+                          scenarios: plan
+                            .filter(
+                              (scenario: typeof TestPlan.Type) =>
+                                scenario.fixtures === "actors" &&
+                                scenario.targets[target].status === "scheduled" &&
+                                filter.test(scenario.title),
+                            )
+                            .map((scenario: typeof TestPlan.Type) => ({
+                              title: scenario.title,
+                              ...(scenario.appOrigin ? { appOrigin: true as const } : {}),
+                            })),
+                        });
+                  yield* fs.writeFileString(
+                    `${directory}/prepared-scenarios.json`,
+                    JSON.stringify(preparedScenarios, null, 2),
+                  );
                   return yield* processes.exitCode(
                     ChildProcess.make(
                       "node",
@@ -204,6 +241,9 @@ export const runSuite = ({
                           ...(Option.isSome(runtimePath)
                             ? { EXECUTOR_E2E_RUNTIME_PATH: runtimePath.value }
                             : {}),
+                          ...(process.env.MCP_CACHE_FIXTURE_ORIGIN === undefined
+                            ? {}
+                            : { MCP_CACHE_FIXTURE_ORIGIN: process.env.MCP_CACHE_FIXTURE_ORIGIN }),
                           ...(process.env.E2E_CLAUDE_BASE_URL === undefined
                             ? {}
                             : { E2E_CLAUDE_BASE_URL: process.env.E2E_CLAUDE_BASE_URL }),
@@ -220,6 +260,7 @@ export const runSuite = ({
                           ...(process.env.E2E_WORKFLOW_HOLD_MS === undefined
                             ? {}
                             : { E2E_WORKFLOW_HOLD_MS: process.env.E2E_WORKFLOW_HOLD_MS }),
+                          E2E_PREPARED_SCENARIOS: JSON.stringify(preparedScenarios),
                           E2E_TEST_NAME: name,
                           E2E_WORKERS: String(interactive || observeUI ? 1 : workers),
                           E2E_TARGET: target,
@@ -261,53 +302,25 @@ export const runSuite = ({
                   );
                 }),
               );
-              return { target, code, config, directory };
+              return { target, code, metadata, directory };
             }),
           ),
         { concurrency: selected === "all" ? 3 : 2 },
       );
-      // No encoding runs while another target is still exercising the application.
-      yield* Console.log("All test targets finished. Rendering evidence outside test timing…");
-      const results = yield* Effect.forEach(captures, ({ target, code, config, directory }) =>
+      const results = yield* Effect.forEach(captures, ({ target, code, metadata, directory }) =>
         Effect.gen(function* () {
-          const started = yield* Clock.currentTimeMillis;
-          const entries = yield* collectEvidence(directory).pipe(
-            Effect.provide(BrowserDriver.layer),
-            Effect.provideService(Target, config),
-          );
-          const report = { runs: [config.metadata], entries, plan };
-          yield* writeEvidenceReport(`${directory}/report`, report);
-          const ended = yield* Clock.currentTimeMillis;
-          yield* Console.log(
-            `${target}: evidence processing ${((ended - started) / 1000).toFixed(1)}s (excluded from test durations)`,
-          );
-          return { target, code, report, directory };
+          const entries = yield* readEvidence(directory);
+          const report: EvidenceReport = { runs: [metadata], entries, plan };
+          return { target, code, report };
         }),
       );
-      const output = path.join(root, "report");
-      yield* fs.makeDirectory(`${output}/targets`, { recursive: true });
-      for (const result of results)
-        yield* fs.copy(`${result.directory}/report`, `${output}/targets/${result.target}`);
-      const report: EvidenceReport = {
+      const report = combineEvidenceReports(
+        results.map(({ target, report }) => ({ report, prefix: `${target}/report` })),
         plan,
-        runs: results.flatMap(({ target, report }) =>
-          report.runs.map((run) => ({
-            ...run,
-            diagnostics: `targets/${target}/${run.diagnostics}`,
-          })),
-        ),
-        entries: results.flatMap(({ target, report }) =>
-          report.entries.map((entry) => ({
-            ...entry,
-            attachments: entry.attachments.map((item) => ({
-              ...item,
-              href: `targets/${target}/${item.href}`,
-            })),
-          })),
-        ),
-      };
-      yield* writeEvidenceReport(output, report);
-      yield* Console.log(`Test evidence: ${output}/index.html`);
+      );
+      yield* fs.writeFileString(path.join(root, "evidence.json"), JSON.stringify(report, null, 2));
+      yield* Console.log(`Raw test evidence: ${root}`);
+      yield* Console.log(`Render on request: bun run e2e:render --directory ${root}`);
       if (results.some((result) => result.report.entries.length === 0))
         return yield* new RunFailed({
           message: "No scenarios produced evidence for a selected target. Check the test filter.",

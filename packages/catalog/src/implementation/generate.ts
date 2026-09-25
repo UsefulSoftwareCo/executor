@@ -59,6 +59,23 @@ export const generateApp = (
             reason: "This API definition could not be read.",
           }),
   }).pipe(
-    Effect.flatMap((document) => generateOpenApiApp(entry, document, options)),
+    Effect.flatMap((document) =>
+      generateOpenApiApp(entry, document, {
+        ...options,
+        ...(entry.specOverrides === undefined
+          ? {}
+          : {
+              patches: Schema.decodeUnknownSync(
+                Schema.Array(
+                  Schema.Struct({
+                    op: Schema.Literals(["add", "remove", "replace"]),
+                    path: Schema.String,
+                    value: Schema.optionalKey(Schema.Json),
+                  }),
+                ),
+              )(entry.specOverrides),
+            }),
+      }),
+    ),
     Effect.mapError((error) => new CatalogImportFailed({ code: error.code, reason: error.reason })),
   );
