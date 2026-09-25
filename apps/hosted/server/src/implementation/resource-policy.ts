@@ -164,8 +164,14 @@ export const accountAccess = (account: AccountId, actor: ResourceAuthority) =>
 
 /** Read access may include management; management never authorizes execution. */
 export const requireAppAccess = (app: AppId, action: "read" | "manage" | "use") =>
+  Effect.flatMap(currentResourceAuthority, (actor) => requireAppAccessAs(actor, app, action));
+/** Check app access for an actor already resolved in this operation. */
+export const requireAppAccessAs = (
+  actor: ResourceAuthority,
+  app: AppId,
+  action: "read" | "manage" | "use",
+) =>
   Effect.gen(function* () {
-    const actor = yield* currentResourceAuthority;
     const access = yield* applicationAccess(app, actor);
     const allowed =
       action === "use"
@@ -213,8 +219,16 @@ export const requireAppUse = (app: App, organization: OrganizationId, user: stri
   );
 /** Account metadata allows shared-account managers; personal metadata has no admin bypass. */
 export const requireAccountAccess = (account: AccountId, action: "read" | "manage" | "use") =>
+  Effect.flatMap(currentResourceAuthority, (actor) =>
+    requireAccountAccessAs(actor, account, action),
+  );
+/** Check account access for an actor already resolved in this operation. */
+export const requireAccountAccessAs = (
+  actor: ResourceAuthority,
+  account: AccountId,
+  action: "read" | "manage" | "use",
+) =>
   Effect.gen(function* () {
-    const actor = yield* currentResourceAuthority;
     const access = yield* accountAccess(account, actor);
     const allowed =
       action === "use"

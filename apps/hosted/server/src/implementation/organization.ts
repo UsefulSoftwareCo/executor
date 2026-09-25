@@ -148,8 +148,17 @@ export const withOrganizationRequest = <E, R>(
     const principal = yield* auth.current(headers);
     if (principal === null) return yield* new Unauthorized();
     const organization = yield* auth.organization(reference);
-    yield* refuseRemoved(organization);
-    const membership = yield* auth.membership(principal, organization);
+    // The tombstone and membership reads use separate clients and depend only on the
+    // resolved organization, so they overlap. Removal is still reported before membership.
+    const [removed, member] = yield* Effect.all(
+      [
+        Effect.exit(refuseRemoved(organization)),
+        Effect.exit(auth.membership(principal, organization)),
+      ],
+      { concurrency: "unbounded" },
+    );
+    yield* removed;
+    const membership = yield* member;
     const access = {
       organization,
       owner: organizationOwner(organization),

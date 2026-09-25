@@ -112,7 +112,7 @@ export const cloudAuth = (send: SendAuthEmail) =>
         cookiePrefix: cloudSessionCookiePrefix(settings.url),
         // The deployment migration validates the schema. Alchemy owns a fresh auth
         // instance per event; repeating Kysely introspection would delay every read.
-        database: { validateSchema: false },
+        database: { ...options.advanced.database, validateSchema: false },
       },
       secret: secrets.authSecret,
       migrate: false,

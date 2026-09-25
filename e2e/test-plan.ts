@@ -1492,6 +1492,19 @@ export const scenarios = {
       local: na("Local uses its configured instance API key."),
     },
   },
+  warmRequestAuth: {
+    fixtures: "actors",
+    file: "warm-request-auth.spec.ts",
+    title: "Dashboard requests refuse signed-out sessions and removed members immediately",
+    targets: {
+      "self-host": scheduled,
+      cloud: {
+        status: "not-run",
+        reason: "This session lifecycle scenario uses self-host password login.",
+      },
+      local: na("Local has no dashboard sessions or organization memberships."),
+    },
+  },
   localWorkflows: {
     file: "local-workflows.spec.ts",
     title: "local app workflows execute through the authenticated SDK HTTP surface",
