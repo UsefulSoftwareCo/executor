@@ -4,7 +4,7 @@ import { JsonObject as importedDocument } from "apps/effect";
 import { SourceFiles } from "@executor-js/sdk";
 import { compileOpenApiDocument } from "apps/openapi-compiler";
 import type { OpenApiImport } from "../contracts/openapi.ts";
-import { TemplateError, skippedOperationSummary } from "../contracts/templates.ts";
+import { TemplateError } from "../contracts/templates.ts";
 import { packageFile, sourceFiles } from "./files.ts";
 const serialize = (value: unknown) => JSON.stringify(value, null, 2);
 const generateDefinition = (
@@ -53,7 +53,7 @@ const generateDefinition = (
           [
             {
               path: "index.ts",
-              content: `${skipped.length ? "// Some API operations were not imported. skipped-operations.json lists each one and why.\n" : ""}import { defineApp${hasAccount ? ", accountOperations" : ""} } from "apps";
+              content: `import { defineApp${hasAccount ? ", accountOperations" : ""} } from "apps";
 import { liveOpenapiOperations } from "apps/openapi";
 ${hasAccount ? 'import { provider } from "./provider.ts";' : ""}
 import configuration from "./openapi.json";
@@ -72,16 +72,6 @@ export default defineApp({ accounts: ${hasAccount ? "{ service: provider.many() 
                 ]
               : []),
             { path: "openapi.json", content: serialize(configuration) },
-            ...(skipped.length
-              ? [
-                  {
-                    path: "skipped-operations.json",
-                    content: serialize(
-                      skipped.map((op) => ({ ...op, summary: skippedOperationSummary(op.reason) })),
-                    ),
-                  },
-                ]
-              : []),
             packageFile(entry.name),
             // Stored workspaces list files by path; generate them in the same order.
           ].sort((a, b) => a.path.localeCompare(b.path)),

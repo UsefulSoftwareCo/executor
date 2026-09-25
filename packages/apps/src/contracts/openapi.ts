@@ -138,6 +138,11 @@ export const isOpenapiTextMedia = (type: string): boolean =>
   /^(?:text\/|application\/(?:[\w.-]+\+)?(?:json|xml)|application\/(?:javascript|x-ndjson|x-www-form-urlencoded))/i.test(
     type,
   );
+/** A form field that carries raw file bytes: OpenAPI 3.1 `contentMediaType` without an
+ * encoding, or the `format: binary` string that 3.1 documents still commonly use. */
+export const isOpenapiFileSchema = (shape: Readonly<Record<string, unknown>>): boolean =>
+  (shape.contentMediaType !== undefined && shape.contentEncoding === undefined) ||
+  (shape.type === "string" && shape.format === "binary");
 /** JSON-safe binary result, independent of the host's file storage. */
 export const openapiBinaryResultSchema: JsonObject = {
   type: "object",

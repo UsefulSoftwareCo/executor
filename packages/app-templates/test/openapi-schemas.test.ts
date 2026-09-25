@@ -50,27 +50,19 @@ test("OpenAPI 3.0 nullable does not override enum or an exclusive bound", async 
   assert.deepEqual(bound.parse({ body: 3 }), { body: 3 });
 });
 
-test("reference siblings follow the selected OpenAPI version", async () => {
+test("reference siblings apply in OpenAPI 3.0 documents as they do in 3.1", async () => {
   const schema = { $ref: "#/components/schemas/Label", minLength: 3 };
   const components = { Label: { type: "string" } };
-  const old = jsonSchema((await compile(schema, "3.0.3", components)).input);
-  assert.deepEqual(old.parse({ body: "x" }), { body: "x" });
-  const modern = jsonSchema((await compile(schema, "3.1.0", components)).input);
-  assert.throws(() => modern.parse({ body: "x" }));
-  assert.deepEqual(modern.parse({ body: "long" }), { body: "long" });
-  const ignoredSibling = jsonSchema(
-    (
-      await compile(
-        {
-          ...schema,
-          allOf: [{ $ref: "https://unsupported.test/ignored" }],
-        },
-        "3.0.3",
-        components,
-      )
-    ).input,
+  for (const version of ["3.0.3", "3.1.0"]) {
+    const input = jsonSchema((await compile(schema, version, components)).input);
+    assert.throws(() => input.parse({ body: "x" }));
+    assert.deepEqual(input.parse({ body: "long" }), { body: "long" });
+  }
+  const nullableReference = jsonSchema(
+    (await compile({ $ref: "#/components/schemas/Label", nullable: true }, "3.0.3", components))
+      .input,
   );
-  assert.deepEqual(ignoredSibling.parse({ body: "x" }), { body: "x" });
+  assert.deepEqual(nullableReference.parse({ body: null }), { body: null });
   const modernNullable = jsonSchema((await compile({ type: "string", nullable: true })).input);
   assert.throws(() => modernNullable.parse({ body: null }));
 });
@@ -260,9 +252,21 @@ test("OpenAPI 3.0 binary bodies and results use Executor's own schemas", async (
   assert.deepEqual(output.parse(bytes), bytes);
 });
 
-test("OpenAPI 3.0 schemas still reject keywords outside their dialect", async () => {
-  await assert.rejects(
-    compile({ type: "object", patternProperties: { "^x$": { type: "string" } } }, "3.0.3"),
-    (error: { code?: string }) => error.code === "schema_keyword",
+test("OpenAPI 3.1 keywords in an OpenAPI 3.0 document keep their constraints", async () => {
+  const input = jsonSchema(
+    (
+      await compile(
+        {
+          type: "object",
+          properties: { kind: { const: "build" } },
+          patternProperties: { "^x-": { type: "string" } },
+        },
+        "3.0.3",
+      )
+    ).input,
   );
+  const body = { kind: "build", "x-note": "ok" };
+  assert.deepEqual(input.parse({ body }), { body });
+  assert.throws(() => input.parse({ body: { kind: "deploy" } }));
+  assert.throws(() => input.parse({ body: { kind: "build", "x-note": 1 } }));
 });

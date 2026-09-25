@@ -156,7 +156,7 @@ test("a tie is pinned to the document server, and a single outlier cannot pin ev
   });
 });
 
-test("the generated source records the skipped operations", async () => {
+test("skipped operations are reported to the importer, not written into the source", async () => {
   const exit = await run(
     generateOpenApiApp(
       entry,
@@ -165,25 +165,15 @@ test("the generated source records the skipped operations", async () => {
   );
   assert.ok(Exit.isSuccess(exit));
   assert.equal(exit.value.toolCount, 1);
-  const file = exit.value.files.find(({ path }) => path === "skipped-operations.json");
-  assert.deepEqual(JSON.parse(file?.content ?? "null"), [
-    {
-      tool: "listThings",
-      method: "GET",
-      path: "/things",
-      reason: "multiple_hosts",
-      summary: "Uses a different API host.",
-    },
+  assert.deepEqual(exit.value.skippedOperations, [
+    { tool: "listThings", method: "GET", path: "/things", reason: "multiple_hosts" },
   ]);
+  assert.deepEqual(
+    exit.value.files.map(({ path }) => path).filter((path) => path !== "package.json"),
+    ["index.ts", "openapi.json"],
+  );
   const index = exit.value.files.find(({ path }) => path === "index.ts");
-  assert.match(index?.content ?? "", /skipped-operations\.json/);
-});
-
-test("an import with nothing skipped has no skipped-operations file", async () => {
-  const exit = await run(generateOpenApiApp(entry, document([{ url: "https://api.example.com" }])));
-  assert.ok(Exit.isSuccess(exit));
-  assert.deepEqual(exit.value.skippedOperations, []);
-  assert.ok(!exit.value.files.some(({ path }) => path === "skipped-operations.json"));
+  assert.doesNotMatch(index?.content ?? "", /skipped/i);
 });
 
 test("server variables use their defaults, including the document server's declaration", async () => {

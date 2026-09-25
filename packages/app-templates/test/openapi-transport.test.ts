@@ -155,61 +155,103 @@ test("JSON false, zero, empty string and null retain their wire values; alternat
 });
 
 test("form encoding, multipart files and JSON parts use the declared media encoding", async () => {
-  const f = await fixture(
-    document({
-      "/form": {
-        post: {
-          operationId: "form",
-          responses: response,
-          requestBody: {
-            content: {
-              "application/x-www-form-urlencoded": {
-                schema: {
-                  type: "object",
-                  properties: { ids: { type: "array", items: { type: "string" } } },
-                },
-                encoding: { ids: { style: "pipeDelimited", explode: false } },
-              },
-            },
-          },
-        },
-      },
-      "/multipart": {
-        post: {
-          operationId: "multipart",
-          responses: response,
-          requestBody: {
-            content: {
-              "multipart/form-data": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    file: { type: "string", format: "binary" },
-                    meta: { type: "object" },
+  // OpenAPI 3.0 file fields reach the importer as 3.1 `contentMediaType` fields.
+  for (const version of ["3.0.3", "3.1.0"]) {
+    const f = await fixture(
+      document(
+        {
+          "/form": {
+            post: {
+              operationId: "form",
+              responses: response,
+              requestBody: {
+                content: {
+                  "application/x-www-form-urlencoded": {
+                    schema: {
+                      type: "object",
+                      properties: { ids: { type: "array", items: { type: "string" } } },
+                    },
+                    encoding: { ids: { style: "pipeDelimited", explode: false } },
                   },
                 },
-                encoding: { meta: { contentType: "application/json" } },
+              },
+            },
+          },
+          "/multipart": {
+            post: {
+              operationId: "multipart",
+              responses: response,
+              requestBody: {
+                content: {
+                  "multipart/form-data": {
+                    schema: {
+                      type: "object",
+                      properties: {
+                        file: { type: "string", format: "binary" },
+                        meta: { type: "object" },
+                      },
+                    },
+                    encoding: { meta: { contentType: "application/json" } },
+                  },
+                },
               },
             },
           },
         },
+        {},
+        version,
+      ),
+    );
+    let result = await f.call("mutations.form", { body: { ids: ["a", "b"] } });
+    assert.equal(f.received.length, 1, JSON.stringify(result));
+    assert.equal(await f.received[0]?.text(), "ids=a|b");
+    result = await f.call("mutations.multipart", { body: { file: "AAH/", meta: { n: 1 } } });
+    assert.equal(f.received.length, 2, JSON.stringify(result));
+    const form = await f.received[1]?.formData();
+    assert.ok(form);
+    const file = form.get("file"),
+      meta = form.get("meta");
+    assert.ok(file instanceof File);
+    assert.deepEqual([...new Uint8Array(await file.arrayBuffer())], [0, 1, 255]);
+    assert.ok(meta instanceof File);
+    assert.equal(meta.type, "application/json");
+    assert.equal(await meta.text(), '{"n":1}');
+  }
+});
+
+test("a Swagger 2.0 document is upgraded, including its host and form file uploads", async () => {
+  const f = await fixture({
+    swagger: "2.0",
+    info: { title: "Legacy", version: "1" },
+    host: "legacy.example.test",
+    basePath: "/v1",
+    schemes: ["https"],
+    paths: {
+      "/files": {
+        post: {
+          operationId: "upload",
+          consumes: ["multipart/form-data"],
+          parameters: [
+            { in: "formData", name: "file", type: "file", required: true },
+            { in: "formData", name: "note", type: "string", maxLength: 3 },
+          ],
+          responses: { "200": { description: "OK", schema: { type: "object" } } },
+        },
       },
-    }),
-  );
-  let result = await f.call("mutations.form", { body: { ids: ["a", "b"] } });
+    },
+  });
+  const result = await f.call("mutations.upload", { body: { file: "AAH/", note: "hi" } });
   assert.equal(f.received.length, 1, JSON.stringify(result));
-  assert.equal(await f.received[0]?.text(), "ids=a|b");
-  result = await f.call("mutations.multipart", { body: { file: "AAH/", meta: { n: 1 } } });
-  assert.equal(f.received.length, 2, JSON.stringify(result));
-  const form = await f.received[1]?.formData();
-  assert.ok(form);
-  const file = form.get("file"),
-    meta = form.get("meta");
+  const request = f.received[0];
+  assert.ok(request);
+  assert.equal(request.url, "https://legacy.example.test/v1/files");
+  const form = await request.formData();
+  const file = form.get("file");
   assert.ok(file instanceof File);
   assert.deepEqual([...new Uint8Array(await file.arrayBuffer())], [0, 1, 255]);
-  assert.ok(meta instanceof File);
-  assert.equal(meta.type, "application/json");
-  assert.equal(await meta.text(), '{"n":1}');
+  assert.equal(form.get("note"), "hi");
+  await f.call("mutations.upload", { body: { file: "AAH/", note: "long" } });
+  assert.equal(f.received.length, 1);
 });
 
 test("selected credentials satisfy a whole alternative; public calls carry no credentials", async () => {

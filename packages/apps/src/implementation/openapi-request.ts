@@ -20,6 +20,7 @@ import {
 import {
   OpenapiError,
   defaultOpenapiResponseLimits,
+  isOpenapiFileSchema,
   isOpenapiTextMedia,
   openapiMediaKind,
   type CredentialBinding,
@@ -224,12 +225,7 @@ export function createRequest(config: {
                 for (const [name, property] of Object.entries(
                   object(media.schema?.properties ?? {}),
                 )) {
-                  const shape = object(property);
-                  if (
-                    shape.type === "string" &&
-                    shape.format === "binary" &&
-                    fields[name] !== undefined
-                  )
+                  if (isOpenapiFileSchema(object(property)) && fields[name] !== undefined)
                     fields[name] = new File([bytes(fields[name])], name);
                 }
                 body = fields;
