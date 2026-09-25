@@ -1,5 +1,13 @@
 # @executor-js/sdk
 
+## 1.6.11
+
+### Patch Changes
+
+- [#2056](https://github.com/UsefulSoftwareCo/executor/pull/2056) [`2e5aa16`](https://github.com/UsefulSoftwareCo/executor/commit/2e5aa16bedb4ba74448b3f9338754764b40519a0) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Request every scope a resource advertises during OAuth scope discovery, bounded by an 8 KiB scope-string budget instead of a 100-scope count. Resources with many fine-grained scopes previously received a token missing the ones it needed. Health checks without a probe no longer replace a tool-sync failure verdict with "healthy".
+
+- [#2061](https://github.com/UsefulSoftwareCo/executor/pull/2061) [`4a08d8d`](https://github.com/UsefulSoftwareCo/executor/commit/4a08d8db6f74612e07f17494e222ff038d8af944) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Toolkit sessions no longer walk the whole workspace catalog on connect, search, or describe: the toolkit's access patterns narrow the tool rows core reads. Tools reads no longer wait on re-listing catalogs that are only older than the freshness TTL; those rebuild in the background while the read answers from the persisted rows. Stale-marked and config-revised catalogs still gate the read within the grace budget.
+
 ## 1.6.10
 
 ## 1.6.9
