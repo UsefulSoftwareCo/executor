@@ -142,7 +142,7 @@ function requirements(slots: AccountSlots, database?: typeof DeclaredRequirement
     }
     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
       accounts: Object.fromEntries(accounts),
-      capabilities: { skills: true },
+      capabilities: { skills: true, toolIndex: true },
       ...(database === undefined ? {} : { database }),
     }).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
   });

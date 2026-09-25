@@ -118,7 +118,27 @@ test("sources without summaries or describe are reduced from their list", async 
   assert.deepEqual(calls, ["list", "list"]);
 });
 
-test("hosts reduce a full inspection from a build that ignores the tool filter", () => {
+test("builds declare that they accept inspect detail and tool filters", async () => {
+  const handler = createAppHandler(defineApp({ accounts: {} }, async () => ({})));
+  const response = Schema.decodeUnknownSync(HostResponse)(
+    await (
+      await handler(
+        new Request("https://synthetic.test/dispatch", {
+          method: "POST",
+          body: JSON.stringify({ operation: "requirements" }),
+        }),
+        hostContext({}),
+      )
+    ).json(),
+  );
+  assert.equal(response.ok, true);
+  assert.deepEqual((response.ok ? response.value : {}) as Record<string, unknown>, {
+    accounts: {},
+    capabilities: { skills: true, toolIndex: true },
+  });
+});
+
+test("hosts keep only the requested tools from an inspection", () => {
   const all = [tool("queries.a"), tool("queries.b"), tool("mutations.c")];
   assert.deepEqual(
     selectTools(["queries.b", "queries.missing"])(all).map((tool) => tool.name),

@@ -706,71 +706,112 @@ test("reading a queued workflow recovers dispatch interrupted after the durable 
     ).pipe(Effect.provide(services)),
   ));
 
+const indexedCatalog = (toolIndex: boolean) =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const zeta = {
+      name: "queries.zeta",
+      description: "Last",
+      inputSchema: { type: "object" },
+    };
+    const alpha = {
+      name: "mutations.alpha",
+      description: "First",
+      readOnly: false,
+      inputSchema: { type: "object", required: ["id"] },
+    };
+    const options = yield* fixture({
+      ...runtime,
+      build: (input) =>
+        runtime.build(input).pipe(
+          Effect.map((built) => ({
+            ...built,
+            requirements: {
+              ...built.requirements,
+              ...(toolIndex ? { capabilities: { skills: true, toolIndex: true } as const } : {}),
+            },
+          })),
+        ),
+      index: () =>
+        Effect.sync(() => {
+          calls.push("index");
+          return [
+            { name: zeta.name, description: zeta.description },
+            { name: alpha.name, description: alpha.description, readOnly: false },
+          ];
+        }),
+      inspect: ({ tools }) =>
+        Effect.sync(() => {
+          calls.push(tools === undefined ? "inspect" : `inspect:${tools.join(",")}`);
+          return tools === undefined
+            ? [zeta, alpha]
+            : [zeta, alpha].filter((tool) => tools.includes(tool.name));
+        }),
+    });
+    const executor = yield* createExecutor(options);
+    const { app } = yield* executor.apps.deploy({ owner, name: "Indexed", files });
+    const account = yield* executor.accounts.add({
+      owner,
+      provider: app.requirements.accounts.service!.provider,
+      method: "key",
+      label: "Native",
+      fields: Redacted.make({ token: "synthetic-token" }),
+    });
+    const profile = yield* executor.apps.profiles.create({
+      app: app.id,
+      owner,
+      subject: "alice",
+      idempotencyKey: "index",
+      accounts: { service: account.id },
+    });
+    const index = yield* executor.tools.index({ app: app.id, profile: profile.id });
+    assert.deepEqual(
+      index.items.map((tool) => [tool.name, tool.app, "inputSchema" in tool]),
+      [
+        ["mutations.alpha", app.id, false],
+        ["queries.zeta", app.id, false],
+      ],
+    );
+    assert.equal(index.profile, profile.id);
+    const tool = yield* executor.tools.get({
+      app: app.id,
+      profile: profile.id,
+      tool: ToolName.make("queries.zeta"),
+    });
+    assert.deepEqual(tool.inputSchema, { type: "object" });
+    assert.equal(tool.deployment, index.deployment);
+    const missing = yield* Effect.flip(
+      executor.tools.get({
+        app: app.id,
+        profile: profile.id,
+        tool: ToolName.make("queries.missing"),
+      }),
+    );
+    assert.ok(Schema.is(ToolNotFound)(missing));
+    return calls;
+  }).pipe(Effect.provide(services), Effect.scoped);
+
 test(
-  "the index lists tools without schemas and get describes one named tool",
+  "builds declaring toolIndex list summaries and describe only the named tool",
   { timeout: 10_000 },
   () =>
     Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const requested: (readonly string[] | undefined)[] = [];
-          const options = yield* fixture({
-            ...runtime,
-            index: () =>
-              Effect.succeed([
-                { name: "queries.zeta", description: "Last" },
-                { name: "mutations.alpha", description: "First", readOnly: false },
-              ]),
-            inspect: ({ tools }) =>
-              Effect.sync(() => {
-                requested.push(tools);
-                return tools?.includes("queries.zeta")
-                  ? [{ name: "queries.zeta", description: "Last", inputSchema: { type: "object" } }]
-                  : [];
-              }),
-          });
-          const executor = yield* createExecutor(options);
-          const { app } = yield* executor.apps.deploy({ owner, name: "Indexed", files });
-          const account = yield* executor.accounts.add({
-            owner,
-            provider: app.requirements.accounts.service!.provider,
-            method: "key",
-            label: "Native",
-            fields: Redacted.make({ token: "synthetic-token" }),
-          });
-          const profile = yield* executor.apps.profiles.create({
-            app: app.id,
-            owner,
-            subject: "alice",
-            idempotencyKey: "index",
-            accounts: { service: account.id },
-          });
-          const index = yield* executor.tools.index({ app: app.id, profile: profile.id });
-          assert.deepEqual(
-            index.items.map((tool) => [tool.name, tool.app, "inputSchema" in tool]),
-            [
-              ["mutations.alpha", app.id, false],
-              ["queries.zeta", app.id, false],
-            ],
-          );
-          assert.equal(index.profile, profile.id);
-          const tool = yield* executor.tools.get({
-            app: app.id,
-            profile: profile.id,
-            tool: ToolName.make("queries.zeta"),
-          });
-          assert.deepEqual(tool.inputSchema, { type: "object" });
-          assert.equal(tool.deployment, index.deployment);
-          const missing = yield* Effect.flip(
-            executor.tools.get({
-              app: app.id,
-              profile: profile.id,
-              tool: ToolName.make("queries.missing"),
-            }),
-          );
-          assert.ok(Schema.is(ToolNotFound)(missing));
-          assert.deepEqual(requested, [["queries.zeta"], ["queries.missing"]]);
-        }).pipe(Effect.provide(services)),
+      indexedCatalog(true).pipe(
+        Effect.map((calls) =>
+          assert.deepEqual(calls, ["index", "inspect:queries.zeta", "inspect:queries.missing"]),
+        ),
+      ),
+    ),
+);
+
+// Earlier builds decode host requests strictly and reject inspect detail and tools.
+test(
+  "earlier builds only receive plain inspection; the host reduces their catalog",
+  { timeout: 10_000 },
+  () =>
+    Effect.runPromise(
+      indexedCatalog(false).pipe(
+        Effect.map((calls) => assert.deepEqual(calls, ["inspect", "inspect", "inspect"])),
       ),
     ),
 );

@@ -78,7 +78,13 @@ export type DeclaredProvider = typeof DeclaredProvider.Type;
 /** Account slots available without binding accounts or evaluating the app factory. */
 export const DeclaredRequirements = Schema.Struct({
   /** Protocol support of this retained framework build, not an author-declared requirement. */
-  capabilities: Schema.optionalKey(Schema.Struct({ skills: Schema.Literal(true) })),
+  capabilities: Schema.optionalKey(
+    Schema.Struct({
+      skills: Schema.Literal(true),
+      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
+      toolIndex: Schema.optionalKey(Schema.Literal(true)),
+    }),
+  ),
   database: Schema.optionalKey(DatabaseSchema),
   accounts: Schema.Record(
     Schema.NonEmptyString,
@@ -159,7 +165,7 @@ export const HostedToolSummary = HostedTool.mapFields(
 );
 export type HostedToolSummary = typeof HostedToolSummary.Type;
 
-/** Inspection commands. Earlier builds ignore detail and tools, so hosts reduce their results. */
+/** Inspection commands. Send detail or tools only to builds that declare toolIndex. */
 export const inspectCommand = (tools?: readonly string[]) =>
   tools === undefined
     ? ({ operation: "inspect" } as const)
@@ -178,9 +184,9 @@ export const HostRequest = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("requirements") }),
   Schema.Struct({
     operation: Schema.Literal("inspect"),
-    /** Omit schemas. Earlier builds ignore this and return full tools, which hosts reduce. */
+    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
     detail: Schema.optionalKey(Schema.Literal("summary")),
-    /** Describe only these tools. Earlier builds ignore this and hosts filter the full list. */
+    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
     tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
   }),
   Schema.Struct({ operation: Schema.Literal("skills") }),

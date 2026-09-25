@@ -1,4 +1,9 @@
-import { ProviderError, SkillLoadFailed } from "apps/contracts";
+import {
+  ProviderError,
+  SkillLoadFailed,
+  type HostedTool,
+  type HostedToolSummary,
+} from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
 import { type Crypto, Effect, Match, Redacted, Result, Schema } from "effect";
@@ -267,6 +272,14 @@ const runtimeFailure = (
     }),
   );
 
+/** Reduce a full description from a build that cannot omit schemas itself. */
+const summarize = ({
+  inputSchema: _input,
+  outputSchema: _output,
+  _meta,
+  ...summary
+}: HostedTool): HostedToolSummary => summary;
+
 /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
 export const makeTools = (
   storage: ExecutorDatabase,
@@ -283,11 +296,13 @@ export const makeTools = (
 ) => {
   const db = database(storage);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
-  /** Evaluate the selected profile's live catalog. Earlier builds may describe more than asked. */
+  /** Evaluate the selected profile's live catalog. */
   const evaluate = <A, R>(
     input: Parameters<Executor["tools"]["index"]>[0],
     read: (
       options: Parameters<typeof runtime.index>[0],
+      /** Earlier builds reject index and filtered inspection; they only describe every tool. */
+      toolIndex: boolean,
     ) => Effect.Effect<A, Effect.Error<ReturnType<typeof runtime.index>>, R>,
   ) =>
     Effect.gen(function* () {
@@ -300,12 +315,15 @@ export const makeTools = (
         "executor.deployment.id": state.deployment.id,
         "executor.build.id": state.deployment.build,
       });
-      const value = yield* read({
-        app: state.app.id,
-        build: state.deployment.build,
-        ...context,
-        ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id, state) }),
-      }).pipe(
+      const value = yield* read(
+        {
+          app: state.app.id,
+          build: state.deployment.build,
+          ...context,
+          ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id, state) }),
+        },
+        state.deployment.requirements.capabilities?.toolIndex === true,
+      ).pipe(
         Effect.mapError((error) =>
           Schema.is(ProviderError)(error)
             ? appProviderFailure(state, error)
@@ -355,7 +373,13 @@ export const makeTools = (
           state,
           catalog,
           value: tools,
-        } = yield* evaluate(input, (options) => runtime.index(options));
+        } = yield* evaluate(input, (options, toolIndex) =>
+          toolIndex
+            ? runtime.index(options)
+            : runtime
+                .inspect(options)
+                .pipe(Effect.map((tools) => tools.map((tool) => summarize(tool)))),
+        );
         return {
           ...catalog,
           items: [...tools]
@@ -370,8 +394,8 @@ export const makeTools = (
       }).pipe(Effect.withSpan("sdk.tools.index")),
     get: (input: Parameters<Executor["tools"]["get"]>[0]) =>
       Effect.gen(function* () {
-        const { state, value: tools } = yield* evaluate(input, (options) =>
-          runtime.inspect({ ...options, tools: [input.tool] }),
+        const { state, value: tools } = yield* evaluate(input, (options, toolIndex) =>
+          runtime.inspect(toolIndex ? { ...options, tools: [input.tool] } : options),
         );
         const tool = tools.find((tool) => tool.name === input.tool);
         if (tool === undefined)
