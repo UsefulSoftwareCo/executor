@@ -1,6 +1,5 @@
 import { ProfileErrors } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
-import { ExecutionLimitReached, ExecutionAdmissionUnavailable } from "./execution-admission.ts";
 /** Account-dependent discovery and execution within a configured app. */
 import {
   AccountNotFound,
@@ -118,8 +117,6 @@ export const HostedTools = HttpApiGroup.make("tools")
         ToolPolicyFailed,
         RequestInvalid,
         OrganizationForbidden,
-        ExecutionLimitReached,
-        ExecutionAdmissionUnavailable,
       ],
     }).annotate(RequiredAction, "run"),
   )

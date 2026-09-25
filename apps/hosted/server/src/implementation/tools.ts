@@ -1,7 +1,5 @@
 import { authorizeApp, authorizeTool } from "./authorization.ts";
 import { permitsTool } from "@executor-js/authorization";
-import { ExecutionAdmission } from "../contracts/execution-admission.ts";
-import { CurrentOrganization } from "../contracts/organization.ts";
 import { ToolApprovalRequired, ToolNotFound, type Executor } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -58,7 +56,6 @@ export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
       yield* authorizeTool(input.app, input.tool);
       const executor = yield* Effect.flatten(HostedExecutor);
       yield* selectedApp(executor, owner, input.app, input.profile);
-      yield* (yield* ExecutionAdmission)((yield* CurrentOrganization).organization);
       const result = yield* executor.tools.call(input);
       if (result.status === "approval-required")
         return yield* new ToolApprovalRequired({

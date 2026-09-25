@@ -57,7 +57,7 @@ export const autumnLive = (options: AutumnOptions) =>
                   .execute(request)
                   .pipe(Effect.mapError((cause) => failed("transport", cause)));
                 yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
-                // Autumn's 202 check response can represent fail-open admission. Require a confirmed result.
+                // Require confirmed provider responses, never queued or fail-open answers.
                 if (response.status !== 200) return { status: response.status } as const;
                 const json = yield* response.json.pipe(
                   Effect.mapError((cause) => failed("response", cause, response.status)),
@@ -107,7 +107,6 @@ export const autumnLive = (options: AutumnOptions) =>
           AutumnRequests.listPlans,
           AutumnResponses.listPlans,
         ),
-        check: post("check", "balances.check", AutumnRequests.check, AutumnResponses.check),
         updateBalance: post(
           "updateBalance",
           "balances.update",

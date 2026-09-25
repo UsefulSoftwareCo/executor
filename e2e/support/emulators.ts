@@ -214,10 +214,7 @@ const make = Effect.gen(function* () {
       readonly status: "active" | "trialing" | "scheduled" | "expired";
     }) =>
       Effect.gen(function* () {
-        const match =
-          /^(executor-next-[a-z0-9-]+?)-(free|free-pay-as-you-go|team|enterprise)$/.exec(
-            input.planId,
-          );
+        const match = /^(executor-next-[a-z0-9-]+?)-(free|team|enterprise)$/.exec(input.planId);
         if (!match?.[1])
           return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
         yield* emulatorRequest(

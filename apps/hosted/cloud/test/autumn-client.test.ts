@@ -27,12 +27,11 @@ const usage = { feature_id: "executions", usage: 2, remaining: 98, unlimited: fa
 const decodedUsage = { featureId: "executions", usage: 2, remaining: 98, unlimited: false };
 const input = {
   customerId: "fixture",
-  featureId: "executions",
-  requiredBalance: 1,
-  sendEvent: true,
+  featureId: "members",
+  usage: 3,
 };
 
-test("seven operations preserve wire fields, API version and emulator path, and trace each round trip without credentials", async () => {
+test("six operations preserve wire fields, API version and emulator path, and trace each round trip without credentials", async () => {
   const requests: Array<{ path: string; body: unknown }> = [];
   const spans: Tracer.NativeSpan[] = [];
   const responses: Record<string, unknown> = {
@@ -53,7 +52,6 @@ test("seven operations preserve wire fields, API version and emulator path, and 
         },
       ],
     },
-    "balances.check": { allowed: true, balance: usage },
     "balances.update": { success: true },
     "billing.attach": { payment_url: "https://checkout.example.test/fixture" },
     "billing.open_customer_portal": { url: "https://billing.example.test/fixture" },
@@ -96,7 +94,6 @@ test("seven operations preserve wire fields, API version and emulator path, and 
           },
         ],
       });
-      assert.deepEqual(yield* client.check(input), { allowed: true, balance: decodedUsage });
       assert.deepEqual(
         yield* client.updateBalance({ customerId: "fixture", featureId: "members", usage: 3 }),
         { success: true },
@@ -147,15 +144,6 @@ test("seven operations preserve wire fields, API version and emulator path, and 
       body: { customer_id: "fixture", auto_enable_plan_id: "free" },
     },
     { path: "plans.list", body: { customer_id: "fixture" } },
-    {
-      path: "balances.check",
-      body: {
-        customer_id: "fixture",
-        feature_id: "executions",
-        required_balance: 1,
-        send_event: true,
-      },
-    },
     { path: "balances.update", body: { customer_id: "fixture", feature_id: "members", usage: 3 } },
     {
       path: "billing.attach",
@@ -177,7 +165,7 @@ test("seven operations preserve wire fields, API version and emulator path, and 
   // Each operation span has one client span for its HTTP round trip.
   const operations = spans.filter((span) => span.name !== "autumn.http");
   const exchanges = spans.filter((span) => span.name === "autumn.http");
-  assert.equal(operations.length, 7);
+  assert.equal(operations.length, 6);
   assert.ok(operations.every((span) => span.name.startsWith("autumn.")));
   assert.deepEqual(
     exchanges.map((span) => ({
@@ -204,15 +192,15 @@ test("seven operations preserve wire fields, API version and emulator path, and 
   assert.ok(!captured.includes(secret) && !captured.includes(capability));
 });
 
-test("errors, fail-open responses and malformed replies fail without retrying a consumption", async () => {
+test("errors, fail-open responses and malformed replies fail without retrying a seat update", async () => {
   for (const [status, body] of [
     [401, "{}"],
     [429, "{}"],
     [500, "{}"],
-    [202, JSON.stringify({ allowed: true, balance: usage })],
+    [202, JSON.stringify({ success: true })],
     [200, "not-json"],
-    [200, JSON.stringify({ allowed: true })],
-    [200, JSON.stringify({ allowed: true, balance: { ...usage, usage: secret } })],
+    [200, JSON.stringify({})],
+    [200, JSON.stringify({ success: secret })],
   ] as const) {
     let attempts = 0;
     const http = HttpClient.make((request) =>
@@ -222,7 +210,7 @@ test("errors, fail-open responses and malformed replies fail without retrying a 
       }),
     );
     const error = await Effect.runPromise(
-      Effect.flatMap(AutumnClient, (client) => client.check(input)).pipe(
+      Effect.flatMap(AutumnClient, (client) => client.updateBalance(input)).pipe(
         Effect.provide(autumnLive(options)),
         Effect.provideService(HttpClient.HttpClient, http),
         Effect.flip,
@@ -237,32 +225,18 @@ test("errors, fail-open responses and malformed replies fail without retrying a 
   }
 });
 
-test("provider denial and a missing balance stay explicit results; failed seat updates fail", async () => {
+test("unconfirmed seat updates fail", async () => {
   const http = HttpClient.make((request) =>
-    Effect.succeed(
-      HttpClientResponse.fromWeb(
-        request,
-        Response.json(
-          request.url.endsWith("balances.update")
-            ? { success: false }
-            : { allowed: false, balance: null },
-        ),
-      ),
-    ),
+    Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ success: false }))),
   );
-  await Effect.runPromise(
-    Effect.gen(function* () {
-      const client = yield* AutumnClient;
-      assert.deepEqual(yield* client.check(input), { allowed: false, balance: null });
-      const error = yield* client
-        .updateBalance({ customerId: "fixture", featureId: "members", usage: 3 })
-        .pipe(Effect.flip);
-      assert.equal(error.reason, "response");
-    }).pipe(
+  const error = await Effect.runPromise(
+    Effect.flatMap(AutumnClient, (client) => client.updateBalance(input)).pipe(
       Effect.provide(autumnLive(options)),
       Effect.provideService(HttpClient.HttpClient, http),
+      Effect.flip,
     ),
   );
+  assert.equal(error.reason, "response");
 });
 
 test("timeout and caller cancellation abort the transport and never retry", async () => {
@@ -291,7 +265,7 @@ test("timeout and caller cancellation abort the transport and never retry", asyn
             Effect.provide(autumnLive(options)),
             Effect.provideService(HttpClient.HttpClient, http),
           );
-          const fiber = yield* client.check(input).pipe(Effect.forkScoped);
+          const fiber = yield* client.updateBalance(input).pipe(Effect.forkScoped);
           yield* Deferred.await(started);
           if (mode === "timeout") yield* TestClock.adjust(autumnTimeout);
           else yield* Fiber.interrupt(fiber);
@@ -323,7 +297,7 @@ test("the real Fetch adapter does not follow redirects or send the key to the ne
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     const error = await Effect.runPromise(
-      Effect.flatMap(AutumnClient, (client) => client.check(input)).pipe(
+      Effect.flatMap(AutumnClient, (client) => client.updateBalance(input)).pipe(
         Effect.provide(
           autumnLive({
             ...options,
@@ -335,7 +309,7 @@ test("the real Fetch adapter does not follow redirects or send the key to the ne
       ),
     );
     assert.equal(error.status, 302);
-    assert.deepEqual(paths, ["/fixture/v1/balances.check"]);
+    assert.deepEqual(paths, ["/fixture/v1/balances.update"]);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>

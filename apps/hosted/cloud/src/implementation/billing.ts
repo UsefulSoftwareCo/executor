@@ -1,4 +1,3 @@
-import { ExecutionAdmissionUnavailable, ExecutionLimitReached } from "@executor-js/hosted-server";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingMembers } from "../infrastructure/billing-members.ts";
 import {
@@ -12,6 +11,12 @@ import { Cause, Effect, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/unstable/http";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
 import { autumnLive } from "./autumn-client.ts";
+import {
+  recordSeatPlan,
+  recordSeats,
+  seatCounts,
+  seatReconcileCandidates,
+} from "./billing-seats.ts";
 import { reportCloudFailure } from "./error-reporting.ts";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import {
@@ -37,6 +42,16 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
     return `Organization ${this.organization} was removed with billing customer ${this.customerId} left live`;
   }
 }
+
+type Subscriptions = {
+  readonly subscriptions: ReadonlyArray<{ readonly planId: string; readonly status: string }>;
+};
+/** Whether the customer currently holds one of these plans. */
+const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
+  customer.subscriptions.some(
+    (subscription) =>
+      plans.includes(subscription.planId) && ["active", "trialing"].includes(subscription.status),
+  );
 
 /** Resolve the selected Autumn environment once; each invocation owns its client. */
 export const billingLive = Effect.gen(function* () {
@@ -64,17 +79,13 @@ export const billingLive = Effect.gen(function* () {
       const customer = yield* use(
         autumn.getOrCreateCustomer({ customerId, autoEnablePlanId: catalog.free }),
       );
+      // Checkout returns here after Stripe settles, so a new seat plan joins the daily reconcile.
+      yield* members.use(
+        recordSeatPlan(organization, active(customer, [catalog.team, catalog.enterprise])),
+      );
       const plans = yield* use(autumn.listPlans({ customerId }));
-      const balance = customer.balances[catalog.executions];
       return yield* Schema.decodeUnknownEffect(BillingOverview)({
-        enterprise: customer.subscriptions.some(
-          (subscription) =>
-            subscription.planId === catalog.enterprise &&
-            ["active", "trialing"].includes(subscription.status),
-        ),
-        usage: balance
-          ? { used: balance.usage, remaining: balance.remaining, unlimited: balance.unlimited }
-          : null,
+        enterprise: active(customer, [catalog.enterprise]),
         plans: plans.list
           .filter(
             (plan) =>
@@ -99,9 +110,7 @@ export const billingLive = Effect.gen(function* () {
           }),
         subscriptions: customer.subscriptions
           .filter((subscription) =>
-            [catalog.free, catalog.payAsYouGo, catalog.team, catalog.enterprise].includes(
-              subscription.planId,
-            ),
+            [catalog.free, catalog.team, catalog.enterprise].includes(subscription.planId),
           )
           .map((subscription) => ({
             planId: subscription.planId,
@@ -118,28 +127,36 @@ export const billingLive = Effect.gen(function* () {
       );
       return { autumn, catalog, customerId, value };
     });
-  const syncSeats = (organization: OrganizationId) =>
+  /**
+   * Make Autumn hold the live member count. `changed` trusts the last confirmed
+   * count and skips the provider when it matches; `verify` always reads Autumn,
+   * which also repairs edits made there directly. A concurrent membership change
+   * can overwrite this job's value in Autumn, so each pass re-reads the live
+   * count after recording it and repeats until they agree.
+   */
+  const syncSeats = (organization: OrganizationId, mode: "changed" | "verify") =>
     Effect.gen(function* () {
-      const rows = yield* members.read(organization);
-      const row = rows[0];
-      if (row === undefined) return yield* new BillingUnavailable();
-      const { autumn, catalog, customerId, value } = yield* customer(organization);
-      // V1's pay-as-you-go plan meters executions only; it has no seat balance to report.
-      if (
-        value.subscriptions.some(
-          (subscription) =>
-            subscription.planId === catalog.payAsYouGo &&
-            ["active", "trialing"].includes(subscription.status),
-        )
-      )
-        return;
-      const balance = value.balances[catalog.members];
-      if (balance === undefined) return yield* new BillingUnavailable();
-      if (balance.usage !== row.count)
-        yield* use(
-          autumn.updateBalance({ customerId, featureId: catalog.members, usage: row.count }),
+      let current: { readonly count: number; readonly synced: number | null } | undefined =
+        yield* members.use(seatCounts(organization));
+      if (current === undefined) return yield* new BillingUnavailable();
+      if (mode === "changed" && current.synced === current.count) return;
+      for (let pass = 0; pass < 3; pass++) {
+        const count: number = current.count;
+        const { autumn, catalog, customerId, value } = yield* customer(organization);
+        const balance = value.balances[catalog.members];
+        if (balance === undefined) return yield* new BillingUnavailable();
+        if (balance.usage !== count)
+          yield* use(
+            autumn.updateBalance({ customerId, featureId: catalog.members, usage: count }),
+          );
+        const live: number | undefined = yield* members.use(
+          recordSeats(organization, count, active(value, [catalog.team, catalog.enterprise])),
         );
-    }).pipe(Effect.withSpan("billing.syncSeats"));
+        if (live === undefined || live === count) return;
+        current = { count: live, synced: count };
+      }
+      return yield* new BillingUnavailable();
+    }).pipe(Effect.withSpan("billing.syncSeats", { attributes: { mode } }));
   const cancel: typeof Billing.Service.cancel = (organization) =>
     Effect.gen(function* () {
       const { autumn, catalog } = yield* client;
@@ -184,50 +201,27 @@ export const billingLive = Effect.gen(function* () {
       );
     }).pipe(Effect.withSpan("billing.cancel"));
   const meter = BillingMeter.of({
-    consume: (organization) =>
-      Effect.gen(function* () {
-        const { autumn, catalog, customerId } = yield* customer(organization);
-        // Atomic check-and-consume prevents concurrent requests from overspending the allowance.
-        // No automatic retries: a lost response is not evidence that consumption failed.
-        const result = yield* use(
-          autumn.check({
-            customerId,
-            featureId: catalog.executions,
-            requiredBalance: 1,
-            sendEvent: true,
-          }),
-        );
-        if (
-          result.balance === null ||
-          result.balance === undefined ||
-          result.balance.featureId !== catalog.executions
-        )
-          return yield* new BillingUnavailable();
-        if (!result.allowed) return yield* new ExecutionLimitReached();
-      }).pipe(
-        Effect.catchTag("BillingUnavailable", () =>
-          Effect.fail(new ExecutionAdmissionUnavailable()),
-        ),
-        Effect.withSpan("billing.admitExecution"),
-      ),
     memberLimit: (organization) =>
       Effect.gen(function* () {
         const { catalog, value } = yield* customer(organization);
-        return value.subscriptions.some(
-          (subscription) =>
-            [catalog.team, catalog.enterprise].includes(subscription.planId) &&
-            ["active", "trialing"].includes(subscription.status),
-        )
+        return active(value, [catalog.team, catalog.enterprise])
           ? Number.POSITIVE_INFINITY
           : freeMembers;
       }),
-    syncSeats,
+    syncSeats: (organization) => syncSeats(organization, "changed"),
     reconcileSeats: Effect.gen(function* () {
-      const rows = yield* members.read();
-      yield* Effect.forEach(rows, (row) => syncSeats(row.organization), {
-        concurrency: 4,
-        discard: true,
-      });
+      const rows = yield* members.use(seatReconcileCandidates);
+      // One organization's failure must not stop the others; the job still reports it.
+      const failed = yield* Effect.forEach(
+        rows,
+        (row) =>
+          syncSeats(row.organization, "verify").pipe(
+            Effect.as(false),
+            Effect.catch(() => Effect.succeed(true)),
+          ),
+        { concurrency: 4 },
+      );
+      if (failed.includes(true)) return yield* new BillingUnavailable();
     }).pipe(Effect.withSpan("billing.reconcileSeats")),
   });
   return Layer.mergeAll(
@@ -238,7 +232,8 @@ export const billingLive = Effect.gen(function* () {
         overview,
         checkout: (organization, plan, returnUrl) =>
           Effect.gen(function* () {
-            yield* syncSeats(organization);
+            // A new plan bills the seats Autumn holds now, so confirm them with Autumn.
+            yield* syncSeats(organization, "verify");
             const current = yield* overview(organization);
             if (
               !current.plans.some(

@@ -13,7 +13,6 @@ import {
 } from "./infrastructure/organization-removal-workflow.ts";
 import { HostedExecutor } from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
-import { ExecutionAdmission } from "@executor-js/hosted-server";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { registryRoutes, gitRoutes } from "@executor-js/app-management";
 import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
@@ -204,7 +203,7 @@ export default Api.make(
     const billing = yield* billingLive.pipe(Effect.orDie);
     const meter = yield* BillingMeter.pipe(Effect.provide(billing));
     // One established schedule owns both independent background jobs. Each job
-    // reports its own failure so billing cannot prevent optional email delivery.
+    // reports its own failure so a workflow problem cannot prevent email delivery.
     yield* Cloudflare.Workers.cron("*/5 * * * *", () =>
       Effect.all(
         [
@@ -217,15 +216,20 @@ export default Api.make(
             Effect.withSpan("job.workflow.reconcile"),
             Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
           ),
-          meter.reconcileSeats.pipe(
-            reportErrors,
-            Effect.scoped,
-            Effect.withSpan("job.billing.reconcile"),
-            Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
-          ),
         ],
         { concurrency: 2, discard: true },
       ).pipe(lifetime.background),
+    );
+    // Membership changes sync seats through durable provisioning jobs. This daily
+    // pass only repairs what those jobs cannot see, such as edits made in Autumn.
+    yield* Cloudflare.Workers.cron("17 4 * * *", () =>
+      meter.reconcileSeats.pipe(
+        reportErrors,
+        Effect.scoped,
+        Effect.withSpan("job.billing.reconcile"),
+        Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
+        lifetime.background,
+      ),
     );
 
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
@@ -237,7 +241,6 @@ export default Api.make(
       HttpRouter.provideRequest(catalogLive(executorSkillFiles(authoring), document, egress)),
       Layer.provide(schedules),
       Layer.provide(billing),
-      Layer.provide(Layer.succeed(ExecutionAdmission, meter.consume)),
       Layer.provide(onboarding),
       Layer.provide(requireUserLive),
       Layer.provide(requireOrganizationLive),

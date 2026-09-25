@@ -11,26 +11,17 @@ import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import { Config, Clock, Effect, Layer, Schema, Semaphore } from "effect";
-import {
-  HostedExecutor,
-  ScheduledAuthority,
-  ScheduleWakeup,
-  ExecutionAdmission,
-} from "@executor-js/hosted-server";
+import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudExecutor } from "./executor.ts";
 import { AppDataSupervisor, AppDataSupervisorLive } from "./app-data.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudTelemetry } from "./telemetry.ts";
-import { billingLive } from "../implementation/billing.ts";
-import { BillingMeter } from "../contracts/billing-meter.ts";
 
 const makeScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
   const report = yield* cloudSentry;
   const resources = yield* cloudExecutor(yield* AppDataSupervisor, yield* cloudArtifactsTokensLive);
-  const billing = yield* billingLive;
-  const meter = yield* BillingMeter.pipe(Effect.provide(billing));
   const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
     Config.withDefault(defaultScheduleWorkerOptions.concurrency),
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Int.check(Schema.isGreaterThan(0)))),
@@ -45,10 +36,7 @@ const makeScheduleCoordinator = Effect.gen(function* () {
     const dispatch = yield* makeScheduleDispatch;
     let initialized = false;
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(
-        Effect.provide(resources),
-        Effect.provideService(ExecutionAdmission, meter.consume),
-      );
+      effect.pipe(Effect.provide(resources));
     const arm = alarms.withPermits(1)(
       provide(
         Effect.gen(function* () {

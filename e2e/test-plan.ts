@@ -318,6 +318,16 @@ export const scenarios = {
       local: na("Local uses pairing."),
     },
   },
+  seatOnlyBilling: {
+    fixtures: "actors",
+    file: "seat-only-billing.spec.ts",
+    title: "Seat-only billing runs HTTP and MCP without an execution balance",
+    targets: {
+      "self-host": na("Billing is cloud only."),
+      cloud: scheduled,
+      local: na("Billing is cloud only."),
+    },
+  },
   emptyStateBilling: {
     fixtures: "actors",
     file: "empty-state-billing.spec.ts",
