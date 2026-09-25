@@ -165,8 +165,9 @@ export const inventoryAtom = Atom.family((organization: OrganizationReference) =
 );
 /** Follow native pagination so search includes members beyond Better Auth's first page. */
 export const membersAtom = Atom.family((organizationId: OrganizationId) =>
-  BrowserAtoms.atom(
-    Effect.gen(function* () {
+  BrowserAtoms.atom((get) => {
+    const organization = get(organizationPresentationAtom(organizationId));
+    return Effect.gen(function* () {
       const first = yield* request("members", (options) =>
         organizationOperations(options).members(organizationId, 0),
       );
@@ -178,12 +179,17 @@ export const membersAtom = Atom.family((organizationId: OrganizationId) =>
         if (next.members.length === 0) break;
         members.push(...next.members);
       }
-      const invitations = yield* request("invitations", (options) =>
-        organizationOperations(options).invitations(organizationId),
-      );
+      // Presentation only selects which query to make; the server rechecks the
+      // current membership before returning any invitation credentials.
+      const invitations =
+        organization?.role === "owner" || organization?.role === "admin"
+          ? yield* request("invitations", (options) =>
+              organizationOperations(options).invitations(organizationId),
+            )
+          : [];
       return { members, invitations };
-    }),
-  ).pipe(Atom.refreshOnWindowFocus, acknowledgedQuery),
+    });
+  }).pipe(Atom.refreshOnWindowFocus, acknowledgedQuery),
 );
 /** Reuse pending invitations so failed email delivery can be retried safely. */
 export const inviteAtom = Atom.family((organizationId: OrganizationId) =>
