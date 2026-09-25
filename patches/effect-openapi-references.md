@@ -13,6 +13,5 @@ object and schema references.
 
 The patch contains the source change and its published JavaScript and types.
 It is local to the pinned Effect dependency; it has not been submitted upstream.
-An upstream proposal needs only the source change and the contract cases in
-`packages/app-templates/test/openapi-conversion.test.ts`, adapted to Effect's
-test harness. Remove the patch when an Effect release provides the hook.
+An upstream proposal needs only the source change and contract cases for the
+callback in Effect's test harness. Remove the patch when an Effect release provides the hook.

@@ -252,7 +252,6 @@
         "@types/react-dom": "^19.2.0",
         "@vitejs/plugin-react": "^6.0.0",
         "tailwindcss": "^4.2.1",
-        "tsx": "^4.23.13",
         "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
         "vite-plus": "0.3.3",
       },
@@ -335,7 +334,6 @@
         "@types/react-dom": "^19.2.0",
         "@vitejs/plugin-react": "^6.0.0",
         "tailwindcss": "^4.2.1",
-        "tsx": "^4.23.13",
         "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
         "vite-plus": "0.3.3",
       },
@@ -541,8 +539,6 @@
         "@effect/sql-pg": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pg@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-        "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect/@effect/vitest@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-        "vitest": "^5.0.0",
       },
       "peerDependencies": {
         "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
@@ -4716,8 +4712,6 @@
     "ts-toolbelt": ["ts-toolbelt@9.6.0", "", {}, "sha512-nsZd8ZeNUzukXPlJmTBwUAuABDe/9qtVDelJeT/qW0ow3ZS3BsQJtNkan1802aM9Uf68/Y8ljw86Hu0h5IUW3w=="],
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
-
-    "tsx": ["tsx@4.23.13", "", { "dependencies": { "esbuild": "~0.28.0" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "bin": { "tsx": "dist/cli.mjs" } }, "sha512-BL5MGkRln6aDYhb0xbQlEAGw743BaZYWdbWtdJOBriYJboKgUUYCadFp2/FpBBZquBC/ezNBn7wMMPx7FDZUDw=="],
 
     "tsyringe": ["tsyringe@4.10.0", "", { "dependencies": { "tslib": "^1.9.3" } }, "sha512-axr3IdNuVIxnaK5XGEUFTu3YmAQ6lllgrvqfEoR16g/HGnYY/6We4oWENtAnzK6/LpJ2ur9PAb80RBt7/U4ugw=="],
 

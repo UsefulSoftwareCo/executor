@@ -43,6 +43,15 @@ Verify fresh setup, retained data, repeat runs, rollback/retry, and compatibilit
 with the running server before release. Use the real database adapter for each
 affected product. See [storage migrations](notes/storage.md#current-baseline-and-migrations).
 
+## Tests are E2E only
+
+The only tests in this repository live in `e2e/`. Every test is an E2E scenario
+that drives a real server through HTTP, MCP, the CLI or the browser. Unit tests
+are banned: do not add `*.test.*`, `*.spec.*`, type tests, `test/` or
+`__tests__/` directories anywhere else, including packages, scripts and helpers,
+and do not import application implementations into tests. `bun run check` fails
+on any test outside `e2e/`.
+
 ## Checks
 
 For application features, fixes, and behavior-preserving refactors, use the
@@ -83,8 +92,8 @@ Blacksmith runners run five check jobs. Local and Cloud E2E jobs use
 product servers and browsers. The load job uses a 6-vCPU M4 Mac for its
 single-threaded PGlite workload. Static checks use 4 vCPUs.
 
-- `check` runs `bun run check`: the format check, `oxlint`, the typecheck and
-  the e2e boundary check.
+- `check` runs `bun run check`: the format check, `oxlint`, the typecheck, the
+  no-tests-outside-`e2e/` check and the e2e boundary check.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
   under `xvfb-run` and `e2e:self-host` headlessly on macOS. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold.
@@ -95,8 +104,7 @@ single-threaded PGlite workload. Static checks use 4 vCPUs.
   Worker, a throwaway Postgres container and the service emulators, so it needs
   Docker but no credentials.
 
-The check job also verifies bounded OTLP export, partial rejection, privacy,
-seven-day local retrieval, Sentry and usage receivers. Cloud scenarios verify
+Cloud scenarios verify
 API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.
 Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
 and teardown. The release workflow builds and tests Docker images on release PRs
