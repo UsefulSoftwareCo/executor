@@ -1,5 +1,7 @@
+import { env } from "cloudflare:workers";
+import { ADMIN_MFA_COOKIE, readAdminMfaProof } from "../auth/admin-mfa-proof";
 import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
-import { Effect, Layer } from "effect";
+import { Clock, Effect, Layer } from "effect";
 
 import {
   AccountProvider,
@@ -75,6 +77,16 @@ const AccountProviderMiddleware = HttpRouter.middleware<{
         // session is `""` (vs `SessionAuthLive`, which keeps the inbound cookie).
         const session: Session | null = resolved ? sessionFromSealed(resolved, "") : null;
 
+        const proof = resolved
+          ? yield* readAdminMfaProof(
+              env.WORKOS_COOKIE_PASSWORD,
+              { userId: resolved.userId, sessionId: resolved.sessionId },
+              "verified",
+              request.cookies[ADMIN_MFA_COOKIE],
+              yield* Clock.currentTimeMillis,
+            )
+          : null;
+
         // Built inside the request body so the WorkOS account service closes
         // over the per-request `UserStoreService` (postgres socket) supplied by
         // the combined request-scoped layer. `local` keeps that promise: the
@@ -84,7 +96,7 @@ const AccountProviderMiddleware = HttpRouter.middleware<{
           AccountProvider.asEffect(),
           workosAccountProvider.pipe(
             Layer.provide(ApiKeyService.WorkOS),
-            Layer.provide(Layer.succeed(AccountCaller)({ session })),
+            Layer.provide(Layer.succeed(AccountCaller)({ session, adminVerified: proof !== null })),
           ),
           { local: true },
         );

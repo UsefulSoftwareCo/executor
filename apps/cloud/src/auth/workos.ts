@@ -431,6 +431,17 @@ const make = Effect.gen(function* () {
       tryPromiseService(() => fn(workos)),
     );
 
+  // MFA SDK errors can contain response details. Keep only the status before
+  // logging, so enrollment secrets and submitted codes cannot enter a cause.
+  const useMfa = <A>(op: string, fn: (wos: WorkOS) => Promise<A>) =>
+    tryPromiseService(() => fn(workos)).pipe(
+      Effect.mapError(workosErrorFromFailure),
+      Effect.tapError((error) =>
+        Effect.logWarning(`workos.${op} failed`, { status: error.status }),
+      ),
+      Effect.withSpan(`workos.${op}`),
+    );
+
   const authenticateSealedSession = (sessionData: string) =>
     Effect.gen(function* () {
       if (!sessionData) return null;
@@ -482,6 +493,31 @@ const make = Effect.gen(function* () {
     });
 
   return {
+    /** List factors belonging to this user; callers cannot supply another user's factor. */
+    listMfaFactors: (userId: string) =>
+      useMfa("userManagement.listAuthFactors", (wos) =>
+        wos.userManagement
+          .listAuthFactors({ userId, limit: 100 })
+          .then((page) => page.autoPagination()),
+      ),
+    /** Begin AuthKit's user-bound TOTP enrollment. The secret is returned only to that user. */
+    enrollMfa: (userId: string, email: string) =>
+      useMfa("userManagement.enrollAuthFactor", (wos) =>
+        wos.userManagement.enrollAuthFactor({
+          userId,
+          type: "totp",
+          totpIssuer: "Executor",
+          totpUser: email,
+        }),
+      ),
+    /** Challenge an already resolved factor. */
+    challengeMfa: (authenticationFactorId: string) =>
+      useMfa("mfa.challengeFactor", (wos) => wos.mfa.challengeFactor({ authenticationFactorId })),
+    /** Verify a TOTP code with WorkOS; never log the code or factor secret. */
+    verifyMfa: (authenticationChallengeId: string, code: string) =>
+      useMfa("mfa.verifyChallenge", (wos) =>
+        wos.mfa.verifyChallenge({ authenticationChallengeId, code }),
+      ),
     getAuthorizationUrl: (redirectUri: string, state?: string) =>
       workos.userManagement.getAuthorizationUrl({
         provider: "authkit",

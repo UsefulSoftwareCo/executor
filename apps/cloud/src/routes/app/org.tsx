@@ -1,3 +1,4 @@
+import { AdminVerification } from "../../web/components/admin-verification";
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Exit } from "effect";
@@ -56,6 +57,14 @@ type DomainData = {
 };
 
 function OrgPage() {
+  return (
+    <AdminVerification>
+      <OrganizationSettings />
+    </AdminVerification>
+  );
+}
+
+function OrganizationSettings() {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       {/* Shared members / roles / invite / org-name surface. */}

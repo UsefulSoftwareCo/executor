@@ -31,7 +31,7 @@ import {
 // the same `WorkOSClient.authenticateSealedSession` the rest of cloud uses.
 export class AccountCaller extends Context.Service<
   AccountCaller,
-  { readonly session: Session | null }
+  { readonly session: Session | null; readonly adminVerified?: boolean }
 >()("@executor-js/cloud/AccountCaller") {}
 
 // ---------------------------------------------------------------------------
@@ -145,6 +145,16 @@ export const workosAccountProvider: Layer.Layer<
     // reconciler has landed the change.
     const requireAdmin = (org: { readonly memberRole: "admin" | "member" }) =>
       org.memberRole === "admin" ? Effect.void : Effect.fail(new AccountForbidden());
+
+    // Settings mutations require MFA; shared member reads and key management do not.
+    const requireVerifiedSettings = (org: { readonly memberRole: "admin" | "member" }) =>
+      Effect.gen(function* () {
+        yield* requireAdmin(org);
+        if (caller.adminVerified !== true)
+          return yield* new AccountForbidden({
+            message: "Verify your identity to change organization settings.",
+          });
+      });
 
     // Ownership check so an admin can't mutate a membership id from another
     // org: the id must name a row the mirror holds for THIS org (any status —
@@ -390,7 +400,7 @@ export const workosAccountProvider: Layer.Layer<
       inviteMember: (headers, body) =>
         Effect.gen(function* () {
           const { org } = yield* requireOrganization(headers);
-          yield* requireAdmin(org);
+          yield* requireVerifiedSettings(org);
           yield* reserveMemberSlot(org.id);
           const invitation = yield* workos
             .sendInvitation({
@@ -422,7 +432,7 @@ export const workosAccountProvider: Layer.Layer<
       removeMember: (headers, membershipId) =>
         Effect.gen(function* () {
           const { org } = yield* requireOrganization(headers);
-          yield* requireAdmin(org);
+          yield* requireVerifiedSettings(org);
           const membership = yield* assertMembershipInOrg(org.id, membershipId);
           yield* workos
             .deleteOrgMembership(membershipId)
@@ -453,7 +463,7 @@ export const workosAccountProvider: Layer.Layer<
       updateMemberRole: (headers, membershipId, roleSlug) =>
         Effect.gen(function* () {
           const { org } = yield* requireOrganization(headers);
-          yield* requireAdmin(org);
+          yield* requireVerifiedSettings(org);
           yield* assertMembershipInOrg(org.id, membershipId);
           const updated = yield* workos
             .updateOrgMembershipRole(membershipId, roleSlug)
@@ -467,7 +477,7 @@ export const workosAccountProvider: Layer.Layer<
       updateOrgName: (headers, name) =>
         Effect.gen(function* () {
           const { org } = yield* requireOrganization(headers);
-          yield* requireAdmin(org);
+          yield* requireVerifiedSettings(org);
           const updated = yield* workos
             .updateOrganization(org.id, name)
             .pipe(Effect.catchTag("WorkOSError", toAccountError));
