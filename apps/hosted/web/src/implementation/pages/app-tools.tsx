@@ -153,7 +153,10 @@ function ToolRunner({
   const [error, setError] = useState<string | AppProviderFailed>();
   const inputId = useId();
   return (
-    <div className="tool-runner flex flex-col gap-4 mt-6 min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere [&_pre]:text-[11px] [&_pre]:bg-muted [&_pre]:p-[12px] [&_pre]:rounded-[6px]">
+    <div
+      data-product-private
+      className="tool-runner flex flex-col gap-4 mt-6 min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere [&_pre]:text-[11px] [&_pre]:bg-muted [&_pre]:p-[12px] [&_pre]:rounded-[6px]"
+    >
       <form
         onSubmit={async (event) => {
           event.preventDefault();

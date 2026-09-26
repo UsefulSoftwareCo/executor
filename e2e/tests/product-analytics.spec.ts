@@ -1,6 +1,8 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema, Schedule } from "effect";
 import { scenarios } from "../test-plan.ts";
+import { App } from "../support/contracts.ts";
+import { createProfile } from "../support/profiles.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Evidence } from "../support/evidence.ts";
@@ -161,7 +163,7 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
             const region = document.createElement("section");
             region.id = "replay-fields";
             region.innerHTML =
-              '<div title="VISIBLE_ATTRIBUTE">VISIBLE_TEXT</div><a href="/visible-link">VISIBLE_LINK</a><form><label>Account name<input aria-label="Replay account name" value="VISIBLE_INPUT"></label><label>Password<input aria-label="Replay password" type="password" value="PRIVATE_PASSWORD"></label><label>Token<input aria-label="Replay token" type="password" data-private value="PRIVATE_TOKEN"></label><label>Numeric credential<input type="number" data-private value="9876543210123"></label><textarea data-private>PRIVATE_JSON</textarea></form><pre>VISIBLE_CODE</pre><div data-private title="PRIVATE_ATTRIBUTE" data-secret="PRIVATE_DATA" style="--secret:PRIVATE_STYLE">PRIVATE_TEXT<code>PRIVATE_SECRET</code></div><div data-product-private>PRIVATE_PRODUCT</div><iframe srcdoc="VISIBLE_FRAME<input type=&quot;password&quot; value=&quot;PRIVATE_FRAME_PASSWORD&quot;><span data-private>PRIVATE_FRAME_SECRET</span>"></iframe>';
+              '<div title="VISIBLE_ATTRIBUTE">VISIBLE_TEXT</div><a href="/visible-link">VISIBLE_LINK</a><form><label>Account name<input aria-label="Replay account name" value="PRIVATE_INPUT"></label><label>Password<input aria-label="Replay password" type="password" value="PRIVATE_PASSWORD"></label><label>Token<input aria-label="Replay token" type="password" data-private value="PRIVATE_TOKEN"></label><label>Numeric credential<input type="number" data-private value="9876543210123"></label><textarea data-private>PRIVATE_JSON</textarea></form><textarea aria-label="Replay textarea">PRIVATE_TEXTAREA</textarea><pre>VISIBLE_CODE</pre><div data-private title="PRIVATE_ATTRIBUTE" data-secret="PRIVATE_DATA" style="--secret:PRIVATE_STYLE">PRIVATE_TEXT<code>PRIVATE_SECRET</code></div><div data-product-private>PRIVATE_PRODUCT</div><iframe srcdoc="VISIBLE_FRAME<input type=&quot;password&quot; value=&quot;PRIVATE_FRAME_PASSWORD&quot;><span data-private>PRIVATE_FRAME_SECRET</span>"></iframe>';
             document.body.append(region);
             console.log("PRIVATE_CONSOLE");
           }),
@@ -181,15 +183,59 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
               page.getByRole("textbox", { name: "Replay token" }).fill("PRIVATE_TOKEN_REVEALED"),
             )
             .then(() =>
-              page.getByRole("textbox", { name: "Replay account name" }).fill("VISIBLE_EDIT"),
+              page.getByRole("textbox", { name: "Replay account name" }).fill("PRIVATE_INPUT_EDIT"),
             ),
         );
-        yield* browser.use("Wait for the readable input update", () =>
-          expect
-            .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })
-            .toContain("VISIBLE_EDIT"),
-        );
+        yield* recordedAfter(snapshots().length);
         const fieldsReplay = [...snapshots()];
+        const deployed = yield* api.request(
+          actors.owner,
+          "POST",
+          `/api/organizations/${actors.organization.id}/apps/deploy`,
+          {
+            name: "Replay privacy probe",
+            files: [
+              {
+                path: "index.ts",
+                content: `
+import { defineApp, query, object, string } from "apps";
+export default defineApp({ accounts: {} }, async () => ({ queries: {
+  echo: query({ input: object({ message: string() }) }, async (_, input) => {
+    if (input.message === "PRIVATE_TOOL_FAILURE") throw new Error("PRIVATE_TOOL_ERROR");
+    return { message: input.message, result: "PRIVATE_TOOL_RESULT" };
+  })
+} }));`,
+              },
+            ],
+          },
+        );
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const app = yield* body(App, deployed);
+        yield* createProfile(
+          actors.owner,
+          `/api/organizations/${actors.organization.id}/apps/${app.id}`,
+        );
+        yield* open(`/org/${actors.organization.slug}/apps/${app.id}?view=tools`);
+        yield* browser.use("Run a tool with private input", (page) =>
+          page
+            .getByLabel("Input", { exact: true })
+            .fill(JSON.stringify({ message: "PRIVATE_TOOL_INPUT" }))
+            .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click())
+            .then(() => page.getByRole("region", { name: "Tool result" }).waitFor())
+            .then(() => page.getByRole("region", { name: "Tool result" }).innerText())
+            .then((result) => expect(result).toContain("PRIVATE_TOOL_RESULT")),
+        );
+        yield* recordedAfter(snapshots().length);
+        yield* browser.checkpoint("tool-result-live");
+        const toolError = yield* browser.use("Run a failing tool", (page) =>
+          page
+            .getByLabel("Input", { exact: true })
+            .fill(JSON.stringify({ message: "PRIVATE_TOOL_FAILURE" }))
+            .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click())
+            .then(() => page.getByRole("alert").innerText()),
+        );
+        yield* recordedAfter(snapshots().length);
+        yield* browser.checkpoint("tool-error-live");
         yield* open(`/org/${actors.organization.slug}/api-keys`);
         yield* browser.use("Wait for excluded API keys page", (page) =>
           page.getByRole("heading", { name: "API keys", exact: true }).waitFor(),
@@ -206,7 +252,14 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         yield* recordedAfter(returning);
         expect(capture.failures).toEqual([]);
         const recorded = JSON.stringify(snapshots());
+        expect(toolError.length).toBeGreaterThan(0);
         for (const privateValue of [
+          toolError,
+          "PRIVATE_INPUT",
+          "PRIVATE_TEXTAREA",
+          "PRIVATE_TOOL_INPUT",
+          "PRIVATE_TOOL_RESULT",
+          "PRIVATE_TOOL_FAILURE",
           "PRIVATE_ATTRIBUTE",
           "PRIVATE_DATA",
           "PRIVATE_STYLE",
@@ -228,8 +281,6 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
           "VISIBLE_ATTRIBUTE",
           "VISIBLE_TEXT",
           "VISIBLE_LINK",
-          "VISIBLE_INPUT",
-          "VISIBLE_EDIT",
           "VISIBLE_CODE",
           "VISIBLE_FRAME",
         ])
@@ -273,14 +324,14 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         yield* browser.use("Render captured field updates", (page) =>
           renderBrowserReplay(page, fieldsReplay),
         );
-        yield* browser.use("Check ordinary content and input values in playback", (page) => {
+        yield* browser.use("Check readable content and masked input values in playback", (page) => {
           const replay = page.frameLocator("iframe");
           return replay
             .locator("#replay-fields")
             .innerText()
             .then((text) => expect(text).toContain("VISIBLE_TEXT"))
             .then(() => replay.getByRole("textbox", { name: "Replay account name" }).inputValue())
-            .then((value) => expect(value).toBe("VISIBLE_EDIT"))
+            .then((value) => expect(value).toMatch(/^\*+$/))
             .then(() => replay.locator("#replay-fields").innerHTML())
             .then((html) => expect(html).not.toContain("PRIVATE_"));
         });

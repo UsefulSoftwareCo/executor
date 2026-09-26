@@ -20,9 +20,9 @@ export const replayPageAllowed = (url: URL) =>
   /^\/org\/[^/]+\/(apps|accounts|connect|settings|groups|approvals)(\/|$)/.test(url.pathname) &&
   !/\/(api-keys|source|connections|oauth|credentials|secrets)(\/|$)/.test(url.pathname);
 
-/** Record readable dashboard content; exclude password fields and marked secrets before transport. */
+/** Record dashboard navigation; mask every input and exclude marked private content before transport. */
 export const dashboardReplay: SessionRecordingOptions = {
-  maskAllInputs: false,
+  maskAllInputs: true,
   maskInputOptions: { password: true },
   maskAllElementAttributes: false,
   // Embedded HTML can contain secret fields; record its DOM with the same selectors instead.
