@@ -2017,6 +2017,16 @@ export const scenarios = {
       local: na("This scenario tests hosted organization consent, which Local does not have."),
     },
   },
+  localMcp: {
+    file: "local-claude-mcp.spec.ts",
+    title:
+      "Claude Code connects to Local through /mcp, paired browser consent and a real tool call",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted consent is covered by the organization Claude Code scenario."),
+      cloud: na("Hosted consent is covered by the organization Claude Code scenario."),
+    },
+  },
   mcpProtocol: {
     fixtures: "actors",
     file: "mcp-server.spec.ts",

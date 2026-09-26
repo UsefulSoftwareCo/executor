@@ -321,8 +321,18 @@ navigation, protocol metadata and request timings remain. Protocol revisions in
 `mcp-*.json` describe the official SDK client. `claude-client.json` records the
 actual CLI version, model, permission mode and model API.
 
+`tests/local-claude-mcp.spec.ts` runs the same Claude Code journey against Local.
+Local has no organization, so its consent adapter pairs the synthetic operator
+through `/auth/pair` and `/auth/exchange`, approves the client on Local's
+`/mcp/authorize` page and revokes the grant afterwards. CI excludes both Claude
+scenarios because it holds no model API key:
+
+```sh
+bun run e2e:local --test-name 'Claude Code connects'
+```
+
 Executor's native tool-policy approval and browser tool approval remain separate
-coverage. Local is N/A for these hosted OAuth scenarios.
+coverage. The SDK protocol scenario remains hosted-only.
 App and grant cleanup uses public endpoints. Anonymous OAuth client registrations
 remain on the dedicated stage because the product has no public deletion flow;
 cleanup evidence calls this out. No active grants are deliberately retained.

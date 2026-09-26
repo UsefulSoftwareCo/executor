@@ -129,9 +129,104 @@ const make = Effect.gen(function* () {
       }),
   };
 });
+const Grants = Schema.Array(
+  Schema.Struct({ clientId: Schema.String, grant: Schema.Struct({ id: Schema.String }) }),
+);
+/** Local consent needs no organization: the dashboard pairing identifies its single operator. */
+const makeLocal = Effect.gen(function* () {
+  const api = yield* Api,
+    browser = yield* Browser,
+    evidence = yield* Evidence,
+    target = yield* Target;
+  return {
+    approve: (request: { readonly url: Redacted.Redacted<string>; readonly clientId: string }) =>
+      Effect.gen(function* () {
+        const url = new URL(Redacted.value(request.url));
+        const callback = URL.parse(url.searchParams.get("redirect_uri") ?? "");
+        const state = url.searchParams.get("state");
+        if (
+          !state ||
+          !callback ||
+          callback.protocol !== "http:" ||
+          !["localhost", "127.0.0.1", "[::1]"].includes(callback.hostname)
+        )
+          return yield* new ConsentFailed({
+            operation: "Client did not request a loopback OAuth callback with state",
+          });
+        const session = yield* api.session();
+        const pairing = yield* session.send("POST", "/auth/pair", undefined, {
+          authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+        });
+        if (pairing.status !== 200)
+          return yield* new ConsentFailed({ operation: "Cannot create a local pairing link" });
+        const link = yield* body(Schema.Struct({ url: Schema.String }), pairing);
+        const token = new URLSearchParams(new URL(link.url).hash.slice(1)).get("pair");
+        if (!token) return yield* new ConsentFailed({ operation: "Pairing link has no token" });
+        const origin = { origin: target.metadata.origin };
+        const exchanged = yield* session.send("POST", "/auth/exchange", { token }, origin);
+        if (exchanged.status !== 200)
+          return yield* new ConsentFailed({ operation: "Cannot pair the local operator" });
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            const listed = yield* session.send("GET", "/api/auth/mcp/grants", undefined, origin);
+            if (listed.status !== 200)
+              return yield* new ConsentFailed({
+                operation: "Cannot list client grants for cleanup",
+              });
+            const grants = yield* body(Grants, listed);
+            const owned = grants.filter((grant) => grant.clientId === request.clientId);
+            for (const grant of owned) {
+              const revoked = yield* session.send(
+                "POST",
+                "/api/auth/mcp/grants/revoke",
+                { id: grant.grant.id },
+                origin,
+              );
+              if (revoked.status !== 200)
+                return yield* new ConsentFailed({
+                  operation: "Cannot revoke the test client's grant",
+                });
+            }
+            yield* evidence.json("claude-grant-cleanup.json", {
+              clientId: request.clientId,
+              revokedGrants: owned.length,
+            });
+          }).pipe(Effect.orDie),
+        );
+        yield* browser.omitNetworkTrace;
+        yield* browser.login(session);
+        yield* browser.use("Open the browser requested by Claude", (page) =>
+          page.goto(Redacted.value(request.url)),
+        );
+        yield* browser.use("Executor Local names Claude Code on the consent page", (page) =>
+          page
+            .getByText("Claude Code (executor_e2e)", { exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.checkpoint("Approve Claude Code's connection");
+        yield* browser.use("Authorize Claude Code and return to its callback", (page) =>
+          Promise.all([
+            page.waitForRequest((request) => {
+              const returned = new URL(request.url());
+              return (
+                request.isNavigationRequest() &&
+                returned.origin === callback.origin &&
+                returned.pathname === callback.pathname &&
+                returned.searchParams.get("state") === state &&
+                Boolean(returned.searchParams.get("code")) &&
+                !returned.searchParams.has("error")
+              );
+            }),
+            page.getByRole("button", { name: "Connect", exact: true }).click(),
+          ]).then(() => undefined),
+        );
+      }),
+  };
+});
 /** Target-specific browser sign-in is injected beneath the shared real-client scenario. */
 export class McpConsent extends Context.Service<McpConsent, Effect.Success<typeof make>>()(
   "e2e/McpConsent",
 ) {
   static readonly layer = Layer.effect(McpConsent, make);
+  static readonly localLayer = Layer.effect(McpConsent, makeLocal);
 }
