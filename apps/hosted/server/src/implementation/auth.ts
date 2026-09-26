@@ -8,6 +8,7 @@ import { organization } from "better-auth/plugins/organization";
 import { admin } from "better-auth/plugins/admin";
 import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
+import { httpsOnlyUrlPolicy, parseDestination } from "@executor-js/utils/url-policy";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
   Authentication,
@@ -24,6 +25,44 @@ import {
 export const accountOAuthRedirectUri = (
   auth: Pick<typeof Authentication.Service, "origin" | "oauthRedirectUri">,
 ) => HttpUrl.make(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href);
+
+export const accountOAuthClientMetadataPath = "/api/oauth/client-id-metadata/default.json";
+
+/**
+ * A configured document wins. Otherwise this host serves its own, but only on public HTTPS
+ * origins, since providers must be able to fetch it.
+ */
+export const clientMetadataUrls = (origin: string, configured?: string) => {
+  const clientMetadataUrl =
+    configured?.trim() ||
+    parseDestination(new URL(accountOAuthClientMetadataPath, origin).href, httpsOnlyUrlPolicy)
+      ?.href;
+  return clientMetadataUrl === undefined ? {} : { clientMetadataUrl };
+};
+
+/** Providers reject the document unless `client_id` matches the URL it was fetched from. */
+export const accountOAuthClientMetadata = (
+  auth: Pick<typeof Authentication.Service, "origin" | "oauthRedirectUri">,
+) => ({
+  client_id: new URL(accountOAuthClientMetadataPath, auth.origin).href,
+  client_name: "Executor",
+  client_uri: auth.origin,
+  redirect_uris: [accountOAuthRedirectUri(auth)],
+  grant_types: ["authorization_code", "refresh_token"],
+  response_types: ["code"],
+  token_endpoint_auth_method: "none",
+  application_type: "web",
+});
+
+/**
+ * Public metadata lets OAuth providers identify this host as a client without registration.
+ * Providers cache the document by these headers, so a changed callback is picked up within an hour.
+ */
+export const hostedOAuthClientMetadata = Effect.gen(function* () {
+  return HttpServerResponse.jsonUnsafe(accountOAuthClientMetadata(yield* Authentication)).pipe(
+    HttpServerResponse.setHeader("cache-control", "public, max-age=3600"),
+  );
+});
 
 /** Explicit host configuration. Missing or weak signing secrets fail startup/deploy. */
 export const authSettings = Config.all({

@@ -16,6 +16,7 @@ import {
   OrganizationRemovals,
   OrganizationRemovalUnavailable,
   OrganizationTombstones,
+  clientMetadataUrls,
 } from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
@@ -112,7 +113,7 @@ export const cloudExecutor = Effect.fn(function* (
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...clientMetadataUrls(origin, clientMetadataUrl),
         },
         { storage, webhookOrigin: origin, workflows },
       ).pipe(Effect.provideContext(services), Effect.provide(BrowserCrypto.layer));

@@ -256,6 +256,8 @@ export const makeOAuth = (
         return yield* new OAuthSetupFailed({ reason: "unsupported" });
       }
       // A client registered for fewer scopes cannot be assumed to allow new ones.
+      // Metadata clients are never saved, so the metadata URL no longer identifies a row. The
+      // slot stays as the `null` an unset URL always serialized to, keeping existing keys stable.
       const clientId = OAuthClientId.make(
         `client_${yield* hash(
           JSON.stringify([
@@ -264,7 +266,7 @@ export const makeOAuth = (
             input.method,
             redirect?.href,
             discovered.server.issuer,
-            options.clientMetadataUrl,
+            null,
             [...discovered.scopes].sort(),
           ]),
         )}`,
@@ -283,7 +285,8 @@ export const makeOAuth = (
         )
           client = registered;
       }
-      const savedClient = client !== undefined;
+      let source: "saved" | "metadata" | undefined = client === undefined ? undefined : "saved";
+      const metadataUrl = options.clientMetadataUrl;
       if (
         automatic &&
         discovered.grant === "authorization_code" &&
@@ -291,25 +294,28 @@ export const makeOAuth = (
         (method.tokenEndpointAuthMethod === undefined ||
           method.tokenEndpointAuthMethod === "none") &&
         discovered.server.client_id_metadata_document_supported === true &&
-        options.clientMetadataUrl !== undefined
+        metadataUrl !== undefined
       ) {
-        const metadataUrl = options.clientMetadataUrl;
         const url = parseDestination(metadataUrl, httpsOnlyUrlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+        // Nothing is registered for a metadata client, so it is derived from configuration
+        // on every sign-in rather than saved; a changed metadata URL applies immediately.
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
+        source = "metadata";
       }
-      return { method, redirect, discovered, clientId, client, savedClient };
+      return { method, redirect, discovered, clientId, client, source };
     });
   const oauthSetup = (input: typeof CheckOAuthSetup.Type) =>
     resolveSetup(input, true).pipe(
-      Effect.map(({ client, discovered, method, savedClient }): OAuthClientSetup => {
-        const mode = savedClient
-          ? "saved"
-          : client !== undefined ||
-              (discovered.grant === "authorization_code" &&
-                discovered.server.registration_endpoint !== undefined)
-            ? "automatic"
-            : "client-required";
+      Effect.map(({ client, discovered, method, source }): OAuthClientSetup => {
+        const mode =
+          source === "saved"
+            ? "saved"
+            : client !== undefined ||
+                (discovered.grant === "authorization_code" &&
+                  discovered.server.registration_endpoint !== undefined)
+              ? "automatic"
+              : "client-required";
         return method.grant === "client_credentials"
           ? {
               mode,
@@ -343,6 +349,7 @@ export const makeOAuth = (
         discovered,
         clientId,
         client: availableClient,
+        source,
       } = yield* resolveSetup(input, input.client === undefined);
       const now = yield* Clock.currentTimeMillis;
       let client: OAuthRegistration | undefined;
@@ -464,7 +471,7 @@ export const makeOAuth = (
       }
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
-      if (input.client === undefined) yield* saveClient(db);
+      if (input.client === undefined && source !== "metadata") yield* saveClient(db);
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));

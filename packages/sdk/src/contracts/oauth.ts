@@ -154,6 +154,7 @@ export interface OAuthOptions {
   readonly clientName: string;
   /** Host transport policy for callbacks, discovery and every token request. */
   readonly urlPolicy: UrlPolicy;
+  /** Public HTTPS client metadata document; used only with providers that advertise CIMD. */
   readonly clientMetadataUrl?: string;
 }
 

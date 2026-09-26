@@ -28,6 +28,7 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import type { Target } from "./platform.ts";
+import { e2eClientMetadataUrl } from "./oauth-setup-issuer.ts";
 
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
@@ -82,6 +83,8 @@ export const startManagedServer = (
         ? {
             EXECUTOR_OAUTH_CALLBACK_URL: `http://account-picker.localhost:${port}/api/oauth/callback?tenant=fixture`,
             EXECUTOR_URL_ALLOW_HTTP_ORIGINS: '["http://oauth.internal:8080"]',
+            // Loopback hosts get no default client metadata URL, so set one explicitly.
+            EXECUTOR_OAUTH_CLIENT_METADATA_URL: e2eClientMetadataUrl,
             // Fixture providers listen on loopback, which the product default refuses to app code.
             EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "true",
           }

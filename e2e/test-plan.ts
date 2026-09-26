@@ -1064,6 +1064,25 @@ export const scenarios = {
       local: na("Exercises shared OAuth through the hosted API."),
     },
   },
+  oauthClientMetadata: {
+    file: "oauth-client-setup.spec.ts",
+    title: "Hosted OAuth publishes client metadata with the configured callback",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host fixture uses a configured callback URL."),
+      local: na("Hosted OAuth client metadata."),
+    },
+  },
+  oauthClientMetadataConnect: {
+    fixtures: "actors",
+    file: "oauth-client-setup.spec.ts",
+    title: "An issuer without registration connects through the client metadata document",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host fixture configures the client metadata URL."),
+      local: na("Hosted OAuth client metadata."),
+    },
+  },
   oauthClientSetup: {
     fixtures: "actors",
     file: "oauth-client-setup.spec.ts",

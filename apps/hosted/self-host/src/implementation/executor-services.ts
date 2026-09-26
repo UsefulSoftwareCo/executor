@@ -22,6 +22,7 @@ import {
   makeOrganizationIcons,
   OrganizationDefaults,
   organizationDefaults,
+  clientMetadataUrls,
 } from "@executor-js/hosted-server";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
@@ -76,7 +77,7 @@ export const selfHostExecutorServices = <E, R>(
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...clientMetadataUrls(origin, clientMetadataUrl),
         },
         { storage, webhookOrigin: origin, workflows },
       );

@@ -23,6 +23,8 @@ import { hideRemovedOrganizations } from "./implementation/organization-removal.
 import {
   browserTelemetry,
   hostedOAuthCallback,
+  hostedOAuthClientMetadata,
+  accountOAuthClientMetadataPath,
   hostedWebhookCallback,
   catalogLive,
   requireUserLive,
@@ -307,6 +309,9 @@ export default Api.make(
       HttpRouter.add("*", "/api/auth/*", auth.handler),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
       HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
+        HttpRouter.provideRequest(auth.identity),
+      ),
+      HttpRouter.add("GET", accountOAuthClientMetadataPath, hostedOAuthClientMetadata).pipe(
         HttpRouter.provideRequest(auth.identity),
       ),
       mcpRoutes,
