@@ -44,6 +44,30 @@ export const frameworkQueries = (input: unknown) => {
       );
     }
   };
+  /** Exact symbols rank first, then name matches, then documentation matches. */
+  const rank = (text: string) => {
+    const terms = text
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
+    return reference.entries
+      .map((entry) => ({
+        entry,
+        score:
+          entry.symbol === text
+            ? 10000
+            : terms.reduce(
+                (score, term) =>
+                  score +
+                  (entry.symbol.toLowerCase().includes(term) ? 4 : 0) +
+                  ((entry.summary + " " + entry.docs).toLowerCase().includes(term) ? 1 : 0),
+                0,
+              ),
+      }))
+      .filter(({ score }) => terms.length === 0 || score > 0)
+      .sort((a, b) => b.score - a.score || a.entry.symbol.localeCompare(b.entry.symbol));
+  };
   return {
     framework_search: query(
       {
@@ -62,27 +86,7 @@ export const frameworkQueries = (input: unknown) => {
         select(input);
         if (!Number.isSafeInteger(input.offset) || input.offset < 0)
           throw new Error("offset must be a nonnegative integer");
-        const terms = input.query
-          .replace(/([a-z])([A-Z])/g, "$1 $2")
-          .toLowerCase()
-          .split(/[^a-z0-9]+/)
-          .filter(Boolean);
-        const ranked = reference.entries
-          .map((entry) => ({
-            entry,
-            score:
-              entry.symbol === input.query
-                ? 10000
-                : terms.reduce(
-                    (score, term) =>
-                      score +
-                      (entry.symbol.toLowerCase().includes(term) ? 4 : 0) +
-                      ((entry.summary + " " + entry.docs).toLowerCase().includes(term) ? 1 : 0),
-                    0,
-                  ),
-          }))
-          .filter(({ score }) => terms.length === 0 || score > 0)
-          .sort((a, b) => b.score - a.score || a.entry.symbol.localeCompare(b.entry.symbol));
+        const ranked = rank(input.query);
         return {
           reference: identity,
           items: ranked.slice(input.offset, input.offset + 12).map(({ entry }) => ({
@@ -98,25 +102,41 @@ export const frameworkQueries = (input: unknown) => {
     framework_describe: query(
       {
         description:
-          "Read an exact framework symbol's generated signatures, related types and JSDoc. Pass the version and digest from framework_search to reject stale references. Read its linked skill document for behavior and examples.",
+          "Read a framework symbol's generated signatures, related types and JSDoc. Pass the exact symbol from framework_search, or an unqualified name that ends exactly one symbol, such as defineApp for apps.defineApp. Pass the version and digest from framework_search to reject stale references. When nothing matches, entry is absent and matches lists the closest symbols. Read its linked skill document for behavior and examples.",
         input: object({ symbol: string(), ...Selection }),
         output: object({
           reference: Identity,
-          entry: Entry,
+          entry: Entry.optional(),
           types: array(Entry),
           examples: array(Example),
+          matches: array(object({ symbol: string(), kind: string(), summary: string() })),
         }),
       },
       async (_ctx, input) => {
         select(input);
-        const entry = reference.entries.find((entry) => entry.symbol === input.symbol);
-        if (entry === undefined)
-          throw new Error("Framework symbol not found. Use framework_search first.");
+        const suffixed = reference.entries.filter((entry) =>
+          [".", "/"].some((separator) => entry.symbol.endsWith(separator + input.symbol)),
+        );
+        const entry =
+          reference.entries.find((entry) => entry.symbol === input.symbol) ??
+          (suffixed.length === 1 ? suffixed[0] : undefined);
+        if (entry === undefined) {
+          const closest = rank(input.symbol).map(({ entry }) => entry);
+          return {
+            reference: identity,
+            types: [],
+            examples: [],
+            matches: [...new Set([...suffixed, ...closest])]
+              .slice(0, 8)
+              .map(({ symbol, kind, summary }) => ({ symbol, kind, summary })),
+          };
+        }
         return {
           reference: identity,
           entry,
           types: reference.entries.filter((candidate) => entry.related.includes(candidate.symbol)),
           examples: reference.examples.filter((example) => entry.examples.includes(example.id)),
+          matches: [],
         };
       },
     ),

@@ -53,6 +53,7 @@ import {
   type ElicitationHandler,
 } from "../contracts/elicitation.ts";
 import { makeElicit } from "./elicitation.ts";
+import { inputInvalid } from "./input-problems.ts";
 import { ApprovalDecision } from "../contracts/approval.ts";
 import { importedJsonSchema } from "./schema.ts";
 import { OperationToolPrefixes } from "../contracts/operations.ts";
@@ -590,9 +591,14 @@ function dispatch(
         return yield* request.operation === "call"
           ? new HostToolNotFound()
           : new HostOperationNotFound();
-      const input = yield* safe(
-        () => Schema.decodeUnknownEffect(tool.input)(request.input),
-        new HostInputInvalid(),
+      const input = yield* Effect.suspend(() =>
+        Schema.decodeUnknownEffect(tool.input)(request.input),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.fail(inputInvalid(Cause.squash(cause))),
+        ),
       );
       if (context.approval !== undefined) {
         const approved = yield* safe(

@@ -251,8 +251,14 @@ const runtimeFailure = (
       HostOperationNotFound: () => new ToolNotFound(identity),
       HostOperationFailed: () =>
         new ToolCallFailed({ ...identity, reason: "Operation execution failed" }),
-      HostInputInvalid: () =>
-        new InputInvalid({ ...identity, problems: ["Input did not match the tool schema"] }),
+      HostInputInvalid: ({ problems }) =>
+        new InputInvalid({
+          ...identity,
+          problems:
+            problems === undefined || problems.length === 0
+              ? ["Input did not match the tool schema"]
+              : problems,
+        }),
       HostToolBlocked: () => new ToolBlocked(identity),
       HostToolApprovalRequired: () => new ToolApprovalRequired(identity),
       HostToolPolicyFailed: () => new ToolPolicyFailed(identity),

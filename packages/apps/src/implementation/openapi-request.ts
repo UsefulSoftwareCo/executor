@@ -321,11 +321,13 @@ export function createRequest(config: {
         });
         const response = yield* HttpClient.withScope(client).execute(request);
         if (response.status < 200 || response.status >= 300) {
+          // Status and header evidence (401, 429, 5xx, rate-limit or scope headers) keeps its
+          // account recovery. A bare 403 proves nothing, so a declared error body explains it.
           const provider = httpProviderError(response.status, response.headers);
-          if (provider !== undefined) return yield* provider;
+          if (provider !== undefined && provider.reason !== "rejected") return yield* provider;
           const declared = yield* responseError(response, errors);
           return yield* (
-            declared ?? new OpenapiError({ reason: "request", status: response.status })
+            declared ?? provider ?? new OpenapiError({ reason: "request", status: response.status })
           );
         }
         if (response.status === 204 || prepared.method === "HEAD") return null;

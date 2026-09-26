@@ -244,11 +244,16 @@ export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(
   "HostToolNotFound",
   {},
 ) {}
-/** Native input decoding failed; supplied values are omitted. */
-export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()(
-  "HostInputInvalid",
-  {},
-) {}
+/** One failing input location and its expected shape; never the supplied value. */
+export const InputProblem = Schema.String.check(Schema.isMaxLength(512));
+/** Input decoding reports at most this many problems. */
+export const maxInputProblems = 10;
+/** Native input decoding failed; supplied values are omitted. Builds before problems were reported send none. */
+export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("HostInputInvalid", {
+  problems: Schema.optionalKey(
+    Schema.Array(InputProblem).check(Schema.isMaxLength(maxInputProblems)),
+  ),
+}) {}
 /** The tool's approval policy blocked this call before its tool body ran. */
 export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
 /** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */

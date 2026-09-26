@@ -24,6 +24,8 @@ export const openapiConflictRecovery = {
   action: "Reload the record, then save again.",
   instructions: "Read the current revision and reapply the change before retrying.",
 };
+/** A declared 403 body; a bare status alone would not explain the refusal. */
+export const openapiDeniedMessage = "This workspace does not allow exports by members.";
 /** A reason-specific response from an error schema with no static description. */
 export const openapiOAuthMessage = "We could not register an OAuth client for this connection.";
 
@@ -53,6 +55,10 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
             publishedError("BuildMemoryExceeded", memorySchema),
             publishedError("OAuthSetupFailed", oauthSchema),
             conflict,
+            Schema.TaggedStruct("ExportDenied", { message: Schema.String }).annotate({
+              identifier: "ExportDenied",
+              httpApiStatus: 403,
+            }),
           ],
         }).annotate(OpenApi.Identifier, "fail"),
       ),
@@ -192,6 +198,15 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
                 recovery: openapiMemoryRecovery,
               },
               { status: 422 },
+            );
+          if (mode === "declared-forbidden" || mode === "declared-limited")
+            return yield* HttpServerResponse.json(
+              { _tag: "ExportDenied", message: openapiDeniedMessage },
+              {
+                status: 403,
+                // Rate-limit evidence still wins over a declared body.
+                headers: mode === "declared-limited" ? { "x-ratelimit-remaining": "0" } : {},
+              },
             );
           if (mode === "missing-message")
             return yield* HttpServerResponse.json(

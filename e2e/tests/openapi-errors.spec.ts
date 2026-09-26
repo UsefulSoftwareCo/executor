@@ -15,6 +15,7 @@ import {
   openapiMemoryMessage,
   openapiMemoryRecovery,
   openapiConflictRecovery,
+  openapiDeniedMessage,
   openapiOAuthMessage,
 } from "../support/openapi-error-upstream.ts";
 
@@ -183,6 +184,49 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
             },
           },
         });
+        // A declared 403 body explains the refusal instead of the generic provider rejection.
+        const denied403 = yield* invoke("declared-forbidden");
+        yield* evidence.json("openapi-declared-403.json", denied403);
+        const deniedError = (yield* Schema.decodeUnknownEffect(Failure)(
+          denied403.structuredContent,
+        )).execution.error;
+        expect(deniedError.message).toBe(`ExportDenied (HTTP 403): ${openapiDeniedMessage}`);
+        expect(deniedError.response).toEqual({
+          code: "ExportDenied",
+          status: 403,
+          message: openapiDeniedMessage,
+        });
+        expect(JSON.stringify(denied403)).not.toContain("We could not identify the cause");
+        // Rate-limit headers remain authoritative even when the body matches a declared error.
+        const limited403 = (yield* Schema.decodeUnknownEffect(Failure)(
+          (yield* invoke("declared-limited")).structuredContent,
+        )).execution.error;
+        expect(limited403.response).toMatchObject({ code: "AppProviderFailed", status: 502 });
+        expect(limited403.message).toContain("limiting requests");
+        // Input validation names the failing field and expected type without echoing the value.
+        const invalidInput = yield* client.use(
+          "Call the OpenAPI tool with invalid input",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: `return await tools[${JSON.stringify(app.slug)}].queries.fail({query:{mode:{hidden:${JSON.stringify(openapiSecretMarker)}}}});`,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        yield* evidence.json("mcp-input-invalid.json", invalidInput);
+        const inputError = (yield* Schema.decodeUnknownEffect(Failure)(
+          invalidInput.structuredContent,
+        )).execution.error;
+        expect(inputError.message).toBe(
+          "InputInvalid (HTTP 422): Input failed validation: input.query.mode: Expected string Recovery: Fix the listed input fields and call the tool again.",
+        );
+        expect(inputError.response).toMatchObject({ code: "InputInvalid", status: 422 });
+        expect(JSON.stringify(invalidInput)).not.toContain(openapiSecretMarker);
         // The interpreter only exposes Error.message inside catch; its JSON envelope retains the same fields.
         const caught = yield* client.use(
           "Catch the declared API error in agent code",
@@ -329,8 +373,11 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                     : "rejected",
             });
           } else {
-            expect(failure.response).toBeUndefined();
-            expect(failure.message).toBe("ToolCallFailed");
+            // Undeclared failures keep only the SDK's fixed reason and retry guidance.
+            expect(failure.response).toMatchObject({ code: "ToolCallFailed", status: 502 });
+            expect(failure.message).toBe(
+              "ToolCallFailed (HTTP 502): Operation execution failed Recovery: Check whether the tool already made changes before retrying.",
+            );
           }
         }
         const broken = yield* body(
