@@ -6,6 +6,7 @@ import {
   OpenapiToolsOptions,
   type OpenapiTools,
   type OpenapiOperation,
+  type OpenapiParameterDefaults,
 } from "../contracts/openapi.ts";
 import type { JsonObject, JsonValue } from "../contracts/schema.ts";
 import { lazyJsonSchemaDecoder, once } from "./schema.ts";
@@ -55,14 +56,94 @@ export const bundler = (definitions: Readonly<Record<string, JsonObject>>) => {
   };
 };
 
+const parameterGroups = { path: "path", query: "query", headers: "header" } as const;
+const isObject = (value: unknown): value is JsonObject =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Defaults for parameters this operation declares; other names never enter its input. */
+const boundParameters = (op: OpenapiOperation, defaults: OpenapiParameterDefaults | undefined) =>
+  (Object.keys(parameterGroups) as (keyof typeof parameterGroups)[]).flatMap((group) =>
+    Object.entries(defaults?.[group] ?? {})
+      .filter(([name]) =>
+        op.request.parameters.some((p) => p.name === name && p.in === parameterGroups[group]),
+      )
+      .map(([name, value]) => ({ group, name, value })),
+  );
+
+/**
+ * Make account-bound parameters optional. Validators omit the values so they stay account-free;
+ * the published schema includes them as `default` so callers can see what an omission sends.
+ */
+export const parameterDefaultsInput = (
+  op: OpenapiOperation,
+  defaults: OpenapiParameterDefaults | undefined,
+  publish: boolean,
+): JsonObject => {
+  const bound = boundParameters(op, defaults);
+  if (!bound.length || !isObject(op.input.properties)) return op.input;
+  const properties: Record<string, JsonValue> = { ...op.input.properties };
+  let required = Array.isArray(op.input.required) ? op.input.required : [];
+  for (const group of new Set(bound.map((entry) => entry.group))) {
+    const shape = properties[group];
+    if (!isObject(shape)) continue;
+    const names = bound.filter((entry) => entry.group === group);
+    const remaining = (Array.isArray(shape.required) ? shape.required : []).filter(
+      (name) => !names.some((entry) => entry.name === name),
+    );
+    const fields = isObject(shape.properties) ? shape.properties : {};
+    properties[group] = {
+      ...shape,
+      required: remaining,
+      ...(publish
+        ? {
+            properties: {
+              ...fields,
+              ...Object.fromEntries(
+                names.map(({ name, value }) => {
+                  const field = isObject(fields[name]) ? fields[name] : {};
+                  const note = "Optional; defaults to the value bound to the selected account.";
+                  const description =
+                    typeof field.description === "string" ? `${field.description} ${note}` : note;
+                  return [name, { ...field, description, default: value }];
+                }),
+              ),
+            },
+          }
+        : {}),
+    };
+    if (!remaining.length) required = required.filter((key) => key !== group);
+  }
+  return { ...op.input, properties, required };
+};
+
+/** Fill omitted account-bound parameters before validation. Explicit values are kept. */
+const fillParameterDefaults = (
+  op: OpenapiOperation,
+  defaults: OpenapiParameterDefaults | undefined,
+  value: unknown,
+) => {
+  const bound = boundParameters(op, defaults);
+  if (!bound.length || !isObject(value)) return value;
+  const result: Record<string, JsonValue> = { ...value };
+  for (const { group, name, value: fallback } of bound) {
+    const current = result[group] ?? {};
+    if (!isObject(current)) return value;
+    if (!Object.hasOwn(current, name)) result[group] = { ...current, [name]: fallback };
+  }
+  return result;
+};
+
 /** Account-free validators can be reused inside a Worker for one immutable revision. */
 export const prepareOpenapiOperation = (
   op: OpenapiOperation,
   definitions: Readonly<Record<string, JsonObject>>,
+  defaults?: OpenapiParameterDefaults,
 ) =>
   Effect.gen(function* () {
     const bundle = bundler(definitions);
-    const input = yield* lazyJsonSchemaDecoder(() => bundle(op.input));
+    const input = yield* lazyJsonSchemaDecoder(() =>
+      bundle(parameterDefaultsInput(op, defaults, false)),
+    );
     const errors = yield* Effect.forEach(op.errorResponses ?? [], (response) =>
       lazyJsonSchemaDecoder(() => bundle(response.schema)).pipe(
         Effect.map((decoder) => ({ ...response, decoder })),
@@ -92,14 +173,20 @@ export const openapiToolsEffect = (
         Effect.gen(function* () {
           const schemas =
             prepared?.get(op.name) ??
-            (yield* prepareOpenapiOperation(op, config.definitions ?? {}));
+            (yield* prepareOpenapiOperation(
+              op,
+              config.definitions ?? {},
+              config.parameterDefaults,
+            ));
           const { input, errors } = schemas;
           const tool: OpenapiTools[string] = {
             description: op.description,
             readOnly: ["GET", "HEAD", "OPTIONS"].includes(op.method),
             input,
             run: (_context, value) =>
-              Schema.decodeUnknownEffect(input)(value).pipe(
+              Schema.decodeUnknownEffect(input)(
+                fillParameterDefaults(op, config.parameterDefaults, value),
+              ).pipe(
                 Effect.mapError(() => new OpenapiError({ reason: "invalid_input" })),
                 Effect.flatMap((parsed) =>
                   request

@@ -1393,6 +1393,17 @@ export const scenarios = {
       local: na("Local uses its configured instance API key."),
     },
   },
+  executorOrganizationDefault: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "executor-organization-default.spec.ts",
+    title: "Executor platform operations default to the managed key's organization over MCP",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local management routes have no organization."),
+    },
+  },
   executorInstallationLoading: {
     fixtures: "actors",
     file: "executor-key-account.spec.ts",

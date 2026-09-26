@@ -44,7 +44,9 @@ export default defineApp({ accounts: { service: provider } }, async (context) =>
       const request = new Request(input, init);
       if (account.method === "apiKey" && new URL(request.url).origin === configuration.allowedOrigin) request.headers.set("X-Executor-Organization", account.fields.organization);
       return context.fetch(request);
-    },`
+    },
+    // A managed key belongs to one organization, so callers need not look it up first.
+    ...(account.method === "apiKey" ? { parameterDefaults: { path: { organization: account.fields.organization } } } : {}),`
         : `account,
     fetch: context.fetch,`
     }

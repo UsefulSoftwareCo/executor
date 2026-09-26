@@ -83,6 +83,17 @@ export const OpenapiAccount = Schema.Struct({
 });
 export type OpenapiAccount = typeof OpenapiAccount.Type;
 
+/**
+ * Parameter values bound by the selected account, grouped as in tool input. Callers may omit
+ * these parameters; an explicit value still takes precedence and the API still authorizes it.
+ */
+export const OpenapiParameterDefaults = Schema.Struct({
+  path: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  query: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+});
+export type OpenapiParameterDefaults = typeof OpenapiParameterDefaults.Type;
+
 /** Parsed options for one account's evaluation. */
 export const OpenapiToolsOptions = Schema.Struct({
   operations: Schema.Array(OpenapiOperation),
@@ -94,6 +105,7 @@ export const OpenapiToolsOptions = Schema.Struct({
   methods: Schema.Record(Schema.String, Schema.Array(CredentialBinding)),
   oauth: Schema.Array(Schema.String),
   account: Schema.optional(OpenapiAccount),
+  parameterDefaults: Schema.optional(OpenapiParameterDefaults),
   signal: Schema.optional(Schema.instanceOf(AbortSignal)),
   fetch: Schema.optional(
     Schema.declare((value): value is typeof globalThis.fetch => typeof value === "function"),

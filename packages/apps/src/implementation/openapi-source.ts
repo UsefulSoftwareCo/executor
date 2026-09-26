@@ -12,6 +12,7 @@ import {
   references,
   bundler,
   prepareOpenapiOperation,
+  parameterDefaultsInput,
   type PreparedOpenapiOperation,
 } from "./openapi.ts";
 import { protocolOperations, type OperationKinds } from "./protocol-operations.ts";
@@ -346,6 +347,13 @@ export const liveOpenapiOperations = (
       }
       return definitions;
     });
+  // Relaxed validators depend only on which parameters are account-bound, never on their values.
+  const defaultedNames = JSON.stringify(
+    Object.entries(options.parameterDefaults ?? {}).map(([group, values]) => [
+      group,
+      Object.keys(values ?? {}).sort(),
+    ]),
+  );
   const qualified = (op: OpenapiOperation) =>
     `${(options.kinds?.[op.name] ?? (["GET", "HEAD", "OPTIONS"].includes(op.method) ? "query" : "mutation")) === "query" ? "queries" : "mutations"}.${op.name}`;
   const operationsFor = (manifest: typeof Manifest.Type) =>
@@ -377,7 +385,7 @@ export const liveOpenapiOperations = (
     bundle: ReturnType<typeof bundler>,
   ): HostedTool => ({
     ...summarize(operation),
-    inputSchema: bundle(operation.input),
+    inputSchema: bundle(parameterDefaultsInput(operation, options.parameterDefaults, true)),
     ...(operation.outputSchema === undefined
       ? {}
       : { outputSchema: bundle(operation.outputSchema) }),
@@ -402,7 +410,7 @@ export const liveOpenapiOperations = (
         withRevision((manifest) =>
           Effect.gen(function* () {
             const raw = name.replace(/^(queries|mutations)\./, "");
-            const memoKey = `${manifest.revision}/${raw}`;
+            const memoKey = `${manifest.revision}/${defaultedNames}/${raw}`;
             const memo = resolved.get(memoKey);
             const operation =
               memo?.operation ??
@@ -416,7 +424,8 @@ export const liveOpenapiOperations = (
               memo?.definitions ?? (yield* definitionsFor(manifest.revision, operation));
             if (definitions === undefined) return undefined;
             const schemas =
-              memo?.schemas ?? (yield* prepareOpenapiOperation(operation, definitions));
+              memo?.schemas ??
+              (yield* prepareOpenapiOperation(operation, definitions, options.parameterDefaults));
             if (memo === undefined) remember(memoKey, { operation, definitions, schemas });
             const tools = yield* openapiToolsEffect(
               { ...options, operations: [operation], definitions },
