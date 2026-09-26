@@ -38,8 +38,9 @@ const SLACK = IntegrationSlug.make("slack");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 
 // The execute description lists the top-level integrations the user has
-// connected: one bare line per integration slug, deduped across connections,
-// names only (no per-integration descriptions).
+// connected: one line per integration slug, deduped across connections, with
+// the integration's capability description when the catalog carries a real one
+// (legacy slug/name-only descriptions are suppressed).
 const githubPlugin = definePlugin(() => ({
   id: "github-plugin" as const,
   credentialProviders: [memoryProvider()],
@@ -118,7 +119,7 @@ describe("buildExecuteDescription", () => {
     }),
   );
 
-  it.effect("lists integration names only, with no descriptions", () =>
+  it.effect("renders capability descriptions, suppressing slug/name repeats", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(
         makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
@@ -142,12 +143,10 @@ describe("buildExecuteDescription", () => {
 
       const description = yield* buildExecuteDescription(executor);
 
-      // Bare slugs, sorted, with no per-integration description riding the line
-      // (Slack's "Send and read workspace messages." is dropped).
-      expect(description).toContain("- `github`");
-      expect(description).toContain("- `slack`");
-      expect(description).not.toContain("Send and read workspace messages");
-      expect(description).not.toContain("- `slack` —");
+      // Slack's real capability description rides its line; github's legacy
+      // description ("GitHub", a name repeat) is suppressed.
+      expect(description).toContain("- `slack` — Send and read workspace messages.");
+      expect(description).toContain("- `github`\n");
       expect(description).not.toContain("- `github` —");
     }),
   );
@@ -176,6 +175,45 @@ describe("buildExecuteDescription", () => {
       expect(occurrences(description, "- `github`")).toBe(1);
       expect(description).not.toContain(".org.prod");
       expect(description).not.toContain(".user.personal");
+    }),
+  );
+
+  it.effect("truncates long descriptions to one scannable line", () =>
+    Effect.gen(function* () {
+      const verbosePlugin = definePlugin(() => ({
+        id: "verbose-plugin" as const,
+        credentialProviders: [memoryProvider()],
+        storage: () => ({}),
+        extension: (ctx) => ({
+          seed: () =>
+            ctx.core.integrations.register({
+              slug: IntegrationSlug.make("verbose"),
+              name: "Verbose",
+              description: `${"word ".repeat(60).trim()} trailing\nsecond line ignored`,
+              config: {},
+            }),
+        }),
+      }))();
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [verbosePlugin] as const }),
+      );
+      yield* executor["verbose-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: IntegrationSlug.make("verbose"),
+        template: TEMPLATE,
+        value: "verbose-token",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+      const line = description.split("\n").find((l) => l.startsWith("- `verbose`")) ?? "";
+
+      expect(line.startsWith("- `verbose` — word")).toBe(true);
+      expect(line.endsWith("…")).toBe(true);
+      expect(line.length).toBeLessThan(140);
+      expect(line).not.toContain("trailing");
+      expect(line).not.toContain("second line");
     }),
   );
 
@@ -224,7 +262,7 @@ describe("parseIntegrationInventory", () => {
     expect(parseIntegrationInventory("Execute TypeScript in a sandboxed runtime.")).toEqual([]);
   });
 
-  it("reads item lines only, not the overflow marker or prose", () => {
+  it("reads item lines only, not the overflow marker, prose, or descriptions", () => {
     const description = [
       "Execute TypeScript in a sandboxed runtime.",
       "",
@@ -232,7 +270,7 @@ describe("parseIntegrationInventory", () => {
       "",
       "Integrations you have connected. Their tools live under `tools.<integration>.…`.",
       "- `github`",
-      "- `google_gmail`",
+      "- `google_gmail` — search, read, and send mail",
       "- ... 3 more",
     ].join("\n");
 
