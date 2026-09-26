@@ -194,9 +194,7 @@ describe("buildExecuteDescription", () => {
             }),
         }),
       }))();
-      const executor = yield* createExecutor(
-        makeTestConfig({ plugins: [verbosePlugin] as const }),
-      );
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [verbosePlugin] as const }));
       yield* executor["verbose-plugin"].seed();
       yield* executor.connections.create({
         owner: "org",
