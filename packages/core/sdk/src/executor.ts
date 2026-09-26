@@ -227,7 +227,19 @@ import { annotateToolResultOutcome, isToolResult } from "./tool-result";
 import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
 
-const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
+// Values per `in (...)` predicate on batched deletes: keeps each statement
+// under D1's 100-bound-parameter limit alongside its scope columns.
+const DELETE_IN_BATCH_SIZE = 90;
+
+// Unique key shared by the `tool` and `definition` catalog tables.
+const CATALOG_ROW_KEY = ["tenant", "owner", "subject", "integration", "connection", "name"];
+
+// Serialized row bytes per catalog upsert call. On D1 one multi-statement
+// upsert runs as a single native batch RPC, which D1 caps at 32MiB; a large
+// spec's full catalog (Cloudflare's own API: ~37MB) exceeds that in one call,
+// and building it stalls the isolate for seconds. The budget leaves room for
+// the SQL and RPC encoding the rows expand into.
+const CATALOG_UPSERT_CHUNK_BYTES = 1024 * 1024;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
 
 // ---------------------------------------------------------------------------
@@ -795,6 +807,16 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * mode: a read then always reflects a fully converged catalog).
    */
   readonly toolsSyncGraceMs?: number | null;
+  /**
+   * How many stale connection catalogs one tools read rebuilds at once.
+   * Defaults to {@link STALE_TOOLS_SYNC_CONCURRENCY}. Every in-flight rebuild
+   * holds its connection's resolved tool set and schema definitions in memory
+   * until its catalog write gets the single persist permit, so hosts with a
+   * small memory ceiling (Cloudflare Workers' 128MB isolate) lower it; hosts
+   * whose catalogs mostly come from slow remote listings keep the default so
+   * those listings overlap.
+   */
+  readonly toolsSyncConcurrency?: number;
   /**
    * Host keep-alive for background work that outlives a request — the
    * platform `waitUntil` on Cloudflare Workers, where I/O started inside a
@@ -1537,13 +1559,22 @@ const makePluginStorageFacade = (input: {
   const tenant = String(input.owner.tenant);
 
   const whereFor =
-    (collection: string, key?: string): CoreWhere =>
+    (collection: string, key?: string, keyPrefix?: string): CoreWhere =>
     (b: AnyCb) =>
       b.and(
         b("plugin_id", "=", input.pluginId),
         b("collection", "=", collection),
         key === undefined ? true : b("key", "=", key),
+        keyPrefix === undefined ? true : b("key", "starts with", keyPrefix),
       );
+
+  // `starts with` compiles to an unescaped LIKE on SQL adapters (and a
+  // case-insensitive one on SQLite), so the pushed-down prefix only narrows
+  // the read to a superset; `list` still applies the exact `startsWith`. A
+  // backslash is Postgres LIKE's default escape character and could turn the
+  // superset into a subset, so such prefixes are filtered in JS only.
+  const sqlKeyPrefix = (keyPrefix: string | undefined): string | undefined =>
+    keyPrefix === undefined || keyPrefix.includes("\\") ? undefined : keyPrefix;
 
   const whereOwner = (owner: Owner, collection: string, key: string): CoreWhere => {
     const os = ownerSubject(owner);
@@ -1654,12 +1685,8 @@ const makePluginStorageFacade = (input: {
     Effect.gen(function* () {
       for (const [collection, keys] of keysByCollection(entries)) {
         const uniqueKeys = [...keys];
-        for (
-          let offset = 0;
-          offset < uniqueKeys.length;
-          offset += PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE
-        ) {
-          const batchKeys = uniqueKeys.slice(offset, offset + PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE);
+        for (let offset = 0; offset < uniqueKeys.length; offset += DELETE_IN_BATCH_SIZE) {
+          const batchKeys = uniqueKeys.slice(offset, offset + DELETE_IN_BATCH_SIZE);
           yield* input.core.deleteMany("plugin_storage", {
             where: (b) =>
               b.and(
@@ -1752,7 +1779,7 @@ const makePluginStorageFacade = (input: {
       if (validationError) return yield* validationError;
 
       const rows = yield* input.core.findMany("plugin_storage", {
-        where: whereFor(definition.name),
+        where: whereFor(definition.name, undefined, sqlKeyPrefix(queryInput?.keyPrefix)),
       });
       const filtered = sortByOwnerPrecedence(rows)
         .filter((row) =>
@@ -1828,7 +1855,7 @@ const makePluginStorageFacade = (input: {
     list: (storageInput) =>
       Effect.gen(function* () {
         const rows = yield* input.core.findMany("plugin_storage", {
-          where: whereFor(storageInput.collection),
+          where: whereFor(storageInput.collection, undefined, sqlKeyPrefix(storageInput.keyPrefix)),
         });
         return sortByOwnerPrecedence(rows)
           .filter((row) =>
@@ -3524,6 +3551,53 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const persistCatalog = <A, E>(effect: Effect.Effect<A, E>) =>
       catalogPersistLock.withPermits(1)(transaction(effect));
 
+    // Upsert catalog rows in calls bounded by their serialized size (see
+    // CATALOG_UPSERT_CHUNK_BYTES). Chunks commit independently, which the
+    // upsert-then-prune rebuild tolerates: a cut-off rebuild leaves every row
+    // intact and the connection unstamped.
+    const upsertCatalogRows = (
+      table: "tool" | "definition",
+      update: readonly string[],
+      rows: readonly Record<string, unknown>[],
+    ) =>
+      Effect.gen(function* () {
+        let chunk: Record<string, unknown>[] = [];
+        let chunkBytes = 0;
+        for (const row of rows) {
+          const rowBytes = JSON.stringify(row).length;
+          if (chunk.length > 0 && chunkBytes + rowBytes > CATALOG_UPSERT_CHUNK_BYTES) {
+            yield* core.upsertMany(table, { target: CATALOG_ROW_KEY, update, values: chunk });
+            chunk = [];
+            chunkBytes = 0;
+          }
+          chunk.push(row);
+          chunkBytes += rowBytes;
+        }
+        yield* core.upsertMany(table, { target: CATALOG_ROW_KEY, update, values: chunk });
+      });
+
+    // Delete the connection's catalog rows whose names the new listing no
+    // longer produces. Reads names only, so an unchanged catalog costs one
+    // narrow read and no writes.
+    const pruneCatalogRows = (
+      table: "tool" | "definition",
+      where: CoreWhere,
+      kept: readonly { readonly name: string }[],
+    ) =>
+      Effect.gen(function* () {
+        const keptNames = new Set(kept.map((row) => row.name));
+        const existing = yield* core.findMany(table, { where, select: ["name"] });
+        const staleNames = existing
+          .map((row) => String(row.name))
+          .filter((name) => !keptNames.has(name));
+        for (let offset = 0; offset < staleNames.length; offset += DELETE_IN_BATCH_SIZE) {
+          const batch = staleNames.slice(offset, offset + DELETE_IN_BATCH_SIZE);
+          yield* core.deleteMany(table, {
+            where: (b: AnyCb) => b.and(where(b), b("name", "in", batch)),
+          });
+        }
+      });
+
     const produceConnectionToolsUnshared = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
@@ -3747,12 +3821,32 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
+        // Replace the catalog without ever emptying it: upsert every current
+        // row, then prune only the names this listing no longer produces. On
+        // D1 (no interactive transactions) each statement commits on its own,
+        // so the old delete-then-insert showed concurrent reads an empty
+        // catalog for the whole rebuild, and a rebuild interrupted midway or
+        // overlapping another session's rebuild left it partial. Definitions
+        // land before the tools that `$ref` them and are pruned after the
+        // tools that stopped referencing them; the stamp comes last, so an
+        // interrupted rebuild stays stale and retries over intact rows.
         yield* persistCatalog(
           Effect.gen(function* () {
-            yield* core.deleteMany("tool", { where });
-            yield* core.deleteMany("definition", { where });
-            yield* core.createMany("tool", toolRows);
-            yield* core.createMany("definition", definitionRows);
+            yield* upsertCatalogRows("definition", ["plugin_id", "schema"], definitionRows);
+            yield* upsertCatalogRows(
+              "tool",
+              [
+                "plugin_id",
+                "description",
+                "input_schema",
+                "output_schema",
+                "annotations",
+                "updated_at",
+              ],
+              toolRows,
+            );
+            yield* pruneCatalogRows("tool", where, toolRows);
+            yield* pruneCatalogRows("definition", where, definitionRows);
             yield* stampSynced(existingRow);
           }),
         );
@@ -5537,6 +5631,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const toolsSyncTtlMs =
       config.toolsSyncTtlMs === undefined ? DEFAULT_TOOLS_SYNC_TTL_MS : config.toolsSyncTtlMs;
 
+    // How many stale catalogs a tools read rebuilds at once
+    // (`ExecutorConfig.toolsSyncConcurrency`).
+    const toolsSyncConcurrency = config.toolsSyncConcurrency ?? STALE_TOOLS_SYNC_CONCURRENCY;
+
     // Rebuild any visible connection whose persisted tool catalog is stale.
     // Three triggers:
     //  - stale-marked: `tools_synced_at` is NULL (`connections.markToolsStale`
@@ -5672,15 +5770,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         if (deferred.length > 0) {
           const background = yield* Effect.forkDetach(
-            Effect.all(deferred, { concurrency: STALE_TOOLS_SYNC_CONCURRENCY }),
+            Effect.all(deferred, { concurrency: toolsSyncConcurrency }),
           );
           config.waitUntil?.(
             new Promise<void>((resolve) => background.addObserver(() => resolve(undefined))),
           );
         }
-        yield* Effect.all(urgent, {
-          concurrency: STALE_TOOLS_SYNC_CONCURRENCY,
-        });
+        yield* Effect.all(urgent, { concurrency: toolsSyncConcurrency });
       });
 
     // How long a tools read waits for the stale sync before answering from
