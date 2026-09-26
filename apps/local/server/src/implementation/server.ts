@@ -5,7 +5,7 @@ import { startScheduleWorker, defaultScheduleWorkerOptions } from "@executor-js/
 import { localScheduleHandlers } from "./schedules.ts";
 import { localMcpApproval } from "./mcp-approvals.ts";
 import { makeLocalMcpOAuth } from "./mcp-oauth.ts";
-import { remoteRegistry } from "@executor-js/app-registry";
+import { hostedExecutorOrigin, remoteRegistry } from "@executor-js/app-registry";
 import { localAppManagement } from "./app-management.ts";
 
 /** Local host composition. The SDK owns operations; this package owns local resources and access. */
@@ -87,7 +87,7 @@ export const localApi = (
       }).pipe(startupPhase("runtime"));
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
-          Config.withDefault("https://v2.executor.sh"),
+          Config.withDefault(hostedExecutorOrigin),
         ),
       );
       const repositories = nativeRepositories(path.join(directory, "repositories"));

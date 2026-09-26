@@ -1820,6 +1820,15 @@ export const scenarios = {
       ),
     },
   },
+  localAppsCli: {
+    file: "local-apps-cli.spec.ts",
+    title: "apps CLI explains sign-in, reads host skills, and creates from a directory",
+    targets: {
+      local: scheduled,
+      "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+      cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+    },
+  },
   skillFolder: {
     fixtures: "actors",
     file: "skill-folder.spec.ts",
