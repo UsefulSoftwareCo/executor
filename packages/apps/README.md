@@ -56,6 +56,9 @@ operation and shared schema before publishing the current revision. A warm call
 reads that revision and the requested operation's schema dependencies. It does
 not download, parse, or read the full catalog. `openapiOperations` remains the
 lower-level helper for already normalized metadata.
+`parameterDefaults` binds path, query or header values to the selected account.
+Those parameters become optional and publish their value as the schema `default`;
+an explicit value still wins.
 
 The default refresh window is five minutes fresh plus five minutes stale.
 `freshFor` and `staleFor` can change it. A stale read schedules a bounded refresh;

@@ -1,7 +1,7 @@
 /** Vitest hooks own isolated servers and cleanup; the test deadline owns scenario work. */
 import { Clock, Effect, Exit, FileSystem, Layer, Scope } from "effect";
 import { beforeEach, type TestContext } from "vitest";
-import { startScenario } from "../sdk/scenario.ts";
+import { prepareScenario, startScenario } from "../sdk/scenario.ts";
 import { RuntimeLive, Target } from "./platform.ts";
 import { Actors } from "./actors.ts";
 import { prepareManagementApp } from "./management-app.ts";
@@ -73,9 +73,14 @@ export const installScenarioLifecycle = () =>
                 { mode: 0o600 },
               )
               .pipe(Effect.orDie);
-          const target = yield* startScenario(base, context.task.name);
           const plan: typeof TestPlan.Type | undefined = Object.values(scenarios).find(
             (scenario) => scenario.title === context.task.name,
+          );
+          // The CLI test exercises creation and removal itself. An unused outer
+          // server would compete with the server whose lifecycle it verifies.
+          const target = yield* (plan?.fixtures === "cli" ? prepareScenario : startScenario)(
+            base,
+            context.task.name,
           );
           let actors: typeof Actors.Service | undefined;
           if (plan?.fixtures === "actors") {

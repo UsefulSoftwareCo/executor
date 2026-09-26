@@ -151,7 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           actors,
           prefix,
           name,
-          resources,
           app,
           path,
           submit,
@@ -216,6 +215,8 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           files: files("v2"),
         });
         expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+        // The original run may proceed only after credentials and deployment have changed.
+        expect((yield* call("mutations.release", { label: "pinned" })).status).toBe(200);
         const completed = yield* wait(run.id, "complete");
         expect(completed.deployment).toBe(app.activeDeployment);
         const output = yield* Schema.decodeUnknownEffect(
@@ -243,11 +244,22 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
             .map((row) => row.source),
         ).toEqual(["synthetic-refreshed", "synthetic-refreshed"]);
         expect((yield* wait((yield* start("quick")).id, "complete")).output).toBe("v2");
+      }),
+    ),
+  );
+  it.effect(scenarios.workflowHistory.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, name, resources, app, path, profile, start, wait, call } =
+          yield* workflowFixture;
+        const run = yield* start("quick");
+        expect((yield* wait(run.id, "complete")).output).toBe("v1");
         const launched = yield* call("mutations.launch", { key: name + "-handler" });
         expect(launched.status).toBe(200);
         const internal = yield* body(Run, launched);
         resources.runs.push({ app: app.id, id: internal.id });
-        expect((yield* wait(internal.id, "complete")).output).toBe("v2");
+        expect((yield* wait(internal.id, "complete")).output).toBe("v1");
         expect((yield* call("queries.history")).status).toBe(200);
         expect(
           (yield* api.request(

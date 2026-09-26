@@ -38,6 +38,7 @@ import {
   HostToolApprovalRequired,
   HostToolPolicyFailed,
   HostedTool,
+  HostedToolSummary,
   ResolvedAccounts,
   HostError,
   TrustedToolApproval,
@@ -52,6 +53,7 @@ import {
   type ElicitationHandler,
 } from "../contracts/elicitation.ts";
 import { makeElicit } from "./elicitation.ts";
+import { inputInvalid } from "./input-problems.ts";
 import { ApprovalDecision } from "../contracts/approval.ts";
 import { importedJsonSchema } from "./schema.ts";
 import { OperationToolPrefixes } from "../contracts/operations.ts";
@@ -141,7 +143,7 @@ function requirements(slots: AccountSlots, database?: typeof DeclaredRequirement
     }
     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
       accounts: Object.fromEntries(accounts),
-      capabilities: { skills: true },
+      capabilities: { skills: true, toolIndex: true },
       ...(database === undefined ? {} : { database }),
     }).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
   });
@@ -333,13 +335,21 @@ function dispatch(
         Effect.withSpan("app.evaluate"),
       );
       if (request.operation === "skills") {
-        const skills =
-          definition.skills === undefined
-            ? yield* folderSkillsEffect({ files }).pipe(
-                Effect.mapError(() => new HostDeclarationInvalid()),
-              )
-            : definition.skills;
-        return yield* Schema.decodeUnknownEffect(AppSkills)(skills).pipe(
+        const declared =
+          definition.skills ??
+          (yield* folderSkillsEffect({ files }).pipe(
+            Effect.mapError(() => new HostDeclarationInvalid()),
+          ));
+        // Dynamic skills fail like evaluation and join the static catalog. Other operations never
+        // call them. A repeated name fails the catalog check below.
+        const source = definition.dynamicSkills;
+        const dynamic =
+          source === undefined
+            ? []
+            : yield* evaluationSafe(Effect.suspend(source.list)).pipe(
+                Effect.withSpan("app.skills.load"),
+              );
+        return yield* Schema.decodeUnknownEffect(AppSkills)([...declared, ...dynamic]).pipe(
           Effect.mapError(() => new HostDeclarationInvalid()),
         );
       }
@@ -422,17 +432,20 @@ function dispatch(
         );
       }
       if (request.operation === "inspect") {
-        const metadata: HostedTool[] = [];
+        const summary = request.detail === "summary";
+        const wanted = request.tools === undefined ? undefined : new Set(request.tools);
+        const metadata: (HostedTool | HostedToolSummary)[] = [];
         for (const [prefix, readOnly, catalog] of [
           [OperationToolPrefixes.query, true, definition.queries],
           [OperationToolPrefixes.mutate, false, definition.mutations],
         ] as const) {
           for (const [name, operation] of Object.entries(catalog ?? {})) {
+            if (wanted !== undefined && !wanted.has(`${prefix}${name}`)) continue;
             metadata.push(
               yield* safe(
                 () =>
                   Effect.gen(function* () {
-                    return yield* Schema.decodeUnknownEffect(HostedTool)({
+                    const fields = {
                       name: `${prefix}${name}`,
                       schedules: Object.entries(definition.schedules ?? {})
                         .filter(([, schedule]) => schedule.tool === `${prefix}${name}`)
@@ -440,14 +453,19 @@ function dispatch(
                       description:
                         operation.description ?? `${readOnly ? "Query" : "Mutate"} ${name}`,
                       ...(operation.title === undefined ? {} : { title: operation.title }),
+                      readOnly,
+                      annotations: { ...operation.annotations, readOnlyHint: readOnly },
+                    };
+                    if (summary)
+                      return yield* Schema.decodeUnknownEffect(HostedToolSummary)(fields);
+                    return yield* Schema.decodeUnknownEffect(HostedTool)({
+                      ...fields,
                       inputSchema: yield* jsonSchema(operation.input),
                       ...(operation.output === undefined
                         ? operation.outputSchema === undefined
                           ? {}
                           : { outputSchema: operation.outputSchema }
                         : { outputSchema: yield* jsonSchema(operation.output) }),
-                      readOnly,
-                      annotations: { ...operation.annotations, readOnlyHint: readOnly },
                       ...(operation._meta === undefined ? {} : { _meta: operation._meta }),
                     });
                   }),
@@ -457,16 +475,32 @@ function dispatch(
           }
         }
         const dynamic = definition.dynamicTools;
-        if (dynamic !== undefined) {
-          const discovered = yield* evaluationSafe(dynamic.list()).pipe(
+        if (dynamic !== undefined && (wanted === undefined || metadata.length < wanted.size)) {
+          const declared = new Set(metadata.map((tool) => tool.name));
+          const discover = (): Effect.Effect<readonly unknown[], unknown> => {
+            if (summary && dynamic.summaries !== undefined) return dynamic.summaries();
+            if (wanted !== undefined && dynamic.describe !== undefined) {
+              const describe = dynamic.describe;
+              return Effect.forEach(
+                [...wanted].filter((name) => !declared.has(name)),
+                (name) => describe(name),
+                { concurrency: "unbounded" },
+              ).pipe(Effect.map((tools) => tools.filter((tool) => tool !== undefined)));
+            }
+            return dynamic.list();
+          };
+          const discovered = yield* evaluationSafe(discover()).pipe(
             Effect.flatMap((value) =>
               safe(
-                () => Schema.decodeUnknownEffect(Schema.Array(HostedTool))(value),
+                () =>
+                  summary
+                    ? Schema.decodeUnknownEffect(Schema.Array(HostedToolSummary))(value)
+                    : Schema.decodeUnknownEffect(Schema.Array(HostedTool))(value),
                 new HostDeclarationInvalid(),
               ),
             ),
           );
-          const names = new Set(metadata.map((tool) => tool.name));
+          const names = new Set(declared);
           for (const tool of discovered) {
             const readOnly = tool.name.startsWith(OperationToolPrefixes.query);
             if (
@@ -477,6 +511,7 @@ function dispatch(
             )
               return yield* new HostDeclarationInvalid();
             names.add(tool.name);
+            if (wanted !== undefined && !wanted.has(tool.name)) continue;
             metadata.push({
               ...tool,
               readOnly,
@@ -556,9 +591,14 @@ function dispatch(
         return yield* request.operation === "call"
           ? new HostToolNotFound()
           : new HostOperationNotFound();
-      const input = yield* safe(
-        () => Schema.decodeUnknownEffect(tool.input)(request.input),
-        new HostInputInvalid(),
+      const input = yield* Effect.suspend(() =>
+        Schema.decodeUnknownEffect(tool.input)(request.input),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.fail(inputInvalid(Cause.squash(cause))),
+        ),
       );
       if (context.approval !== undefined) {
         const approved = yield* safe(

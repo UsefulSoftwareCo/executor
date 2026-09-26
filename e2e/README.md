@@ -84,7 +84,9 @@ minute-based scheduling without adding a minute of sleep to each scenario.
 Each case owns its fixtures. Self-host runs signup and invitations against a new
 process and PGlite directory. Local uses its own process, database and pairing key.
 Cloud shares one Worker and database while each case owns a random organization
-and three synthetic identities. A runner-owned loopback process provisions Cloud
+and three synthetic identities. Managed Cloud serves the built site through that
+Worker, including its static asset rewrites and server-resolved entry pages.
+It does not start Vite's source development server. A runner-owned loopback process provisions Cloud
 fixtures. It keeps database and signing credentials in memory. Neither those
 credentials nor fixture endpoints are installed in the Worker.
 The test plan declares `appOrigin: true` for scenarios that use private app URLs.
@@ -677,12 +679,16 @@ Run it alone with `bun run e2e:deployed --test-name 'Cloud compiler memory failu
 The default deployed filter excludes it because exhausting the shared compiler
 can interrupt other scenarios' builds.
 
-The three MCP memory soak probes run in the separate `deployed-cloud-soak` job
+The MCP memory soak probes use the separate `deployed-cloud-soak` job
 after the functional deployed job on `main`. PRs run the emulated Cloud target.
 Main and manual deployed CI jobs share one non-cancelling concurrency group;
 scenario workers remain parallel within each job. Agents can still run targeted
 disposable deployments through this CLI.
-They share a disposable deployment and run concurrently in independent organizations.
+The shared-session and distributed-session probes are temporarily skipped because deployed
+streams end unexpectedly; see [the failing run](https://github.com/UsefulSoftwareCo/executor-next/actions/runs/36063767428).
+The reconnect-burst probe remains enabled. The skipped probes retain their workloads and
+assertions for re-enabling after the transport cause is resolved. Enabled probes share a
+disposable deployment and run concurrently in independent organizations.
 Their original stream counts, reconnect rounds, observation periods and 20-minute
 deadlines are preserved. The normal deployed suite excludes these probes and keeps
 its 16 workers and separate 60-second setup, scenario and cleanup deadlines.

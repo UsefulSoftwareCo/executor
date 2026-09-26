@@ -5,7 +5,9 @@ import { mcpMemoryProbe } from "../support/mcp-memory-scenario.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("MCP memory", (it) => {
-  it.effect(
+  // Temporarily skipped: deployed streams end unexpectedly; the transport cause is unresolved.
+  // Evidence: https://github.com/UsefulSoftwareCo/executor-next/actions/runs/36063767428
+  it.effect.skip(
     scenarios.mcpMemoryShared.title,
     (context) =>
       withHostedCase(

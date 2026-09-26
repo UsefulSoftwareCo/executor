@@ -145,6 +145,13 @@ export const telemetryHttpClient = Layer.effect(
                   error.reason instanceof HttpClientError.DecodeError
                   ? "acknowledgement"
                   : "transport",
+              ).pipe(
+                Effect.annotateLogs({
+                  "executor.telemetry.http_status": error.response?.status ?? 0,
+                  "executor.telemetry.timed_out":
+                    error.reason instanceof HttpClientError.TransportError &&
+                    error.reason.description === "Telemetry collector acknowledgement timed out",
+                }),
               ),
             ),
             Effect.onInterrupt(() =>

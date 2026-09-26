@@ -206,8 +206,25 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
         yield* browser.use("Owner sees the authoring action", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}?view=skills`),
         );
-        yield* browser.use("Author can copy a skills prompt", (page) =>
-          page.getByRole("button", { name: "Copy prompt", exact: true }).waitFor(),
+        yield* browser.use("Author can start a skill from the empty state", (page) =>
+          page
+            .getByRole("heading", { name: "Give your app its first skill", exact: true })
+            .locator("..")
+            .getByRole("button", { name: "New skill", exact: true })
+            .click()
+            .then(() =>
+              page
+                .getByRole("dialog", { name: "New skill", exact: true })
+                .getByLabel("Name", { exact: true })
+                .fill("First skill"),
+            ),
+        );
+        yield* browser.checkpoint("Owner can author a first skill directly");
+        yield* browser.use("Cancel the skill draft without changing the empty app", (page) =>
+          page
+            .getByRole("dialog", { name: "New skill", exact: true })
+            .getByRole("button", { name: "Cancel", exact: true })
+            .click(),
         );
         yield* browser.login(actors.member);
         for (const tab of ["skills", "schedules"] as const) {

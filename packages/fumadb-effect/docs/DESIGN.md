@@ -182,11 +182,7 @@ package exports. The original tests and SQL snapshots are retained in `test/`.
   runnable script.
 - Value codec matrix (`schema/codec.ts`) is the single place that knows how a
   provider represents each column type. See the table in that file.
-- Tests: `@effect/vitest`. Real databases from `docker-compose.yml`
-  (`bun run db:up`). `test/support/databases.ts` exposes one layer per
-  provider and `resetDatabase`. Snapshot oracles copied from upstream live in
-  `test/snapshots/upstream/**` and must match after normalising the
-  `name-variants` JSON payload.
+- Tests: none in this package; Executor is tested only through `e2e/`.
 
 ## Deliberate deviations from upstream
 

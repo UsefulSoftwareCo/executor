@@ -15,7 +15,7 @@ export const TargetPlan = Schema.Union([
 export const TestPlan = Schema.Struct({
   file: Schema.String,
   title: Schema.String,
-  fixtures: Schema.optional(Schema.Literal("actors")),
+  fixtures: Schema.optional(Schema.Literals(["actors", "cli"])),
   appOrigin: Schema.optional(Schema.Literal(true)),
   managementProfiles: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
   targets: Schema.Struct({ "self-host": TargetPlan, local: TargetPlan, cloud: TargetPlan }),
@@ -33,6 +33,28 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  workflowReplayAccess: {
+    fixtures: "actors",
+    file: "workflow-replay-access.spec.ts",
+    title: "workflow replay checks retained account access after profile rebinding",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario exercises hosted account sharing and profile authorization."),
+    },
+  },
+  activeDeploymentTools: {
+    fixtures: "actors",
+    file: "active-deployment-tools.spec.ts",
+    title: "Hosted new tool calls reject retired deployments and preserve active approval policy",
+    targets: { "self-host": scheduled, cloud: scheduled, local: na("Hosted authorization policy") },
+  },
+  activeDeploymentResume: {
+    fixtures: "actors",
+    file: "active-deployment-tools.spec.ts",
+    title: "Hosted MCP resumes pinned approvals after promotion with current authorization",
+    targets: { "self-host": scheduled, cloud: scheduled, local: na("Hosted authorization policy") },
+  },
   graphqlPublicCache: {
     fixtures: "actors",
     file: "graphql-cache.spec.ts",
@@ -84,10 +106,50 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  liveOpenapiCache: {
+    fixtures: "actors",
+    file: "live-openapi-cache.spec.ts",
+    title: "Live OpenAPI reuses fresh definitions and validates input before dispatch",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture; deployed Cloud API benchmark covers the live runtime"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  dynamicOnlyApp: {
+    fixtures: "actors",
+    file: "dynamic-only-app.spec.ts",
+    title: "Dynamic-only apps resolve and call tools without a static catalog",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted profile API fixture; Node adapter exercised by self-host"),
+    },
+  },
+  appCacheAccounts: {
+    fixtures: "actors",
+    file: "app-cache-accounts.spec.ts",
+    title: "App cache isolates accounts, credential rotations and profile access",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted profile API fixture; Node adapter exercised by self-host"),
+    },
+  },
   appCache: {
     fixtures: "actors",
     file: "app-cache.spec.ts",
-    title: "App cache shares values, fences concurrent loads and retains background refreshes",
+    title: "App cache shares values, coalesces loads and retains values after refresh failure",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted profile API fixture; Node adapter exercised by self-host"),
+    },
+  },
+  appCacheFences: {
+    fixtures: "actors",
+    file: "app-cache-fences.spec.ts",
+    title: "App cache fences invalidated loaders and retains background refreshes",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -145,6 +207,7 @@ export const scenarios = {
     },
   },
   testingCli: {
+    fixtures: "cli",
     file: "testing-cli.spec.ts",
     title: "Testing CLI owns scenario creation, role requests, population and teardown",
     targets: {
@@ -275,6 +338,16 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: na("Cloud routes new users through team setup."),
       local: na("Local uses pairing."),
+    },
+  },
+  seatOnlyBilling: {
+    fixtures: "actors",
+    file: "seat-only-billing.spec.ts",
+    title: "Seat-only billing runs HTTP and MCP without an execution balance",
+    targets: {
+      "self-host": na("Billing is cloud only."),
+      cloud: scheduled,
+      local: na("Billing is cloud only."),
     },
   },
   emptyStateBilling: {
@@ -587,6 +660,16 @@ export const scenarios = {
         "Self-host permits only one organization; foreign organization references are checked in the shared groups scenario.",
       ),
       local: na("Local has no organizations or groups."),
+    },
+  },
+  openapiPaths: {
+    fixtures: "actors",
+    file: "openapi-paths.spec.ts",
+    title: "OpenAPI path parameters cannot escape a narrowed MCP tool grant",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a controlled loopback HTTP API through the shared Worker runtime."),
+      local: na("Hosted MCP grant narrowing is verified on self-host."),
     },
   },
   openapiErrors: {
@@ -1137,6 +1220,7 @@ export const scenarios = {
   },
   appUiDiscovery: {
     fixtures: "actors",
+    managementProfiles: ["owner"],
     file: "app-ui.spec.ts",
     appOrigin: true,
     title: "MCP discovers private app URLs and preserves browser-only API boundaries",
@@ -1236,6 +1320,15 @@ export const scenarios = {
       local: na("This scenario uses hosted deployment and app authentication."),
     },
   },
+  authObservability: {
+    file: "auth-observability.spec.ts",
+    title: "Cloud OAuth callbacks report safe failures and verified sessions with stage traces",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud social sign-in instrumentation."),
+      local: na("Cloud social sign-in instrumentation."),
+    },
+  },
   observabilityOutcomes: {
     fixtures: "actors",
     file: "observability-outcomes.spec.ts",
@@ -1300,6 +1393,17 @@ export const scenarios = {
       local: na("Local uses its configured instance API key."),
     },
   },
+  executorOrganizationDefault: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "executor-organization-default.spec.ts",
+    title: "Executor platform operations default to the managed key's organization over MCP",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local management routes have no organization."),
+    },
+  },
   executorInstallationLoading: {
     fixtures: "actors",
     file: "executor-key-account.spec.ts",
@@ -1330,10 +1434,16 @@ export const scenarios = {
       local: na("This scenario checks hosted API and MCP parity."),
     },
   },
+  apiGrantRestrictions: {
+    fixtures: "actors",
+    file: "api-grant-restrictions.spec.ts",
+    title: "API grants retain exact selections through deployment, refresh and live narrowing",
+    targets: { "self-host": scheduled, cloud: scheduled, local: na("Hosted OAuth grant scenario") },
+  },
   liveGrantRestrictions: {
     fixtures: "actors",
-    file: "shared-authorization.spec.ts",
-    title: "MCP and API grants retain exact selections through refresh and live narrowing",
+    file: "mcp-grant-restrictions.spec.ts",
+    title: "MCP grants retain exact selections through deployment and live narrowing",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -1435,6 +1545,19 @@ export const scenarios = {
       local: na("Local uses its configured instance API key."),
     },
   },
+  warmRequestAuth: {
+    fixtures: "actors",
+    file: "warm-request-auth.spec.ts",
+    title: "Dashboard requests refuse signed-out sessions and removed members immediately",
+    targets: {
+      "self-host": scheduled,
+      cloud: {
+        status: "not-run",
+        reason: "This session lifecycle scenario uses self-host password login.",
+      },
+      local: na("Local has no dashboard sessions or organization memberships."),
+    },
+  },
   localWorkflows: {
     file: "local-workflows.spec.ts",
     title: "local app workflows execute through the authenticated SDK HTTP surface",
@@ -1523,16 +1646,36 @@ export const scenarios = {
       cloud: scheduled,
     },
   },
+  profileDeployment: {
+    fixtures: "actors",
+    file: "profile-picker.spec.ts",
+    title: "profile catalogs follow deployments independently across browser tabs",
+    targets: {
+      local: na("Hosted browser authority journey."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedProfiles: {
     fixtures: "actors",
     file: "hosted-profiles.spec.ts",
     title: "hosted profiles isolate subjects and preserve disabled account selections",
     targets: { local: na("Hosted membership only."), "self-host": scheduled, cloud: scheduled },
   },
+  hostedProfileScheduling: {
+    fixtures: "actors",
+    file: "hosted-profile-scheduling.spec.ts",
+    title: "hosted profiles isolate shared accounts for schedules and workflows",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted profile authorization"),
+    },
+  },
   hostedProfileRevocation: {
     fixtures: "actors",
     file: "hosted-profiles.spec.ts",
-    title: "hosted profiles recheck shared accounts for schedules, workflows and revocation",
+    title: "hosted profiles recheck shared accounts after deletion and revocation",
     targets: { local: na("Hosted membership only."), "self-host": scheduled, cloud: scheduled },
   },
   profiles: {
@@ -1544,10 +1687,30 @@ export const scenarios = {
       cloud: na("Hosted profile access has its own browser scenario."),
     },
   },
+  workflowProfiles: {
+    fixtures: "actors",
+    file: "workflow-profiles.spec.ts",
+    title: "approval-resumed workflow controls stay inside the caller's profile",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted profiles, API keys and MCP."),
+    },
+  },
   workflows: {
     fixtures: "actors",
     file: "workflows.spec.ts",
     title: "app workflows pin deployments and accounts, retry steps, and enforce permissions",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app and account management routes."),
+    },
+  },
+  workflowHistory: {
+    fixtures: "actors",
+    file: "workflows.spec.ts",
+    title: "app workflows launch from handlers and isolate paginated history",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -1594,6 +1757,37 @@ export const scenarios = {
       local: na("This scenario uses hosted account and webhook management routes."),
     },
   },
+  invitationRoles: {
+    fixtures: "actors",
+    file: "invitation-roles.spec.ts",
+    title: "invitation roles cannot grant owner authority through native auth routes",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  invitationPrivacy: {
+    fixtures: "actors",
+    file: "invitation-security.spec.ts",
+    title: "invitation secrets are available only to current organization administrators",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  invitationRedemption: {
+    fixtures: "actors",
+    file: "invitation-redemption.spec.ts",
+    title:
+      "self-host invitation links admit the intended role exactly once without replacing accounts",
+    targets: {
+      local: na("Self-host invitation signup."),
+      "self-host": scheduled,
+      cloud: na("Cloud requires a verified recipient instead of password registration."),
+    },
+  },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
     title: "Self-host administrator setup opens the agent handoff before Apps",
@@ -1635,6 +1829,15 @@ export const scenarios = {
       cloud: na(
         "Local bearer access is covered here; hosted OAuth skills use the hosted scenario.",
       ),
+    },
+  },
+  localAppsCli: {
+    file: "local-apps-cli.spec.ts",
+    title: "apps CLI explains sign-in, reads host skills, and creates from a directory",
+    targets: {
+      local: scheduled,
+      "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+      cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
     },
   },
   skillFolder: {
@@ -1825,6 +2028,7 @@ export const scenarios = {
     },
   },
   mcpSkills: {
+    managementProfiles: ["owner"],
     fixtures: "actors",
     file: "mcp-server.spec.ts",
     title: "MCP skills expose pinned instructions and obey live OAuth grant restrictions",

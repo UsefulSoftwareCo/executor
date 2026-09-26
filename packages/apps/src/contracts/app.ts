@@ -17,6 +17,8 @@ export interface AppDefinition<Context> {
   readonly dynamicTools?: import("./dynamic-tools.ts").DynamicTools;
   /** Omission reads packaged skills/. An explicit catalog replaces that default, including []. */
   readonly skills?: readonly AppSkillSource[];
+  /** Optional lazy skills, added to the static catalog. Only skill reads call them. */
+  readonly dynamicSkills?: import("./dynamic-skills.ts").DynamicSkills;
   readonly workflows?: Readonly<Record<string, AppWorkflow>>;
   readonly schedules?: Readonly<
     Record<string, Omit<OperationSchedule, "name"> & { readonly tool: string }>

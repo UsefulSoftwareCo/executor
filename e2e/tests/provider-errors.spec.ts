@@ -283,7 +283,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
             ),
           ).toBe(0);
           const held = yield* holdQuery(
-            new RegExp(`/api/organizations/[^/]+/apps/${app.id}/tools$`),
+            new RegExp(`/api/organizations/[^/]+/apps/${app.id}/tools/index$`),
             "continue",
           );
           yield* browser.use("Retry discovery", (page) =>

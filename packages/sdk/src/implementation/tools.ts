@@ -1,4 +1,9 @@
-import { ProviderError, SkillLoadFailed } from "apps/contracts";
+import {
+  ProviderError,
+  SkillLoadFailed,
+  type HostedTool,
+  type HostedToolSummary,
+} from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
 import { type Crypto, Effect, Match, Redacted, Result, Schema } from "effect";
@@ -176,9 +181,10 @@ export function resolve(
   }).pipe(Effect.provideService(CurrentProfile, state.profile));
 }
 
-type Snapshot = Effect.Success<ReturnType<typeof snapshot>>;
+/** One resolved invocation: app, pinned deployment, optional profile and account selection. */
+export type InvocationSnapshot = Effect.Success<ReturnType<typeof snapshot>>;
 
-function invocation(state: Snapshot, tool: ToolName, input: Json) {
+function invocation(state: InvocationSnapshot, tool: ToolName, input: Json) {
   return Schema.decodeUnknownEffect(ToolInvocation)({
     app: state.app.id,
     owner: state.app.owner,
@@ -225,7 +231,7 @@ export const evaluationFailure = (
 
 const runtimeFailure = (
   identity: { app: AppId; deployment: DeploymentId; tool: ToolName },
-  state: Snapshot,
+  state: InvocationSnapshot,
 ) =>
   Match.type<
     Effect.Error<ReturnType<Runtime["call"] | Runtime["query"] | Runtime["mutate"]>>
@@ -245,8 +251,14 @@ const runtimeFailure = (
       HostOperationNotFound: () => new ToolNotFound(identity),
       HostOperationFailed: () =>
         new ToolCallFailed({ ...identity, reason: "Operation execution failed" }),
-      HostInputInvalid: () =>
-        new InputInvalid({ ...identity, problems: ["Input did not match the tool schema"] }),
+      HostInputInvalid: ({ problems }) =>
+        new InputInvalid({
+          ...identity,
+          problems:
+            problems === undefined || problems.length === 0
+              ? ["Input did not match the tool schema"]
+              : problems,
+        }),
       HostToolBlocked: () => new ToolBlocked(identity),
       HostToolApprovalRequired: () => new ToolApprovalRequired(identity),
       HostToolPolicyFailed: () => new ToolPolicyFailed(identity),
@@ -267,6 +279,14 @@ const runtimeFailure = (
     }),
   );
 
+/** Reduce a full description from a build that cannot omit schemas itself. */
+const summarize = ({
+  inputSchema: _input,
+  outputSchema: _output,
+  _meta,
+  ...summary
+}: HostedTool): HostedToolSummary => summary;
+
 /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
 export const makeTools = (
   storage: ExecutorDatabase,
@@ -275,55 +295,71 @@ export const makeTools = (
   credentials: Credentials,
   crypto: Crypto.Crypto,
   appStorage?: AppDatabases,
-  workflows?: (
-    app: AppId,
-    state?: Effect.Success<ReturnType<typeof snapshot>>,
-  ) => WorkflowHostControls,
+  workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
+  /** Evaluate the selected profile's live catalog. */
+  const evaluate = <A, R>(
+    input: Parameters<Executor["tools"]["index"]>[0],
+    read: (
+      options: Parameters<typeof runtime.index>[0],
+      /** Earlier builds reject index and filtered inspection; they only describe every tool. */
+      toolIndex: boolean,
+    ) => Effect.Effect<A, Effect.Error<ReturnType<typeof runtime.index>>, R>,
+  ) =>
+    Effect.gen(function* () {
+      const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
+      const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
+        Effect.withSpan("sdk.accounts.resolve"),
+      );
+      yield* Effect.annotateCurrentSpan({
+        "executor.app.id": state.app.id,
+        "executor.deployment.id": state.deployment.id,
+        "executor.build.id": state.deployment.build,
+      });
+      const value = yield* read(
+        {
+          app: state.app.id,
+          build: state.deployment.build,
+          ...context,
+          ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
+        },
+        state.deployment.requirements.capabilities?.toolIndex === true,
+      ).pipe(
+        Effect.mapError((error) =>
+          Schema.is(ProviderError)(error)
+            ? appProviderFailure(state, error)
+            : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, error),
+        ),
+      );
+      const catalog = {
+        deployment: state.deployment.id,
+        ...(state.profile === undefined
+          ? {}
+          : {
+              profile: state.profile.id,
+              profileRevision: state.profile.revision,
+            }),
+      };
+      return { state, catalog, value };
+    });
   return {
     list: (input: Parameters<Executor["tools"]["list"]>[0]) =>
       Effect.gen(function* () {
-        const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
-        const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
-          Effect.withSpan("sdk.accounts.resolve"),
-        );
-        yield* Effect.annotateCurrentSpan({
-          "executor.app.id": state.app.id,
-          "executor.deployment.id": state.deployment.id,
-          "executor.build.id": state.deployment.build,
-        });
-        const tools = yield* runtime
-          .inspect({
-            app: state.app.id,
-            build: state.deployment.build,
-            ...context,
-            ...(workflows === undefined
-              ? {}
-              : { workflowControls: workflows(state.app.id, state) }),
-          })
-          .pipe(
-            Effect.mapError((error) =>
-              Schema.is(ProviderError)(error)
-                ? appProviderFailure(state, error)
-                : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, error),
-            ),
-          );
+        const {
+          state,
+          catalog,
+          value: tools,
+        } = yield* evaluate(input, (options) => runtime.inspect(options));
         const sorted = [...tools]
           .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
           .filter((tool) => input.cursor === undefined || tool.name > input.cursor);
         const selected = sorted.slice(0, input.limit ?? 2_000);
         const last = selected.at(-1);
         return {
-          deployment: state.deployment.id,
-          ...(state.profile === undefined
-            ? {}
-            : {
-                profile: state.profile.id,
-                profileRevision: state.profile.revision,
-              }),
+          ...catalog,
           items: selected.map((tool) => ({
             ...tool,
             app: state.app.id,
@@ -335,6 +371,50 @@ export const makeTools = (
             : {}),
         };
       }).pipe(Effect.withSpan("sdk.tools.list")),
+    index: (input: Parameters<Executor["tools"]["index"]>[0]) =>
+      Effect.gen(function* () {
+        const {
+          state,
+          catalog,
+          value: tools,
+        } = yield* evaluate(input, (options, toolIndex) =>
+          toolIndex
+            ? runtime.index(options)
+            : runtime
+                .inspect(options)
+                .pipe(Effect.map((tools) => tools.map((tool) => summarize(tool)))),
+        );
+        return {
+          ...catalog,
+          items: [...tools]
+            .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+            .map((tool) => ({
+              ...tool,
+              app: state.app.id,
+              deployment: state.deployment.id,
+              name: ToolName.make(tool.name),
+            })),
+        };
+      }).pipe(Effect.withSpan("sdk.tools.index")),
+    get: (input: Parameters<Executor["tools"]["get"]>[0]) =>
+      Effect.gen(function* () {
+        const { state, value: tools } = yield* evaluate(input, (options, toolIndex) =>
+          runtime.inspect(toolIndex ? { ...options, tools: [input.tool] } : options),
+        );
+        const tool = tools.find((tool) => tool.name === input.tool);
+        if (tool === undefined)
+          return yield* new ToolNotFound({
+            app: state.app.id,
+            deployment: state.deployment.id,
+            tool: input.tool,
+          });
+        return {
+          ...tool,
+          app: state.app.id,
+          deployment: state.deployment.id,
+          name: ToolName.make(tool.name),
+        };
+      }).pipe(Effect.withSpan("sdk.tools.get")),
     call: (input: Parameters<Executor["tools"]["call"]>[0], options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         if (yield* storage.reactivity.inTransaction) return yield* new RequestInvalid();
@@ -364,9 +444,7 @@ export const makeTools = (
           .call({
             app: state.app.id,
             ...(yield* bindAppStorage(appStorage, state.app.id)),
-            ...(workflows === undefined
-              ? {}
-              : { workflowControls: workflows(state.app.id, state) }),
+            ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
             build: state.deployment.build,
             database: state.deployment.requirements.database !== undefined,
             ...context,
@@ -461,7 +539,7 @@ export const makeTools = (
                       ...(yield* bindAppStorage(appStorage, saved.app)),
                       ...(workflows === undefined
                         ? {}
-                        : { workflowControls: workflows(saved.app) }),
+                        : { workflowControls: workflows(checked.success.state) }),
                       build: checked.success.state.deployment.build,
                       database:
                         checked.success.state.deployment.requirements.database !== undefined,

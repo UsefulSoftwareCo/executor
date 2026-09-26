@@ -30,7 +30,7 @@ const make = Effect.gen(function* () {
   });
   const chooseSocial = (provider: "google" | "github") =>
     Effect.gen(function* () {
-      const response = yield* browser.use(`Choose ${provider} sign-in`, (page) =>
+      const submit = browser.use(`Choose ${provider} sign-in`, (page) =>
         Promise.all([
           page.waitForResponse((response) => {
             const url = new URL(response.url());
@@ -49,9 +49,23 @@ const make = Effect.gen(function* () {
           response.headers()["content-type"]?.includes("application/json")
             ? response.json()
             : Promise.resolve(undefined)
-          ).then((failure: unknown) => ({ status: response.status(), failure })),
+          ).then((failure: unknown) => ({
+            status: response.status(),
+            failure,
+            retryAfter: response.headers()["x-retry-after"],
+          })),
         ),
       );
+      let response = yield* submit;
+      if (response.status === 429) {
+        // Managed Cloud scenarios share an IP. Respect the real auth rate limit
+        // when another scenario has used the current sign-in allowance.
+        const seconds = yield* Schema.decodeUnknownEffect(
+          Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(60)),
+        )(Number(response.retryAfter));
+        yield* Effect.sleep(seconds * 1000);
+        response = yield* submit;
+      }
       if (response.status !== 200) {
         const failure = Schema.decodeUnknownOption(AuthFailure)(response.failure);
         return yield* new OnboardingFailed({

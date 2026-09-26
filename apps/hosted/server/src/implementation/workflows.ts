@@ -1,11 +1,9 @@
-import { requireWorkflowAccess } from "./workflow-access.ts";
-/** Keep product permissions and execution admission outside the reusable workflow SDK. */
+import { requireWorkflowAccess, requireWorkflowReplayAccess } from "./workflow-access.ts";
+/** Keep product permissions outside the reusable workflow SDK. */
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { CurrentOrganization } from "../contracts/organization.ts";
-import { ExecutionAdmission } from "../contracts/execution-admission.ts";
 import { executionManagerOwner, currentOwner, selectedApp } from "./access.ts";
 
 /** Run reads check current membership; writes require current administrator authority. */
@@ -24,8 +22,11 @@ export const hostedWorkflowHandlers = HttpApiBuilder.group(HostedApi, "workflows
         const owner = yield* currentOwner,
           executor = yield* Effect.flatten(HostedExecutor);
         yield* selectedApp(executor, owner, params.app, payload.profile);
-        yield* (yield* ExecutionAdmission)((yield* CurrentOrganization).organization);
-        return yield* executor.apps.workflowRuns.start({ ...params, ...payload });
+        yield* requireWorkflowReplayAccess(executor, owner, params.app, payload);
+        const run = yield* executor.apps.workflowRuns.start({ ...params, ...payload });
+        // A concurrent start may have saved this key after the preflight read.
+        yield* requireWorkflowAccess(executor, owner, params.app, run.id);
+        return run;
       }),
     )
     .handle("get", ({ params }) =>

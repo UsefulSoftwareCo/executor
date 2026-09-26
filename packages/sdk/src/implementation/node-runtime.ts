@@ -15,6 +15,10 @@ import {
   HostResponse,
   ToolResultObservation,
   HostedTool,
+  HostedToolSummary,
+  indexCommand,
+  inspectCommand,
+  selectTools,
   type HostContext,
   type ResolvedAccountsInput,
 } from "apps/contracts";
@@ -449,21 +453,37 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
         ),
         Effect.withSpan("runtime.node.skills"),
       ),
-    inspect: ({ build, ...context }) =>
+    inspect: ({ build, tools, ...context }) =>
       load(build)
         .pipe(
           Effect.flatMap((handler) =>
             cachedDispatch(
               handler,
-              { operation: "inspect" },
+              inspectCommand(tools),
               context,
               Schema.Array(HostedTool),
               HostInspectError,
               build,
             ),
           ),
+          Effect.map(selectTools(tools)),
         )
         .pipe(Effect.withSpan("runtime.node.inspect")),
+    index: ({ build, ...context }) =>
+      load(build)
+        .pipe(
+          Effect.flatMap((handler) =>
+            cachedDispatch(
+              handler,
+              indexCommand,
+              context,
+              Schema.Array(HostedToolSummary),
+              HostInspectError,
+              build,
+            ),
+          ),
+        )
+        .pipe(Effect.withSpan("runtime.node.index")),
     query: ({ build, name, input, ...context }) =>
       load(build)
         .pipe(

@@ -50,10 +50,6 @@ const errorMessage = Match.type<HostedError>().pipe(
       })[reason],
     RegistryError: registryErrorMessage,
     AppAccessDenied: () => "You do not have permission to change this app.",
-    ExecutionLimitReached: () =>
-      "Your organization has reached its execution limit. The tool did not run. Ask an organization admin to review the limit.",
-    ExecutionAdmissionUnavailable: () =>
-      "We could not check your execution allowance. The tool did not run. Try again.",
     AppSlugTaken: () => "Another app name produces this address. Choose a different name.",
     AppNameTaken: () => "An app already uses this name. Choose another name.",
     AppDeploymentChanged: () =>

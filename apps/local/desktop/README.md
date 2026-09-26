@@ -92,17 +92,6 @@ preload or an IPC bridge for ordinary dashboard operations. Distribution builds,
 notarization, updates, and platform-specific release artifacts remain separate
 from this workspace launcher. Windows and Linux have not been verified.
 
-## Verification
-
-```sh
-node --test apps/local/desktop/test/server.test.ts
-```
-
-The integration test starts the real server with isolated test data. It checks
-one-use pairing, session authentication, private OAuth relay, callback rendering,
-and listener shutdown. Live provider consent is a separate check; the relay test
-does not claim Google or another provider has authorized an account.
-
 ## Persistent diagnostics
 
 Startup builds and copies the standalone Motel collector into `dist/motel`.

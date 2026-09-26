@@ -1,6 +1,7 @@
 /** Cloud records an unusable OAuth response with safe evidence and tells the user it was tracked. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
@@ -8,6 +9,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { BaseUrl, emulatorRequest } from "../support/emulators.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
+import { Evidence } from "../support/evidence.ts";
 
 const App = Schema.Struct({ id: Schema.String });
 const Instance = Schema.Struct({ providerBaseUrl: BaseUrl });
@@ -56,19 +58,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error report", (it) => {
         // Cloud Workers fetch only public addresses, so the issuer is a private MCP emulator
         // instance whose registration endpoint answers 200 without a client ID.
         const issuer = (yield* emulatorRequest("https://mcp.emulators.dev", "/_emulate/instances", {
-          instance: "executor-oauth-report",
+          instance: `executor-oauth-report-${randomUUID()}`,
         }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Instance)))).providerBaseUrl;
         yield* Effect.addFinalizer(() =>
           emulatorRequest(issuer, "/_emulate/reset", {}).pipe(Effect.orDie),
         );
-        yield* emulatorRequest(issuer, "/_emulate/faults", {
-          match: { method: "POST", pathPattern: "/register" },
-          response: {
-            status: 200,
-            body: { client_secret: "synthetic-client-secret", redirect_uris: [] },
-          },
-          times: 5,
-        });
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: "Connection error report",
@@ -92,18 +86,39 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
           page.emulateMedia({ colorScheme: "dark" }),
         );
         const title = "Executor could not use the service’s response";
-        yield* browser.use("Start sign-in against the incompatible registration", (page) =>
+        yield* browser.use("Prepare the service connection", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`)
             .then(() =>
               page.getByRole("button", { name: "Add Sample service account", exact: true }).click(),
             )
-            .then(() => page.getByLabel("Account name", { exact: true }).fill("Work reports"))
-            .then(() =>
-              page.getByRole("button", { name: "Connect Sample service", exact: true }).click(),
-            )
-            .then(() => page.getByRole("alert").getByText(title, { exact: true }).waitFor()),
+            .then(() => page.getByLabel("Account name", { exact: true }).fill("Work reports")),
         );
+        yield* emulatorRequest(issuer, "/_emulate/faults", {
+          match: { method: "POST", pathPattern: "/register" },
+          response: {
+            status: 200,
+            body: { client_secret: "synthetic-client-secret", redirect_uris: [] },
+          },
+          times: 5,
+        });
+        yield* browser.use("Start sign-in against the incompatible registration", (page) =>
+          page.getByRole("button", { name: "Connect Sample service", exact: true }).click(),
+        );
+        yield* browser
+          .use("Wait for the tracked registration failure", (page) =>
+            page.getByRole("alert").getByText(title, { exact: true }).waitFor(),
+          )
+          .pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                const ledger = yield* emulatorRequest(issuer, "/_emulate/ledger").pipe(
+                  Effect.flatMap(Schema.decodeUnknownEffect(Ledger)),
+                );
+                yield* (yield* Evidence).json("registration-requests.json", ledger);
+              }).pipe(Effect.orDie),
+            ),
+          );
         const ledger = yield* emulatorRequest(issuer, "/_emulate/ledger").pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Ledger)),
         );

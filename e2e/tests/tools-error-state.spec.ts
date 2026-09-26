@@ -45,7 +45,7 @@ export default defineApp({ accounts: {} }, async () => {
           "PRIVATE_TOOL_DIAGNOSTIC",
         );
         const paths = [actors.organization.id, actors.organization.slug].map(
-          (organization) => `/api/organizations/${organization}/apps/${app.id}/tools`,
+          (organization) => `/api/organizations/${organization}/apps/${app.id}/tools/index`,
         );
         const pageUrl = `/org/${actors.organization.slug}/apps/${app.id}?view=tools`;
         yield* browser.login(actors.owner);

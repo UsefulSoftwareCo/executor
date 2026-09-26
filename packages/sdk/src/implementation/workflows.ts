@@ -29,7 +29,7 @@ import { storedProfile } from "./profiles.ts";
 import { ProfileId } from "../contracts/shared.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
-import { resolve, snapshot } from "./tools.ts";
+import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import { bindAppStorage } from "./app-database.ts";
 
 const StoredRun = Schema.Struct({
@@ -177,7 +177,7 @@ export const makeWorkflowRuns = (
           ...(yield* resolve(state, resolveAccount, lifecycle)),
           database: state.deployment.requirements.database !== undefined,
           ...(yield* bindAppStorage(appStorage, row.app)),
-          workflowControls: controls(row.app, state),
+          workflowControls: controls(state),
         };
       }),
       "credentials",
@@ -357,10 +357,7 @@ export const makeWorkflowRuns = (
       yield* storedApp(db, { app: input.app });
       return yield* reconcile(yield* read(input.run, input.app));
     });
-  const start = (
-    input: typeof StartWorkflow.Type,
-    inherited?: Effect.Success<ReturnType<typeof snapshot>>,
-  ) =>
+  const start = (input: typeof StartWorkflow.Type, inherited?: InvocationSnapshot) =>
     Effect.gen(function* () {
       if (backend === undefined) return yield* unavailable();
       yield* storedApp(db, { app: input.app });
@@ -535,10 +532,10 @@ export const makeWorkflowRuns = (
         ...(rows.length > limit && last !== undefined ? { next: last.id } : {}),
       });
     }).pipe(Effect.withSpan("sdk.workflows.list"));
-  function controls(
-    app: AppId,
-    inherited?: Effect.Success<ReturnType<typeof snapshot>>,
-  ): WorkflowHostControls {
+  /** The snapshot is the profile boundary: controls never widen to another profile's runs. */
+  function controls(inherited: InvocationSnapshot): WorkflowHostControls {
+    const app = inherited.app.id;
+    const profile = inherited.profile?.id;
     const parse = <A, B>(
       schema: Schema.Decoder<A>,
       input: unknown,
@@ -547,7 +544,7 @@ export const makeWorkflowRuns = (
     const within = (input: typeof WorkflowTarget.Type) =>
       Effect.gen(function* () {
         const row = yield* read(input.run, input.app);
-        if (row.profile !== (inherited?.profile?.id ?? null)) return yield* failure("not_found");
+        if (row.profile !== (profile ?? null)) return yield* failure("not_found");
       });
     return {
       start: (input) =>
@@ -556,7 +553,7 @@ export const makeWorkflowRuns = (
           {
             ...input,
             app,
-            profile: inherited?.profile?.id,
+            profile,
           },
           (input) => start(input, inherited),
         ),
@@ -570,9 +567,9 @@ export const makeWorkflowRuns = (
           {
             ...input,
             app,
-            profile: inherited?.profile?.id,
+            profile,
           },
-          (input) => list(input, inherited?.profile?.id ?? null),
+          (input) => list(input, profile ?? null),
         ),
       terminate: (input) =>
         parse(WorkflowTarget, { ...input, app }, (input) =>

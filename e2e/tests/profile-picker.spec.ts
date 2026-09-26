@@ -238,8 +238,7 @@ layer(HostedLive, { excludeTestServices: true })("Profile picker", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, browser, files, app, path, url, first, second } =
-          yield* seededProfileFixture;
+        const { api, actors, browser, app, path, url, first, second } = yield* seededProfileFixture;
         yield* browser.login(actors.member);
         yield* browser.use("Open the app without a selected account", (page) =>
           page.goto(`${url}?view=tools`),
@@ -407,6 +406,31 @@ layer(HostedLive, { excludeTestServices: true })("Profile picker", (it) => {
             yield* api.request(actors.owner, "GET", `${path}/profiles`),
           ),
         ).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.profileDeployment.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { actors, browser, files, path, url, first, second } = yield* seededProfileFixture;
+        yield* browser.login(actors.member);
+        yield* browser.use("Open the personal profile before deployment", (page) =>
+          page.goto(`${url}?view=tools&profile=${first.id}`),
+        );
+        yield* browser.use("The personal profile has the original catalog", (page) =>
+          page.getByRole("button", { name: "queries.who", exact: true }).waitFor(),
+        );
+        const other = yield* browser.use("Open the work profile in another tab", (page) =>
+          page.context().newPage(),
+        );
+        yield* browser.use("Load the work profile before deployment", () =>
+          other.goto(`${url}?view=tools&profile=${second.id}`),
+        );
+        yield* browser.use("The work profile has the original catalog", () =>
+          other.getByRole("button", { name: "queries.who", exact: true }).waitFor(),
+        );
         const changed = yield* saveAndDeploy(actors.owner, path, {
           files: files.map((file) =>
             file.path === "index.ts"

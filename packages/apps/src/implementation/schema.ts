@@ -300,6 +300,62 @@ function interpretedDocument(value: EffectSchema.Json): EffectSchema.Json {
   return Object.fromEntries(entries);
 }
 
+// Keywords that only wrap a nested failure; the nested error carries the useful location.
+const containerKeywords = new Set([
+  "$ref",
+  "$recursiveRef",
+  "$dynamicRef",
+  "properties",
+  "patternProperties",
+  "additionalProperties",
+  "unevaluatedProperties",
+  "propertyNames",
+  "items",
+  "prefixItems",
+  "additionalItems",
+  "unevaluatedItems",
+  "contains",
+  "allOf",
+  "if",
+  "then",
+  "else",
+  "dependentSchemas",
+]);
+
+/**
+ * Locate imported JSON Schema failures without the validator's text, which can quote input
+ * values. Type failures name only the schema's expected types.
+ */
+const jsonSchemaProblems = (
+  errors: readonly { keyword: string; instanceLocation: string; error: string }[],
+) => {
+  const problems = errors.flatMap(({ keyword, instanceLocation, error }) => {
+    if (containerKeywords.has(keyword)) return [];
+    const path = instanceLocation
+      .replace(/^#\/?/, "")
+      .split("/")
+      .filter((segment) => segment !== "")
+      .map((segment) => decodeURIComponent(segment).replace(/~1/g, "/").replace(/~0/g, "~"))
+      .map((segment) => (/^\d+$/.test(segment) ? Number(segment) : segment));
+    const required = keyword === "required" ? /required property "([^"]*)"/.exec(error) : null;
+    const expected = keyword === "type" ? /Expected "([^.]*)"\.?$/.exec(error) : null;
+    const issue =
+      required !== null
+        ? { path: [...path, required[1] ?? ""], issue: "Missing key" }
+        : {
+            path,
+            issue:
+              expected !== null
+                ? `Expected ${(expected[1] ?? "").replace(/"/g, "")}`
+                : keyword === "const" || keyword === "enum"
+                  ? "Expected one of the allowed values"
+                  : `Failed the "${keyword}" constraint`,
+          };
+    return [issue];
+  });
+  return problems.length === 0 ? false : problems;
+};
+
 /** Prepare an interpreted validator. No eval or generated JavaScript runs in any host. */
 export const compileJsonSchemaDecoder = (document: JsonObject) =>
   Effect.gen(function* () {
@@ -344,7 +400,8 @@ export const compileJsonSchemaDecoder = (document: JsonObject) =>
       EffectSchema.makeFilter(
         (value) => {
           try {
-            return validator.validate(value).valid;
+            const result = validator.validate(value);
+            return result.valid || jsonSchemaProblems(result.errors);
           } catch {
             return false;
           }

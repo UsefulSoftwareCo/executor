@@ -264,11 +264,13 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect((yield* control(origin)).counters.list).toBe(1);
         const warmMs = yield* Effect.forEach([1, 2, 3], () => measured("alpha_fixture_0000"));
         expect((yield* control(origin)).counters.list).toBe(1);
+        const listStart = performance.now();
         const listed = yield* app.api.request(
           app.actors.owner,
           "GET",
           `${app.path}/tools?profile=${app.profile.id}`,
         );
+        const listMs = performance.now() - listStart;
         expect(listed.status).toBe(200);
         const page = yield* body(
           Schema.Struct({
@@ -280,6 +282,56 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect(page.items.length).toBe(2000);
         expect(page.next).toBeDefined();
         expect((yield* control(origin)).counters.list).toBe(1);
+        // Browsing reads the whole catalog without schemas, then one tool's schemas.
+        const indexStart = performance.now();
+        const indexed = yield* app.api.request(
+          app.actors.owner,
+          "GET",
+          `${app.path}/tools/index?profile=${app.profile.id}`,
+        );
+        const indexMs = performance.now() - indexStart;
+        expect(indexed.status).toBe(200);
+        const index = yield* body(
+          Schema.Struct({ items: Schema.Array(Schema.Record(Schema.String, Schema.Json)) }),
+          indexed,
+        );
+        // Every upstream tool plus the app's declared refresh query.
+        expect(index.items.length).toBe(3001);
+        expect(index.items.some((tool) => "inputSchema" in tool || "outputSchema" in tool)).toBe(
+          false,
+        );
+        const selected = index.items.find((tool) => tool.name !== "queries.refresh")?.name;
+        expect(typeof selected).toBe("string");
+        const describeStart = performance.now();
+        const described = yield* app.api.request(
+          app.actors.owner,
+          "GET",
+          `${app.path}/tools/${String(selected)}?profile=${app.profile.id}`,
+        );
+        const describeMs = performance.now() - describeStart;
+        expect(described.status).toBe(200);
+        const tool = yield* body(
+          Schema.Struct({
+            name: Schema.String,
+            inputSchema: Schema.Struct({ anyOf: Schema.Array(Schema.Json) }),
+          }),
+          described,
+        );
+        expect(tool.name).toBe(selected);
+        expect(tool.inputSchema.anyOf.length).toBe(1);
+        expect(
+          (yield* app.api.request(
+            app.actors.owner,
+            "GET",
+            `${app.path}/tools/queries.missing_tool?profile=${app.profile.id}`,
+          )).status,
+        ).toBe(404);
+        expect((yield* control(origin)).counters.list).toBe(1);
+        yield* Effect.logInfo("MCP catalog browsing measurements", {
+          listMs,
+          indexMs,
+          describeMs,
+        });
         const countBefore = (yield* control(origin)).counters.call;
         expect(
           (yield* app.call("alpha_fixture_0000", { accountId: alpha, input: { message: 42 } }))

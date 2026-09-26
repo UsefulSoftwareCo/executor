@@ -1,6 +1,6 @@
 {
   "name": "executor",
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0-beta.3",
   "private": true,
   "description": "Run Executor locally and connect your agents to your apps.",
   "homepage": "https://v2.executor.sh",

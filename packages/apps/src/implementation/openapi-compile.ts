@@ -5,6 +5,7 @@ import { jsonSchema } from "./schema.ts";
 import {
   OpenapiErrorResponse,
   openapiMediaKind,
+  isOpenapiFileSchema,
   isOpenapiTextMedia,
   openapiBinaryResultSchema,
 } from "../contracts/openapi.ts";
@@ -405,7 +406,7 @@ export const compileOpenApiDocument = (
                 const files: Record<string, JsonObject> = {};
                 for (const [key, field] of Object.entries(fields)) {
                   const shape = document.resolve(record(field));
-                  if (shape.type === "string" && shape.format === "binary") {
+                  if (isOpenapiFileSchema(shape)) {
                     delete fields[key];
                     files[key] = binaryInput;
                     retainedFiles[key] = shape;

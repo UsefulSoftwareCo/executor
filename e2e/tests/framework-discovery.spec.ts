@@ -24,6 +24,10 @@ const Description = Schema.Struct({
     }),
   ),
 });
+const Lookup = Schema.Struct({
+  entry: Schema.optional(Schema.Struct({ symbol: Schema.String })),
+  matches: Schema.Array(Schema.Struct({ symbol: Schema.String })),
+});
 const Document = Schema.Struct({ content: Schema.String, deployment: Schema.String });
 
 layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => {
@@ -107,6 +111,27 @@ layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => 
           [describe("apps/react.useAppQuery"), describe("AppMutation.withOptimisticUpdate")],
           { concurrency: 2 },
         );
+        // Agents often pass an unqualified name; a unique suffix resolves, otherwise the
+        // result names the closest symbols instead of failing without guidance.
+        const lookup = (symbol: string) =>
+          execute(
+            `return await ${queries}.framework_describe(${JSON.stringify({ symbol, ...found.reference })});`,
+          ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Lookup)));
+        const [unqualified, unknown, partial] = yield* Effect.all(
+          [lookup("defineApp"), lookup("defineApplication"), lookup("withOptimistic")],
+          { concurrency: 3 },
+        );
+        yield* evidence.json("framework-describe-lookups.json", {
+          unqualified,
+          unknown,
+          partial,
+        });
+        expect(unqualified.entry?.symbol).toBe("apps.defineApp");
+        expect(unqualified.matches).toEqual([]);
+        expect(unknown.entry).toBeUndefined();
+        expect(unknown.matches.map((match) => match.symbol)).toContain("apps.defineApp");
+        expect(partial.entry).toBeUndefined();
+        expect(partial.matches[0]?.symbol).toBe("AppMutation.withOptimisticUpdate");
         expect(hook.entry.signatures.join(" ")).toContain("data: A | undefined");
         expect(hook.entry.signatures.join(" ")).toContain("pending: boolean");
         expect(update.entry.signatures.join(" ")).toContain("OptimisticUpdate<Input>");

@@ -333,16 +333,18 @@ export function AppDetailLoading({
 export function AppDetailPending({
   view,
   back,
+  actions,
   selectedTool,
   accountAction,
 }: {
   readonly view: AppView;
   readonly back: ReactNode;
+  readonly actions?: ReactNode;
   readonly selectedTool?: string | undefined;
   readonly accountAction?: ReactNode;
 }) {
   return (
-    <AppDetailLayout app={undefined} view={view} canInspectSource back={back}>
+    <AppDetailLayout app={undefined} view={view} canInspectSource back={back} actions={actions}>
       <AppDetailLoading view={view} selectedTool={selectedTool} accountAction={accountAction} />
     </AppDetailLayout>
   );

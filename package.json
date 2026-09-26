@@ -59,7 +59,6 @@
     "docs:eval": "bun run --cwd apps/docs eval",
     "hosted:cloud:site:build": "bun run marketing:build && bun run docs:build && bun run hosted:cloud:web:build && node apps/hosted/cloud/scripts/build-site.ts",
     "workspace:check": "bash scripts/workspace-check.sh",
-    "test:miniflare-recovery": "node --test scripts/miniflare-recovery.test.mjs",
     "telemetry:build": "bun run --cwd packages/telemetry build:motel",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
@@ -71,7 +70,7 @@
     "testing": "node e2e/cli.ts",
     "e2e": "node e2e/check-boundary.ts && node e2e/run.ts",
     "e2e:inspect": "E2E_INTERACTIVE=1 bun run e2e",
-    "e2e:check": "node e2e/check-boundary.ts && tsc --noEmit -p e2e && node --test scripts/evidence-results.test.ts scripts/e2e-selection.test.ts scripts/oauth-setup-issuer.test.ts",
+    "e2e:check": "node scripts/check-no-unit-tests.ts && node e2e/check-boundary.ts && tsc --noEmit -p e2e",
     "e2e:viewer:build": "bun run --cwd e2e/viewer build:styles && bun build e2e/viewer/main.tsx --target browser --minify --outdir .local/e2e-viewer",
     "e2e:local": "node e2e/check-boundary.ts && node e2e/run.ts --target local",
     "e2e:cloud": "node e2e/check-boundary.ts && node e2e/run.ts --target cloud",
@@ -92,7 +91,6 @@
     "release:beta:start": "changeset pre enter beta",
     "release:beta:stop": "changeset pre exit",
     "lint:changelog-stubs": "bun run scripts/check-changelog-stubs.ts",
-    "test:alchemy-recovery": "WORKFLOW_RECOVERY_BACKEND=alchemy node --test scripts/miniflare-recovery.test.mjs",
     "apps:build": "bun run --cwd packages/apps build",
     "apps:check": "bun run apps:build && bun run --cwd packages/apps test:package",
     "release:cli": "node scripts/releases/package.ts",
@@ -133,7 +131,6 @@
   },
   "patchedDependencies": {
     "effect@https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d": "patches/effect@c7d1ffff.patch",
-    "bun@1.3.11": "patches/bun@1.3.11.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
     "alchemy@2.0.0-beta.79": "patches/alchemy@2.0.0-beta.79.patch",
@@ -145,7 +142,11 @@
     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
     "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
-    "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch"
+    "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
+    "bun@1.4.2": "patches/bun@1.4.2.patch",
+    "tree-sitter@0.21.1": "patches/tree-sitter@0.21.1.patch",
+    "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
+    "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch"
   },
   "trustedDependencies": [
     "bun",

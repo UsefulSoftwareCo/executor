@@ -5,18 +5,20 @@ import type { AppCache, CacheLoadContext } from "../contracts/cache.ts";
 import { OpenapiOperation, OpenapiError, type OpenapiToolsOptions } from "../contracts/openapi.ts";
 import { JsonObject, type JsonValue } from "../contracts/schema.ts";
 import type { DynamicTools } from "../contracts/dynamic-tools.ts";
-import type { HostedTool } from "../contracts/host.ts";
+import type { HostedTool, HostedToolSummary } from "../contracts/host.ts";
 import { compileOpenApiDocument } from "./openapi-compile.ts";
 import {
   openapiToolsEffect,
   references,
   bundler,
   prepareOpenapiOperation,
+  parameterDefaultsInput,
   type PreparedOpenapiOperation,
 } from "./openapi.ts";
 import { protocolOperations, type OperationKinds } from "./protocol-operations.ts";
 import { nativeOperation } from "./operations.ts";
 import { wrap } from "./schema.ts";
+import { fromPromise, toPromise } from "./authoring.ts";
 import { createRequest } from "./openapi-request.ts";
 
 const Manifest = Schema.Struct({ revision: Schema.String, pages: Schema.Number });
@@ -27,6 +29,15 @@ const invoke = <A>(work: () => Promise<A>) =>
 const invalid = () => new OpenapiError({ reason: "invalid_definition" });
 
 const pageSize = 64;
+
+/** SHA-256 of a string, as lowercase hex. */
+const sha256 = (text: string) =>
+  invoke(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))).pipe(
+    Effect.map((hash) =>
+      Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    ),
+  );
+const partConcurrency = 4;
 
 // Immutable, account-free data only. Neither credentials nor executable handlers enter this map.
 const resolved = new Map<
@@ -165,8 +176,10 @@ export const liveOpenapiOperations = (
   readonly mutations: {};
   readonly dynamicTools: DynamicTools;
 } => {
+  // Specs change rarely and compiling a large one takes seconds. Idle visits serve the
+  // retained revision and refresh it in the background instead of waiting for a full load.
   const freshFor = options.freshFor ?? "5 minutes";
-  const staleFor = options.staleFor ?? "5 minutes";
+  const staleFor = options.staleFor ?? "1 day";
   const retention =
     Duration.toMillis(Duration.fromInputUnsafe(freshFor)) +
     Duration.toMillis(Duration.fromInputUnsafe(staleFor)) +
@@ -222,7 +235,9 @@ export const liveOpenapiOperations = (
           ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
         },
       );
-      const revision = crypto.randomUUID();
+      // Revisions are content-addressed: refreshing an unchanged document rewrites the
+      // same parts and renews their retention instead of storing another copy.
+      const revision = yield* sha256(JSON.stringify([yield* sourceId, document]));
       const names = compiled.operations.map((operation) => operation.name);
       const entries: { key: JsonValue; value: JsonValue }[] = [
         ...compiled.operations.map((operation) => ({
@@ -241,32 +256,41 @@ export const liveOpenapiOperations = (
           value: names.slice(page * pageSize, (page + 1) * pageSize),
         });
       // Byte and count bounds apply to each RPC. Publication is last, under the cache loader lease.
+      const batches: (typeof entries)[] = [];
       let batch: typeof entries = [];
       let size = 0;
       for (const entry of entries) {
         const bytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
         if (batch.length && (batch.length >= 64 || size + bytes > 4_000_000)) {
-          yield* invoke(() => context.cache.write(batch, retention));
+          batches.push(batch);
           batch = [];
           size = 0;
         }
         batch.push(entry);
         size += bytes;
       }
-      if (batch.length) yield* invoke(() => context.cache.write(batch, retention));
+      if (batch.length) batches.push(batch);
+      // Revision keys are immutable and independent. Await every write before
+      // publishing the manifest, without serializing their network round trips.
+      yield* Effect.forEach(
+        batches,
+        (entries) => fromPromise(context.cache.write)(entries, retention),
+        {
+          concurrency: partConcurrency,
+          discard: true,
+        },
+      );
       return { revision, pages };
     });
   const current = Effect.gen(function* () {
     const key = yield* pointer;
-    return yield* invoke(() =>
-      options.cache.get({
-        key,
-        schema: schema(Manifest),
-        freshFor,
-        staleFor,
-        load: (context) => Effect.runPromise(refresh(context), { signal: context.signal }),
-      }),
-    );
+    return yield* fromPromise(options.cache.get)({
+      key,
+      schema: schema(Manifest),
+      freshFor,
+      staleFor,
+      load: toPromise(refresh),
+    });
   });
   const read = <A>(
     revision: string,
@@ -274,11 +298,9 @@ export const liveOpenapiOperations = (
     names: readonly (string | number)[],
     decoder: Schema.Decoder<A>,
   ) =>
-    invoke(() =>
-      options.cache.readMany(
-        names.map((name) => partKey(revision, kind, name)),
-        schema(decoder),
-      ),
+    fromPromise(options.cache.readMany)(
+      names.map((name) => partKey(revision, kind, name)),
+      schema(decoder),
     );
   const namesFor = (manifest: typeof Manifest.Type) =>
     Effect.gen(function* () {
@@ -303,10 +325,18 @@ export const liveOpenapiOperations = (
       const seen = new Set<string>();
       let pending = [...references(operation)];
       while (pending.length) {
-        const names = pending.splice(0, pageSize).filter((name) => !seen.has(name));
+        const names = [...new Set(pending.splice(0, pageSize * partConcurrency))].filter(
+          (name) => !seen.has(name),
+        );
         names.forEach((name) => seen.add(name));
         if (!names.length) continue;
-        const values = yield* read(revision, "definition", names, JsonObject);
+        const values = (yield* Effect.forEach(
+          Array.from({ length: Math.ceil(names.length / pageSize) }, (_, page) =>
+            names.slice(page * pageSize, (page + 1) * pageSize),
+          ),
+          (batch) => read(revision, "definition", batch, JsonObject),
+          { concurrency: partConcurrency },
+        )).flat();
         for (let i = 0; i < names.length; i++) {
           const name = names[i];
           const value = values[i];
@@ -317,8 +347,49 @@ export const liveOpenapiOperations = (
       }
       return definitions;
     });
+  // Relaxed validators depend only on which parameters are account-bound, never on their values.
+  const defaultedNames = JSON.stringify(
+    Object.entries(options.parameterDefaults ?? {}).map(([group, values]) => [
+      group,
+      Object.keys(values ?? {}).sort(),
+    ]),
+  );
   const qualified = (op: OpenapiOperation) =>
     `${(options.kinds?.[op.name] ?? (["GET", "HEAD", "OPTIONS"].includes(op.method) ? "query" : "mutation")) === "query" ? "queries" : "mutations"}.${op.name}`;
+  const operationsFor = (manifest: typeof Manifest.Type) =>
+    Effect.gen(function* () {
+      const names = yield* namesFor(manifest);
+      if (names === undefined) return undefined;
+      const pages = yield* Effect.forEach(
+        Array.from({ length: Math.ceil(names.length / pageSize) }, (_, page) =>
+          names.slice(page * pageSize, (page + 1) * pageSize),
+        ),
+        (batch) => read(manifest.revision, "operation", batch, OpenapiOperation),
+        { concurrency: partConcurrency },
+      );
+      const all: OpenapiOperation[] = [];
+      for (const operations of pages) {
+        for (const operation of operations) {
+          if (operation === undefined) return undefined;
+          all.push(operation);
+        }
+      }
+      return all;
+    });
+  const summarize = (operation: OpenapiOperation): HostedToolSummary => {
+    const name = qualified(operation);
+    return { name, description: operation.description, readOnly: name.startsWith("queries.") };
+  };
+  const describe = (
+    operation: OpenapiOperation,
+    bundle: ReturnType<typeof bundler>,
+  ): HostedTool => ({
+    ...summarize(operation),
+    inputSchema: bundle(parameterDefaultsInput(operation, options.parameterDefaults, true)),
+    ...(operation.outputSchema === undefined
+      ? {}
+      : { outputSchema: bundle(operation.outputSchema) }),
+  });
   // Repair missing parts once. A missing operation is checked against the revision's name index.
   const withRevision = <A>(
     work: (manifest: typeof Manifest.Type) => Effect.Effect<{ value: A } | undefined, unknown>,
@@ -327,7 +398,7 @@ export const liveOpenapiOperations = (
       for (let attempt = 0; attempt < 2; attempt++) {
         const result = yield* work(yield* current);
         if (result !== undefined) return result.value;
-        yield* invoke(async () => options.cache.invalidate(await Effect.runPromise(pointer)));
+        yield* fromPromise(options.cache.invalidate)(yield* pointer);
       }
       return yield* invalid();
     });
@@ -339,7 +410,7 @@ export const liveOpenapiOperations = (
         withRevision((manifest) =>
           Effect.gen(function* () {
             const raw = name.replace(/^(queries|mutations)\./, "");
-            const memoKey = `${manifest.revision}/${raw}`;
+            const memoKey = `${manifest.revision}/${defaultedNames}/${raw}`;
             const memo = resolved.get(memoKey);
             const operation =
               memo?.operation ??
@@ -353,7 +424,8 @@ export const liveOpenapiOperations = (
               memo?.definitions ?? (yield* definitionsFor(manifest.revision, operation));
             if (definitions === undefined) return undefined;
             const schemas =
-              memo?.schemas ?? (yield* prepareOpenapiOperation(operation, definitions));
+              memo?.schemas ??
+              (yield* prepareOpenapiOperation(operation, definitions, options.parameterDefaults));
             if (memo === undefined) remember(memoKey, { operation, definitions, schemas });
             const tools = yield* openapiToolsEffect(
               { ...options, operations: [operation], definitions },
@@ -367,40 +439,54 @@ export const liveOpenapiOperations = (
       list: () =>
         withRevision((manifest) =>
           Effect.gen(function* () {
-            const names = yield* namesFor(manifest);
-            if (names === undefined) return undefined;
-            const all: OpenapiOperation[] = [];
-            for (let offset = 0; offset < names.length; offset += pageSize) {
-              const operations = yield* read(
-                manifest.revision,
-                "operation",
-                names.slice(offset, offset + pageSize),
-                OpenapiOperation,
-              );
-              for (const operation of operations) {
-                if (operation === undefined) return undefined;
-                all.push(operation);
-              }
-            }
+            const all = yield* operationsFor(manifest);
+            if (all === undefined) return undefined;
             const definitions = yield* definitionsFor(manifest.revision, all);
             if (definitions === undefined) return undefined;
             const bundle = bundler(definitions);
             const request = createRequest(options);
-            const result: HostedTool[] = all
-              .filter((op) => request.available(op, options.account))
-              .map((operation) => {
-                const name = qualified(operation);
-                return {
-                  name,
-                  description: operation.description,
-                  inputSchema: bundle(operation.input),
-                  readOnly: name.startsWith("queries."),
-                  ...(operation.outputSchema === undefined
-                    ? {}
-                    : { outputSchema: bundle(operation.outputSchema) }),
-                };
-              });
-            return { value: result };
+            return {
+              value: all
+                .filter((op) => request.available(op, options.account))
+                .map((operation) => describe(operation, bundle)),
+            };
+          }),
+        ),
+      summaries: () =>
+        withRevision((manifest) =>
+          Effect.gen(function* () {
+            const all = yield* operationsFor(manifest);
+            if (all === undefined) return undefined;
+            const request = createRequest(options);
+            return {
+              value: all
+                .filter((op) => request.available(op, options.account))
+                .map((operation) => summarize(operation)),
+            };
+          }),
+        ),
+      describe: (name) =>
+        withRevision((manifest) =>
+          Effect.gen(function* () {
+            const raw = name.replace(/^(queries|mutations)\./, "");
+            const operation = (yield* read(
+              manifest.revision,
+              "operation",
+              [raw],
+              OpenapiOperation,
+            ))[0];
+            if (operation === undefined) {
+              const names = yield* namesFor(manifest);
+              return names === undefined || names.includes(raw) ? undefined : { value: undefined };
+            }
+            if (
+              qualified(operation) !== name ||
+              !createRequest(options).available(operation, options.account)
+            )
+              return { value: undefined };
+            const definitions = yield* definitionsFor(manifest.revision, operation);
+            if (definitions === undefined) return undefined;
+            return { value: describe(operation, bundler(definitions)) };
           }),
         ),
     },

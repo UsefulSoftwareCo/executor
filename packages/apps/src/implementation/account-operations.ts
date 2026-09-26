@@ -2,7 +2,7 @@ import { accountProviderError } from "./provider-error.ts";
 /** Combine account-bound protocol operations without changing their upstream inputs. */
 import { Effect, Schema } from "effect";
 import type { DynamicTools } from "../contracts/dynamic-tools.ts";
-import { HostedTool } from "../contracts/host.ts";
+import { HostedTool, HostedToolSummary } from "../contracts/host.ts";
 import type { AppOperation, OperationContext } from "../contracts/operations.ts";
 import { JsonObject, type JsonValue } from "../contracts/schema.ts";
 import { nativeOperation, operationDeclaration, type Operation } from "./operations.ts";
@@ -115,6 +115,62 @@ const combine = <K extends Kind>(kind: K, groups: ReadonlyMap<string, Map<string
     }),
   );
 
+const sameAcross = <K extends "annotations" | "_meta">(
+  key: K,
+  variants: readonly (readonly [string, HostedToolSummary & Partial<Pick<HostedTool, "_meta">>])[],
+) => {
+  const first = variants[0]?.[1][key];
+  return first !== undefined &&
+    variants.every(([, tool]) => JSON.stringify(tool[key]) === JSON.stringify(first))
+    ? { [key]: first }
+    : {};
+};
+
+/** One entry per name across accounts; schemas stay with the per-tool description. */
+const mergeSummary = (
+  name: string,
+  variants: readonly (readonly [string, HostedToolSummary])[],
+) => {
+  const first = variants[0]?.[1];
+  if (first === undefined) throw new Error("Expected a source operation");
+  return Schema.decodeUnknownSync(HostedToolSummary)({
+    name,
+    description: first.description,
+    ...(first.title === undefined ? {} : { title: first.title }),
+    readOnly: name.startsWith("queries."),
+    ...sameAcross("annotations", variants),
+  });
+};
+
+/** Calls take { accountId, input }, so each account's schema is one branch of the input union. */
+const merge = (name: string, variants: readonly (readonly [string, HostedTool])[]) =>
+  Schema.decodeUnknownSync(HostedTool)({
+    ...mergeSummary(name, variants),
+    inputSchema: {
+      type: "object",
+      anyOf: variants.map(([accountId, tool], index) => ({
+        type: "object",
+        properties: {
+          accountId: { type: "string", const: accountId },
+          input: nestJsonSchema(tool.inputSchema, `#/anyOf/${index}/properties/input`),
+        },
+        required: ["accountId", "input"],
+      })),
+    },
+    ...(variants.every(([, tool]) => tool.outputSchema !== undefined)
+      ? {
+          outputSchema: {
+            anyOf: variants.flatMap(([, tool], index) =>
+              tool.outputSchema === undefined
+                ? []
+                : [nestJsonSchema(tool.outputSchema, `#/anyOf/${index}`)],
+            ),
+          },
+        }
+      : {}),
+    ...sameAcross("_meta", variants),
+  });
+
 /**
  * Discover each selected account's protocol operations and combine matching names.
  * Calls take { accountId, input }; each branch retains its account's input schema,
@@ -160,73 +216,54 @@ export const accountOperations = <Account extends { readonly id: string }>(
         mutations: combine("mutation", mutations),
       };
       if (sources.size === 0) return declared;
+      const grouped = <T extends HostedToolSummary>(
+        read: (source: DynamicTools) => Effect.Effect<readonly T[], unknown>,
+      ) =>
+        Effect.gen(function* () {
+          const groups = new Map<string, [string, T][]>();
+          for (const [accountId, source] of sources) {
+            const tools = yield* read(source).pipe(
+              Effect.mapError((error) => accountProviderError(error, accountId)),
+            );
+            for (const tool of tools) {
+              const variants = groups.get(tool.name) ?? [];
+              if (variants.some(([id]) => id === accountId))
+                return yield* Effect.die(new Error("Duplicate source operation"));
+              variants.push([accountId, tool]);
+              groups.set(tool.name, variants);
+            }
+          }
+          return groups;
+        });
       return {
         ...declared,
         dynamicTools: {
           list: () =>
+            grouped((source) => source.list()).pipe(
+              Effect.map((groups) => [...groups].map(([name, variants]) => merge(name, variants))),
+            ),
+          summaries: () =>
+            grouped((source) =>
+              source.summaries === undefined ? source.list() : source.summaries(),
+            ).pipe(
+              Effect.map((groups) =>
+                [...groups].map(([name, variants]) => mergeSummary(name, variants)),
+              ),
+            ),
+          describe: (name: string) =>
             Effect.gen(function* () {
-              const groups = new Map<string, Map<string, HostedTool>>();
+              const variants: [string, HostedTool][] = [];
               for (const [accountId, source] of sources) {
-                const tools = yield* source
-                  .list()
-                  .pipe(Effect.mapError((error) => accountProviderError(error, accountId)));
-                for (const tool of tools) {
-                  const accounts = groups.get(tool.name) ?? new Map<string, HostedTool>();
-                  if (accounts.has(accountId))
-                    return yield* Effect.die(new Error("Duplicate source operation"));
-                  accounts.set(accountId, tool);
-                  groups.set(tool.name, accounts);
-                }
+                const tool = yield* (
+                  source.describe === undefined
+                    ? source
+                        .list()
+                        .pipe(Effect.map((tools) => tools.find((tool) => tool.name === name)))
+                    : source.describe(name)
+                ).pipe(Effect.mapError((error) => accountProviderError(error, accountId)));
+                if (tool !== undefined) variants.push([accountId, tool]);
               }
-              return [...groups].map(([name, accounts]) => {
-                const variants = [...accounts];
-                const first = variants[0]?.[1];
-                if (first === undefined) throw new Error("Expected a source operation");
-                return Schema.decodeUnknownSync(HostedTool)({
-                  name,
-                  description: first.description,
-                  ...(first.title === undefined ? {} : { title: first.title }),
-                  readOnly: name.startsWith("queries."),
-                  inputSchema: {
-                    type: "object",
-                    anyOf: variants.map(([accountId, tool], index) => ({
-                      type: "object",
-                      properties: {
-                        accountId: { type: "string", const: accountId },
-                        input: nestJsonSchema(
-                          tool.inputSchema,
-                          `#/anyOf/${index}/properties/input`,
-                        ),
-                      },
-                      required: ["accountId", "input"],
-                    })),
-                  },
-                  ...(variants.every(([, tool]) => tool.outputSchema !== undefined)
-                    ? {
-                        outputSchema: {
-                          anyOf: variants.flatMap(([, tool], index) =>
-                            tool.outputSchema === undefined
-                              ? []
-                              : [nestJsonSchema(tool.outputSchema, `#/anyOf/${index}`)],
-                          ),
-                        },
-                      }
-                    : {}),
-                  ...(first.annotations !== undefined &&
-                  variants.every(
-                    ([, tool]) =>
-                      JSON.stringify(tool.annotations) === JSON.stringify(first.annotations),
-                  )
-                    ? { annotations: first.annotations }
-                    : {}),
-                  ...(first._meta !== undefined &&
-                  variants.every(
-                    ([, tool]) => JSON.stringify(tool._meta) === JSON.stringify(first._meta),
-                  )
-                    ? { _meta: first._meta }
-                    : {}),
-                });
-              });
+              return variants.length === 0 ? undefined : merge(name, variants);
             }),
           resolve: (name: string) =>
             Effect.gen(function* () {

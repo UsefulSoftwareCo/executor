@@ -15,8 +15,8 @@ export class ScenarioPreparationFailed extends Schema.TaggedError<ScenarioPrepar
   }
 }
 
-/** Start an isolated product instance for single-organization hosts, or namespace a shared Cloud stage. */
-export const startScenario = (
+/** Allocate isolated evidence and identity before the caller starts its product lifecycle. */
+export const prepareScenario = (
   base: typeof Target.Service,
   label: string,
   id = base.preparedScenarios?.[label]?.id ?? randomBytes(16).toString("hex"),
@@ -32,7 +32,7 @@ export const startScenario = (
       return Target.of({ ...base, scenarioId: id, scenarioLabel: label });
     const directory = `${base.directory}/scenarios/${id}`;
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
-    const target = Target.of({
+    return Target.of({
       ...base,
       directory,
       evidenceDirectory: base.evidenceDirectory ?? base.directory,
@@ -41,6 +41,13 @@ export const startScenario = (
       scenarioId: id,
       scenarioLabel: label,
     });
+  });
+
+/** Start an isolated product instance for single-organization hosts, or namespace a shared Cloud stage. */
+export const startScenario = (base: typeof Target.Service, label: string, id?: string) =>
+  Effect.gen(function* () {
+    const target = yield* prepareScenario(base, label, id);
+    if (base.metadata.target === "cloud") return target;
     const server = yield* startManagedServer(target);
     return Target.of({
       ...target,

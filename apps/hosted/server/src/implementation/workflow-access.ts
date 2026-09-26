@@ -4,7 +4,9 @@ import {
   SelectedAccounts,
   StorageError,
   WorkflowFailure,
+  WorkflowRunId,
   type Executor,
+  type StartWorkflow,
   type OwnerId,
   type AppId,
 } from "@executor-js/sdk/core";
@@ -33,6 +35,27 @@ export const requireWorkflowAccess = (
     if (saved.profile !== null) yield* ownProfile(executor, owner, app, saved.profile);
     yield* checkAccounts(executor, owner, saved.accounts);
     return saved;
+  }).pipe(
+    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+  );
+
+/** Authorize a retained idempotency key before start can wake its saved execution. */
+export const requireWorkflowReplayAccess = (
+  executor: Executor,
+  owner: OwnerId,
+  app: AppId,
+  input: Pick<typeof StartWorkflow.Type, "key" | "profile">,
+) =>
+  Effect.gen(function* () {
+    if (input.key === undefined) return;
+    const sql = yield* policyDatabase;
+    const rows = yield* sql`select id from executor_workflow_runs
+      where app = ${app} and owner = ${owner} and start_key = ${input.key}
+        and installation is not distinct from ${input.profile ?? null}`;
+    const retained = (yield* Schema.decodeUnknownEffect(
+      Schema.Array(Schema.Struct({ id: WorkflowRunId })),
+    )(rows))[0];
+    if (retained !== undefined) yield* requireWorkflowAccess(executor, owner, app, retained.id);
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );

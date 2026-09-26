@@ -35,22 +35,32 @@ checks HTTP status and parses a JSON response.
 
 ## Ship instructions with your app
 
-Return resolved skills in the second argument to `defineApp`, beside queries,
-mutations and workflows. Load a published GitHub directory inside the factory:
+Return skills in the second argument to `defineApp`, beside queries, mutations
+and workflows. Load remote skills with `dynamicSkills({ list })`, like
+`dynamicTools({ list, resolve })` for tools. Executor calls `list` only when
+skills are read:
 
 ```ts
-import { defineApp } from "apps";
+import { defineApp, dynamicSkills } from "apps";
 import { githubSkills } from "apps/skills";
 
 export default defineApp({ accounts: {} }, async (ctx) => ({
-  skills: await githubSkills({
-    repo: "planetscale/database-skills",
-    path: "skills",
-    fetch: ctx.fetch,
-    signal: ctx.signal,
+  dynamicSkills: dynamicSkills({
+    list: () =>
+      githubSkills({
+        repo: "planetscale/database-skills",
+        path: "skills",
+        fetch: ctx.fetch,
+        signal: ctx.signal,
+        cache: ctx.cache,
+      }),
   }),
 }));
 ```
+
+Tool listing and calls then never fetch remote skills, and a skill source
+failure does not break tools. `skills` is the static catalog: an array of
+resolved skills. Dynamic skills are added to it.
 
 Each resolved skill has `name`, `description` and `files: {path, content}[]`.
 Files are relative to the skill directory and include the full `SKILL.md` with
@@ -60,33 +70,18 @@ Names match their directories. Names are at most 64 characters, descriptions
 1024, and compatibility 500. Duplicate names or invalid resources fail the read.
 
 `githubSkills` resolves `ref` (default `HEAD`) once per call and reads all files
-from that commit. `wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
+from that commit. With `cache: ctx.cache`, it keeps each commit's file list, so
+later reads of an unchanged commit skip the file listing. `wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
 loads a site's `/.well-known/agent-skills/index.json`. Its directory index is
 `{skills: [{name, version?, files: ["SKILL.md", "references/example.md"]}]}`.
 Files live beneath the named directory beside that index. Helpers return complete
-UTF-8 text bundles, refuse redirects, and keep no persistent cache. Limits are
+UTF-8 text bundles and refuse redirects. Limits are
 1,000 files, 2 MB per response, and 20 MB total.
 
 Omit `skills` to load packaged `skills/<name>/SKILL.md` and its text resources.
 An explicit `skills` value replaces that default; `skills: []` disables it.
-To combine packaged and remote skills, use the same folder loader explicitly:
-
-```ts
-import { defineApp } from "apps";
-import { folderSkills, githubSkills } from "apps/skills";
-
-export default defineApp({ accounts: {} }, async (ctx) => ({
-  skills: [
-    ...(await folderSkills({ files: ctx.files })),
-    ...(await githubSkills({
-      repo: "planetscale/database-skills",
-      path: "skills",
-      fetch: ctx.fetch,
-      signal: ctx.signal,
-    })),
-  ],
-}));
-```
+`dynamicSkills` adds to whichever static catalog applies, so packaged and remote
+skills combine without extra code. A name in both fails the read.
 
 `folderSkills({ files: ctx.files, path: "guides" })` selects another packaged
 folder. Its immediate subdirectories must be skill directories. Loose files
@@ -102,7 +97,8 @@ reading a reference with `file`. Deployment pins code; revision detects remote
 content changes. A changed revision requires a fresh read. The dashboard bundle
 keeps its documents and references together in one response.
 
-Skill reads evaluate the factory and require the selected accounts. Current app,
+Skill reads evaluate the factory, call `dynamicSkills.list` and require the
+selected accounts. Current app,
 profile and account access is checked. Use an account-free app for instructions
 that must be readable before setup. The Executor app loads this guide through the
 same public helper; discover its slug with `skills({})`.

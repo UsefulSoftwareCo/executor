@@ -1,7 +1,7 @@
 import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
 import { executorSelfHostApiDocument } from "../contracts/api.ts";
 import { AppManagementHost } from "@executor-js/app-management";
-import { remoteRegistry } from "@executor-js/app-registry";
+import { hostedExecutorOrigin, remoteRegistry } from "@executor-js/app-registry";
 import { gitSourceStorage } from "@executor-js/app-source";
 import type { RepositoryBackend } from "@executor-js/app-source";
 /** Self-host SDK uses the same PGlite connection as Better Auth. */
@@ -64,7 +64,7 @@ export const selfHostExecutorServices = <E, R>(
       const { runtime, workflows, blobs, repositories } = yield* acquire(Deferred.await(ready));
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
-          Config.withDefault("https://v2.executor.sh"),
+          Config.withDefault(hostedExecutorOrigin),
         ),
       );
       const sources = gitSourceStorage(repositories);

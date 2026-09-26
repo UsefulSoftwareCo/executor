@@ -10,7 +10,7 @@ import { AppDataFailed, AppDataNotFound, type AppDataInput } from "../contracts/
 import type { Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import { database } from "./database.ts";
-import { resolve, snapshot } from "./tools.ts";
+import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import type { makeOAuth } from "./oauth.ts";
 
 /** Bind data calls to fresh saved app/deployment/account selections. */
@@ -19,10 +19,7 @@ export const makeAppData = (
   resolveAccount: ReturnType<typeof makeOAuth>["resolve"],
   runtime: Runtime,
   appStorage?: AppDatabases,
-  workflows?: (
-    app: import("../contracts/shared.ts").AppId,
-    state?: Effect.Success<ReturnType<typeof snapshot>>,
-  ) => WorkflowHostControls,
+  workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
@@ -40,7 +37,7 @@ export const makeAppData = (
         ...accounts,
         app: state.app.id,
         ...(yield* bindAppStorage(appStorage, state.app.id)),
-        ...(workflows === undefined ? {} : { workflowControls: workflows(state.app.id, state) }),
+        ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
         name: input.name,
         input: input.input,
         ...(observeRevision === undefined ? {} : { observeRevision }),

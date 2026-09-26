@@ -122,8 +122,12 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
         yield* browser.use("Leave the decoded failure document", (page) =>
           page.goto("about:blank"),
         );
-        yield* browser.use("Fail the dashboard entry module", (page) =>
-          page.route("**/src/main.tsx", (route) => route.abort("failed")),
+        let blockedEntryRequests = 0;
+        yield* browser.use("Fail the built dashboard entry module", (page) =>
+          page.route("**/assets/main-*.js", (route) => {
+            blockedEntryRequests++;
+            return route.abort("failed");
+          }),
         );
         yield* browser.use("Open the dashboard with a missing entry module", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps`),
@@ -135,8 +139,9 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
             ) === true,
         );
         yield* evidence.json("entry-module-failure.json", moduleFailure);
+        expect(blockedEntryRequests).toBeGreaterThan(0);
         yield* browser.use("Restore the dashboard entry module", (page) =>
-          page.unroute("**/src/main.tsx"),
+          page.unroute("**/assets/main-*.js"),
         );
         yield* corruptDashboardEntry(actors.organization.slug);
         const boot = yield* sentry(

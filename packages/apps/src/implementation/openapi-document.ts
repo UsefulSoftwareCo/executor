@@ -1,6 +1,7 @@
 /** OpenAPI reference and dialect rules, shared by every part of the app importer. */
 import "../contracts/swagger-client.ts";
 import SwaggerClient from "swagger-client";
+import { upgrade } from "@scalar/openapi-upgrader";
 import { JsonPointer, JsonSchema, Schema } from "effect";
 import { JsonObject } from "../contracts/schema.ts";
 import { Specification } from "../contracts/openapi-document.ts";
@@ -12,20 +13,18 @@ function fail(code: TemplateError["code"], reason: string): never {
 }
 
 /** Resolve OpenAPI objects once with Swagger; schemas retain their original recursive references.
+ * Scalar first upgrades Swagger 2.0 and OpenAPI 3.0 to 3.1, so the importer has one dialect and
+ * 3.1 keywords that appear in 3.0 documents keep their meaning.
  * Unsupported versions, references and conversions throw TemplateError at the import boundary.
  */
 export async function openApiDocument(input: unknown) {
-  const root = record(input);
+  // The upgrader rewrites its argument in place.
+  const root = record(upgrade(structuredClone(record(input)), "3.1"));
   const spec = Schema.decodeUnknownSync(Specification)(root);
-  if (!/^3\.[01]\./.test(spec.openapi))
-    fail(
-      "openapi_version",
-      "This importer supports OpenAPI 3.0 and 3.1. Swagger 2 needs conversion first.",
-    );
+  if (!spec.openapi.startsWith("3.1."))
+    fail("openapi_version", "This importer supports Swagger 2.0 and OpenAPI 3.0 and 3.1.");
   const components = spec.components?.schemas ?? {};
-  const convert = spec.openapi.startsWith("3.0.")
-    ? JsonSchema.fromSchemaOpenApi3_0
-    : JsonSchema.fromSchemaOpenApi3_1;
+  const convert = JsonSchema.fromSchemaOpenApi3_1;
 
   // Schema Objects are opaque to the object resolver. Effect owns their dialect,
   // reference siblings and recursion. Masking also avoids dereferencing a large

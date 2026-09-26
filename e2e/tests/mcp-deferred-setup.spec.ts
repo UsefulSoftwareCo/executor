@@ -212,11 +212,7 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
             .getByRole("button", { name: "Try again", exact: true })
             .click()
             .then(() =>
-              page
-                .getByText("queries.identity", { exact: true })
-                .filter({ visible: true })
-                .first()
-                .waitFor(),
+              page.getByRole("heading", { name: "queries.identity", exact: true }).waitFor(),
             ),
         );
         expect(

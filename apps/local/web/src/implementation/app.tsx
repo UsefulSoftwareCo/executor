@@ -131,16 +131,6 @@ function Dashboard() {
       navigation={
         <>
           <Link
-            to="/connect"
-            className={cn(
-              section === "connect" &&
-                "active [.sidebar_nav_a&]:bg-accent [.sidebar_nav_a&]:text-foreground",
-            )}
-          >
-            <HugeiconsIcon icon={Plug01Icon} strokeWidth={2} aria-hidden size={16} />
-            Connect
-          </Link>
-          <Link
             to="/apps"
             className={cn(
               section === "apps" &&
@@ -149,6 +139,16 @@ function Dashboard() {
           >
             <HugeiconsIcon icon={PackageIcon} strokeWidth={2} aria-hidden size={16} />
             Apps{Option.isSome(data) && <span>{data.value.apps.length}</span>}
+          </Link>
+          <Link
+            to="/connect"
+            className={cn(
+              section === "connect" &&
+                "active [.sidebar_nav_a&]:bg-accent [.sidebar_nav_a&]:text-foreground",
+            )}
+          >
+            <HugeiconsIcon icon={Plug01Icon} strokeWidth={2} aria-hidden size={16} />
+            Connect
           </Link>
           <Link
             to="/accounts"

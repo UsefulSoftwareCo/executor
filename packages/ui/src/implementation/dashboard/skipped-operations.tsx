@@ -70,11 +70,6 @@ export function SkippedOperationsNotice({
             </li>
           ))}
         </ul>
-        <p>
-          To add {count === 1 ? "it" : "them"}, edit the app source. The file{" "}
-          <code className="font-mono text-foreground">skipped-operations.json</code> lists each
-          operation and the reason.
-        </p>
       </AlertDescription>
       <div className="col-span-2 col-start-1 mt-5 flex border-t border-border pt-5">
         <Button type="button" onClick={() => void onContinue()}>

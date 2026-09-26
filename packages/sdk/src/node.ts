@@ -26,6 +26,7 @@ export const nodeRuntime = (options: NodeRuntimeOptions): AppRuntime => {
         }),
     skills: (input) => runtime.skills(input).pipe(provideNode),
     inspect: (input) => runtime.inspect(input).pipe(provideNode),
+    index: (input) => runtime.index(input).pipe(provideNode),
     query: (input) => runtime.query(input).pipe(provideNode),
     mutate: (input) => runtime.mutate(input).pipe(provideNode),
     workflow: (input) => runtime.workflow(input).pipe(provideNode),

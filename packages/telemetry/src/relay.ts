@@ -199,55 +199,62 @@ export const forwardTelemetry = (
     if (batch.dropped > 0) yield* recordExportFailure("app", "capacity", batch.dropped);
     for (const signal of ["traces", "logs"] as const) {
       const target = config[signal];
-      if (target === undefined) continue;
-      for (const body of batch[signal]) {
-        const data =
-          signal === "traces"
-            ? yield* Schema.decodeUnknownEffect(TracePayload)(body).pipe(
-                Effect.map((payload) => ({
-                  resourceSpans: [
-                    {
-                      resource,
-                      scopeSpans: [
-                        {
-                          scope: { name: service },
-                          spans: payload.resourceSpans
-                            .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
-                            .filter((span) => traceId === undefined || span.traceId === traceId),
-                        },
-                      ],
-                    },
-                  ],
-                })),
-              )
-            : yield* Schema.decodeUnknownEffect(LogPayload)(body).pipe(
-                Effect.map((payload) => ({
-                  resourceLogs: [
-                    {
-                      resource,
-                      scopeLogs: [
-                        {
-                          scope: { name: service },
-                          logRecords: payload.resourceLogs
-                            .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
-                            .filter((log) => traceId === undefined || log.traceId === traceId),
-                        },
-                      ],
-                    },
-                  ],
-                })),
-              );
-        yield* client
-          .pipe(HttpClient.filterStatusOk)
-          .execute(
-            HttpClientRequest.post(target.url).pipe(
-              HttpClientRequest.setHeaders(
-                target.headers === undefined ? {} : Redacted.value(target.headers),
-              ),
-              HttpClientRequest.bodyJsonUnsafe(data),
+      if (target === undefined || batch[signal].length === 0) continue;
+      // The isolate return channel is already bounded to four 256 KiB envelopes.
+      // Send each signal once instead of serializing four network acknowledgements
+      // inside the same three-second drain budget.
+      const data =
+        signal === "traces"
+          ? yield* Effect.forEach(batch.traces, (body) =>
+              Schema.decodeUnknownEffect(TracePayload)(body),
+            ).pipe(
+              Effect.map((payloads) => ({
+                resourceSpans: [
+                  {
+                    resource,
+                    scopeSpans: [
+                      {
+                        scope: { name: service },
+                        spans: payloads
+                          .flatMap((payload) => payload.resourceSpans)
+                          .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
+                          .filter((span) => traceId === undefined || span.traceId === traceId),
+                      },
+                    ],
+                  },
+                ],
+              })),
+            )
+          : yield* Effect.forEach(batch.logs, (body) =>
+              Schema.decodeUnknownEffect(LogPayload)(body),
+            ).pipe(
+              Effect.map((payloads) => ({
+                resourceLogs: [
+                  {
+                    resource,
+                    scopeLogs: [
+                      {
+                        scope: { name: service },
+                        logRecords: payloads
+                          .flatMap((payload) => payload.resourceLogs)
+                          .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
+                          .filter((log) => traceId === undefined || log.traceId === traceId),
+                      },
+                    ],
+                  },
+                ],
+              })),
+            );
+      yield* client
+        .pipe(HttpClient.filterStatusOk)
+        .execute(
+          HttpClientRequest.post(target.url).pipe(
+            HttpClientRequest.setHeaders(
+              target.headers === undefined ? {} : Redacted.value(target.headers),
             ),
-          );
-      }
+            HttpClientRequest.bodyJsonUnsafe(data),
+          ),
+        );
     }
   }).pipe(
     Effect.provide(telemetryHttpClient),
