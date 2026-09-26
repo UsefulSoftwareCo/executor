@@ -587,7 +587,7 @@ export const scenarios = {
   appPackageMetadata: {
     fixtures: "actors",
     file: "app-package-metadata.spec.ts",
-    title: "App templates retain package names independently of installed labels",
+    title: "Quick-add MCP apps retain package names independently of installed labels",
     targets: {
       "self-host": scheduled,
       cloud: na(
@@ -609,11 +609,11 @@ export const scenarios = {
   templateAccounts: {
     fixtures: "actors",
     file: "template-accounts.spec.ts",
-    title: "Imported templates route shared tools to explicitly selected accounts",
+    title: "Skill-authored templates route shared tools to explicitly selected accounts",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses loopback upstream fixtures for the shared protocol templates."),
-      local: na("Exercises the hosted import and profile APIs."),
+      local: na("Exercises the hosted deployment and profile APIs."),
     },
   },
   cloudDashboardRoutes: {
@@ -740,13 +740,13 @@ export const scenarios = {
       local: na("Shared error views and SDK are exercised through hosted APIs."),
     },
   },
-  graphqlCatalogImport: {
+  catalogAgentSetup: {
     fixtures: "actors",
-    file: "graphql-catalog.spec.ts",
-    title: "GraphQL catalog import hides CLI entries and connects account tools",
+    file: "catalog-agent-setup.spec.ts",
+    title: "Catalog services without quick add copy an agent setup prompt",
     targets: {
       "self-host": scheduled,
-      cloud: na("Uses a loopback GraphQL upstream to verify the shared catalog importer."),
+      cloud: na("The shared catalog view and install rule are exercised through self-host."),
       local: na("The shared catalog form is exercised through hosted installation."),
     },
   },
@@ -805,10 +805,10 @@ export const scenarios = {
     fixtures: "actors",
     managementProfiles: ["owner"],
     file: "import-diagnostics.spec.ts",
-    title: "OpenAPI imports distinguish download, parse and generation failures safely",
+    title: "Agents learn safely when an MCP server needs them to write the app",
     targets: {
       "self-host": scheduled,
-      cloud: na("Uses a loopback definition host to exercise the shared importer."),
+      cloud: na("Uses a loopback MCP server to exercise the shared importer."),
       local: na("The shared importer is exercised through the hosted import route."),
     },
   },
@@ -825,7 +825,7 @@ export const scenarios = {
   mcpAuthDiscovery: {
     fixtures: "actors",
     file: "mcp-auth-discovery.spec.ts",
-    title: "MCP imports defer discovery and OAuth setup honors POST authentication challenges",
+    title: "MCP quick add confirms public or OAuth servers and sends others to agent setup",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback MCP issuer."),
@@ -845,7 +845,7 @@ export const scenarios = {
   mcpDeferredSetup: {
     fixtures: "actors",
     file: "mcp-deferred-setup.spec.ts",
-    title: "MCP outages preserve added apps and recover in account setup and tools",
+    title: "MCP outages block quick add with a retry and recover in account setup and tools",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses controlled loopback MCP and OAuth servers through shared product code."),
@@ -1094,15 +1094,11 @@ export const scenarios = {
   },
   localCustomImport: {
     file: "local-custom-import.spec.ts",
-    title: "Local custom OpenAPI imports generate app source on concurrent first use",
+    title: "Local custom MCP imports generate app source on concurrent first use",
     targets: {
       local: scheduled,
-      "self-host": na(
-        "Hosted custom OpenAPI imports are covered by the OpenAPI user agent scenario.",
-      ),
-      cloud: na(
-        "Cloud egress refuses loopback definition hosts, so no Cloud scenario imports one.",
-      ),
+      "self-host": na("Hosted custom MCP imports are covered by the MCP auth discovery scenario."),
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
     },
   },
   localOAuth: {

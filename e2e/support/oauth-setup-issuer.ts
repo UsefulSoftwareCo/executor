@@ -170,15 +170,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     ),
     HttpRouter.add(
       "GET",
-      "/invalid-openapi",
-      HttpServerResponse.json({
-        openapi: "2.0.0",
-        info: { title: "PRIVATE_SPEC_CONTENT", version: "1" },
-        paths: {},
-      }),
-    ),
-    HttpRouter.add(
-      "GET",
       "/mcp",
       Effect.gen(function* () {
         probes++;

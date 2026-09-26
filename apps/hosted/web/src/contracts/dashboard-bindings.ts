@@ -1,5 +1,5 @@
 /** Hosted resolvers bind organization identity here, outside reusable atoms and views. */
-import type { RemoteCustomAppInput } from "@executor-js/catalog/contracts";
+import type { CustomAppInput } from "@executor-js/catalog/contracts";
 import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import type { AppId } from "@executor-js/sdk";
@@ -48,7 +48,7 @@ export const dashboardAtoms = Atom.family((organization: OrganizationReference) 
       client.apps.install({ params: { organization }, payload: input }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, organization, saved)))),
   ),
-  importCustom: HostedClient.runtime.fn((input: RemoteCustomAppInput, get) =>
+  importCustom: HostedClient.runtime.fn((input: CustomAppInput, get) =>
     Effect.flatMap(HostedClient, (client) =>
       client.apps.importCustom({ params: { organization }, payload: { source: input } }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, organization, saved)))),

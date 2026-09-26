@@ -1,5 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
+import { openapiAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -91,13 +92,14 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
             "Your current membership or role does not allow this action in this organization.",
         });
         yield* evidence.json("http-error-message.json", denied.body);
-        const imported = yield* api.request(actors.owner, "POST", `${prefix}/import`, {
-          source: {
-            kind: "openapi",
-            name: "OpenAPI error proof",
+        const imported = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
+          name: "OpenAPI error proof",
+          files: openapiAppFiles("OpenAPI error proof", {
             url: `${origin}/openapi.json`,
+            allowedOrigin: origin,
             baseUrl: origin,
-          },
+            securitySchemes: {},
+          }),
         });
         expect(imported.status, JSON.stringify(imported.body)).toBe(200);
         const app = yield* body(App, imported);

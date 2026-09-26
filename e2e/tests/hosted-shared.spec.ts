@@ -245,7 +245,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
                 kind: "mcp",
                 name,
                 url: "https://docs.mcp.cloudflare.com/mcp",
-                auth: { type: "none" },
               },
             });
             expect(imported.status).toBe(200);

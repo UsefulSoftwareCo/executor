@@ -691,30 +691,6 @@ const lifecycleScenarios: Scenario[] = [
             kind: "mcp",
             name: `Perf import ${key}`,
             url: `${target.receipt.emulator}/mcp/${formatSpec({ tools: 50, listMs: 30, key })}/mcp`,
-            auth: { type: "none" },
-          },
-        });
-        yield* removeCreated(client, entry, response);
-        return fromTimed(response);
-      }),
-  },
-  {
-    id: "app.import.openapi",
-    group: "lifecycle",
-    description:
-      "POST apps/import of a new 50-operation emulator OpenAPI document (uncached URL), then delete",
-    target: "minimise; report",
-    warmup: 1,
-    run: (target) =>
-      Effect.gen(function* () {
-        const entry = target.org("call");
-        const client = yield* target.owner("call");
-        const key = `life${randomBytes(6).toString("hex")}`;
-        const response = yield* client.request("POST", `${org(entry)}/apps/import`, {
-          source: {
-            kind: "openapi",
-            name: `Perf import ${key}`,
-            url: `${target.receipt.emulator}/openapi/${formatSpec({ tools: 50, listMs: 30, key })}/openapi.json`,
           },
         });
         yield* removeCreated(client, entry, response);

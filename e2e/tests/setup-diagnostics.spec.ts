@@ -42,30 +42,36 @@ layer(HostedLive, { excludeTestServices: true })("Setup diagnostics", (it) => {
         const assertPrivate = (value: unknown) => {
           const json = JSON.stringify(value);
           for (const marker of [
-            "PRIVATE_SPEC_CONTENT",
             "PRIVATE_QUERY",
             "PRIVATE_PROVIDER_ERROR",
             "synthetic-client-secret",
           ])
             expect(json).not.toContain(marker);
         };
+        // A server that rejects anonymous use without discoverable OAuth is set up by an agent.
+        yield* issuer.configure({ challenge: false, postChallenge: true, discovery: "missing" });
         const rejected = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
           source: {
-            kind: "openapi",
+            kind: "mcp",
             name: `Diagnostic ${randomUUID().slice(0, 8)}`,
-            url: `${issuer.origin}/invalid-openapi`,
+            url: `${issuer.origin}/mcp`,
           },
         });
         expect(rejected.status).toBe(422);
         const imported = yield* trace("/apps/import");
         expect(
-          imported.data.find(({ span }) => span.operationName === "catalog.generate")?.span.tags,
-        ).toMatchObject({ "catalog.stage": "generate", "catalog.error.reason": "openapi_version" });
+          imported.data.find(({ span }) => span.operationName === "catalog.custom")?.span.tags,
+        ).toMatchObject({
+          "catalog.stage": "custom",
+          "catalog.error.reason": "agent_setup_required",
+        });
         expect(
-          imported.data.find(({ span }) => span.operationName === "catalog.document")?.span.tags,
-        ).toMatchObject({ "http.response.status_code": "200" });
+          imported.data.some(({ span }) => span.operationName === "catalog.mcp.access"),
+          "The server check is traced",
+        ).toBe(true);
         assertPrivate(imported);
         yield* evidence.json("catalog-diagnostics.json", imported);
+        yield* issuer.configure({ challenge: true, postChallenge: false, discovery: "available" });
 
         const app = yield* body(
           Resource,
@@ -74,7 +80,6 @@ layer(HostedLive, { excludeTestServices: true })("Setup diagnostics", (it) => {
               kind: "mcp",
               name: `OAuth diagnostics ${randomUUID().slice(0, 8)}`,
               url: `${issuer.origin}/mcp`,
-              auth: { type: "auto" },
             },
           }),
         );

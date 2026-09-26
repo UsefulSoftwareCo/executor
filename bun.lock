@@ -452,7 +452,6 @@
         "@modelcontextprotocol/sdk": "1.30.0",
         "apps": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-        "swagger-client": "3.38.2",
       },
     },
     "packages/apps": {
@@ -504,7 +503,6 @@
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-        "yaml": "^2.8.2",
       },
     },
     "packages/devtools": {
@@ -784,8 +782,8 @@
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
     "effect@https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d": "patches/effect@c7d1ffff.patch",
     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
-    "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
     "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
+    "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",

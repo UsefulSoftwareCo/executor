@@ -25,12 +25,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP URL defaults", (it) => {
         const source = (url: string) =>
           Effect.gen(function* () {
             const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-              source: {
-                kind: "mcp",
-                name: `Defaults ${randomUUID().slice(0, 8)}`,
-                url,
-                auth: { type: "auto" },
-              },
+              source: { kind: "mcp", name: `Defaults ${randomUUID().slice(0, 8)}`, url },
             });
             expect(imported.status).toBe(200);
             const app = yield* body(Resource, imported);

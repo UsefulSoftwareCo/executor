@@ -1,4 +1,4 @@
-/** Compile an API document into ordinary app source, never a second execution engine. */
+/** Compile an OpenAPI document into tool declarations inside the app runtime, never a second execution engine. */
 import { Effect, Option, Schema } from "effect";
 import { JsonObject, type JsonValue as Json } from "../contracts/schema.ts";
 import { jsonSchema } from "./schema.ts";
@@ -11,10 +11,7 @@ import {
 } from "../contracts/openapi.ts";
 import "../contracts/swagger-client.ts";
 import SwaggerClient from "swagger-client";
-import {
-  OpenapiCompileError as TemplateError,
-  type SkippedOperation,
-} from "../contracts/openapi-compile.ts";
+import { OpenapiCompileError as TemplateError } from "../contracts/openapi-compile.ts";
 import type { OpenApiImport } from "../contracts/openapi-document.ts";
 import {
   Operation,
@@ -197,7 +194,7 @@ function errorResponses(document: OpenApiDocument, operation: Operation): Openap
   }
   return errors;
 }
-/** Parse and generate once at import; API calls only use retained source and selected account fields. */
+/** Compile a revision of a live OpenAPI source into tool declarations for the app runtime. */
 export const compileOpenApiDocument = (
   entry: OpenApiImport,
   inputDocument: unknown,
@@ -298,8 +295,8 @@ export const compileOpenApiDocument = (
         );
       const methods = new Map<string, GeneratedSecrets>();
       const operations: GeneratedOperation[] = [];
-      // An operation the importer cannot represent is skipped and reported, not fatal.
-      const skipped: SkippedOperation[] = [];
+      // An operation the importer cannot represent is left out, not fatal.
+      const skipped = new Set<TemplateError["code"]>();
       const causes = new Map<TemplateError["code"], TemplateError>();
       const built: { operation: GeneratedOperation; methods: GeneratedSecrets[] }[] = [];
       const documentServer = spec.servers?.[0];
@@ -311,12 +308,6 @@ export const compileOpenApiDocument = (
       });
       if (!candidates.length) fail("no_operations", "This API does not contain any operations.");
       for (const { path, item, method } of candidates) {
-        const declared = Schema.decodeUnknownOption(Schema.Struct({ operationId: Schema.String }))(
-          item[method.toLowerCase()],
-        );
-        const tool = identifier(
-          Option.isSome(declared) ? declared.value.operationId : `${method.toLowerCase()}_${path}`,
-        );
         try {
           if (!path.startsWith("/") || path.includes("?") || path.includes("#"))
             fail("operation_path", "An operation has an invalid API path.");
@@ -534,7 +525,7 @@ export const compileOpenApiDocument = (
           if (!(error instanceof TemplateError) && !Schema.isSchemaError(error)) throw error;
           const code = error instanceof TemplateError ? error.code : "invalid_document";
           if (error instanceof TemplateError && !causes.has(code)) causes.set(code, error);
-          skipped.push({ tool, method, path, reason: code });
+          skipped.add(code);
         }
       }
       // Every credential-bearing operation of one app addresses one origin, so an account's key
@@ -560,12 +551,7 @@ export const compileOpenApiDocument = (
       }
       for (const { operation, methods: operationMethods } of built) {
         if (new URL(operation.baseUrl).origin !== pinnedOrigin) {
-          skipped.push({
-            tool: operation.name,
-            method: operation.method,
-            path: operation.path,
-            reason: "multiple_hosts",
-          });
+          skipped.add("multiple_hosts");
           continue;
         }
         operations.push(operation);
@@ -577,7 +563,7 @@ export const compileOpenApiDocument = (
         if (
           only !== undefined &&
           others.length === 0 &&
-          skipped.every((op) => op.reason === only.code)
+          [...skipped].every((reason) => reason === only.code)
         )
           throw only;
         fail(
@@ -606,7 +592,6 @@ export const compileOpenApiDocument = (
       return {
         operations,
         definitions: Object.fromEntries(document.definitions),
-        skipped,
         methods: Object.fromEntries(
           [...methods.values()].map((method) => [method.name, method.bindings]),
         ),

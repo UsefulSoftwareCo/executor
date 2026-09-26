@@ -10,6 +10,7 @@ import {
 } from "effect/unstable/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { openapiAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -74,13 +75,15 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI User-Agent", (it) => {
         if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
         const origin = `http://127.0.0.1:${server.address.port}`;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-          source: {
-            kind: "openapi",
-            name: "GitHub REST User-Agent proof",
+        const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: "GitHub REST User-Agent proof",
+          files: openapiAppFiles("GitHub REST User-Agent proof", {
             url: `${origin}/openapi.json`,
+            allowedOrigin: origin,
             baseUrl: origin,
-          },
+            securitySchemes: { bearer: { type: "http", scheme: "bearer" } },
+            key: "bearer",
+          }),
         });
         expect(imported.status, JSON.stringify(imported.body)).toBe(200);
         const app = yield* body(App, imported);

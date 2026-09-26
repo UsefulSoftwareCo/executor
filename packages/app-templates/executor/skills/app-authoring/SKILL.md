@@ -20,7 +20,7 @@ the framework. An app's installed name is separate from its source definition.
 | Build a React UI and subscribe to data                       | [ui.md](ui.md)                     |
 | Store, query or modify app data                              | [storage.md](storage.md)           |
 | Connect provider accounts                                    | [accounts.md](accounts.md)         |
-| Import MCP, OpenAPI or GraphQL operations                    | [integrations.md](integrations.md) |
+| Add a service: MCP, OpenAPI, GraphQL or another API          | [integrations.md](integrations.md) |
 | Handle webhooks                                              | [webhooks.md](webhooks.md)         |
 | Run workflows or scheduled mutations                         | [workflows.md](workflows.md)       |
 

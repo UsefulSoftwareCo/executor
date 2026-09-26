@@ -4,6 +4,7 @@ export { createExecutor, createRemoteExecutor } from "./implementation/create.ts
 export { makeDeclarationCache } from "./implementation/declarations.ts";
 export { executorHandlers } from "./implementation/handlers.ts";
 export { probeOAuthChallenge } from "./implementation/oauth-probe.ts";
+export { discoversResourceOAuth } from "./implementation/oauth-protocol.ts";
 export { bearerResourceMetadata } from "./implementation/oauth-challenge.ts";
 export { subscribeAppQuery } from "./implementation/live.ts";
 export {

@@ -1,7 +1,7 @@
 /** Adapt the local API once. Live streams remain live; no hosted concepts enter these contracts. */
 import { Effect } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import type { RemoteCustomAppInput } from "@executor-js/catalog/contracts";
+import type { CustomAppInput } from "@executor-js/catalog/contracts";
 import type { InstallApp } from "@executor-js/ui/contracts/dashboard";
 import type { AppId } from "@executor-js/sdk";
 import { DashboardClient, overviewAtom, toolsAtom } from "./api.ts";
@@ -23,7 +23,7 @@ export const dashboardAtoms = {
       client.dashboard.importApp({ payload: input }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, saved)))),
   ),
-  importCustom: DashboardClient.runtime.fn((input: RemoteCustomAppInput, get) =>
+  importCustom: DashboardClient.runtime.fn((input: CustomAppInput, get) =>
     Effect.flatMap(DashboardClient, (client) =>
       client.dashboard.importCustomApp({ payload: { source: input } }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, saved)))),

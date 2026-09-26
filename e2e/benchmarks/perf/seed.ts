@@ -250,6 +250,66 @@ export default defineApp({ accounts: {} }, async (ctx) => ({ queries: {
   approved: mutation({ input: object({}), approval: always() }, async () => ({ ran: true })),
 } }));`;
 
+/** Source an agent would author for an emulator app; keyed apps read an `x-api-key` token. */
+const authoredFiles = (kind: "mcp" | "openapi", url: string, keyed: boolean) => {
+  const operations =
+    kind === "mcp"
+      ? (account: string) => `mcpOperations({
+    url: ${JSON.stringify(url)},
+    cache: ${account === "" ? "cache" : "cache.forAccount(account)"},
+    ${account === "" ? "" : 'accountId: account.id,\n    headers: { "x-api-key": account.fields.token },'}
+    signal,
+  })`
+      : (account: string) => `liveOpenapiOperations({
+    ...${JSON.stringify({
+      source: { url },
+      allowedOrigin: new URL(url).origin,
+      securitySchemes: keyed ? { key: { type: "apiKey", in: "header", name: "x-api-key" } } : {},
+      methods: keyed
+        ? { apiKey: [{ scheme: "key", field: "token", part: "value", prefix: "" }] }
+        : {},
+      oauth: [],
+    })},
+    cache, fetch, signal${account === "" ? "" : ", account"},
+  })`;
+  const helper =
+    kind === "mcp"
+      ? 'import { mcpOperations } from "apps/mcp";'
+      : 'import { liveOpenapiOperations } from "apps/openapi";';
+  return [
+    {
+      path: "index.ts",
+      content: keyed
+        ? `import { accountOperations, defineApp } from "apps";
+${helper}
+import { provider } from "./provider.ts";
+export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, cache, fetch, signal }) =>
+  accountOperations(accounts.service, async (account) => ${operations("account")}, { signal }));`
+        : `import { defineApp } from "apps";
+${helper}
+export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ${operations("")});`,
+    },
+    ...(keyed
+      ? [
+          {
+            path: "provider.ts",
+            content: `import { defineProvider, object, secrets, string } from "apps";
+export const provider = defineProvider({
+  name: "Perf emulator",
+  auth: { apiKey: secrets({ label: "API key", fields: object({ token: string({ minLength: 1 }) }) }) },
+});`,
+          },
+        ]
+      : []),
+    {
+      path: "package.json",
+      content: JSON.stringify({
+        dependencies: kind === "mcp" ? { "@modelcontextprotocol/sdk": "1.30.0" } : {},
+      }),
+    },
+  ];
+};
+
 const seedApp = (client: ProductClient, root: string, app: AppPlan, emulator: string) =>
   Effect.gen(function* () {
     const url = appUrl(app, emulator);
@@ -288,18 +348,17 @@ export default defineApp({ accounts: {} }, async () => mcpOperations({ url: ${JS
         );
       return receiptFor(app, emulator, deployed, "", []);
     }
-    const source =
-      app.kind === "mcp"
-        ? {
-            kind: "mcp",
+    // Quick add covers public MCP servers; keyed servers and OpenAPI apps are authored source.
+    const imported = yield* (
+      app.kind === "mcp" && !app.spec.auth
+        ? client.request("POST", `${root}/apps/import`, {
+            source: { kind: "mcp", name: app.name, url },
+          })
+        : client.request("POST", `${root}/apps/deploy`, {
             name: app.name,
-            url,
-            auth: app.spec.auth
-              ? { type: "apiKey", header: "x-api-key", prefix: "" }
-              : { type: "none" },
-          }
-        : { kind: "openapi", name: app.name, url };
-    const imported = yield* client.request("POST", `${root}/apps/import`, { source }).pipe(
+            files: authoredFiles(app.kind, url, app.spec.auth),
+          })
+    ).pipe(
       Effect.flatMap((response) => expectOk(`import ${app.name}`, response)),
       Effect.flatMap(Schema.decodeUnknownEffect(Created)),
     );

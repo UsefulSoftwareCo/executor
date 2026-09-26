@@ -2,51 +2,33 @@ import { Publication } from "@executor-js/app-registry/contracts";
 import type { Query } from "../../contracts/dashboard.ts";
 import type { ComponentType } from "react";
 import type { FailureProps } from "../../contracts/dashboard.ts";
-import { RemoteAppForm } from "./custom-app.tsx";
 import { AppCreateForm } from "./app-create.tsx";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useState, type ReactNode } from "react";
-import { Option, Schema } from "effect";
+import { Option } from "effect";
+import type { DeployedApp } from "@executor-js/sdk";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
-import {
-  McpImportAuth,
-  graphqlCatalogAuth,
-  type CatalogEntry,
-  type ImportedApp,
-} from "@executor-js/catalog/contracts";
+import { quickAdd, type CatalogEntry } from "@executor-js/catalog/contracts";
 import type { QueryProps, MutationProps, InstallApp } from "../../contracts/dashboard.ts";
 import { Empty, LoadingRows, ProviderIcon, SearchInput } from "./common.tsx";
-import { SkippedOperationsNotice, useImportReview } from "./skipped-operations.tsx";
+import { AgentSetupPrompt, agentSetupPrompt } from "./agent-setup.tsx";
 import { Button } from "../components/button.tsx";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../components/select.tsx";
 
-/** Explain unsupported imports before a user opens their install form. */
-export const catalogUnavailable = (entry: CatalogEntry) => {
+const catalogKind = (entry: CatalogEntry) => {
   switch (entry.kind) {
+    case "app":
+      return "App";
     case "graphql":
-      return undefined;
-    case "cli":
-      return "CLI imports are not supported";
-    case "mcp":
-      return entry.connectUrl ? undefined : "No MCP server URL available";
+      return "GraphQL";
     case "openapi":
-      return entry.connectUrl ? undefined : "No API definition available";
+      return "OpenAPI";
+    case "mcp":
+    case "cli":
+      return entry.kind.toUpperCase();
   }
 };
-const catalogKind = (entry: CatalogEntry) =>
-  entry.kind === "graphql"
-    ? "GraphQL"
-    : entry.kind === "openapi"
-      ? "OpenAPI"
-      : entry.kind.toUpperCase();
 /** One discovery list combines published apps and integration templates, with independent failure states. */
 export function CatalogPage<E, P>({
   query,
@@ -88,8 +70,6 @@ export function CatalogPage<E, P>({
       : []),
   ];
   const title = (row: Row) => (row.kind === "publication" ? row.publication.name : row.entry.name);
-  const unavailable = (row: Row) =>
-    row.kind === "publication" ? undefined : catalogUnavailable(row.entry);
   const entries = rows
     .filter((row) =>
       (row.kind === "publication"
@@ -101,7 +81,6 @@ export function CatalogPage<E, P>({
     )
     .sort(
       (a, b) =>
-        Number(unavailable(a) !== undefined) - Number(unavailable(b) !== undefined) ||
         Number(b.kind === "publication") - Number(a.kind === "publication") ||
         (a.kind === "template" && b.kind === "template"
           ? Number(b.entry.feeds?.includes("curated") ?? false) -
@@ -163,7 +142,6 @@ export function CatalogPage<E, P>({
         <>
           <div className="catalog-list border-t border-t-border">
             {entries.slice(0, limit).map((row) => {
-              const reason = unavailable(row);
               const name = title(row);
               const published = row.kind === "publication";
               return (
@@ -171,10 +149,7 @@ export function CatalogPage<E, P>({
                   type="button"
                   className="catalog-row w-full flex items-center gap-4 min-h-18.5 text-left py-[15px] px-[12px] border-b border-b-border cursor-pointer [&:hover:not(:disabled)]:bg-muted disabled:cursor-default max-[740px]:grid max-[740px]:grid-cols-[34px_minmax(0,_1fr)_auto] max-[740px]:gap-[4px_12px] max-[740px]:py-[15px] max-[740px]:px-0 max-[740px]:[&_>_svg]:col-[3] max-[740px]:[&_>_svg]:row-[1_/_3]"
                   key={published ? `package:${row.publication.name}` : row.entry.id}
-                  disabled={
-                    reason !== undefined ||
-                    (published ? onPublication === undefined : onSelect === undefined)
-                  }
+                  disabled={published ? onPublication === undefined : onSelect === undefined}
                   onClick={() => {
                     if (row.kind === "publication") onPublication?.(row.publication);
                     else onSelect?.(row.entry);
@@ -195,13 +170,7 @@ export function CatalogPage<E, P>({
                   <span className="catalog-kind text-[12px] text-muted-foreground min-w-18.75 max-[740px]:col-[2] max-[740px]:text-[11px]">
                     {row.kind === "publication" ? "App" : catalogKind(row.entry)}
                   </span>
-                  {reason ? (
-                    <span className="catalog-unavailable text-muted-foreground text-[12px] max-[740px]:col-[2_/_-1]">
-                      {reason}
-                    </span>
-                  ) : (
-                    <HugeiconsIcon icon={ArrowRight02Icon} strokeWidth={2} aria-hidden size={15} />
-                  )}
+                  <HugeiconsIcon icon={ArrowRight02Icon} strokeWidth={2} aria-hidden size={15} />
                 </button>
               );
             })}
@@ -220,22 +189,43 @@ export function CatalogPage<E, P>({
     </div>
   );
 }
-/** Common install form; the supplied mutation atom owns routing and invalidation. */
+/**
+ * MCP servers and built-in apps are added directly; the server confirms how an MCP server
+ * connects. Every other service is set up by the user's agent from a copied prompt.
+ */
 export function CatalogInstall<E>({
   mutation,
   Failure,
   entry,
+  endpoint,
   onBack,
   onInstalled,
-}: MutationProps<InstallApp, ImportedApp, E> & {
+}: MutationProps<InstallApp, DeployedApp, E> & {
   readonly entry: CatalogEntry;
+  /** This installation's MCP URL, included so an unconnected agent can connect first. */
+  readonly endpoint?: string;
   readonly onBack: () => void;
-  readonly onInstalled: (app: ImportedApp) => void | Promise<void>;
+  readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
 }) {
   const imported = useAtomValue(mutation);
-  const { review, installed } = useImportReview(onInstalled);
-  const [mcpAuth, setMcpAuth] = useState<McpImportAuth>("auto");
   const pending = imported.waiting;
+  const provider = (
+    <>
+      <div className="setup-provider flex items-center gap-3.25 [&_h2]:text-[16px] [&_h2]:[font-weight:550] [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
+        <ProviderIcon name={entry.name} url={entry.domain} large />
+        <div>
+          <h2>{entry.name}</h2>
+          <span className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
+            {catalogKind(entry)} · {entry.domain}
+          </span>
+        </div>
+      </div>
+      <p className="catalog-description text-muted-foreground text-[13px] leading-[1.6]">
+        {entry.description}
+      </p>
+    </>
+  );
+  const prompt = agentSetupPrompt(entry, endpoint);
   return (
     <div className="page setup-page w-full shrink-0 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-w-212.5 max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
       <Button
@@ -253,97 +243,43 @@ export function CatalogInstall<E>({
           Add app
         </h1>
       </div>
-      {review ? (
-        <SkippedOperationsNotice
-          operations={review.skippedOperations}
-          onContinue={() => onInstalled(review)}
-        />
-      ) : entry.kind === "graphql" ? (
-        <RemoteAppForm
-          kind="graphql"
-          mutation={mutation}
-          Failure={Failure}
-          initial={{
-            name: entry.name,
-            url: entry.connectUrl ?? "",
-            auth: Option.getOrElse(graphqlCatalogAuth(entry), () => ({
-              type: "apiKey" as const,
-              header: "Authorization",
-              prefix: "Bearer ",
-            })),
-          }}
-          input={(source) => ({
-            entry: entry.id,
-            name: source.name,
-            ...(source.kind === "graphql"
-              ? { graphql: { url: source.url, auth: source.auth } }
-              : {}),
-          })}
-          onInstalled={installed}
-        />
-      ) : (
-        <AppCreateForm
-          mutation={mutation}
-          Failure={Failure}
-          initialName={entry.name}
-          input={(name) => ({
-            entry: entry.id,
-            name,
-            ...(entry.kind === "mcp" ? { mcpAuth } : {}),
-          })}
-          onCreated={installed}
-          label="Add app"
-          onCancel={onBack}
-          beforeName={
-            <>
-              <div className="setup-provider flex items-center gap-3.25 [&_h2]:text-[16px] [&_h2]:[font-weight:550] [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
-                <ProviderIcon name={entry.name} url={entry.domain} large />
-                <div>
-                  <h2>{entry.name}</h2>
-                  <span className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
-                    {catalogKind(entry)} · {entry.domain}
-                  </span>
-                </div>
-              </div>
-              <p className="catalog-description text-muted-foreground text-[13px] leading-[1.6]">
-                {entry.description}
-              </p>
-            </>
-          }
-        >
-          {(pending) => (
-            <>
-              {entry.kind === "mcp" && (
-                <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
-                  Sign-in method
-                  <Select
-                    value={mcpAuth}
-                    disabled={pending}
-                    onValueChange={(value) => {
-                      const parsed = Schema.decodeUnknownOption(McpImportAuth)(value);
-                      if (Option.isSome(parsed)) setMcpAuth(parsed.value);
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="auto">Use catalog settings</SelectItem>
-                      <SelectItem value="oauth">OAuth</SelectItem>
-                      <SelectItem value="apiKey">API key</SelectItem>
-                      <SelectItem value="none">No authentication</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </label>
-              )}
-              <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
-                {entry.kind === "mcp"
-                  ? "Tools load live with your selected account."
-                  : "Creates editable app source from this API definition."}
-              </span>
-            </>
+      {quickAdd(entry) ? (
+        <div className="flex flex-col gap-10">
+          <AppCreateForm
+            mutation={mutation}
+            Failure={Failure}
+            initialName={entry.name}
+            input={(name) => ({ entry: entry.id, name })}
+            onCreated={onInstalled}
+            label="Add app"
+            onCancel={onBack}
+            beforeName={provider}
+          >
+            {() =>
+              entry.kind === "mcp" ? (
+                <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5]">
+                  Executor checks whether this server needs no sign-in or supports OAuth.
+                </span>
+              ) : null
+            }
+          </AppCreateForm>
+          {entry.kind === "mcp" && (
+            <AgentSetupPrompt
+              title="Needs an API key or other setup?"
+              description="Send this prompt to your agent instead. It reads the server’s documentation and asks how you sign in."
+              prompt={prompt}
+            />
           )}
-        </AppCreateForm>
+        </div>
+      ) : (
+        <div className="flex max-w-145 flex-col gap-6">
+          {provider}
+          <AgentSetupPrompt
+            title="Set up with your agent"
+            description="Your agent reads this service’s documentation, asks how you sign in, then writes and deploys the app in Executor."
+            prompt={prompt}
+          />
+        </div>
       )}
     </div>
   );

@@ -357,7 +357,7 @@ export const dashboard = (
             name: payload.name,
             files: generated.files,
           });
-          return { ...app, skippedOperations: generated.skippedOperations };
+          return app;
         }),
       )
       .handle("addAccount", ({ payload }) => executor.accounts.add({ owner, ...payload }))
@@ -406,7 +406,7 @@ export const dashboard = (
             name: input.name,
             files: generated.files,
           });
-          return { ...app, skippedOperations: generated.skippedOperations };
+          return app;
         }),
       )
       .handle("oauthSetup", ({ payload }) =>

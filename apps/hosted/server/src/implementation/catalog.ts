@@ -1,6 +1,6 @@
 import type { HostedApiDocument } from "../contracts/api.ts";
 /** Supply shared catalog reads and source preparation to hosted handlers. */
-import { CatalogImportFailed, createCatalog } from "@executor-js/catalog";
+import { createCatalog } from "@executor-js/catalog";
 import type { SourceFile } from "@executor-js/sdk/core";
 import { Effect, Layer } from "effect";
 import type { HostEgress } from "@executor-js/utils/url-policy";
@@ -10,8 +10,8 @@ import { executorCatalogEntry } from "./executor-catalog-entry.ts";
 
 /**
  * Fetch the public integrations.sh feed on request. Layer construction performs no network I/O.
- * The API document and the OpenAPI source generator are only needed to prepare the Executor
- * app, so both load on that request instead of during server startup.
+ * The API document and the Executor app source are only needed to prepare the Executor app, so
+ * both load on that request instead of during server startup.
  */
 export const catalogLive = (
   skills: readonly SourceFile[],
@@ -38,13 +38,7 @@ export const catalogLive = (
                 Effect.flatMap(([{ executorAppSource }, document]) =>
                   executorAppSource(origin, skills, document),
                 ),
-                Effect.map(({ files, skippedOperations }) => ({ files, skippedOperations })),
-                Effect.mapError(
-                  (error) => new CatalogImportFailed({ code: error.code, reason: error.reason }),
-                ),
-                Effect.tapError((error) =>
-                  Effect.annotateCurrentSpan("catalog.error.reason", error.code),
-                ),
+                Effect.map(({ files }) => ({ files })),
                 Effect.withSpan("catalog.generate", {
                   attributes: {
                     "catalog.stage": "generate",

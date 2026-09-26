@@ -1,6 +1,7 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted } from "effect";
 import { randomUUID } from "node:crypto";
+import { openapiAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -25,13 +26,15 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI paths", (it) => {
           mcp = yield* McpClient;
         const upstream = yield* openapiPathUpstream;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-          source: {
-            kind: "openapi",
-            name: "Restricted path tools",
+        const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: "Restricted path tools",
+          files: openapiAppFiles("Restricted path tools", {
             url: `${upstream.origin}/openapi.json`,
+            allowedOrigin: upstream.origin,
             baseUrl: `${upstream.origin}/v2/`,
-          },
+            securitySchemes: { key: { type: "apiKey", in: "header", name: "X-Fixture-Key" } },
+            key: "key",
+          }),
         });
         expect(imported.status, JSON.stringify(imported.body)).toBe(200);
         const app = yield* body(App, imported),

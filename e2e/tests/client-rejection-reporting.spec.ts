@@ -11,7 +11,8 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, traceExceptionTypes } from "../support/sentry-events.ts";
-import { staleOpenapiUpstream } from "../support/stale-openapi-upstream.ts";
+import { openapiAppFiles } from "../support/authored-templates.ts";
+import { staleRegistryDocument } from "../support/stale-openapi-upstream.ts";
 
 const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 const kindTag = "executor.request.rejection.kind",
@@ -128,14 +129,15 @@ export default defineApp({ accounts: {} }, async () => ({
         // contract calls Executor, which rejects the request inside the tool call's trace.
         const stale = cloud
           ? yield* Effect.gen(function* () {
-              const upstream = yield* staleOpenapiUpstream;
-              const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-                source: {
-                  kind: "openapi",
-                  name: `Stale registry ${randomUUID().slice(0, 8)}`,
-                  url: `${upstream}/openapi.json`,
+              const name = `Stale registry ${randomUUID().slice(0, 8)}`;
+              const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+                name,
+                files: openapiAppFiles(name, {
+                  url: { document: staleRegistryDocument },
+                  allowedOrigin: target.metadata.origin,
                   baseUrl: target.metadata.origin,
-                },
+                  securitySchemes: {},
+                }),
               });
               expect(imported.status, JSON.stringify(imported.body)).toBe(200);
               const staleApp = yield* body(App, imported);

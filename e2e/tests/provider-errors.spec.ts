@@ -9,6 +9,7 @@ import { App, Resource } from "../support/contracts.ts";
 import { selectProfileAccounts } from "../support/profiles.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { providerErrorUpstream, providerSecretMarker } from "../support/provider-error-upstream.ts";
+import { authoredAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Failure = Schema.Struct({
@@ -57,21 +58,14 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
                     },
                   ],
                 })
-              : yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-                  source:
-                    kind === "openapi"
-                      ? {
-                          kind,
-                          name: "OpenAPI provider errors",
-                          url: `${upstream.origin}/openapi.json`,
-                          baseUrl: upstream.origin,
-                        }
-                      : {
-                          kind,
-                          name: `${kind} provider errors`,
-                          url: `${upstream.origin}/${kind}`,
-                          auth: { type: "apiKey", header: "Authorization", prefix: "Bearer " },
-                        },
+              : yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+                  name: `${kind} provider errors`,
+                  files: authoredAppFiles(
+                    kind,
+                    upstream.origin,
+                    "apiKey",
+                    `${kind} provider errors`,
+                  ),
                 });
           expect(created.status, JSON.stringify(created.body)).toBe(200);
           const app = yield* body(App, created),

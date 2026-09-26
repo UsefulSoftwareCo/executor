@@ -600,3 +600,22 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       }).pipe(protocolStage("refresh")),
   };
 };
+
+/**
+ * Confirm that a protected resource advertises authorization-code OAuth an account connection can
+ * complete. Any discovery failure means OAuth is not confirmed; it never selects another method.
+ */
+export const discoversResourceOAuth = (
+  resource: string,
+  options: Pick<OAuthOptions, "httpClient" | "urlPolicy">,
+) =>
+  makeOAuthProtocol({ ...options, clientName: "Executor" })
+    .discover({ type: "oauth2", discover: resource, response: {} })
+    .pipe(
+      Effect.map(
+        (found) =>
+          found.grant === "authorization_code" &&
+          (found.server.code_challenge_methods_supported?.includes("S256") ?? true),
+      ),
+      Effect.orElseSucceed(() => false),
+    );

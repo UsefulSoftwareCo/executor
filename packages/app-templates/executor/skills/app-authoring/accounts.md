@@ -45,6 +45,38 @@ const listProjects = query(
 export default defineApp(requirements, { queries: { listProjects } });
 ```
 
+## OAuth sign-in
+
+Prefer discovery. When the service publishes OAuth authorization server or OpenID
+metadata, point `discover` at its issuer or MCP URL. Executor then reads the real
+issuer, endpoints and supported client authentication, and checks the service's
+responses against them:
+
+```ts
+const searchConsole = defineProvider({
+  name: "Google Search Console",
+  auth: {
+    oauth: oauth2({
+      discover: "https://accounts.google.com",
+      scopes: ["https://www.googleapis.com/auth/webmasters"],
+    }),
+  },
+});
+```
+
+Check for metadata at `<issuer>/.well-known/oauth-authorization-server` or
+`<issuer>/.well-known/openid-configuration`. The issuer is often the host of the
+sign-in page, not the token URL: Google signs in at `accounts.google.com` and
+issues tokens from `oauth2.googleapis.com`. List the scopes the app needs;
+discovery only fills them in when the service advertises scopes for the resource.
+
+Declare `authorizationUrl`, `tokenUrl` and `scopes` only when the service
+publishes no metadata. Then set `tokenEndpointAuthMethod` to what its docs say
+the token endpoint accepts (`client_secret_basic`, `client_secret_post`, or `none`
+for public PKCE clients). Do not copy endpoints from an OpenAPI `oauth2` scheme
+without checking the service's docs; those schemes carry no issuer or client
+authentication.
+
 Deploy the source, create a profile, then request a connection for its account requirement.
 The management examples below use the **local** API. For hosted calls, use
 `profiles_create` and `accounts_connect` with `path.organization`, as shown in

@@ -11,8 +11,7 @@ import {
   CatalogImport,
   CatalogImportFailed,
   CatalogUnavailable,
-  ImportedApp,
-  RemoteCustomAppInput,
+  CustomAppInput,
 } from "@executor-js/catalog/contracts";
 import {
   AccountNotFound,
@@ -72,15 +71,15 @@ export const HostedApps = HttpApiGroup.make("apps")
     HttpApiEndpoint.post("install", `${prefix}/install`, {
       params,
       payload: InstallApp,
-      success: ImportedApp,
+      success: DeployedApp,
       error: [...deployErrors, CatalogImportFailed, CatalogUnavailable],
     }).annotate(RequiredAction, "manage"),
   )
   .add(
     HttpApiEndpoint.post("importCustom", `${prefix}/import`, {
       params,
-      payload: Schema.Struct({ source: RemoteCustomAppInput }),
-      success: ImportedApp,
+      payload: Schema.Struct({ source: CustomAppInput }),
+      success: DeployedApp,
       error: [...deployErrors, CatalogImportFailed],
     }).annotate(RequiredAction, "manage"),
   )

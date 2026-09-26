@@ -36,11 +36,3 @@ export class OpenapiCompileError extends Schema.TaggedError<OpenapiCompileError>
     reason: Schema.String,
   },
 ) {}
-
-export const SkippedOperation = Schema.Struct({
-  tool: Schema.String,
-  method: Schema.String,
-  path: Schema.String,
-  reason: OpenapiCompileErrorCode,
-});
-export type SkippedOperation = typeof SkippedOperation.Type;

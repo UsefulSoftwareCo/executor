@@ -1,4 +1,7 @@
-/** An unavailable remote server cannot prevent saving an app or erase its setup draft. */
+/**
+ * Quick add cannot confirm an unavailable server, so it keeps the form and retries. After an app is
+ * added, a later outage cannot erase an account setup draft or hide the app.
+ */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -6,7 +9,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App, Resource } from "../support/contracts.ts";
+import { App } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import {
   publicProviderErrorUpstream,
@@ -27,47 +30,59 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
         const issuer = yield* oauthSetupIssuer;
         const upstream = yield* publicProviderErrorUpstream;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        const apps: string[] = [],
-          accounts: string[] = [];
+        const apps: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* issuer.configure({ mcpStatus: null });
             yield* upstream.configure(undefined);
             for (const id of apps)
               yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${id}`);
-            for (const id of accounts)
-              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
         yield* issuer.configure({ mcpStatus: 520 });
         const name = `MCP connection ${randomUUID().slice(0, 8)}`;
         yield* browser.login(actors.owner);
+        const submit = (label: string) =>
+          browser.use(label, (page) =>
+            Promise.all([
+              page.waitForResponse(
+                (response) =>
+                  response.url().endsWith("/apps/import") && response.request().method() === "POST",
+              ),
+              page.getByRole("button", { name: "Add app", exact: true }).click(),
+            ]).then(([saved]) => saved.json().then((body) => ({ status: saved.status(), body }))),
+          );
+        yield* browser.use("Fill the MCP server form", (page) =>
+          page
+            .goto(`/org/${actors.organization.slug}/apps/add/custom`)
+            .then(() => page.getByLabel("App name", { exact: true }).fill(name))
+            .then(() =>
+              page.getByLabel("MCP server URL", { exact: true }).fill(`${issuer.origin}/mcp`),
+            ),
+        );
+        const rejected = yield* submit("Add MCP app while its server returns 520");
+        expect(rejected.status, "An unconfirmed server is not added").toBe(422);
+        expect(rejected.body).toMatchObject({ code: "mcp_probe" });
+        expect(
+          yield* browser.use("The form keeps its draft beside the error", (page) =>
+            Promise.all([
+              page.getByLabel("App name", { exact: true }).inputValue(),
+              page.getByText("The MCP server could not respond right now.").count(),
+            ]),
+          ),
+        ).toEqual([name, 1]);
+        yield* browser.checkpoint("Quick add reports an unreachable MCP server");
+        yield* issuer.configure({ mcpStatus: null });
         // The saved app's Accounts tab preloads setup. Hold that separate read to isolate import.
         const initialSetup = yield* holdQuery(
           /\/providers\/[^/]+\/oauth\/oauth\/setup$/,
           "continue",
         );
-        const imported = yield* browser.use("Add MCP app while its server returns 520", (page) =>
-          page
-            .goto(`/org/${actors.organization.slug}/apps/add/custom`)
-            .then(() => page.getByLabel("App name", { exact: true }).fill(name))
-            .then(() => page.getByLabel("Server URL", { exact: true }).fill(`${issuer.origin}/mcp`))
-            .then(() =>
-              Promise.all([
-                page.waitForResponse(
-                  (response) =>
-                    response.url().endsWith("/apps/import") &&
-                    response.request().method() === "POST",
-                ),
-                page.getByRole("button", { name: "Add app", exact: true }).click(),
-              ]),
-            )
-            .then(([saved]) => saved.json().then((body) => ({ status: saved.status(), body }))),
-        );
-        expect(imported.status, "An outage must not reject adding the app").toBe(200);
+        const imported = yield* submit("Retry after the server recovers");
+        expect(imported.status, JSON.stringify(imported.body)).toBe(200);
         const app = yield* Schema.decodeUnknownEffect(App)(imported.body);
         apps.push(app.id);
-        expect((yield* issuer.metrics).probes, "Import makes no probe request").toBe(0);
+        yield* issuer.configure({ mcpStatus: 520 });
         yield* initialSetup.requested;
         yield* initialSetup.release;
         yield* browser.use("Open account setup on the saved app", (page) =>
@@ -85,7 +100,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
         expect((yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`)).status).toBe(
           200,
         );
-        expect((yield* issuer.metrics).probes).toBeGreaterThan(0);
         yield* browser.checkpoint("Saved MCP app with retryable account setup error");
         const held = yield* holdQuery(
           /\/providers\/[^/]+\/oauth\/oauth\/setup(?:\?|$)/,
@@ -122,57 +136,18 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
         ).toBe(0);
         yield* browser.checkpoint("OAuth setup recovers without adding the app again");
 
-        yield* upstream.configure({ status: 520, accounts: "all" });
         const remote = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-          source: {
-            kind: "mcp",
-            name: "Public MCP connection",
-            url: `${upstream.origin}/mcp`,
-            auth: { type: "auto" },
-          },
+          source: { kind: "mcp", name: "Public MCP connection", url: `${upstream.origin}/mcp` },
         });
-        expect(remote.status).toBe(200);
+        expect(remote.status, JSON.stringify(remote.body)).toBe(200);
+        expect(remote.body, "A public server needs no account").toMatchObject({
+          requirements: { accounts: {} },
+        });
         const publicApp = yield* body(App, remote);
         apps.push(publicApp.id);
         const path = `${prefix}/apps/${publicApp.id}`;
         const profile = yield* createProfile(actors.owner, path);
-        yield* browser.use("Explicitly choose a public connection", (page) =>
-          page
-            .goto(
-              `/org/${actors.organization.slug}/apps/${publicApp.id}?view=accounts&profile=${profile.id}`,
-            )
-            .then(() =>
-              page
-                .getByRole("button", { name: "Add Public MCP connection account", exact: true })
-                .click(),
-            )
-            .then(() => page.getByRole("combobox", { name: "Sign-in method" }).click())
-            .then(() =>
-              page
-                .getByRole("option", { name: "No authentication (public server)", exact: true })
-                .click(),
-            )
-            .then(() =>
-              page
-                .getByText(
-                  "This connection sends no credentials. Continue only if the service supports public access.",
-                  { exact: true },
-                )
-                .waitFor(),
-            )
-            .then(() => page.getByLabel("Account name", { exact: true }).fill("Public connection")),
-        );
-        yield* browser.checkpoint("Public access requires an explicit selection");
-        const saved = yield* browser.use("Save the explicit public connection", (page) =>
-          Promise.all([
-            page.waitForResponse(
-              (response) =>
-                response.url().endsWith("/submit") && response.request().method() === "POST",
-            ),
-            page.getByRole("button", { name: "Connect account", exact: true }).click(),
-          ]).then(([response]) => response.json()),
-        );
-        accounts.push((yield* Schema.decodeUnknownEffect(Resource)(saved)).id);
+        yield* upstream.configure({ status: 520, accounts: "all" });
         const tools = yield* api.request(
           actors.owner,
           "GET",
@@ -218,30 +193,6 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
         expect(
           (yield* api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`)).status,
         ).toBe(200);
-        // Explicit public imports retain their account-free shape even while the server is down.
-        yield* upstream.configure({ status: 520, accounts: "all" });
-        const direct = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-          source: {
-            kind: "mcp",
-            name: "Known public MCP",
-            url: `${upstream.origin}/mcp`,
-            auth: { type: "none" },
-          },
-        });
-        expect(direct.status).toBe(200);
-        const known = yield* body(App, direct);
-        apps.push(known.id);
-        expect(direct.body).toMatchObject({ requirements: { accounts: {} } });
-        const anonymousFailure = yield* api.request(
-          actors.owner,
-          "GET",
-          `${prefix}/apps/${known.id}/tools`,
-        );
-        expect(anonymousFailure.body).toMatchObject({
-          _tag: "AppProviderFailed",
-          reason: "unavailable",
-          status: 520,
-        });
       }),
     ),
   );

@@ -9,8 +9,7 @@ import type { HostEgress } from "@executor-js/utils/url-policy";
 /**
  * Use integrations.sh by default, or supply a source. Construction performs no I/O. The host
  * supplies the egress it fetches with, because an import reads URLs a user chose. Source
- * generators load with the first preparation. That keeps them out of hosted startup; the local
- * server still loads the OpenAPI compiler at startup to install its own management app.
+ * generators load with the first preparation, which keeps them out of hosted startup.
  */
 export const createCatalog = (
   egress: HostEgress,
@@ -28,7 +27,7 @@ export const createCatalog = (
       ),
     prepare: (input) =>
       Effect.promise(() => import("./prepare.ts")).pipe(
-        Effect.flatMap(({ prepareEntry }) => prepareEntry(list, source, egress, input)),
+        Effect.flatMap(({ prepareEntry }) => prepareEntry(list, egress, input)),
         catalogStage("prepare"),
       ),
   };

@@ -54,8 +54,9 @@ Republishing or unpublishing the original does not update or revoke your copy.
 ## Getting an app
 
 - **From a public listing.** Make your own copy, then select its accounts.
-- **From the catalog.** Generate an app from a prepared integration.
-- **From a URL.** Import a supported API or MCP server as a custom app.
+- **From the catalog.** Add an MCP server that needs no sign-in or supports OAuth.
+  For any other service, copy the setup prompt and your agent writes the app.
+- **From a URL.** Add an MCP server by URL, with the same check.
 - **From source.** Write TypeScript and deploy it. See [Author an app](/build/author-an-app).
 
 After deploying or changing account selections, discover tools again in a new

@@ -1,37 +1,32 @@
-/** Prepare source without a product server, account, database or workspace. No network calls. */
+/** Prepare source without a product server, account, database or workspace. */
 import { createCatalog } from "@executor-js/catalog";
 import { httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
 import { Console, Effect } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 
-// Supply a small feed so this example works offline. A host normally passes a client that also
-// checks the address a destination resolves to; nothing here reaches the network.
+// A host normally passes a client that also checks the address a destination resolves to.
 const egress = {
   policy: httpsOnlyUrlPolicy,
   client: Effect.runSync(HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer))),
 };
+// Supply a one-entry feed. Preparing an MCP entry checks the server over the network to confirm
+// that it needs no sign-in or supports OAuth; it never lists or calls tools.
 const catalog = createCatalog(egress, {
   list: Effect.succeed([
     {
-      id: "example/notes",
-      kind: "openapi",
-      name: "Notes",
-      description: "Example notes API",
-      domain: "example.test",
-      connectUrl: "https://example.test/openapi.json",
+      id: "example/deepwiki",
+      kind: "mcp",
+      name: "DeepWiki",
+      description: "Public documentation MCP server",
+      domain: "deepwiki.com",
+      connectUrl: "https://mcp.deepwiki.com/mcp",
     },
   ]),
-  document: () =>
-    Effect.succeed({
-      openapi: "3.1.0",
-      servers: [{ url: "https://example.test" }],
-      paths: { "/notes": { get: { operationId: "listNotes", summary: "List notes" } } },
-    }),
 });
 
 await Effect.runPromise(
   Effect.gen(function* () {
-    const prepared = yield* catalog.prepare({ entry: "example/notes" });
+    const prepared = yield* catalog.prepare({ entry: "example/deepwiki" });
     yield* Console.log(prepared.files.map((file) => file.path));
 
     // Stop at files. A local or hosted product decides how to install them.

@@ -4,7 +4,7 @@ import { CatalogImportFailed, CatalogUnavailable } from "../contracts/catalog.ts
 
 /** Keep the failure stage and safe reason on the span before product error translation. */
 export const catalogStage =
-  (stage: "prepare" | "lookup" | "document" | "generate" | "mcp" | "custom") =>
+  (stage: "prepare" | "lookup" | "mcp" | "custom") =>
   <A, E, R>(program: Effect.Effect<A, E, R>) =>
     program.pipe(
       Effect.tapError((error) => {

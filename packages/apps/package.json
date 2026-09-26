@@ -18,7 +18,6 @@
     "./mcp/effect": "./src/implementation/mcp.ts",
     "./graphql": "./src/graphql.ts",
     "./openapi": "./src/openapi.ts",
-    "./openapi/contracts": "./src/contracts/openapi-compile.ts",
     "./ui/contracts": "./src/contracts/ui.ts",
     "./ui/auth": "./src/ui-auth.ts",
     "./ui/serving": "./src/ui-serving.ts",
@@ -26,8 +25,7 @@
     "./react": "./src/react.ts",
     "./storage/facet": "./src/facet.ts",
     "./skills": "./src/skills.ts",
-    "./skills/effect": "./src/implementation/skill-files.ts",
-    "./openapi-compiler": "./src/openapi-compiler.ts"
+    "./skills/effect": "./src/implementation/skill-files.ts"
   },
   "scripts": {
     "build": "node scripts/build.mjs",

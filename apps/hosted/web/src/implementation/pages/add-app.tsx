@@ -57,6 +57,7 @@ export function AddAppPage() {
         Failure={HostedFailure}
         key={selection.entry.id}
         entry={selection.entry}
+        endpoint={`${window.location.origin}/mcp`}
         onBack={back}
         onInstalled={installed}
       />

@@ -519,13 +519,13 @@ http.createServer((request, response) => {
   if (request.url === "/stats") return response.end(JSON.stringify({ hosts, blockedConnections }));
   hosts.push(request.headers.host);
   if (request.url === "/redirect") {
-    response.writeHead(302, { location: "https://blocked.example.test:8092/definition" }).end();
+    response.writeHead(302, { location: "https://blocked.example.test:8092/mcp" }).end();
     return;
   }
+  // A public MCP server: anonymous initialization succeeds, so quick add needs no account.
   response.end(JSON.stringify({
-    openapi: "3.0.3", info: { title: "Release network fixture", version: "1.0.0" },
-    servers: [{ url: "https://api.example.test" }],
-    paths: { "/ping": { get: { operationId: "ping", responses: { "200": { description: "OK" } } } } }
+    jsonrpc: "2.0", id: 1,
+    result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "Release network fixture", version: "1.0.0" } }
   }));
 }).listen(8091, "::");
 `,
@@ -555,9 +555,9 @@ http.createServer((request, response) => {
               `${prefix}/apps/import`,
               {
                 source: {
-                  kind: "openapi",
+                  kind: "mcp",
                   name: `Allowed import ${Number(restart)}`,
-                  url: "http://allowed.example.test:8091/definition",
+                  url: "http://allowed.example.test:8091/mcp",
                 },
               },
               cookie,
@@ -567,13 +567,13 @@ http.createServer((request, response) => {
               yield* driver("allowed import", () => imported.clone().text()),
             ).toBe(200);
             for (const url of [
-              "https://blocked.example.test:8092/definition",
+              "https://blocked.example.test:8092/mcp",
               "http://allowed.example.test:8091/redirect",
             ]) {
               const refused = yield* request(
                 `${prefix}/apps/import`,
                 {
-                  source: { kind: "openapi", name: "Blocked import", url },
+                  source: { kind: "mcp", name: "Blocked import", url },
                 },
                 cookie,
               );

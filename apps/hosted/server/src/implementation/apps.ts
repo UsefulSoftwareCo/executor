@@ -1,7 +1,7 @@
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 import { requireAppAccess } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
-import { CatalogImportFailed, type RemoteCustomAppInput } from "@executor-js/catalog";
+import { CatalogImportFailed, type CustomAppInput } from "@executor-js/catalog";
 import { type AppId, type DeploymentId, type OwnerId } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { scopeGeneratedPackage } from "@executor-js/app-registry";
@@ -32,14 +32,13 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
       Effect.withSpan("catalog.package", { attributes: { "catalog.stage": "package" } }),
     );
     const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
-    return { ...app, skippedOperations: generated.skippedOperations };
+    return app;
   });
 /**
- * Generate remote protocol source and create an organization app without replacing a name.
- * A tenant-supplied import URL is fetched by the host, so it stays on public destinations.
- * Operators who need an internal definition deploy its source instead.
+ * Confirm a tenant-supplied MCP server and create an organization app without replacing a name.
+ * The URL is checked by the host, so it stays on public destinations.
  */
-export const importCustomApp = (owner: OwnerId, input: RemoteCustomAppInput) =>
+export const importCustomApp = (owner: OwnerId, input: CustomAppInput) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const catalog = yield* HostedCatalog;
@@ -57,7 +56,7 @@ export const importCustomApp = (owner: OwnerId, input: RemoteCustomAppInput) =>
       Effect.withSpan("catalog.package", { attributes: { "catalog.stage": "package" } }),
     );
     const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
-    return { ...app, skippedOperations: generated.skippedOperations };
+    return app;
   });
 /** Direct source deployment uses the same create-only operation as a catalog install. */
 export const deployApp = (owner: OwnerId, input: typeof DeployApp.Type) =>

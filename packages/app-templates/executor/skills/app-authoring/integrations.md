@@ -1,8 +1,24 @@
+# Connect a service
+
+Use this when the user asks you to add a service, often from a setup prompt
+copied from the dashboard. Pick the helper below, read the service's
+authentication docs, and ask the user how they sign in when it is unclear. Put
+that method in `provider.ts` ([accounts.md](accounts.md)); never put a
+credential in source. Look up exact helper options with `framework_describe`.
+
+| Interface                   | Helper                                                    |
+| --------------------------- | --------------------------------------------------------- |
+| Remote MCP server           | `mcpOperations` from `apps/mcp`                           |
+| Local MCP process           | `stdioOperations` from `apps/mcp/stdio`                   |
+| OpenAPI or Swagger document | `liveOpenapiOperations` from `apps/openapi`               |
+| GraphQL endpoint            | `graphqlOperations` from `apps/graphql`                   |
+| Anything else               | Queries and mutations with `fetch` ([tools.md](tools.md)) |
+
 ## Remote MCP tools
 
 Import `mcpOperations` from `apps/mcp`. Add `@modelcontextprotocol/sdk` (currently
-`1.30.0`) to the app's `package.json` dependencies. Custom Add generates this
-manifest and the app/provider source. A public server needs no account:
+`1.30.0`) to the app's `package.json` dependencies. The dashboard's quick add
+generates this for public and OAuth servers. A public server needs no account:
 
 ```ts
 import { defineApp } from "apps";
@@ -16,7 +32,7 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-Authenticated templates declare `service: provider.many()` and combine discovery
+Authenticated apps declare `service: provider.many()` and combine discovery
 with `accountOperations(accounts.service, account => mcpOperations({ ... }), { signal })`
 from `apps`. Each tool takes `{ accountId, input }`: the chosen account ID and the
 original upstream input. Same-name tools keep one name with an input schema for
@@ -25,7 +41,8 @@ each account. Empty selections expose no tools.
 Pass headers derived from that callback's account.
 OAuth uses `oauth2({ discover: "https://example.com/mcp" })`
 and `Authorization: "Bearer " + account.fields.access_token`.
-API-key methods use their declared fields and the server's required headers.
+API-key methods use a `secrets` field and the header the server documents,
+for example `headers: { "X-API-Key": account.fields.token }`.
 The factory runs with each configured app's selected account, so different
 accounts can expose different catalogs. Do not keep a global authenticated catalog.
 
@@ -45,15 +62,14 @@ are not exposed. Stdio uses the separate helper below.
 ## Local stdio MCP tools
 
 Import `stdioOperations` from `apps/mcp/stdio` and declare
-`@modelcontextprotocol/sdk` in the app's dependencies. The local product's
-**Custom app → MCP → Local process (stdio)** generates `index.ts`, an optional
-`provider.ts`, and `package.json`. The HTTP helper never imports this process adapter.
-
-Declare environment variable names in the form. The generated provider stores
-their values as accounts and passes the chosen `account.fields` to the child.
-The generated app uses `provider.many()` and `accountOperations`, as above.
-Do not embed tokens in source, command arguments, or working-directory paths.
-Servers with no environment fields need no account.
+`@modelcontextprotocol/sdk` in the app's dependencies. The HTTP helper never
+imports this process adapter. Pass the command, literal arguments, and an
+optional working directory. Declare each secret environment variable as a
+`secrets` field; pass the chosen `account.fields` as the child's environment
+with `provider.many()` and `accountOperations`, as above. Do not embed tokens
+in source, command arguments, or working-directory paths. Servers with no
+environment fields need no account. Use `framework_describe` for the exact
+`stdioOperations` options.
 
 The helper discovers tools with the selected account and starts a
 fresh initialized process for each discovery and call. It validates schemas,
@@ -61,30 +77,41 @@ retains MCP result semantics, forwards cancellation, and closes the process
 on completion, error, or timeout. Arguments are literal; there is no shell.
 The process receives the MCP SDK's basic inherited environment plus the
 selected fields, not the host's full environment. Stderr is ignored. Edit the
-source for server-specific behavior; this template does not retain sessions
+source for server-specific behavior; this helper does not retain sessions
 across calls. Process spawning requires a host that provides it, such as the
 local Node runtime.
 
-## GraphQL and OpenAPI helpers
+## OpenAPI APIs
 
-Use `graphqlOperations` from `apps/graphql` with the endpoint, selected account's
-headers, and optional cancellation signal. Declare `graphql` (currently
-`16.11.0`) in the app's dependencies.
+Call `liveOpenapiOperations` from `apps/openapi` with `ctx.cache`, `ctx.fetch`,
+the signal and the selected account. It downloads and compiles the definition
+inside the app, caching each revision; no extra dependency is needed. Pass the
+settings the definition cannot be trusted to decide:
 
-Use `liveOpenapiOperations` from `apps/openapi` with `ctx.cache`, the generated
-`openapi.json` configuration, and the selected account. Custom Add retains the
-source URL, allowed origin, and static authentication bindings. The framework
-refreshes compiled revisions through the app cache. A call reads one operation
-and only the shared definitions it needs. Live metadata cannot move credentials
-to another origin or change their header placement. No extra dependency is needed.
-`openapiOperations` is the lower-level helper for normalized metadata.
-Use `contentType` to choose an alternate declared request media type. Binary
-request bodies and multipart binary fields take base64 strings. Binary responses
-return `{ base64, contentType }`; text and NDJSON return text. Success responses
-have a 16 MiB / 30-second read bound. Live SSE requires an authored subscription.
-Existing retained apps keep their source and bundled helper until redeployment.
+- `source`: `{ url }` for a public definition (up to 40 MB), or `{ document }`.
+- `allowedOrigin`: the one origin that may receive credentials. `baseUrl`
+  overrides the definition's server.
+- `securitySchemes`: usually `components.securitySchemes` from the definition.
+- `methods`: which account fields fill each scheme for each `secrets` method,
+  e.g. `{ apiKey: [{ scheme: "bearerAuth", field: "token", part: "value", prefix: "" }] }`.
+  Basic auth binds `username` and `password` parts.
+- `oauth`: names of `oauth2` provider methods, each named like the OpenAPI
+  `oauth2` scheme it fills. Declare those methods as in
+  [accounts.md](accounts.md#oauth-sign-in), preferring `discover`.
+- Optional `fallbackSecurity` when the definition declares no security, and
+  `patches` for mistakes in a definition you do not control.
 
-OpenAPI imports retain documented errors with an exact HTTP status, a required
+Operations the helper cannot represent, and operations whose security needs
+another method, are left out rather than failing the app. Public APIs need no
+account: call `liveOpenapiOperations` without `accountOperations` and with
+`methods: {}` and `oauth: []`. `openapiOperations` is the lower-level helper for
+normalized metadata. Use `contentType` to choose an alternate declared request
+media type. Binary request bodies and multipart binary fields take base64
+strings. Binary responses return `{ base64, contentType }`; text and NDJSON
+return text. Success responses have a 16 MiB / 30-second read bound. Live SSE
+requires an authored subscription.
+
+OpenAPI apps return documented errors with an exact HTTP status, a required
 literal `_tag`, and either a declared string `message` or a schema description.
 Local component references and plain `anyOf` alternatives are supported. A matching JSON failure returns its
 code, status, and message in MCP's `execution.error.response`. The message comes
@@ -101,13 +128,15 @@ Inside an `execute` program's `catch`, CodeMode exposes only `error.message`.
 For these declared API errors it contains JSON with `code`, `status`,
 `message`, and an optional `recovery`; parse it with `JSON.parse`. Other failures are ordinary diagnostic
 strings, so guard that parse. A failed mutation may already have made changes;
-inspect its state before retrying. Existing imports need regenerated metadata
-and a new deployment to gain this behavior.
+inspect its state before retrying.
 
-Authenticated GraphQL and OpenAPI templates also use `provider.many()` and
-`accountOperations`. Public templates keep their original tool inputs and need
-no account selection. Existing apps change only when their source is edited and
-deployed again.
+## GraphQL APIs
+
+Use `graphqlOperations` from `apps/graphql` with the endpoint, the selected
+account's headers, and optional cancellation signal. Declare `graphql`
+(currently `16.11.0`) in the app's dependencies. Authenticated apps use
+`provider.many()` and `accountOperations` as above; public endpoints need no
+account selection.
 
 Helpers are separate subpath imports. Importing `apps` alone does not load
 MCP or GraphQL. Optional dependencies must appear in the app's manifest and
@@ -115,7 +144,7 @@ resolve from its own installation. A missing peer fails the deployment with
 the package to add. A declared `apps` version owns its framework dependencies;
 otherwise the host supplies them.
 
-MCP imports pass `ctx.cache.forAccount(account)` to `mcpOperations`. Public
+MCP apps pass `ctx.cache.forAccount(account)` to `mcpOperations`. Public
 sources without account requirements can pass `ctx.cache`. The helper returns
 `{ dynamicTools }`; it lists metadata without compiling every tool, and resolves
 one executable for each call. Cached identity includes the server URL, normalized
@@ -129,9 +158,8 @@ A received `notifications/tools/list_changed` invalidates the retained manifest.
 There is no idle background connection, so TTL or explicit refresh covers changes
 made while disconnected. A failed explicit refresh retains the previous catalog.
 Only metadata is cached; credentials and executable handlers remain invocation-owned.
-Existing generated apps need the cache option added and a new deployment.
 
-GraphQL imports use the same cache policy through `graphqlOperations`:
+GraphQL apps use the same cache policy through `graphqlOperations`:
 
 ```ts
 await graphqlOperations({
@@ -154,4 +182,3 @@ current evaluation. Keys include the URL, normalized headers and account ID.
 GraphQL has no standard schema-change notification, so TTL or an explicit
 refresh discovers changed fields and input types. Failed refreshes retain the
 previous revision. Cached introspection never caches query or mutation results.
-Existing generated GraphQL apps need the cache option and redeployment.
