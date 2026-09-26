@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import type { CustomAppInput } from "../contracts/imports.ts";
 import { generateApp } from "./generate.ts";
 import { generateMcpApp } from "./mcp.ts";
+import { applyMcpUrlDefaults } from "./overrides.ts";
 import { readApiDocument } from "./source.ts";
 import { generateRemoteApp, generateStdioApp, type RemoteAuth } from "@executor-js/app-templates";
 import { CatalogImportFailed, type PreparedApp } from "../contracts/catalog.ts";
@@ -28,13 +29,16 @@ export const generateCustomApp = (input: CustomAppInput, egress: HostEgress) =>
         code: "destination_blocked",
         reason: "This URL is not an allowed destination. Use a public HTTPS URL and try again.",
       });
+    // Only the connection URL gains provider defaults; OAuth discovery keeps the entered URL.
+    const connectUrl = input.kind === "mcp" ? applyMcpUrlDefaults(input.url) : input.url;
     const entry = {
       id: input.url,
       kind: input.kind,
       name: input.name,
       domain: new URL(input.url).hostname,
       description: "",
-      connectUrl: input.url,
+      connectUrl,
+      ...(connectUrl === input.url ? {} : { oauthDiscoveryUrl: input.url }),
     };
     if (input.kind === "openapi") {
       if (
@@ -78,7 +82,7 @@ export const generateCustomApp = (input: CustomAppInput, egress: HostEgress) =>
         };
         break;
     }
-    return complete(yield* generateRemoteApp(input.name, input.url, input.kind, auth));
+    return complete(yield* generateRemoteApp(input.name, connectUrl, input.kind, auth));
   }).pipe(
     Effect.catchTag("TemplateError", (error) =>
       Effect.fail(new CatalogImportFailed({ code: error.code, reason: error.reason })),

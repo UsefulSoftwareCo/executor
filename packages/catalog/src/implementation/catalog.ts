@@ -26,7 +26,7 @@ export const createCatalog = (
   source: CatalogSource = catalogSource(egress.client),
 ): Catalog => {
   const list = source.list.pipe(
-    Effect.flatMap((entries) => Effect.forEach(entries, applyCatalogOverride)),
+    Effect.map((entries) => entries.map(applyCatalogOverride)),
     catalogStage("lookup"),
   );
   return {

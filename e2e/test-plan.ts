@@ -784,6 +784,16 @@ export const scenarios = {
       local: na("Exercises the shared import and OAuth implementation through hosted APIs."),
     },
   },
+  mcpUrlDefaults: {
+    fixtures: "actors",
+    file: "mcp-url-defaults.spec.ts",
+    title: "Custom MCP imports apply provider tool defaults",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Import generation is shared; self-host covers it without contacting providers."),
+      local: na("Exercises the shared import implementation through hosted APIs."),
+    },
+  },
   mcpDeferredSetup: {
     fixtures: "actors",
     file: "mcp-deferred-setup.spec.ts",
