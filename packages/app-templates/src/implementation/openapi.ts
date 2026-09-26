@@ -24,7 +24,13 @@ const generateDefinition = (
             `[${serialize(method.name)}]: secrets({ label: ${serialize(method.label)}, fields: object({ ${method.bindings.map((b) => `[${serialize(b.field)}]: string({ minLength: 1 })`).join(", ")} }) })`,
         ),
         ...oauth.map(
-          (method) => `[${serialize(method.name)}]: oauth2(${serialize(method.config)})`,
+          (method) =>
+            `[${serialize(method.name)}]: oauth2(${serialize(
+              "discover" in method.config
+                ? method.config
+                : // OpenAPI can't say how the client authenticates; providers like Google require a secret.
+                  { ...method.config, tokenEndpointAuthMethod: "client_secret_basic" },
+            )})`,
         ),
       ];
       const hasAccount = auth.length > 0;

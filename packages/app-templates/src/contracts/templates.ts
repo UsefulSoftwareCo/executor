@@ -21,6 +21,7 @@ export interface RemoteAuth {
         readonly authorizationUrl: string;
         readonly tokenUrl: string;
         readonly scopes: readonly string[];
+        readonly tokenEndpointAuthMethod?: "client_secret_basic";
       };
   readonly apiKey?: { readonly header: string; readonly prefix: string };
 }

@@ -78,6 +78,7 @@ export const generateCustomApp = (input: CustomAppInput, egress: HostEgress) =>
             authorizationUrl: input.auth.authorizationUrl,
             tokenUrl: input.auth.tokenUrl,
             scopes: input.auth.scopes,
+            tokenEndpointAuthMethod: "client_secret_basic",
           },
         };
         break;
