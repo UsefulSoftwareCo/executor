@@ -15,7 +15,8 @@
     "./contracts/*": "./src/contracts/*.ts",
     "./icon-picker": "./src/implementation/components/icon-picker.tsx",
     "./page-pending": "./src/implementation/components/page-pending.tsx",
-    "./session-hint": "./src/implementation/session-hint.ts"
+    "./session-hint": "./src/implementation/session-hint.ts",
+    "./route-params": "./src/implementation/route-params.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

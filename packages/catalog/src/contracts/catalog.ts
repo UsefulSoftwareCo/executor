@@ -1,6 +1,6 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Option, Schema, SchemaGetter, type Effect } from "effect";
-import { SkippedOperation, TemplateErrorCode } from "@executor-js/app-templates";
+import { SkippedOperation, TemplateErrorCode } from "@executor-js/app-templates/contracts";
 import { DeployedApp, JsonObject, SourceFiles } from "@executor-js/sdk";
 import { ImportAuth, ImportUrl, type CustomAppInput } from "./imports.ts";
 

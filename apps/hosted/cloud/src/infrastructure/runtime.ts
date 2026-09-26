@@ -1,4 +1,3 @@
-import { AppSkills } from "apps/contracts";
 import { CacheCommand } from "@executor-js/app-cache/contracts";
 import { invocationWorkflow, invocationWorkflowControls } from "../implementation/workflow-rpc.ts";
 /** Cloud apps use account-isolated cached Workers; explicitly declared databases run in facets. */
@@ -28,6 +27,9 @@ import {
   HostedToolSummary,
   indexCommand,
   inspectCommand,
+  skillCatalog,
+  SkillCatalogResponse,
+  skillsCommand,
   selectTools,
   HostResponse,
   ToolResultObservation,
@@ -36,7 +38,7 @@ import {
 } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Exit, FiberSet, Option, Redacted, Result, Schema } from "effect";
+import { Effect, Exit, Option, Redacted, Result, Schema } from "effect";
 import { facetIdentity, FacetResult } from "@executor-js/app-data/cloudflare";
 import type { AppDataSupervisor } from "./app-data.ts";
 import { dataChanges } from "../implementation/data-changes.ts";
@@ -84,6 +86,9 @@ const NativeFetcher = Schema.declare(
     typeof value.fetch === "function",
 );
 
+/** The longest a call's release, including its cache refreshes, may keep running. */
+const releaseLimit = "35 seconds";
+
 /** Native Alchemy bindings are resolved once; actual work belongs to the current invocation. */
 export const cloudRuntime = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
@@ -102,10 +107,11 @@ export const cloudRuntime = Effect.fn(function* (
       yield* Schema.decodeUnknownEffect(NativeFetcher)(environment.AppOutbound).pipe(Effect.orDie),
     );
     const forward = yield* makeTelemetryForwarder;
-    const background = yield* FiberSet.make();
-    yield* Effect.addFinalizer(() =>
-      FiberSet.awaitEmpty(background).pipe(Effect.timeoutOption("35 seconds"), Effect.asVoid),
-    );
+    // This runtime is memoized in whichever scope first uses it; an MCP execution scopes each
+    // operation. A successful call's cache refreshes belong to the Worker or Durable Object
+    // invocation, as self-host's waitUntil and local's runtime-owned refreshes do, so they never
+    // hold an operation, its database client or its result open.
+    const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));
     const collect = (body: unknown, build?: BuildId) =>
       Effect.gen(function* () {
         // Telemetry is an additive transport field. Retained builds keep their original protocol.
@@ -213,6 +219,7 @@ export const cloudRuntime = Effect.fn(function* (
               Effect.withSpan("runtime.cloud.rpc.start"),
             ),
             (call, exit) => {
+              // Bounded, so a release RPC that never settles cannot hold its owner open.
               const release = Effect.promise(async () => {
                 try {
                   if (Exit.isSuccess(exit)) await call.drain?.();
@@ -224,12 +231,22 @@ export const cloudRuntime = Effect.fn(function* (
                   }
                 }
               }).pipe(
+                Effect.interruptible,
+                Effect.timeoutOption(releaseLimit),
+                Effect.tap((settled) =>
+                  Option.isNone(settled)
+                    ? Effect.annotateCurrentSpan("executor.release.timed_out", true)
+                    : Effect.void,
+                ),
                 Effect.withSpan("runtime.cloud.rpc.release"),
                 Effect.catchCause(() => Effect.void),
               );
-              return Exit.isSuccess(exit)
-                ? FiberSet.run(background, release).pipe(Effect.asVoid)
-                : release;
+              if (Exit.isFailure(exit)) return release;
+              return Effect.context<never>().pipe(
+                Effect.flatMap((services) =>
+                  Effect.sync(() => waitUntil(Effect.runPromiseWith(services)(release))),
+                ),
+              );
             },
           );
           const body = yield* Effect.tryPromise({
@@ -436,22 +453,24 @@ export const cloudRuntime = Effect.fn(function* (
           ),
           Effect.withSpan("runtime.cloud.build"),
         ),
-      skills: ({ app, build, ...context }) =>
+      skills: ({ app, build, sources, ...context }) =>
         Effect.gen(function* () {
           const identity = `${app}:${yield* facetIdentity(build, JSON.stringify(Redacted.value(context.accounts))).pipe(Effect.mapError(protocolFailed))}`;
           yield* Effect.annotateCurrentSpan({
             "executor.runtime.mode": "worker",
             "executor.worker.identity": identity,
           });
-          return yield* dispatch(
-            load(build),
-            { operation: "skills" },
-            context,
-            AppSkills,
-            HostInspectError,
-            build,
-            identity,
-            app,
+          return skillCatalog(
+            yield* dispatch(
+              load(build),
+              skillsCommand(sources === true),
+              context,
+              SkillCatalogResponse,
+              HostInspectError,
+              build,
+              identity,
+              app,
+            ),
           );
         }).pipe(Effect.withSpan("runtime.cloud.skills")),
       inspect: ({ app, build, tools, ...context }) =>

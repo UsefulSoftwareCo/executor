@@ -1,12 +1,39 @@
-/** Synthetic definition host for import failures, owned by the scenario scope. */
+/** Synthetic definition host for imports and their failures, owned by the scenario scope. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { createServer } from "node:http";
 
-/** Serve controlled failures without calling a live integration or retaining its data. */
+/** The one operation served by `/openapi.json`, and the server origin its import must pin. */
+export const importDefinition = {
+  serverOrigin: "https://fixture.invalid",
+  operationId: "listWidgets",
+} as const;
+
+/**
+ * Serve a valid definition at `/openapi.json` and controlled failures elsewhere, without calling
+ * a live integration or retaining its data.
+ */
 export const importUpstream = Effect.gen(function* () {
   const routes = Layer.mergeAll(
+    HttpRouter.add(
+      "GET",
+      "/openapi.json",
+      HttpServerResponse.json({
+        openapi: "3.0.3",
+        info: { title: "Import fixture", version: "1.0.0" },
+        servers: [{ url: importDefinition.serverOrigin }],
+        paths: {
+          "/widgets": {
+            get: {
+              operationId: importDefinition.operationId,
+              summary: "List widgets",
+              responses: { "200": { description: "Widgets" } },
+            },
+          },
+        },
+      }),
+    ),
     HttpRouter.add("GET", "/json", HttpServerResponse.text('{"PRIVATE_SPEC_CONTENT":')),
     HttpRouter.add("GET", "/yaml", HttpServerResponse.text("PRIVATE_SPEC_CONTENT: [")),
     HttpRouter.add("GET", "/version", HttpServerResponse.json({ openapi: "2.0.0", paths: {} })),

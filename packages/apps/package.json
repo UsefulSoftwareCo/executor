@@ -18,6 +18,7 @@
     "./mcp/effect": "./src/implementation/mcp.ts",
     "./graphql": "./src/graphql.ts",
     "./openapi": "./src/openapi.ts",
+    "./openapi/contracts": "./src/contracts/openapi-compile.ts",
     "./ui/contracts": "./src/contracts/ui.ts",
     "./ui/auth": "./src/ui-auth.ts",
     "./ui/serving": "./src/ui-serving.ts",

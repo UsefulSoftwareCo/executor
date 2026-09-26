@@ -1,9 +1,11 @@
 export * from "./skills.ts";
-import { SkillLoadFailed, type SkillFile } from "./skills.ts";
+import { AppSkills, SkillLoadFailed, type SkillFile } from "./skills.ts";
 import { ProviderError } from "./provider-error.ts";
+import { McpError } from "./mcp.ts";
 import { OpenapiResponseError } from "./api-response-error.ts";
 export { ApiErrorResponse, OpenapiResponseError } from "./api-response-error.ts";
 export { ProviderError } from "./provider-error.ts";
+export { McpError } from "./mcp.ts";
 import {
   WorkflowCommand,
   WorkflowFailure,
@@ -83,6 +85,8 @@ export const DeclaredRequirements = Schema.Struct({
       skills: Schema.Literal(true),
       /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
       toolIndex: Schema.optionalKey(Schema.Literal(true)),
+      /** Accepts skills sources and reports whether the catalog includes a live loader. */
+      skillSources: Schema.optionalKey(Schema.Literal(true)),
     }),
   ),
   database: Schema.optionalKey(DatabaseSchema),
@@ -165,6 +169,24 @@ export const HostedToolSummary = HostedTool.mapFields(
 );
 export type HostedToolSummary = typeof HostedToolSummary.Type;
 
+/**
+ * A skill catalog and whether any of it came from `dynamicSkills`. Without a live loader the
+ * catalog is determined by the build and its evaluation inputs; with one it reflects a publisher.
+ */
+export const SkillSources = Schema.Struct({ skills: AppSkills, dynamic: Schema.Boolean });
+export type SkillSources = typeof SkillSources.Type;
+/** Skill commands. Send sources only to builds that declare skillSources. */
+export const skillsCommand = (sources: boolean) =>
+  sources ? ({ operation: "skills", sources: true } as const) : ({ operation: "skills" } as const);
+/** Either response shape; `dynamic` is unknown for builds that predate skillSources. */
+export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
+export interface SkillCatalog {
+  readonly skills: SkillSources["skills"];
+  readonly dynamic?: boolean;
+}
+export const skillCatalog = (response: typeof SkillCatalogResponse.Type): SkillCatalog =>
+  Schema.is(SkillSources)(response) ? response : { skills: response };
+
 /** Inspection commands. Send detail or tools only to builds that declare toolIndex. */
 export const inspectCommand = (tools?: readonly string[]) =>
   tools === undefined
@@ -189,7 +211,11 @@ export const HostRequest = Schema.Union([
     /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
     tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
   }),
-  Schema.Struct({ operation: Schema.Literal("skills") }),
+  Schema.Struct({
+    operation: Schema.Literal("skills"),
+    /** Answer with SkillSources. Only builds that declare the skillSources capability accept this. */
+    sources: Schema.optionalKey(Schema.Literal(true)),
+  }),
   Schema.Struct({
     operation: Schema.Literal("query"),
     name: Schema.NonEmptyString,
@@ -277,6 +303,7 @@ export const HostRequirementsError = Schema.Union([HostRequestInvalid, HostDecla
 /** Inspection can fail while binding accounts or evaluating the live definition. */
 export const HostInspectError = Schema.Union([
   ProviderError,
+  McpError,
   SkillLoadFailed,
   HostRequestInvalid,
   HostDeclarationInvalid,
@@ -305,6 +332,7 @@ export const HostDataError = HostCallError;
 export const HostError = Schema.Union([
   OpenapiResponseError,
   ProviderError,
+  McpError,
   SkillLoadFailed,
   WorkflowFailure,
   HostRequestInvalid,

@@ -41,6 +41,9 @@ export const TestLive = BrowserDriver.captureLayer.pipe(Layer.provideMerge(Runti
 /** Share platform and browser processes; actor fixtures are acquired per case. */
 export const HostedLive = TestLive;
 
+/** The same shared platform driven through Safari's engine. */
+export const WebKitLive = BrowserDriver.webkitCaptureLayer.pipe(Layer.provideMerge(RuntimeLive));
+
 /** Hosted cases use the fixtures acquired by setup; the native cleanup hook owns their release. */
 export const withHostedCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
   withCase(

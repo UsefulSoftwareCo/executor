@@ -21,7 +21,7 @@ Pass a `CatalogSource` to `createCatalog` to use another feed or fixture.
 Run the [offline example](../../playground/catalog/prepare.ts) with
 `bun run --cwd playground/catalog start` from the repository root.
 
-`generateCustomApp(input)` prepares MCP, OpenAPI, GraphQL, or stdio app source
+`catalog.custom(input)` prepares MCP, OpenAPI, GraphQL, or stdio app source
 from explicit configuration. Generating a stdio template does not run a process
 or imply that a host supports it. Products decide which imports they offer.
 
@@ -29,7 +29,9 @@ or imply that a host supports it. Products decide which imports they offer.
 
 - `src/contracts/catalog.ts`: entries, import choices, prepared files, and source interface.
 - `src/contracts/imports.ts`: custom import configuration, without credentials.
-- `src/implementation/catalog.ts`: catalog selection and preparation.
+- `src/implementation/catalog.ts`: catalog construction. Source generators load on the first
+  `prepare` or `custom` call.
+- `src/implementation/prepare.ts`: catalog selection and preparation.
 - `src/implementation/source.ts`: integrations.sh feed and JSON/YAML downloads.
 - `src/implementation/overrides.ts`: catalog defaults, including PostHog's tool mode.
 - `src/implementation/mcp.ts`: MCP authentication discovery.

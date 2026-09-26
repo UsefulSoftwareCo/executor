@@ -1,5 +1,10 @@
 import * as Sentry from "@sentry/react";
 import { BrowserOperationFailure, browserPageId } from "@executor-js/telemetry/browser";
+import {
+  automaticBrowserCapture,
+  firstPartyFailure,
+  scriptDirectory,
+} from "@executor-js/telemetry/browser-errors";
 import { Schema, Option } from "effect";
 
 /**
@@ -44,6 +49,8 @@ export const startErrorReporting = () => {
         tags: { error_type: value.value.error_type, page_id: value.value.page_id },
       });
   });
+  // Every dashboard chunk is emitted beside this module.
+  const scripts = scriptDirectory(import.meta.url);
   Sentry.init({
     tunnel,
     dsn,
@@ -56,7 +63,9 @@ export const startErrorReporting = () => {
     },
     // Breadcrumbs are attached before this hook runs, so they are scrubbed here too.
     beforeBreadcrumb: (crumb) => strippedBreadcrumb(crumb),
-    beforeSend: (event) => {
+    beforeSend: (event, hint) => {
+      if (automaticBrowserCapture(event) && !firstPartyFailure(hint.originalException, scripts))
+        return null;
       if (event.request) {
         delete event.request.cookies;
         delete event.request.headers;

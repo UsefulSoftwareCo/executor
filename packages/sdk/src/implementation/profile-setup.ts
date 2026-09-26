@@ -31,6 +31,8 @@ export const makeProfileSetup = (
   profiles: ReturnType<typeof makeProfiles>,
   resources: Pick<Executor, "webhooks" | "schedules"> & {
     readonly runs: Executor["apps"]["workflowRuns"];
+    /** Evaluated now, never reused: reconciliation changes upstream registrations. */
+    readonly webhookDefinitions: Executor["webhooks"]["definitions"];
   },
 ) => {
   const now = Clock.currentTimeMillis;
@@ -146,7 +148,7 @@ export const makeProfileSetup = (
                 failure = "deployment";
                 return;
               }
-              const definitions = yield* resources.webhooks.definitions(input);
+              const definitions = yield* resources.webhookDefinitions(input);
               const desired = new Set<string>();
               for (const hook of definitions) {
                 const selected = current.accounts[hook.account];

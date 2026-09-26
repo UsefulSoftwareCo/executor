@@ -109,6 +109,7 @@ export const createAppRuntime = (options: {
       Effect.runPromise(
         context(accounts).pipe(
           Effect.flatMap((context) => runtime.skills({ ...input, ...context })),
+          Effect.map((catalog) => catalog.skills),
         ),
       ),
     inspect: ({ accounts, ...input }) =>

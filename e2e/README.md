@@ -15,7 +15,7 @@ or generate HTML reports.
 
 ```sh
 bun install
-bunx playwright install chromium
+bunx playwright install chromium webkit
 bun run e2e:prepare
 bun run e2e:self-host
 ```

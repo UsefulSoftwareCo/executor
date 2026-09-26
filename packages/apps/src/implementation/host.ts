@@ -1,6 +1,7 @@
 import { folderSkillsEffect } from "./skill-files.ts";
 import { AppSkills, SkillFile, SkillLoadFailed } from "../contracts/skills.ts";
 import { parseProviderError } from "./provider-error.ts";
+import { McpError } from "../contracts/mcp.ts";
 import { OpenapiResponseError } from "../contracts/api-response-error.ts";
 import { toPromise } from "./authoring.ts";
 import type { WorkflowControls, WorkflowReads } from "../contracts/workflows.ts";
@@ -77,12 +78,16 @@ const evaluationSafe = <A>(work: Effect.Effect<A, unknown>) =>
       const error = Cause.squash(cause);
       const provider = parseProviderError(error);
       const skills = parseSkillLoadFailed(error);
+      // An MCP server that cannot be reached is not an invalid app definition; keep its safe fields.
+      const mcp = parseMcpError(error);
       return Effect.fail(
         Option.isSome(provider)
           ? provider.value
           : Option.isSome(skills)
             ? skills.value
-            : new HostEvaluationFailed(),
+            : Option.isSome(mcp)
+              ? mcp.value
+              : new HostEvaluationFailed(),
       );
     }),
   );
@@ -143,7 +148,7 @@ function requirements(slots: AccountSlots, database?: typeof DeclaredRequirement
     }
     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
       accounts: Object.fromEntries(accounts),
-      capabilities: { skills: true, toolIndex: true },
+      capabilities: { skills: true, toolIndex: true, skillSources: true },
       ...(database === undefined ? {} : { database }),
     }).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
   });
@@ -349,9 +354,10 @@ function dispatch(
             : yield* evaluationSafe(Effect.suspend(source.list)).pipe(
                 Effect.withSpan("app.skills.load"),
               );
-        return yield* Schema.decodeUnknownEffect(AppSkills)([...declared, ...dynamic]).pipe(
+        const skills = yield* Schema.decodeUnknownEffect(AppSkills)([...declared, ...dynamic]).pipe(
           Effect.mapError(() => new HostDeclarationInvalid()),
         );
+        return request.sources === true ? { skills, dynamic: source !== undefined } : skills;
       }
       if (request.operation === "workflows") {
         return yield* Effect.forEach(Object.entries(definition.workflows ?? {}), ([name, entry]) =>
@@ -755,9 +761,18 @@ const parseSkillLoadFailed = (error: unknown): Option.Option<SkillLoadFailed> =>
     ),
   );
 
+const parseMcpError = (error: unknown): Option.Option<McpError> =>
+  Schema.decodeUnknownOption(McpError)(error).pipe(
+    Option.map(
+      ({ phase, reason, status }) =>
+        new McpError({ phase, reason, ...(status === undefined ? {} : { status }) }),
+    ),
+  );
+
 const errorStatus = Match.type<HostError>().pipe(
   Match.tagsExhaustive({
     ProviderError: () => 502,
+    McpError: () => 502,
     SkillLoadFailed: () => 502,
     OpenapiResponseError: () => 502,
     WorkflowFailure: () => 422,

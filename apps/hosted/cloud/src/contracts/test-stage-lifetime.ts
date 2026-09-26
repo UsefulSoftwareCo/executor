@@ -2,7 +2,11 @@
 import { Schema } from "effect";
 import { TestStageSlug } from "../infrastructure/stage.ts";
 
-/** Hyperdrive's minimum pool size, isolated to each preview's database branch. */
+/**
+ * Hyperdrive's minimum pool size, isolated to each preview's database branch. A preview branch
+ * allows 22 non-superuser connections, and Hyperdrive's limit is soft: after a redeploy with a
+ * limit of 12, the branch refused new logins. Keep previews at the minimum.
+ */
 export const testStageConnectionLimit = 5;
 /** Disposable CI environments have a fixed deadline, including failed deployment attempts. */
 export const testStageLifetimeMilliseconds = 3 * 60 * 60 * 1000;

@@ -27,7 +27,7 @@ import { Exit, Option } from "effect";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { useAtomSet } from "@effect/atom-react";
-import { AppId, type App, type Profile, type ProfileId } from "@executor-js/sdk";
+import type { App, AppId, Profile, ProfileId } from "@executor-js/sdk";
 import { Link, useBlocker, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -69,7 +69,7 @@ export function AppDetailPage({
   openApp,
   profile,
 }: {
-  readonly appId: string;
+  readonly appId: AppId;
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
   readonly openApp?: (app: App, selected?: Profile) => ReactNode;
@@ -84,15 +84,15 @@ export function AppDetailPage({
   });
   const atoms = useDashboardAtoms();
   const inventory = useQuery(atoms.inventory);
-  const query = useQuery(liveAppAtom({ organization, app: AppId.make(appId) }));
+  const query = useQuery(liveAppAtom({ organization, app: appId }));
   const app = Option.isSome(query.data)
     ? query.data.value
     : Option.isSome(inventory.data)
       ? inventory.data.value.apps.find((item) => item.id === appId)
       : undefined;
   const selectedView = view ?? (tool === undefined ? "overview" : "tools");
-  const setups = useQuery(profilesAtom({ organization, app: AppId.make(appId) }));
-  const authority = useQuery(appAccessAtom({ organization, app: AppId.make(appId) }));
+  const setups = useQuery(profilesAtom({ organization, app: appId }));
+  const authority = useQuery(appAccessAtom({ organization, app: appId }));
   const access = Option.getOrUndefined(authority.data);
   const canManage = access?.canManage === true,
     canUse = access?.canUse === true;

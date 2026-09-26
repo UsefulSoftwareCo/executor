@@ -15,6 +15,7 @@ export * from "./webhooks.ts";
 export * from "./webhook-setup.ts";
 export * from "./http.ts";
 export * from "./executor.ts";
+export * from "./declarations.ts";
 export * from "./storage.ts";
 export * from "./runtime.ts";
 export * from "./blobs.ts";

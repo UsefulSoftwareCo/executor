@@ -2,6 +2,7 @@ import type { AstroIntegration } from "astro";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
 import { defineConfig } from "blume";
 import { siteOrigin } from "@executor-js/marketing/site-origin";
+import { assetsInlineLimit } from "@executor-js/marketing/script-assets";
 import { releaseCommandMarkdown } from "./release-commands.ts";
 import { release } from "../../scripts/releases/config.ts";
 
@@ -80,7 +81,7 @@ const errors: AstroIntegration = {
     "astro:config:setup": ({ updateConfig }) => {
       updateConfig({
         vite: {
-          build: { sourcemap: "hidden" },
+          build: { sourcemap: "hidden", assetsInlineLimit },
           plugins: process.env.SENTRY_AUTH_TOKEN
             ? [
                 sentryVitePlugin({

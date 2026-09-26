@@ -6,12 +6,16 @@ import { Effect, Layer } from "effect";
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { Authentication } from "../contracts/auth.ts";
-import { executorAppSource, executorCatalogEntry } from "./executor-app.ts";
+import { executorCatalogEntry } from "./executor-catalog-entry.ts";
 
-/** Fetch the public integrations.sh feed on request. Layer construction performs no network I/O. */
+/**
+ * Fetch the public integrations.sh feed on request. Layer construction performs no network I/O.
+ * The API document and the OpenAPI source generator are only needed to prepare the Executor
+ * app, so both load on that request instead of during server startup.
+ */
 export const catalogLive = (
   skills: readonly SourceFile[],
-  document: HostedApiDocument,
+  document: Effect.Effect<HostedApiDocument>,
   egress: HostEgress,
 ) =>
   Layer.effect(
@@ -30,7 +34,10 @@ export const catalogLive = (
         custom: published.custom,
         prepare: (input) =>
           input.entry === executor.id
-            ? executorAppSource(origin, skills, document).pipe(
+            ? Effect.all([Effect.promise(() => import("./executor-app.ts")), document]).pipe(
+                Effect.flatMap(([{ executorAppSource }, document]) =>
+                  executorAppSource(origin, skills, document),
+                ),
                 Effect.map(({ files, skippedOperations }) => ({ files, skippedOperations })),
                 Effect.mapError(
                   (error) => new CatalogImportFailed({ code: error.code, reason: error.reason }),

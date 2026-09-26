@@ -103,6 +103,41 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         yield* browser.use("Personal app data loads", (page) =>
           page.locator("#identity").filter({ hasText: personal.account }).waitFor(),
         );
+        const appOrigin = new URL(ui).origin;
+        expect(
+          yield* browser.use("Reserved host roots are not app pages", (page) =>
+            Promise.all(
+              (
+                [
+                  ["GET", "/_executor"],
+                  ["GET", "/dashboard"],
+                  ["GET", "/auth"],
+                  ["GET", "/v1"],
+                  ["GET", "/mcp"],
+                  ["POST", "/v1"],
+                  ["POST", "/mcp"],
+                ] as const
+              ).map(([method, path]) =>
+                page
+                  .context()
+                  .request.fetch(`${appOrigin}${path}`, {
+                    method,
+                    headers: { origin: appOrigin },
+                    maxRedirects: 0,
+                  })
+                  .then((response) => [method, path, response.status()] as const),
+              ),
+            ),
+          ),
+        ).toEqual([
+          ["GET", "/_executor", 404],
+          ["GET", "/dashboard", 404],
+          ["GET", "/auth", 404],
+          ["GET", "/v1", 404],
+          ["GET", "/mcp", 404],
+          ["POST", "/v1", 404],
+          ["POST", "/mcp", 404],
+        ]);
         expect(
           new URL(
             yield* browser.use("Explicit local app context", (page) => Promise.resolve(page.url())),

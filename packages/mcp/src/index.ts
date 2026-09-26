@@ -4,7 +4,6 @@ export * from "./contracts/execute.ts";
 export * from "./contracts/elicitation.ts";
 export * from "./contracts/skills.ts";
 export * from "./contracts/tools.ts";
-export { execute } from "./implementation/execute.ts";
 export { mcp, makeMcp } from "./implementation/server.ts";
 export { skills } from "./implementation/skills.ts";
 export { makeExecutions } from "./implementation/executions.ts";

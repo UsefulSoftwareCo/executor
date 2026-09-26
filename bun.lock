@@ -345,6 +345,7 @@
         "@astrojs/react": "^6.0.5",
         "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@executor-js/app-registry": "workspace:*",
+        "@executor-js/telemetry": "workspace:*",
         "@executor-js/ui": "workspace:*",
         "@sentry/browser": "10.75.0",
         "@tailwindcss/vite": "^4.2.2",
@@ -551,6 +552,7 @@
       "name": "@executor-js/mcp",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "@opencode-ai/codemode": "0.0.0-dev-19272",
         "apps": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",

@@ -2,14 +2,14 @@
 
 /** Stable diagnostic reasons; authored names and source never enter telemetry. */
 import { Schema } from "effect";
-import { OpenapiCompileErrorCode as TemplateErrorCode } from "apps/openapi";
+import { OpenapiCompileErrorCode as TemplateErrorCode } from "apps/openapi/contracts";
 export { TemplateErrorCode };
-export { SkippedOperation } from "apps/openapi";
+export { SkippedOperation } from "apps/openapi/contracts";
 export class TemplateError extends Schema.TaggedError<TemplateError>()("TemplateError", {
   code: TemplateErrorCode,
   reason: Schema.String,
 }) {}
-import type { SkippedOperation } from "apps/openapi";
+import type { SkippedOperation } from "apps/openapi/contracts";
 
 /** Credential-free provider declaration and API key placement. */
 export interface RemoteAuth {

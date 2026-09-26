@@ -1,4 +1,4 @@
-import { ApiErrorResponse, ProviderError, SkillLoadFailed } from "apps/contracts";
+import { ApiErrorResponse, McpError, ProviderError, SkillLoadFailed } from "apps/contracts";
 import { ProfileId } from "./shared.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
@@ -137,6 +137,94 @@ const skillPresentation = ({
   };
 };
 
+/** Present an MCP server failure from its safe phase, reason and HTTP status. */
+const mcpPresentation = ({
+  phase,
+  reason,
+  status,
+}: {
+  readonly phase: McpError["phase"];
+  readonly reason: McpError["reason"];
+  readonly status?: number | undefined;
+}) => {
+  const http = status === undefined ? "" : ` (HTTP ${status})`;
+  const stage =
+    phase === "connect" || phase === "transport"
+      ? "connecting"
+      : phase === "call"
+        ? "calling a tool"
+        : "listing its tools";
+  const instructions = `The app's MCP server failed while ${stage}. Inspect the app's MCP server URL, transport and account requirements from its source or import settings. Do not print credentials or raw responses, and do not change accounts automatically. Verify that the Tools page loads after the repair.`;
+  switch (reason) {
+    case "timeout":
+      return {
+        title: "MCP server did not respond",
+        description: `The app’s MCP server did not respond in time while ${stage}.`,
+        recovery: {
+          action: "Try again later. If this continues, check the MCP server’s status.",
+          instructions,
+        },
+        retryable: true,
+      };
+    case "unauthorized":
+      return {
+        title: "MCP server rejected the credentials",
+        description: `The app’s MCP server rejected the credentials${http}.`,
+        recovery: {
+          action: "Check the account’s credentials. Update its API key or reconnect its sign-in.",
+          instructions,
+        },
+        retryable: false,
+      };
+    case "invalid_response":
+      return {
+        title: "MCP server response not supported",
+        // Includes Executor refusing to follow the server to another origin.
+        description: `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.`,
+        recovery: { action: "Check that the app points at a supported MCP server.", instructions },
+        retryable: false,
+      };
+    case "invalid_input":
+      return {
+        title: "MCP server settings are invalid",
+        description: "The app’s MCP server URL or settings are invalid.",
+        recovery: { action: "Correct the app’s MCP server URL or settings.", instructions },
+        retryable: false,
+      };
+    case "request":
+      // Request Timeout and Too Early ask the client to retry the same request later.
+      if (status === 408 || status === 425)
+        return {
+          title: "MCP server asked to retry",
+          description: `The app’s MCP server could not handle the request yet while ${stage}${http}.`,
+          recovery: {
+            action: "Try again later. If this continues, check the MCP server’s status.",
+            instructions,
+          },
+          retryable: true,
+        };
+      return status === undefined
+        ? {
+            title: "MCP server unreachable",
+            description: `Executor could not reach the app’s MCP server while ${stage}.`,
+            recovery: {
+              action: "Try again. If this continues, check the MCP server’s address and status.",
+              instructions,
+            },
+            retryable: true,
+          }
+        : {
+            title: "MCP server refused the request",
+            description: `The app’s MCP server refused the request while ${stage}${http}.`,
+            recovery: {
+              action: "Check the app’s MCP server URL and access requirements.",
+              instructions,
+            },
+            retryable: false,
+          };
+  }
+};
+
 /** Evaluating the app's live definition failed before any tool ran. */
 export const AppEvaluationFailed = UserFacingError.define({
   tag: "AppEvaluationFailed",
@@ -153,19 +241,29 @@ export const AppEvaluationFailed = UserFacingError.define({
         status: SkillLoadFailed.fields.status,
       }),
     ),
+    /** Present when the app's MCP server caused the failure. */
+    mcp: Schema.optional(
+      Schema.Struct({
+        phase: McpError.fields.phase,
+        reason: McpError.fields.reason,
+        status: McpError.fields.status,
+      }),
+    ),
   },
-  presentation: ({ skills }) =>
-    skills === undefined
-      ? {
-          title: "Tools could not be loaded",
-          description: "Executor could not load this app’s tool definitions.",
-          recovery: {
-            action: "Try again. If this continues, copy the fix prompt to investigate the app.",
-            instructions: evaluationInstructions,
-          },
-          retryable: true,
-        }
-      : skillPresentation(skills),
+  presentation: ({ skills, mcp }) =>
+    mcp !== undefined
+      ? mcpPresentation(mcp)
+      : skills === undefined
+        ? {
+            title: "Tools could not be loaded",
+            description: "Executor could not load this app’s tool definitions.",
+            recovery: {
+              action: "Try again. If this continues, copy the fix prompt to investigate the app.",
+              instructions: evaluationInstructions,
+            },
+            retryable: true,
+          }
+        : skillPresentation(skills),
 });
 /** Parsed evaluation failure; raw runtime diagnostics never enter its presentation. */
 export type AppEvaluationFailed = typeof AppEvaluationFailed.Type;

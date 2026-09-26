@@ -8,6 +8,7 @@ import {
 } from "effect/unstable/http";
 import { forwardTelemetry } from "./relay.ts";
 import { recordResponseReady } from "./measurements.ts";
+export { isRequestRejection, recordRequestRejections } from "./request-rejection.ts";
 
 /**
  * Expose handler-to-response timing and correlation IDs to the caller.

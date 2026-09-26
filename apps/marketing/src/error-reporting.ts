@@ -1,5 +1,10 @@
 /** Error-only reporting for public pages, without capability URLs or request data. */
 import * as Sentry from "@sentry/browser";
+import {
+  automaticBrowserCapture,
+  firstPartyFailure,
+  scriptDirectory,
+} from "@executor-js/telemetry/browser-errors";
 const pathOnly = (value: string) => {
   const url = URL.parse(value, location.origin);
   if (url === null) return "";
@@ -20,6 +25,8 @@ export const startPublicErrorReporting = (
   if (!settings.dsn) return;
   if (!settings.tunnel || !/^\/api\/[a-f0-9]{16}\/submit$/.test(settings.tunnel))
     throw new Error("Sentry tunnel path is missing from this build");
+  // Each public surface emits all of its chunks beside the one bundling this module.
+  const scripts = scriptDirectory(import.meta.url);
   Sentry.init({
     ...settings,
     sendDefaultPii: false,
@@ -30,7 +37,9 @@ export const startPublicErrorReporting = (
         if (typeof crumb.data?.[key] === "string") crumb.data[key] = pathOnly(crumb.data[key]);
       return crumb;
     },
-    beforeSend: (event) => {
+    beforeSend: (event, hint) => {
+      if (automaticBrowserCapture(event) && !firstPartyFailure(hint.originalException, scripts))
+        return null;
       if (event.request) {
         delete event.request.headers;
         delete event.request.cookies;

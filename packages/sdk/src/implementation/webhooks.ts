@@ -34,6 +34,7 @@ import { snapshot, resolve, type InvocationSnapshot } from "./tools.ts";
 import { storedProfile } from "./profiles.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
+import type { Declarations } from "./declarations.ts";
 
 const StoredWebhook = Schema.Struct({
   ...WebhookSubscription.fields,
@@ -55,7 +56,8 @@ export const makeWebhooks = (
   resolveAccount: ReturnType<typeof makeOAuth>["resolve"],
   credentials: Credentials,
   crypto: Crypto.Crypto,
-  origin?: string,
+  origin: string | undefined,
+  declarations: Declarations,
   appStorage?: AppDatabases,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
@@ -113,26 +115,32 @@ export const makeWebhooks = (
           ),
         );
     });
-  const definitions = (input: typeof WebhookApp.Type) =>
+  /** Dashboard reads may reuse a recent evaluation; `live` evaluates the current build now. */
+  const definitions = (input: typeof WebhookApp.Type, live = false) =>
     Effect.gen(function* () {
       const state = yield* snapshot(db, input);
-      const context = yield* resolve(state, resolveAccount, lifecycle);
-      return yield* runtime
-        .webhook({
-          app: input.app,
-          build: state.deployment.build,
-          database: state.deployment.requirements.database !== undefined,
-          ...context,
-          command: { operation: "webhooks" },
-        })
-        .pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))),
-          Effect.mapError((error) =>
-            Schema.is(ProviderError)(error)
-              ? appProviderFailure(state, error)
-              : new WebhookFailed({ reason: "definition" }),
-          ),
-        );
+      const failed = (error: unknown) =>
+        Schema.is(ProviderError)(error)
+          ? appProviderFailure(state, error)
+          : new WebhookFailed({ reason: "definition" });
+      const value = yield* declarations.read(
+        "webhooks",
+        state,
+        (context) =>
+          runtime
+            .webhook({
+              app: input.app,
+              build: state.deployment.build,
+              database: state.deployment.requirements.database !== undefined,
+              ...context,
+              command: { operation: "webhooks" },
+            })
+            .pipe(Effect.mapError(failed)),
+        { live },
+      );
+      return yield* Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))(value).pipe(
+        Effect.mapError(failed),
+      );
     });
   const outsideTransaction = storage.reactivity.inTransaction.pipe(
     Effect.flatMap((inside) => (inside ? Effect.fail(new RequestInvalid()) : Effect.void)),
@@ -273,7 +281,7 @@ export const makeWebhooks = (
           return yield* metadata(current);
         }),
       ),
-    definitions,
+    definitions: (input: typeof WebhookApp.Type) => definitions(input),
     list: (input: typeof WebhookApp.Type) =>
       Effect.gen(function* () {
         yield* storedApp(db, input);
@@ -515,6 +523,8 @@ export const makeWebhooks = (
   };
   return {
     webhooks,
+    /** Reconciliation creates and removes upstream registrations from the current definitions. */
+    liveDefinitions: (input: typeof WebhookApp.Type) => definitions(input, true),
     webhookSetup: {
       read: (input: typeof WebhookTarget.Type) =>
         Effect.gen(function* () {

@@ -162,15 +162,14 @@ function ResumedConnectionDialog({
 
 /** Resolve a handoff URL into the owning page's modal; no standalone connection screen exists. */
 export function ConnectionEntry({
-  connectionId,
+  connectionId: id,
   client,
 }: {
-  readonly connectionId: string;
+  readonly connectionId: AccountConnectionId;
   readonly client?: "change" | undefined;
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
-  const id = AccountConnectionId.make(connectionId);
   const query = useQuery(connectionAtom({ organization, connection: id }));
   const connection = Option.getOrUndefined(query.data);
   useEffect(() => {

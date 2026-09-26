@@ -18,7 +18,9 @@ import {
   OrganizationDefaultsPending,
 } from "../contracts/organization-defaults.ts";
 import { organizationOwner } from "../contracts/organization.ts";
-import { defaultExecutorAppSource, executorAppSource } from "./executor-app.ts";
+
+/** Only a new or changed installation generates the Executor app, so its OpenAPI compiler loads then. */
+const executorApp = Effect.promise(() => import("./executor-app.ts"));
 
 const State = Schema.Struct({
   initialized: Schema.Boolean,
@@ -34,7 +36,7 @@ export const organizationDefaults = (
   origin: string,
   storage: ExecutorDatabase,
   skills: readonly SourceFile[],
-  document: HostedApiDocument,
+  document: Effect.Effect<HostedApiDocument>,
   requireVerifiedEmail = true,
 ) =>
   Effect.gen(function* () {
@@ -58,7 +60,8 @@ export const organizationDefaults = (
           return yield* new OrganizationDefaultsPending();
         const owner = organizationOwner(organization);
         if (!state.initialized) {
-          const source = yield* defaultExecutorAppSource(origin, skills, document);
+          const { defaultExecutorAppSource } = yield* executorApp;
+          const source = yield* defaultExecutorAppSource(origin, skills, yield* document);
           const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
           if (existing === undefined) {
             yield* executor.apps.deploy({ owner, name: "Executor", files: source.files }).pipe(
@@ -94,10 +97,11 @@ export const organizationDefaults = (
         if (state.deployment !== app.activeDeployment) {
           const deployment = yield* executor.apps.source({ owner, app: app.id });
           if (deployment.id !== app.activeDeployment) return;
-          const source = yield* defaultExecutorAppSource(origin, skills, document);
+          const { defaultExecutorAppSource, executorAppSource } = yield* executorApp;
+          const source = yield* defaultExecutorAppSource(origin, skills, yield* document);
           if (!sourceFilesEqual(deployment.files, source.files)) {
             // Upgrade only the untouched, unconfigured catalog version. Preserve user edits and connections.
-            const catalog = yield* executorAppSource(origin, skills, document);
+            const catalog = yield* executorAppSource(origin, skills, yield* document);
             if (!sourceFilesEqual(deployment.files, catalog.files)) return;
             const workspace = yield* executor.apps.workspace({ owner, app: app.id });
             if (!sourceFilesEqual(workspace.files, deployment.files)) return;

@@ -20,7 +20,7 @@ import {
   StorageError,
   SourceError,
 } from "@executor-js/sdk/core";
-import { TemplateError } from "@executor-js/app-templates";
+import { TemplateError } from "@executor-js/app-templates/contracts";
 import type { OrganizationId } from "./organization.ts";
 
 /** A member job waits for the separate team installation to commit. */

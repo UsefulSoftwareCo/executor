@@ -4,6 +4,19 @@ import { createStackParser, nodeStackLineParser } from "@sentry/core";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
 import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
 import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
+import { isRequestRejection } from "@executor-js/telemetry/http";
+
+/**
+ * Client rejections stay in request telemetry and are not incidents: declared
+ * 4xx errors, and requests an endpoint's schema rejected. The request span
+ * records why a request was rejected.
+ */
+const isClientRejection = (error: unknown) => {
+  if (isRequestRejection(error)) return true;
+  if (!(error instanceof Error) || !Schema.isSchema(error.constructor)) return false;
+  const status = SchemaAST.resolveAt<unknown>("httpApiStatus")(error.constructor.ast);
+  return typeof status === "number" && status >= 400 && status < 500;
+};
 
 // Match Sentry's Cloudflare parser: Worker module names are relative, while
 // uploaded release artifacts use root-relative paths.
@@ -96,15 +109,15 @@ export const withCloudSentry = <A, E, R>(
     );
     const seen = new Set<unknown>();
     const captureIn = (cause: Cause.Cause<unknown>, context: Context.Context<never>) => {
-      if (Cause.hasInterruptsOnly(cause)) return;
-      const exception = Cause.squash(cause);
+      // Filter each reason, so a client rejection cannot hide an unrelated defect in the same cause.
+      const reasons = cause.reasons.filter(
+        (reason) =>
+          reason._tag !== "Interrupt" &&
+          !isClientRejection(reason._tag === "Fail" ? reason.error : reason.defect),
+      );
+      if (reasons.length === 0) return;
+      const exception = Cause.squash(Cause.fromReasons(reasons));
       if (ErrorReporter.isIgnored(exception) || seen.has(exception)) return;
-      // Declared client rejections remain in request/operation telemetry. Only
-      // unexpected failures and server errors become Sentry incidents.
-      if (exception instanceof Error && Schema.isSchema(exception.constructor)) {
-        const status = SchemaAST.resolveAt<unknown>("httpApiStatus")(exception.constructor.ast);
-        if (typeof status === "number" && status >= 400 && status < 500) return;
-      }
       seen.add(exception);
       const scope = new Scope();
       scope.setClient(client);

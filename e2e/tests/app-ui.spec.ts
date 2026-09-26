@@ -254,6 +254,23 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
             page.context().request.get(`${url}/api/auth/get-session`),
           )).status(),
         ).toBe(404);
+        expect(
+          yield* browser.use("Reserved product roots are not app pages", (page) =>
+            Promise.all(
+              ["/api", "/mcp", "/_executor", "/.well-known"].map((path) =>
+                page
+                  .context()
+                  .request.get(`${url}${path}`, { maxRedirects: 0 })
+                  .then((response) => [path, response.status()] as const),
+              ),
+            ),
+          ),
+        ).toEqual([
+          ["/api", 404],
+          ["/mcp", 404],
+          ["/_executor", 404],
+          ["/.well-known", 404],
+        ]);
         yield* browser.use("Direct bookmark requires the existing product login", (page) =>
           page.goto(bookmark),
         );

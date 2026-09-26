@@ -11,7 +11,7 @@ import {
   OrganizationRemoval,
   dispatchOrganizationRemovals,
 } from "./infrastructure/organization-removal-workflow.ts";
-import { HostedExecutor } from "@executor-js/hosted-server";
+import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { registryRoutes, gitRoutes } from "@executor-js/app-management";
@@ -69,7 +69,7 @@ import { cloudOrigin } from "./infrastructure/stage.ts";
 import { AppDataSupervisor, AppDataSupervisorLive } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
 import { requestServices } from "@executor-js/hosted-server";
-import { requestTiming } from "@executor-js/telemetry/http";
+import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 
 import { Api } from "./infrastructure/api-worker.ts";
 export { Api } from "./infrastructure/api-worker.ts";
@@ -234,11 +234,14 @@ export default Api.make(
 
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
     const egress = yield* cloudEgress;
-    const document = executorCloudApiDocument(auth.origin);
+    // Only /openapi.json and preparing the Executor catalog app read the document.
+    const document = lazyHostedApiDocument(() => executorCloudApiDocument(auth.origin));
     const api = cloudApi(document).pipe(
       Layer.provide(appUi.dashboard),
       Layer.provide(requestServices(auth.appSessions).layer),
-      HttpRouter.provideRequest(catalogLive(executorSkillFiles(authoring), document, egress)),
+      HttpRouter.provideRequest(
+        catalogLive(executorSkillFiles(authoring), document.document, egress),
+      ),
       Layer.provide(schedules),
       Layer.provide(billing),
       Layer.provide(onboarding),
@@ -352,6 +355,7 @@ export default Api.make(
         // query string nor the redirect `Location` is ever recorded, on this route,
         // on the RFC 8058 POST, or on any outbound provider request.
         analytics.wrap,
+        recordRequestRejections,
         reportErrors,
         requestTiming,
         lifetime.http,

@@ -16,6 +16,8 @@ declare module "cloudflare:workers" {
     constructor(ctx: import("@cloudflare/workers-types").ExecutionContext, env: Env);
     abstract run(event: Readonly<{ payload: Payload }>, step: unknown): Promise<unknown>;
   }
+  /** Keep the current Worker or Durable Object invocation alive until the promise settles. */
+  export function waitUntil(promise: Promise<unknown>): void;
 }
 /** Runtime-only modules provided by workerd, never imported by the Node host. */
 declare module "executor-framework" {

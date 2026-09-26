@@ -28,7 +28,7 @@ import { mcpClient, mcpJsonSchemaValidator } from "./mcp-client.ts";
 
 /** Safe projection of transport errors. Raw messages can contain credential-bearing URLs. */
 const failure = (phase: McpError["phase"], error: unknown): McpError | ProviderError => {
-  if (Schema.is(ProviderError)(error)) return error;
+  if (Schema.is(ProviderError)(error) || Schema.is(McpError)(error)) return error;
   const status =
     error instanceof UnauthorizedError
       ? 401
@@ -58,12 +58,16 @@ const transportFetch =
   (url, init) =>
     Effect.runPromiseWith(telemetry.context)(
       Effect.gen(function* () {
+        // Executor's own refusals name the setting or server response at fault, never a network failure.
         const target = yield* Effect.try({
           try: () => new URL(url),
-          catch: () => failure("transport", undefined),
+          catch: () => new McpError({ phase: "transport", reason: "invalid_response" }),
         });
+        if (connection.url.username || connection.url.password)
+          return yield* new McpError({ phase: "transport", reason: "invalid_input" });
+        // The server directed the client to another origin or embedded credentials in a URL.
         if (target.origin !== connection.url.origin || target.username || target.password)
-          return yield* failure("transport", undefined);
+          return yield* new McpError({ phase: "transport", reason: "invalid_response" });
         const headers = new Headers(Redacted.value(connection.headers));
         new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
         const request = yield* Effect.try({

@@ -22,7 +22,7 @@ const configure = Effect.scoped(
     );
     const receiver = URL.parse(control.origin);
     if (
-      !/^test-e2e-[a-z0-9-]+$/.test(stage) ||
+      !/^test-(?:e2e|perf)-[a-z0-9-]+$/.test(stage) ||
       branch !== stage ||
       origin !== `https://${stage.slice(5)}.executor.engineering` ||
       receiver === null ||

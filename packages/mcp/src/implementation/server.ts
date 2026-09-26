@@ -56,6 +56,9 @@ const observeExecution =
                 Effect.annotateCurrentSpan({
                   "executor.outcome": execution.ok ? "completed" : "failed",
                   "executor.tool_call.count": execution.toolCalls.length,
+                  "executor.tool_call.succeeded": execution.toolCalls.filter(
+                    ({ outcome }) => outcome === "success",
+                  ).length,
                   ...(execution.ok ? {} : { "error.type": execution.error.kind }),
                 }),
               ),

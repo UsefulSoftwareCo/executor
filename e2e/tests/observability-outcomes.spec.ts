@@ -12,6 +12,7 @@ import { McpClient } from "../support/mcp-client.ts";
 import { mcpOutcomeFixture } from "../support/mcp-outcome-fixture.ts";
 import { WorkflowRun } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
+import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
 
 const Analytics = Schema.fromJsonString(
   Schema.Struct({
@@ -20,19 +21,6 @@ const Analytics = Schema.fromJsonString(
         event: Schema.String,
         properties: Schema.Record(Schema.String, Schema.Json),
       }),
-    ),
-  }),
-);
-const Envelope = Schema.fromJsonString(Schema.Struct({ envelope: Schema.String }));
-const SentryEvent = Schema.fromJsonString(
-  Schema.Struct({
-    exception: Schema.optional(
-      Schema.Struct({ values: Schema.Array(Schema.Struct({ type: Schema.String })) }),
-    ),
-    user: Schema.optional(Schema.Struct({ id: Schema.String })),
-    tags: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
-    contexts: Schema.optional(
-      Schema.Struct({ trace: Schema.optional(Schema.Struct({ trace_id: Schema.String })) }),
     ),
   }),
 );
@@ -178,26 +166,9 @@ export default defineApp({ accounts: {} }, async () => {
         expect(failure.status).toBeGreaterThanOrEqual(500);
         const failureTrace = yield* latestTrace();
         if (target.metadata.target === "cloud") {
-          const events = yield* fs.readFileString(`${target.directory}/sentry.ndjson`).pipe(
-            Effect.map((text) =>
-              text
-                .trim()
-                .split("\n")
-                .filter(Boolean)
-                .flatMap((line) =>
-                  Schema.decodeUnknownSync(Envelope)(line)
-                    .envelope.split("\n")
-                    .slice(2)
-                    .filter(Boolean)
-                    .map((value) => Schema.decodeUnknownSync(SentryEvent)(value)),
-                )
-                .filter((event) => event.contexts?.trace?.trace_id === failureTrace),
-            ),
-            Effect.repeat({
-              schedule: Schedule.spaced("100 millis"),
-              until: (events) => events.length > 0,
-            }),
-            Effect.timeout("10 seconds"),
+          const events = traceEvents(
+            yield* awaitSentryEvents((events) => traceEvents(events, failureTrace).length > 0),
+            failureTrace,
           );
           expect(events).toHaveLength(1);
           expect(events[0]?.user?.id).toEqual(expect.any(String));

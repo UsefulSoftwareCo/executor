@@ -7,7 +7,7 @@ import {
   type HostDataError,
   type HostedTool,
   type HostedToolSummary,
-  type AppSkillSource,
+  type SkillCatalog,
   type HostContext,
   type WebhookCommand,
   type WorkflowCommand,
@@ -68,14 +68,18 @@ export interface Runtime<Requirements = never> {
     readonly build: BuildId;
     readonly path: string;
   }) => Effect.Effect<RuntimeAsset | undefined, RuntimeBuildUnavailable, Requirements>;
-  /** Evaluate the current app skill catalog with the same selected account context as tools. */
+  /**
+   * Evaluate the current app skill catalog with the same selected account context as tools.
+   * `sources` also reports whether a live loader contributed; send it only to builds that
+   * declare the skillSources capability.
+   */
   readonly skills: (
-    input: { readonly app: string; readonly build: BuildId } & HostContext,
-  ) => Effect.Effect<
-    readonly AppSkillSource[],
-    RuntimeLoadError | typeof HostInspectError.Type,
-    Requirements
-  >;
+    input: {
+      readonly app: string;
+      readonly build: BuildId;
+      readonly sources?: boolean;
+    } & HostContext,
+  ) => Effect.Effect<SkillCatalog, RuntimeLoadError | typeof HostInspectError.Type, Requirements>;
   /** Describe the current tools, or only the named ones. Unknown names are omitted. */
   readonly inspect: (
     input: {

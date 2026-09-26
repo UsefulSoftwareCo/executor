@@ -1,22 +1,9 @@
 import { SourceFiles, type SourceFile } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 /** Executor uses the same source generator, provider accounts and deployments as other API apps. */
-import { CatalogEntry } from "@executor-js/catalog/contracts";
+import { executorCatalogEntry } from "./executor-catalog-entry.ts";
 import { compileOpenApi, generateOpenApiApp } from "@executor-js/app-templates";
 import type { HostedApiDocument } from "../contracts/api.ts";
-
-/** This installation's public API, available as an ordinary OpenAPI app. */
-export const executorCatalogEntry = (origin: string) =>
-  CatalogEntry.make({
-    id: `${origin}/openapi.json`,
-    kind: "openapi",
-    name: "Executor",
-    description: "Manage apps and connected accounts in Executor.",
-    domain: new URL(origin).hostname,
-    connectUrl: `${origin}/openapi.json`,
-    oauthDiscoveryUrl: `${origin}/api`,
-    feeds: ["curated"],
-  });
 
 /** The catalog retains the ordinary OAuth connection for explicitly installed copies. */
 const managementIndex = (

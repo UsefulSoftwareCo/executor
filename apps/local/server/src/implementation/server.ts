@@ -17,14 +17,15 @@ import {
   AccountNotFound,
   AppNotFound,
   createExecutor,
+  makeDeclarationCache,
   toEffectRuntime,
   executorHandlers,
   webhookCallback,
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
-import { Config, Effect, Layer, Path, Redacted, Result, Deferred, Schedule } from "effect";
+import { Config, Effect, Layer, Path, Redacted, Result, Deferred, Schedule, Scope } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { requestTiming } from "@executor-js/telemetry/http";
+import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { safeHttpClient } from "@executor-js/utils/safe-fetch";
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -92,7 +93,11 @@ export const localApi = (
       );
       const repositories = nativeRepositories(path.join(directory, "repositories"));
       const sources = gitSourceStorage(repositories);
+      const server = yield* Scope.Scope;
       const executor = yield* createExecutor({
+        // Stale declarations refresh on the server's own lifetime.
+        declarations: makeDeclarationCache(),
+        background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
         workflows,
         webhookOrigin:
           config.webhookOrigin ?? config.browserOrigin ?? `http://localhost:${config.port}`,
@@ -317,6 +322,8 @@ export const localApi = (
         HttpRouter.add("GET", "/accounts/:account", web.document),
         HttpRouter.add("GET", "/accounts/:account/credentials", web.document),
         HttpRouter.add("GET", "/accounts/:account/disconnect", web.document),
+        // Manual webhook setup links issued to agents open this dashboard page.
+        HttpRouter.add("GET", "/webhooks/:app/:subscription", web.document),
         HttpRouter.add(
           "GET",
           OAuthCallbackPath,
@@ -344,7 +351,7 @@ export const localApi = (
           return yield* appFromHost(request.headers.host, config.port) === undefined
             ? productHandler
             : appHandler.pipe(requestTiming);
-        }),
+        }).pipe(recordRequestRejections),
       );
     }),
   );

@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./contracts": "./src/contracts/templates.ts",
     "./probe": "./src/probe.ts",
     "./executor": "./src/executor.ts",
     "./executor/skills/app-authoring/SKILL.md": "./executor/skills/app-authoring/SKILL.md"

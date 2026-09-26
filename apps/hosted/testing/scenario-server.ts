@@ -108,7 +108,7 @@ const main = Effect.gen(function* () {
         ["localhost", "127.0.0.1"].includes(new URL(origin).hostname) &&
         ["localhost", "127.0.0.1"].includes(url.hostname);
       const deployed =
-        /^test-e2e-[a-z0-9-]+$/.test(input.stage) &&
+        /^test-(?:e2e|perf)-[a-z0-9-]+$/.test(input.stage) &&
         origin === `https://${input.stage.slice(5)}.executor.engineering` &&
         url.searchParams.get("sslmode") === "verify-full";
       if (

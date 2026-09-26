@@ -1,5 +1,4 @@
 import { nodeCacheSession } from "./node-cache.ts";
-import { AppSkills } from "apps/contracts";
 /** Retained trusted-code builds using Effect platform services and direct handler invocation. */
 import { build as compile } from "esbuild";
 import { captureTelemetry, traceHeaders } from "@executor-js/telemetry";
@@ -18,6 +17,9 @@ import {
   HostedToolSummary,
   indexCommand,
   inspectCommand,
+  skillCatalog,
+  SkillCatalogResponse,
+  skillsCommand,
   selectTools,
   type HostContext,
   type ResolvedAccountsInput,
@@ -439,18 +441,19 @@ export const nodeRuntime = (options: NodeRuntimeOptions): Runtime<NodeRuntimeSer
       ).pipe(Effect.withSpan("runtime.node.build")),
     asset: ({ build, path: assetPath }) =>
       nodeBuildAsset(build, assetPath).pipe(Effect.withSpan("runtime.node.asset")),
-    skills: ({ build, ...context }) =>
+    skills: ({ build, sources, ...context }) =>
       load(build).pipe(
         Effect.flatMap((handler) =>
           cachedDispatch(
             handler,
-            { operation: "skills" },
+            skillsCommand(sources === true),
             context,
-            AppSkills,
+            SkillCatalogResponse,
             HostInspectError,
             build,
           ),
         ),
+        Effect.map(skillCatalog),
         Effect.withSpan("runtime.node.skills"),
       ),
     inspect: ({ build, tools, ...context }) =>

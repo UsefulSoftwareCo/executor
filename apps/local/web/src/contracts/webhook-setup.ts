@@ -1,6 +1,6 @@
 /** Private session-authenticated client; generated secrets remain redacted in query state. */
 import { LocalWebhookSetupApi } from "@executor-js/local-server/webhook-setup";
-import { AppId, WebhookId } from "@executor-js/sdk";
+import type { AppId, WebhookId } from "@executor-js/sdk";
 import { Data, Effect } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
@@ -26,5 +26,5 @@ const family = Atom.family((params: SetupKey) =>
   }),
 );
 /** Stable resource keys keep independent setup pages from superseding one another. */
-export const localWebhookSetupAtoms = (app: string, subscription: string) =>
-  family(new SetupKey({ app: AppId.make(app), subscription: WebhookId.make(subscription) }));
+export const localWebhookSetupAtoms = (app: AppId, subscription: WebhookId) =>
+  family(new SetupKey({ app, subscription }));

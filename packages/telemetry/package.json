@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts",
+    "./browser-errors": "./src/browser-errors.ts",
     "./http": "./src/http.ts",
     "./local": "./src/local.ts",
     "./files": "./src/files.ts",

@@ -4,6 +4,7 @@ import { Schema } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { McpSchema, Tool as McpTool } from "effect/unstable/ai";
 import { ApiErrorResponse, ElicitationResponse } from "apps/contracts";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";
 export * from "./interactions.ts";
 import { NativeElicitationFailed } from "./elicitation.ts";
@@ -28,6 +29,24 @@ export class ExecutionRejected extends Schema.TaggedError<ExecutionRejected>()(
   { message: Schema.String },
 ) {}
 
+/**
+ * An app that needs accounts exposes no tools until the caller has an enabled profile for it.
+ * The caller may have no profile, or only disabled or removed ones.
+ */
+export const AppProfileRequired = UserFacingError.define({
+  tag: "AppProfileRequired",
+  status: 409,
+  fields: { app: Schema.String },
+  title: "Set up an account profile to continue",
+  description: "This app needs an account, and you have no enabled profile for it.",
+  recovery: {
+    action:
+      "Open the app's Accounts page and connect an account or enable an existing profile, then run execute again.",
+    instructions:
+      "Tell the user this app needs an account profile before its tools can be used. They can connect an account, or enable a profile they already have, on the app's Accounts page. Never substitute another identity automatically. This execution cannot call the app's tools.",
+  },
+});
+
 /** Generated code is bounded before it reaches the parser. */
 export const ExecuteInput = Schema.Struct({
   code: Schema.String.check(Schema.isMaxLength(defaultMcpRuntimeLimits.maxCodeChars)),
@@ -39,16 +58,28 @@ export const UnavailableApp = Schema.Struct({
   reason: Schema.String,
   profile: Schema.optional(Schema.String),
 });
+/**
+ * One admitted tool call in call order. `interrupted` calls were still running when the
+ * execution ended; the upstream may or may not have applied them. `awaiting-approval` calls
+ * were still waiting for approval when the execution ended; they never ran.
+ */
+export const McpToolCall = Schema.Struct({
+  name: Schema.String,
+  outcome: Schema.Literals(["success", "failure", "interrupted", "awaiting-approval"]),
+  durationMs: Schema.optionalKey(Schema.Number),
+});
+export type McpToolCall = typeof McpToolCall.Type;
 /** Program result plus apps that could not expose a live catalog during this execution. */
 export const ExecuteResult = Schema.Struct({
   execution: Schema.Union([
-    CodeMode.Success,
+    Schema.Struct({ ...CodeMode.Success.fields, toolCalls: Schema.Array(McpToolCall) }),
     Schema.Struct({
       ...CodeMode.Failure.fields,
       error: Schema.Struct({
         ...CodeMode.Diagnostic.fields,
         response: Schema.optionalKey(ApiErrorResponse),
       }),
+      toolCalls: Schema.Array(McpToolCall),
     }),
   ]),
   unavailableApps: Schema.Array(UnavailableApp),

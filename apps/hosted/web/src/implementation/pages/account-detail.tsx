@@ -2,7 +2,7 @@ import { AccountAccessSettings } from "./resource-settings.tsx";
 import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import type { AccountDetail } from "@executor-js/ui/contracts/dashboard";
 import { useAtomSet } from "@effect/atom-react";
-import { AccountId } from "@executor-js/sdk";
+import type { AccountId } from "@executor-js/sdk";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Exit, type Cause } from "effect";
 import { useState } from "react";
@@ -26,11 +26,10 @@ export function AccountDetailPage({
   id,
   view = "details",
 }: {
-  readonly id: string;
+  readonly id: AccountId;
   readonly view?: "details" | "disconnect";
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
-  const account = AccountId.make(id);
   return (
     <section className="page setup-page w-full shrink-0 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-w-212.5 max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
       <Link
@@ -47,7 +46,7 @@ export function AccountDetailPage({
       </Link>
       <QueryView
         pending={<DetailSkeleton label="Loading account" />}
-        query={accountAtom({ organization, account })}
+        query={accountAtom({ organization, account: id })}
         Failure={HostedFailure}
       >
         {(data) => <AccountView key={id} data={data} view={view} />}

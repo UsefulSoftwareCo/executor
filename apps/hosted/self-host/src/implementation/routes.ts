@@ -24,8 +24,9 @@ import {
   mcpAuthorizationServer,
   apiChallenge,
   apiProtectedResource,
+  lazyHostedApiDocument,
 } from "@executor-js/hosted-server";
-import { requestTiming } from "@executor-js/telemetry/http";
+import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
 import { AppSignInApi, appSignInPage, appSignInScript } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
@@ -77,11 +78,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
     const appUi = hostedAppUi(addresses);
     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
-    const document = executorSelfHostApiDocument(auth.origin);
+    const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
     const api = selfHostApi(document).pipe(
       Layer.provide(appUi.dashboard),
       HttpRouter.provideRequest(auth.appSessions),
-      HttpRouter.provideRequest(catalogLive(skills, document, egress)),
+      HttpRouter.provideRequest(catalogLive(skills, document.document, egress)),
       Layer.provide(requireUserLive),
       Layer.provide(requireOrganizationLive),
       HttpRouter.provideRequest(executorServices),
@@ -178,7 +179,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
           return yield* apps.pipe(requestTiming);
         if (addresses.ownsHost(request.headers.host)) return notFound;
         return yield* product;
-      }),
+      }).pipe(recordRequestRejections),
     );
     return routes;
   });

@@ -45,6 +45,9 @@ const migrationUrl = (origin: Planetscale.PostgresOrigin) => {
   return Redacted.make(url.toString());
 };
 
+/** Dedicated automated and performance stages may hand fixture authority to a local runner. */
+const fixtureStage = /^test-(?:e2e|perf)-/;
+
 /** Provision the preview schema and local fixtures before exposing its runtime URL. */
 const preparedPreviewDatabase = (stage: TestStage) =>
   Effect.gen(function* () {
@@ -68,9 +71,9 @@ const preparedPreviewDatabase = (stage: TestStage) =>
         Config.option,
       );
       if (Option.isSome(fixtureControl)) {
-        if (!stage.name.startsWith("test-e2e-"))
+        if (!fixtureStage.test(stage.name))
           return yield* Effect.die(
-            new Error("Fixture control requires a dedicated test-e2e- stage"),
+            new Error("Fixture control requires a dedicated test-e2e- or test-perf- stage"),
           );
         yield* Command.Exec("ScenarioFixtures", {
           command: "node scripts/configure-test-fixtures.ts",

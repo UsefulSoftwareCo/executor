@@ -19,6 +19,7 @@ import { makeSkills } from "./skills.ts";
 import { toEffectRuntime } from "./runtime.ts";
 import { database } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
+import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
 
 /** Capture host cryptography; caller owns database and platform resource lifetimes. */
 export const createExecutor = (
@@ -29,12 +30,21 @@ export const createExecutor = (
     const db = database(options.storage);
     const runtime = toEffectRuntime(options.runtime, options.blobs);
     const oauth = makeOAuth(db, options.credentials, crypto, options.oauth, options.lifecycle);
+    const declarations = makeDeclarations({
+      cache: options.declarations ?? makeDeclarationCache(),
+      background: options.background,
+      resolveAccount: oauth.resolve,
+      accountUsable: oauth.usable,
+      crypto,
+      lifecycle: options.lifecycle,
+    });
     const workflows = makeWorkflowRuns(
       options.storage,
       runtime,
       oauth.resolve,
       options.credentials,
       crypto,
+      declarations,
       options.workflows,
       options.appStorage,
       options.lifecycle,
@@ -46,6 +56,7 @@ export const createExecutor = (
       options.credentials,
       crypto,
       options.webhookOrigin,
+      declarations,
       options.appStorage,
       workflows.controls,
       options.lifecycle,
@@ -69,6 +80,7 @@ export const createExecutor = (
     const schedules = makeSchedules(options.storage, apps, tools, options.credentials, crypto);
     const setup = makeProfileSetup(db, crypto, apps.profiles, {
       webhooks: webhooks.webhooks,
+      webhookDefinitions: webhooks.liveDefinitions,
       schedules: schedules.operations,
       runs: workflows.runs,
     });
@@ -84,8 +96,9 @@ export const createExecutor = (
       },
       apps: { ...apps, profiles: setup.operations },
       owners: makeOwners(db),
-      skills: makeSkills(apps, db, runtime, oauth.resolve, crypto, options.lifecycle),
-      ...webhooks,
+      skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
+      webhooks: webhooks.webhooks,
+      webhookSetup: webhooks.webhookSetup,
       appData: makeAppData(
         options.storage,
         oauth.resolve,

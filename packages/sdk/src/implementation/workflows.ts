@@ -31,6 +31,7 @@ import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
 import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import { bindAppStorage } from "./app-database.ts";
+import type { Declarations } from "./declarations.ts";
 
 const StoredRun = Schema.Struct({
   id: WorkflowRunId,
@@ -86,6 +87,7 @@ export const makeWorkflowRuns = (
   resolveAccount: ReturnType<typeof makeOAuth>["resolve"],
   credentials: Credentials,
   crypto: Crypto.Crypto,
+  declarations: Declarations,
   backend?: WorkflowRuntime,
   appStorage?: AppDatabases,
   lifecycle?: ResourceLifecycle,
@@ -582,18 +584,22 @@ export const makeWorkflowRuns = (
     definitions: (input: typeof WorkflowApp.Type) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
-        return yield* safe(
-          runtime
-            .workflow({
+        const value = yield* declarations.read("workflows", state, (context) =>
+          safe(
+            runtime.workflow({
               app: input.app,
               build: state.deployment.build,
-              ...(yield* resolve(state, resolveAccount, lifecycle)),
+              ...context,
               command: { operation: "workflows" },
-            })
-            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWorkflow)))),
+            }),
+            "execution",
+          ),
+        );
+        return yield* safe(
+          Schema.decodeUnknownEffect(Schema.Array(HostedWorkflow))(value),
           "execution",
         );
-      }),
+      }).pipe(Effect.withSpan("sdk.workflows.definitions")),
     runs: {
       start,
       get,

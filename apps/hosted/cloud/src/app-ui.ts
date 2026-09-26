@@ -10,7 +10,7 @@ import { Config, Effect, Layer, Option } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
-import { requestTiming } from "@executor-js/telemetry/http";
+import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
@@ -118,6 +118,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     return {
       fetch: handle.pipe(
         analytics.wrap,
+        recordRequestRejections,
         reportErrors,
         Effect.catch(() =>
           Effect.succeed(

@@ -1,75 +1,131 @@
-import { storedDeployment } from "./apps.ts";
-import { evaluationFailure, snapshot as invocation, resolve } from "./tools.ts";
+import { storedApp, storedDeployment } from "./apps.ts";
+import { evaluationFailure, snapshot as invocation } from "./tools.ts";
 import { AppSkills } from "apps/contracts";
 import { AppEvaluationFailed } from "../contracts/tools.ts";
 import { AppNotDeployed } from "../contracts/apps.ts";
 /** Skill reads project one authorized runtime catalog, or a retained pre-capability folder. */
 import { Crypto, Effect, Encoding, Schema } from "effect";
-import type { Executor } from "../contracts/executor.ts";
+import type { BlobStorage } from "../contracts/blobs.ts";
 import { AppSkillInputs, AppSkillNotFound, SkillRevisionChanged } from "../contracts/skills.ts";
 import { RequestInvalid, StorageError } from "../contracts/shared.ts";
+import type { Runtime } from "../contracts/runtime.ts";
+import type { Query } from "./database.ts";
+import type { Declarations } from "./declarations.ts";
+import { readDeploymentSource } from "./deployment-source.ts";
 import { prepareAppSkills } from "./skill-source.ts";
 
-/** Bind skill reads to the same app lookup and retained-source lineage used by deployment inspection. */
+/** Runtime skill results; only a catalog known to have no live loader is reused. */
+const Catalog = Schema.Struct({
+  skills: Schema.Unknown,
+  dynamic: Schema.optionalKey(Schema.Boolean),
+});
+const StaticCatalog = Schema.Struct({ skills: Schema.Unknown, dynamic: Schema.Literal(false) });
+
+/** Sorted catalog digest; equal content has equal revisions. */
+const catalogRevision = (crypto: Crypto.Crypto, skills: typeof AppSkills.Type) =>
+  crypto.digest("SHA-256", new TextEncoder().encode(JSON.stringify(skills))).pipe(
+    Effect.map(Encoding.encodeHex),
+    Effect.mapError(() => new StorageError()),
+  );
+const sorted = (skills: typeof AppSkills.Type) =>
+  [...skills]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((skill) => ({
+      ...skill,
+      files: [...skill.files].sort((a, b) => a.path.localeCompare(b.path)),
+    }));
+
+/**
+ * Bind skill reads to the app's code lineage. Builds with the skills capability are evaluated
+ * with the selected profile; their catalog is served stale-while-revalidate within its bound.
+ */
 export const makeSkills = (
-  apps: Pick<Executor["apps"], "get" | "source">,
-  db: import("./database.ts").Query,
-  runtime: import("../contracts/runtime.ts").Runtime,
-  resolveAccount: ReturnType<typeof import("./oauth.ts").makeOAuth>["resolve"],
+  db: Query,
+  runtime: Runtime,
   crypto: Crypto.Crypto,
-  lifecycle?: import("../contracts/executor.ts").ResourceLifecycle,
+  declarations: Declarations,
+  blobs: BlobStorage,
 ) => {
   const snapshot = (input: typeof AppSkillInputs.list.Type) =>
     Effect.gen(function* () {
-      const app = yield* apps.get(input);
+      const app = yield* storedApp(db, input);
       const deployment = input.deployment ?? app.activeDeployment;
       if (deployment === null) return yield* new AppNotDeployed({ app: app.id });
-      const source = yield* apps.source({
-        ...input,
-        deployment,
-      });
       const retained = yield* storedDeployment(db, app, deployment);
+      const decode = (value: unknown) =>
+        Schema.decodeUnknownEffect(AppSkills)(value).pipe(
+          Effect.map(sorted),
+          Effect.mapError(
+            () =>
+              new AppEvaluationFailed({
+                app: app.id,
+                deployment,
+                reason: "Invalid skill catalog",
+              }),
+          ),
+        );
       // A retained framework that predates dynamic skills cannot receive the new command.
       // Its immutable bundled skills remain readable until its owner deploys a newer build.
+      const capabilities = retained.requirements.capabilities;
       const live =
-        retained.requirements.capabilities?.skills === true
+        capabilities?.skills === true
           ? yield* Effect.gen(function* () {
               const state = yield* invocation(db, { ...input, deployment });
-              const context = yield* resolve(state, resolveAccount, lifecycle);
-              const skills = yield* runtime
-                .skills({ app: app.id, build: state.deployment.build, ...context })
-                .pipe(
-                  Effect.mapError((error) =>
-                    evaluationFailure(
-                      { app: app.id, deployment },
-                      error,
-                      "Skill evaluation failed",
+              // Builds that report their sources keep catalogs without a live loader. A catalog
+              // from `dynamicSkills`, or from an older build that cannot say, is read every time.
+              const sources = capabilities.skillSources === true;
+              const known = input.revision;
+              const catalog = yield* declarations.read(
+                "skills",
+                state,
+                (context) =>
+                  runtime
+                    .skills({ app: app.id, build: state.deployment.build, sources, ...context })
+                    .pipe(
+                      Effect.mapError((error) =>
+                        evaluationFailure(
+                          { app: app.id, deployment },
+                          error,
+                          "Skill evaluation failed",
+                        ),
+                      ),
                     ),
-                  ),
-                );
+                {
+                  retain: (value) => Schema.is(StaticCatalog)(value),
+                  // A caller holding another revision rereads rather than receive an older one.
+                  current: (value) =>
+                    known === undefined
+                      ? Effect.succeed(true)
+                      : Schema.decodeUnknownEffect(StaticCatalog)(value).pipe(
+                          Effect.flatMap((catalog) => decode(catalog.skills)),
+                          Effect.flatMap((skills) => catalogRevision(crypto, skills)),
+                          Effect.map((revision) => revision === known),
+                          Effect.orElseSucceed(() => false),
+                        ),
+                },
+              );
+              const skills = yield* Schema.decodeUnknownEffect(Catalog)(catalog).pipe(
+                Effect.mapError(
+                  () =>
+                    new AppEvaluationFailed({
+                      app: app.id,
+                      deployment,
+                      reason: "Invalid skill catalog",
+                    }),
+                ),
+                Effect.flatMap((catalog) => decode(catalog.skills)),
+              );
               return { skills, profile: state.profile };
             })
-          : { skills: yield* prepareAppSkills(source.files), profile: undefined };
-      const skills = yield* Schema.decodeUnknownEffect(AppSkills)(live.skills).pipe(
-        Effect.mapError(
-          () =>
-            new AppEvaluationFailed({ app: app.id, deployment, reason: "Invalid skill catalog" }),
-        ),
-        Effect.map((skills) =>
-          [...skills]
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map((skill) => ({
-              ...skill,
-              files: [...skill.files].sort((a, b) => a.path.localeCompare(b.path)),
-            })),
-        ),
-      );
-      const revision = yield* crypto
-        .digest("SHA-256", new TextEncoder().encode(JSON.stringify(skills)))
-        .pipe(
-          Effect.map(Encoding.encodeHex),
-          Effect.mapError(() => new StorageError()),
-        );
+          : {
+              skills: yield* readDeploymentSource(blobs, retained.id).pipe(
+                Effect.flatMap(prepareAppSkills),
+                Effect.flatMap(decode),
+              ),
+              profile: undefined,
+            };
+      const skills = live.skills;
+      const revision = yield* catalogRevision(crypto, skills);
       if (input.revision !== undefined && input.revision !== revision)
         return yield* new SkillRevisionChanged({
           app: app.id,
@@ -78,7 +134,7 @@ export const makeSkills = (
         });
       return {
         app: { id: app.id, name: app.name, slug: app.slug },
-        deployment: source.id,
+        deployment: retained.id,
         revision,
         skills,
         ...(live.profile === undefined

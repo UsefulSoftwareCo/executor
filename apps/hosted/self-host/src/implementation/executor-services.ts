@@ -11,6 +11,7 @@ import {
   makeExecutorStorage,
   WorkflowHost,
   recoverAppRepositories,
+  makeDeclarationCache,
   type Executor,
   type SourceFile,
 } from "@executor-js/sdk/core";
@@ -22,12 +23,13 @@ import {
   makeOrganizationIcons,
   OrganizationDefaults,
   organizationDefaults,
+  lazyHostedApiDocument,
 } from "@executor-js/hosted-server";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
 import { workerdHostHandler } from "@executor-js/sdk/workerd";
 import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
-import { Config, Effect, Layer, Option, Deferred, Schedule, Context } from "effect";
+import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { SqlClient } from "effect/unstable/sql";
 
@@ -60,6 +62,7 @@ export const selfHostExecutorServices = <E, R>(
         Config.map(Option.getOrUndefined),
       );
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+      const server = yield* Scope.Scope;
       const ready = yield* Deferred.make<Executor>();
       const { runtime, workflows, blobs, repositories } = yield* acquire(Deferred.await(ready));
       const registry = remoteRegistry(
@@ -78,7 +81,14 @@ export const selfHostExecutorServices = <E, R>(
           urlPolicy: egress.policy,
           ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
         },
-        { storage, webhookOrigin: origin, workflows },
+        {
+          storage,
+          webhookOrigin: origin,
+          workflows,
+          declarations: makeDeclarationCache(),
+          // Stale declarations refresh on the server's own lifetime.
+          background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
+        },
       );
       yield* Deferred.succeed(ready, executor);
       yield* Effect.forkScoped(
@@ -98,7 +108,7 @@ export const selfHostExecutorServices = <E, R>(
         origin,
         storage,
         skills,
-        executorSelfHostApiDocument(origin),
+        lazyHostedApiDocument(() => executorSelfHostApiDocument(origin)).document,
         // Password registration is admitted locally; self-host does not send verification mail.
         false,
       );

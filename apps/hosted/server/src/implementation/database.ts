@@ -47,7 +47,10 @@ export const postgresExecutor = (
   sources: AppSourceStorage,
   oauth: Pick<OAuthOptions, "httpClient" | "clientMetadataUrl" | "urlPolicy">,
   options?: Partial<
-    Pick<ExecutorOptions, "storage" | "appStorage" | "webhookOrigin" | "workflows">
+    Pick<
+      ExecutorOptions,
+      "storage" | "appStorage" | "webhookOrigin" | "workflows" | "declarations" | "background"
+    >
   >,
 ) =>
   Effect.gen(function* () {
@@ -60,6 +63,8 @@ export const postgresExecutor = (
       ...(options?.workflows === undefined ? {} : { workflows: options.workflows }),
       ...(options?.webhookOrigin === undefined ? {} : { webhookOrigin: options.webhookOrigin }),
       ...(options?.appStorage === undefined ? {} : { appStorage: options.appStorage }),
+      ...(options?.declarations === undefined ? {} : { declarations: options.declarations }),
+      ...(options?.background === undefined ? {} : { background: options.background }),
       blobs,
       sources,
       credentials,

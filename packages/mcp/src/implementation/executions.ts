@@ -41,7 +41,14 @@ import {
 } from "../contracts/execute.ts";
 import type { BrowserApprovalView, BrowserApprovalAcknowledgement } from "../contracts/browser.ts";
 import { programScheduler } from "./program-scheduler.ts";
-import { executeProgram } from "./execute.ts";
+import {
+  executeProgram,
+  executionProgress,
+  reportedCalls,
+  timeoutDeliveryMs,
+  timeoutMessage,
+  type ExecutionProgress,
+} from "./execute.ts";
 
 class ApprovalTooLarge extends Schema.TaggedError<ApprovalTooLarge>()("ApprovalTooLarge", {}) {}
 class ApprovalDenied extends Schema.TaggedError<ApprovalDenied>()("ApprovalDenied", {}) {}
@@ -67,6 +74,8 @@ type Pending = {
       readonly kind: "approval";
       readonly request: typeof ToolPending.Type;
       readonly response: Deferred.Deferred<ToolCallResult, Error>;
+      /** The program's call index, reported as awaiting approval until this is answered. */
+      readonly call: number | undefined;
     }
   | {
       readonly kind: "input";
@@ -88,7 +97,9 @@ type Run = {
   readonly events: Queue.Queue<Event>;
   readonly pending: Map<InteractionId, Pending>;
   readonly operations: Set<Operation>;
-  readonly calls: Array<CodeMode.ToolCall>;
+  readonly progress: ExecutionProgress;
+  /** Completed once when the active-time budget is spent; the program observes it as its timeout. */
+  readonly expired: Deferred.Deferred<void>;
   remainingMs: number;
   busy: boolean;
   closed: boolean;
@@ -107,6 +118,8 @@ export const makeExecutions = (
       Context.add(Scheduler.Scheduler, scheduler),
     );
     const runs = new Set<Run>();
+    /** Ended runs whose tools are still being cancelled; they count toward the execution limit. */
+    const closing = new Set<Run>();
     const requests = new Map<InteractionId, Pending>();
     const unavailable = (requestId: InteractionId): McpExecutionResult => ({
       status: "unavailable",
@@ -118,9 +131,22 @@ export const makeExecutions = (
       message: string,
     ): McpExecutionResult & { status: "completed" } => ({
       status: "completed",
-      execution: { ok: false, error: { kind, message }, toolCalls: [...run.calls] },
-      unavailableApps: [],
+      execution: { ok: false, error: { kind, message }, toolCalls: reportedCalls(run.progress) },
+      unavailableApps: run.progress.unavailableApps,
     });
+    /** The program did not deliver its own timeout result; report what the driver recorded. */
+    const timedOut = (run: Run) =>
+      Effect.gen(function* () {
+        yield* Effect.annotateCurrentSpan({
+          "executor.timeout.phase": run.progress.phase,
+          "executor.timeout.delivery": "driver",
+        });
+        return failure(
+          run,
+          "TimeoutExceeded",
+          timeoutMessage(limits.timeoutMs, run.progress.phase),
+        );
+      });
     const wake = (run: Run) => Queue.offer(run.events, { kind: "wake" });
     const forget = (pending: Pending) => {
       requests.delete(pending.request.requestId);
@@ -128,15 +154,42 @@ export const makeExecutions = (
       // Wake collectors atomically with removal; an already recorded answer is never overwritten.
       Deferred.doneUnsafe(pending.browserAnswer, Effect.succeed(undefined));
     };
+    /** End the run at once: no new work, answers or resumes. Returns false if it had already ended. */
+    const detach = (run: Run) => {
+      if (run.closed) return false;
+      run.closed = true;
+      run.scheduling.resume();
+      for (const pending of run.pending.values()) forget(pending);
+      runs.delete(run);
+      return true;
+    };
     const stop = (run: Run) =>
+      Effect.suspend(() => (detach(run) ? Scope.close(run.scope, Exit.void) : Effect.void));
+    // Closing a run interrupts its unfinished tools and waits for their cancellation. A result
+    // or a caller's cancellation never waits for that: the host scope owns it, shutting the host
+    // down still waits for it, and closing runs count toward the execution limit until done.
+    const release = (run: Run) =>
       Effect.suspend(() => {
-        if (run.closed) return Effect.void;
-        run.closed = true;
-        run.scheduling.resume();
-        for (const pending of run.pending.values()) forget(pending);
-        runs.delete(run);
-        return Scope.close(run.scope, Exit.void);
+        if (!detach(run)) return Effect.void;
+        closing.add(run);
+        return Effect.forkIn(
+          Effect.uninterruptible(
+            Scope.close(run.scope, Exit.void).pipe(
+              Effect.ensuring(Effect.sync(() => closing.delete(run))),
+            ),
+          ),
+          hostScope,
+        ).pipe(Effect.asVoid);
       });
+    /** Report a call as awaiting approval while it waits, and as running once it is answered. */
+    const approvalWait = (run: Run, index: number | undefined, waiting: boolean) => {
+      const call = index === undefined ? undefined : run.progress.calls[index];
+      if (call === undefined) return;
+      if (waiting && call.outcome === "running") call.outcome = "awaiting-approval";
+      if (!waiting && call.outcome === "awaiting-approval") call.outcome = "running";
+    };
+    /** The active-time budget is spent: nothing new may start, park or resume. */
+    const expired = (run: Run) => Deferred.isDoneUnsafe(run.expired);
     yield* Effect.addFinalizer(() =>
       Effect.forEach([...runs], stop, { concurrency: "unbounded", discard: true }),
     );
@@ -156,7 +209,7 @@ export const makeExecutions = (
 
     const record = (pending: Pending) =>
       Effect.gen(function* () {
-        if (pending.run.closed) return yield* new ApprovalUnavailable();
+        if (pending.run.closed || expired(pending.run)) return yield* new ApprovalUnavailable();
         if (
           new TextEncoder().encode(JSON.stringify(pending.request)).byteLength >
           limits.maxOutputBytes
@@ -176,7 +229,7 @@ export const makeExecutions = (
       (input, signal) =>
         Effect.gen(function* () {
           const form = yield* prepareElicitation(input);
-          if (signal.aborted || run.closed)
+          if (signal.aborted || run.closed || expired(run))
             return yield* new ElicitationFailed({ reason: "unavailable" });
           const response = yield* Deferred.make<ElicitationResponse, ElicitationFailed>();
           const request: typeof ToolInputPending.Type = {
@@ -282,38 +335,45 @@ export const makeExecutions = (
         listTargets: (input) => exchange((backend) => backend.listTargets(input)),
         listTools: (input) => exchange((backend) => backend.listTools(input)),
         callTool: (input) =>
-          exchange(
-            (backend, operation) =>
-              backend
-                .callTool(input, {
-                  elicitation: elicitation(run, operation, {
-                    app: input.app,
-                    tool: input.tool,
-                    profile: input.profile,
-                    expectedProfileRevision: input.expectedProfileRevision,
-                  }),
-                })
-                .pipe(
-                  Effect.withSpan("mcp.tool.call", {
-                    attributes: { "executor.app.id": input.app, "executor.tool.name": input.tool },
-                  }),
-                ),
-            (result, response) => {
-              if (result.status === "completed")
-                return Deferred.succeed(response, result).pipe(Effect.asVoid);
-              return record({
-                kind: "approval",
-                browserAnswer: Deferred.makeUnsafe<ElicitationResponse | undefined>(),
-                request: result,
-                response,
-                run,
-                respond: (input) =>
-                  Schema.decodeUnknownEffect(ToolInputs.resume.fields.response)(input).pipe(
-                    Effect.mapError(() => new ElicitationResponseInvalid()),
+          Effect.flatMap(Effect.fiberId, (fiber) => {
+            const call = run.progress.callFibers.get(fiber);
+            return exchange(
+              (backend, operation) =>
+                backend
+                  .callTool(input, {
+                    elicitation: elicitation(run, operation, {
+                      app: input.app,
+                      tool: input.tool,
+                      profile: input.profile,
+                      expectedProfileRevision: input.expectedProfileRevision,
+                    }),
+                  })
+                  .pipe(
+                    Effect.withSpan("mcp.tool.call", {
+                      attributes: {
+                        "executor.app.id": input.app,
+                        "executor.tool.name": input.tool,
+                      },
+                    }),
                   ),
-              });
-            },
-          ),
+              (result, response) => {
+                if (result.status === "completed")
+                  return Deferred.succeed(response, result).pipe(Effect.asVoid);
+                return record({
+                  kind: "approval",
+                  browserAnswer: Deferred.makeUnsafe<ElicitationResponse | undefined>(),
+                  request: result,
+                  response,
+                  run,
+                  call,
+                  respond: (input) =>
+                    Schema.decodeUnknownEffect(ToolInputs.resume.fields.response)(input).pipe(
+                      Effect.mapError(() => new ElicitationResponseInvalid()),
+                    ),
+                }).pipe(Effect.tap(() => Effect.sync(() => approvalWait(run, call, true))));
+              },
+            );
+          }),
         authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "unavailable" })),
         resumeInvocation: () => Effect.fail(new ApprovalUnavailable()),
       };
@@ -334,29 +394,36 @@ export const makeExecutions = (
           while (true) {
             const event = yield* Queue.take(run.events);
             if (run.closed)
-              return failure(
-                run,
-                "ExecutionFailure",
-                "Execution ended; its continuation is unavailable",
-              );
+              return expired(run)
+                ? yield* timedOut(run)
+                : failure(
+                    run,
+                    "ExecutionFailure",
+                    "Execution ended; its continuation is unavailable",
+                  );
             const completed = yield* Match.value(event).pipe(
+              // After the deadline, work the program queued before its interruption never starts.
               Match.when({ kind: "operation" }, ({ handle }) =>
-                launch(run, backend, handle).pipe(Effect.as(undefined)),
+                expired(run)
+                  ? Effect.succeed(undefined)
+                  : launch(run, backend, handle).pipe(Effect.as(undefined)),
               ),
               Match.when({ kind: "done" }, ({ result }) =>
-                stop(run).pipe(Effect.as({ status: "completed" as const, ...result })),
+                release(run).pipe(Effect.as({ status: "completed" as const, ...result })),
               ),
               Match.when({ kind: "wake" }, () => Effect.succeed(undefined)),
               Match.exhaustive,
             );
             if (completed !== undefined) return completed;
             // Calls awaiting input remain owned by run.scope. Other admitted work must finish before parking.
+            // An expired run never parks: it only waits for the program's own timeout result.
             if (
+              !expired(run) &&
               run.pending.size > 0 &&
               [...run.operations].every((operation) => operation.waiting.size > 0)
             ) {
               yield* Effect.yieldNow;
-              if ((yield* Queue.size(run.events)) === 0) {
+              if (!expired(run) && (yield* Queue.size(run.events)) === 0) {
                 const first = run.pending.values().next().value;
                 if (first !== undefined) {
                   run.scheduling.pause();
@@ -369,14 +436,11 @@ export const makeExecutions = (
         return yield* loop.pipe(
           Effect.raceFirst(
             Effect.sleep(Math.max(0, run.remainingMs)).pipe(
-              Effect.andThen(stop(run)),
-              Effect.map(() =>
-                failure(
-                  run,
-                  "TimeoutExceeded",
-                  "Execution timed out; earlier tool calls may have completed",
-                ),
-              ),
+              Effect.andThen(Deferred.succeed(run.expired, undefined)),
+              // The program normally delivers its own timeout result, with logs, well within this.
+              Effect.andThen(Effect.sleep(timeoutDeliveryMs)),
+              Effect.andThen(release(run)),
+              Effect.andThen(timedOut(run)),
             ),
           ),
           Effect.onInterrupt(() => stop(run)),
@@ -384,6 +448,8 @@ export const makeExecutions = (
             Effect.gen(function* () {
               run.remainingMs -= Math.max(0, (yield* Clock.currentTimeMillis) - started);
               run.busy = false;
+              // A run that parked as its budget ran out must not resume before its timer fires.
+              if (run.remainingMs <= 0) yield* Deferred.succeed(run.expired, undefined);
             }),
           ),
         );
@@ -394,7 +460,7 @@ export const makeExecutions = (
         const pending = requests.get(id);
         if (pending === undefined || pending.run.caller !== caller) return undefined;
         if (pending.request.expiresAt <= (yield* Clock.currentTimeMillis)) {
-          yield* stop(pending.run);
+          yield* release(pending.run);
           return undefined;
         }
         return pending;
@@ -442,12 +508,12 @@ export const makeExecutions = (
             }),
           );
         }),
-      /** Discard all interactions and live work for the caller's program. */
+      /** Discard all interactions and live work for the caller's program, without awaiting cleanup. */
       discard: (caller: string, requestId: InteractionId): Effect.Effect<void> =>
         Effect.suspend(() => {
           const pending = requests.get(requestId);
           return pending !== undefined && pending.run.caller === caller
-            ? stop(pending.run)
+            ? release(pending.run)
             : Effect.void;
         }),
       /** Start one program. Policy consent and tool input return the same pending-interaction union. */
@@ -457,8 +523,11 @@ export const makeExecutions = (
         code: string,
       ): Effect.Effect<McpExecutionResult, ExecutionRejected> =>
         Effect.gen(function* () {
-          if (runs.size >= defaultMcpRuntimeLimits.maxExecutions)
+          const admitted = () => runs.size + closing.size < defaultMcpRuntimeLimits.maxExecutions;
+          if (!admitted()) {
+            yield* Effect.annotateCurrentSpan("executor.execution.closing", closing.size);
             return { status: "capacity-exceeded" };
+          }
           const run: Run = {
             id: crypto.randomUUID(),
             caller,
@@ -467,12 +536,13 @@ export const makeExecutions = (
             events: yield* Queue.unbounded<Event>(),
             pending: new Map(),
             operations: new Set(),
-            calls: [],
+            progress: executionProgress(),
+            expired: yield* Deferred.make<void>(),
             remainingMs: limits.timeoutMs,
             busy: false,
             closed: false,
           };
-          if (runs.size >= defaultMcpRuntimeLimits.maxExecutions) {
+          if (!admitted()) {
             yield* Scope.close(run.scope, Exit.void);
             return { status: "capacity-exceeded" };
           }
@@ -484,9 +554,10 @@ export const makeExecutions = (
           );
           const program = executeProgram(
             broker(run),
-            { maxToolCalls: limits.maxToolCalls, maxOutputBytes: limits.maxOutputBytes },
+            limits,
             code,
-            (call) => run.calls.push(call),
+            Deferred.await(run.expired),
+            run.progress,
           ).pipe(
             Effect.onExit((exit) =>
               Queue.offer(run.events, {
@@ -526,13 +597,19 @@ export const makeExecutions = (
           const run = pending.run;
           yield* Effect.annotateCurrentSpan("executor.execution.id", run.id);
           if (pending.request.expiresAt <= (yield* Clock.currentTimeMillis)) {
-            yield* stop(run);
+            yield* release(run);
             return unavailable(input.requestId);
           }
           if (requests.get(input.requestId) !== pending) return unavailable(input.requestId);
+          // A run parks only before its deadline; never let an answer start work after it.
+          if (expired(run)) {
+            yield* release(run);
+            return unavailable(input.requestId);
+          }
           if (run.busy) return { status: "busy", requestId: input.requestId };
           run.busy = true;
           forget(pending);
+          if (pending.kind === "approval") approvalWait(run, pending.call, false);
           const begin = Match.value(pending).pipe(
             Match.when({ kind: "approval" }, (pending) =>
               launch(run, backend, (active, operation) =>

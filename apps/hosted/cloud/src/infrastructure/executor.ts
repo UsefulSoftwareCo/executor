@@ -19,6 +19,7 @@ import {
 } from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
+import type { HostedApiDocument } from "@executor-js/hosted-server/contracts";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
 import {
   AppRepositoryRecovery,
@@ -30,13 +31,15 @@ import {
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Config, Context, Effect, Layer, Option } from "effect";
+import { Config, Context, Effect, FiberSet, Layer, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { SqlClient } from "effect/unstable/sql";
 import { cloudBuildAsset } from "../implementation/build-storage.ts";
 import { cachedBuildAssets } from "../implementation/asset-cache.ts";
+import { cachedDeploymentSources } from "../implementation/deployment-source-cache.ts";
 import { withExecutorAnalytics } from "../implementation/product-analytics.ts";
 import { cloudAppSources } from "./source.ts";
+import { isolateDeclarations } from "./isolate-memory.ts";
 import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { cloudBlobs } from "./blobs.ts";
 import { cloudWorkflows } from "./workflows.ts";
@@ -101,20 +104,44 @@ export const cloudExecutor = Effect.fn(function* (
       const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
         Effect.provideContext(services),
       );
+      // Stale metadata refreshes beside the request, inside this event's lifetime.
+      // Work offered once the event is closing is refused, so its caller releases what it holds.
+      const refreshes = yield* FiberSet.make();
+      let closing = false;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          closing = true;
+        }).pipe(
+          Effect.andThen(FiberSet.awaitEmpty(refreshes)),
+          Effect.timeoutOption("20 seconds"),
+          Effect.asVoid,
+        ),
+      );
+      const background = (work: Effect.Effect<void>) =>
+        Effect.suspend(() =>
+          closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
+        );
       const registryStorage = yield* makeRegistryStorage.pipe(Effect.provideContext(services));
       const registry = storedRegistry(registryStorage, sources, origin);
       const runtime = yield* makeRuntime;
       const executor = yield* postgresExecutor(
         key,
         runtime,
-        blobs,
+        yield* cachedDeploymentSources(origin, blobs),
         sources,
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
           ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
         },
-        { storage, webhookOrigin: origin, workflows },
+        {
+          storage,
+          webhookOrigin: origin,
+          workflows,
+          // One store per isolate, shared by every executor built in it.
+          declarations: isolateDeclarations,
+          background,
+        },
       ).pipe(Effect.provideContext(services), Effect.provide(BrowserCrypto.layer));
       const scheduleAuthority = yield* makeScheduledAuthority(executor).pipe(
         Effect.provideContext(services),
@@ -140,15 +167,21 @@ export const cloudExecutor = Effect.fn(function* (
   );
   // Serving an app does not install the default management app. Keep its API
   // document, templates and authoring files off the app-serving startup path.
+  // The document depends only on the origin, so the isolate keeps the first one
+  // generated for later provisioning runs instead of regenerating it per execution.
+  let document: HostedApiDocument | undefined;
   const defaults = yield* makeExecutionMemo(
     Effect.gen(function* () {
-      const { defaultApp } = yield* Effect.promise(
+      const { defaultApp, executorCloudApiDocument } = yield* Effect.promise(
         () => import("../implementation/default-app.ts"),
       );
       const resources = yield* executor;
-      return yield* defaultApp(resources.executor, origin, resources.storage).pipe(
-        Effect.provideContext(yield* database),
-      );
+      return yield* defaultApp(
+        resources.executor,
+        origin,
+        resources.storage,
+        Effect.sync(() => (document ??= executorCloudApiDocument(origin))),
+      ).pipe(Effect.provideContext(yield* database));
     }).pipe(
       Effect.mapError(() => new StorageError()),
       Effect.withSpan("runtime.cloud.defaults.initialize"),

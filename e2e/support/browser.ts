@@ -1,5 +1,11 @@
 /** Promise APIs are confined to this driver adapter; Effect owns browser and context scopes. */
-import { chromium, type Browser as NativeBrowser, type Page } from "playwright";
+import {
+  chromium,
+  webkit,
+  type Browser as NativeBrowser,
+  type BrowserType,
+  type Page,
+} from "playwright";
 import { Cause, Clock, Console, Context, Effect, Exit, Layer, Redacted, Result } from "effect";
 import { Target, driver, type DriverFailed } from "./platform.ts";
 import { Evidence } from "./evidence.ts";
@@ -7,11 +13,26 @@ import type { Session } from "./api.ts";
 import { RecordingFocus } from "./recording-focus.ts";
 import { captureUIObservations } from "./ui-observation.ts";
 
-const launchBrowser = (options: { readonly headless: boolean; readonly slowMo: number }) =>
+const launchBrowser = (
+  options: { readonly headless: boolean; readonly slowMo: number },
+  engine: BrowserType = chromium,
+) =>
   Effect.acquireRelease(
-    driver("launch browser", () => chromium.launch(options)),
+    driver("launch browser", () => engine.launch(options)),
     (browser) => driver("close browser", () => browser.close()).pipe(Effect.orDie),
   );
+
+const captureBrowser = (engine: BrowserType) =>
+  Effect.gen(function* () {
+    const target = yield* Target;
+    return yield* launchBrowser(
+      {
+        headless: target.headless ?? !target.metadata.interactive,
+        slowMo: target.recordingPaceMs,
+      },
+      engine,
+    );
+  });
 
 /** Suite-scoped Playwright process injected into browser and recording services. */
 export class BrowserDriver extends Context.Service<BrowserDriver, NativeBrowser>()(
@@ -20,16 +41,9 @@ export class BrowserDriver extends Context.Service<BrowserDriver, NativeBrowser>
   /** Rendering is never paced, even when the source recording was captured slowly. */
   static readonly layer = Layer.effect(BrowserDriver, launchBrowser({ headless: true, slowMo: 0 }));
   /** Instrument individual actions, including several actions inside one use call. */
-  static readonly captureLayer = Layer.effect(
-    BrowserDriver,
-    Effect.gen(function* () {
-      const target = yield* Target;
-      return yield* launchBrowser({
-        headless: target.headless ?? !target.metadata.interactive,
-        slowMo: target.recordingPaceMs,
-      });
-    }),
-  );
+  static readonly captureLayer = Layer.effect(BrowserDriver, captureBrowser(chromium));
+  /** Safari's engine, for behavior that differs from Chromium. */
+  static readonly webkitCaptureLayer = Layer.effect(BrowserDriver, captureBrowser(webkit));
 }
 /** A case-scoped browser with captured steps and a single isolated context. */
 export class Browser extends Context.Service<

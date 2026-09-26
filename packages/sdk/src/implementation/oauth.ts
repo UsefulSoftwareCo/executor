@@ -826,6 +826,35 @@ export const makeOAuth = (
       }
     }).pipe(Effect.withSpan("oauth.resolve"));
 
+  /**
+   * Fail as `resolve` would when the stored grant can no longer release credentials, without
+   * renewing it or releasing anything. A grant that renewal would replace still passes; its
+   * outcome is known only once a live resolve renews it.
+   */
+  const usable = (account: StoredAccount, provider: ProviderDefinition) =>
+    Effect.gen(function* () {
+      if (provider.auth[account.method]?.type === "secrets") return;
+      const reconnect = new OAuthReconnectRequired({ account: account.id });
+      const row = yield* query(() =>
+        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+      );
+      if (row === null || row.status === "reconnect") return yield* reconnect;
+      const now = yield* Clock.currentTimeMillis;
+      if (!row.status.startsWith("ready_")) {
+        if (now - row.updatedAt.getTime() > 60_000) return yield* reconnect;
+        return;
+      }
+      const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
+      const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
+      if (
+        grant.expiresAt === undefined ||
+        grant.expiresAt > now + 30_000 ||
+        (!renewable && grant.expiresAt > now)
+      )
+        return;
+      if (protocol === undefined || !renewable) return yield* reconnect;
+    }).pipe(Effect.withSpan("oauth.usable"));
+
   const resolve = (account: StoredAccount, provider: ProviderDefinition) =>
     Effect.gen(function* () {
       if (lifecycle) yield* lifecycle.accountResolving(account);
@@ -834,5 +863,5 @@ export const makeOAuth = (
       if (lifecycle) yield* lifecycle.accountResolving(account);
       return fields;
     });
-  return { connections: { oauthSetup, startOAuth, completeOAuth }, resolve };
+  return { connections: { oauthSetup, startOAuth, completeOAuth }, resolve, usable };
 };

@@ -14,7 +14,7 @@ import {
   type SkillsResult,
   type SkillSummary,
 } from "../contracts/skills.ts";
-import { diagnostic } from "./diagnostics.ts";
+import { diagnosticSummary } from "./diagnostics.ts";
 
 const summaries = (catalog: AppSkillCatalog): readonly (typeof SkillSummary.Type)[] =>
   catalog.skills.map((skill) => ({
@@ -26,7 +26,7 @@ const summaries = (catalog: AppSkillCatalog): readonly (typeof SkillSummary.Type
       ? {}
       : { profile: catalog.profile, profileRevision: catalog.profileRevision }),
   }));
-const failure = (error: Error) => new SkillAccessFailed({ reason: diagnostic(error) });
+const failure = (error: Error) => new SkillAccessFailed({ reason: diagnosticSummary(error) });
 
 /** Resolve a slug only within authorized apps. Reference reads can pin the document's deployment. */
 export const skills = <E extends Error>(
@@ -62,7 +62,7 @@ export const skills = <E extends Error>(
                               app: app.id,
                               name: app.name,
                               ...(target.kind === "profile" ? { profile: target.id } : {}),
-                              reason: diagnostic(error),
+                              reason: diagnosticSummary(error),
                             },
                           ],
                         }),
@@ -75,7 +75,7 @@ export const skills = <E extends Error>(
               Effect.succeed([
                 {
                   skills: [],
-                  unavailable: [{ app: app.id, name: app.name, reason: diagnostic(error) }],
+                  unavailable: [{ app: app.id, name: app.name, reason: diagnosticSummary(error) }],
                 },
               ]),
             ),

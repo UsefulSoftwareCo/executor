@@ -1,6 +1,7 @@
 /** Public Effect-native SDK. The caller owns platform layers and resource lifetimes. */
 export * from "./contracts/index.ts";
 export { createExecutor, createRemoteExecutor } from "./implementation/create.ts";
+export { makeDeclarationCache } from "./implementation/declarations.ts";
 export { executorHandlers } from "./implementation/handlers.ts";
 export { probeOAuthChallenge } from "./implementation/oauth-probe.ts";
 export { bearerResourceMetadata } from "./implementation/oauth-challenge.ts";

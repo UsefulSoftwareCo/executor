@@ -10,7 +10,7 @@ export {
   McpImportAuth,
   PreparedApp,
 } from "./catalog.ts";
-export { SkippedOperation, skippedOperationSummary } from "@executor-js/app-templates";
+export { SkippedOperation, skippedOperationSummary } from "@executor-js/app-templates/contracts";
 export type { Catalog, CatalogSource } from "./catalog.ts";
 export {
   ApiKeyHeader,
