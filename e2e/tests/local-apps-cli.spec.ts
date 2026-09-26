@@ -39,9 +39,10 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
           Config.option,
         );
-        const [command, ...prefix] = Option.isSome(packagedEntry)
-          ? [packagedEntry.value]
-          : ["node", "apps/local/server/src/bin.ts"];
+        // The packaged entry is JavaScript; Windows cannot execute it directly.
+        const entry = Option.isSome(packagedEntry)
+          ? packagedEntry.value
+          : "apps/local/server/src/bin.ts";
         const home = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-cli-" });
         const origin = target.metadata.origin;
         const run = (args: readonly string[], signedIn: boolean) =>
@@ -50,7 +51,7 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
             Effect.scoped(
               Effect.gen(function* () {
                 const child = yield* processes.spawn(
-                  ChildProcess.make(command ?? "node", [...prefix, "apps", ...args], {
+                  ChildProcess.make("node", [entry, "apps", ...args], {
                     extendEnv: false,
                     env: {
                       PATH: process.env.PATH ?? "",
