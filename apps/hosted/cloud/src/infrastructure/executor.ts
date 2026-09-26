@@ -43,6 +43,7 @@ import { cloudWorkflows } from "./workflows.ts";
 import { cloudRuntime } from "./runtime.ts";
 import { cloudDatabaseConnection } from "./database.ts";
 import { cloudSecrets } from "./secrets.ts";
+import { cloudOAuthClients } from "./oauth-clients.ts";
 import { cloudOrigin } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
@@ -76,6 +77,7 @@ export const cloudExecutor = Effect.fn(function* (
     Config.option,
     Config.map(Option.getOrUndefined),
   );
+  const hostClients = yield* cloudOAuthClients.pipe(Effect.orDie);
   const connection = yield* cloudDatabaseConnection;
   const makeRuntime = yield* cloudRuntime(databases, origin);
   const workflows = yield* cloudWorkflows;
@@ -113,6 +115,7 @@ export const cloudExecutor = Effect.fn(function* (
           httpClient: egress.client,
           urlPolicy: egress.policy,
           ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          hostClients,
         },
         { storage, webhookOrigin: origin, workflows },
       ).pipe(Effect.provideContext(services), Effect.provide(BrowserCrypto.layer));

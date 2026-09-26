@@ -148,6 +148,14 @@ export const OAuthClientInput = Schema.Struct({
 });
 export type OAuthClientInput = typeof OAuthClientInput.Type;
 
+/** An OAuth app the host registered by hand, for services without automatic registration. */
+export interface HostOAuthClient {
+  /** The client is only sent to these exact endpoints. */
+  readonly authorizationEndpoint: string;
+  readonly tokenEndpoint: string;
+  readonly client: OAuthRegistration;
+}
+
 /** Network transport and client identity belong to the product hosting this SDK. */
 export interface OAuthOptions {
   readonly httpClient: HttpClient.HttpClient;
@@ -155,6 +163,8 @@ export interface OAuthOptions {
   /** Host transport policy for callbacks, discovery and every token request. */
   readonly urlPolicy: UrlPolicy;
   readonly clientMetadataUrl?: string;
+  /** Used when the owner has no saved client. Never saved as the owner's client. */
+  readonly hostClients?: ReadonlyArray<HostOAuthClient>;
 }
 
 /** OAuth setup failed without exposing upstream bodies, URLs containing codes, or secrets. */

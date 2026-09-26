@@ -98,7 +98,10 @@ export const emulatorRequest = (origin: string, path: string, payload?: unknown,
   );
 
 /** Provision actual hosted instances and credentials through emulators.dev's control plane. */
-export const createEmulatorFixture = (origin: string) =>
+export const createEmulatorFixture = (
+  origin: string,
+  accountCallback = `${origin}/api/oauth/callback`,
+) =>
   Effect.gen(function* () {
     const instance = `executor-onboarding-${randomUUID()}`;
     const create = (service: string) =>
@@ -113,7 +116,11 @@ export const createEmulatorFixture = (origin: string) =>
         const issued = yield* emulatorRequest(instance.providerBaseUrl, "/_emulate/credentials", {
           type: "oauth-authorization-code",
           name: "Executor onboarding E2E",
-          redirect_uris: [`${origin}/api/auth/callback/${service}`],
+          redirect_uris: [
+            `${origin}/api/auth/callback/${service}`,
+            // Cloud also uses the GitHub client to connect accounts.
+            ...(service === "github" ? [accountCallback] : []),
+          ],
         }).pipe(
           Effect.flatMap(
             Schema.decodeUnknownEffect(
@@ -208,6 +215,8 @@ const make = Effect.gen(function* () {
       Effect.map(({ data }) => data.filter((message) => message.to.includes(email))),
     );
   return {
+    /** Address of the GitHub emulator, for test apps to call. */
+    githubOrigin: value.services.github.baseUrl,
     billingSubscription: (input: {
       readonly organizationId: string;
       readonly planId: string;
