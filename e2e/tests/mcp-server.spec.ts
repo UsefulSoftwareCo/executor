@@ -1,11 +1,13 @@
 /** Hosted MCP journeys use isolated grants and run against Node and Cloudflare. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
+import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -239,6 +241,70 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         expect(executorSource.files.find((file) => file.path === "index.ts")?.content).toContain(
           "wellKnownSkills",
         );
+        // A draft that never deployed and an app still waiting for its account must not hide
+        // other apps' skills, and a direct read must say what the agent should do next.
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const drafted = yield* api.request(actors.owner, "POST", `${prefix}/apps/drafts`, {
+          name: `Undeployed ${randomUUID().slice(0, 8)}`,
+          files: [{ path: "index.ts", content: "export default {};" }],
+        });
+        expect(drafted).toMatchObject({ status: 200 });
+        const draft = yield* body(App, drafted);
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: `Needs account ${randomUUID().slice(0, 8)}`,
+          files: [
+            {
+              path: "skills/connect/SKILL.md",
+              content: "---\nname: connect\ndescription: Needs an account.\n---\nConnected.\n",
+            },
+            {
+              path: "index.ts",
+              content: `
+import { defineApp, defineProvider, secrets, object, string } from "apps";
+const provider=defineProvider({name:"Skills account",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
+export default defineApp({ accounts: { service: provider.many() } }, async () => ({ queries: {} }));
+`,
+            },
+          ],
+        });
+        expect(deployed).toMatchObject({ status: 200 });
+        const needsAccount = yield* body(App, deployed);
+        yield* Effect.addFinalizer(() =>
+          Effect.forEach([draft, needsAccount], (removed) =>
+            api.request(actors.owner, "DELETE", `${prefix}/apps/${removed.id}`),
+          ).pipe(Effect.orDie),
+        );
+        const partial = yield* client.use(
+          "Skill discovery survives undeployed and account-less apps",
+          (client, signal) =>
+            client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
+        );
+        expect(partial.isError).not.toBe(true);
+        const partialIndex = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            ...skillIndex.fields,
+            unavailableApps: Schema.Array(
+              Schema.Struct({ app: Schema.String, reason: Schema.String }),
+            ),
+          }),
+        )(partial.structuredContent);
+        expect(partialIndex.skills.some((entry) => entry.app.id === app.id)).toBe(true);
+        expect(partialIndex.skills.some((entry) => entry.app.id === guide.app.id)).toBe(true);
+        expect(partialIndex.unavailableApps.map((entry) => entry.app)).toContain(draft.id);
+        const accountless = yield* client.use(
+          "Reading an account-less app's skills explains the missing account",
+          (client, signal) =>
+            client.callTool({ name: "skills", arguments: { app: needsAccount.slug } }, undefined, {
+              signal,
+            }),
+        );
+        expect(accountless.isError).toBe(true);
+        expect(accountless.content).toEqual([
+          expect.objectContaining({
+            type: "text",
+            text: `${needsAccount.slug} needs a connected account before its skills can be read. Connect one through Executor's account connection tool, then retry.`,
+          }),
+        ]);
         const skill = yield* client.use("Read a deployed app skill through MCP", (client, signal) =>
           client.callTool(
             { name: "skills", arguments: { app: app.slug, name: "echo" } },
