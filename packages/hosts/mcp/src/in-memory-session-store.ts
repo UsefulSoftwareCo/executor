@@ -68,9 +68,8 @@ import type { BrowserApprovalStore, McpPassthroughUnavailableError } from "./too
 // lifetime of the process.
 //
 // The standalone SSE stream is NOT a substitute teardown signal, and it is not
-// absent either. `enableJsonResponse` governs only how a POST carrying requests
-// answers; a POST carrying just the `notifications/initialized` notification
-// still gets a bare 202, which is exactly the cue the client SDK uses to open
+// absent either. A POST carrying just the `notifications/initialized`
+// notification gets a bare 202, which is exactly the cue the client SDK uses to open
 // the long-lived `GET /mcp` stream. So essentially every session holds an open
 // server-to-client stream for its whole life. That stream is silent by design
 // (it exists for server-initiated messages) and this transport does no max-age
@@ -86,6 +85,56 @@ import type { BrowserApprovalStore, McpPassthroughUnavailableError } from "./too
 // gets the store's existing "not-found" (404, -32001), the client's cue to
 // re-initialize. The cost is bounded and visible — a connected-but-quiet client
 // loses its stream at the ceiling and re-initializes on its next call.
+/** Run `fn` at most once; later calls are no-ops. */
+const once = (fn: () => void): (() => void) => {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    fn();
+  };
+};
+
+/**
+ * Hand back `response` with `release` deferred until its SSE body ends — read
+ * to completion, errored, or cancelled by a client that went away. Any other
+ * response (a JSON error, a bare 202) releases immediately.
+ */
+const releaseWhenStreamEnds = (response: Response, release: () => void): Response => {
+  const body = response.body;
+  if (!body || !response.headers.get("content-type")?.includes("text/event-stream")) {
+    release();
+    return response;
+  }
+  const reader = body.getReader();
+  const stream = new ReadableStream<Uint8Array>({
+    pull: (controller) =>
+      reader.read().then(
+        (chunk) => {
+          if (chunk.done) {
+            release();
+            controller.close();
+          } else {
+            controller.enqueue(chunk.value);
+          }
+        },
+        (cause: unknown) => {
+          release();
+          controller.error(cause);
+        },
+      ),
+    cancel: (reason) => {
+      release();
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+};
+
 /** Idle window after which an untouched session is evicted. */
 const DEFAULT_SESSION_IDLE_TTL_MS = 30 * 60 * 1000;
 /** Floor on the sweep interval, so a small TTL cannot spin the timer. */
@@ -255,8 +304,8 @@ export const makeInMemoryMcpSessionStore = (
   // Monotonic-ish last-touch stamp per live session, the first input the idle
   // sweep reads. Written on create and on every forwarded request.
   const lastSeen = new Map<string, number>();
-  // Requests currently inside `transport.handleRequest` for a session, the
-  // sweep's second input. A stamp alone cannot describe a long call: it is
+  // Requests currently being served for a session (a POST's SSE stream stays
+  // claimed until it ends), the sweep's second input. A stamp alone cannot describe a long call: it is
   // written BEFORE the await, so a single `execute` that outruns the TTL (a
   // browser approval waiting on a human, a slow upstream) would look exactly
   // like an abandoned session and have its transport, server, and engine closed
@@ -396,13 +445,22 @@ export const makeInMemoryMcpSessionStore = (
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
     owners.set(sessionId, { principal, resource });
     touch(sessionId);
-    // Claim before the await, release in the finalizer — `runHandleRequest`
-    // already recovers every failure to a 500, but `ensuring` also covers an
-    // interrupt, so the counter cannot be left permanently raised (which would
-    // make the session immortal, the opposite leak).
+    // Claim before the await. A POST answered as an SSE stream is still being
+    // served after `handleRequest` resolves — the tool call and any native
+    // elicitation ride that stream — so its claim is released when the stream
+    // ends, not when it opens. `runHandleRequest` already recovers every failure
+    // to a 500, but `onError` also covers an interrupt, so the counter cannot be
+    // left permanently raised (which would make the session immortal, the
+    // opposite leak).
     beginRequest(sessionId);
+    const release = once(() => endRequest(sessionId));
     return runHandleRequest(transport, request, orgWriteAccessForPrincipal(principal)).pipe(
-      Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
+      Effect.map((response) => {
+        if (request.method === "POST") return releaseWhenStreamEnds(response, release);
+        release();
+        return response;
+      }),
+      Effect.onError(() => Effect.sync(() => release())),
     );
   };
 
@@ -459,8 +517,13 @@ export const makeInMemoryMcpSessionStore = (
       Effect.flatMap(({ mcpServer, engine, executor, close }) =>
         Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({
+            // SSE streaming (the spec default), NOT `enableJsonResponse: true`.
+            // JSON mode buffers a POST's answer into one body, so it has no open
+            // stream to write on: an `elicitation/create` issued DURING a
+            // `tools/call` is dropped and native elicitation dies on the request
+            // timeout (#2140; the local app's #1555). Streaming keeps the tool
+            // call's own stream writable, which is what native elicitation rides.
             sessionIdGenerator: () => crypto.randomUUID(),
-            enableJsonResponse: true,
             onsessioninitialized: (sid) => {
               createdSessionId = sid;
               transports.set(sid, transport);

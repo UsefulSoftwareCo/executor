@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, expect, test } from "@effect/vitest";
 
+import { readJsonRpcResponse } from "../testing/mcp-sse";
 import { mintInviteCode } from "../testing/mint-invite";
 
 process.env.EXECUTOR_DATA_DIR = mkdtempSync(join(tmpdir(), "eh-mcp-"));
@@ -89,7 +90,7 @@ const initSession = async (token: string, browser = false): Promise<string> => {
     browser,
   );
   expect(res.status).toBe(200);
-  expect(res.headers.get("content-type")).toContain("application/json");
+  expect(res.headers.get("content-type")).toContain("text/event-stream");
   const sessionId = res.headers.get("mcp-session-id") ?? "";
   expect(sessionId).not.toBe("");
   await res.text();
@@ -113,7 +114,9 @@ test("an authenticated MCP client initializes, lists tools, and executes code", 
   const sessionId = await initSession(token);
 
   const list = await mcp(token, { jsonrpc: "2.0", id: 2, method: "tools/list" }, sessionId);
-  const listBody = (await list.json()) as { result: { tools: ReadonlyArray<{ name: string }> } };
+  const listBody = (await readJsonRpcResponse(list)) as {
+    result: { tools: ReadonlyArray<{ name: string }> };
+  };
   expect(listBody.result.tools.map((tool) => tool.name)).toContain("execute");
 
   const call = await mcp(
@@ -127,7 +130,7 @@ test("an authenticated MCP client initializes, lists tools, and executes code", 
     sessionId,
   );
   expect(call.status).toBe(200);
-  expect(JSON.stringify(await call.json())).toContain("42");
+  expect(JSON.stringify(await readJsonRpcResponse(call))).toContain("42");
 });
 
 test("an MCP session cannot be reused by another user, and unauth is rejected", async () => {
@@ -297,7 +300,7 @@ test("a browser approval uses the bootstrap admin's demoted membership at the si
       sessionId,
       true,
     );
-    const paused = (await pausedResponse.json()) as {
+    const paused = (await readJsonRpcResponse(pausedResponse)) as {
       readonly result?: {
         readonly structuredContent?: { readonly executionId?: string };
       };
