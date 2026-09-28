@@ -46,10 +46,15 @@ export const Route = createRootRoute({
   component: RootComponent,
 });
 
-// Self-host adds account API keys for every member. The instance administration
+// Self-host adds account API keys and connected clients for every member (both
+// show only the member's own credentials). The instance administration
 // surfaces are appended separately after the active member is confirmed as an
 // owner/admin, so plain members are not offered links that only refuse them.
-const selfHostNavItems = [...defaultShellNavItems, { to: "/api-keys", label: "API keys" }];
+const selfHostNavItems = [
+  ...defaultShellNavItems,
+  { to: "/api-keys", label: "API keys" },
+  { to: "/connected-clients", label: "Connected clients" },
+];
 
 const selfHostAdminNavItems = [
   { to: "/admin", label: "Admin" },
