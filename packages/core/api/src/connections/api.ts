@@ -66,6 +66,12 @@ const ConnectionResponse = Schema.Struct({
   lastHealth: Schema.NullOr(HealthCheckResult),
 });
 
+const OAuthRefreshResponse = Schema.Struct({
+  refreshed: Schema.Boolean,
+  expiresAt: Schema.NullOr(Schema.Number),
+  health: HealthCheckResult,
+});
+
 const ToolResponse = Schema.Struct({
   address: Schema.String,
   owner: Owner,
@@ -248,6 +254,29 @@ export const ConnectionsApi = HttpApiGroup.make("connections")
       success: HealthCheckResult,
       error: [InternalError, ConnectionNotFound, IntegrationNotFound],
     }),
+  )
+  // Run the OAuth refresh grant NOW, however far the access token is from
+  // expiry, then report health. Refresh is otherwise lazy, so this is what
+  // keeps an idle connection's refresh token inside the provider's inactivity
+  // window. Distinct from `refresh` above, which re-syncs the tool catalog. A
+  // refused grant is a verdict (`health.status: "expired"`), not an error; a
+  // connection with no OAuth grant is a 400.
+  .add(
+    HttpApiEndpoint.post(
+      "refreshOAuthToken",
+      "/connections/:owner/:integration/:name/oauth/refresh",
+      {
+        params: ConnectionParams,
+        success: OAuthRefreshResponse,
+        error: [
+          InternalError,
+          ConnectionNotFound,
+          IntegrationNotFound,
+          InvalidConnectionInput,
+          OrgWriteDeniedError,
+        ],
+      },
+    ),
   )
   // Run the health check against an IN-FLIGHT credential without saving it (the
   // key-first connect flow): confirm the pasted key works and surface the

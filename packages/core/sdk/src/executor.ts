@@ -37,6 +37,7 @@ import { coreToolsPlugin } from "./core-tools";
 import type {
   Connection,
   ConnectionInputOrigin,
+  ConnectionOAuthRefreshResult,
   ConnectionRef,
   CreateConnectionInput,
   ConnectionValueInput,
@@ -455,6 +456,25 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
     ) => Effect.Effect<
       HealthCheckResult,
       ConnectionNotFoundError | IntegrationNotFoundError | StorageFailure
+    >;
+    /** Run the OAuth refresh grant for a saved connection NOW, even while its
+     *  access token is far from expiry, then report its health. Refresh is
+     *  otherwise lazy (due within the expiry skew, or after an upstream 401),
+     *  so an idle connection never exercises its refresh token and can outlive
+     *  the provider's refresh-token inactivity window; calling this on a
+     *  schedule keeps it alive. Shares the in-flight gate and rotation-safe
+     *  persistence with every other refresh. A refused grant is a verdict, not
+     *  an error; a connection with no OAuth grant is `InvalidConnectionInputError`.
+     *  (`refresh` above re-syncs the tool catalog; it does not touch tokens.) */
+    readonly refreshOAuthToken: (
+      ref: ConnectionRef,
+    ) => Effect.Effect<
+      ConnectionOAuthRefreshResult,
+      | ConnectionNotFoundError
+      | IntegrationNotFoundError
+      | InvalidConnectionInputError
+      | OrgWriteDeniedError
+      | StorageFailure
     >;
     /** Validate an in-flight credential WITHOUT saving it (key-first connect):
      *  resolve the pasted value(s), run the health check, and return the result
@@ -2265,9 +2285,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       readonly tokenRequestFormat?: "form" | "json";
     }
 
-    /** What drove a refresh: the pre-call expiry check (`proactive`), or an
-     *  upstream 401 on a token we believed was still valid (`reactive`). */
-    type RefreshTrigger = "proactive" | "reactive";
+    /** What drove a refresh: the pre-call expiry check (`proactive`), an
+     *  upstream 401 on a token we believed was still valid (`reactive`), or an
+     *  explicit `connections.refreshOAuthToken` call (`manual`). */
+    type RefreshTrigger = "proactive" | "reactive" | "manual";
 
     /** Record the AS's invalid_grant verdict on the row so later refreshes
      *  skip the doomed token request, and stamp `last_health` expired so the
@@ -5328,6 +5349,93 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }),
       );
 
+    /** Force a refresh grant regardless of `expires_at` (see the interface
+     *  docs for why). This is not a second refresh implementation: the grant
+     *  runs through `refreshConnectionToken`, so it joins an in-flight refresh
+     *  of the same connection instead of racing it with the same single-use
+     *  refresh token, and persists a rotated refresh token before the access
+     *  token exactly like the proactive and reactive paths. */
+    const connectionsRefreshOAuthToken = (
+      ref: ConnectionRef,
+    ): Effect.Effect<
+      ConnectionOAuthRefreshResult,
+      | ConnectionNotFoundError
+      | IntegrationNotFoundError
+      | InvalidConnectionInputError
+      | OrgWriteDeniedError
+      | StorageFailure
+    > =>
+      Effect.gen(function* () {
+        yield* guardOrgWrite(ref.owner);
+        const row = yield* findConnectionRow(ref);
+        if (!row) {
+          return yield* new ConnectionNotFoundError({
+            owner: ref.owner,
+            integration: ref.integration,
+            name: ref.name,
+          });
+        }
+        if (row.oauth_client == null) {
+          return yield* new InvalidConnectionInputError({
+            message: `Connection "${ref.name}" does not use OAuth, so it has no token to refresh.`,
+          });
+        }
+        const expiresAtOf = (current: ConnectionRow | null): number | null =>
+          current?.expires_at == null ? null : Number(current.expires_at);
+        // A recorded dead grant answers as `checkHealth` does, without a token
+        // request. The refresh path would refuse to re-send it anyway; this
+        // keeps the verdict identical to the one every other surface serves.
+        const reauthState = oauthReauthRequiredFromProviderState(row.provider_state);
+        if (reauthState !== null) {
+          return {
+            refreshed: false,
+            expiresAt: expiresAtOf(row),
+            health: deadGrantVerdict(reauthState, row),
+          };
+        }
+        const provider = credentialProviders.get(row.provider);
+        if (!provider) {
+          return yield* new StorageError({
+            message: `Credential provider "${row.provider}" is not registered.`,
+            cause: undefined,
+          });
+        }
+        const refusal = yield* refreshConnectionToken(row, provider, "manual").pipe(
+          Effect.as(null),
+          Effect.catchTag("CredentialResolutionError", (failure) => Effect.succeed(failure)),
+        );
+        if (refusal !== null) {
+          // Fold the refusal the way a probe would. A rejected grant has
+          // already recorded itself dead (which makes this persist a no-op);
+          // anything else lands as the connection's verdict.
+          const health = healthFromCredentialResolutionFailure(refusal);
+          yield* persistProbeHealthResult(ref, health);
+          return {
+            refreshed: false,
+            expiresAt: expiresAtOf(yield* findConnectionRow(ref)),
+            health,
+          };
+        }
+        // A minted token proves only that the authorization server still
+        // honours the grant. Probe so the verdict (and the persisted one)
+        // reflects whether the upstream accepts it.
+        const health = yield* connectionCheckHealth(ref);
+        return {
+          refreshed: true,
+          expiresAt: expiresAtOf(yield* findConnectionRow(ref)),
+          health,
+        };
+      }).pipe(
+        Effect.withSpan("executor.connection.oauth.refresh", {
+          attributes: {
+            "executor.tenant": tenant,
+            ...(subject != null ? { "executor.subject": subject } : {}),
+            "executor.integration": String(ref.integration),
+            "executor.connection": String(ref.name),
+          },
+        }),
+      );
+
     const connectionValidate = (
       input: ValidateConnectionInput,
     ): Effect.Effect<HealthCheckResult, IntegrationNotFoundError | StorageFailure> =>
@@ -7280,6 +7388,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         remove: connectionsRemove,
         refresh: connectionsRefresh,
         checkHealth: connectionCheckHealth,
+        refreshOAuthToken: connectionsRefreshOAuthToken,
         validate: connectionValidate,
       },
       oauth,

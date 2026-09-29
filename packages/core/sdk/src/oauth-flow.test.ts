@@ -15,7 +15,7 @@ import {
   ToolName,
 } from "./ids";
 import { authToolFailure } from "./auth-tool-failure";
-import { createExecutor } from "./executor";
+import { createExecutor, type Executor } from "./executor";
 import { decodeOAuthCallbackState } from "./oauth";
 import { OAuthStartError } from "./oauth-client";
 import { missingGrantedOAuthScopes } from "./oauth-service";
@@ -23,7 +23,7 @@ import { definePlugin } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import { makeTestConfig, makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { ToolResult } from "./tool-result";
-import { serveOAuthTestServer } from "./testing/oauth-test-server";
+import { serveOAuthTestServer, type OAuthTestServerShape } from "./testing/oauth-test-server";
 
 // Milestone 2: prove the v2 `oauth.start` / `oauth.complete` token-minting flow
 // and OAuth access-token refresh end to end against the test authorization
@@ -2895,6 +2895,212 @@ describe("resource-less client sends no resource parameter (#1789)", () => {
           (r) => r.path === "/token" && r.body.includes("grant_type=client_credentials"),
         );
         expect(grant?.body).toContain(`resource=${encodeURIComponent(server.mcpResourceUrl)}`);
+      }),
+    ),
+  );
+});
+
+// Refresh is lazy: a token is re-minted only when it is due or an upstream
+// rejects it, so a connection nobody uses never spends its refresh token and
+// can outlive the provider's refresh-token inactivity window.
+// `connections.refreshOAuthToken` runs the grant on demand through the same
+// gate and persistence as the lazy paths.
+describe("connections.refreshOAuthToken", () => {
+  const MAIN = ConnectionName.make("main");
+  const mainRef = { owner: "org" as const, integration: INTEG, name: MAIN };
+  const address = ToolAddress.make("tools.acme.org.main.whoami");
+
+  const connect = (executor: Executor<typeof plugins>, server: OAuthTestServerShape) =>
+    Effect.gen(function* () {
+      yield* executor.acme.seed();
+      yield* executor.oauth.createClient({
+        owner: "org",
+        slug: CLIENT,
+        authorizationUrl: server.authorizationEndpoint,
+        tokenUrl: server.tokenEndpoint,
+        grant: "authorization_code",
+        clientId: "test-client",
+        clientSecret: "test-secret",
+      });
+      const started = yield* executor.oauth.start({
+        owner: "org",
+        client: CLIENT,
+        clientOwner: "org",
+        name: MAIN,
+        integration: INTEG,
+        template: TEMPLATE,
+      });
+      if (started.status !== "redirect") {
+        return yield* Effect.die(`expected a redirect, got ${started.status}`);
+      }
+      const callback = yield* server.completeAuthorizationCodeFlow({
+        authorizationUrl: started.authorizationUrl,
+      });
+      return yield* executor.oauth.complete({ state: started.state, code: callback.code });
+    });
+
+  it.effect("refreshes a token far from expiry and persists the rotated refresh token", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          tokenExpiresInSeconds: 3600,
+        });
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const connection = yield* connect(executor, server);
+        const originalExpiry = connection.expiresAt ?? 0;
+        expect(originalExpiry).toBeGreaterThan(Date.now() + 30 * 60_000);
+
+        // Baseline: the lazy path leaves a token with an hour to go alone.
+        yield* server.clearRequests;
+        const original = (yield* executor.execute(address, {})) as { token: string };
+        expect(refreshGrantsIn(yield* server.requests)).toHaveLength(0);
+
+        const first = yield* executor.connections.refreshOAuthToken(mainRef);
+        expect(first.refreshed).toBe(true);
+        expect(first.health.status).toBe("healthy");
+        expect(first.expiresAt).toBeGreaterThanOrEqual(originalExpiry);
+        expect(refreshGrantsIn(yield* server.requests)).toHaveLength(1);
+
+        const after = (yield* executor.execute(address, {})) as { token: string };
+        expect(after.token, "tool calls use the newly minted access token").not.toBe(
+          original.token,
+        );
+        expect(yield* server.acceptsAccessToken(after.token)).toBe(true);
+
+        // The test authorization server rotates refresh tokens and forgets
+        // the spent one, so a second grant succeeds only if the rotated
+        // token was stored.
+        const second = yield* executor.connections.refreshOAuthToken(mainRef);
+        expect(second.refreshed).toBe(true);
+        const grants = refreshGrantsIn(yield* server.requests);
+        expect(grants).toHaveLength(2);
+        const sentRefreshTokens = grants.map((grant) =>
+          new URLSearchParams(grant.body).get("refresh_token"),
+        );
+        expect(sentRefreshTokens[1]).not.toBe(sentRefreshTokens[0]);
+
+        const persisted = yield* executor.connections.get(mainRef);
+        expect(persisted?.lastHealth?.status).toBe("healthy");
+      }),
+    ),
+  );
+
+  it.effect("joins a refresh already in flight instead of spending the token twice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+        const park = makeTokenRequestPark();
+        const config = { ...makeTestConfig({ plugins }), fetch: park.fetch };
+        const executor = yield* createExecutor(config);
+        yield* Effect.addFinalizer(() => executor.close().pipe(Effect.ignore));
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(() => config.testDb.close()).pipe(Effect.ignore),
+        );
+        yield* connect(executor, server);
+
+        // A tool call that must refresh, racing a keepalive caller.
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            where: (b) => b("name", "=", "main"),
+            set: { expires_at: Date.now() - 60_000 },
+          }),
+        );
+        yield* server.clearRequests;
+        park.arm();
+
+        const call = yield* Effect.forkChild(executor.execute(address, {}));
+        const forced = yield* Effect.forkChild(executor.connections.refreshOAuthToken(mainRef));
+        yield* Effect.promise(() => park.seen);
+        park.release();
+
+        const called = (yield* Fiber.join(call)) as { token: string };
+        const result = yield* Fiber.join(forced);
+        expect(result.refreshed).toBe(true);
+        expect(
+          refreshGrantsIn(yield* server.requests),
+          "the forced refresh joined the tool call's grant",
+        ).toHaveLength(1);
+        const next = (yield* executor.execute(address, {})) as { token: string };
+        expect(next.token).toBe(called.token);
+
+        // The rotated refresh token survived the race: another grant works.
+        const again = yield* executor.connections.refreshOAuthToken(mainRef);
+        expect(again.refreshed).toBe(true);
+        expect(again.health.status).toBe("healthy");
+      }),
+    ),
+  );
+
+  it.effect("reports a dead grant as expired and does not re-send it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* serveOAuthTestServer({
+          scopes: ["read"],
+          supportRefresh: false,
+          invalidRefreshTokenDescription: "Grant revoked",
+        });
+        const { executor, config } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* connect(executor, server);
+        yield* server.clearRequests;
+
+        const first = yield* executor.connections.refreshOAuthToken(mainRef);
+        expect(first.refreshed).toBe(false);
+        expect(first.health).toMatchObject({
+          status: "expired",
+          reason: "credential_refresh_rejected",
+        });
+        expect(first.health.detail).toContain("invalid_grant");
+        expect(refreshGrantsIn(yield* server.requests)).toHaveLength(1);
+
+        const row = yield* Effect.promise(() =>
+          config.db.findFirst("connection", { where: (b) => b("name", "=", "main") }),
+        );
+        expect(
+          (row?.provider_state as { oauthReauthRequiredAt?: number } | null)?.oauthReauthRequiredAt,
+        ).toEqual(expect.any(Number));
+
+        const second = yield* executor.connections.refreshOAuthToken(mainRef);
+        expect(second.refreshed).toBe(false);
+        expect(second.health.status).toBe("expired");
+        expect(
+          refreshGrantsIn(yield* server.requests),
+          "the dead grant is not re-sent",
+        ).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("rejects connections without an OAuth grant and unknown connections", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        yield* executor.acme.seed();
+        const pasted = yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("pasted"),
+          integration: INTEG,
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "static-token",
+        });
+
+        const notOAuth = yield* Effect.flip(
+          executor.connections.refreshOAuthToken({
+            owner: pasted.owner,
+            integration: pasted.integration,
+            name: pasted.name,
+          }),
+        );
+        expect(notOAuth).toMatchObject({ _tag: "InvalidConnectionInputError" });
+
+        const missing = yield* Effect.flip(
+          executor.connections.refreshOAuthToken({
+            owner: "org",
+            integration: INTEG,
+            name: ConnectionName.make("nope"),
+          }),
+        );
+        expect(missing).toMatchObject({ _tag: "ConnectionNotFoundError" });
       }),
     ),
   );

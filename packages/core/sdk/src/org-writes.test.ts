@@ -185,6 +185,11 @@ describe("orgWrites: denied", () => {
         description: "my credential",
       });
       expect(yield* member.connections.refresh(mineRef)).toHaveLength(1);
+      // Past the gate for a Personal connection: refused only because a
+      // pasted credential has no OAuth grant to refresh.
+      expect(yield* Effect.flip(member.connections.refreshOAuthToken(mineRef))).toMatchObject({
+        _tag: "InvalidConnectionInputError",
+      });
 
       const shared = yield* admin.connections.create({
         owner: "org",
@@ -200,6 +205,7 @@ describe("orgWrites: denied", () => {
       };
       yield* expectOrgWriteDenied(member.connections.update(ref, { description: "renamed" }));
       yield* expectOrgWriteDenied(member.connections.refresh(ref));
+      yield* expectOrgWriteDenied(member.connections.refreshOAuthToken(ref));
       yield* expectOrgWriteDenied(member.connections.remove(ref));
       expect(yield* admin.connections.refresh(ref)).toHaveLength(1);
       yield* member.connections.remove(mineRef);

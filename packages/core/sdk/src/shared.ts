@@ -40,6 +40,7 @@ export type {
 } from "./integration";
 export type {
   Connection,
+  ConnectionOAuthRefreshResult,
   ConnectionRef,
   ConnectionValueInput,
   CreateConnectionInput,

@@ -160,6 +160,23 @@ export const ConnectionsHandlers = HttpApiBuilder.group(ExecutorApi, "connection
         }),
       ),
     )
+    .handle("refreshOAuthToken", ({ params: path }) =>
+      capture(
+        Effect.gen(function* () {
+          const executor = yield* ExecutorService;
+          const result = yield* executor.connections.refreshOAuthToken({
+            owner: path.owner,
+            integration: path.integration,
+            name: path.name,
+          });
+          return {
+            refreshed: result.refreshed,
+            expiresAt: result.expiresAt,
+            health: toHealthResponse(result.health),
+          };
+        }),
+      ),
+    )
     .handle("validate", ({ payload }) =>
       capture(
         Effect.gen(function* () {
