@@ -210,13 +210,14 @@ describe("oauth loopback callback", () => {
           callbackPath: "/oauth/cb",
         });
 
-        // What a host does: read the URI it must serve, bind it, then start the
-        // flow with exactly that value.
+        // What a host does: read the URI it must serve (asserted above), bind it,
+        // then start the flow with exactly that value.
         const declared = yield* executor.oauth.loopbackCallback({
           client: CLIENT,
           clientOwner: "org",
         });
-        if (declared === null) throw new Error("expected a declared loopback callback");
+        expect(declared).toEqual({ port: 3118, path: "/oauth/cb" });
+        if (declared === null) return;
 
         const started = yield* executor.oauth.start({
           owner: "org",

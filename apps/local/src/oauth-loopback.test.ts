@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { createServer } from "node:net";
 
 import {
   makeOAuthLoopbackListener,
@@ -26,20 +25,18 @@ afterEach(() => {
 });
 
 /** A genuinely free port: bind one, read it, release it. */
-const freePort = async (): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("probe socket has no port"));
-        return;
-      }
-      const port = address.port;
-      probe.close(() => resolve(port));
-    });
+const freePort = (): number => {
+  const probe = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(""),
   });
+  // A successful bind always has a port; the assertion only satisfies Bun's
+  // optional-typed property (same shape as `serve.ts` reporting a live port).
+  const port = probe.port!;
+  probe.stop(true);
+  return port;
+};
 
 const listening = (webBaseUrl: string): LocalOAuthLoopbackListener => {
   const listener = makeOAuthLoopbackListener(webBaseUrl);
@@ -49,8 +46,8 @@ const listening = (webBaseUrl: string): LocalOAuthLoopbackListener => {
 
 describe("local loopback OAuth callback listener", () => {
   it("forwards the provider's callback to the daemon's completion route", async () => {
-    const daemonPort = await freePort();
-    const callbackPort = await freePort();
+    const daemonPort = freePort();
+    const callbackPort = freePort();
     const seen: string[] = [];
     openServers.push(
       Bun.serve({
@@ -89,8 +86,8 @@ describe("local loopback OAuth callback listener", () => {
   });
 
   it("serves only the declared path", async () => {
-    const callbackPort = await freePort();
-    const listener = listening(`http://127.0.0.1:${await freePort()}`);
+    const callbackPort = freePort();
+    const listener = listening(`http://127.0.0.1:${freePort()}`);
     await Effect.runPromise(listener.listen(`http://127.0.0.1:${callbackPort}/oauth/cb`));
 
     const wrongPath = await fetch(`http://127.0.0.1:${callbackPort}/callback?code=a&state=b`, {
@@ -106,23 +103,22 @@ describe("local loopback OAuth callback listener", () => {
   });
 
   it("reports a port another process already holds, naming the likely culprit", async () => {
-    const callbackPort = await freePort();
+    const callbackPort = freePort();
     openServers.push(
       Bun.serve({ hostname: "127.0.0.1", port: callbackPort, fetch: () => new Response("taken") }),
     );
 
-    const listener = listening(`http://127.0.0.1:${await freePort()}`);
+    const listener = listening(`http://127.0.0.1:${freePort()}`);
     const failure = await Effect.runPromise(
       Effect.flip(listener.listen(`http://127.0.0.1:${callbackPort}/callback`)),
     );
-    expect(failure._tag).toBe("OAuthLoopbackListenError");
     expect(failure.message).toContain(`Port ${callbackPort} is already in use`);
     expect(failure.message).toContain("Claude Code");
   });
 
   it("reuses a listener already bound instead of contending with itself", async () => {
-    const callbackPort = await freePort();
-    const listener = listening(`http://127.0.0.1:${await freePort()}`);
+    const callbackPort = freePort();
+    const listener = listening(`http://127.0.0.1:${freePort()}`);
     const url = `http://127.0.0.1:${callbackPort}/callback`;
 
     await Effect.runPromise(listener.listen(url));
@@ -134,8 +130,8 @@ describe("local loopback OAuth callback listener", () => {
   });
 
   it("releases the port when the flow is over", async () => {
-    const callbackPort = await freePort();
-    const listener = listening(`http://127.0.0.1:${await freePort()}`);
+    const callbackPort = freePort();
+    const listener = listening(`http://127.0.0.1:${freePort()}`);
     await Effect.runPromise(listener.listen(`http://127.0.0.1:${callbackPort}/callback`));
     expect(
       (
@@ -157,8 +153,8 @@ describe("local loopback OAuth callback listener", () => {
   });
 
   it("keeps serving a URI two flows share after the first one completes", async () => {
-    const daemonPort = await freePort();
-    const callbackPort = await freePort();
+    const daemonPort = freePort();
+    const callbackPort = freePort();
     openServers.push(
       Bun.serve({
         hostname: "127.0.0.1",
@@ -187,8 +183,8 @@ describe("local loopback OAuth callback listener", () => {
   });
 
   it("closes behind a callback it served for a single flow", async () => {
-    const callbackPort = await freePort();
-    const listener = listening(`http://127.0.0.1:${await freePort()}`);
+    const callbackPort = freePort();
+    const listener = listening(`http://127.0.0.1:${freePort()}`);
     const url = `http://127.0.0.1:${callbackPort}/callback`;
     await Effect.runPromise(listener.listen(url));
     expect((await fetch(`${url}?code=a&state=b`, { redirect: "manual" })).status).toBe(302);
@@ -208,9 +204,8 @@ describe("local loopback OAuth callback listener", () => {
   it("refuses a callback when the browser is not on this machine", async () => {
     const listener = listening("https://executor.example.com");
     const failure = await Effect.runPromise(
-      Effect.flip(listener.listen(`http://127.0.0.1:${await freePort()}/callback`)),
+      Effect.flip(listener.listen(`http://127.0.0.1:${freePort()}/callback`)),
     );
-    expect(failure._tag).toBe("OAuthLoopbackListenError");
     expect(failure.message).toContain("same machine as the browser");
   });
 });

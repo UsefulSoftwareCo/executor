@@ -198,14 +198,12 @@ export const normalizeOAuthLoopbackCallbackPath = (
   const candidate = path == null ? "" : path.trim();
   if (candidate.length === 0) return DEFAULT_OAUTH_LOOPBACK_CALLBACK_PATH;
   if (!candidate.startsWith("/")) return null;
-  try {
-    const parsed = new URL(`http://${OAUTH_LOOPBACK_CALLBACK_HOST}${candidate}`);
-    return parsed.pathname === candidate && parsed.search === "" && parsed.hash === ""
-      ? candidate
-      : null;
-  } catch {
-    return null;
-  }
+  const absolute = `http://${OAUTH_LOOPBACK_CALLBACK_HOST}${candidate}`;
+  if (!URL.canParse(absolute)) return null;
+  const parsed = new URL(absolute);
+  return parsed.pathname === candidate && parsed.search === "" && parsed.hash === ""
+    ? candidate
+    : null;
 };
 
 /** The loopback callback an app declares, or null when it declares none. A path

@@ -21,7 +21,6 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:net";
 
 import { HttpApi, HttpApiBuilder, HttpApiClient } from "effect/unstable/httpapi";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
@@ -66,20 +65,19 @@ const TEST_BASE_URL = "http://local.test";
  *  daemon's default. The loopback listener forwards here. */
 const DAEMON_ORIGIN = "http://localhost:4788";
 
-const freePort = async (): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const address = probe.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("probe socket has no port"));
-        return;
-      }
-      const port = address.port;
-      probe.close(() => resolve(port));
-    });
+/** A genuinely free port: bind one, read it, release it. */
+const freePort = (): number => {
+  const probe = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(""),
   });
+  // A successful bind always has a port; the assertion only satisfies Bun's
+  // optional-typed property (same shape as `serve.ts` reporting a live port).
+  const port = probe.port!;
+  probe.stop(true);
+  return port;
+};
 
 interface Harness {
   /** The in-process web handler, reached through this origin. */
@@ -173,6 +171,8 @@ const startHarness = async (tmpDir: string): Promise<Harness> => {
 
 const tmpDirs: string[] = [];
 const harnesses: Harness[] = [];
+/** Sockets a test stands up itself; stopped after the test. */
+const openServers: { stop: (closeActiveConnections?: boolean) => void }[] = [];
 
 const openHarness = async (): Promise<Harness> => {
   const tmpDir = mkdtempSync(join(tmpdir(), "executor-local-loopback-"));
@@ -183,6 +183,7 @@ const openHarness = async (): Promise<Harness> => {
 };
 
 afterEach(async () => {
+  for (const server of openServers.splice(0)) server.stop(true);
   while (harnesses.length > 0) await harnesses.pop()?.dispose();
   while (tmpDirs.length > 0) {
     const dir = tmpDirs.pop();
@@ -198,7 +199,7 @@ describe("local oauth loopback callback (real API, real sockets)", () => {
         Effect.gen(function* () {
           const harness = yield* Effect.promise(() => openHarness());
           const oauth = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const callbackPort = yield* Effect.promise(() => freePort());
+          const callbackPort = yield* Effect.sync(freePort);
           const clientLayer = FetchHttpClient.layer.pipe(
             Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(harness.fetch)),
           );
@@ -298,12 +299,13 @@ describe("local oauth loopback callback (real API, real sockets)", () => {
         Effect.gen(function* () {
           const harness = yield* Effect.promise(() => openHarness());
           const oauth = yield* serveOAuthTestServer({ scopes: ["read"] });
-          const callbackPort = yield* Effect.promise(() => freePort());
+          const callbackPort = yield* Effect.sync(freePort);
           const holder = Bun.serve({
             hostname: "127.0.0.1",
             port: callbackPort,
             fetch: () => new Response("held"),
           });
+          openServers.push(holder);
           const clientLayer = FetchHttpClient.layer.pipe(
             Layer.provide(Layer.succeed(FetchHttpClient.Fetch)(harness.fetch)),
           );
@@ -314,48 +316,44 @@ describe("local oauth loopback callback (real API, real sockets)", () => {
               return yield* body(client);
             }).pipe(Effect.provide(clientLayer)) as Effect.Effect<A, E>;
 
-          try {
-            yield* harness.registerRemoteServer({
-              slug: "mcp_remote",
-              endpoint: oauth.mcpResourceUrl,
-            });
+          yield* harness.registerRemoteServer({
+            slug: "mcp_remote",
+            endpoint: oauth.mcpResourceUrl,
+          });
 
-            const slug = `slack-${randomBytes(4).toString("hex")}`;
-            yield* run((client) =>
-              client.oauth.createClient({
+          const slug = `slack-${randomBytes(4).toString("hex")}`;
+          yield* run((client) =>
+            client.oauth.createClient({
+              payload: {
+                owner: "org",
+                slug: OAuthClientSlug.make(slug),
+                authorizationUrl: oauth.authorizationEndpoint,
+                tokenUrl: oauth.tokenEndpoint,
+                grant: "authorization_code",
+                clientId: "test-client",
+                clientSecret: "test-secret",
+                callbackPort,
+              },
+            }),
+          );
+
+          const failure = yield* Effect.flip(
+            run((client) =>
+              client.oauth.start({
                 payload: {
+                  client: OAuthClientSlug.make(slug),
+                  clientOwner: "org",
                   owner: "org",
-                  slug: OAuthClientSlug.make(slug),
-                  authorizationUrl: oauth.authorizationEndpoint,
-                  tokenUrl: oauth.tokenEndpoint,
-                  grant: "authorization_code",
-                  clientId: "test-client",
-                  clientSecret: "test-secret",
-                  callbackPort,
+                  name: ConnectionName.make("slack"),
+                  integration: IntegrationSlug.make("mcp_remote"),
+                  template: AuthTemplateSlug.make("oauth"),
                 },
               }),
-            );
-
-            const failure = yield* Effect.flip(
-              run((client) =>
-                client.oauth.start({
-                  payload: {
-                    client: OAuthClientSlug.make(slug),
-                    clientOwner: "org",
-                    owner: "org",
-                    name: ConnectionName.make("slack"),
-                    integration: IntegrationSlug.make("mcp_remote"),
-                    template: AuthTemplateSlug.make("oauth"),
-                  },
-                }),
-              ),
-            );
-            expect(String((failure as { readonly message?: string }).message)).toContain(
-              `Port ${callbackPort} is already in use`,
-            );
-          } finally {
-            holder.stop(true);
-          }
+            ),
+          );
+          expect(String((failure as { readonly message?: string }).message)).toContain(
+            `Port ${callbackPort} is already in use`,
+          );
         }),
       ),
     30_000,

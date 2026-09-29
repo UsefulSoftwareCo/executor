@@ -54,16 +54,21 @@ interface BoundCallback {
   readonly server: { stop: (closeActiveConnections?: boolean) => void };
 }
 
-const addressInUse = (cause: unknown): boolean => {
-  if (cause instanceof Error) {
-    const code = (cause as { readonly code?: unknown }).code;
-    return (
-      code === "EADDRINUSE" ||
-      /EADDRINUSE|address already in use/i.test(cause.message) ||
-      /address already in use/i.test(cause.name)
-    );
-  }
-  return /EADDRINUSE|address already in use/i.test(String(cause));
+/** The `code` a foreign bind failure carries, when it carries one.
+ *
+ *  `Bun.serve` throws a plain Error, so "the port is taken" can only be read out
+ *  of its `code` — a true adapter boundary, and the one place here that looks at
+ *  a foreign failure's shape at all. */
+interface ForeignBindFailure {
+  readonly code?: unknown;
+}
+
+const PORT_IN_USE = "EADDRINUSE";
+
+const foreignBindCode = (thrown: unknown): string | null => {
+  if (typeof thrown !== "object" || thrown === null) return null;
+  const code = (thrown as ForeignBindFailure).code;
+  return typeof code === "string" ? code : null;
 };
 
 /** The page a browser sees when it reaches a loopback callback URL of a path we
@@ -188,16 +193,16 @@ export const makeOAuthLoopbackListener = (webBaseUrl: string): LocalOAuthLoopbac
           armTtl(url, entry);
           bound.set(url, entry);
         },
-        catch: (cause) =>
+        catch: (thrown) =>
           new OAuthLoopbackListenError({
             url,
-            message: addressInUse(cause)
-              ? `Port ${port} is already in use, so Executor cannot serve ${url}. ` +
-                `Another client (Claude Code, Cursor, …) may be mid-sign-in on that port. ` +
-                `Finish or close that flow, or register a different callback port for this app.`
-              : `Could not serve the loopback callback ${url}: ${
-                  cause instanceof Error ? cause.message : String(cause)
-                }`,
+            message:
+              foreignBindCode(thrown) === PORT_IN_USE
+                ? `Port ${port} is already in use, so Executor cannot serve ${url}. ` +
+                  `Another client (Claude Code, Cursor, …) may be mid-sign-in on that port. ` +
+                  `Finish or close that flow, or register a different callback port for this app.`
+                : `Could not serve the loopback callback ${url}: this machine refused a ` +
+                  `listener on port ${port}. Something else may be holding it.`,
           }),
       });
     });

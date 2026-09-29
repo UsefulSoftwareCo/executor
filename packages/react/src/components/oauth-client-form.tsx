@@ -32,6 +32,7 @@ import {
   normalizeConnectionOwner,
 } from "../plugins/connection-owner";
 import { Button } from "./button";
+import { Checkbox } from "./checkbox";
 import { CopyButton } from "./copy-button";
 import { Input } from "./input";
 import { Label } from "./label";
@@ -634,13 +635,12 @@ export function OAuthClientForm(props: {
               htmlFor="oauth-loopback-callback"
               className="flex cursor-pointer items-start gap-3 font-normal"
             >
-              <input
+              <Checkbox
                 id="oauth-loopback-callback"
-                type="checkbox"
                 className="mt-0.5"
                 checked={showLoopback}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setShowLoopback(e.target.checked)
+                onCheckedChange={(checked: boolean | "indeterminate") =>
+                  setShowLoopback(checked === true)
                 }
               />
               <span className="min-w-0 flex-1">
