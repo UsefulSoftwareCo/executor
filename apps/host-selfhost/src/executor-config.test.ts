@@ -11,6 +11,8 @@ const originalSecret = process.env[SECRET_ENV_NAME];
 const originalTtl = process.env[TTL_ENV_NAME];
 const RATE_LIMIT_ENV_NAME = "EXECUTOR_DISABLE_AUTH_RATE_LIMIT";
 const originalRateLimit = process.env[RATE_LIMIT_ENV_NAME];
+const ORIGINS_ENV_NAME = "EXECUTOR_ALLOWED_LOCAL_ORIGINS";
+const originalOrigins = process.env[ORIGINS_ENV_NAME];
 
 beforeEach(() => {
   process.env[SECRET_ENV_NAME] = originalSecret ?? "executor-config-test-secret";
@@ -36,6 +38,11 @@ afterEach(() => {
     delete process.env[RATE_LIMIT_ENV_NAME];
   } else {
     process.env[RATE_LIMIT_ENV_NAME] = originalRateLimit;
+  }
+  if (originalOrigins === undefined) {
+    delete process.env[ORIGINS_ENV_NAME];
+  } else {
+    process.env[ORIGINS_ENV_NAME] = originalOrigins;
   }
 });
 
@@ -130,4 +137,27 @@ test("auth rate limiting stays on unless the opt-out is exactly true", () => {
 test("auth rate limiting is off when the opt-out is exactly true", () => {
   process.env[RATE_LIMIT_ENV_NAME] = "true";
   expect(loadConfig().authRateLimit).toBe(false);
+});
+
+test("no local origins are allowed unless listed", () => {
+  delete process.env[ORIGINS_ENV_NAME];
+  expect(loadConfig().allowedLocalOrigins).toEqual([]);
+  process.env[ORIGINS_ENV_NAME] = " , ";
+  expect(loadConfig().allowedLocalOrigins).toEqual([]);
+});
+
+test("listed local origins are normalized and deduplicated", () => {
+  process.env[ORIGINS_ENV_NAME] =
+    "http://127.0.0.1:4790, http://127.0.0.1:4790/ ,http://[::1]:8080";
+  expect(loadConfig().allowedLocalOrigins).toEqual(["http://127.0.0.1:4790", "http://[::1]:8080"]);
+});
+
+test.each([
+  "http://localhost:4790",
+  "http://127.0.0.1:4790/api",
+  "169.254.169.254",
+  "http://169.254.169.254",
+])("a local origin that is not a bare IP-literal origin refuses to boot: %s", (raw) => {
+  process.env[ORIGINS_ENV_NAME] = raw;
+  expect(() => loadConfig()).toThrow(/EXECUTOR_ALLOWED_LOCAL_ORIGINS/);
 });

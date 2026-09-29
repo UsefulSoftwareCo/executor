@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { isValidOrgSlug } from "@executor-js/api";
+import { normalizeAllowedLocalOrigin } from "@executor-js/sdk/host-internal";
 import {
   missingPublicOriginWarning,
   resolvePublicOrigin,
@@ -54,6 +55,12 @@ export interface SelfHostConfig {
    * internal network unless an operator opts in.
    */
   readonly allowLocalNetwork: boolean;
+  /**
+   * Exact local/private origins outbound requests may reach even with
+   * `allowLocalNetwork` off, from `EXECUTOR_ALLOWED_LOCAL_ORIGINS`
+   * (comma-separated `http(s)://<ip literal>:<port>`).
+   */
+  readonly allowedLocalOrigins: readonly string[];
   /**
    * Whether Better Auth rate-limits its own endpoints (sign-in and friends).
    * Better Auth turns this on in production and keys the limit on the client
@@ -196,6 +203,7 @@ export const loadConfig = (): SelfHostConfig => {
     webBaseUrl,
     trustedOrigins: resolveTrustedOrigins(webBaseUrl),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
+    allowedLocalOrigins: resolveAllowedLocalOrigins(),
     authRateLimit: process.env.EXECUTOR_DISABLE_AUTH_RATE_LIMIT !== "true",
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
@@ -341,6 +349,24 @@ const normalizeTrustedOrigin = (value: string): string => {
 // The canonical origin always leads the list, so the unset case reproduces the
 // previous `[webBaseUrl]` exactly and an operator who repeats it in the env var
 // does not get a duplicate.
+const resolveAllowedLocalOrigins = (): readonly string[] => {
+  const entries = (process.env.EXECUTOR_ALLOWED_LOCAL_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  const origins = entries.map((entry) => {
+    const origin = normalizeAllowedLocalOrigin(entry);
+    if (origin === null) {
+      // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+      throw new Error(
+        `EXECUTOR_ALLOWED_LOCAL_ORIGINS entry ${JSON.stringify(entry)} is not an http(s)://<ip literal>[:port] origin`,
+      );
+    }
+    return origin;
+  });
+  return [...new Set(origins)];
+};
+
 const resolveTrustedOrigins = (webBaseUrl: string): readonly string[] => {
   const additional = (process.env.EXECUTOR_TRUSTED_ORIGINS ?? "")
     .split(",")
