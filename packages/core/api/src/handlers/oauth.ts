@@ -18,13 +18,14 @@ import {
   OAuthSessionNotFoundError,
   OAuthStartError,
   OAuthState,
+  oauthLoopbackCallbackUrl,
   type Connection,
   type ConnectResult,
 } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { capture } from "../observability";
-import { ExecutorService } from "../services";
+import { ExecutorService, OAuthLoopbackListener } from "../services";
 
 const OAUTH_POPUP_CHANNEL = OAUTH_POPUP_MESSAGE_TYPE;
 
@@ -106,6 +107,8 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             tokenEndpointAuthMethod: payload.tokenEndpointAuthMethod,
             resource: payload.resource ?? null,
             origin: { kind: "manual", integration: payload.originIntegration ?? null },
+            callbackPort: payload.callbackPort ?? null,
+            callbackPath: payload.callbackPath ?? null,
           });
           return { client };
         }),
@@ -154,6 +157,38 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
+          // An app whose provider registration pins a loopback callback needs
+          // THIS host listening on that exact URI before the flow starts:
+          // `start` sends the declared callback verbatim, so a flow whose
+          // listener is missing strands the user at the provider. Binding first
+          // also means a port someone else holds fails here, with the reason,
+          // instead of after a trip through the consent screen.
+          const loopback = yield* executor.oauth.loopbackCallback({
+            client: payload.client,
+            clientOwner: payload.clientOwner,
+          });
+          // For a declared callback this IS the flow's redirect URI — the same
+          // string the listener serves and the value `start` insists on, so the
+          // two cannot drift.
+          let callbackUrl: string | null = null;
+          if (loopback !== null) {
+            callbackUrl = oauthLoopbackCallbackUrl(loopback);
+            const listener = yield* Effect.service(OAuthLoopbackListener);
+            if (listener === null) {
+              return yield* new OAuthStartError({
+                message:
+                  `The OAuth app ${String(payload.client)} requires the loopback callback ` +
+                  `${callbackUrl}, but this Executor cannot serve one: a loopback callback only ` +
+                  `works when Executor runs on the same machine as the browser. Use the callback ` +
+                  `URL the app shows you instead.`,
+              });
+            }
+            yield* listener
+              .listen(callbackUrl)
+              .pipe(
+                Effect.mapError((failure) => new OAuthStartError({ message: failure.message })),
+              );
+          }
           const result = yield* executor.oauth.start({
             client: payload.client,
             clientOwner: payload.clientOwner,
@@ -163,7 +198,7 @@ export const OAuthHandlers = HttpApiBuilder.group(ExecutorApi, "oauth", (handler
             template: payload.template,
             identityLabel: payload.identityLabel,
             newConnection: payload.newConnection,
-            redirectUri: payload.redirectUri,
+            redirectUri: callbackUrl ?? payload.redirectUri,
             // Enterprise-managed authorization inputs. Ignored by every other
             // grant, and REQUIRED by `id_jag` — the identity assertion is held
             // by the caller, never by the server.

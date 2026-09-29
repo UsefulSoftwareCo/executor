@@ -2,6 +2,7 @@ import {
   ConnectionAddress,
   PolicyId,
   ProviderKey,
+  oauthClientLoopbackCallback,
   type ArtifactId,
   type AuthTemplateSlug,
   type Connection,
@@ -607,6 +608,8 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
           readonly resource?: string | null;
           readonly originIntegration?: IntegrationSlug | null;
+          readonly callbackPort?: number | null;
+          readonly callbackPath?: string | null;
         };
       },
     ) =>
@@ -625,6 +628,18 @@ export const createOAuthClientOptimistic = oauthClientsOptimisticAtom.pipe(
           // Mirror the server's stamp so the just-registered app matches its
           // integration in the picker immediately (before the refetch lands).
           origin: { kind: "manual", integration: arg.payload.originIntegration ?? null },
+          // Same for a declared loopback callback: a connect started before the
+          // refetch must already see the app's callback. Normalized through the
+          // same helper the server uses, and absent when the app declares none.
+          ...(() => {
+            const loopback = oauthClientLoopbackCallback({
+              callbackPort: arg.payload.callbackPort ?? null,
+              callbackPath: arg.payload.callbackPath ?? null,
+            });
+            return loopback === null
+              ? {}
+              : { callbackPort: loopback.port, callbackPath: loopback.path };
+          })(),
         };
         const index = rows.findIndex(
           (client) => client.owner === summary.owner && client.slug === summary.slug,

@@ -299,6 +299,15 @@ export const coreTables = defineTables({
       // since re-registering every legacy client on upgrade would churn
       // providers for the majority whose callback never changed.
       origin_redirect_uri: nullableTextColumn("origin_redirect_uri"),
+      // The loopback callback THIS app's provider registration requires, when it
+      // is not the executor's own `/api/oauth/callback` (RFC 8252 §7.3). Set on
+      // apps for providers that do not support dynamic client registration and
+      // only accept a redirect registered on their own app; the host binds this
+      // exact URI and sends it as `redirect_uri`. Text like every other column
+      // here — it is registration metadata, not arithmetic — and parsed on read.
+      // Null (both columns) means the app uses the host's callback.
+      callback_port: nullableTextColumn("callback_port"),
+      callback_path: nullableTextColumn("callback_path"),
       created_at: dateColumn("created_at"),
     },
     ["tenant", "owner", "subject", "slug"],

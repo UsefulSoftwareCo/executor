@@ -3,10 +3,16 @@ import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
 import { ExternalLink } from "lucide-react";
 import {
+  DEFAULT_OAUTH_LOOPBACK_CALLBACK_PATH,
+  OAUTH_LOOPBACK_CALLBACK_HOST,
+  isOAuthLoopbackCallbackPort,
   isTokenEndpointAuthMethod,
+  normalizeOAuthLoopbackCallbackPath,
+  oauthLoopbackCallbackUrl,
   OAuthClientSlug,
   type IntegrationSlug,
   type OAuthGrant,
+  type OAuthLoopbackCallback,
   type Owner,
   type TokenEndpointAuthMethod,
 } from "@executor-js/sdk/shared";
@@ -72,6 +78,10 @@ export interface OAuthClientFormPrefill {
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
   /** Saved manual-client transport. Omitted means client_secret_post. */
   readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
+  /** Loopback callback the app's provider registration pins, when it is not
+   *  this host's own callback. Seeded when editing an app that declares one. */
+  readonly callbackPort?: number | null;
+  readonly callbackPath?: string | null;
 }
 
 export const preferredManualTokenEndpointAuthMethod = (
@@ -129,6 +139,40 @@ export const canSubmitOAuthClientForm = (input: {
  * restored unless the user actively selected Personal. */
 export const initialOAuthClientOwner = (fixedOwner: Owner | undefined): Owner =>
   fixedOwner ?? "org";
+
+/** The loopback callback these form inputs declare, or null when they declare
+ *  none (or name a pair we could not send to a provider verbatim). Pure, so the
+ *  form's behaviour around a fixed callback is testable without a DOM. */
+export const declaredLoopbackCallback = (input: {
+  readonly enabled: boolean;
+  readonly port: string;
+  readonly path: string;
+}): OAuthLoopbackCallback | null => {
+  if (!input.enabled) return null;
+  const port = Number(input.port.trim());
+  if (input.port.trim().length === 0 || !isOAuthLoopbackCallbackPort(port)) return null;
+  const path = normalizeOAuthLoopbackCallbackPath(input.path);
+  return path === null ? null : { port, path };
+};
+
+/** What to tell the user about the loopback fields, or null when they are fine.
+ *  The port is the part providers pin, so a bad one is reported before a bad
+ *  path — and the message names the range, since "3118" is not obviously a
+ *  required shape. */
+export const loopbackCallbackError = (input: {
+  readonly enabled: boolean;
+  readonly port: string;
+  readonly path: string;
+}): string | null => {
+  if (!input.enabled) return null;
+  const port = Number(input.port.trim());
+  if (input.port.trim().length === 0 || !isOAuthLoopbackCallbackPort(port)) {
+    return "The callback port must be a free port between 1024 and 65535.";
+  }
+  return normalizeOAuthLoopbackCallbackPath(input.path) === null
+    ? "The callback path must be an absolute path, with no query or fragment."
+    : null;
+};
 
 export function OAuthClientForm(props: {
   /** Human label for the integration this app backs (used in toasts + default name). */
@@ -194,7 +238,31 @@ export function OAuthClientForm(props: {
   // and to DCR registration below, so showing it here is exactly the redirect a
   // user must allow-list on their OAuth app. Resolved from `window.location` so
   // it is automatically correct per platform (cloud / self-host / local).
-  const callbackUrl = useMemo(() => oauthCallbackUrl(), []);
+  //
+  // A provider that does not support dynamic client registration only accepts a
+  // redirect URI already registered on ITS OAuth app, and such an app usually
+  // pins a loopback URI this host cannot otherwise offer (RFC 8252 §7.3). The
+  // user registers exactly one such URI on the provider's app and declares it
+  // here; the host serves it and sends it verbatim.
+  const [showLoopback, setShowLoopback] = useState(prefill?.callbackPort != null);
+  const [loopbackPort, setLoopbackPort] = useState(
+    prefill?.callbackPort == null ? "" : String(prefill.callbackPort),
+  );
+  const [loopbackPath, setLoopbackPath] = useState(
+    prefill?.callbackPath ?? DEFAULT_OAUTH_LOOPBACK_CALLBACK_PATH,
+  );
+  const declaredLoopback = declaredLoopbackCallback({
+    enabled: showLoopback,
+    port: loopbackPort,
+    path: loopbackPath,
+  });
+  const loopbackError = loopbackCallbackError({
+    enabled: showLoopback,
+    port: loopbackPort,
+    path: loopbackPath,
+  });
+  const callbackUrl =
+    declaredLoopback === null ? oauthCallbackUrl() : oauthLoopbackCallbackUrl(declaredLoopback);
 
   // Explicit create-time choice (no ambient owner). Admins default to Workspace
   // (`org`) on an org host; members are clamped to Personal (`user`); non-org
@@ -262,16 +330,17 @@ export function OAuthClientForm(props: {
   const normalizedResource =
     resource == null || resource.trim().length === 0 ? null : resource.trim();
 
-  const canSubmit = canSubmitOAuthClientForm({
-    submitting,
-    name,
-    grant,
-    clientId,
-    clientSecret,
-    authorizationUrl,
-    tokenUrl,
-    tokenEndpointAuthMethod,
-  });
+  const canSubmit =
+    canSubmitOAuthClientForm({
+      submitting,
+      name,
+      grant,
+      clientId,
+      clientSecret,
+      authorizationUrl,
+      tokenUrl,
+      tokenEndpointAuthMethod,
+    }) && loopbackError === null;
 
   // DCR is offered when the server advertises a registration endpoint AND we
   // have the interactive-flow endpoints to persist alongside the minted client.
@@ -284,7 +353,11 @@ export function OAuthClientForm(props: {
   // When the server already rejected automatic registration for this host (e.g.
   // it refused our non-loopback redirect URI), don't lead the user back into the
   // path that just failed: suppress the auto CTA and lead with manual entry.
-  const showAutoRegister = canRegisterDynamic && autoRegisterRejectedReason === null;
+  // A declared loopback callback also forces the manual path: it exists for apps
+  // whose provider registration already fixes the redirect URI, which is the
+  // opposite of letting the server register one.
+  const showAutoRegister =
+    canRegisterDynamic && autoRegisterRejectedReason === null && !showLoopback;
   const appSetup = oauthAppSetupFor({
     authorizationUrl,
     tokenUrl,
@@ -382,6 +455,11 @@ export function OAuthClientForm(props: {
         // `intentIntegration`, passed verbatim by the caller); a fresh
         // registration from an integration's dialog stamps recorded intent.
         originIntegration: resolveOriginIntegration(intentIntegration, integrationSlug),
+        // The declared loopback callback, or null to clear one the app used to
+        // have — `createClient` upserts, so an edit that turns it off must send
+        // the absence explicitly.
+        callbackPort: declaredLoopback?.port ?? null,
+        callbackPath: declaredLoopback?.path ?? null,
       },
       reactivityKeys: oauthClientWriteKeys,
     });
@@ -528,23 +606,90 @@ export function OAuthClientForm(props: {
           so the user can allow-list it on their OAuth app. Client-credentials
           has no browser redirect, so it is hidden for that grant. */}
       {grant === "authorization_code" ? (
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">
-            Callback URL
-            <span className="font-normal text-muted-foreground/70">
-              add this to your OAuth app&apos;s allowed redirects
-            </span>
-          </Label>
-          <div className="flex items-center gap-1 rounded-md border border-border bg-background/50 px-2.5 py-1.5">
-            <span
-              id="oauth-callback-url"
-              className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground"
-            >
-              {callbackUrl}
-            </span>
-            <CopyButton value={callbackUrl} />
+        <>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">
+              Callback URL
+              <span className="font-normal text-muted-foreground/70">
+                add this to your OAuth app&apos;s allowed redirects
+              </span>
+            </Label>
+            <div className="flex items-center gap-1 rounded-md border border-border bg-background/50 px-2.5 py-1.5">
+              <span
+                id="oauth-callback-url"
+                className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground"
+              >
+                {callbackUrl}
+              </span>
+              <CopyButton value={callbackUrl} />
+            </div>
           </div>
-        </div>
+
+          {/* Some providers have no registration endpoint and only allow a
+              redirect URI registered on their own app, which usually pins a
+              loopback port (RFC 8252 §7.3). Declaring it here makes the host
+              serve that exact URI instead of this host's own callback. */}
+          <div className="space-y-2 rounded-lg border border-border/50 bg-background/30 p-3">
+            <Label
+              htmlFor="oauth-loopback-callback"
+              className="flex cursor-pointer items-start gap-3 font-normal"
+            >
+              <input
+                id="oauth-loopback-callback"
+                type="checkbox"
+                className="mt-0.5"
+                checked={showLoopback}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setShowLoopback(e.target.checked)
+                }
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium">
+                  Use a loopback callback the provider already allows
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  For providers that only accept a callback from their own app — register the URI
+                  below on that app and Executor will serve it while you sign in.
+                </span>
+              </span>
+            </Label>
+            {showLoopback ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                    http://{OAUTH_LOOPBACK_CALLBACK_HOST}:
+                  </span>
+                  <Input
+                    id="oauth-loopback-port"
+                    inputMode="numeric"
+                    placeholder="3118"
+                    value={loopbackPort}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setLoopbackPort(e.target.value)
+                    }
+                    className="w-24 font-mono"
+                    aria-label="Loopback callback port"
+                  />
+                  <Input
+                    id="oauth-loopback-path"
+                    placeholder={DEFAULT_OAUTH_LOOPBACK_CALLBACK_PATH}
+                    value={loopbackPath}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setLoopbackPath(e.target.value)
+                    }
+                    className="min-w-0 flex-1 font-mono"
+                    aria-label="Loopback callback path"
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Only works when the browser and Executor are on the same machine. Nothing else may
+                  be listening on that port while you sign in.
+                </p>
+                {loopbackError ? <p className="text-xs text-destructive">{loopbackError}</p> : null}
+              </div>
+            ) : null}
+          </div>
+        </>
       ) : null}
 
       {/* client id / secret */}

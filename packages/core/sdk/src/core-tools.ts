@@ -22,6 +22,7 @@ import {
 } from "./ids";
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
 import { HealthCheckResult, isToolSyncHealth } from "./health-check";
+import { OAuthStartError, oauthLoopbackCallbackUrl } from "./oauth-client";
 import { ToolPolicyActionSchema } from "./policies";
 import type { Tool } from "./tool";
 import { ToolResult } from "./tool-result";
@@ -946,8 +947,25 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           // but one gate on the whole tool covers the silent path cleanly.
           annotations: { requiresApproval: true },
           execute: (input: typeof OAuthStartInput.Type, { ctx }) =>
-            Effect.map(
-              ctx.oauth.start({
+            Effect.gen(function* () {
+              // An app whose provider registration pins a loopback callback needs
+              // a listener on THIS machine, and only the host that owns the socket
+              // can serve one — not this tool, and not an agent. Refuse instead of
+              // handing back an authorization URL that would strand the user at
+              // the provider with nothing listening at the registered redirect.
+              const loopback = yield* ctx.oauth.loopbackCallback({
+                client: OAuthClientSlug.make(input.client),
+                clientOwner: input.clientOwner as Owner,
+              });
+              if (loopback !== null) {
+                return yield* new OAuthStartError({
+                  message:
+                    `This integration's OAuth app requires the loopback callback ` +
+                    `${oauthLoopbackCallbackUrl(loopback)}, which only the local Executor app can ` +
+                    `serve. Connect it from the Executor app instead of starting the flow here.`,
+                });
+              }
+              const result = yield* ctx.oauth.start({
                 client: OAuthClientSlug.make(input.client),
                 clientOwner: input.clientOwner as Owner,
                 owner: input.owner as Owner,
@@ -956,19 +974,18 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 template: AuthTemplateSlug.make(input.template),
                 identityLabel: input.identityLabel,
                 redirectUri: input.redirectUri,
-              }),
-              (result) =>
-                result.status === "connected"
-                  ? {
-                      status: "connected" as const,
-                      connection: connectionToOutput(result.connection),
-                    }
-                  : {
-                      status: "redirect" as const,
-                      authorizationUrl: result.authorizationUrl,
-                      state: String(result.state),
-                    },
-            ),
+              });
+              return result.status === "connected"
+                ? {
+                    status: "connected" as const,
+                    connection: connectionToOutput(result.connection),
+                  }
+                : {
+                    status: "redirect" as const,
+                    authorizationUrl: result.authorizationUrl,
+                    state: String(result.state),
+                  };
+            }),
         }),
         tool({
           name: "oauth.cancel",

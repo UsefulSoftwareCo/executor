@@ -52,6 +52,12 @@ import {
   firstPartyOAuthClientAllowsScopes,
   firstPartyOAuthClientSlug,
   isFirstPartyOAuthClientSlug,
+  MAX_OAUTH_LOOPBACK_CALLBACK_PORT,
+  MIN_OAUTH_LOOPBACK_CALLBACK_PORT,
+  normalizeOAuthLoopbackCallbackPath,
+  oauthClientLoopbackCallback,
+  oauthLoopbackCallbackUrl,
+  isOAuthLoopbackCallbackPort,
   parseStoredTokenEndpointAuthMethod,
   type ConnectResult,
   type CreateOAuthClientInput,
@@ -62,6 +68,7 @@ import {
   type OAuthCompleteInput,
   type OAuthCompleteOptions,
   type OAuthGrant,
+  type OAuthLoopbackCallback,
   type OAuthProbeInput,
   type OAuthProbeResult,
   type OAuthService,
@@ -557,6 +564,36 @@ const parseOAuthClientOrigin = (row: {
   };
 };
 
+/** Parse the stored `callback_port` column into a port, or null when the app
+ *  declares no loopback callback. The value is text like every other
+ *  `oauth_client` column (it is metadata, not arithmetic), so it is converted
+ *  here. A value that is not an unprivileged port reads as "no declared
+ *  callback" instead of failing: that is the pre-existing behavior for every
+ *  app, and a corrupt row must not make the app unusable. */
+const parseStoredCallbackPort = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  const parsed = typeof value === "number" ? value : Number(String(value).trim());
+  return isOAuthLoopbackCallbackPort(parsed) ? parsed : null;
+};
+
+/** The declared loopback callback of a stored row, as summary fields — or an
+ *  empty spread when the row declares none (or its stored pair is unusable, so
+ *  a corrupt row degrades to the pre-existing "no callback" behaviour).
+ *
+ *  Absent rather than null, mirroring `tokenEndpointAuthMethod`: a summary
+ *  reports what the app declares, and an app declaring no callback has nothing
+ *  to report. */
+const storedLoopbackColumns = (row: {
+  readonly callback_port?: unknown;
+  readonly callback_path?: unknown;
+}): { readonly callbackPort?: number; readonly callbackPath?: string } => {
+  const loopback = oauthClientLoopbackCallback({
+    callbackPort: parseStoredCallbackPort(row.callback_port),
+    callbackPath: row.callback_path == null ? null : String(row.callback_path),
+  });
+  return loopback === null ? {} : { callbackPort: loopback.port, callbackPath: loopback.path };
+};
+
 interface LoadedOAuthClient {
   readonly slug: string;
   readonly authorizationUrl: string;
@@ -568,6 +605,10 @@ interface LoadedOAuthClient {
   readonly resource: string | null;
   readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   readonly tokenRequestFormat?: "form" | "json";
+  /** Declared loopback callback (see `oauthClientLoopbackCallback`). Null when
+   *  the app uses the host's own callback. */
+  readonly callbackPort?: number | null;
+  readonly callbackPath?: string | null;
 }
 
 /** Provider lifecycle scopes that are required to keep an authorization-code
@@ -952,6 +993,27 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           cause: undefined,
         });
       }
+      // A declared loopback callback is sent to the provider verbatim, so it has
+      // to be exactly the URI the user registered on their app. Reject a pair we
+      // would have to rewrite (privileged or out-of-range port, path with a
+      // query/fragment/whitespace) rather than storing it and sending something
+      // the provider will refuse mid-flow.
+      const callbackPort = input.callbackPort ?? null;
+      const callbackPath = normalizeOAuthLoopbackCallbackPath(input.callbackPath);
+      if (callbackPort !== null && !isOAuthLoopbackCallbackPort(callbackPort)) {
+        return yield* new StorageError({
+          message:
+            `Loopback callback port must be an unprivileged port between ` +
+            `${MIN_OAUTH_LOOPBACK_CALLBACK_PORT} and ${MAX_OAUTH_LOOPBACK_CALLBACK_PORT}: ${callbackPort}`,
+          cause: undefined,
+        });
+      }
+      if (callbackPath === null) {
+        return yield* new StorageError({
+          message: `Loopback callback path must be an absolute path with no query or fragment: ${String(input.callbackPath)}`,
+          cause: undefined,
+        });
+      }
       const keys = yield* Effect.try({
         try: () => deps.ownedKeys(input.owner),
         catch: (cause) =>
@@ -1042,6 +1104,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 input.origin?.kind === "dynamic_client_registration"
                   ? (input.originRedirectUri ?? null)
                   : null,
+              // Declared loopback callback. The path is stored only alongside a
+              // port: a path on its own declares nothing, and storing the default
+              // would make "no callback" indistinguishable from "callback on the
+              // default path" for a later reader.
+              callback_port: callbackPort,
+              callback_path: callbackPort === null ? null : callbackPath,
               created_at: now,
             }),
           );
@@ -1599,6 +1667,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                 clientId: String(row.client_id),
                 ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
                 origin: parseOAuthClientOrigin(row),
+                ...storedLoopbackColumns(row),
               } satisfies OAuthClientSummary);
             }),
           ),
@@ -1684,11 +1753,25 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               clientSecret,
               resource: row.resource == null ? null : String(row.resource),
               ...(tokenEndpointAuthMethod === undefined ? {} : { tokenEndpointAuthMethod }),
+              ...storedLoopbackColumns(row),
             } satisfies LoadedOAuthClient;
           });
         }),
       );
   };
+
+  // -----------------------------------------------------------------------
+  // loopbackCallback — the declared callback a host must bind before `start`.
+  // -----------------------------------------------------------------------
+  const loopbackCallback = (input: {
+    readonly client: OAuthClientSlug;
+    readonly clientOwner: Owner;
+  }): Effect.Effect<OAuthLoopbackCallback | null, StorageFailure> =>
+    // Reads through the same (owner, slug) resolution `start` uses, so a caller
+    // cannot ask about an app the flow would refuse to run.
+    loadClient(input.clientOwner, input.client).pipe(
+      Effect.map((client) => (client === null ? null : oauthClientLoopbackCallback(client))),
+    );
 
   // -----------------------------------------------------------------------
   // start — begin a flow through a client to mint a connection.
@@ -2014,7 +2097,27 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       // authorization_code requires our callback to receive the code — fail
       // loudly if the executor was constructed without a redirectUri rather
       // than persisting a session pointed at a wrong localhost callback.
-      const flowRedirectUri = input.redirectUri ?? redirectUri;
+      //
+      // A declared loopback callback WINS over both the caller's redirect URI and
+      // the host default: the provider only accepts the URI registered on its own
+      // app, so anything else fails the authorize request outright. The host must
+      // have BOUND that URI first, and the only way to learn it is
+      // `loopbackCallback` — so a caller that did not pass it is a caller that
+      // never bound it, and its flow would strand the user at the provider with
+      // nothing listening. Refuse instead.
+      const declaredLoopback = oauthClientLoopbackCallback(client);
+      const flowRedirectUri =
+        declaredLoopback === null
+          ? (input.redirectUri ?? redirectUri)
+          : oauthLoopbackCallbackUrl(declaredLoopback);
+      if (declaredLoopback !== null && input.redirectUri !== flowRedirectUri) {
+        return yield* new OAuthStartError({
+          message:
+            `The OAuth app ${String(input.client)} requires the loopback callback ${flowRedirectUri}, ` +
+            `which this flow was not started with. Read it from oauth.loopbackCallback, serve it, and ` +
+            `pass it as redirectUri; the local Executor app does that when you connect from its UI.`,
+        });
+      }
       if (flowRedirectUri == null) {
         return yield* new OAuthStartError({
           message: REDIRECT_URI_REQUIRED_MESSAGE,
@@ -2580,6 +2683,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     removeClient,
     registerDynamicClient,
     listClients,
+    loopbackCallback,
     start,
     complete,
     cancel,
