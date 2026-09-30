@@ -1,5 +1,16 @@
 # @executor-js/plugin-toolkits
 
+## 1.5.46
+
+### Patch Changes
+
+- [#2061](https://github.com/UsefulSoftwareCo/executor/pull/2061) [`4a08d8d`](https://github.com/UsefulSoftwareCo/executor/commit/4a08d8db6f74612e07f17494e222ff038d8af944) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Toolkit sessions no longer walk the whole workspace catalog on connect, search, or describe: the toolkit's access patterns narrow the tool rows core reads. Tools reads no longer wait on re-listing catalogs that are only older than the freshness TTL; those rebuild in the background while the read answers from the persisted rows. Stale-marked and config-revised catalogs still gate the read within the grace budget.
+
+- Updated dependencies [[`29413d8`](https://github.com/UsefulSoftwareCo/executor/commit/29413d8dafaeabfd9b9f10e5fddd1f5b735ffa30), [`31b24b8`](https://github.com/UsefulSoftwareCo/executor/commit/31b24b8564899b137106baf28f66fb3f15c33633), [`2e5aa16`](https://github.com/UsefulSoftwareCo/executor/commit/2e5aa16bedb4ba74448b3f9338754764b40519a0), [`4a08d8d`](https://github.com/UsefulSoftwareCo/executor/commit/4a08d8db6f74612e07f17494e222ff038d8af944)]:
+  - @executor-js/react@1.4.74
+  - @executor-js/sdk@1.6.11
+  - @executor-js/api@1.4.74
+
 ## 1.5.45
 
 ### Patch Changes

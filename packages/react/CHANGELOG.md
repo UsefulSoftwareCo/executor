@@ -1,5 +1,17 @@
 # @executor-js/react
 
+## 1.4.74
+
+### Patch Changes
+
+- [#2062](https://github.com/UsefulSoftwareCo/executor/pull/2062) [`29413d8`](https://github.com/UsefulSoftwareCo/executor/commit/29413d8dafaeabfd9b9f10e5fddd1f5b735ffa30) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Tool policies set from an account section of the integration Tools tab now apply to that connection only, and each account header gets a menu to set a policy for the whole connection. Members no longer see policy controls they cannot use, and a refused policy write shows the server's reason.
+
+- [#2051](https://github.com/UsefulSoftwareCo/executor/pull/2051) [`31b24b8`](https://github.com/UsefulSoftwareCo/executor/commit/31b24b8564899b137106baf28f66fb3f15c33633) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Show restricted integration actions as disabled controls with an admin explanation. Members can browse the catalog and add personal connections to existing integrations.
+
+- Updated dependencies [[`2e5aa16`](https://github.com/UsefulSoftwareCo/executor/commit/2e5aa16bedb4ba74448b3f9338754764b40519a0), [`4a08d8d`](https://github.com/UsefulSoftwareCo/executor/commit/4a08d8db6f74612e07f17494e222ff038d8af944)]:
+  - @executor-js/sdk@1.6.11
+  - @executor-js/api@1.4.74
+
 ## 1.4.73
 
 ### Patch Changes

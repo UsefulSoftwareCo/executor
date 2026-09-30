@@ -1,5 +1,26 @@
 # @executor-js/host-selfhost
 
+## 0.0.53
+
+### Patch Changes
+
+- Updated dependencies [[`29413d8`](https://github.com/UsefulSoftwareCo/executor/commit/29413d8dafaeabfd9b9f10e5fddd1f5b735ffa30), [`31b24b8`](https://github.com/UsefulSoftwareCo/executor/commit/31b24b8564899b137106baf28f66fb3f15c33633), [`2e5aa16`](https://github.com/UsefulSoftwareCo/executor/commit/2e5aa16bedb4ba74448b3f9338754764b40519a0), [`4a08d8d`](https://github.com/UsefulSoftwareCo/executor/commit/4a08d8db6f74612e07f17494e222ff038d8af944)]:
+  - @executor-js/react@1.4.74
+  - @executor-js/sdk@1.6.11
+  - @executor-js/plugin-toolkits@1.5.46
+  - @executor-js/app@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.22
+  - @executor-js/plugin-graphql@1.6.11
+  - @executor-js/plugin-mcp@1.6.11
+  - @executor-js/plugin-openapi@1.6.11
+  - @executor-js/analytics@0.1.18
+  - @executor-js/api@1.4.74
+  - @executor-js/execution@1.6.11
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/plugin-encrypted-secrets@0.0.53
+  - @executor-js/plugin-provider-service-split@0.0.25
+  - @executor-js/runtime-quickjs@1.6.11
+
 ## 0.0.52
 
 ### Patch Changes

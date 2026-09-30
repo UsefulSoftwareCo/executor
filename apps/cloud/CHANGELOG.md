@@ -1,5 +1,30 @@
 # @executor-js/cloud
 
+## 1.4.72
+
+### Patch Changes
+
+- [#2099](https://github.com/UsefulSoftwareCo/executor/pull/2099) [`9e143d9`](https://github.com/UsefulSoftwareCo/executor/commit/9e143d99c28f4c26d9e2cb1b136658048fecd3cb) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - An admin who resumes a paused execution from a different MCP session (for example after the client reconnects) keeps workspace-write access. The forwarded resume now carries the requester's access to the session that owns the execution, so a pending `addServer`, `addSpec`, or similar write no longer fails with `org_write_denied`.
+
+- [#2119](https://github.com/UsefulSoftwareCo/executor/pull/2119) [`4a52307`](https://github.com/UsefulSoftwareCo/executor/commit/4a52307c0bdc7606107c22e15574c24d0254777c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Require authenticator verification for organization settings while preserving shared workspace reads and API-key access.
+
+- Updated dependencies [[`29413d8`](https://github.com/UsefulSoftwareCo/executor/commit/29413d8dafaeabfd9b9f10e5fddd1f5b735ffa30), [`31b24b8`](https://github.com/UsefulSoftwareCo/executor/commit/31b24b8564899b137106baf28f66fb3f15c33633), [`2e5aa16`](https://github.com/UsefulSoftwareCo/executor/commit/2e5aa16bedb4ba74448b3f9338754764b40519a0), [`4a08d8d`](https://github.com/UsefulSoftwareCo/executor/commit/4a08d8db6f74612e07f17494e222ff038d8af944)]:
+  - @executor-js/react@1.4.74
+  - @executor-js/sdk@1.6.11
+  - @executor-js/plugin-toolkits@1.5.46
+  - @executor-js/mcp-apps-shell@1.4.22
+  - @executor-js/plugin-graphql@1.6.11
+  - @executor-js/plugin-mcp@1.6.11
+  - @executor-js/plugin-openapi@1.6.11
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/api@1.4.74
+  - @executor-js/execution@1.6.11
+  - @executor-js/vite-plugin@0.0.71
+  - @executor-js/cloudflare@0.0.53
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/runtime-quickjs@1.6.11
+
 ## 1.4.71
 
 ### Patch Changes
