@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, type Cause } from "effect";
+import { EXTENSION_ID, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 
 import type { ExecutionEngine } from "@executor-js/execution";
 import { FormElicitation, ToolAddress, createExecutor } from "@executor-js/sdk";
@@ -11,7 +12,7 @@ import {
   type McpBuildServer,
   type McpBuildServerOptions,
 } from "./in-memory-session-store";
-import { defaultMcpResource, type Principal } from "./seams";
+import { defaultMcpResource, type McpResource, type Principal } from "./seams";
 import { createExecutorMcpServer } from "./tool-server";
 
 const TEST_PRINCIPAL: Principal = {
@@ -121,16 +122,27 @@ const makeLatchedTestEngine = (): {
 const IDLE_TTL_MS = 60_000;
 
 type TestSessionStore = ReturnType<typeof makeInMemoryMcpSessionStore>;
+type OpenSessionOptions = {
+  readonly resource?: McpResource;
+  readonly elicitationMode?: "browser" | "model" | "native";
+  readonly principal?: Principal;
+  readonly appTools?: boolean;
+};
 
 /** Open a session on `sessions` and return its minted id. */
 const openSession = async (
   sessions: TestSessionStore,
-  principal: Principal = TEST_PRINCIPAL,
-  requestUrl = "https://executor.test/mcp",
+  {
+    resource = defaultMcpResource,
+    elicitationMode = "model",
+    principal = TEST_PRINCIPAL,
+    appTools = false,
+  }: OpenSessionOptions = {},
 ): Promise<string> => {
+  const path = resource.kind === "default" ? "/mcp" : `/mcp/toolkits/${resource.slug}`;
   const response = (await Effect.runPromise(
     sessions.store.dispatch({
-      request: new Request(requestUrl, {
+      request: new Request(`https://executor.test${path}?elicitation_mode=${elicitationMode}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -142,13 +154,15 @@ const openSession = async (
           method: "initialize",
           params: {
             protocolVersion: "2025-06-18",
-            capabilities: {},
-            clientInfo: { name: "idle-test", version: "1.0.0" },
+            capabilities: appTools
+              ? { extensions: { [EXTENSION_ID]: { mimeTypes: [RESOURCE_MIME_TYPE] } } }
+              : {},
+            clientInfo: { name: "session-store-test", version: "1.0.0" },
           },
         }),
       }),
       principal,
-      resource: defaultMcpResource,
+      resource,
       sessionId: null,
       method: "POST",
     }),
@@ -156,6 +170,21 @@ const openSession = async (
   expect(response.status).toBe(200);
   const sessionId = response.headers.get("mcp-session-id") ?? "";
   expect(sessionId).not.toBe("");
+  if (appTools) {
+    await Effect.runPromise(
+      sessions.store.dispatch({
+        request: new Request(`https://executor.test${path}`, {
+          method: "POST",
+          headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+          body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+        }),
+        principal,
+        resource,
+        sessionId,
+        method: "POST",
+      }),
+    );
+  }
   return sessionId;
 };
 
@@ -192,7 +221,7 @@ it("keeps overlapping warm-session workspace writes bound to their request roles
     createExecutorMcpServer({ engine }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine }))),
   );
   const admin = { ...TEST_PRINCIPAL, orgRole: "admin" as const };
-  const sessionId = await openSession(sessions, admin);
+  const sessionId = await openSession(sessions, { principal: admin });
   const call = (id: number, role: "admin" | "member") =>
     Effect.runPromise(
       sessions.store.dispatch({
@@ -273,7 +302,7 @@ it("binds a paused workspace write to the resuming principal after demotion", as
     createExecutorMcpServer({ engine }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine }))),
   );
   const admin = { ...TEST_PRINCIPAL, orgRole: "admin" as const };
-  const sessionId = await openSession(sessions, admin);
+  const sessionId = await openSession(sessions, { principal: admin });
   const call = (id: number, principal: Principal, name: "execute" | "resume", args: unknown) =>
     Effect.runPromise(
       sessions.store.dispatch({
@@ -347,11 +376,10 @@ it("uses the browser approver's demoted role after an admin starts waiting", asy
   );
   const admin = { ...TEST_PRINCIPAL, orgRole: "admin" as const };
   const member = { ...admin, orgRole: "member" as const };
-  const sessionId = await openSession(
-    sessions,
-    admin,
-    "https://executor.test/mcp?elicitation_mode=browser",
-  );
+  const sessionId = await openSession(sessions, {
+    principal: admin,
+    elicitationMode: "browser",
+  });
 
   const call = (id: number, name: "execute" | "resume", args: unknown) =>
     Effect.runPromise(
@@ -775,5 +803,318 @@ describe("pre-initialize dispatch through the in-memory session store", () => {
     await sessions.close();
     expect(executorClosed).toBe(1);
     expect(sessions.sessionCount()).toBe(0);
+  });
+});
+
+describe("cross-session model resume boundaries and lifetime", () => {
+  type FixtureOptions = {
+    readonly latchResume?: boolean;
+    readonly appTools?: boolean;
+    readonly resumeEffect?: () => ReturnType<ExecutionEngine<Cause.YieldableError>["resume"]>;
+  };
+  type ResumeOptions = {
+    readonly resource?: McpResource;
+    readonly requestId?: number;
+    readonly principal?: Principal;
+    readonly executionId?: string;
+    readonly toolName?: "resume" | "execute-action-resume";
+  };
+
+  const executionId = "exec_cross_session";
+  const pausedExecution = {
+    id: executionId,
+    elicitationContext: {
+      address: ToolAddress.make("executor.coreTools.policies.create"),
+      args: { owner: "org", pattern: "cross-session.*", action: "block" },
+      request: FormElicitation.make({ message: "Approve?", requestedSchema: {} }),
+    },
+  };
+  const completed = {
+    status: "completed" as const,
+    result: { result: "owner-resumed" },
+  };
+
+  const fixture = (options: FixtureOptions = {}) => {
+    let built = 0;
+    let paused = true;
+    let settled = false;
+    let resuming = false;
+    let resumeCalls = 0;
+    let ownerShutdowns = 0;
+    const started = Promise.withResolvers<void>();
+    const joined = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const ownerEngine: ExecutionEngine<Cause.YieldableError> = {
+      ...makeIdleTestEngine(),
+      getPausedExecution: (id) =>
+        Effect.sync(() => (id === executionId && paused ? pausedExecution : null)),
+      isExecutionSettled: (id) => Effect.sync(() => id === executionId && settled),
+      resume: (id) =>
+        Effect.gen(function* () {
+          if (id !== executionId) return null;
+          if (settled) return completed;
+          paused = false;
+          if (!resuming) {
+            resumeCalls += 1;
+            resuming = true;
+          } else joined.resolve();
+          started.resolve();
+          if (options.latchResume) yield* Effect.promise(() => gate.promise);
+          if (options.resumeEffect) return yield* options.resumeEffect();
+          settled = true;
+          return completed;
+        }),
+      shutdown: Effect.sync(() => {
+        ownerShutdowns += 1;
+      }),
+    };
+    const sessions = makeInMemoryMcpSessionStore(
+      (_principal, buildOptions) => {
+        const engine = ++built === 1 ? ownerEngine : makeIdleTestEngine();
+        return createExecutorMcpServer({
+          engine,
+          ...(options.appTools ? { loadAppShellHtml: async () => "<html/>" } : {}),
+          ...(buildOptions ?? {}),
+        }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine })));
+      },
+      { sessionIdleTtlMs: IDLE_TTL_MS, sessionSweepIntervalMs: IDLE_TTL_MS },
+    );
+    return {
+      sessions,
+      started: started.promise,
+      joined: joined.promise,
+      release: gate.resolve,
+      resumeCalls: () => resumeCalls,
+      ownerShutdowns: () => ownerShutdowns,
+    };
+  };
+
+  const resume = async (
+    sessions: TestSessionStore,
+    sessionId: string,
+    {
+      resource = defaultMcpResource,
+      requestId = 2,
+      principal = TEST_PRINCIPAL,
+      executionId: requestedExecutionId = executionId,
+      toolName = "resume",
+    }: ResumeOptions = {},
+  ) => {
+    const path = resource.kind === "default" ? "/mcp" : `/mcp/toolkits/${resource.slug}`;
+    const response = await Effect.runPromise(
+      sessions.store.dispatch({
+        request: new Request(`https://executor.test${path}`, {
+          method: "POST",
+          headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: requestId,
+            method: "tools/call",
+            params: {
+              name: toolName,
+              arguments: { executionId: requestedExecutionId, action: "accept", content: "{}" },
+            },
+          }),
+        }),
+        principal,
+        resource,
+        sessionId,
+        method: "POST",
+      }),
+    );
+    expect(response).toBeInstanceOf(Response);
+    const body = (await (response as Response).json()) as {
+      result?: { isError?: boolean; structuredContent?: Record<string, unknown> };
+    };
+    return body.result ?? {};
+  };
+
+  const withFixture = (
+    run: (value: ReturnType<typeof fixture>) => Promise<void>,
+    options: FixtureOptions = {},
+  ) => {
+    const value = fixture(options);
+    return Effect.runPromise(
+      Effect.promise(() => run(value)).pipe(
+        Effect.ensuring(
+          Effect.promise(async () => {
+            value.release();
+            await value.sessions.close();
+          }),
+        ),
+      ),
+    );
+  };
+
+  const boundaries: ReadonlyArray<{
+    readonly name: string;
+    readonly owner?: OpenSessionOptions;
+    readonly requester?: OpenSessionOptions;
+  }> = [
+    {
+      name: "MCP resource",
+      requester: { resource: { kind: "toolkit", slug: "restricted" } },
+    },
+    { name: "approval mode", owner: { elicitationMode: "browser" } },
+    {
+      name: "account",
+      requester: { principal: { ...TEST_PRINCIPAL, accountId: "acct_other" } },
+    },
+    {
+      name: "organization",
+      requester: { principal: { ...TEST_PRINCIPAL, organizationId: "org_other" } },
+    },
+  ];
+
+  it.each(boundaries)("does not cross the $name boundary", ({ owner, requester = {} }) =>
+    withFixture(async (f) => {
+      await openSession(f.sessions, owner);
+      const next = await openSession(f.sessions, requester);
+      const result = await resume(f.sessions, next, requester);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({ status: "execution_forbidden" });
+      expect(f.resumeCalls()).toBe(0);
+    }),
+  );
+
+  it.each(["browser", "native"] as const)(
+    "does not let %s-mode app tools resume another session's model pause",
+    (elicitationMode) =>
+      withFixture(
+        async (f) => {
+          await openSession(f.sessions);
+          const next = await openSession(f.sessions, { elicitationMode, appTools: true });
+          const result = await resume(f.sessions, next, { toolName: "execute-action-resume" });
+          expect(result.isError).toBe(true);
+          expect(result.structuredContent).toMatchObject({ status: "execution_not_found" });
+          expect(f.resumeCalls()).toBe(0);
+        },
+        { appTools: true },
+      ),
+  );
+
+  it("keeps the owning session alive while another session resumes its execution", () =>
+    withFixture(
+      async (f) => {
+        await openSession(f.sessions);
+        const next = await openSession(f.sessions);
+        const pending = resume(f.sessions, next);
+        await f.started;
+        expect(await f.sessions.sweepIdleSessions(Date.now() + IDLE_TTL_MS + 1000)).toBe(0);
+        expect(f.ownerShutdowns()).toBe(0);
+        f.release();
+        await pending;
+      },
+      { latchResume: true },
+    ));
+
+  it("replays a settled resume across another fresh session without repeating side effects", () =>
+    withFixture(async (f) => {
+      await openSession(f.sessions);
+      const next = await openSession(f.sessions);
+      expect((await resume(f.sessions, next)).structuredContent).toMatchObject({
+        status: "completed",
+      });
+      const retry = await openSession(f.sessions);
+      const replay = await resume(f.sessions, retry, { requestId: 3 });
+      expect(replay.isError).toBeFalsy();
+      expect(replay.structuredContent).toMatchObject({
+        status: "completed",
+        result: "owner-resumed",
+      });
+      expect(f.resumeCalls()).toBe(1);
+    }));
+
+  it("joins an in-flight resume from another fresh session", () =>
+    withFixture(
+      async (f) => {
+        await openSession(f.sessions);
+        const first = resume(f.sessions, await openSession(f.sessions));
+        await f.started;
+        const retry = resume(f.sessions, await openSession(f.sessions));
+        // The pause has been consumed but its continuation is still running.
+        const joined = await Promise.race([f.joined.then(() => true), retry.then(() => false)]);
+        expect(joined).toBe(true);
+        f.release();
+        const [initial, repeated] = await Promise.all([first, retry]);
+        expect(initial.structuredContent).toMatchObject({ status: "completed" });
+        expect(repeated.structuredContent).toMatchObject({
+          status: "completed",
+          result: "owner-resumed",
+        });
+        expect(f.resumeCalls()).toBe(1);
+      },
+      { latchResume: true },
+    ));
+
+  it("reports a missing id without resuming a different execution", () =>
+    withFixture(async (f) => {
+      await openSession(f.sessions);
+      const next = await openSession(f.sessions);
+      const result = await resume(f.sessions, next, { executionId: "exec_unknown" });
+      expect(result.structuredContent).toMatchObject({ status: "execution_not_found" });
+      expect(f.resumeCalls()).toBe(0);
+    }));
+
+  it("does not resurrect an execution after its owner session is disposed", () =>
+    withFixture(async (f) => {
+      const owner = await openSession(f.sessions);
+      const next = await openSession(f.sessions);
+      await Effect.runPromise(f.sessions.store.dispose(owner));
+      const result = await resume(f.sessions, next);
+      expect(result.structuredContent).toMatchObject({ status: "execution_not_found" });
+      expect(f.resumeCalls()).toBe(0);
+    }));
+
+  it("returns an opaque execution failure rather than recovery instructions for a missing pause", () =>
+    withFixture(
+      async (f) => {
+        await openSession(f.sessions);
+        const result = await resume(f.sessions, await openSession(f.sessions));
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({ status: "error" });
+        expect(result.structuredContent?.error).toMatch(/Internal tool error/);
+        expect(JSON.stringify(result)).not.toContain("sensitive continuation detail");
+        expect(JSON.stringify(result)).not.toContain("run the execute tool again");
+      },
+      { resumeEffect: () => Effect.die("sensitive continuation detail") },
+    ));
+
+  it("uses the current resuming request's role after both sessions were initialized as admin", async () => {
+    const executor = await Effect.runPromise(
+      createExecutor({ ...makeTestConfig(), orgWrites: "request" }),
+    );
+    await Effect.runPromise(
+      Effect.promise(() =>
+        withFixture(
+          async (f) => {
+            const admin: Principal = { ...TEST_PRINCIPAL, orgRole: "admin" };
+            await openSession(f.sessions, { principal: admin });
+            const next = await openSession(f.sessions, { principal: admin });
+            const result = await resume(f.sessions, next, {
+              principal: { ...admin, orgRole: "member" },
+            });
+            expect(result.isError).toBe(true);
+            expect(result.structuredContent).toMatchObject({ status: "error" });
+            expect(await Effect.runPromise(executor.policies.list())).toEqual([]);
+          },
+          {
+            resumeEffect: () =>
+              executor.policies
+                .create({
+                  owner: "org",
+                  pattern: "cross-session-demotion.*",
+                  action: "block",
+                })
+                .pipe(
+                  Effect.map((policy) => ({
+                    status: "completed" as const,
+                    result: { result: policy },
+                  })),
+                ),
+          },
+        ),
+      ).pipe(Effect.ensuring(executor.close().pipe(Effect.orDie))),
+    );
   });
 });
