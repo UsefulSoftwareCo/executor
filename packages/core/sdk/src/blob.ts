@@ -38,6 +38,26 @@ export interface BlobStore {
   ) => Effect.Effect<void, StorageError>;
   readonly delete: (namespace: string, key: string) => Effect.Effect<void, StorageError>;
   readonly has: (namespace: string, key: string) => Effect.Effect<boolean, StorageError>;
+  /**
+   * Atomically delete a record IF it exists. Returns true iff this caller's
+   * delete removed an existing record; false iff it was already absent.
+   *
+   * The single-winner invariant: exactly one concurrent caller observes true
+   * for a given (namespace, key); everyone else observes false, and the
+   * post-condition is that the record is absent for all callers. There is no
+   * read-your-undefined window — a caller that observed true is guaranteed
+   * the record was present at deletion time, and no other caller can observe
+   * true for the same key afterwards.
+   *
+   * Implementations MUST NOT do check-then-act across two statements:
+   * either a single atomic statement with a rows-affected/count check, or
+   * get+delete inside a serializing transaction (libSQL/Postgres
+   * `fuma.transaction`), or a single synchronous Map op (in-memory).
+   */
+  readonly compareAndDelete: (
+    namespace: string,
+    key: string,
+  ) => Effect.Effect<boolean, StorageError>;
 }
 
 export interface PluginBlobStore {
@@ -154,6 +174,16 @@ export const makeInMemoryBlobStore = (): BlobStore => {
         store.delete(k(ns, key));
       }),
     has: (ns, key) => Effect.sync(() => store.has(k(ns, key))),
+    // Atomic by construction: a synchronous Map has+delete runs to completion
+    // without yielding, so no other fiber can interleave between the check
+    // and the delete in JS's single-threaded model.
+    compareAndDelete: (ns, key) =>
+      Effect.sync(() => {
+        const id = k(ns, key);
+        if (!store.has(id)) return false;
+        store.delete(id);
+        return true;
+      }),
   };
 };
 
@@ -239,6 +269,37 @@ export const makeFumaBlobStore = (fuma: IFumaClient): BlobStore => ({
       )
       .pipe(
         Effect.asVoid,
+        Effect.mapError(
+          (cause) => new StorageError({ message: "FumaDB blob operation failed", cause }),
+        ),
+      ),
+  compareAndDelete: (namespace, key) =>
+    fuma
+      .transaction(
+        Effect.gen(function* () {
+          const id = blobId(namespace, key);
+          // Read inside the transaction: on libSQL/Postgres, `fuma.transaction`
+          // runs real BEGIN/COMMIT, so concurrent transactions serialize and
+          // no other fiber can interleave between this get and the delete —
+          // exactly one caller observes a present row, everyone else sees
+          // absent-after-commit. FumaDB's query builder discards rows-affected
+          // counts (deleteMany -> Promise<void>) and exposes no raw driver
+          // handle, so a single `DELETE ... RETURNING` statement is not
+          // reachable through this abstraction without a cross-host driver
+          // change; the serializing transaction is the equivalent guarantee
+          // here. (The in-memory store's synchronous Map op is the atomic
+          // counterpart.)
+          const row = (yield* fuma.use("blob.cad.find", (db) =>
+            db.findFirst("blob", { where: (b) => b("id", "=", id) }),
+          )) as BlobRow | null;
+          if (row === null) return false;
+          yield* fuma.use("blob.cad.delete", (db) =>
+            db.deleteMany("blob", { where: (b) => b("id", "=", id) }),
+          );
+          return true;
+        }),
+      )
+      .pipe(
         Effect.mapError(
           (cause) => new StorageError({ message: "FumaDB blob operation failed", cause }),
         ),
