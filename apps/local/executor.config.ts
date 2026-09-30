@@ -1,3 +1,4 @@
+import { wsdlHttpPlugin } from "@executor-js/plugin-wsdl/api";
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -38,6 +39,7 @@ export default defineExecutorConfig({
       }),
       mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
       graphqlHttpPlugin(),
+      wsdlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       // The durable file store must register before keychain: the first
       // writable provider becomes the default for minted OAuth tokens, and on

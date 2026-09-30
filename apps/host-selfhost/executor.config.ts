@@ -1,3 +1,4 @@
+import { wsdlHttpPlugin } from "@executor-js/plugin-wsdl/api";
 import { defineExecutorConfig } from "@executor-js/sdk";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -43,6 +44,7 @@ export default defineExecutorConfig({
         dangerouslyAllowStdioMCP: process.env.EXECUTOR_ALLOW_STDIO_MCP === "true",
       }),
       graphqlHttpPlugin(),
+      wsdlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
       // First writable secret provider -> the default for `secrets.set`.
       encryptedSecretsPlugin({ key: resolveSecretKey() }),
