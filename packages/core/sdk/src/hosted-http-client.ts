@@ -20,6 +20,13 @@ export type HostedHostnameResolver = (
 
 export interface HostedHttpClientOptions {
   readonly allowLocalNetwork?: boolean;
+  /**
+   * Exact origins (`scheme://ip:port`) that may be dialled even though they
+   * are local or private, while `allowLocalNetwork` stays off. Hosts must be
+   * IP literals, so DNS never decides; metadata addresses are never allowed.
+   * Every redirect hop is still validated on its own.
+   */
+  readonly allowedLocalOrigins?: ReadonlyArray<string>;
   /** Require HTTPS, except private addresses explicitly allowed for local development. */
   readonly requireTls?: boolean;
   readonly maxRedirects?: number;
@@ -127,6 +134,34 @@ const isAddressLiteral = (hostname: string): boolean => {
   return parseIpv4(normalized) !== null || /^[0-9a-f:.]+$/i.test(normalized);
 };
 
+/**
+ * Normalizes one `allowedLocalOrigins` entry to its URL origin, or returns
+ * null when it is not a bare `http(s)://<ip literal>[:port]` origin.
+ */
+export const normalizeAllowedLocalOrigin = (value: string): string | null => {
+  let url: URL;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: URL parsing of operator config
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  if (!isAddressLiteral(url.hostname)) return null;
+  if (isBlockedMetadataHostname(url.hostname)) return null;
+  return url.origin;
+};
+
+const isAllowedLocalOrigin = (url: URL, options: HostedHttpClientOptions): boolean => {
+  if (!options.allowedLocalOrigins || options.allowedLocalOrigins.length === 0) return false;
+  if (!isAddressLiteral(url.hostname)) return false;
+  return options.allowedLocalOrigins.some(
+    (entry) => normalizeAllowedLocalOrigin(entry) === url.origin,
+  );
+};
+
 const resolveHostnameWithNodeDns: HostedHostnameResolver = async (hostname) => {
   const { lookup } = await import("node:dns/promises");
   const addresses = await lookup(hostname, { all: true, verbatim: true });
@@ -157,6 +192,18 @@ export const validateHostedOutboundUrl = (
       });
     }
 
+    if (isBlockedMetadataHostname(url.hostname)) {
+      return yield* new HostedOutboundRequestBlocked({
+        url: value,
+        reason: "Metadata service addresses are not allowed",
+      });
+    }
+
+    // An operator-listed exact origin (IP literal, so no DNS) is allowed
+    // regardless of allowLocalNetwork. Checked per hop, so a redirect away
+    // from it is validated like any other URL.
+    if (isAllowedLocalOrigin(url, options)) return;
+
     if (
       options.requireTls &&
       url.protocol !== "https:" &&
@@ -165,13 +212,6 @@ export const validateHostedOutboundUrl = (
       return yield* new HostedOutboundRequestBlocked({
         url: value,
         reason: "This host requires HTTPS for outbound requests",
-      });
-    }
-
-    if (isBlockedMetadataHostname(url.hostname)) {
-      return yield* new HostedOutboundRequestBlocked({
-        url: value,
-        reason: "Metadata service addresses are not allowed",
       });
     }
 

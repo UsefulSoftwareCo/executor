@@ -64,6 +64,12 @@ export interface HostConfigShape {
    * production hosts leave it off. Drives `makeHostedHttpClientLayer`.
    */
   readonly allowLocalNetwork: boolean;
+  /**
+   * Exact local/private origins the hosted HTTP client may dial while
+   * `allowLocalNetwork` is off (e.g. one loopback API). See
+   * `HostedHttpClientOptions.allowedLocalOrigins`.
+   */
+  readonly allowedLocalOrigins?: ReadonlyArray<string>;
   /** Require TLS for public outbound requests from both execution and admin views. */
   readonly requireTls?: boolean;
   /**
@@ -316,6 +322,7 @@ export const makeScopedExecutor = <
     const plugins = yield* Effect.sync(() => pluginsFactory(options?.plugins));
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
+      allowedLocalOrigins: config.allowedLocalOrigins,
       requireTls: config.requireTls,
     };
     const httpClientLayer = makeHostedHttpClientLayer(hostedHttpOptions);
@@ -418,6 +425,7 @@ export const makePlatformExecutor = (
     );
     const hostedHttpOptions = {
       allowLocalNetwork: config.allowLocalNetwork,
+      allowedLocalOrigins: config.allowedLocalOrigins,
       requireTls: config.requireTls,
     };
 

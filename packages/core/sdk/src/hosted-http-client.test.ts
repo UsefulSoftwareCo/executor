@@ -7,6 +7,7 @@ import {
   type HostedHostnameResolver,
   makeHostedFetch,
   makeHostedHttpClientLayer,
+  normalizeAllowedLocalOrigin,
   validateHostedOutboundUrl,
 } from "./hosted-http-client";
 
@@ -395,5 +396,85 @@ describe("hosted TLS policy", () => {
       reason: "This host requires HTTPS for outbound requests",
     });
     expect(calls).toBe(1);
+  });
+});
+
+describe("allowedLocalOrigins", () => {
+  const allowed = { allowedLocalOrigins: ["http://127.0.0.1:4790"] };
+
+  it.effect("allows exactly the listed origin, on any path", () =>
+    Effect.gen(function* () {
+      yield* validateHostedOutboundUrl("http://127.0.0.1:4790/openapi.json", allowed);
+      yield* validateHostedOutboundUrl("http://127.0.0.1:4790/transactions?q=x", allowed);
+    }),
+  );
+
+  it.effect("keeps every other local or private target blocked", () =>
+    Effect.gen(function* () {
+      for (const url of [
+        "http://127.0.0.1:4791/",
+        "http://127.0.0.1/",
+        "http://127.0.0.2:4790/",
+        "https://127.0.0.1:4790/",
+        "http://localhost:4790/",
+        "http://[::1]:4790/",
+        "http://[::ffff:127.0.0.1]:4790/",
+        "http://10.250.0.10/",
+        "http://192.168.1.1/",
+        "http://100.100.100.100/",
+        "http://169.254.169.254/latest/meta-data/",
+      ]) {
+        const error = yield* validateHostedOutboundUrl(url, allowed).pipe(Effect.flip);
+        expect(Predicate.isTagged(error, "HostedOutboundRequestBlocked")).toBe(true);
+      }
+    }),
+  );
+
+  it.effect("never lets a hostname through, even one resolving to the listed address", () =>
+    Effect.gen(function* () {
+      const error = yield* validateHostedOutboundUrl("http://ledger.example:4790/", {
+        ...allowed,
+        resolveHostname: async () => [{ address: "127.0.0.1", family: 4 }],
+      }).pipe(Effect.flip);
+      expect(Predicate.isTagged(error, "HostedOutboundRequestBlocked")).toBe(true);
+    }),
+  );
+
+  it("re-validates redirects away from the listed origin", async () => {
+    const seen: string[] = [];
+    const guarded = makeHostedFetch({
+      ...allowed,
+      resolveHostname: publicResolver,
+      fetch: (async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        seen.push(url);
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://127.0.0.1:4791/other" },
+        });
+      }) as typeof globalThis.fetch,
+    });
+    await expect(guarded("http://127.0.0.1:4790/start")).rejects.toMatchObject({
+      _tag: "HostedOutboundRequestBlocked",
+    });
+    expect(seen).toEqual(["http://127.0.0.1:4790/start"]);
+  });
+
+  it("normalizes entries and rejects anything but a bare IP-literal origin", () => {
+    expect(normalizeAllowedLocalOrigin("http://127.0.0.1:4790")).toBe("http://127.0.0.1:4790");
+    expect(normalizeAllowedLocalOrigin(" http://127.0.0.1:4790/ ")).toBe("http://127.0.0.1:4790");
+    expect(normalizeAllowedLocalOrigin("http://[::1]:4790")).toBe("http://[::1]:4790");
+    for (const bad of [
+      "127.0.0.1:4790",
+      "http://localhost:4790",
+      "http://ledger.example:4790",
+      "http://127.0.0.1:4790/api",
+      "http://user:pw@127.0.0.1:4790",
+      "http://169.254.169.254",
+      "ftp://127.0.0.1:4790",
+      "not a url",
+    ]) {
+      expect(normalizeAllowedLocalOrigin(bad)).toBeNull();
+    }
   });
 });

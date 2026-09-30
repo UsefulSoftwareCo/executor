@@ -53,6 +53,7 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
   const config = loadConfig();
   return {
     allowLocalNetwork: config.allowLocalNetwork,
+    allowedLocalOrigins: config.allowedLocalOrigins,
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
     toolsSyncTtlMs: config.toolsSyncTtlMs,
