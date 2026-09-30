@@ -211,8 +211,9 @@ export class ConnectionAlreadyExistsError extends Schema.TaggedErrorClass<Connec
 /** A connection create request was rejected before anything was written: the
  *  input is structurally invalid (no credential inputs for a credentialed
  *  template, mixed pasted/external origins, …) or targets owner `user` in a
- *  context that has no user subject. The message says which — it is safe to
- *  show to the caller. */
+ *  context that has no user subject. Also raised when an operation targets a
+ *  connection that cannot support it (an OAuth refresh of a pasted
+ *  credential). The message says which — it is safe to show to the caller. */
 export class InvalidConnectionInputError extends Schema.TaggedErrorClass<InvalidConnectionInputError>()(
   "InvalidConnectionInputError",
   { message: Schema.String },

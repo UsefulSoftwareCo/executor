@@ -101,6 +101,7 @@ export type {
 export { freshCustomAuthSlug, mergeAuthTemplates } from "./integration";
 export type {
   Connection,
+  ConnectionOAuthRefreshResult,
   ConnectionRef,
   ConnectionValueInput,
   CreateConnectionInput,

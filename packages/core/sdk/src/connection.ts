@@ -123,3 +123,19 @@ export interface UpdateConnectionInput {
   readonly description?: string | null;
   readonly identityLabel?: string | null;
 }
+
+/** Outcome of `connections.refreshOAuthToken`: a refresh-token grant run on
+ *  demand, however far the stored access token is from expiry. */
+export interface ConnectionOAuthRefreshResult {
+  /** True when the authorization server issued a new access token. False when
+   *  it refused the grant, or when the grant was already recorded dead and
+   *  nothing was sent; `health` then says why. */
+  readonly refreshed: boolean;
+  /** Epoch ms when the stored access token expires after this call; null when
+   *  the authorization server advertised no lifetime. */
+  readonly expiresAt: number | null;
+  /** The connection's health after the refresh, in the same shape and with the
+   *  same persistence as `checkHealth`. A refused grant reads `expired` (dead
+   *  grant) or `degraded`. */
+  readonly health: HealthCheckResult;
+}
