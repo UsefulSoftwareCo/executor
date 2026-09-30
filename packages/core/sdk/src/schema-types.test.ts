@@ -467,4 +467,81 @@ describe("schema-types", () => {
       outputTypeScript: "{ metadata: { [k: string]: unknown; }; }",
     });
   });
+
+  it.each(["allOf", "anyOf", "oneOf"])(
+    "keeps sibling properties and required keys beside an inline %s",
+    async (composition) => {
+      const siblings = {
+        properties: { type: { type: "string" }, label: { type: "string" } },
+        required: ["type"],
+        [composition]: [{ type: "object", additionalProperties: {} }],
+      };
+      const expected = {
+        type: "({ [k: string]: unknown; } & { type: string; label?: string; })",
+        definitions: {},
+      };
+      expect(await schemaToTypeScriptPreview({ type: "object", ...siblings })).toEqual(expected);
+      expect(await schemaToTypeScriptPreview(siblings)).toEqual(expected);
+    },
+  );
+
+  it("applies sibling properties per member of a nullable composed type", async () => {
+    expect(
+      await schemaToTypeScriptPreview({
+        type: ["object", "null"],
+        properties: { type: { type: "string" } },
+        required: ["type"],
+        allOf: [{ type: "object", additionalProperties: {} }],
+      }),
+    ).toEqual({
+      type: "({ [k: string]: unknown; } & ({ type: string; } | null))",
+      definitions: {},
+    });
+  });
+
+  it("names the whole composition when a titled definition has sibling properties", async () => {
+    expect(
+      await schemaToTypeScriptPreview({
+        type: "object",
+        properties: { first: { $ref: "#/$defs/Metadata" }, second: { $ref: "#/$defs/Metadata" } },
+        $defs: {
+          Metadata: {
+            title: "Metadata",
+            type: "object",
+            properties: { type: { type: "string" } },
+            required: ["type"],
+            allOf: [{ type: "object", additionalProperties: {} }],
+          },
+        },
+      }),
+    ).toEqual({
+      type: "{ first?: Metadata; second?: Metadata; }",
+      definitions: { Metadata: "({ [k: string]: unknown; } & { type: string; })" },
+    });
+  });
+
+  it("compiles a composed definition whose branch refers back to it", async () => {
+    expect(
+      await schemaToTypeScriptPreview({
+        $ref: "#/$defs/Comment",
+        $defs: {
+          Comment: {
+            type: "object",
+            properties: { body: { type: "string" } },
+            allOf: [{ $ref: "#/$defs/Base" }],
+          },
+          Base: {
+            type: "object",
+            properties: { replies: { type: "array", items: { $ref: "#/$defs/Comment" } } },
+          },
+        },
+      }),
+    ).toEqual({
+      type: "Comment",
+      definitions: {
+        Base: "{ replies?: Comment[]; }",
+        Comment: "(Base & { body?: string; })",
+      },
+    });
+  });
 });

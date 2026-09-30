@@ -153,6 +153,13 @@ const ordersOpenApiSpec = (baseUrl: string): string =>
                       type: "string",
                       description: "Free-form note shown to the warehouse packer.",
                     },
+                    metadata: {
+                      type: "object",
+                      description: "Extensible metadata for the order.",
+                      properties: { type: { type: "string" } },
+                      required: ["type"],
+                      allOf: [{ type: "object", additionalProperties: {} }],
+                    },
                   },
                 },
               },
@@ -488,6 +495,10 @@ scenario(
         expect(createOrder?.listDescription, "summary is the fallback description").toBe(
           "Create an order",
         );
+        expect(
+          createOrder?.inputTypeScript,
+          "sibling properties survive an inline allOf",
+        ).toContain("metadata?: ({ [k: string]: unknown; } & { type: string; })");
         expect(getOrder?.inputTypeScript, "input shape is compiled to TypeScript").toContain(
           "orderId",
         );
