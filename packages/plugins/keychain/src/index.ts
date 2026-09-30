@@ -29,6 +29,8 @@ const probeAccount = (): string =>
 export { KeychainError } from "./errors";
 export { makeKeychainProvider } from "./provider";
 export { isSupportedPlatform, displayName } from "./keyring";
+export { describeKeychainAvailability } from "./keyring";
+export type { KeychainAvailability } from "./keyring";
 
 // ---------------------------------------------------------------------------
 // Plugin config

@@ -36,16 +36,35 @@ export default defineExecutorConfig({
         presets: [...googleCatalog, ...microsoftCatalog],
         specFormats: [googleDiscoveryAdapter, microsoftGraphAdapter],
       }),
-      mcpHttpPlugin({ dangerouslyAllowStdioMCP: true }),
+      mcpHttpPlugin({
+        // Stdio MCP servers spawn arbitrary local processes. Default OFF for
+        // the shipped local app; opt in explicitly only for trusted local
+        // contexts (the e2e harness sets EXECUTOR_ALLOW_STDIO_MCP=1 for its
+        // dedicated stdio scenarios). The MCP plugin itself rejects stdio
+        // connections with a clear error when this flag is false (see
+        // plugin.ts resolveConnector).
+        dangerouslyAllowStdioMCP: process.env.EXECUTOR_ALLOW_STDIO_MCP === "1",
+      }),
       graphqlHttpPlugin(),
       toolkitsPlugin({ activeToolkitSlug }),
-      // The durable file store must register before keychain: the first
-      // writable provider becomes the default for minted OAuth tokens, and on
-      // sandbox/headless hosts the keychain is an in-memory keyring that a
-      // stop/recreate wipes while only EXECUTOR_DATA_DIR is persisted.
-      // Keychain stays registered for explicit external refs.
-      fileSecretsPlugin(),
+      // Secrets ordering — CAUSAL KNOWLEDGE, encoded:
+      //
+      // The FIRST writable credential provider becomes the default for
+      // minted OAuth tokens. On macOS/Windows the OS keychain is a durable
+      // persistent store, so keychain must register FIRST to become the
+      // default there. On Linux/headless/sandbox hosts the keychain probe
+      // (write+delete sentinel) fails or degrades to an in-memory keyring
+      // that a stop/recreate wipes while only EXECUTOR_DATA_DIR persists —
+      // the keychain plugin's credentialProviders() then returns [] and the
+      // file store naturally becomes the default. This ordering therefore
+      // yields "keychain default where durable, file fallback where not"
+      // without any runtime switch.
+      //
+      // If the platform truth changes (e.g. a durable Linux backend ships),
+      // update describeKeychainAvailability() in @executor-js/plugin-keychain
+      // — not this comment.
       keychainPlugin(),
+      fileSecretsPlugin(),
       onepasswordHttpPlugin(),
       desktopSettingsPlugin({
         webBaseUrl:
