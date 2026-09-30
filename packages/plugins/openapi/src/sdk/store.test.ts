@@ -51,6 +51,13 @@ describe("OpenAPI operation store", () => {
             ),
           query: () => Effect.succeed([]),
           count: () => Effect.succeed(0),
+          queryKeyset: () => Effect.succeed({ entries: [], nextCursor: null }),
+          aggregate: {
+            count: () => Effect.succeed(0),
+            groupCount: () => Effect.succeed([]),
+            timeBuckets: () => Effect.succeed([]),
+            stats: () => Effect.succeed({ count: 0, min: null, max: null, percentiles: [] }),
+          },
           remove: () => Effect.void,
         }),
         get: <T = unknown>(input: { readonly collection: string; readonly key: string }) =>
