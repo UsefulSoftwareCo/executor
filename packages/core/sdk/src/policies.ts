@@ -121,6 +121,32 @@ export const isValidPattern = (pattern: string): boolean => {
 };
 
 // ---------------------------------------------------------------------------
+// Owner-segment backfill — the public docs and UI describe patterns in the
+// pre-owner 3-segment shape `integration.connection.tool`. The matcher keys
+// dynamic tools by the full 4-segment `integration.owner.connection.tool`
+// (see `normalizedPolicyId` in executor.ts), so a pattern written in the
+// documented shape is one segment short and can never match anything
+// (#2047). `policiesCreate`/`policiesUpdate` run every pattern through this
+// first, backfilling the owner segment the writer never named. Left
+// untouched: `*`, `integration.*` (already unbounded — no owner to insert),
+// and patterns rooted at a static namespace (no owner segment at all).
+//
+// Duplicated from `migration-spec.ts`'s `DEFAULT_STATIC_NAMESPACES` rather
+// than imported: this module is part of the public SDK surface (browser
+// bundles included), and `migration-spec.ts` pulls in `node:crypto`.
+// ---------------------------------------------------------------------------
+
+const STATIC_TOOL_NAMESPACES: readonly string[] = ["executor", "openapi"];
+
+export const normalizePolicyPattern = (pattern: string): string => {
+  if (pattern === "*") return pattern;
+  const segments = pattern.split(".");
+  if (segments.length !== 3) return pattern;
+  if (STATIC_TOOL_NAMESPACES.includes(segments[0]!)) return pattern;
+  return `${segments[0]}.*.${segments[1]}.${segments[2]}`;
+};
+
+// ---------------------------------------------------------------------------
 // Dynamic-tool scope — the (integration, owner, connection) prefix a pattern
 // can reach. Lets a policy source that is an allowlist (a toolkit) narrow the
 // tool rows core loads to the connections the allowlist names, instead of

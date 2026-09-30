@@ -998,7 +998,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
         tool({
           name: "policies.create",
           description:
-            "Create a tool policy. `pattern` matches a tool address tail (`integration.connection.tool`, `integration.*`, `*`); `action` is approve/require_approval/block. `owner` is org (workspace guardrail) or user (personal).",
+            "Create a tool policy. `pattern` matches a tool address (`integration.connection.tool`, `integration.*`, `*`); the owner segment is optional and defaults to every owner when omitted. `action` is approve/require_approval/block. `owner` is org (workspace guardrail) or user (personal).",
           inputSchema: PolicyCreateInputStd,
           outputSchema: PolicyOutputStd,
           // A policy decides which tools run without confirmation, so creating

@@ -1416,6 +1416,30 @@ describe("speculative read abandonment", () => {
     }),
   );
 
+  it.effect(
+    "a policy pattern written in the documented pre-owner shape still blocks the tool (#2047)",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor({ plugins: [demoPlugin] as const });
+        yield* seedRunConnection(executor);
+        // Public docs and the settings UI describe patterns as
+        // `integration.connection.tool` — one segment short of the matcher's
+        // `integration.owner.connection.tool`. Written as-is this pattern can
+        // never match; `policiesCreate` backfills the missing owner segment
+        // so a block set through the documented shape still takes effect.
+        yield* executor.policies.create({
+          owner: "org",
+          pattern: `${INTEG}.${CONN}.run`,
+          action: "block",
+        });
+
+        const result = yield* Effect.result(executor.execute(addr("run"), {}));
+        expect(Result.isFailure(result)).toBe(true);
+        if (!Result.isFailure(result)) return;
+        expect(Predicate.isTagged("ToolBlockedError")(result.failure)).toBe(true);
+      }),
+  );
+
   it.effect("failing speculative reads neither mask the branch error nor unhandled-reject", () =>
     Effect.gen(function* () {
       const faults = makeReadFaults();

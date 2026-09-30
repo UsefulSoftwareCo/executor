@@ -20,6 +20,7 @@ import {
   effectivePolicyFromSorted,
   isValidPattern,
   matchPattern,
+  normalizePolicyPattern,
   resolveToolPolicy,
 } from "./policies";
 import { definePlugin, tool } from "./plugin";
@@ -156,6 +157,41 @@ describe("dynamicToolScopeForPattern", () => {
     // A literal owner that is neither org nor user is a static namespace.
     expect(dynamicToolScopeForPattern("executor.coreTools.*")).toBeNull();
     expect(dynamicToolScopeForPattern("executor.coreTools.connections.list")).toBeNull();
+  });
+});
+
+describe("normalizePolicyPattern", () => {
+  it("backfills the owner segment on the documented pre-owner shape (#2047)", () => {
+    // The public docs and UI describe patterns as `integration.connection.tool`,
+    // one segment short of the matcher's `integration.owner.connection.tool`.
+    // Written as-is these can never match — see `matchPattern`'s mid-segment
+    // wildcard tests above.
+    expect(normalizePolicyPattern("vercel.dns.create")).toBe("vercel.*.dns.create");
+    expect(normalizePolicyPattern("vercel.dns.*")).toBe("vercel.*.dns.*");
+  });
+
+  it("leaves the universal pattern and already-unbounded plugin-wide patterns alone", () => {
+    expect(normalizePolicyPattern("*")).toBe("*");
+    expect(normalizePolicyPattern("vercel.*")).toBe("vercel.*");
+  });
+
+  it("leaves patterns that already carry an owner segment alone", () => {
+    expect(normalizePolicyPattern("vercel.org.dns.create")).toBe("vercel.org.dns.create");
+    expect(normalizePolicyPattern("vercel.*.dns.*")).toBe("vercel.*.dns.*");
+    expect(normalizePolicyPattern("github.*.*.repos.list")).toBe("github.*.*.repos.list");
+  });
+
+  it("leaves patterns rooted at a static namespace alone — there is no owner to backfill", () => {
+    expect(normalizePolicyPattern("executor.desktopSettings.openSettings")).toBe(
+      "executor.desktopSettings.openSettings",
+    );
+  });
+
+  it("produces a pattern that actually matches the dynamic tool it was written for", () => {
+    // Dynamic tool id: integration.owner.connection.tool
+    const toolId = "vercel.org.dns.create";
+    expect(matchPattern("vercel.dns.create", toolId)).toBe(false); // the bug
+    expect(matchPattern(normalizePolicyPattern("vercel.dns.create"), toolId)).toBe(true); // fixed
   });
 });
 
