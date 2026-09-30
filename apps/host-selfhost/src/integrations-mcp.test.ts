@@ -9,6 +9,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 import { makeScopedExecutor } from "@executor-js/api/server";
 
 import { createSelfHostDb, SelfHostDb } from "./db/self-host-db";
+import { readJsonRpcResponse } from "./testing/mcp-sse";
 import { mintInviteCode } from "./testing/mint-invite";
 import { SelfHostScopedExecutorSeams } from "./execution";
 import type { SelfHostPlugins } from "./plugins";
@@ -165,5 +166,5 @@ test("a user's MCP execute sandbox can reach an org-owned connection's tools", a
     sessionId,
   );
   expect(call.status).toBe(200);
-  expect(JSON.stringify(await call.json())).toContain("tiny");
+  expect(JSON.stringify(await readJsonRpcResponse(call))).toContain("tiny");
 });

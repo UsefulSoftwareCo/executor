@@ -504,9 +504,12 @@ const makeMcpElicitationHandler =
         clientCapabilities: server.server.getClientCapabilities() ?? null,
       });
 
+      // A human answers this, often on an async surface, so the SDK's 60s
+      // request default is too short; give it the same window a paused
+      // approval gets.
       const response = await server.server.elicitInput(
         params as Parameters<typeof server.server.elicitInput>[0],
-        { relatedRequestId },
+        { relatedRequestId, timeout: PAUSED_APPROVAL_TIMEOUT_MS },
       );
 
       const meta = answeredTerms(response._meta);

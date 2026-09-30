@@ -1,5 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, type Cause } from "effect";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Effect, Schema, type Cause } from "effect";
 
 import type { ExecutionEngine } from "@executor-js/execution";
 import { FormElicitation, ToolAddress, createExecutor } from "@executor-js/sdk";
@@ -23,6 +26,18 @@ const TEST_PRINCIPAL: Principal = {
   avatarUrl: null,
   roles: ["user"],
   orgRoleModel: "organization",
+};
+
+const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+
+/** A `tools/call` POST is answered as an SSE stream; read the JSON-RPC response it carries. */
+const readJsonRpcResponse = async (response: Response): Promise<unknown> => {
+  const data = (await response.text())
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trim())
+    .at(-1);
+  return decodeJson(data ?? "");
 };
 
 it("preserves native elicitation mode when creating an in-memory MCP session", async () => {
@@ -58,6 +73,72 @@ it("preserves native elicitation mode when creating an in-memory MCP session", a
   expect(result).toBeInstanceOf(Response);
   expect((result as Response).status).toBe(500);
   expect(buildOptions?.elicitationMode).toEqual({ mode: "native" });
+});
+
+// Regression for #2140: in native mode the approval is an `elicitation/create`
+// the server sends DURING the `tools/call`. It can only reach the client on
+// that call's own SSE stream; a JSON-mode transport dropped it and the call
+// died on the request timeout.
+it("delivers a native elicitation to the client during a tools/call", async () => {
+  const engine: ExecutionEngine = {
+    ...makeIdleTestEngine(),
+    execute: (_code, { onElicitation }) =>
+      onElicitation({
+        address: ToolAddress.make("slack.org.main.send_message"),
+        args: {},
+        request: FormElicitation.make({ message: "Send the message?", requestedSchema: {} }),
+      }).pipe(Effect.map((response) => ({ result: `decision:${response.action}` }))),
+  };
+  const sessions = makeInMemoryMcpSessionStore((_principal, options) =>
+    createExecutorMcpServer({
+      engine,
+      ...(options?.elicitationMode ? { elicitationMode: options.elicitationMode } : {}),
+    }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine }))),
+  );
+  const fetchThroughStore = async (url: string | URL, init?: RequestInit) => {
+    const request = new Request(url.toString(), init);
+    const result = await Effect.runPromise(
+      sessions.store.dispatch({
+        request,
+        principal: TEST_PRINCIPAL,
+        resource: defaultMcpResource,
+        sessionId: request.headers.get("mcp-session-id"),
+        method: request.method,
+      }),
+    );
+    return typeof result === "string" ? new Response(null, { status: 404 }) : result;
+  };
+
+  const elicitations: string[] = [];
+  const client = new Client(
+    { name: "native-elicitation-test", version: "1.0.0" },
+    { capabilities: { elicitation: { form: {} } } },
+  );
+  client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    elicitations.push(request.params.message);
+    return { action: "accept" as const, content: {} };
+  });
+
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the client and the store
+  try {
+    await client.connect(
+      new StreamableHTTPClientTransport(
+        new URL("https://executor.test/mcp?elicitation_mode=native"),
+        { fetch: fetchThroughStore },
+      ),
+    );
+    const result = await client.callTool(
+      { name: "execute", arguments: { code: "send()" } },
+      undefined,
+      { timeout: 5_000 },
+    );
+    expect(elicitations).toEqual(["Send the message?"]);
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toEqual([{ type: "text", text: "decision:accept" }]);
+  } finally {
+    await client.close();
+    await sessions.close();
+  }
 });
 
 /** A do-nothing engine: the eviction test drives session lifetime, not tools. */
@@ -223,10 +304,10 @@ it("keeps overlapping warm-session workspace writes bound to their request roles
   releaseWrites();
 
   const [memberResponse, adminResponse] = await Promise.all([memberCall, adminCall]);
-  const memberBody = (await memberResponse.json()) as {
+  const memberBody = (await readJsonRpcResponse(memberResponse)) as {
     result?: { isError?: boolean };
   };
-  const adminBody = (await adminResponse.json()) as {
+  const adminBody = (await readJsonRpcResponse(adminResponse)) as {
     result?: { isError?: boolean };
   };
   expect(memberBody.result?.isError).toBe(true);
@@ -303,7 +384,7 @@ it("binds a paused workspace write to the resuming principal after demotion", as
     executionId,
     action: "accept",
   });
-  const body = (await resumed.json()) as { result?: { isError?: boolean } };
+  const body = (await readJsonRpcResponse(resumed)) as { result?: { isError?: boolean } };
   expect(body.result?.isError).toBe(true);
   expect(await Effect.runPromise(executor.policies.list())).toEqual([]);
 
@@ -374,7 +455,7 @@ it("uses the browser approver's demoted role after an admin starts waiting", asy
     ) as Promise<Response>;
 
   const pausedResponse = await call(2, "execute", { code: "create workspace policy" });
-  const pausedBody = (await pausedResponse.json()) as {
+  const pausedBody = (await readJsonRpcResponse(pausedResponse)) as {
     result?: { structuredContent?: { executionId?: string } };
   };
   const pausedExecutionId = pausedBody.result?.structuredContent?.executionId;
@@ -398,7 +479,7 @@ it("uses the browser approver's demoted role after an admin starts waiting", asy
   );
   expect(approvalResponse?.status).toBe(200);
 
-  const resumeBody = (await (await firstResume).json()) as {
+  const resumeBody = (await readJsonRpcResponse(await firstResume)) as {
     result?: { isError?: boolean };
   };
   expect(resumeBody.result?.isError).toBe(true);
@@ -522,11 +603,21 @@ it("never evicts a session while one of its requests is still in flight", async 
     expect(sessions.sessionCount()).toBe(1);
     expect(latched.shutdowns()).toBe(0);
 
-    // The parked request still completes, on the transport it started on.
-    latched.release();
+    // The POST is answered as an SSE stream the moment it opens, while the
+    // engine is still parked. The claim rides the stream, not the Response: the
+    // call is still in flight, so the session is still busy.
     const response = await inFlight;
     expect(response).toBeInstanceOf(Response);
     expect((response as Response).status).toBe(200);
+    expect(await sessions.sweepIdleSessions(startedAt + IDLE_TTL_MS)).toBe(0);
+    expect(sessions.sessionCount()).toBe(1);
+
+    // The parked request still completes, on the stream it started on.
+    latched.release();
+    expect(await readJsonRpcResponse(response as Response)).toMatchObject({
+      id: 2,
+      result: { content: [{ type: "text", text: "released" }] },
+    });
 
     // And the reprieve is only for the duration of the call: the session is
     // restamped as it ends, so the next idle window still reclaims it — engine
