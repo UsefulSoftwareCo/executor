@@ -122,6 +122,11 @@ scenario(
         await step("Sign in with a provider account without naming the connection", async () => {
           await visit(page, `/integrations/${slug}?addAccount=1`);
           await page.getByRole("tab", { name: "OAuth2", exact: true }).click();
+          // Attached previews can contain other compatible apps. Use this
+          // scenario's provider instance for the full callback and token exchange.
+          await page
+            .getByRole("radio", { name: new RegExp(slug.replace("setup-", ""), "i") })
+            .check();
           const opened = page.waitForEvent("popup");
           await page.getByRole("button", { name: "Connect with OAuth", exact: true }).click();
           const popup = await opened;
@@ -285,6 +290,151 @@ scenario(
           ).toBe("true");
         });
       });
+    }),
+  ),
+);
+
+scenario(
+  "Connection setup · an interrupted OAuth popup can be cancelled and retried",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, identity, slug, client, emulator } = yield* fixture;
+      yield* browser.session(identity, async ({ page, step }) => {
+        await step("Start provider sign-in without entering a name", async () => {
+          await visit(page, `/integrations/${slug}?addAccount=1`);
+          await page.getByRole("tab", { name: "OAuth2", exact: true }).click();
+          // Attached previews can contain other compatible apps. Use this
+          // scenario's provider instance for the full callback and token exchange.
+          await page
+            .getByRole("radio", { name: new RegExp(slug.replace("setup-", ""), "i") })
+            .check();
+          const opened = page.waitForEvent("popup");
+          await page.getByRole("button", { name: "Connect with OAuth", exact: true }).click();
+          const popup = await opened;
+          await popup.waitForURL(/oauth\/v2\/authorize/);
+          await popup.close();
+        });
+        await step("Cancel the waiting sign-in and retry", async () => {
+          const cancel = page.getByRole("button", { name: "Cancel sign-in", exact: true });
+          expect(
+            await cancel.isVisible(),
+            "an interrupted provider window must not strand Connecting forever",
+          ).toBe(true);
+          expect(await cancel.isEnabled()).toBe(true);
+          await page.getByText("Continue in the sign-in window", { exact: true }).waitFor();
+          expect(
+            await page.getByRole("tab", { name: "OAuth2", exact: true }).isVisible(),
+            "the authentication form stays visible during sign-in",
+          ).toBe(true);
+          expect(await page.getByRole("textbox", { name: /Display name/ }).isVisible()).toBe(true);
+          expect(
+            await page.getByRole("button", { name: "Connecting…", exact: true }).count(),
+            "waiting for provider consent must not leave a dead Connecting button",
+          ).toBe(0);
+          await cancel.click();
+          expect(
+            await page.getByRole("button", { name: "Connect with OAuth", exact: true }).isEnabled(),
+          ).toBe(true);
+          const opened = page.waitForEvent("popup");
+          await page.getByRole("button", { name: "Connect with OAuth", exact: true }).click();
+          const popup = await opened;
+          await popup.waitForURL(/oauth\/v2\/authorize/);
+          await popup.route("https://emulators.dev/oauth/v2/authorize/callback", (route) =>
+            route.continue({ url: `${emulator.baseUrl}/oauth/v2/authorize/callback` }),
+          );
+          await popup.getByRole("button", { name: /admin/ }).click();
+          await page.getByRole("dialog").waitFor({ state: "hidden", timeout: 30_000 });
+        });
+      });
+      const connections = yield* client.connections.list({ query: { integration: slug } });
+      expect(connections, "retry finishes and persists exactly one connection").toHaveLength(1);
+    }),
+  ),
+);
+
+scenario(
+  "Connection setup · cancelling a pending OAuth start ignores its late response",
+  {},
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, identity, slug, client, emulator } = yield* fixture;
+      yield* browser.session(identity, async ({ page, step }) => {
+        const released = Promise.withResolvers<void>();
+        const started = Promise.withResolvers<string>();
+        const completed = Promise.withResolvers<void>();
+        await page.route(
+          "**/api/oauth/start",
+          async (route) => {
+            const response = await route.fetch();
+            const body: unknown = await response.json();
+            if (
+              typeof body !== "object" ||
+              body === null ||
+              !("state" in body) ||
+              typeof body.state !== "string"
+            ) {
+              expect.fail("the held start response must contain its OAuth session state");
+            }
+            started.resolve(body.state);
+            await released.promise;
+            await route.fulfill({ response });
+            completed.resolve();
+          },
+          { times: 1 },
+        );
+        try {
+          await step("Cancel while the authorization response is still in flight", async () => {
+            await visit(page, `/integrations/${slug}?addAccount=1`);
+            await page
+              .getByRole("radio", { name: new RegExp(slug.replace("setup-", ""), "i") })
+              .check();
+            const opened = page.waitForEvent("popup");
+            await page.getByRole("button", { name: "Connect with OAuth", exact: true }).click();
+            const popup = await opened;
+            const oldState = await started.promise;
+            expect(
+              await page.getByRole("textbox", { name: /Display name/ }).isVisible(),
+              "the connection form stays visible while sign-in is being prepared",
+            ).toBe(true);
+            await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click();
+            await expect.poll(() => popup.isClosed()).toBe(true);
+            const cancelled = page.waitForResponse((response) =>
+              response.url().endsWith("/api/oauth/cancel"),
+            );
+            const retryOpened = page.waitForEvent("popup");
+            await page.getByRole("button", { name: "Connect with OAuth", exact: true }).click();
+            const retryPopup = await retryOpened;
+            await retryPopup.waitForURL(/oauth\/v2\/authorize/);
+            released.resolve();
+            await completed.promise;
+            const cancellation = await cancelled;
+            expect(
+              cancellation.request().postDataJSON(),
+              "only the old session is cancelled",
+            ).toEqual({ state: oldState });
+            expect(
+              retryPopup.isClosed(),
+              "the old response cannot close the new sign-in window",
+            ).toBe(false);
+            expect(
+              page.context().pages(),
+              "only the replacement sign-in window remains",
+            ).toHaveLength(2);
+            await page.getByText("Continue in the sign-in window", { exact: true }).waitFor();
+            await retryPopup.route("https://emulators.dev/oauth/v2/authorize/callback", (route) =>
+              route.continue({ url: `${emulator.baseUrl}/oauth/v2/authorize/callback` }),
+            );
+            await retryPopup.getByRole("button", { name: /admin/ }).click();
+            await page.getByRole("dialog").waitFor({ state: "hidden", timeout: 30_000 });
+          });
+        } finally {
+          released.resolve();
+          await page.unrouteAll({ behavior: "wait" });
+        }
+      });
+      const connections = yield* client.connections.list({ query: { integration: slug } });
+      expect(connections, "the newer attempt survives and completes consent").toHaveLength(1);
     }),
   ),
 );

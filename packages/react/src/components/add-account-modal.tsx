@@ -741,6 +741,7 @@ type CimdCreateClientArgs = {
 };
 
 type RunCimdConnectDeps = {
+  readonly isActive: () => boolean;
   readonly createClient: (args: CimdCreateClientArgs) => Promise<OAuthClientSlug | null>;
   readonly start: (args: CimdStartArgs) => void;
   /** Claim the sign-in window before any await. See `useOAuthPopupFlow.reserve`. */
@@ -767,6 +768,7 @@ type RunCimdConnectInput = {
 
 type CimdOutcome =
   | { readonly kind: "started"; readonly client: OAuthClientSlug; readonly reused: boolean }
+  | { readonly kind: "aborted" }
   | { readonly kind: "popup-blocked" }
   | { readonly kind: "failed"; readonly reason: "missing-endpoints" | "create-failed" };
 
@@ -830,6 +832,10 @@ export async function runCimdConnect(
   if (reservation.kind === "blocked") return { kind: "popup-blocked" };
 
   const resolved = await resolveCimdClient(deps, input);
+  if (!deps.isActive()) {
+    deps.release();
+    return { kind: "aborted" };
+  }
   if (resolved.kind === "failed") {
     deps.release();
     return resolved;
@@ -1866,7 +1872,14 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const oauthBusy = ccBusy || oauthPopup.busy;
   const cimdConnecting = cimdBusy || oauthPopup.busy;
   const dcrConnecting = dcrBusy || oauthPopup.busy;
-  const automaticOAuthConnecting = cimdConnecting || dcrConnecting;
+  const signInPending = cimdBusy || dcrBusy || oauthPopup.busy;
+  const automaticAttemptRef = useRef(0);
+  const cancelSignIn = () => {
+    automaticAttemptRef.current += 1;
+    oauthPopup.cancel();
+    setCimdBusy(false);
+    setDcrBusy(false);
+  };
 
   // "Connection saved to" for a PICKED BYO OAuth app. Cloud: a Workspace (`org`)
   // app can mint Personal or Workspace connections; a Personal (`user`) app can
@@ -2359,11 +2372,16 @@ function AddAccountModalView(props: AddAccountModalProps) {
     const cimdOwner = owner;
     const connectionName = previewConnectionName(label, cimdOwner);
     const identityLabel = typedIdentityLabel(label);
+    const attempt = ++automaticAttemptRef.current;
+    const isActive = () => viewMountedRef.current && attempt === automaticAttemptRef.current;
     setCimdBusy(true);
     const outcome = await runCimdConnect(
       {
         reserve: oauthPopup.reserve,
-        release: oauthPopup.releaseReservation,
+        release: () => {
+          if (attempt === automaticAttemptRef.current) oauthPopup.releaseReservation();
+        },
+        isActive,
         createClient: createCimdClient,
         start: (args: CimdStartArgs): void => {
           void oauthPopup.start({
@@ -2398,6 +2416,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
         existingClients: clientSummaries,
       },
     );
+    if (!isActive()) return;
     setCimdBusy(false);
     trackEvent("connection_oauth_started", {
       integration_slug: String(integration),
@@ -2442,16 +2461,18 @@ function AddAccountModalView(props: AddAccountModalProps) {
         setDcrFailed(true);
         return;
       }
+      const attempt = ++automaticAttemptRef.current;
+      const isActive = () => viewMountedRef.current && attempt === automaticAttemptRef.current;
       setDcrBusy(true);
       const outcome = await runAutomaticOAuthConnect(
         {
           reserve: oauthPopup.reserve,
-          release: oauthPopup.releaseReservation,
-          // Closing the modal genuinely unmounts this view (see
-          // `AddAccountModal`), so "still mounted" is exactly "still open".
-          // The sequence checks it between round trips: a close mid-flight
-          // must not register a client or launch the popup afterwards.
-          isActive: () => viewMountedRef.current,
+          release: () => {
+            if (attempt === automaticAttemptRef.current) oauthPopup.releaseReservation();
+          },
+          // A closed modal or cancelled attempt cannot register a client or
+          // launch sign-in after the next round trip. A retry owns a new attempt.
+          isActive,
           probe: async (url: string): Promise<OAuthProbeResult | null> => {
             const exit = await doProbe({ payload: { url }, reactivityKeys: [] });
             if (Exit.isFailure(exit)) return null;
@@ -2560,7 +2581,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
       // The modal closed mid-flight: this view is unmounted, so no state may
       // be written at all — not the fallback below, and not even the busy
       // flag, which belongs to the surface that is gone.
-      if (outcome.kind === "aborted") return;
+      if (!isActive() || outcome.kind === "aborted") return;
       setDcrBusy(false);
       // `connection_oauth_started` measures the connect funnel; a reconnect
       // reports through `connection_reconnected` on the popup callbacks above,
@@ -3371,15 +3392,20 @@ function AddAccountModalView(props: AddAccountModalProps) {
               </p>
             ) : null}
             <DialogFooter>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={close}
-                disabled={submitting || oauthBusy || automaticOAuthConnecting}
-              >
+              {signInPending ? (
+                <p role="status" className="flex-1 self-center text-xs text-muted-foreground">
+                  {oauthPopup.phase === "authorizing"
+                    ? "Continue in the sign-in window"
+                    : oauthPopup.phase === "saving"
+                      ? "Finishing connection…"
+                      : "Preparing sign-in…"}
+                </p>
+              ) : null}
+              <Button type="button" variant="ghost" onClick={close} disabled={submitting || ccBusy}>
                 {isOAuth ? "Close" : "Cancel"}
               </Button>
               {/* Footer action, in precedence order:
+              - pending sign-in: cancel, or wait for an authorized connection to save;
               - transparent CIMD (no app registration): create/reuse a public
                 metadata-document client and start OAuth;
               - transparent DCR (no picker): a single Connect that runs
@@ -3387,7 +3413,17 @@ function AddAccountModalView(props: AddAccountModalProps) {
               - registering a BYO app: the form owns its own submit, no footer;
               - picked BYO OAuth app: Connect with OAuth / Connect (client creds);
               - credential/no-auth method: Add connection. */}
-              {cimdActive ? (
+              {signInPending ? (
+                oauthPopup.phase === "saving" ? (
+                  <Button type="button" loading>
+                    Finishing…
+                  </Button>
+                ) : (
+                  <Button type="button" variant="outline" onClick={cancelSignIn}>
+                    Cancel sign-in
+                  </Button>
+                )
+              ) : cimdActive ? (
                 <Button
                   type="button"
                   onClick={() => void handleCimdConnect()}

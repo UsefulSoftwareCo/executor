@@ -366,6 +366,7 @@ describe("runCimdConnect", () => {
 
     const outcome = await runCimdConnect(
       {
+        isActive: () => true,
         reserve: (): OAuthPopupReservation => RESERVED,
         release: (): void => {},
         createClient: (args: CimdCreateArgs): Promise<OAuthClientSlug | null> => {
@@ -410,6 +411,7 @@ describe("runCimdConnect", () => {
 
     const outcome = await runCimdConnect(
       {
+        isActive: () => true,
         reserve: (): OAuthPopupReservation => RESERVED,
         release: (): void => {},
         createClient: (): Promise<OAuthClientSlug | null> => {
@@ -1076,6 +1078,7 @@ describe("runCimdConnect popup reservation", () => {
     const popup = popupSpy();
     const outcome = await runCimdConnect(
       {
+        isActive: () => true,
         ...popup,
         createClient: (args: CimdCreateArgs): Promise<OAuthClientSlug> => {
           popup.calls.push("createClient");
@@ -1096,6 +1099,7 @@ describe("runCimdConnect popup reservation", () => {
     const popup = popupSpy();
     const outcome = await runCimdConnect(
       {
+        isActive: () => true,
         ...popup,
         createClient: (): Promise<OAuthClientSlug | null> => Promise.resolve(null),
         start: (): void => {},
@@ -1107,10 +1111,32 @@ describe("runCimdConnect popup reservation", () => {
     expect(popup.calls).toEqual(["reserve", "release"]);
   });
 
+  it("does not start sign-in after cancellation during client setup", async () => {
+    const created = Promise.withResolvers<OAuthClientSlug | null>();
+    const popup = popupSpy();
+    let active = true;
+    const connecting = runCimdConnect(
+      {
+        ...popup,
+        isActive: () => active,
+        createClient: () => created.promise,
+        start: () => {
+          popup.calls.push("start");
+        },
+      },
+      cimdInput,
+    );
+    active = false;
+    created.resolve(OAuthClientSlug.make("cancelled-client"));
+    expect(await connecting).toEqual({ kind: "aborted" });
+    expect(popup.calls).toEqual(["reserve", "release"]);
+  });
+
   it("never claims a window when the method is missing its endpoints", async () => {
     const popup = popupSpy();
     const outcome = await runCimdConnect(
       {
+        isActive: () => true,
         ...popup,
         createClient: (): Promise<OAuthClientSlug | null> => Promise.resolve(null),
         start: (): void => {},
