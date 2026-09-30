@@ -28,6 +28,10 @@
       "types": "./src/in-memory-session-store.ts",
       "default": "./src/in-memory-session-store.ts"
     },
+    "./sse-heartbeat": {
+      "types": "./src/sse-heartbeat.ts",
+      "default": "./src/sse-heartbeat.ts"
+    },
     "./browser-approval": {
       "types": "./src/browser-approval.ts",
       "default": "./src/browser-approval.ts"

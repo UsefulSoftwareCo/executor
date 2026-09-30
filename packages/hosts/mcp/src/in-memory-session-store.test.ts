@@ -777,3 +777,117 @@ describe("pre-initialize dispatch through the in-memory session store", () => {
     expect(sessions.sessionCount()).toBe(0);
   });
 });
+
+describe("in-memory store, quiet GET stream", () => {
+  it("emits a keepalive comment on a live-session GET and reconnects after cancel", async () => {
+    const { sessions } = makeServingStore();
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the store
+    try {
+      const sessionId = await openSession(sessions);
+      const initialized = await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp", {
+            method: "POST",
+            headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+            body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: defaultMcpResource,
+          sessionId,
+          method: "POST",
+        }),
+      );
+      expect(initialized).toBeInstanceOf(Response);
+      expect((initialized as Response).status).toBe(202);
+
+      const get = (await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp", {
+            method: "GET",
+            headers: { accept: "text/event-stream", "mcp-session-id": sessionId },
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: defaultMcpResource,
+          sessionId,
+          method: "GET",
+        }),
+      )) as Response;
+      expect(get.status).toBe(200);
+      expect(get.headers.get("content-type")).toContain("text/event-stream");
+      const reader = get.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe(": keepalive\n\n");
+      await reader.cancel();
+
+      const reconnect = (await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp", {
+            method: "GET",
+            headers: { accept: "text/event-stream", "mcp-session-id": sessionId },
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: defaultMcpResource,
+          sessionId,
+          method: "GET",
+        }),
+      )) as Response;
+      expect(reconnect.status).toBe(200);
+      expect(reconnect.headers.get("content-type")).toContain("text/event-stream");
+      await reconnect.body?.cancel();
+    } finally {
+      await sessions.close();
+    }
+  });
+
+  it("keeps the GET keepalive on a toolkit resource session", async () => {
+    const { sessions } = makeServingStore();
+    const toolkit = { kind: "toolkit" as const, slug: "deploy" };
+    // oxlint-disable-next-line executor/no-try-catch-or-throw -- test boundary: always close the store
+    try {
+      const init = (await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp/toolkits/deploy", {
+            method: "POST",
+            headers: MCP_POST_HEADERS,
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "initialize",
+              params: {
+                protocolVersion: "2025-06-18",
+                capabilities: {},
+                clientInfo: { name: "idle-test", version: "1.0.0" },
+              },
+            }),
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: toolkit,
+          sessionId: null,
+          method: "POST",
+        }),
+      )) as Response;
+      expect(init.status).toBe(200);
+      const sessionId = init.headers.get("mcp-session-id") ?? "";
+      expect(sessionId).not.toBe("");
+
+      const get = (await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp/toolkits/deploy", {
+            method: "GET",
+            headers: { accept: "text/event-stream", "mcp-session-id": sessionId },
+          }),
+          principal: TEST_PRINCIPAL,
+          resource: toolkit,
+          sessionId,
+          method: "GET",
+        }),
+      )) as Response;
+      expect(get.status).toBe(200);
+      expect(get.headers.get("content-type")).toContain("text/event-stream");
+      const reader = get.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe(": keepalive\n\n");
+      await reader.cancel();
+    } finally {
+      await sessions.close();
+    }
+  });
+});

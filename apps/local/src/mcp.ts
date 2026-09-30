@@ -10,6 +10,7 @@ import {
   preInitializeMethodNotFound,
   type McpResource,
 } from "@executor-js/host-mcp";
+import { withMcpSseHeartbeat } from "@executor-js/host-mcp/sse-heartbeat";
 import {
   createExecutorMcpServer,
   type ExecutorMcpServerConfig,
@@ -196,7 +197,7 @@ export const createMcpRequestHandler = (
         if (!sessionResource || mcpResourceKey(sessionResource) !== mcpResourceKey(resource)) {
           return jsonError(403, -32003, "Session belongs to a different MCP resource");
         }
-        return transport.handleRequest(request);
+        return withMcpSseHeartbeat(request, await transport.handleRequest(request));
       }
 
       // Pre-initialize dispatch: only `initialize` opens a session here, so a
@@ -263,7 +264,7 @@ export const createMcpRequestHandler = (
           }),
         );
         await created.connect(transport);
-        const response = await transport.handleRequest(request);
+        const response = withMcpSseHeartbeat(request, await transport.handleRequest(request));
 
         if (!transport.sessionId) {
           await ignoreClose(() => transport.close());

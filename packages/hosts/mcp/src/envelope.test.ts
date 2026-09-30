@@ -225,6 +225,34 @@ it("dispatches toolkit MCP routes with the parsed toolkit resource", async () =>
   });
 });
 
+it("forwards a live GET SSE body without injecting keepalive comments", async () => {
+  const StoreLive = Layer.succeed(McpSessionStore)({
+    dispatch: (): Effect.Effect<McpDispatchResult> =>
+      Effect.succeed(
+        new Response("data: already-kept-alive\n\n", {
+          status: 200,
+          headers: { "content-type": "text/event-stream", "mcp-session-id": "s1" },
+        }),
+      ),
+    dispose: () => Effect.void,
+  });
+
+  const handler = buildHandler(StoreLive, McpErrorReporterNoop);
+  const response = await handler(
+    new Request("https://host.test/mcp", {
+      method: "GET",
+      headers: {
+        authorization: "Bearer x",
+        accept: "text/event-stream",
+        "mcp-session-id": "s1",
+      },
+    }),
+  );
+
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe("data: already-kept-alive\n\n");
+});
+
 // ---------------------------------------------------------------------------
 // The pre-initialize dispatch guard. Session-less, only `initialize` is servable,
 // and the transport's answer for everything else is a connection-killing HTTP
