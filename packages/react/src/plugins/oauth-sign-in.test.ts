@@ -50,6 +50,26 @@ describe("oauthClientIdMetadataDocumentUrl", () => {
       }),
     ).toBe("https://executor.sh/api/oauth/client-id-metadata/local.json");
   });
+
+  it("uses the hosted local document on an IPv6 loopback origin", () => {
+    setLocation("http://[::1]:4788/integrations/posthog");
+
+    expect(
+      oauthClientIdMetadataDocumentUrl({
+        hostedBaseUrl: "https://executor.sh",
+      }),
+    ).toBe("https://executor.sh/api/oauth/client-id-metadata/local.json");
+  });
+
+  it("uses the current origin behind a public reverse proxy", () => {
+    setLocation("https://executor-mcp.example.com/integrations/posthog");
+
+    expect(
+      oauthClientIdMetadataDocumentUrl({
+        hostedBaseUrl: "https://executor.sh",
+      }),
+    ).toBe("https://executor-mcp.example.com/api/oauth/client-id-metadata/default.json");
+  });
 });
 
 describe("oauthCallbackUrl", () => {

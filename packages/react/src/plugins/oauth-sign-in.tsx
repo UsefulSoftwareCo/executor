@@ -147,12 +147,21 @@ const configuredClientIdMetadataBaseUrl = (): string | undefined => {
   return value ? value : undefined;
 };
 
+// The hosted local document only lists loopback callbacks, so a local
+// Executor reached through a public origin (a reverse proxy) must publish its
+// own document instead.
+const isLoopbackHostname = (hostname: string): boolean =>
+  hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+
 export function oauthClientIdMetadataDocumentUrl(options?: {
   readonly hostedBaseUrl?: string | null;
   readonly path?: string;
 }): string {
   const hostedBaseUrl = options?.hostedBaseUrl ?? configuredClientIdMetadataBaseUrl();
-  if (hostedBaseUrl) {
+  if (
+    hostedBaseUrl &&
+    (typeof window === "undefined" || isLoopbackHostname(window.location.hostname))
+  ) {
     return new URL(OAUTH_CLIENT_ID_METADATA_DOCUMENT_LOCAL_PATH, hostedBaseUrl).toString();
   }
 
