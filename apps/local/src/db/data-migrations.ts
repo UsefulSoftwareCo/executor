@@ -8,6 +8,7 @@
 import {
   Effect,
   bigintStorageClassSqliteMigration,
+  emptyJsonSqliteMigration,
   oauthClientGcSqliteMigration,
   sqliteDataMigration,
   type SqliteDataMigration,
@@ -36,6 +37,10 @@ export const localDataMigrations: readonly SqliteDataMigration[] = [
   // class cannot be read by the bigint row mapper, so a single legacy
   // `connection.expires_at` failed every catalog read (issue #1771).
   bigintStorageClassSqliteMigration,
+  // Same reason: an older build left `''` in nullable `json` columns, which
+  // the json row mapper cannot parse, so one legacy `connection.credential_write`
+  // failed every toolkit MCP session (issue #2092).
+  emptyJsonSqliteMigration,
   // Rewrite pre-canonical integration auth configs (incl. v1→v2 outputs)
   // into the shared placements model.
   sqliteDataMigration("2026-06-05-auth-config-placements", (client) =>
