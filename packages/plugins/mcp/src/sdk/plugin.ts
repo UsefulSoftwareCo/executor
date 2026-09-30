@@ -538,6 +538,10 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
  *  the stamp is where a host reads it back. */
 const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
   const destructive = entry.annotations?.destructiveHint === true;
+  // The title describes the action whether or not it destroys state, so it is
+  // the approval copy for any call that pauses, including one a policy forces.
+  const approvalDescription =
+    entry.annotations?.title ?? (destructive ? entry.toolName : undefined);
   const stamp: McpToolStamp = {
     toolName: entry.toolName,
     ...(entry.annotations ? { upstream: entry.annotations } : {}),
@@ -545,7 +549,7 @@ const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
   };
   const annotations: StampedAnnotations = {
     requiresApproval: destructive,
-    ...(destructive ? { approvalDescription: entry.annotations?.title ?? entry.toolName } : {}),
+    ...(approvalDescription ? { approvalDescription } : {}),
     mcp: stamp,
   };
   return {
@@ -1925,7 +1929,10 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
               approvalDescription: ann.title ?? stamp?.toolName ?? String(row.name),
             };
           } else {
-            out[String(row.name)] = { requiresApproval: false };
+            out[String(row.name)] = {
+              requiresApproval: false,
+              ...(ann?.title ? { approvalDescription: ann.title } : {}),
+            };
           }
         }
         return out;
