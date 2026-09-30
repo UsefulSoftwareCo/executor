@@ -168,7 +168,9 @@ type HarnessSession = {
     requestIds: ReadonlyArray<string | number>,
   ) => Promise<void>;
   dbHandle: { readonly end: () => void } | null;
+  destroy: () => Promise<void>;
   engine: ExecutionEngine<Cause.YieldableError> | null;
+  ensurePartyServerInitialized: () => Promise<void>;
   getConnections?: () => Iterable<unknown>;
   getSessionId: () => string;
   initialized: boolean;
@@ -317,6 +319,11 @@ const makeHarnessSession = async (
   session.server = server;
   session.sessionMeta = sessionMeta;
   session.sessionTimeoutMs = () => 1;
+  // The harness has no PartyServer private state to consult. Model an
+  // instance PartyServer has already started — the state every in-place
+  // restore below runs in — so the gate is a no-op; the fresh-instance case
+  // installs its own model where it matters.
+  session.ensurePartyServerInitialized = async () => undefined;
   session.runMcpAgentOnStart = async () => {
     const restored = session.server ?? makeServer();
     session.server = restored;
@@ -1939,5 +1946,148 @@ describe("McpAgentSessionDOBase stranded-request ledger", () => {
       afterReset.initialized,
       "a request nothing will ever answer is dead work, not running work",
     ).toBe(false);
+  });
+});
+
+describe("McpAgentSessionDOBase owner check during the destroy alarm", () => {
+  /**
+   * The agents SDK's `destroy()` is what runs between "the durable
+   * destroy-pending marker is gone" and "the isolate is aborted": it
+   * `deleteAll()`s storage (taking the marker with it) and only then aborts
+   * from a `setTimeout(0)`. Stand in for it on the SDK prototype so the test
+   * can hold the object in exactly that gap — the real one also disposes SDK
+   * internals the harness never constructed.
+   */
+  const withSdkDestroy = async (
+    replacement: (this: HarnessSession) => Promise<void>,
+    run: () => Promise<void>,
+  ): Promise<void> => {
+    let proto: object | null = Object.getPrototypeOf(McpAgentSessionDOBase.prototype);
+    while (proto && !Object.hasOwn(proto, "destroy")) proto = Object.getPrototypeOf(proto);
+    if (!proto) throw new Error("agents SDK prototype chain has no destroy()");
+    const original = Reflect.get(proto, "destroy");
+    Reflect.set(proto, "destroy", replacement);
+    try {
+      await run();
+    } finally {
+      Reflect.set(proto, "destroy", original);
+    }
+  };
+
+  it("answers terminated, not a restore, once destroy has wiped the marker", async () => {
+    const session = await makeHarnessSession();
+    await session.ctx.storage.put("cf_agents_destroy_pending", true);
+    let restoreAttempts = 0;
+    session.runMcpAgentOnStart = async () => {
+      restoreAttempts += 1;
+      // What the SDK's own `onStart` does first on a destroyed object: read a
+      // table `destroy()` has already dropped.
+      throw new Error("no such table: cf_agents_mcp_servers: SQLITE_ERROR");
+    };
+    const wiped = makeDeferred();
+    const release = makeDeferred();
+
+    await withSdkDestroy(
+      async function (this: HarnessSession) {
+        await this.ctx.storage.deleteAll();
+        wiped.resolve();
+        await release.promise;
+      },
+      async () => {
+        const destroying = session.destroy();
+        await wiped.promise;
+        expect(
+          await session.ctx.storage.get("cf_agents_destroy_pending"),
+          "precondition: the durable marker is already gone",
+        ).toBeUndefined();
+        expect(session.initialized, "precondition: the runtime is already torn down").toBe(false);
+
+        const verdict = await session.validateMcpSessionOwner(
+          { accountId: "user-1", organizationId: "org-1" },
+          defaultMcpResource,
+        );
+
+        expect(verdict).toBe("terminated");
+        expect(restoreAttempts, "a dying object never tries to rebuild its runtime").toBe(0);
+        release.resolve();
+        await destroying;
+      },
+    );
+  });
+});
+
+describe("McpAgentSessionDOBase restore from an RPC entry point", () => {
+  /**
+   * PartyServer's gate, as the harness sees it: runs `onStart` exactly once
+   * per instance and remembers that it did. `started` is the private state
+   * the real class keeps and this one cannot read.
+   */
+  const modelPartyServerGate = (session: HarnessSession, started: boolean) => {
+    const gate = { runs: 0, started };
+    session.ensurePartyServerInitialized = async () => {
+      if (gate.started) return;
+      gate.runs += 1;
+      await session.onStart();
+      gate.started = true;
+    };
+    return gate;
+  };
+
+  const coldInstance = (session: HarnessSession): void => {
+    session.initialized = false;
+    session.engine = null;
+    session.dbHandle = null;
+    delete session.server;
+  };
+
+  it("initializes a fresh instance through PartyServer's gate, so the next fetch does not restart it", async () => {
+    const session = await makeHarnessSession();
+    coldInstance(session);
+    const gate = modelPartyServerGate(session, false);
+    let onStartCalls = 0;
+    const restore = session.runMcpAgentOnStart;
+    session.runMcpAgentOnStart = async () => {
+      onStartCalls += 1;
+      await restore();
+    };
+
+    await expect(
+      session.validateMcpSessionOwner(
+        { accountId: "user-1", organizationId: "org-1" },
+        defaultMcpResource,
+      ),
+    ).resolves.toBe("ok");
+    expect(gate.runs, "the restore went through the gate").toBe(1);
+    expect(onStartCalls).toBe(1);
+    expect(session.initialized).toBe(true);
+
+    // The SDK's fetch path for the same session: `setName` re-enters the gate.
+    // A started instance passes straight through instead of rebuilding.
+    await session.ensurePartyServerInitialized();
+    expect(onStartCalls, "no second build under the input gate").toBe(1);
+    expect(session.initialized).toBe(true);
+  });
+
+  it("restores in place when PartyServer already started the instance", async () => {
+    const session = await makeHarnessSession();
+    const gate = modelPartyServerGate(session, true);
+    let onStartCalls = 0;
+    const restore = session.runMcpAgentOnStart;
+    session.runMcpAgentOnStart = async () => {
+      onStartCalls += 1;
+      await restore();
+    };
+
+    await session.alarm();
+    expect(session.initialized, "precondition: idle disposal emptied the runtime").toBe(false);
+
+    await expect(
+      session.validateMcpSessionOwner(
+        { accountId: "user-1", organizationId: "org-1" },
+        defaultMcpResource,
+      ),
+    ).resolves.toBe("ok");
+    expect(gate.runs, "a started instance is not re-gated").toBe(0);
+    expect(onStartCalls, "the runtime is rebuilt directly").toBe(1);
   });
 });
