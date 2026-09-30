@@ -4,7 +4,9 @@ import { Schema } from "effect";
 
 import {
   canSubmitOAuthClientForm,
+  declaredLoopbackCallback,
   initialOAuthClientOwner,
+  loopbackCallbackError,
   preferredManualTokenEndpointAuthMethod,
   registrationScopes,
   resolveOriginIntegration,
@@ -208,5 +210,41 @@ describe("oauthAppSetupFor", () => {
     expect(manifest.oauth_config.scopes.user).toContain("search:read.users");
     expect(manifest.oauth_config.scopes.user).toContain("chat:write");
     expect(manifest.settings.agent_view).toBeUndefined();
+  });
+});
+
+describe("declaredLoopbackCallback", () => {
+  const base = { enabled: true, port: "3118", path: "/callback" } as const;
+
+  it("declares nothing while the option is off, whatever the fields hold", () => {
+    expect(declaredLoopbackCallback({ ...base, enabled: false })).toBeNull();
+    expect(loopbackCallbackError({ ...base, enabled: false })).toBeNull();
+  });
+
+  it("declares the exact URI the user registered on the provider's app", () => {
+    expect(declaredLoopbackCallback(base)).toEqual({ port: 3118, path: "/callback" });
+    expect(declaredLoopbackCallback({ ...base, path: "/oauth/cb" })).toEqual({
+      port: 3118,
+      path: "/oauth/cb",
+    });
+    // A blank path means the provider's default path, which is what gets sent.
+    expect(declaredLoopbackCallback({ ...base, path: "  " })).toEqual({
+      port: 3118,
+      path: "/callback",
+    });
+  });
+
+  it("reports the port first, then the path, and declares nothing while either is bad", () => {
+    expect(loopbackCallbackError({ enabled: true, port: "", path: "/callback" })).toContain("port");
+    expect(loopbackCallbackError({ enabled: true, port: "80", path: "/callback" })).toContain(
+      "1024 and 65535",
+    );
+    expect(declaredLoopbackCallback({ enabled: true, port: "80", path: "/callback" })).toBeNull();
+
+    expect(loopbackCallbackError({ enabled: true, port: "3118", path: "/cb?x=1" })).toContain(
+      "absolute path",
+    );
+    expect(declaredLoopbackCallback({ enabled: true, port: "3118", path: "/cb?x=1" })).toBeNull();
+    expect(loopbackCallbackError(base)).toBeNull();
   });
 });

@@ -139,7 +139,91 @@ export interface OAuthClient {
   /** RFC 8707 Resource Indicator (MCP). Carried so the refresh request can keep
    *  the re-minted token bound to the same resource. Null/omitted otherwise. */
   readonly resource?: string | null;
+  /** Port of the loopback callback THIS app's provider registration requires,
+   *  when it is not the executor's own callback (RFC 8252 §7.3). A provider that
+   *  does not support dynamic client registration pins its redirect URI on a
+   *  pre-existing app, so the flow must send that exact URI and something must
+   *  be listening there. Null/omitted means the host's own callback. */
+  readonly callbackPort?: number | null;
+  /** Path of the declared loopback callback. Only meaningful with
+   *  `callbackPort`; null/omitted uses {@link DEFAULT_OAUTH_LOOPBACK_CALLBACK_PATH}. */
+  readonly callbackPath?: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Loopback callbacks (RFC 8252 §7.3).
+//
+// Some providers only accept a callback that was registered on their own OAuth
+// app: Slack's MCP server, for one, has no registration endpoint and answers an
+// unregistered redirect with "redirect_uri did not match any configured URIs".
+// The user can therefore register ONE loopback URI on that app and have the
+// client send it, which means the host must bind that URI itself.
+//
+// The host is spelled `127.0.0.1`, never `localhost`: authorization servers
+// compare redirect URIs as strings, and the two spellings are different URIs.
+// ---------------------------------------------------------------------------
+
+/** Literal host every declared loopback callback uses. */
+export const OAUTH_LOOPBACK_CALLBACK_HOST = "127.0.0.1";
+
+/** Path a declared callback falls back to when the app names only a port. */
+export const DEFAULT_OAUTH_LOOPBACK_CALLBACK_PATH = "/callback";
+
+/** Lowest port a declared callback may use — below 1024 is privileged, and a
+ *  desktop/CLI host does not run as root. */
+export const MIN_OAUTH_LOOPBACK_CALLBACK_PORT = 1024;
+
+/** Highest port a declared callback may use (16-bit). */
+export const MAX_OAUTH_LOOPBACK_CALLBACK_PORT = 65535;
+
+/** A loopback callback a registered app declares: the exact URI its provider
+ *  registration allows. */
+export interface OAuthLoopbackCallback {
+  readonly port: number;
+  readonly path: string;
+}
+
+export const isOAuthLoopbackCallbackPort = (port: number): boolean =>
+  Number.isInteger(port) &&
+  port >= MIN_OAUTH_LOOPBACK_CALLBACK_PORT &&
+  port <= MAX_OAUTH_LOOPBACK_CALLBACK_PORT;
+
+/** Normalize a declared callback path, or null when it is not a plain absolute
+ *  path. A callback is compared character-for-character by the provider, so a
+ *  path that would round-trip differently (query, fragment, space, percent
+ *  escapes) is rejected instead of quietly sent as something else. */
+export const normalizeOAuthLoopbackCallbackPath = (
+  path: string | null | undefined,
+): string | null => {
+  const candidate = path == null ? "" : path.trim();
+  if (candidate.length === 0) return DEFAULT_OAUTH_LOOPBACK_CALLBACK_PATH;
+  if (!candidate.startsWith("/")) return null;
+  const absolute = `http://${OAUTH_LOOPBACK_CALLBACK_HOST}${candidate}`;
+  if (!URL.canParse(absolute)) return null;
+  const parsed = new URL(absolute);
+  return parsed.pathname === candidate && parsed.search === "" && parsed.hash === ""
+    ? candidate
+    : null;
+};
+
+/** The loopback callback an app declares, or null when it declares none. A path
+ *  without a port is not a callback: the port is the part the provider pinned.
+ *  An unusable pair (port out of range, malformed path) is also null, so a
+ *  corrupt row degrades to "no declared callback" rather than a broken URL. */
+export const oauthClientLoopbackCallback = (client: {
+  readonly callbackPort?: number | null;
+  readonly callbackPath?: string | null;
+}): OAuthLoopbackCallback | null => {
+  const port = client.callbackPort ?? null;
+  if (port === null || !isOAuthLoopbackCallbackPort(port)) return null;
+  const path = normalizeOAuthLoopbackCallbackPath(client.callbackPath);
+  return path === null ? null : { port, path };
+};
+
+/** The exact URI sent to the provider as `redirect_uri` for a declared loopback
+ *  callback. The listener binds this, not a re-derived equivalent. */
+export const oauthLoopbackCallbackUrl = (callback: OAuthLoopbackCallback): string =>
+  `http://${OAUTH_LOOPBACK_CALLBACK_HOST}:${callback.port}${callback.path}`;
 
 export type OAuthClientOrigin =
   | {
@@ -282,6 +366,11 @@ export type CreateOAuthClientInput = OAuthClient & {
    *  reject an authorize request whose redirect_uri differs from the
    *  registration). Ignored for manual clients. */
   readonly originRedirectUri?: string | null;
+  /** Loopback callback to persist with the app (see {@link OAuthClient}).
+   *  `undefined`/null stores none. Rejected when the port is outside the
+   *  unprivileged range or the path is not a plain absolute path. */
+  readonly callbackPort?: number | null;
+  readonly callbackPath?: string | null;
 };
 
 /** Metadata-only projection of a registered client for listing in the UI.
@@ -299,6 +388,10 @@ export interface OAuthClientSummary {
   /** Omitted for legacy rows, which use client_secret_post. */
   readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
   readonly origin: OAuthClientOrigin;
+  /** Declared loopback callback, when this app's provider registration pins one
+   *  instead of accepting the host's own callback. See {@link OAuthClient}. */
+  readonly callbackPort?: number | null;
+  readonly callbackPath?: string | null;
 }
 
 /** Flow-aware result of `oauth.start` — the status says what's next. */
@@ -528,6 +621,14 @@ export interface OAuthService {
   /** All registered clients visible to the caller (their org's shared clients +
    *  their own user clients), as metadata-only summaries — never the secret. */
   readonly listClients: () => Effect.Effect<readonly OAuthClientSummary[], StorageFailure>;
+  /** The exact loopback callback a registered app declares, or null when it
+   *  declares none. A host reads this BEFORE `start` to bind that URI, because
+   *  `start` sends the declared callback verbatim — a flow whose listener is not
+   *  already listening there fails at the provider. */
+  readonly loopbackCallback: (input: {
+    readonly client: OAuthClientSlug;
+    readonly clientOwner: Owner;
+  }) => Effect.Effect<OAuthLoopbackCallback | null, StorageFailure>;
   /** Permanently remove a registered OAuth app, keyed by (owner, slug). The
    *  owner policy on `oauth_client` prevents removing another subject's user app.
    *  Idempotent: removing an already-gone app succeeds. Connections that

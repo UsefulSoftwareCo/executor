@@ -3,6 +3,7 @@ import { Layer } from "effect";
 
 import {
   ArtifactUsageObserver,
+  OAuthLoopbackListener,
   composePluginApi,
   ExecutorApp,
   FixedExecutionProvider,
@@ -15,6 +16,7 @@ import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import { localAnalytics } from "./analytics";
 import { getExecutorBundle, type LocalExecutor } from "./executor";
 import { makeLocalIdentityLayer } from "./identity";
+import { makeOAuthLoopbackListener } from "./oauth-loopback";
 import { ErrorCaptureLive } from "./observability";
 
 // ===========================================================================
@@ -89,7 +91,7 @@ export interface LocalApiHandler {
  * test seam where a test wants to bypass the boot graph.
  */
 export const makeLocalApiHandler = async (token: string): Promise<LocalApiHandler> => {
-  const { executor, plugins } = await getExecutorBundle();
+  const { executor, plugins, webBaseUrl } = await getExecutorBundle();
 
   // Build the fixed-execution seam ONCE (one executor + one engine). The same
   // Layer is the `fixedExecution` seam declaration AND lives in `boot` so the
@@ -136,6 +138,12 @@ export const makeLocalApiHandler = async (token: string): Promise<LocalApiHandle
       Layer.succeed(ArtifactUsageObserver)((action) =>
         localAnalytics.record(`artifact_${action}`, { via: "ui" }),
       ),
+      // Loopback callbacks for apps whose provider registration pins one (RFC
+      // 8252 §7.3). This host and the browser share a machine, which is the one
+      // condition that makes such a callback servable at all. Bound listeners
+      // live only as long as the flow that needs them (or their TTL), so there
+      // is nothing to release at shutdown.
+      Layer.succeed(OAuthLoopbackListener)(makeOAuthLoopbackListener(webBaseUrl)),
     ),
   });
 

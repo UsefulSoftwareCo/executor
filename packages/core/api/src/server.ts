@@ -2,7 +2,10 @@ export {
   ArtifactUsageObserver,
   ExecutorService,
   ExecutionEngineService,
+  OAuthLoopbackListenError,
+  OAuthLoopbackListener,
   type ArtifactUsageAction,
+  type OAuthLoopbackListenerShape,
 } from "./services";
 export {
   CoreHandlers,

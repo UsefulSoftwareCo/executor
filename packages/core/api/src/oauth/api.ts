@@ -73,6 +73,13 @@ const CreateClientPayload = Schema.Struct({
   /** Integration whose connect dialog registered this manual app. Recorded so
    *  the picker matches it to this integration by intent, not root domain. */
   originIntegration: Schema.optional(Schema.NullOr(IntegrationSlug)),
+  /** Loopback callback this app's provider registration pins, when it is not
+   *  this Executor's own callback (RFC 8252 §7.3). The host serves this exact
+   *  URI and sends it as `redirect_uri`. */
+  callbackPort: Schema.optional(Schema.NullOr(Schema.Number)),
+  /** Path of that callback; omitted means `/callback`. Only meaningful with
+   *  `callbackPort`. */
+  callbackPath: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const CreateClientResponse = Schema.Struct({
@@ -120,6 +127,11 @@ const OAuthClientSummaryResponse = Schema.Struct({
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
   tokenEndpointAuthMethod: Schema.optional(TokenEndpointAuthMethodSchema),
+  /** Loopback callback the app declares, when the provider registration pins
+   *  one instead of accepting this Executor's own callback. Not a secret: it is
+   *  the URI the user registered with the provider. */
+  callbackPort: Schema.optional(Schema.NullOr(Schema.Number)),
+  callbackPath: Schema.optional(Schema.NullOr(Schema.String)),
   origin: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("manual") }),
     Schema.Struct({
