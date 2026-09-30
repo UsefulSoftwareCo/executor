@@ -22,7 +22,12 @@ import { createMcpConnector, type McpConnection, type McpConnector } from "./con
 // that precondition here — these tests construct SDK errors directly.
 beforeAll(() => loadMcpClientSdk());
 import { McpInvocationError, McpOAuthReauthorizationRequired } from "./errors";
-import { invokeMcpTool, makeActiveWorkDeadline, MCP_ACTIVE_WORK_TIMEOUT_MS } from "./invoke";
+import {
+  invokeMcpTool,
+  makeActiveWorkDeadline,
+  MCP_ACTIVE_WORK_TIMEOUT_MS,
+  resolveActiveWorkTimeout,
+} from "./invoke";
 
 const acceptAll = () => Effect.succeed(ElicitationResponse.make({ action: "accept" }));
 
@@ -187,6 +192,64 @@ describe("invokeMcpTool", () => {
     vi.advanceTimersByTime(1);
     expect(deadline.signal.aborted).toBe(true);
     deadline.dispose();
+  });
+
+  it("falls back to the default active-work timeout for an unusable value", () => {
+    expect(resolveActiveWorkTimeout(undefined)).toBe(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(resolveActiveWorkTimeout(0)).toBe(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(resolveActiveWorkTimeout(-5)).toBe(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(resolveActiveWorkTimeout(Number.POSITIVE_INFINITY)).toBe(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(resolveActiveWorkTimeout(120_000)).toBe(120_000);
+  });
+
+  it("gives a tool call the integration's timeout instead of the default", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+
+    let callOptions: { signal: AbortSignal; timeout: number } | undefined;
+    let resolveCallStarted: (() => void) | undefined;
+    const callStarted = new Promise<void>((resolve) => {
+      resolveCallStarted = resolve;
+    });
+    const client = {
+      setRequestHandler: () => undefined,
+      callTool: (_request: unknown, options: { signal: AbortSignal; timeout: number }) => {
+        callOptions = options;
+        resolveCallStarted!();
+        // oxlint-disable-next-line executor/no-promise-reject -- boundary: fake MCP client models SDK abort rejection
+        return new Promise<never>((_resolve, reject) => {
+          // oxlint-disable-next-line executor/no-promise-reject -- boundary: fake MCP client models SDK abort rejection
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), {
+            once: true,
+          });
+        });
+      },
+    };
+
+    const invocation = Effect.runPromise(
+      invokeMcpTool({
+        toolId: "slow",
+        toolName: "slow",
+        args: {},
+        transport: "stdio",
+        connector: Effect.succeed({
+          // oxlint-disable-next-line executor/no-double-cast -- boundary: minimal fake MCP client implements only invokeMcpTool's surface
+          client: client as unknown as McpConnection["client"],
+          close: () => Promise.resolve(),
+        }),
+        elicit: acceptAll,
+        activeWorkTimeoutMs: 2 * MCP_ACTIVE_WORK_TIMEOUT_MS,
+      }),
+    ).then(
+      () => "completed" as const,
+      () => "failed" as const,
+    );
+
+    await callStarted;
+    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(callOptions?.signal.aborted).toBe(false);
+    vi.advanceTimersByTime(MCP_ACTIVE_WORK_TIMEOUT_MS);
+    expect(callOptions?.signal.aborted).toBe(true);
+    expect(await invocation).toBe("failed");
   });
 
   it("uses the active signal for a tool call and excludes elicitation from its deadline", async () => {
