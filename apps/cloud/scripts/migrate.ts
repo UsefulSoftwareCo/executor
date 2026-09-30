@@ -5,8 +5,13 @@ import { fileURLToPath } from "node:url";
 
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate as migrateDrizzle } from "drizzle-orm/postgres-js/migrator";
+import { Result } from "effect";
 import postgres from "postgres";
 
+import {
+  describeRefusedAttempt,
+  retryWhileTooManyConnections,
+} from "../src/db/too-many-connections";
 import { cloudCodeMigrations, runCodeMigrations } from "./code-migrations/index";
 import { directDatabaseUrl, waitForDatabaseConnection } from "./database-connection";
 
@@ -49,6 +54,20 @@ const sql = postgres(directDatabaseUrl(connectionString), {
   ...(usesLocalDatabase ? {} : { ssl: "require" as const }),
 });
 
+// A full server refuses the connection with SQLSTATE 53300 before a statement
+// runs — on the first statement, or on a later one after postgres.js has
+// reopened a dropped connection. So each step over the direct connection
+// waits for a slot instead of failing the deploy (src/db/too-many-connections.ts).
+// A step is safe to repeat: Drizzle and the code-migration ledger each skip
+// what has already been applied.
+const withConnectionSlot = async <A>(run: () => Promise<A>): Promise<A> => {
+  const outcome = await retryWhileTooManyConnections(run, {
+    onRefused: (_failure, attempt) => console.warn(`[migrate] ${describeRefusedAttempt(attempt)}`),
+  });
+  if (Result.isFailure(outcome)) throw outcome.failure;
+  return outcome.success;
+};
+
 try {
   await waitForDatabaseConnection(sql, { log: console.log });
   if (!codeOnly) {
@@ -56,7 +75,9 @@ try {
       console.log("[schema-migrate] dry run: Drizzle SQL migrations are not applied");
     } else {
       console.log(`[schema-migrate] running Drizzle migrations from ${MIGRATIONS_FOLDER}`);
-      await migrateDrizzle(drizzle(sql), { migrationsFolder: MIGRATIONS_FOLDER });
+      await withConnectionSlot(() =>
+        migrateDrizzle(drizzle(sql), { migrationsFolder: MIGRATIONS_FOLDER }),
+      );
       console.log("[schema-migrate] complete");
     }
   }
@@ -66,7 +87,9 @@ try {
     if (migrations.length === 0) {
       console.log("[code-migrate] no code migrations configured");
     } else {
-      const applied = await runCodeMigrations(sql, migrations, { dryRun });
+      const applied = await withConnectionSlot(() =>
+        runCodeMigrations(sql, migrations, { dryRun }),
+      );
       console.log(
         dryRun
           ? `[code-migrate] dry run planned ${applied.length} migration(s)`

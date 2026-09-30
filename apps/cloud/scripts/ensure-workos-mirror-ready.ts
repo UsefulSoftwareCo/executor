@@ -35,6 +35,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { drizzle } from "drizzle-orm/postgres-js";
+import { Result } from "effect";
 import postgres from "postgres";
 import { directDatabaseUrl, waitForDatabaseConnection } from "./database-connection";
 
@@ -43,6 +44,10 @@ import {
   describeMirrorReadiness,
   readMirrorReadiness,
 } from "../src/auth/mirror-readiness-store";
+import {
+  describeRefusedAttempt,
+  retryWhileTooManyConnections,
+} from "../src/db/too-many-connections";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BACKFILL_SCRIPT = resolve(__dirname, "backfill-workos-mirror.ts");
@@ -67,7 +72,19 @@ const db = drizzle(sql);
 
 const log = (line: string) => console.log(`[mirror-ready] ${line}`);
 
-const readiness = () => readMirrorReadiness(db, new Date());
+// A full server refuses the connection with SQLSTATE 53300 before a statement
+// runs — on the first read, or on a later one after postgres.js has reopened a
+// dropped connection — so every read waits for a slot instead of failing the
+// deploy, as the migration step before this one does
+// (src/db/too-many-connections.ts). The backfill and drain scripts below each
+// open their own connection and wait for their own slot.
+const readiness = async () => {
+  const outcome = await retryWhileTooManyConnections(() => readMirrorReadiness(db, new Date()), {
+    onRefused: (_failure, attempt) => log(describeRefusedAttempt(attempt)),
+  });
+  if (Result.isFailure(outcome)) throw outcome.failure;
+  return outcome.success;
+};
 
 // The backfill and drain scripts own their own WorkOS + database wiring;
 // running them as subprocesses (with this process's env) keeps that wiring
