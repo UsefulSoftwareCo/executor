@@ -71,6 +71,7 @@ const OAuthTemplatePayload = Schema.Struct({
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.Array(Schema.String),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  discoveryUrl: Schema.optional(Schema.String),
 });
 
 /** Auth INPUTS: oauth templates + the request-shaped apikey dialect. */

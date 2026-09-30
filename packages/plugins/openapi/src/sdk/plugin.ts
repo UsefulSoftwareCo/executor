@@ -6,6 +6,7 @@ import {
   IntegrationAlreadyExistsError,
   IntegrationDetectionResult,
   IntegrationNotFoundError,
+  OAuthProbeError,
   IntegrationSlug,
   ToolResult,
   definePlugin,
@@ -23,7 +24,11 @@ import {
   type StorageFailure,
 } from "@executor-js/sdk/core";
 
-import { decodeOpenApiIntegrationConfig, type OpenApiIntegrationConfig } from "./config";
+import {
+  decodeOpenApiIntegrationConfig,
+  openApiOAuthDiscoveryUrl,
+  type OpenApiIntegrationConfig,
+} from "./config";
 import {
   OpenApiExtractionError,
   OpenApiOAuthError,
@@ -69,6 +74,7 @@ import {
 } from "./backing";
 import type { InvokeOptions } from "./invoke";
 import { resolveServerUrl } from "./openapi-utils";
+import { parseHead, structuralSplit } from "./split";
 import {
   applySpecOverrides,
   decodeOpenApiSpecOverrides,
@@ -196,8 +202,8 @@ export interface OpenApiPluginExtension {
   >;
   readonly removeSpec: (slug: string) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
   readonly getIntegration: (slug: string) => Effect.Effect<Integration | null, StorageFailure>;
-  /** Read the integration's full opaque config, including its
-   *  `authenticationTemplate`. Returns null when the integration is absent. */
+  /** Read the stored integration config, including authentication templates.
+   *  Returns null when the integration is absent. */
   readonly getConfig: (
     slug: string,
   ) => Effect.Effect<OpenApiIntegrationConfig | null, StorageFailure>;
@@ -270,6 +276,7 @@ const StaticPreviewOAuth2PresetSchema = Schema.Struct({
     Schema.Array(Schema.String),
   ]),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  discoveryUrl: Schema.optional(Schema.String),
 });
 const StaticPreviewSpecOutputSchema = Schema.Struct({
   title: Schema.NullOr(Schema.String),
@@ -305,6 +312,7 @@ const AuthenticationSchema = Schema.Union([
     resource: Schema.optional(Schema.NullOr(Schema.String)),
     scopes: Schema.Array(Schema.String),
     supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+    discoveryUrl: Schema.optional(Schema.String),
   }),
   // Credential methods are authored request-shaped - the ONE apikey input
   // dialect: `{ type: "apiKey", headers: { Authorization: ["Bearer ",
@@ -435,6 +443,7 @@ const staticPreviewOutput = (preview: SpecPreview): StaticPreviewSpecOutput => (
     scopes: preset.scopes,
     identityScopes: preset.identityScopes,
     supportsClientIdMetadataDocument: preset.supportsClientIdMetadataDocument,
+    discoveryUrl: preset.discoveryUrl,
   })),
 });
 
@@ -477,7 +486,7 @@ const addProbeCandidate = (candidates: string[], value: string | undefined): voi
 };
 
 const oauthProbeCandidates = (
-  preview: SpecPreview,
+  preview: Pick<SpecPreview, "servers">,
   specUrl: string | undefined,
   baseUrl: string | undefined,
 ): readonly string[] => {
@@ -545,7 +554,7 @@ const discoveredOAuthPreview = (input: {
   readonly tokenUrl: string;
   readonly resource?: string | null;
   readonly scopes: readonly string[];
-  readonly supportsClientIdMetadataDocument?: boolean;
+  readonly discoveryUrl: string;
 }): SpecPreview => {
   const scopes = Object.fromEntries(input.scopes.map((scope) => [scope, ""]));
   const flow = OAuth2AuthorizationCodeFlow.make({
@@ -586,9 +595,7 @@ const discoveredOAuthPreview = (input: {
         refreshUrl: Option.none(),
         scopes,
         identityScopes: "auto",
-        ...(input.supportsClientIdMetadataDocument === true
-          ? { supportsClientIdMetadataDocument: true }
-          : {}),
+        discoveryUrl: input.discoveryUrl,
       }),
     ],
   };
@@ -622,6 +629,7 @@ export const describeOpenApiAuthMethods = (
           resource: template.resource ?? null,
           scopes: template.scopes,
           supportsClientIdMetadataDocument: template.supportsClientIdMetadataDocument,
+          discoveryUrl: openApiOAuthDiscoveryUrl(template, config),
         },
       };
     }
@@ -797,8 +805,7 @@ export const openApiPlugin = definePlugin<
               tokenUrl: oauth.result.tokenUrl,
               resource: oauth.result.resource ?? null,
               scopes,
-              supportsClientIdMetadataDocument:
-                oauth.result.clientIdMetadataDocumentSupported === true,
+              discoveryUrl: candidate,
             });
           }
 
@@ -856,12 +863,14 @@ export const openApiPlugin = definePlugin<
                 ? yield* previewSpecTextStreaming(resolved.specText, resolved.keepPathItem)
                 : yield* previewSpecText(resolved.specText).pipe(
                     Effect.flatMap((rawPreview) =>
-                      enrichPreviewWithDiscoveredOAuth({
-                        specText: resolved.specText,
-                        preview: rawPreview,
-                        specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
-                        baseUrl: explicitBaseUrl,
-                      }),
+                      needsDerivedAuth
+                        ? enrichPreviewWithDiscoveredOAuth({
+                            specText: resolved.specText,
+                            preview: rawPreview,
+                            specUrl: resolved.specUrl ?? specInputToSpecUrl(config.spec),
+                            baseUrl: explicitBaseUrl,
+                          })
+                        : Effect.succeed(rawPreview),
                     ),
                   )
               : undefined;
@@ -1369,6 +1378,87 @@ export const openApiPlugin = definePlugin<
         ],
       },
     ],
+
+    recoverOAuthDiscovery: ({ ctx, integration, template: slug }) =>
+      Effect.gen(function* () {
+        const config = decodeOpenApiIntegrationConfig(integration.config);
+        const template = config?.authenticationTemplate?.find((method) => method.slug === slug);
+        if (!config || template?.kind !== "oauth2") return null;
+        // Callers may still hold the pre-recovery catalog hint. Always use the
+        // saved URL, but re-probe it so deployment capability is never cached.
+        if (template.discoveryUrl) return yield* ctx.oauth.probe({ url: template.discoveryUrl });
+        if (
+          !(template.supportsClientIdMetadataDocument || template.slug === "oauth-DiscoveredOAuth2")
+        ) {
+          return null;
+        }
+        // Use the saved spec, not a newly fetched document which may have changed
+        // providers since this template was created. Discovery stays off catalog reads.
+        const specText = config.specHash ? yield* ctx.storage.getSpec(config.specHash) : null;
+        const structure = specText ? structuralSplit(specText) : null;
+        const preview = specText
+          ? yield* previewSpecText(
+              structure ? encodeJsonText({ ...parseHead(structure), paths: {} }) : specText,
+            ).pipe(
+              Effect.mapError(
+                () =>
+                  new OAuthProbeError({
+                    message: "Cannot read the saved OpenAPI spec for OAuth discovery",
+                  }),
+              ),
+            )
+          : null;
+        const candidates: string[] = [];
+        addProbeCandidate(candidates, template.resource ?? undefined);
+        for (const candidate of oauthProbeCandidates(
+          preview ?? { servers: [] },
+          config.specUrl,
+          config.baseUrl,
+        )) {
+          if (!candidates.includes(candidate)) candidates.push(candidate);
+        }
+        for (const url of candidates) {
+          const probe = yield* ctx.oauth
+            .probe({ url })
+            .pipe(Effect.catchTag("OAuthProbeError", () => Effect.succeed(null)));
+          // A spec may name multiple servers. Never register at an unrelated AS.
+          if (
+            !probe ||
+            probe.authorizationUrl !== template.authorizationUrl ||
+            probe.tokenUrl !== template.tokenUrl
+          )
+            continue;
+          yield* ctx
+            .transaction(
+              Effect.gen(function* () {
+                const record = yield* ctx.core.integrations.get(integration.slug);
+                const current = record ? decodeOpenApiIntegrationConfig(record.config) : null;
+                if (!current) return;
+                const methods = current.authenticationTemplate?.map((method) =>
+                  method.kind === "oauth2" &&
+                  method.slug === slug &&
+                  !method.discoveryUrl &&
+                  method.authorizationUrl === template.authorizationUrl &&
+                  method.tokenUrl === template.tokenUrl
+                    ? { ...method, discoveryUrl: url }
+                    : method,
+                );
+                yield* ctx.core.integrations.update(integration.slug, {
+                  config: { ...current, authenticationTemplate: methods } as IntegrationConfig,
+                });
+              }),
+            )
+            .pipe(
+              // Members can connect without permission to rewrite org configuration.
+              Effect.catchTag("OrgWriteDeniedError", () => Effect.void),
+            );
+          return probe;
+        }
+        return yield* new OAuthProbeError({
+          message:
+            "No OAuth metadata matching the stored OpenAPI authorization and token endpoints was found",
+        });
+      }),
 
     describeAuthMethods: describeOpenApiAuthMethods,
     describeIntegrationDisplay: describeOpenApiIntegrationDisplay,

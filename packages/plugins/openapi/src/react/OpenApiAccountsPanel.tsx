@@ -69,9 +69,12 @@ export default function OpenApiAccountsPanel(props: {
   }, [configResult]);
 
   const methods = useMemo<readonly AuthMethod[]>(() => {
-    const declared = authMethodsFromConfig(existingTemplate);
+    const declared = authMethodsFromConfig(
+      existingTemplate,
+      AsyncResult.isSuccess(configResult) ? (configResult.value ?? undefined) : undefined,
+    );
     return declared.length > 0 ? declared : [NO_AUTH_METHOD];
-  }, [existingTemplate]);
+  }, [existingTemplate, configResult]);
 
   // Custom-method create/remove: the shared skeleton (merge-append → diff out
   // the created method; filter → replace) parameterized by the OpenAPI codec.
@@ -93,14 +96,18 @@ export default function OpenApiAccountsPanel(props: {
 
   const codec = useMemo<AuthMethodsCodec<Authentication>>(
     () => ({
-      toAuthMethods: authMethodsFromConfig,
+      toAuthMethods: (templates) =>
+        authMethodsFromConfig(
+          templates,
+          AsyncResult.isSuccess(configResult) ? (configResult.value ?? undefined) : undefined,
+        ),
       // Slug omitted → backend backfills `custom_<id>`.
       templatesFromPlacements: (placements: readonly Placement[]) => [
         templateFromPlacements(placements),
       ],
       slugOf: (template: Authentication) => String(template.slug),
     }),
-    [],
+    [configResult],
   );
 
   const { createCustomMethod, removeCustomMethod } = useCustomMethodActions({

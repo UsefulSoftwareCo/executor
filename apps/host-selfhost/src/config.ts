@@ -95,6 +95,11 @@ export interface SelfHostConfig {
    * re-sync, leaving stale-marking and config revision as the only triggers.
    */
   readonly toolsSyncTtlMs: number | null | undefined;
+  /**
+   * Resolved `EXECUTOR_OAUTH_CIMD_ENABLED`; see apps/docs/hosted/docker.mdx.
+   * Passed to `ExecutorConfig.oauthClientIdMetadataDocumentEnabled`.
+   */
+  readonly oauthCimdEnabled: boolean;
 }
 
 export const resolveDataDir = (): string =>
@@ -207,6 +212,7 @@ export const loadConfig = (): SelfHostConfig => {
     sso: resolveSso(),
     mcpSessionIdleTtlMs: resolveMcpSessionIdleTtlMs(),
     toolsSyncTtlMs: resolveToolsSyncTtlMs(),
+    oauthCimdEnabled: resolveOauthCimdEnabled(),
   };
 };
 
@@ -264,6 +270,14 @@ const resolveSso = (): SsoConfig | undefined => {
     process.env.EXECUTOR_SSO_PROVIDER_NAME?.trim() ||
     providerId.charAt(0).toUpperCase() + providerId.slice(1);
   return { providerId, providerName, discoveryUrl, clientId, clientSecret, allowedDomains };
+};
+
+const resolveOauthCimdEnabled = (): boolean => {
+  const raw = process.env.EXECUTOR_OAUTH_CIMD_ENABLED;
+  if (raw === undefined || raw === "true") return true;
+  if (raw === "false") return false;
+  // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+  throw new Error(`EXECUTOR_OAUTH_CIMD_ENABLED ${JSON.stringify(raw)} must be "true" or "false"`);
 };
 
 // A malformed value is refused rather than silently ignored: an operator who

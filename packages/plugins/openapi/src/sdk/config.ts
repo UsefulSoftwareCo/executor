@@ -38,6 +38,7 @@ const OAuthAuthenticationSchema = Schema.Struct({
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopes: Schema.Array(Schema.String),
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  discoveryUrl: Schema.optional(Schema.String),
 });
 
 export const AuthenticationSchema = Schema.Union([OAuthAuthenticationSchema, ApiKeyAuthMethod]);
@@ -80,6 +81,16 @@ export type OpenApiIntegrationConfig = Omit<
   readonly authenticationTemplate?: readonly Authentication[];
   readonly specOverrides?: SpecOverrides;
 };
+
+/** Legacy templates need connect-time recovery from the original spec. */
+export const openApiOAuthDiscoveryUrl = (
+  template: Extract<Authentication, { kind: "oauth2" }>,
+  config?: Pick<OpenApiIntegrationConfig, "baseUrl" | "specUrl">,
+): string | undefined =>
+  template.discoveryUrl ??
+  (template.supportsClientIdMetadataDocument || template.slug === "oauth-DiscoveredOAuth2"
+    ? (template.resource ?? config?.baseUrl ?? config?.specUrl)
+    : undefined);
 
 const decodeConfig = Schema.decodeUnknownOption(OpenApiIntegrationConfigSchema);
 

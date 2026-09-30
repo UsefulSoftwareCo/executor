@@ -119,6 +119,11 @@ export interface HostConfigShape {
    */
   readonly enterpriseManagedRollout?: ExecutorConfig["enterpriseManagedRollout"];
   /**
+   * Forwarded verbatim to `ExecutorConfig.oauthClientIdMetadataDocumentEnabled`.
+   * Omit to keep the SDK default (enabled).
+   */
+  readonly oauthClientIdMetadataDocumentEnabled?: boolean;
+  /**
    * Forwarded verbatim to `ExecutorConfig.toolsSyncTtlMs`: how long a
    * connection's persisted remote tool catalog stays fresh. Omit to take the
    * SDK default (15 minutes); `null` disables time-based re-sync. Declared
@@ -341,6 +346,7 @@ export const makeScopedExecutor = <
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,
       enterpriseManagedRollout: config.enterpriseManagedRollout,
+      oauthClientIdMetadataDocumentEnabled: config.oauthClientIdMetadataDocumentEnabled,
       coreTools: {
         webBaseUrl,
         orgSlug,

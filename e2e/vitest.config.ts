@@ -38,6 +38,20 @@ export default defineConfig({
         include: ["scenarios/**/*.test.ts", "selfhost/**/*.test.ts"],
         fileParallelism: false,
       }),
+      // Opt-in deployment cycles against hosted OAuth providers: the attached
+      // Docker instance needs a public HTTPS URL for real CIMD document fetches.
+      project("selfhost-docker-cimd", {
+        include: ["selfhost-docker/oauth-cimd-deployment.test.ts"],
+        env: { E2E_TARGET: "selfhost-docker" },
+        globalSetup: ["./setup/selfhost-docker.globalsetup.ts"],
+        fileParallelism: false,
+      }),
+      project("selfhost-docker-cimd-legacy", {
+        include: ["selfhost-docker/oauth-cimd-legacy.test.ts"],
+        env: { E2E_TARGET: "selfhost-docker" },
+        globalSetup: ["./setup/selfhost-docker.globalsetup.ts"],
+        fileParallelism: false,
+      }),
       // The Cloudflare self-host worker (workerd via wrangler dev, dev-auth).
       // Scoped to the cross-target scenarios wired for this host; the rest of
       // scenarios/** is not yet validated against the worker. The full-graph

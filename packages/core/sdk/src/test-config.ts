@@ -133,6 +133,7 @@ export type TestConfigOptions<TPlugins extends readonly AnyPlugin[] = readonly [
   readonly oauthCallbackStateOrgSlug?: string;
   readonly onIntegrationChange?: ExecutorConfig<TPlugins>["onIntegrationChange"];
   readonly firstPartyOAuthClients?: ExecutorConfig<TPlugins>["firstPartyOAuthClients"];
+  readonly oauthClientIdMetadataDocumentEnabled?: boolean;
   readonly enterpriseManagedRollout?: ExecutorConfig<TPlugins>["enterpriseManagedRollout"];
   /** Workspace-settings permission for the test binding (see
    *  `ExecutorConfig.orgWrites`). Defaults to allowed, like production hosts
@@ -181,6 +182,7 @@ export const makeTestConfig = <const TPlugins extends readonly AnyPlugin[] = rea
     ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
     oauthCallbackStateOrgSlug: options?.oauthCallbackStateOrgSlug,
     firstPartyOAuthClients: options?.firstPartyOAuthClients,
+    oauthClientIdMetadataDocumentEnabled: options?.oauthClientIdMetadataDocumentEnabled,
     enterpriseManagedRollout: options?.enterpriseManagedRollout,
     waitUntil: options?.waitUntil,
   };

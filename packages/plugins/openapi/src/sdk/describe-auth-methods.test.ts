@@ -29,6 +29,28 @@ const recordWith = (templates: readonly Authentication[]): IntegrationRecord => 
 });
 
 describe("describeOpenApiAuthMethods", () => {
+  it("uses the original base URL for issuer-only legacy discovery", () => {
+    const record = recordWith([]);
+    const methods = describeOpenApiAuthMethods({
+      ...record,
+      config: {
+        authenticationTemplate: [
+          {
+            kind: "oauth2",
+            slug: AuthTemplateSlug.make("oauth-DiscoveredOAuth2"),
+            authorizationUrl: "https://provider.example/tenant/oauth/authorize",
+            tokenUrl: "https://provider.example/tenant/oauth/token",
+            resource: null,
+            scopes: [],
+            supportsClientIdMetadataDocument: true,
+          },
+        ],
+        baseUrl: "https://provider.example/tenant",
+      },
+    });
+    expect(methods[0]?.oauth?.discoveryUrl).toBe("https://provider.example/tenant");
+  });
+
   it("projects an apiKey header template to an apikey method with the placement prefix", () => {
     const methods = describeOpenApiAuthMethods(
       recordWith([
@@ -77,6 +99,7 @@ describe("describeOpenApiAuthMethods", () => {
           authorizationUrl: "https://auth.example/authorize",
           tokenUrl: "https://auth.example/token",
           resource: "https://api.example",
+          discoveryUrl: "https://api.example",
           scopes: ["read", "write"],
           supportsClientIdMetadataDocument: true,
         },

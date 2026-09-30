@@ -157,6 +157,8 @@ export const OAuth2Preset = Schema.Struct({
   ]),
   /** Provider metadata advertised Client ID Metadata Document support. */
   supportsClientIdMetadataDocument: Schema.optional(Schema.Boolean),
+  /** The candidate whose OAuth discovery succeeded; deployment policy is rechecked at connect. */
+  discoveryUrl: Schema.optional(Schema.String),
 });
 export type OAuth2Preset = typeof OAuth2Preset.Type;
 

@@ -842,7 +842,7 @@ export async function runCimdConnect(
 // Automatic discovered OAuth connect orchestration.
 //
 // MCP OAuth is discovered at connect time. Prefer Client ID Metadata Documents
-// when the authorization server advertises them; otherwise use Dynamic Client
+// when `OAuthProbeResult` reports support; otherwise use Dynamic Client
 // Registration when available. Both paths keep the popup reserved by the
 // original click and avoid a provider-specific app picker.
 //
@@ -973,7 +973,7 @@ const DCR_CLIENT_NAME = "Executor";
  *
  * - Popup refused → `{ kind: "popup-blocked" }` before any network call.
  * - Probe failure → `{ kind: "fallback", reason: "probe-failed" }` (caller shows BYO).
- * - CIMD advertised → create/reuse the public metadata client, then start.
+ * - Probe reports CIMD support -> create/reuse the public metadata client, then start.
  * - Otherwise no DCR endpoint → `{ kind: "fallback", reason: "no-registration-endpoint", probe }`.
  * - Register rejected with a message → `{ kind: "fallback", reason: "registration-failed", probe, message }`
  *   so the caller can show why (e.g. a redirect-URI rejection) over the generic copy.
@@ -1766,10 +1766,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
     method != null &&
     method.placements.length > 0 &&
     method.placements.every((p) => p.carrier === "env");
-  // CIMD-capable: the provider accepts a client_id that is a metadata-document
-  // URL, so we can create a public local client and skip provider app
-  // registration entirely.
-  const isCimd = isOAuth && method?.oauth?.supportsClientIdMetadataDocument === true;
+  // Discovery-backed methods choose CIMD or DCR from a fresh server probe.
+  // Only static CIMD methods use the direct metadata-client path.
+  const isCimd =
+    isOAuth && method?.oauth?.supportsClientIdMetadataDocument === true && !hasDcr(method);
   const cimdActive = isCimd;
   // Single-input header/query methods: the placement's lead + prefix (e.g.
   // "Authorization: Bearer ") merges INTO the credential field as a non-editable
@@ -2453,7 +2453,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
           // must not register a client or launch the popup afterwards.
           isActive: () => viewMountedRef.current,
           probe: async (url: string): Promise<OAuthProbeResult | null> => {
-            const exit = await doProbe({ payload: { url }, reactivityKeys: [] });
+            const exit = await doProbe({
+              payload: { url, integration, template: requestMethod.template },
+              reactivityKeys: [],
+            });
             if (Exit.isFailure(exit)) return null;
             return exit.value;
           },
@@ -2537,10 +2540,12 @@ function AddAccountModalView(props: AddAccountModalProps) {
         },
         {
           discoveryUrl,
-          // Only a genuine discovery URL (MCP) seeds the RFC 8707 resource
-          // indicator; the token-endpoint fallback baked into `discoveryUrl` must
-          // not, so pass the un-collapsed method value here.
-          resourceFallback: requestMethod.oauth?.discoveryUrl,
+          // MCP's discovery URL identifies its protected resource. OpenAPI
+          // discovery may identify an issuer or token endpoint instead; use
+          // its declared resource rather than treating that URL as a resource.
+          resourceFallback: requestMethod.oauth?.tokenUrl
+            ? (requestMethod.oauth.resource ?? undefined)
+            : requestMethod.oauth?.discoveryUrl,
           owner: dcrOwner,
           // DCR slugs are server-keyed (Part A): the connect path no longer depends
           // on the picker's app list, so it need not be threaded here.
