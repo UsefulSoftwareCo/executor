@@ -232,6 +232,28 @@ const createLocalExecutorLayer = (options: LocalExecutorOptions = {}) => {
         },
       });
 
+      // Boot sweep: any execution still running|paused from a previous
+      // process is unrecoverable (its fiber died with that process). Mark
+      // them interrupted so resume surfaces honestly instead of "not found".
+      // Runs after storage opens and before the API/MCP surfaces accept
+      // resume calls; never fails boot (a sweep hiccup is logged, not fatal).
+      yield* executor.executionRecords.sweepInterrupted().pipe(
+        Effect.map(({ interrupted }) => {
+          if (interrupted > 0) {
+            console.warn(
+              `[executor] Marked ${interrupted} execution(s) interrupted after restart; re-trigger them to resume.`,
+            );
+          }
+        }),
+        Effect.catch(() =>
+          Effect.sync(() =>
+            console.warn(
+              "[executor] Execution tombstone sweep failed; interrupted state may be stale.",
+            ),
+          ),
+        ),
+      );
+
       if (migration.migrated) {
         console.warn(
           `[executor] Migrated local Executor data to v2; moved old DB to ${migration.backupPath}.`,
