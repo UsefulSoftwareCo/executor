@@ -21,7 +21,7 @@ import { Browser, Cli, RunDir, Target } from "../src/services";
 import { withLocalServer } from "./local-server";
 
 scenario(
-  "Local auth · the CLI's ?_token URL boots an authenticated console",
+  "Local auth · the CLI's bootstrap URL boots an authenticated console",
   { timeout: 180_000 },
   Effect.gen(function* () {
     const cli = yield* Cli;
@@ -30,9 +30,9 @@ scenario(
     const runDir = yield* RunDir;
     const identity = yield* target.newIdentity();
 
-    yield* withLocalServer(cli, runDir, ({ url, token }) =>
+    yield* withLocalServer(cli, runDir, ({ url }) =>
       browser.session(identity, async ({ page, step }) => {
-        await step("Open the ?_token URL printed by executor web --foreground", async () => {
+        await step("Open the bootstrap URL printed by executor web --foreground", async () => {
           await page.goto(url, { waitUntil: "domcontentloaded" });
           await page.getByRole("link", { name: "Secrets" }).first().waitFor({ timeout: 30_000 });
           // Integrations actually LOAD (the built-in Executor integration) — proves
@@ -40,10 +40,13 @@ scenario(
           // testid: the list renders each integration's name + slug, never the
           // literal "built-in" (that string is only an internal `kind`).
           await page.getByTestId("integration-entry-executor").first().waitFor({ timeout: 30_000 });
-          // The token is moved out of the URL and persisted to localStorage.
-          expect(new URL(page.url()).searchParams.has("_token")).toBe(false);
+          // The bootstrap credential is single-use and never persisted: the
+          // query is stripped and localStorage stays empty — the bearer lives
+          // only in the in-memory connection.
+          const query = new URL(page.url()).search;
+          expect(query.includes("_otc") || query.includes("_token")).toBe(false);
           const stored = await page.evaluate(() => localStorage.getItem("executor.authToken"));
-          expect(stored).toBe(token);
+          expect(stored).toBe(null);
         });
       }),
     );

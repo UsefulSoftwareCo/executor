@@ -16,8 +16,11 @@ import { markFocus, markRecordingStart } from "../src/timeline";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 
-/** The `Open: …/?_token=<token>` URL the CLI prints once the server is up. */
-export const TOKEN_URL = /http:\/\/127\.0\.0\.1:\d+\/\?_token=[A-Za-z0-9_-]+/;
+/** The `Open: …/?_otc=<code>` or `Open: …/?_token=<token>` URL the CLI
+ * prints once the server is up. The OTC form is the default bootstrap (the
+ * bearer never rides the URL); the token form is the daemon's fallback when
+ * no OTC store is wired. */
+export const TOKEN_URL = /http:\/\/127\.0\.0\.1:\d+\/\?_(?:otc|token)=[A-Za-z0-9_-]+/;
 
 export interface ServerHandle {
   /** The full `?_token=` bootstrap URL (origin + token). */
@@ -98,7 +101,7 @@ export const withLocalServer = (
             const url = TOKEN_URL.exec(snapshot.text)?.[0];
             if (!url) {
               throw new Error(
-                `executor web --foreground printed no ?_token URL:\n${snapshot.text.slice(-600)}`,
+                `executor web --foreground printed no bootstrap URL:\n${snapshot.text.slice(-600)}`,
               );
             }
             publishUrl(url);
@@ -125,10 +128,50 @@ export const withLocalServer = (
         Effect.gen(function* () {
           const url = yield* Effect.promise(() => urlReady);
           const parsed = new URL(url);
+          // Resolve the bearer: a `?_token=` URL carries it directly; a
+          // `?_otc=` URL carries a single-use bootstrap code, redeemed the
+          // same way the production client does (POST /api/auth/exchange).
+          // Codes are single-use, and redeeming the printed one kills it for
+          // the browser — so after redeeming, mint a FRESH code via the
+          // bearer-gated /api/auth/otc endpoint and rebuild the bootstrap
+          // URL. Tests get a live bearer AND a live browser bootstrap URL,
+          // exactly like a real user session.
+          const token = yield* Effect.promise(async () => {
+            const direct = parsed.searchParams.get("_token");
+            if (direct !== null) return { token: direct, url };
+            const code = parsed.searchParams.get("_otc");
+            if (code === null) throw new Error("bootstrap URL carries no credential");
+            const res = await fetch(new URL("/api/auth/exchange", parsed.origin), {
+              method: "POST",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: `code=${encodeURIComponent(code)}`,
+            });
+            if (!res.ok) {
+              throw new Error(`OTC exchange failed: HTTP ${res.status}`);
+            }
+            const body = (await res.json()) as { readonly token?: unknown };
+            if (typeof body.token !== "string" || body.token.length === 0) {
+              throw new Error("OTC exchange returned no token");
+            }
+            const mintRes = await fetch(new URL("/api/auth/otc", parsed.origin), {
+              method: "POST",
+              headers: { authorization: `Bearer ${body.token}` },
+            });
+            if (!mintRes.ok) {
+              throw new Error(`OTC mint failed: HTTP ${mintRes.status}`);
+            }
+            const minted = (await mintRes.json()) as { readonly code?: unknown };
+            if (typeof minted.code !== "string" || minted.code.length === 0) {
+              throw new Error("OTC mint returned no code");
+            }
+            const fresh = new URL(parsed.origin + "/");
+            fresh.searchParams.set("_otc", minted.code);
+            return { token: body.token, url: fresh.toString() };
+          });
           yield* body({
-            url,
+            url: token.url,
             origin: parsed.origin,
-            token: parsed.searchParams.get("_token")!,
+            token: token.token,
           }).pipe(Effect.ensuring(Effect.sync(() => signalBodyDone())));
         }),
       ],

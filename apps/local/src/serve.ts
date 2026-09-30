@@ -13,6 +13,7 @@ import type { Subprocess } from "bun";
 import { setOAuthCompletionListener } from "@executor-js/api";
 import { oauthClientIdMetadataDocumentFromRequest } from "@executor-js/api/server";
 import { loadOrMintLocalAuthToken } from "./auth";
+import { makeOtcStore, type OtcStore } from "./otc";
 import { publishOAuthResult, waitForOAuthResult } from "./oauth-result-store";
 import { disposeAnalytics } from "./analytics";
 import { startIntegrationsRefresh } from "./integrations";
@@ -276,6 +277,8 @@ export interface ServerInstance {
   /** The effective bearer token this server validates. Callers publish it in the
    * manifest, print the `?_token=` bootstrap URL, and hand it to MCP clients. */
   authToken: string;
+  /** One-time bootstrap-code store for the web OTC exchange. */
+  otcStore: OtcStore;
   stop: () => Promise<void>;
 }
 
@@ -338,6 +341,9 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
   // process could otherwise drive.
   const authToken = normalizeCredential(opts.authToken) ?? loadOrMintLocalAuthToken();
   const isAuthorized = makeIsAuthorized(authToken);
+  // One-time bootstrap codes (web OTC exchange). Instance-bound: dies with
+  // the process, so a code can never be replayed against a future daemon.
+  const otcStore = makeOtcStore();
   // CORS-only origin allowlist (no Host gate — the bearer is the boundary).
   const corsAllowedHosts = new Set<string>([
     ...DEFAULT_ALLOWED_HOSTS,
@@ -423,6 +429,46 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
         // reachability check (which therefore never forwards a credential).
         if (url.pathname === "/api/health" && req.method === "GET") {
           return withCors(new Response("ok", { headers: { "content-type": "text/plain" } }));
+        }
+
+        // The OTC mint is bearer-gated (the CLI holds the bearer from the
+        // manifest); the exchange is reached by the browser on FIRST load,
+        // before it has any bearer — same rationale as the OAuth callback: an
+        // external actor (here, the just-opened browser tab) cannot carry our
+        // bearer. The one-time code IS the credential; consumption is
+        // destructive.
+        if (url.pathname === "/api/auth/otc" && req.method === "POST") {
+          if (!isAuthorized(req)) {
+            return withCors(new Response("Unauthorized", { status: 401 }));
+          }
+          return withCors(
+            new Response(JSON.stringify({ code: otcStore.issue() }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+          );
+        }
+        if (url.pathname === "/api/auth/exchange" && req.method === "POST") {
+          // oxlint-disable-next-line executor/no-promise-catch -- boundary: raw web-handler request body read; an unreadable body collapses to no code, which the exchange rejects
+          const code = (await req.text().catch(() => ""))
+            .split("&")
+            .find((kv) => kv.startsWith("code="))
+            ?.slice("code=".length);
+          const redeemed = code ? otcStore.consume(code) : null;
+          if (redeemed === null) {
+            return withCors(new Response("Invalid or expired code", { status: 400 }));
+          }
+          // The bearer is the request gate for /api; the HttpOnly cookie is
+          // transport hardening (SameSite=strict, never readable by JS).
+          return withCors(
+            new Response(JSON.stringify({ token: authToken }), {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+                "set-cookie": `executor_session=${authToken}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`,
+              },
+            }),
+          );
         }
 
         // OAuth callbacks and CIMD documents are reached by the external
@@ -524,6 +570,7 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
     return {
       port: server.port!,
       authToken,
+      otcStore,
       async stop() {
         if (stopped) return;
         stopped = true;
@@ -540,5 +587,6 @@ export async function startServer(opts: StartServerOptions = {}): Promise<Server
 
 if (import.meta.main) {
   const server = await startServer();
-  console.log(`Executor listening on http://localhost:${server.port}/?_token=${server.authToken}`);
+  const otc = server.otcStore.issue();
+  console.log(`Executor listening on http://localhost:${server.port}/?_otc=${otc}`);
 }

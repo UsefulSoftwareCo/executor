@@ -7,10 +7,11 @@
  *
  *   - Desktop: the Electron main process injects the header at the session
  *     layer, so the renderer never needs the token and this module no-ops.
- *   - Standalone web AND dev (vite): the server prints `…/?_token=<token>`.
- *     `bootstrapLocalAuthToken` reads it once, stores it in localStorage, strips
- *     it from the URL, and sets the connection's bearer auth. Subsequent loads
- *     read it from localStorage. Dev uses the exact same path — no dev-only
+ *   - Standalone web AND dev (vite): the server prints `…/?_otc=<code>`.
+ *     `bootstrapLocalAuthToken` POSTs the code to the exchange endpoint,
+ *     receives the bearer in the response body (plus an HttpOnly cookie),
+ *     applies it to the in-memory connection, and strips the query. Nothing
+ *     is written to localStorage. Dev uses the exact same path — no dev-only
  *     token injection.
  *
  * When a request still 401s (cleared storage, rotated token), the API client
@@ -57,34 +58,79 @@ const applyBearer = (token: string): void => {
  * mounts. Order: `?_token` URL param (one-time, persisted + stripped) →
  * localStorage. Identical in dev and prod.
  */
-export const bootstrapLocalAuthToken = (): void => {
+const EXCHANGE_PATH = "/api/auth/exchange";
+
+/**
+ * Exchange a one-time code for the local bearer. The response body carries the
+ * token (applied to the in-memory connection) and the server also sets an
+ * HttpOnly SameSite=strict cookie (transport hardening; the bearer header
+ * remains the /api request gate). Returns true on success.
+ */
+// oxlint-disable executor/no-try-catch-or-throw -- boundary: browser fetch in a synchronous bootstrap path; any network failure collapses to false and the auth gate renders
+const exchangeOtc = async (code: string): Promise<boolean> => {
+  try {
+    const res = await fetch(EXCHANGE_PATH, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `code=${encodeURIComponent(code)}`,
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { readonly token?: unknown };
+    if (typeof body.token !== "string" || body.token.length === 0) return false;
+    applyBearer(body.token);
+    return true;
+  } catch {
+    return false;
+  }
+};
+// oxlint-enable executor/no-try-catch-or-throw
+
+export const bootstrapLocalAuthToken = (): Promise<void> | void => {
   const url = globalThis.window ? new URL(window.location.href) : null;
-  const fromUrl = url?.searchParams.get("_token") ?? null;
+  const fromOtc = url?.searchParams.get("_otc") ?? null;
+  const fromUrlToken = url?.searchParams.get("_token") ?? null;
   const stripCacheBust = url?.searchParams.has(DESKTOP_LAUNCH_CACHE_BUST_PARAM) ?? false;
   if (stripCacheBust) {
     url!.searchParams.delete(DESKTOP_LAUNCH_CACHE_BUST_PARAM);
   }
 
+  const stripQuery = (): void => {
+    globalThis.window?.history?.replaceState(null, "", url!.pathname + url!.search + url!.hash);
+  };
+
   if (isDesktopBridge()) {
-    if (fromUrl) {
-      url!.searchParams.delete("_token");
-    }
-    if (stripCacheBust || fromUrl) {
-      globalThis.window?.history?.replaceState(null, "", url!.pathname + url!.search + url!.hash);
-    }
+    // Desktop injects the bearer at the session layer; nothing to exchange.
+    if (fromOtc) url!.searchParams.delete("_otc");
+    if (fromUrlToken) url!.searchParams.delete("_token");
+    if (stripCacheBust || fromOtc || fromUrlToken) stripQuery();
     return;
   }
 
-  if (fromUrl) {
-    persistToken(fromUrl);
+  if (fromOtc) {
+    // The code is single-use, so strip the query immediately regardless of
+    // outcome (a failed exchange falls through to the stored token or the
+    // auth gate). The returned promise is awaited by the caller
+    // (entry-client) before the router mounts: the bearer must be on the
+    // connection before the first API atom fires, or those atoms 401 and
+    // cache the failure state — the auth gate would render even after a
+    // successful late exchange.
+    url!.searchParams.delete("_otc");
+    stripQuery();
+    return exchangeOtc(fromOtc).then(() => undefined);
+  }
+
+  if (fromUrlToken) {
+    // Legacy fallback: dev servers / older daemons may still print ?_token=.
+    // Accepted for compatibility but never persisted — the OTC path is the
+    // default and this branch is deprecated.
     url!.searchParams.delete("_token");
-    globalThis.window?.history?.replaceState(null, "", url!.pathname + url!.search + url!.hash);
-    applyBearer(fromUrl);
+    stripQuery();
+    applyBearer(fromUrlToken);
     return;
   }
 
   if (stripCacheBust) {
-    globalThis.window?.history?.replaceState(null, "", url!.pathname + url!.search + url!.hash);
+    stripQuery();
   }
 
   const stored = readStoredToken();
