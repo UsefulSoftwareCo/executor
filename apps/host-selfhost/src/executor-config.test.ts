@@ -11,6 +11,10 @@ const originalSecret = process.env[SECRET_ENV_NAME];
 const originalTtl = process.env[TTL_ENV_NAME];
 const RATE_LIMIT_ENV_NAME = "EXECUTOR_DISABLE_AUTH_RATE_LIMIT";
 const originalRateLimit = process.env[RATE_LIMIT_ENV_NAME];
+const PROXY_HEADER_ENV_NAME = "EXECUTOR_TRUSTED_PROXY_HEADER";
+const PROXIES_ENV_NAME = "EXECUTOR_TRUSTED_PROXIES";
+const originalProxyHeader = process.env[PROXY_HEADER_ENV_NAME];
+const originalProxies = process.env[PROXIES_ENV_NAME];
 
 beforeEach(() => {
   process.env[SECRET_ENV_NAME] = originalSecret ?? "executor-config-test-secret";
@@ -36,6 +40,16 @@ afterEach(() => {
     delete process.env[RATE_LIMIT_ENV_NAME];
   } else {
     process.env[RATE_LIMIT_ENV_NAME] = originalRateLimit;
+  }
+  if (originalProxyHeader === undefined) {
+    delete process.env[PROXY_HEADER_ENV_NAME];
+  } else {
+    process.env[PROXY_HEADER_ENV_NAME] = originalProxyHeader;
+  }
+  if (originalProxies === undefined) {
+    delete process.env[PROXIES_ENV_NAME];
+  } else {
+    process.env[PROXIES_ENV_NAME] = originalProxies;
   }
 });
 
@@ -131,3 +145,62 @@ test("auth rate limiting is off when the opt-out is exactly true", () => {
   process.env[RATE_LIMIT_ENV_NAME] = "true";
   expect(loadConfig().authRateLimit).toBe(false);
 });
+
+test("no trusted proxy is configured by default", () => {
+  delete process.env[PROXY_HEADER_ENV_NAME];
+  delete process.env[PROXIES_ENV_NAME];
+  expect(loadConfig().trustedProxy).toBeUndefined();
+
+  process.env[PROXY_HEADER_ENV_NAME] = "  ";
+  process.env[PROXIES_ENV_NAME] = " , ";
+  expect(loadConfig().trustedProxy).toBeUndefined();
+});
+
+test("a trusted proxy header and address list are parsed together", () => {
+  process.env[PROXY_HEADER_ENV_NAME] = " CF-Connecting-IP ";
+  process.env[PROXIES_ENV_NAME] = "10.0.0.0/8, 192.0.2.10 ,2001:db8::/32";
+  expect(loadConfig().trustedProxy).toEqual({
+    header: "cf-connecting-ip",
+    proxies: ["10.0.0.0/8", "192.0.2.10", "2001:db8::/32"],
+  });
+});
+
+// A header with no proxy addresses would be honoured from anyone who can reach
+// the container; addresses with no header name nothing. Both refuse to boot.
+test("a trusted proxy header without addresses refuses to boot", () => {
+  process.env[PROXY_HEADER_ENV_NAME] = "x-real-ip";
+  delete process.env[PROXIES_ENV_NAME];
+  expect(() => loadConfig()).toThrow(/must be set together/);
+});
+
+test("trusted proxy addresses without a header refuse to boot", () => {
+  delete process.env[PROXY_HEADER_ENV_NAME];
+  process.env[PROXIES_ENV_NAME] = "10.0.0.0/8";
+  expect(() => loadConfig()).toThrow(/must be set together/);
+});
+
+test.each(["x real ip", "x-real-ip:", "x(real)ip"])(
+  "a malformed trusted proxy header (%j) refuses to boot",
+  (raw) => {
+    process.env[PROXY_HEADER_ENV_NAME] = raw;
+    process.env[PROXIES_ENV_NAME] = "10.0.0.0/8";
+    expect(() => loadConfig()).toThrow(/EXECUTOR_TRUSTED_PROXY_HEADER/);
+  },
+);
+
+test("the server-stamped header cannot be named as the proxy header", () => {
+  process.env[PROXY_HEADER_ENV_NAME] = "X-Executor-Client-IP";
+  process.env[PROXIES_ENV_NAME] = "10.0.0.0/8";
+  expect(() => loadConfig()).toThrow(/must not be "x-executor-client-ip"/);
+});
+
+// Better Auth would only warn and skip a bad entry, silently leaving every
+// user in one bucket; refuse at boot and name the entry instead.
+test.each(["proxy.example.com", "10.0.0.0/33", "10.0.0/8", "*"])(
+  "a malformed trusted proxy address (%j) refuses to boot",
+  (raw) => {
+    process.env[PROXY_HEADER_ENV_NAME] = "x-real-ip";
+    process.env[PROXIES_ENV_NAME] = `10.0.0.0/8,${raw}`;
+    expect(() => loadConfig()).toThrow(`EXECUTOR_TRUSTED_PROXIES contains ${JSON.stringify(raw)}`);
+  },
+);

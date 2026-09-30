@@ -53,23 +53,25 @@ Back it up by snapshotting that volume (or copying `/data`, primarily `data.db`)
 Everything is optional: a bare run boots a working instance. The defaults below are
 the container defaults.
 
-| Variable                            | Default                         | Purpose                                                                                         |
-| ----------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `PORT`                              | `4788`                          | HTTP port the server listens on.                                                                |
-| `EXECUTOR_HOST`                     | `0.0.0.0`                       | Bind address. The image binds all interfaces.                                                   |
-| `EXECUTOR_DATA_DIR`                 | `/data`                         | Directory holding the database and generated keys.                                              |
-| `EXECUTOR_DB_PATH`                  | `<data dir>/data.db`            | SQLite database file.                                                                           |
-| `EXECUTOR_WEB_BASE_URL`             | auto (`http://localhost:4788`)  | Public URL browsers use. Required behind a domain or TLS (see below).                           |
-| `EXECUTOR_TRUSTED_ORIGINS`          | unset                           | Comma-separated browser aliases allowed to authenticate without changing the public URL.        |
-| `BETTER_AUTH_SECRET`                | generated, persisted in `/data` | Session secret (32+ chars). Rotating it signs everyone out.                                     |
-| `EXECUTOR_SECRET_KEY`               | generated, persisted in `/data` | Master key encrypting stored secrets. Set it to manage it yourself.                             |
-| `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`    | unset                           | Pre-create the admin headlessly (with the password below); skips browser first-run.             |
-| `EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD` | unset                           | Password for the bootstrap admin.                                                               |
-| `EXECUTOR_BOOTSTRAP_ADMIN_NAME`     | `Admin`                         | Display name for the bootstrap admin.                                                           |
-| `EXECUTOR_ORG_NAME`                 | `Default`                       | Display name of the single org every user joins.                                                |
-| `EXECUTOR_ORG_SLUG`                 | `default`                       | URL slug for that org.                                                                          |
-| `EXECUTOR_ALLOW_LOCAL_NETWORK`      | `false`                         | Allow sandboxed code to reach loopback / private addresses. Keep off unless you trust the code. |
-| `EXECUTOR_DISABLE_AUTH_RATE_LIMIT`  | `false`                         | Turn off sign-in rate limiting. Only when a proxy or WAF in front of Executor limits instead.   |
+| Variable                            | Default                         | Purpose                                                                                           |
+| ----------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `PORT`                              | `4788`                          | HTTP port the server listens on.                                                                  |
+| `EXECUTOR_HOST`                     | `0.0.0.0`                       | Bind address. The image binds all interfaces.                                                     |
+| `EXECUTOR_DATA_DIR`                 | `/data`                         | Directory holding the database and generated keys.                                                |
+| `EXECUTOR_DB_PATH`                  | `<data dir>/data.db`            | SQLite database file.                                                                             |
+| `EXECUTOR_WEB_BASE_URL`             | auto (`http://localhost:4788`)  | Public URL browsers use. Required behind a domain or TLS (see below).                             |
+| `EXECUTOR_TRUSTED_ORIGINS`          | unset                           | Comma-separated browser aliases allowed to authenticate without changing the public URL.          |
+| `BETTER_AUTH_SECRET`                | generated, persisted in `/data` | Session secret (32+ chars). Rotating it signs everyone out.                                       |
+| `EXECUTOR_SECRET_KEY`               | generated, persisted in `/data` | Master key encrypting stored secrets. Set it to manage it yourself.                               |
+| `EXECUTOR_BOOTSTRAP_ADMIN_EMAIL`    | unset                           | Pre-create the admin headlessly (with the password below); skips browser first-run.               |
+| `EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD` | unset                           | Password for the bootstrap admin.                                                                 |
+| `EXECUTOR_BOOTSTRAP_ADMIN_NAME`     | `Admin`                         | Display name for the bootstrap admin.                                                             |
+| `EXECUTOR_ORG_NAME`                 | `Default`                       | Display name of the single org every user joins.                                                  |
+| `EXECUTOR_ORG_SLUG`                 | `default`                       | URL slug for that org.                                                                            |
+| `EXECUTOR_ALLOW_LOCAL_NETWORK`      | `false`                         | Allow sandboxed code to reach loopback / private addresses. Keep off unless you trust the code.   |
+| `EXECUTOR_TRUSTED_PROXY_HEADER`     | unset                           | Header your reverse proxy sets to the real client IP, e.g. `cf-connecting-ip`. Set with the next. |
+| `EXECUTOR_TRUSTED_PROXIES`          | unset                           | Comma-separated IPs or CIDR ranges the proxy connects from. Set with the previous.                |
+| `EXECUTOR_DISABLE_AUTH_RATE_LIMIT`  | `false`                         | Turn off sign-in rate limiting. Only when a proxy or WAF in front of Executor limits instead.     |
 
 Tracing is configured separately, and off unless you turn it on — see
 [Tracing](/hosted/tracing).
@@ -108,6 +110,46 @@ separately:
 Only cookie-authenticated browser requests use this allowlist. OAuth callbacks,
 MCP metadata, approval links, and other absolute URLs remain pinned to
 `EXECUTOR_WEB_BASE_URL`. Origins are never inferred from request headers.
+
+### Behind a reverse proxy
+
+Sign-in attempts are rate-limited per client IP (three per ten seconds). When
+browsers reach the container directly, the IP is the connecting address and
+nothing needs configuring.
+
+Behind Caddy, nginx, Cloudflare, or another reverse proxy, every connection
+comes from the proxy. If Executor runs behind a reverse proxy, set both
+variables, otherwise all users share one sign-in bucket. Tell Executor which
+header the proxy sets to the real client IP, and which addresses the proxy
+connects from:
+
+```bash
+-e EXECUTOR_TRUSTED_PROXY_HEADER=x-real-ip \
+-e EXECUTOR_TRUSTED_PROXIES=172.18.0.2
+```
+
+Set both together. The header is only honoured on connections from one of the
+listed addresses, so a client that reaches the container directly cannot spoof
+it. List only the proxy's own addresses (its IP, or the compose network it
+shares with Executor, such as `172.18.0.0/24`), never a range that also
+contains your users: every listed address counts as a proxy hop, and if every
+hop is trusted Better Auth finds no client and falls back to one shared bucket.
+Use `cf-connecting-ip` with Cloudflare's published IP ranges, `x-real-ip` for
+nginx (`proxy_set_header X-Real-IP $remote_addr;`), or `x-forwarded-for` for
+Caddy. A malformed entry refuses to boot rather than silently pooling every
+user into one bucket.
+
+Executor never trusts `x-forwarded-for` or a similar header on its own, because
+any client could set it. When an auth request carries one of those headers and
+no trusted proxy is configured, the server logs one warning naming these two
+variables.
+
+On Linux, Docker's default iptables NAT preserves the client IP on a published
+port, so a container reached directly needs nothing. Docker Desktop (macOS and
+Windows) routes published ports through Docker's userland proxy, as does
+loopback traffic from the Docker host itself, so every connection arrives from
+one internal address; there, put a reverse proxy on the same Docker network in
+front of Executor and configure it as above.
 
 ## Connect an agent
 
