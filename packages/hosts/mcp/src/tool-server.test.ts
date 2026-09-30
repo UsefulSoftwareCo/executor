@@ -729,6 +729,109 @@ describe("MCP host server — native elicitation mode", () => {
     });
   });
 
+  it("execute tool decodes unpadded base64url text file output (Gmail message bodies)", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: null,
+          output: [
+            {
+              type: "file",
+              file: toolFile({
+                name: "body.txt",
+                mimeType: "text/plain; charset=UTF-8",
+                data: "5Lu25ZCNOiDjgZPjgpPjgavjgaHjga_kuJbnlYwg4oCUIOODhuOCueODiD8-Pg",
+                byteLength: 46,
+              }),
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "emit(body);" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[1]).toMatchObject({
+        type: "text",
+        text: "件名: こんにちは世界 — テスト?>>",
+      });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool hands MCP clients standard padded base64 for base64url binary file output", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: null,
+          output: [
+            {
+              type: "file",
+              file: toolFile({
+                name: "blob.bin",
+                mimeType: "application/octet-stream",
+                data: "-_8",
+                byteLength: 2,
+              }),
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "emit(blob);" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[1]).toMatchObject({
+        type: "resource",
+        resource: { blob: "+/8=" },
+      });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
+  it("execute tool reports undecodable file output instead of failing the call", async () => {
+    const engine = makeStubEngine({
+      execute: () =>
+        Effect.succeed({
+          result: { kept: true },
+          output: [
+            {
+              type: "file",
+              file: toolFile({
+                name: "body.txt",
+                mimeType: "text/plain",
+                data: "not base64!",
+                byteLength: 11,
+              }),
+            },
+          ],
+        }),
+    });
+
+    await withNativeClient(engine, ELICITATION_CAPS, async (client) => {
+      const result = await client.callTool({
+        name: "execute",
+        arguments: { code: "emit(body); return { kept: true };" },
+      });
+
+      const content = result.content as Array<Record<string, unknown>>;
+      expect(content[1]).toMatchObject({
+        type: "text",
+        text: "File output omitted: body.txt data is not valid base64 or base64url.",
+      });
+      expect(result.structuredContent).toMatchObject({ status: "completed" });
+      expect(result.isError).toBeFalsy();
+    });
+  });
+
   it("execute tool surfaces failed engine effects as an opaque generic with correlation id", async () => {
     const engine = makeStubEngine({
       execute: () => Effect.fail(new TestExecutionError({ message: "Unexpected token ':'" })),

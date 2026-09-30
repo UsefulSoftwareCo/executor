@@ -595,6 +595,20 @@ const toolFileKind = (file: ToolFileValue): "image" | "audio" | "text" | "resour
   return "resource";
 };
 
+/**
+ * Agents wrap upstream payloads in a `ToolFile` verbatim, and some upstreams
+ * (Gmail message bodies) use unpadded base64url. Accept either alphabet and
+ * hand MCP clients standard padded base64. Returns null when the data is not
+ * base64 in either alphabet.
+ */
+const standardBase64 = (data: string): string | null => {
+  const alphabet = data.replace(/\s/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  const unpadded = alphabet.replace(/=+$/, "");
+  if (!/^[A-Za-z0-9+/]*$/.test(unpadded) || unpadded.length % 4 === 1) return null;
+  const remainder = unpadded.length % 4;
+  return remainder === 0 ? unpadded : `${unpadded}${"=".repeat(4 - remainder)}`;
+};
+
 const bytesFromBase64 = (base64: string): Uint8Array => {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -604,8 +618,8 @@ const bytesFromBase64 = (base64: string): Uint8Array => {
   return bytes;
 };
 
-const decodeTextFile = (file: ToolFileValue): string => {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytesFromBase64(file.data));
+const decodeTextFile = (base64: string): string => {
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytesFromBase64(base64));
   if (text.length <= TEXT_FILE_CONTENT_MAX_CHARS) return text;
   return `${text.slice(0, TEXT_FILE_CONTENT_MAX_CHARS)}\n\n[truncated ${
     text.length - TEXT_FILE_CONTENT_MAX_CHARS
@@ -613,15 +627,24 @@ const decodeTextFile = (file: ToolFileValue): string => {
 };
 
 const toolFileContent = (file: ToolFileValue): ContentBlock[] => {
+  const data = standardBase64(file.data);
+  if (data === null) {
+    return [
+      {
+        type: "text",
+        text: `File output omitted: ${toolFileName(file)} data is not valid base64 or base64url.`,
+      },
+    ];
+  }
   const kind = toolFileKind(file);
   if (kind === "image") {
-    return [{ type: "image", data: file.data, mimeType: file.mimeType }];
+    return [{ type: "image", data, mimeType: file.mimeType }];
   }
   if (kind === "audio") {
-    return [{ type: "audio", data: file.data, mimeType: file.mimeType }];
+    return [{ type: "audio", data, mimeType: file.mimeType }];
   }
   if (kind === "text") {
-    return [{ type: "text", text: decodeTextFile(file) }];
+    return [{ type: "text", text: decodeTextFile(data) }];
   }
   return [
     {
@@ -629,7 +652,7 @@ const toolFileContent = (file: ToolFileValue): ContentBlock[] => {
       resource: {
         uri: fileResourceUri(file),
         mimeType: file.mimeType,
-        blob: file.data,
+        blob: data,
       },
     },
   ];
