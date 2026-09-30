@@ -4,6 +4,8 @@ import { HttpClient } from "effect/unstable/http";
 
 import {
   authToolFailure,
+  botChallengeToolFailure,
+  detectBotChallenge,
   detectInsufficientScope,
   AuthTemplateSlug,
   definePlugin,
@@ -1434,6 +1436,21 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
         // gateway's OAuth error object), and even when it is, the transport
         // status is the authoritative signal — labelling it graphql_errors
         // would hide the credential problem from the agent entirely.
+        //
+        // A bot-protection challenge comes first of all: the edge answered
+        // before the request reached the endpoint, so neither the credential
+        // nor the GraphQL layer was involved.
+        const botChallenge =
+          result.status < 200 || result.status >= 300
+            ? detectBotChallenge({ headers: result.headers })
+            : null;
+        if (botChallenge) {
+          return botChallengeToolFailure({
+            integration: { id: integration, scope: credential.owner },
+            status: result.status,
+            detection: botChallenge,
+          });
+        }
         if (result.status === 401 || result.status === 403) {
           // A scope-insufficient 403 is not fixable by re-authenticating
           // the same grant; give it its own code so the agent stops looping

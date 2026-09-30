@@ -39,6 +39,7 @@ import {
   ToolAddress,
 } from "@executor-js/sdk";
 import { makeTestConfig, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
+import { variable } from "@executor-js/sdk/http-auth";
 import {
   addOpenApiTestConnection,
   makeOpenApiHttpApiTestIntegrationConfig,
@@ -398,6 +399,121 @@ describe("OpenAPI upstream failure modes", () => {
       expect(result).toMatchObject({
         ok: false,
         error: { code: "connection_rejected", status: 403 },
+      });
+    }),
+  );
+
+  // A Cloudflare challenge page is the edge answering before the request
+  // reaches the API: the key was never evaluated, so it must not read as a
+  // rejected credential (and the challenge HTML must not be the payload).
+  const CHALLENGE_HTML =
+    "<!DOCTYPE html><html lang=\"en-US\"><head><title>Just a moment...</title></head><body><script>window._cf_chl_opt = {cType: 'managed', cZone: 'api.example.com'};</script></body></html>";
+
+  it.effect("Cloudflare challenge 403 is classified as upstream_bot_challenge", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: {
+          "content-type": "text/html; charset=UTF-8",
+          "cf-mitigated": "challenge",
+          "cf-ray": "8f1a2b3c4d5e6f70-SJC",
+          server: "cloudflare",
+        },
+        body: CHALLENGE_HTML,
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_bot_challenge",
+          status: 403,
+          retryable: false,
+          message: expect.stringContaining("Ray ID 8f1a2b3c4d5e6f70-SJC"),
+          details: {
+            category: "upstream_protection",
+            upstream: { status: 403, provider: "cloudflare", rayId: "8f1a2b3c4d5e6f70-SJC" },
+          },
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain("_cf_chl_opt");
+    }),
+  );
+
+  it.effect("Cloudflare challenge on a non-auth status is classified the same way", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 503,
+        headers: { "content-type": "text/html", "cf-mitigated": "challenge" },
+        body: CHALLENGE_HTML,
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: "upstream_bot_challenge", status: 503 },
+      });
+    }),
+  );
+
+  it.effect(
+    "challenge-looking HTML without the cf-mitigated header stays connection_rejected",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* startScriptedServer(() => ({
+          status: 403,
+          headers: { "content-type": "text/html", server: "cloudflare" },
+          body: CHALLENGE_HTML,
+        }));
+        const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+        const result = yield* executor.execute(address, {});
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "connection_rejected", status: 403 },
+        });
+      }),
+  );
+
+  it.effect("a challenged health probe reads degraded, not expired", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: {
+          "content-type": "text/html",
+          "cf-mitigated": "challenge",
+          "cf-ray": "8f1a2b3c4d5e6f70-SJC",
+        },
+        body: CHALLENGE_HTML,
+      }));
+      const executor = yield* createExecutor(makeTestConfig({ plugins: testPlugins() }));
+      yield* executor.openapi.addSpec({
+        spec: { kind: "blob", value: server.specJson },
+        slug: "f",
+        baseUrl: server.baseUrl,
+        healthCheck: { operation: LIST_THINGS },
+        authenticationTemplate: [
+          { slug: "apiKey", type: "apiKey", headers: { "x-api-key": [variable("token")] } },
+        ],
+      });
+
+      const health = yield* executor.connections.validate({
+        owner: "org",
+        integration: IntegrationSlug.make("f"),
+        template: AuthTemplateSlug.make("apiKey"),
+        value: "token",
+      });
+
+      expect(health).toMatchObject({
+        status: "degraded",
+        httpStatus: 403,
+        reason: "upstream_status",
+        detail: expect.stringContaining("credential was not checked"),
       });
     }),
   );
