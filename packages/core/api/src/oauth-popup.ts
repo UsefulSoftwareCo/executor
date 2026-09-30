@@ -12,6 +12,8 @@
 
 import { Cause, Effect } from "effect";
 
+import { escapeHtml } from "./html-escape";
+
 import {
   decodeOAuthCallbackState,
   OAUTH_POPUP_MESSAGE_TYPE,
@@ -47,14 +49,6 @@ export const setOAuthCompletionListener = (listener: OAuthCompletionListener | n
 // ---------------------------------------------------------------------------
 // HTML generation
 // ---------------------------------------------------------------------------
-
-const escapeHtml = (value: string): string =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 
 /**
  * Serialize for embedding inside a `<script>` tag. Escapes the characters

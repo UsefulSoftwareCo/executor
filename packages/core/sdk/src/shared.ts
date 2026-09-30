@@ -163,6 +163,8 @@ export {
   type TokenEndpointAuthMethod,
   isTokenEndpointAuthMethod,
   type FirstPartyOAuthClientConfig,
+  type OAuthAuthorizationSetup,
+  type OAuthSetupResult,
   type OAuthGrant,
   type OAuthAuthentication,
   type OAuthClient,

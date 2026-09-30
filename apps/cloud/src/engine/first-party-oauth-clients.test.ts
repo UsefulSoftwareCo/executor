@@ -83,6 +83,10 @@ describe("cloud first-party OAuth clients", () => {
         optional_scope: "content crm.objects.custom.read crm.schemas.custom.read",
       },
     });
+    expect(byName.get("github")).toMatchObject({
+      authorizationScopes: [],
+      authorizationSetup: { actionUrl: "https://github.com/apps/executor-sh/installations/new" },
+    });
     expect(byName.get("linear")).toMatchObject({ authorizationScopeSeparator: "," });
     expect(byName.get("microsoft")).toMatchObject({
       additionalAuthorizationScopes: ["offline_access"],
@@ -178,4 +182,14 @@ describe("cloud first-party Google app", () => {
       expect(allowed).not.toContain(GOOGLE_SCOPE(scope));
     }
   });
+});
+
+it("uses the installation page for the deployment's GitHub App", () => {
+  const github = firstPartyOAuthClientsFor({
+    ...completeEnv,
+    FIRST_PARTY_GITHUB_INSTALLATION_URL: "https://github.com/apps/custom-app/installations/new",
+  }).find((client) => client.name === "github");
+  expect(github?.authorizationSetup?.actionUrl).toBe(
+    "https://github.com/apps/custom-app/installations/new",
+  );
 });

@@ -7,6 +7,9 @@ import {
   ConnectionName,
   IntegrationSlug,
   OAuthClientSlug,
+  OAuthState,
+  Subject,
+  Tenant,
   ToolAddress,
   ToolName,
 } from "./ids";
@@ -15,6 +18,8 @@ import {
   type FirstPartyOAuthClientConfig,
   type OAuthStartError,
 } from "./oauth-client";
+import { createExecutor } from "./executor";
+import { decodeOAuthCallbackState } from "./oauth";
 import { definePlugin } from "./plugin";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 import { scopesFromAuthorizeUrl, serveOAuthTestServer } from "./testing/oauth-test-server";
@@ -546,6 +551,149 @@ describe("first-party oauth clients", () => {
           code: callback.code,
         });
         expect(String(connection.address)).toBe("tools.acme.user.mine");
+      }),
+    ),
+  );
+});
+
+describe("first-party authorization setup", () => {
+  const setup = {
+    title: "Connect GitHub",
+    description: "Choose repositories before authorizing your account.",
+    actionLabel: "Install GitHub App",
+    actionUrl: "https://github.com/apps/example/installations/new",
+  };
+  const firstParty: FirstPartyOAuthClientConfig = {
+    name: "acme",
+    authorizationUrl: "https://github.com/login/oauth/authorize",
+    tokenUrl: "https://github.com/login/oauth/access_token",
+    clientId: "test-client",
+    clientSecret: "test-secret",
+    authorizationScopes: [],
+    authorizationSetup: setup,
+  };
+  const startInput = {
+    owner: "user" as const,
+    client: FIRST_PARTY,
+    clientOwner: "org" as const,
+    name: ConnectionName.make("setup"),
+    integration: INTEG,
+    template: TEMPLATE,
+  };
+
+  it.effect(
+    "keeps PKCE, organization routing and custom callbacks through setup and reconnect",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { executor } = yield* makeTestWorkspaceHarness({
+            plugins,
+            firstPartyOAuthClients: [firstParty],
+            redirectUri: "https://executor.example/api/oauth/callback",
+            oauthCallbackStateOrgSlug: "example-org",
+          });
+          yield* executor.acme.seed(["repo"]);
+          // The default (no newConnection flag) is also the reconnect path.
+          const started = yield* executor.oauth.start({
+            ...startInput,
+            redirectUri: "https://client.example/custom-callback",
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+          const setupUrl = new URL(started.authorizationUrl);
+          expect(setupUrl.origin + setupUrl.pathname).toBe(
+            "https://executor.example/api/oauth/setup",
+          );
+          expect(decodeOAuthCallbackState(setupUrl.searchParams.get("state"))).toEqual({
+            state: started.state,
+            orgSlug: "example-org",
+          });
+          const resolved = yield* executor.oauth.getSetup(started.state);
+          expect(resolved.setup).toEqual(setup);
+          const provider = new URL(resolved.authorizationUrl);
+          expect(provider.origin + provider.pathname).toBe(firstParty.authorizationUrl);
+          expect(provider.searchParams.get("client_id")).toBe("test-client");
+          expect(provider.searchParams.get("redirect_uri")).toBe(
+            "https://client.example/custom-callback",
+          );
+          expect(provider.searchParams.get("state")).toBe(setupUrl.searchParams.get("state"));
+          expect(provider.searchParams.get("code_challenge_method")).toBe("S256");
+          expect(provider.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+          expect(provider.searchParams.has("scope")).toBe(false);
+          expect(JSON.stringify(resolved)).not.toContain("test-secret");
+          // Reading guidance does not consume the authorization session.
+          expect(yield* executor.oauth.getSetup(started.state)).toEqual(resolved);
+          yield* executor.oauth.cancel(started.state);
+          expect(
+            Predicate.isTagged(
+              yield* executor.oauth.getSetup(started.state).pipe(Effect.flip),
+              "OAuthSessionNotFoundError",
+            ),
+          ).toBe(true);
+        }),
+      ),
+  );
+
+  it.effect(
+    "does not disclose another user's or tenant's continuation and rejects expired sessions",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { executor, config } = yield* makeTestWorkspaceHarness({
+            plugins,
+            firstPartyOAuthClients: [firstParty],
+          });
+          yield* executor.acme.seed();
+          const started = yield* executor.oauth.start(startInput);
+          if (started.status !== "redirect") return yield* Effect.die("expected redirect");
+          for (const scope of [
+            { subject: Subject.make("another-user") },
+            { tenant: Tenant.make("another-tenant") },
+          ]) {
+            const other = yield* createExecutor({ ...config, ...scope });
+            yield* Effect.addFinalizer(() => other.close().pipe(Effect.ignore));
+            expect(
+              Predicate.isTagged(
+                yield* other.oauth.getSetup(started.state).pipe(Effect.flip),
+                "OAuthSessionNotFoundError",
+              ),
+            ).toBe(true);
+          }
+          expect(
+            Predicate.isTagged(
+              yield* executor.oauth.getSetup(OAuthState.make("unknown")).pipe(Effect.flip),
+              "OAuthSessionNotFoundError",
+            ),
+          ).toBe(true);
+          yield* Effect.promise(() =>
+            config.db.updateMany("oauth_session", {
+              where: (b) => b("state", "=", String(started.state)),
+              set: { expires_at: Date.now() - 1 },
+            }),
+          );
+          expect(
+            Predicate.isTagged(
+              yield* executor.oauth.getSetup(started.state).pipe(Effect.flip),
+              "OAuthSessionNotFoundError",
+            ),
+          ).toBe(true);
+        }),
+      ),
+  );
+
+  it.effect("requires a host callback to serve setup even with a caller-provided callback", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor } = yield* makeTestWorkspaceHarness({
+          plugins,
+          firstPartyOAuthClients: [firstParty],
+          redirectUri: null,
+        });
+        yield* executor.acme.seed();
+        const error = yield* executor.oauth
+          .start({ ...startInput, redirectUri: "https://client.example/callback" })
+          .pipe(Effect.flip);
+        expect(Predicate.isTagged(error, "OAuthStartError")).toBe(true);
       }),
     ),
   );
