@@ -5,9 +5,14 @@
 // Usage is tracked to Autumn after every execution (execution-usage.ts), but
 // nothing ever CHECKED the balance before running, so a free-tier org could run
 // unbounded executions past its quota. This gate consults
-// `AutumnService.checkExecutionBalance` before `execute` / `executeWithPause`.
-// `resume` is never gated: a paused execution already consumed its quota slot
-// when it started, and blocking resume would strand approved work forever.
+// `AutumnService.checkExecutionBalance` before `execute` / `executeWithPause`,
+// and before `resume` too: a paused execution consumed its quota slot when it
+// started, but one execution can pause many times, and each continuation is
+// fresh work — ungating resume let a single billable execution carry unbounded
+// resumed computation past both this gate and the rate limiter. A blocked
+// resume answers with the same descriptive error result as a blocked execute
+// and leaves the paused execution intact, so approved work can complete once
+// the org is back under its limit.
 //
 // FAIL OPEN is a hard requirement: any Autumn error, timeout, or missing
 // customer/feature allows the execution (logged + Sentry, mirroring
@@ -68,12 +73,13 @@ export type GateDecision =
   | { readonly blocked: true; readonly error: { readonly message: string } };
 
 /**
- * Wrap an engine so `decide` runs before `execute` / `executeWithPause`. A
- * blocked decision short-circuits to a descriptive `ExecuteResult.error`
- * (which `formatExecuteResult` renders as a clean `isError` MCP tool result)
- * WITHOUT invoking the inner engine — so a blocked execution is neither run
- * nor usage-tracked. `resume` and all read-only members pass through
- * untouched: paused executions must always be able to complete.
+ * Wrap an engine so `decide` runs before `execute` / `executeWithPause` /
+ * `resume`. A blocked decision short-circuits to a descriptive
+ * `ExecuteResult.error` (which `formatExecuteResult` renders as a clean
+ * `isError` MCP tool result) WITHOUT invoking the inner engine — so a blocked
+ * execution is neither run nor usage-tracked, and a blocked resume leaves the
+ * paused execution untouched and retryable. The read-only members pass through
+ * untouched.
  */
 export const withPreExecutionGate = <E extends Cause.YieldableError>(
   engine: ExecutionEngine<E>,
@@ -98,8 +104,17 @@ export const withPreExecutionGate = <E extends Cause.YieldableError>(
             })
           : engine.executeWithPause(code, options),
     ),
-  // resume is never gated: paused executions must be able to complete.
-  resume: (executionId, response) => engine.resume(executionId, response),
+  resume: (executionId, response) =>
+    Effect.flatMap(
+      decide,
+      (decision): Effect.Effect<ExecutionResult | null, E> =>
+        decision.blocked
+          ? Effect.succeed({
+              status: "completed",
+              result: { result: null, error: decision.error.message },
+            })
+          : engine.resume(executionId, response),
+    ),
   // Optional member, so it must be forwarded explicitly — a decorator that
   // rebuilds the object literal drops it, and the host then reads every settled
   // execution as "never existed".
