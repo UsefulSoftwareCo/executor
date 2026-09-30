@@ -10,6 +10,11 @@ import { openApiPlugin } from "./plugin";
 import { applySpecOverrides, type SpecOverrides } from "./spec-overrides";
 import { serveMutableOpenApiSpecTestServer } from "../testing";
 
+// URL-hosted spec tests boot real 127.0.0.1 listeners and fetch them through
+// the production path; the egress guard's loopback block must trust them in
+// this suite. Set before the plugin reads it.
+process.env.EXECUTOR_ALLOW_LOOPBACK_SPECS = "1";
+
 const testPlugins = () =>
   [openApiPlugin({ httpClientLayer: FetchHttpClient.layer }), memoryCredentialsPlugin()] as const;
 
