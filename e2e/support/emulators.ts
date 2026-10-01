@@ -216,6 +216,25 @@ const make = Effect.gen(function* () {
   return {
     /** Address of the GitHub emulator, for test apps to call. */
     githubOrigin: value.services.github.baseUrl,
+    /** A separate user-owned app, not Cloud's shared GitHub client. */
+    githubClient: (redirectUri: string) =>
+      request(value.services.github.baseUrl, "/_emulate/credentials", {
+        type: "oauth-authorization-code",
+        name: "Organization GitHub app",
+        redirect_uris: [redirectUri],
+      }).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({
+              credential: Schema.Struct({
+                client_id: Schema.NonEmptyString,
+                client_secret: Schema.NonEmptyString,
+              }),
+            }),
+          ),
+        ),
+        Effect.map(({ credential }) => Redacted.make(credential)),
+      ),
     billingSubscription: (input: {
       readonly organizationId: string;
       readonly planId: string;

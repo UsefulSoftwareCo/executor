@@ -38,6 +38,9 @@ import {
   OAuthAttempt,
   OAuthAttemptId,
   OAuthClientId,
+  type OAuthClientReference,
+  OAuthHostClientRef,
+  type OAuthTokenServer,
   OAuthGrant,
   OAuthReconnectRequired,
   OAuthRegistration,
@@ -69,7 +72,7 @@ import {
   idTokenIdentity,
   isOAuthErrorResponse,
   makeOAuthProtocol,
-  type OAuthProtocolFailed,
+  OAuthProtocolFailed,
 } from "./oauth-protocol.ts";
 import { defaultLabel, ownedAccount } from "./accounts.ts";
 import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
@@ -380,6 +383,22 @@ export const makeOAuth = (
     );
   const nextId = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
   const protocol = options === undefined ? undefined : makeOAuthProtocol(options);
+  /** Resolve only the same host app at the frozen destinations; rotation changes its secret, not identity. */
+  const resolveClient = Effect.fnUntraced(function* (
+    reference: OAuthClientReference,
+    server: OAuthTokenServer,
+  ) {
+    if (!Schema.is(OAuthHostClientRef)(reference)) return reference;
+    const host = options?.hostClients?.find(
+      (host) =>
+        host.name === reference.host &&
+        host.client.client_id === reference.client_id &&
+        sameUrl(host.authorizationEndpoint, server.authorization_endpoint) &&
+        sameUrl(host.tokenEndpoint, server.token_endpoint),
+    );
+    if (host === undefined) return yield* new OAuthProtocolFailed({ reason: "invalid_client" });
+    return host.client;
+  });
   const encrypt = (identity: AccountId | OAuthAttemptId | OAuthClientId, value: unknown) =>
     decode(JsonObject, value).pipe(
       Effect.flatMap((value) => credentials.encrypt(identity, Redacted.make(value))),
@@ -504,9 +523,9 @@ export const makeOAuth = (
               (host) =>
                 sameUrl(host.authorizationEndpoint, authorization_endpoint) &&
                 sameUrl(host.tokenEndpoint, token_endpoint),
-            )?.client
+            )
           : undefined;
-      client ??= hostClient;
+      client ??= hostClient?.client;
       if (
         automatic &&
         discovered.grant === "authorization_code" &&
@@ -524,12 +543,15 @@ export const makeOAuth = (
       return {
         method,
         redirect,
-        discovered,
+        discovered:
+          hostClient?.authorizationScopes === undefined
+            ? discovered
+            : { ...discovered, scopes: [...hostClient.authorizationScopes] },
         clientId,
         client,
         savedClient,
         reused,
-        hostClient: hostClient !== undefined,
+        hostClient,
       };
     });
   const oauthSetup = (input: typeof CheckOAuthSetup.Type) =>
@@ -731,7 +753,10 @@ export const makeOAuth = (
         redirectUri: redirect.href,
         account,
         ...(existing === undefined ? {} : { reconnect: true }),
-        client: registered,
+        client:
+          hostClient === undefined
+            ? registered
+            : { host: hostClient.name, client_id: registered.client_id },
         ...(input.client !== undefined
           ? { clientKey: clientId }
           : hostClient
@@ -920,7 +945,8 @@ export const makeOAuth = (
       const parameters = yield* protocol
         .callback(attempt, callback)
         .pipe(Effect.mapError(callbackFailed));
-      const tokens = yield* protocol.exchange(attempt, parameters).pipe(
+      const tokens = yield* resolveClient(attempt.client, attempt.server).pipe(
+        Effect.flatMap((client) => protocol.exchange({ ...attempt, client }, parameters)),
         Effect.mapError(exchangeFailed),
         Effect.catchIf(
           (error) =>
@@ -1121,12 +1147,15 @@ export const makeOAuth = (
           return Redacted.make(grant.fields);
         if (protocol === undefined) return yield* reconnect("not_renewable");
         const stage = grant.grant === "client_credentials" ? "clientCredentials" : "refresh";
+        const refreshToken = grant.grant === "client_credentials" ? undefined : grant.refreshToken;
         const renewal =
           grant.grant === "client_credentials"
             ? protocol.clientCredentials(grant)
-            : grant.refreshToken === undefined
+            : refreshToken === undefined
               ? undefined
-              : protocol.refresh({ ...grant, refreshToken: grant.refreshToken });
+              : resolveClient(grant.client, grant.server).pipe(
+                  Effect.flatMap((client) => protocol.refresh({ ...grant, client, refreshToken })),
+                );
         if (renewal === undefined) return yield* reconnect("not_renewable");
         const claim = `refresh_${yield* nextId}`;
         /** Renew under the claim and save the outcome; undefined when the claim was lost. */
@@ -1438,7 +1467,8 @@ export const makeOAuth = (
             : undefined;
       if (token === undefined) return "no_token" as const;
       yield* Effect.annotateCurrentSpan("oauth.revocation.token_type_hint", token.tokenTypeHint);
-      yield* protocol.revoke({ server: grant.server, client: grant.client, ...token });
+      const client = yield* resolveClient(grant.client, grant.server);
+      yield* protocol.revoke({ server: grant.server, client, ...token });
       return "revoked" as const;
     }).pipe(
       Effect.catch(() => Effect.succeed("failed" as const)),

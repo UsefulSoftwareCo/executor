@@ -1063,7 +1063,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
      * issuer, and then any RFC 6749 §4.1.2.1 `error`. Failures here never reached the token endpoint.
      */
     callback: (
-      input: { server: OAuthServer; client: OAuthRegistration; state: string },
+      input: { server: OAuthServer; client: Pick<OAuthRegistration, "client_id">; state: string },
       callback: URL,
     ) =>
       Effect.try({
