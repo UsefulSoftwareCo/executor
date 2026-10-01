@@ -191,6 +191,20 @@ export const createPkceCodeChallenge = (verifier: string): Promise<string> =>
  *  and redeemed by `oauth.complete`. */
 export const createOAuthState = (): string => oauth.generateRandomState();
 
+/** LinkedIn's standard confidential web flow rejects token requests that
+ * include PKCE material. Its separate native endpoint supports PKCE, so keep
+ * the exception tied to the documented web authorization endpoint and only
+ * apply it when the client has a secret. */
+export const shouldUsePkce = (authorizationUrl: string, clientSecret?: string | null): boolean => {
+  if (!clientSecret) return true;
+  if (!URL.canParse(authorizationUrl)) return true;
+  const url = new URL(authorizationUrl);
+  return !(
+    url.origin.toLowerCase() === "https://www.linkedin.com" &&
+    url.pathname === "/oauth/v2/authorization"
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Authorization URL builder
 // ---------------------------------------------------------------------------
@@ -202,7 +216,7 @@ export type BuildAuthorizationUrlInput = {
   readonly scopes: readonly string[];
   readonly state: string;
   /** Pre-computed base64url S256 challenge (from `createPkceCodeChallenge`). */
-  readonly codeChallenge: string;
+  readonly codeChallenge?: string;
   /** Separator between scopes. RFC 6749 says space; some providers use comma. */
   readonly scopeSeparator?: string;
   /** RFC 8707 Resource Indicator. MCP Authorization 2025-06-18 §"Resource
@@ -235,8 +249,10 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
     url.searchParams.set("scope", input.scopes.join(separator));
   }
   url.searchParams.set("state", input.state);
-  url.searchParams.set("code_challenge_method", "S256");
-  url.searchParams.set("code_challenge", input.codeChallenge);
+  if (input.codeChallenge) {
+    url.searchParams.set("code_challenge_method", "S256");
+    url.searchParams.set("code_challenge", input.codeChallenge);
+  }
   if (input.resource) {
     url.searchParams.set("resource", input.resource);
   }
@@ -244,6 +260,12 @@ export const buildAuthorizationUrl = (input: BuildAuthorizationUrlInput): string
     for (const [k, v] of Object.entries(input.extraParams)) {
       url.searchParams.set(k, v);
     }
+  }
+  // When this flow does not use PKCE, configured endpoint or provider-extra
+  // parameters must not reintroduce a challenge without a persisted verifier.
+  if (!input.codeChallenge) {
+    url.searchParams.delete("code_challenge_method");
+    url.searchParams.delete("code_challenge");
   }
   return url.toString();
 };
@@ -1213,7 +1235,7 @@ export type ExchangeAuthorizationCodeInput = {
   readonly clientId: string;
   readonly clientSecret?: string | null;
   readonly redirectUrl: string;
-  readonly codeVerifier: string;
+  readonly codeVerifier?: string;
   readonly code: string;
   readonly clientAuth?: ClientAuthMethod;
   /** Encoding required by the provider's token endpoint. OAuth defaults to
@@ -1300,8 +1322,10 @@ export const exchangeAuthorizationCode = (
       const params = new URLSearchParams({
         code: input.code,
         redirect_uri: input.redirectUrl,
-        code_verifier: input.codeVerifier,
       });
+      if (input.codeVerifier) {
+        params.set("code_verifier", input.codeVerifier);
+      }
       if (input.resource) {
         params.set("resource", input.resource);
       }
