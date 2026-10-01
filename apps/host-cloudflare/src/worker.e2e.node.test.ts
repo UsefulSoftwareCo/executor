@@ -252,6 +252,27 @@ describe("cloudflare host e2e (workerd/miniflare)", () => {
     expect(me.user.id).toBe("dev");
   });
 
+  it("lists the caller as the one active member, with the admin role the server grants", async () => {
+    const res = await worker.fetch("/api/account/members");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      members: ReadonlyArray<{
+        userId: string;
+        role: string;
+        status: string;
+        isCurrentUser: boolean;
+      }>;
+    };
+    expect(
+      body.members.map(({ userId, role, status, isCurrentUser }) => ({
+        userId,
+        role,
+        status,
+        isCurrentUser,
+      })),
+    ).toEqual([{ userId: "dev", role: "admin", status: "active", isCurrentUser: true }]);
+  });
+
   it("lists tools on a follow-up request after a fresh initialize (DO session survives across requests)", async () => {
     // The production regression: `initialize` creates the session, then a
     // SEPARATE `tools/list` request must find it. With the old in-process store a
