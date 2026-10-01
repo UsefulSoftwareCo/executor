@@ -164,10 +164,14 @@ export type OAuthClientInput = typeof OAuthClientInput.Type;
 
 /** An OAuth app the host registered by hand, for services without automatic registration. */
 export interface HostOAuthClient {
+  /** Stable deployment-owned identity, retained by attempts and grants across secret rotation. */
+  readonly name: string;
   /** The client is only sent to these exact endpoints. */
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
   readonly client: OAuthRegistration;
+  /** Override authorization scopes for apps whose permissions come from their registration. */
+  readonly authorizationScopes?: ReadonlyArray<string>;
 }
 
 /** Network transport and client identity belong to the product hosting this SDK. */
@@ -820,6 +824,13 @@ export const OAuthRegistration = Schema.Union([
   OAuthConfidentialRegistration,
 ]);
 export type OAuthRegistration = typeof OAuthRegistration.Type;
+/** Host secrets remain in configuration. The client ID pins the grant to the original app. */
+export const OAuthHostClientRef = Schema.Struct({
+  host: Schema.NonEmptyString,
+  client_id: Schema.NonEmptyString,
+});
+export const OAuthClientReference = Schema.Union([OAuthHostClientRef, OAuthRegistration]);
+export type OAuthClientReference = typeof OAuthClientReference.Type;
 /**
  * How a saved client came to exist. Only a `registered` client is Executor's to discard and
  * replace; saved records written before sources were recorded have none.
@@ -856,7 +867,7 @@ export const OAuthAttempt = Schema.Struct({
   verifier: Schema.NonEmptyString,
   nonce: Schema.optional(Schema.NonEmptyString),
   server: OAuthServer,
-  client: OAuthRegistration,
+  client: OAuthClientReference,
   /** User-entered clients become reusable only when this attempt completes successfully. */
   clientKey: Schema.optionalKey(OAuthClientId),
   /** The saved client this attempt used, so a rejection can discard exactly that version. */
@@ -886,7 +897,7 @@ export const OAuthGrant = Schema.Union([
     ...grantFields,
     grant: Schema.optionalKey(Schema.Literal("authorization_code")),
     server: OAuthServer,
-    client: OAuthRegistration,
+    client: OAuthClientReference,
     refreshToken: Schema.optional(Schema.NonEmptyString),
     /** The first validated ID token's `sub`. A refreshed ID token must keep it (OIDC Core §12.2). */
     idTokenSubject: Schema.optional(Schema.NonEmptyString),

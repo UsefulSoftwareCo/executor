@@ -4,8 +4,11 @@ import { Config, Effect, Option, Redacted } from "effect";
 import { cloudEmulators } from "./emulators.ts";
 
 const github = (origin: string, clientId: string, clientSecret: string): HostOAuthClient => ({
+  name: "github",
   authorizationEndpoint: `${origin}/login/oauth/authorize`,
   tokenEndpoint: `${origin}/login/oauth/access_token`,
+  // GitHub App user tokens use the app's registered permissions, not classic OAuth scopes.
+  authorizationScopes: [],
   client: {
     client_id: clientId,
     client_secret: clientSecret,
@@ -24,8 +27,8 @@ export const cloudOAuthClients = Effect.gen(function* () {
   if (Option.isSome(clientId) && Option.isSome(clientSecret))
     return [github("https://github.com", clientId.value, Redacted.value(clientSecret.value))];
   if (Option.isSome(clientId) || Option.isSome(clientSecret))
-    return yield* Effect.die(
-      new Error("Set FIRST_PARTY_GITHUB_CLIENT_ID and FIRST_PARTY_GITHUB_CLIENT_SECRET together"),
+    yield* Effect.logWarning(
+      "GitHub OAuth disabled: set FIRST_PARTY_GITHUB_CLIENT_ID and FIRST_PARTY_GITHUB_CLIENT_SECRET together",
     );
   return [];
 });
