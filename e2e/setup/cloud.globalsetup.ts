@@ -31,6 +31,7 @@ const optionalCloudEnv = (): Record<string, string> => {
   // env vars remain overridable for local runs against a different setup.
   const env: Record<string, string> = {
     SENTRY_OTEL_VERIFY: "true",
+    EXECUTOR_COEXISTENCE_KEY: "synthetic-coexistence-e2e-key-32-characters",
     SENTRY_OTEL_LOG_PAYLOAD: "true",
     // Boot the BROWSER crash reporter too, so what the frontend actually
     // reports is observable to a scenario. Production always has this set;
