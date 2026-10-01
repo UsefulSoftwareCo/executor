@@ -10,6 +10,7 @@ import {
 import * as Sentry from "@sentry/cloudflare";
 import handler from "@tanstack/react-start/server-entry";
 
+import { coexistenceIdentity } from "./coexistence/identity";
 import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
@@ -306,6 +307,9 @@ const prewarmAppPlane = (ctx: ExecutionContext): void => {
 
 const cloudflareHandler = {
   fetch: async (request, env, ctx) => {
+    if (new URL(request.url).pathname === "/__coexistence/identity") {
+      return coexistenceIdentity(request, env.EXECUTOR_COEXISTENCE_KEY);
+    }
     isolateRequestSeq += 1;
 
     // Public pages must not enter TanStack Start: its first-request dynamic

@@ -125,6 +125,8 @@ declare global {
        * the mirror current.
        */
       WORKOS_WEBHOOK_SECRET?: string;
+      /** Temporary private routing bridge. Unset disables the endpoint. */
+      EXECUTOR_COEXISTENCE_KEY?: string;
 
       // MCP
       EXECUTOR_MCP_DEBUG?: string;
