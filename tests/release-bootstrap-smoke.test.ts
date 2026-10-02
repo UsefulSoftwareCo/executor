@@ -105,6 +105,8 @@ describe("release bootstrap smoke", () => {
 
     const wrapperDir = join(distDir, "executor");
     const platformDir = join(distDir, currentPlatformPackage);
+    const wrapperPackage = await readFile(join(wrapperDir, "package.json"), "utf8");
+    expect(wrapperPackage).toContain('"executor": "bin.mjs"');
 
     // Simulate the install layout npm/bun produces:
     //   <root>/executor/                <- wrapper (bin, postinstall, package.json)
@@ -120,15 +122,20 @@ describe("release bootstrap smoke", () => {
 
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: release smoke test must clean temp install files after process checks
     try {
-      const firstRun = await runCommand(
-        process.execPath,
-        [join(installedWrapperDir, "bin", "executor"), "--help"],
-        installedWrapperDir,
-      );
-      const combined = `${firstRun.stdout}\n${firstRun.stderr}`;
-      expect(firstRun.exitCode, combined).toBe(0);
-      expect(combined).not.toContain("could not locate a platform binary");
-      expect(combined).not.toContain("ENOENT");
+      for (const entrypoint of [
+        join(installedWrapperDir, "bin.mjs"),
+        join(installedWrapperDir, "bin", "executor"),
+      ]) {
+        const firstRun = await runCommand(
+          process.execPath,
+          [entrypoint, "--help"],
+          installedWrapperDir,
+        );
+        const combined = `${firstRun.stdout}\n${firstRun.stderr}`;
+        expect(firstRun.exitCode, combined).toBe(0);
+        expect(combined).not.toContain("could not locate a platform binary");
+        expect(combined).not.toContain("ENOENT");
+      }
 
       // The platform binary lives under node_modules/<platform-pkg>/bin/.
       const platformBinaryPath = join(installedPlatformDir, "bin", currentRuntimeBinaryName);

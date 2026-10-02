@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { $ } from "bun";
 import { WORKER_BUNDLER_DIRNAME, missingWorkerBundlerFiles } from "./worker-bundler-artifact";
+import { writeWrapperEntrypoints } from "./wrapper-entrypoints";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const cliRoot = resolve(repoRoot, "apps/cli");
@@ -598,17 +599,10 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
 const buildWrapperPackage = async (binaries: Record<string, string>) => {
   const meta = await readMetadata();
   const wrapperDir = join(distDir, meta.name);
-  const binDir = join(wrapperDir, "bin");
 
-  await mkdir(binDir, { recursive: true });
-
-  // Node.js launcher — resolves the platform binary via require.resolve
-  // against optionalDependencies and execs it. No postinstall: the binary
-  // ships as an os/cpu-filtered optional dep, the launcher resolves it at
-  // runtime. This works whether or not the package manager runs postinstalls
-  // (bun blocks them by default).
-  await writeFile(join(binDir, "executor"), NODE_SHIM);
-  await chmod(join(binDir, "executor"), 0o755);
+  // Keep bin/executor as a compatibility entrypoint for stale Windows
+  // PowerShell shims while making bin.mjs the package's declared entrypoint.
+  await writeWrapperEntrypoints(wrapperDir, NODE_SHIM);
 
   await writeFile(
     join(wrapperDir, "package.json"),
@@ -622,7 +616,7 @@ const buildWrapperPackage = async (binaries: Record<string, string>) => {
         bugs: meta.bugs,
         repository: meta.repository,
         license: meta.license,
-        bin: { executor: "bin/executor" },
+        bin: { executor: "bin.mjs" },
         // Per-platform compiled binaries published as platform-tagged
         // versions of `executor` itself, referenced via npm:alias specs:
         //   "executor-linux-x64": "npm:executor@1.4.14-linux-x64"
@@ -712,11 +706,10 @@ const buildPreviewWrapperPackage = async (targets: Target[]) => {
   }
 
   const wrapperDir = join(distDir, meta.name);
-  const binDir = join(wrapperDir, "bin");
-  await mkdir(binDir, { recursive: true });
 
-  await writeFile(join(binDir, "executor"), NODE_SHIM);
-  await chmod(join(binDir, "executor"), 0o755);
+  // Keep bin/executor for stale Windows PowerShell shims created by older
+  // installs; current installs use the declared bin.mjs entrypoint.
+  await writeWrapperEntrypoints(wrapperDir, NODE_SHIM);
 
   const postinstall = PREVIEW_POSTINSTALL_SCRIPT.replaceAll("__CDN_BASE_URL__", `${cdnUrl}/${sha}`);
   await writeFile(join(wrapperDir, "postinstall.cjs"), postinstall);
@@ -739,8 +732,8 @@ const buildPreviewWrapperPackage = async (targets: Target[]) => {
         bugs: meta.bugs,
         repository: meta.repository,
         license: meta.license,
-        bin: { executor: "bin/executor" },
-        files: ["bin", "postinstall.cjs", "README.md"],
+        bin: { executor: "bin.mjs" },
+        files: ["bin", "bin.mjs", "postinstall.cjs", "README.md"],
         scripts: { postinstall: "node ./postinstall.cjs" },
         os: osList,
         cpu: cpuList,
