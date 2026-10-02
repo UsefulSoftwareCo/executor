@@ -1,8 +1,10 @@
-import { describe, expect, it } from "@effect/vitest";
+import { afterEach, describe, expect, it } from "@effect/vitest";
 import { Effect, type Cause } from "effect";
 
-import type { ExecutionEngine } from "@executor-js/execution";
+import { createExecutionEngine, type ExecutionEngine } from "@executor-js/execution";
 import { FormElicitation, ToolAddress, createExecutor } from "@executor-js/sdk";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
+import type { Executor } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
 
 import {
@@ -11,7 +13,7 @@ import {
   type McpBuildServer,
   type McpBuildServerOptions,
 } from "./in-memory-session-store";
-import { defaultMcpResource, type Principal } from "./seams";
+import { defaultMcpResource, type Principal, type McpResource } from "./seams";
 import { createExecutorMcpServer } from "./tool-server";
 
 const TEST_PRINCIPAL: Principal = {
@@ -127,6 +129,7 @@ const openSession = async (
   sessions: TestSessionStore,
   principal: Principal = TEST_PRINCIPAL,
   requestUrl = "https://executor.test/mcp",
+  resource: McpResource = defaultMcpResource,
 ): Promise<string> => {
   const response = (await Effect.runPromise(
     sessions.store.dispatch({
@@ -148,7 +151,7 @@ const openSession = async (
         }),
       }),
       principal,
-      resource: defaultMcpResource,
+      resource,
       sessionId: null,
       method: "POST",
     }),
@@ -158,6 +161,145 @@ const openSession = async (
   expect(sessionId).not.toBe("");
   return sessionId;
 };
+
+describe("model approvals across in-memory MCP sessions", () => {
+  const admin = { ...TEST_PRINCIPAL, orgRole: "admin" as const };
+  const policyCode = `return await tools.executor.coreTools.policies.create({
+    owner: "org", pattern: "cross-session-test.*", action: "block"
+  });`;
+
+  const stores: TestSessionStore[] = [];
+  afterEach(async () => {
+    await Promise.all(stores.splice(0).map((store) => store.close()));
+  });
+
+  const setup = () => {
+    const executors: Executor[] = [];
+    const sessions = makeInMemoryMcpSessionStore((_principal, options) =>
+      Effect.gen(function* () {
+        const executor = yield* createExecutor(
+          makeTestConfig({ coreTools: {}, orgWrites: "request" }),
+        );
+        executors.push(executor);
+        const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
+        const mcpServer = yield* createExecutorMcpServer({ engine, ...options });
+        return { engine, executor, mcpServer };
+      }).pipe(Effect.mapError((cause) => new McpEngineBuildError({ cause }))),
+    );
+    stores.push(sessions);
+    let rpcId = 1;
+    const call = async (
+      sessionId: string,
+      name: string,
+      args: unknown,
+      principal: Principal = admin,
+      resource: McpResource = defaultMcpResource,
+    ) => {
+      const response = await Effect.runPromise(
+        sessions.store.dispatch({
+          request: new Request("https://executor.test/mcp", {
+            method: "POST",
+            headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: ++rpcId,
+              method: "tools/call",
+              params: { name, arguments: args },
+            }),
+          }),
+          principal,
+          resource,
+          sessionId,
+          method: "POST",
+        }),
+      );
+      expect(response).toBeInstanceOf(Response);
+      return (
+        (await (response as Response).json()) as {
+          result: { structuredContent: Record<string, unknown>; isError?: boolean };
+        }
+      ).result;
+    };
+    return { sessions, call, executors };
+  };
+
+  it("resumes a real paused engine from a new session and replays without repeating the write", async () => {
+    const { sessions, call, executors } = setup();
+    {
+      const a = await openSession(sessions, admin);
+      const b = await openSession(sessions, admin);
+      expect((await call(a, "execute", { code: "return 42;" })).structuredContent.result).toBe(42);
+      const paused = await call(a, "execute", { code: policyCode });
+      expect(paused.structuredContent.status).toBe("waiting_for_interaction");
+      expect(await Effect.runPromise(executors[0]!.policies.list())).toHaveLength(0);
+      const args = {
+        executionId: paused.structuredContent.executionId,
+        action: "accept",
+        content: "{}",
+      };
+      const resumed = await call(b, "resume", args);
+      expect(resumed.structuredContent.status).toBe("completed");
+      expect(await Effect.runPromise(executors[0]!.policies.list())).toHaveLength(1);
+      expect((await call(b, "resume", args)).structuredContent).toEqual(resumed.structuredContent);
+      expect(await Effect.runPromise(executors[0]!.policies.list())).toHaveLength(1);
+    }
+  });
+
+  it("uses the resuming request's permissions after the owner is demoted", async () => {
+    const { sessions, call, executors } = setup();
+    {
+      const a = await openSession(sessions, admin);
+      const b = await openSession(sessions, admin);
+      const paused = await call(a, "execute", { code: policyCode });
+      const resumed = await call(
+        b,
+        "resume",
+        { executionId: paused.structuredContent.executionId, action: "accept", content: "{}" },
+        { ...admin, orgRole: "member" },
+      );
+      expect(resumed.structuredContent.status).toBe("completed");
+      expect(resumed.structuredContent.result).toMatchObject({
+        ok: false,
+        error: { code: "org_write_denied" },
+      });
+      expect(await Effect.runPromise(executors[0]!.policies.list())).toHaveLength(0);
+    }
+  });
+
+  it.each(["account", "organization", "resource", "browser", "disposed"])(
+    "does not cross the %s boundary",
+    async (boundary) => {
+      const { sessions, call } = setup();
+      {
+        const a = await openSession(
+          sessions,
+          admin,
+          boundary === "browser" ? "https://executor.test/mcp?elicitation_mode=browser" : undefined,
+        );
+        const principal = {
+          ...admin,
+          ...(boundary === "account" ? { accountId: "other" } : {}),
+          ...(boundary === "organization" ? { organizationId: "other" } : {}),
+        };
+        const resource: McpResource =
+          boundary === "resource" ? { kind: "toolkit", slug: "other" } : defaultMcpResource;
+        const b = await openSession(sessions, principal, undefined, resource);
+        const paused = await call(a, "execute", { code: policyCode });
+        const executionId = paused.structuredContent.executionId;
+        expect(typeof executionId).toBe("string");
+        if (boundary === "disposed") await Effect.runPromise(sessions.store.dispose(a));
+        const resumed = await call(
+          b,
+          "resume",
+          { executionId, action: "accept", content: "{}" },
+          principal,
+          resource,
+        );
+        expect(resumed.structuredContent.status).toBe("execution_not_found");
+      }
+    },
+  );
+});
 
 it("keeps overlapping warm-session workspace writes bound to their request roles", async () => {
   const executor = await Effect.runPromise(

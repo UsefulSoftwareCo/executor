@@ -822,7 +822,7 @@ const formatResumeApprovalRequired = (input: {
   },
 });
 
-const toMcpFailureResult = (cause: Cause.Cause<unknown>): McpToolResult => {
+export const formatMcpExecutionFailure = (cause: Cause.Cause<unknown>): McpToolResult => {
   const correlationId = newCorrelationId();
   const defect = Cause.findDefect(cause);
   const nativeElicitationFailed =
@@ -1286,7 +1286,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
             CurrentOrgWriteAccess,
             makeOrgWriteAccessState(requestOrgWriteAccess(extra)),
           ),
-          Effect.catchCause((cause) => Effect.succeed(toMcpFailureResult(cause))),
+          Effect.catchCause((cause) => Effect.succeed(formatMcpExecutionFailure(cause))),
         ),
       );
     yield* Effect.sync(() => {
@@ -1638,7 +1638,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             CurrentOrgWriteAccess,
             makeOrgWriteAccessState(requestOrgWriteAccess(extra)),
           ),
-          Effect.catchCause((cause) => Effect.succeed(toMcpFailureResult(cause))),
+          Effect.catchCause((cause) => Effect.succeed(formatMcpExecutionFailure(cause))),
         ),
       );
 
@@ -1692,6 +1692,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         }
         const outcome = yield* engine.executeWithPause(code);
         debugLog("execute.paused_flow_result", {
+          ...joinKeyAttributes(extra),
           status: outcome.status,
           executionId: outcome.status === "paused" ? outcome.execution.id : undefined,
           interactionKind:
@@ -1849,6 +1850,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           "mcp.execute.execution_id": executionId,
         });
         debugLog("resume.call", {
+          ...joinKeyAttributes(extra),
           executionId,
           action: response.action,
           hasContent: response.content !== undefined,

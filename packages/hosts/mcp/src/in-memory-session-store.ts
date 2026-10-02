@@ -33,7 +33,14 @@ import {
   type Principal,
   type McpResource,
 } from "./seams";
-import type { BrowserApprovalStore, McpPassthroughUnavailableError } from "./tool-server";
+import {
+  formatMcpExecutionOutcome,
+  formatMcpExecutionFailure,
+  type BrowserApprovalStore,
+  type McpPassthroughUnavailableError,
+  type ResumeFallbackOutcome,
+} from "./tool-server";
+import type { ResumeResponse } from "@executor-js/execution";
 
 // ---------------------------------------------------------------------------
 // In-process McpSessionStore — the single-node serving store, shared by every
@@ -106,6 +113,10 @@ export interface BuiltMcpServer {
 
 /** The browser-mode wiring the store hands a build call when a session opts in. */
 export interface McpBuildServerOptions {
+  readonly resumeFallback?: (
+    executionId: string,
+    response: ResumeResponse,
+  ) => Effect.Effect<ResumeFallbackOutcome | null, unknown>;
   readonly resource?: McpResource;
   readonly elicitationMode?:
     | { readonly mode: "browser"; readonly approvalUrl: (executionId: string) => string }
@@ -249,6 +260,7 @@ export const makeInMemoryMcpSessionStore = (
   const servers = new Map<string, McpServer>();
   const owners = new Map<string, SessionOwner>();
   const engines = new Map<string, ExecutionEngine<Cause.YieldableError>>();
+  const modelSessions = new Set<string>();
   const executors = new Map<string, Executor>();
   const closers = new Map<string, () => Promise<void>>();
   const approvals: InProcessBrowserApprovalStore = makeInProcessBrowserApprovalStore();
@@ -283,11 +295,11 @@ export const makeInMemoryMcpSessionStore = (
    * `touch` is a no-op once the session is gone, so this can never resurrect a
    * disposed id.
    */
-  const endRequest = (id: string): void => {
+  const endRequest = (id: string, restamp = true): void => {
     const remaining = (activeRequests.get(id) ?? 1) - 1;
     if (remaining > 0) activeRequests.set(id, remaining);
     else activeRequests.delete(id);
-    touch(id);
+    if (restamp) touch(id);
   };
 
   /**
@@ -319,6 +331,7 @@ export const makeInMemoryMcpSessionStore = (
     servers.delete(id);
     owners.delete(id);
     engines.delete(id);
+    modelSessions.delete(id);
     executors.delete(id);
     closers.delete(id);
     lastSeen.delete(id);
@@ -455,6 +468,47 @@ export const makeInMemoryMcpSessionStore = (
     return buildServer(principal, {
       ...buildOptionsFor(request, () => createdSessionId),
       resource,
+      // A client may initialize again between execute and resume. Keep engines
+      // session-owned, but route model approvals within the same authenticated
+      // account, organization, resource, and approval mode. Calling resume (not
+      // probing only paused state) also joins in-flight calls and replays the
+      // engine's bounded settled-result cache without executing a tool twice.
+      resumeFallback: (executionId, response) =>
+        Effect.gen(function* () {
+          if (!createdSessionId || !modelSessions.has(createdSessionId)) return null;
+          const caller = owners.get(createdSessionId);
+          if (!caller) return null;
+          for (const [id, engine] of engines) {
+            const owner = owners.get(id);
+            if (
+              id === createdSessionId ||
+              !modelSessions.has(id) ||
+              !owner ||
+              !sessionOwnerMatches(owner, caller.principal, caller.resource)
+            )
+              continue;
+            // Keep the owning session alive for the forwarded request. The
+            // Effect inherits the resumer's request-local workspace permissions.
+            beginRequest(id);
+            let matched = false;
+            const result = yield* engine.resume(executionId, response).pipe(
+              Effect.map((outcome) => (outcome ? formatMcpExecutionOutcome(outcome) : null)),
+              Effect.catchCause((cause) => Effect.succeed(formatMcpExecutionFailure(cause))),
+              Effect.tap((result) =>
+                Effect.sync(() => {
+                  matched = result !== null;
+                }),
+              ),
+              // A miss must not keep every unrelated session alive forever.
+              Effect.ensuring(Effect.sync(() => endRequest(id, matched))),
+            );
+            if (result) return { status: "result" as const, result };
+            if (yield* engine.isExecutionSettled?.(executionId) ?? Effect.succeed(false)) {
+              return { status: "execution_already_settled" as const };
+            }
+          }
+          return null;
+        }),
     }).pipe(
       Effect.flatMap(({ mcpServer, engine, executor, close }) =>
         Effect.gen(function* () {
@@ -467,6 +521,7 @@ export const makeInMemoryMcpSessionStore = (
               servers.set(sid, mcpServer);
               owners.set(sid, { principal, resource });
               engines.set(sid, engine);
+              if (readElicitationMode(request) === "model") modelSessions.add(sid);
               if (executor) executors.set(sid, executor);
               if (close) closers.set(sid, close);
               lastSeen.set(sid, Date.now());

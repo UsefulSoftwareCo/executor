@@ -54,6 +54,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@executor-js/runtime-quickjs": "workspace:*",
     "@types/node": "catalog:",
     "bun-types": "catalog:",
     "vitest": "catalog:"

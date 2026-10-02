@@ -38,7 +38,7 @@ return JSON.stringify(result);
 `;
 
 scenario(
-  "Policy tools · policies.create pauses for approval from its own annotation, then runs once approved",
+  "Policy tools · policies.create pauses for approval from its own annotation, then resumes (across MCP sessions on self-host)",
   {},
   Effect.gen(function* () {
     const target = yield* Target;
@@ -85,7 +85,13 @@ scenario(
         "policy is not written while the approval is still pending",
       ).toBe(false);
 
-      const resumed = yield* session.approvePaused(paused.text);
+      // The in-memory store supports replay across live sessions. Cloud uses
+      // a separate owner directory whose cross-session replay is out of scope.
+      const resumeSession = target.name.startsWith("selfhost") ? mcp.session(identity) : session;
+      yield* resumeSession.listTools();
+      const resumed = yield* resumeSession.approvePaused(paused.text);
+      const replayed = yield* resumeSession.approvePaused(paused.text);
+      expect(replayed.text, "retry replays the completed result").toBe(resumed.text);
       expect(resumed.ok, "resumed execution completed without error").toBe(true);
 
       const afterApproval = yield* client.policies.list();
