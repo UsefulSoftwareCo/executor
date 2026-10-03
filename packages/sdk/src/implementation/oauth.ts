@@ -457,6 +457,8 @@ export const makeOAuth = (
         return yield* new OAuthSetupFailed({ reason: "unsupported" });
       }
       // A client registered for fewer scopes cannot be assumed to allow new ones.
+      // Metadata clients are never saved, so the metadata URL no longer identifies a row. The
+      // slot stays as the `null` an unset URL always serialized to, keeping existing keys stable.
       const clientId = OAuthClientId.make(
         `client_${yield* hash(
           JSON.stringify([
@@ -465,7 +467,7 @@ export const makeOAuth = (
             input.method,
             redirect?.href,
             discovered.server.issuer,
-            options.clientMetadataUrl,
+            null,
             [...discovered.scopes].sort(),
           ]),
         )}`,
@@ -492,6 +494,7 @@ export const makeOAuth = (
         }
       }
       const savedClient = client !== undefined;
+      const metadataUrl = options.clientMetadataUrl;
       if (
         automatic &&
         discovered.grant === "authorization_code" &&
@@ -499,11 +502,12 @@ export const makeOAuth = (
         (method.tokenEndpointAuthMethod === undefined ||
           method.tokenEndpointAuthMethod === "none") &&
         discovered.server.client_id_metadata_document_supported === true &&
-        options.clientMetadataUrl !== undefined
+        metadataUrl !== undefined
       ) {
-        const metadataUrl = options.clientMetadataUrl;
         const url = parseDestination(metadataUrl, httpsOnlyUrlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
+        // Nothing is registered for a metadata client, so it is derived from configuration
+        // on every sign-in rather than saved; a changed metadata URL applies immediately.
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
       }
       return { method, redirect, discovered, clientId, client, savedClient, reused };
@@ -693,7 +697,8 @@ export const makeOAuth = (
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
       // A reused client is already saved; writing it again could restore one discarded meanwhile.
-      if (input.client === undefined && reused === undefined) yield* saveClient(db);
+      if (input.client === undefined && reused === undefined && source !== "metadata")
+        yield* saveClient(db);
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
@@ -709,14 +714,16 @@ export const makeOAuth = (
         client: registered,
         ...(input.client !== undefined
           ? { clientKey: clientId }
-          : {
-              savedClient: {
-                key: clientId,
-                version: Encoding.encodeBase64(reused?.version ?? encryptedClient),
-                ...(source === undefined ? {} : { source }),
-                fresh: reused === undefined,
-              },
-            }),
+          : reused === undefined && source === "metadata"
+            ? {}
+            : {
+                savedClient: {
+                  key: clientId,
+                  version: Encoding.encodeBase64(reused?.version ?? encryptedClient),
+                  ...(source === undefined ? {} : { source }),
+                  fresh: reused === undefined,
+                },
+              }),
         response: method.response,
       });
       const encrypted = yield* encrypt(id, attempt);

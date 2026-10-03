@@ -25,10 +25,16 @@ export type IssuedTokens = {
 };
 export type TokenShape = (tokens: IssuedTokens, refreshing: boolean) => object;
 
+/** The client metadata URL self-host e2e servers are configured with. */
+export const e2eClientMetadataUrl =
+  "https://executor.example/api/oauth/client-id-metadata/default.json";
+
 /** Start a loopback issuer with controllable discovery and registration metadata. */
 export const oauthSetupIssuer = Effect.gen(function* () {
   const address = yield* Deferred.make<string>();
   let registration = true;
+  let clientIdMetadata = false;
+  let lastRedirect: string | undefined;
   let postChallenge = false;
   let challenge = true;
   let probes = 0;
@@ -233,9 +239,15 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           redirect === null ||
           challenge === null ||
           params.get("code_challenge_method") !== "S256" ||
-          !clients.get(clientId)?.redirects.includes(redirect)
+          // A real issuer fetches the metadata document to check the redirect. This loopback
+          // fixture cannot reach it, so the scenario checks the served `redirect_uris` instead.
+          !(
+            (clientIdMetadata && clientId === e2eClientMetadataUrl) ||
+            clients.get(clientId)?.redirects.includes(redirect)
+          )
         )
           return HttpServerResponse.empty({ status: 400 });
+        lastRedirect = redirect;
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
         authorizationScope = params.get("scope");
@@ -301,7 +313,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         const presented = presentedClient(authorization, input);
         const method = presented.method;
         if (!refreshing) lastExchangeAuth = method;
-        const client = clientId === undefined ? undefined : clients.get(clientId);
+        // A client metadata URL identifies a public PKCE client with no secret to present.
+        const client =
+          clientId === undefined
+            ? undefined
+            : clientIdMetadata && clientId === e2eClientMetadataUrl
+              ? { redirects: [], secret: null, methods: ["none" as const] }
+              : clients.get(clientId);
         const authChecks = {
           format:
             contentType ===
@@ -534,6 +552,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             : { id_token_signing_alg_values_supported: idTokenAlgorithms }),
           jwks_uri: `${origin}/jwks`,
           scopes_supported: scopes,
+          ...(clientIdMetadata ? { client_id_metadata_document_supported: true } : {}),
           ...(registration
             ? { registration_endpoint: `${origin}/register?fixture=PRIVATE_QUERY` }
             : {}),
@@ -678,6 +697,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     origin,
     configure: (input: {
       readonly registration?: boolean;
+      readonly clientIdMetadata?: boolean;
       readonly registrationStatus?: typeof registrationStatus;
       readonly malformedRegistration?: boolean;
       readonly registrationError?: typeof registrationError;
@@ -760,6 +780,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.omitSecretExpiry !== undefined) omitSecretExpiry = input.omitSecretExpiry;
         if (input.issuePublicClients !== undefined) issuePublicClients = input.issuePublicClients;
         if (input.registration !== undefined) registration = input.registration;
+        if (input.clientIdMetadata !== undefined) clientIdMetadata = input.clientIdMetadata;
         if (input.expiresAt !== undefined) expiresAt = input.expiresAt;
         if (input.discovery !== undefined) discovery = input.discovery;
         if (input.pathDiscovery !== undefined) pathDiscovery = input.pathDiscovery;
@@ -832,6 +853,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       discoveries,
       discoveryRequests: [...discoveryRequests],
       lastRegistration,
+      lastRedirect,
       probes,
       tokenExchanges,
       tokenChecks,

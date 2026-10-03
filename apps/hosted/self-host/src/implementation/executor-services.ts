@@ -25,6 +25,7 @@ import {
   OrganizationDefaults,
   organizationDefaults,
   lazyHostedApiDocument,
+  clientMetadataUrls,
   withExecutorAnalytics,
 } from "@executor-js/hosted-server";
 import { postgresExecutor } from "@executor-js/hosted-server/database";
@@ -81,7 +82,7 @@ export const selfHostExecutorServices = <E, R>(
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...clientMetadataUrls(origin, clientMetadataUrl),
         },
         {
           storage,

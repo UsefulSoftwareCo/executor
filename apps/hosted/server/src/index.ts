@@ -22,6 +22,9 @@ export {
 export {
   authOptions,
   authSettings,
+  clientMetadataUrls,
+  accountOAuthClientMetadataPath,
+  hostedOAuthClientMetadata,
   requireUserLive,
   sessionPrincipal,
 } from "./implementation/auth.ts";

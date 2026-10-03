@@ -15,6 +15,7 @@ import {
   OrganizationRemovals,
   OrganizationRemovalUnavailable,
   OrganizationTombstones,
+  clientMetadataUrls,
   withExecutorAnalytics,
 } from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
@@ -129,7 +130,7 @@ export const cloudExecutor = Effect.fn(function* (
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...clientMetadataUrls(origin, clientMetadataUrl),
         },
         {
           storage,
