@@ -2557,6 +2557,26 @@ export const scenarios = {
       local: na("Hosted organization policy and setup UI."),
     },
   },
+  cloudGithubOAuth: {
+    fixtures: "actors",
+    file: "cloud-github-oauth.spec.ts",
+    title: "Cloud connects a GitHub account through its own OAuth client without client entry",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host operators supply their own OAuth clients."),
+      local: na("Local has no hosted Executor OAuth client."),
+    },
+  },
+  cloudGithubOAuthEndpointBinding: {
+    fixtures: "actors",
+    file: "cloud-github-oauth.spec.ts",
+    title: "Cloud requires both exact endpoints before using its GitHub OAuth client",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host operators supply their own OAuth clients."),
+      local: na("Local has no hosted Executor OAuth client."),
+    },
+  },
   appAccountOAuth: {
     fixtures: "actors",
     file: "app-account-picker.spec.ts",

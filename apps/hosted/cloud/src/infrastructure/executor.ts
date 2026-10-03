@@ -49,6 +49,7 @@ import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
 import { cloudSecrets } from "./secrets.ts";
+import { cloudOAuthClients } from "./oauth-clients.ts";
 import { cloudOrigin } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
@@ -82,6 +83,7 @@ export const cloudExecutor = Effect.fn(function* (
     Config.option,
     Config.map(Option.getOrUndefined),
   );
+  const hostClients = yield* cloudOAuthClients.pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
@@ -130,6 +132,7 @@ export const cloudExecutor = Effect.fn(function* (
           httpClient: egress.client,
           urlPolicy: egress.policy,
           ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          hostClients,
         },
         {
           storage,
