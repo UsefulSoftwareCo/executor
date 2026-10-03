@@ -395,6 +395,22 @@ export function McpInstallCard(props: { className?: string }) {
             )}
           </NativeSelect>
         </div>
+        {mode === "http" && (
+          <div className="mt-2 flex flex-col gap-2 rounded-md border border-border bg-muted/25 p-3">
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-foreground">
+                Headless or SSH environments
+              </div>
+              <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                To connect from remote SSH sessions or scripts without browser OAuth redirects or
+                token timeouts, authenticate using an API key from Settings &gt; API keys:
+              </div>
+              <div className="mt-1 font-mono text-xs text-muted-foreground">
+                --header &apos;Authorization: Bearer &lt;api-key&gt;&apos;
+              </div>
+            </div>
+          </div>
+        )}
       </CollapsibleContent>
     </Collapsible>
   );

@@ -12,3 +12,41 @@ Sign in at [executor.sh](https://executor.sh), then add your first
 and point your agents at the hosted [MCP endpoint](/mcp-proxy). It is the easiest way
 to share one tool catalog across every agent you use, including cloud agents like
 ChatGPT.
+
+## Authentication Methods
+
+Executor Cloud supports two authentication methods for connecting MCP clients:
+
+### 1. Browser OAuth
+
+Interactive desktop clients (Claude Code, Cursor) automatically initiate browser OAuth via RFC 9728 discovery when connecting to your endpoint (`https://v2.executor.sh/<org-slug>/mcp`). The browser logs in through AuthKit and redirects back to the client.
+
+### 2. API Keys (Recommended for SSH & Headless Environments)
+
+If you are running agents in remote SSH sessions, Docker containers, or CI/CD pipelines, browser OAuth can be difficult because the callback attempts to redirect to a loopback `http://localhost` address on the remote host. Additionally, some clients do not support automatic refresh-token rotation when OAuth access tokens expire.
+
+To keep remote agents connected permanently without timeouts:
+
+1. Navigate to **Settings > API keys** (or `/api-keys`) in the Executor Cloud console.
+2. Create an API key.
+3. Pass the key in the `Authorization` header when connecting:
+
+```bash
+npx add-mcp https://v2.executor.sh/<org-slug>/mcp --transport http --name executor --header "Authorization: Bearer <your-api-key>"
+```
+
+#### Codex CLI Configuration
+
+In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.executor]
+url = "https://v2.executor.sh/<org-slug>/mcp"
+http_headers = { "Authorization" = "Bearer <your-api-key>" }
+```
+
+Or via the command line:
+
+```bash
+codex mcp add executor https://v2.executor.sh/<org-slug>/mcp --header "Authorization: Bearer <your-api-key>"
+```

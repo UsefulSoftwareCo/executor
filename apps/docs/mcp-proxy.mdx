@@ -52,7 +52,8 @@ Executor:
 
 - **Local:** see [CLI](/local/cli) for `executor mcp` and the `add-mcp` command.
 - **Hosted:** see [Executor Cloud](/hosted/cloud), or self-host on
-  [Docker](/hosted/docker).
+  [Docker](/hosted/docker). For remote/SSH environments or long-running daemons,
+  use an API key with `--header "Authorization: Bearer <token>"` to bypass browser redirects.
 
 Once a client is connected, every integration you add to Executor appears in that
 agent automatically.
