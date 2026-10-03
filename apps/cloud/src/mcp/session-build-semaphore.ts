@@ -125,7 +125,16 @@ export const acquireBuildSlot = (maxQueueWaitMs: number = MAX_QUEUE_WAIT_MS): Bu
     waiter.state = "timed-out";
     const idx = waitQueue.indexOf(waiter);
     if (idx !== -1) waitQueue.splice(idx, 1);
-    resolvePromise({ acquired: false, waitMs: Date.now() - requestedAt, timedOut: true });
+    // Floor the reported wait at the timeout that produced it. The timer runs
+    // on libuv's monotonic clock while this measures the wall clock, and the
+    // two disagree by up to a millisecond — `setTimeout(10)` routinely lands
+    // on a `Date.now()` delta of 9, which made "waited at least the timeout"
+    // a coin flip for anyone asserting on it (this test suite included).
+    resolvePromise({
+      acquired: false,
+      waitMs: Math.max(maxQueueWaitMs, Date.now() - requestedAt),
+      timedOut: true,
+    });
   }, maxQueueWaitMs);
 
   return {

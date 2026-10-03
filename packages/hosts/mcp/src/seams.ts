@@ -50,6 +50,16 @@ const PrincipalFields = {
   name: Schema.NullOr(Schema.String),
   avatarUrl: Schema.NullOr(Schema.String),
   roles: Schema.Array(Schema.String),
+  /** The credential the session was opened with (an OAuth client, an API
+   *  key), when the auth provider can tell. Audit metadata for the tool call
+   *  log — never consulted for ownership or authorization. */
+  credential: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["api_key", "oauth_client", "session", "cli"]),
+      id: Schema.NullOr(Schema.String),
+      name: Schema.NullOr(Schema.String),
+    }),
+  ),
 } as const;
 
 export const Principal = Schema.Union([

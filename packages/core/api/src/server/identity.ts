@@ -21,6 +21,20 @@
 // ---------------------------------------------------------------------------
 
 import { Context, Effect, Schema } from "effect";
+import type { ToolCallClientKind } from "@executor-js/sdk";
+
+/**
+ * The credential a request authenticated with, when the provider can tell:
+ * which API key, which OAuth-connected MCP client, or the browser console.
+ * Recorded on the tool call log so an audit row names the agent and not only
+ * the member. NEVER an authorization input — two credentials of one member
+ * carry exactly the same rights.
+ */
+export interface PrincipalCredential {
+  readonly kind: ToolCallClientKind;
+  readonly id: string | null;
+  readonly name: string | null;
+}
 
 /**
  * The provider-neutral resolved identity. Both self-host's AuthProvider impls
@@ -48,6 +62,9 @@ interface PrincipalBase {
   readonly name: string | null;
   readonly avatarUrl: string | null;
   readonly roles: readonly string[];
+  /** The credential the request came in on, when the provider can tell. See
+   *  {@link PrincipalCredential}; absent on providers that do not say. */
+  readonly credential?: PrincipalCredential;
 }
 
 /**

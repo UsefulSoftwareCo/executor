@@ -43,6 +43,7 @@ import type { ExecutionEngine } from "@executor-js/execution";
 
 import type { DbProvider } from "./executor-fuma-db";
 import {
+  provideRequestCaller,
   RequestOrgSlug,
   RequestWebOrigin,
   type HostConfig,
@@ -257,6 +258,8 @@ export const makeExecutionStackMiddleware = <
             Effect.provideService(RequestWebOrigin, {
               origin: requestWebOriginFromRequest(webRequest),
             }),
+            // Which credential this request came in on, for the tool call log.
+            provideRequestCaller(resolved),
           );
           // Pin browser-handoff URLs to the resolved org's slug when the identity
           // provider carried one. Absent slug -> the service stays unprovided and

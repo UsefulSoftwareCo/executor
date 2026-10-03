@@ -1,9 +1,10 @@
 import { Effect, Layer } from "effect";
 
-import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
+import { IdentityProvider, Unauthorized, type PrincipalCredential } from "@executor-js/api/server";
 
 import { isPrivileged } from "../admin/require-admin";
 import { BetterAuth, type BetterAuthHandle } from "./better-auth";
+import { makeCredentialNames, type CredentialNames } from "./credential-names";
 
 // ---------------------------------------------------------------------------
 // The self-host identity seam — the production implementation of the shared
@@ -67,6 +68,7 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
     Effect.gen(function* () {
       const betterAuth = yield* BetterAuth;
       const { auth, organizationId, organizationName, organizationSlug } = betterAuth;
+      const credentialNames = makeCredentialNames(auth);
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
@@ -76,6 +78,7 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // The credential shape that resolved the session — the SAME headers
             // are what the membership-role lookup below must present.
             let sessionHeaders: Headers | Record<string, string> = request.headers;
+            let resolvedByApiKey = false;
             if (!resolved) {
               const token = bearerToken(request.headers);
               if (token) {
@@ -85,11 +88,18 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
                   catch: () => "api-key session lookup failed",
                 }).pipe(Effect.orElseSucceed(() => null));
                 sessionHeaders = apiKeyHeaders;
+                resolvedByApiKey = resolved != null;
               }
             }
             // No session resolved from any credential shape -> unauthenticated.
             // The middleware's failure strategy renders this as a 401.
             if (!resolved) return yield* new Unauthorized();
+            const credential = yield* credentialFor(
+              request.headers,
+              resolved.session,
+              resolvedByApiKey,
+              credentialNames,
+            );
             // Single-org instance: every authenticated user belongs to the one
             // seeded org. Cookie/bearer-session logins are pinned to it by the
             // session hook; API-key-minted sessions carry no active org, so we
@@ -120,8 +130,36 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
                 .filter((role) => role.length > 0),
               orgRoleModel: "organization",
               orgRole,
+              credential,
             };
           }),
       });
     }),
   );
+
+/**
+ * Which credential resolved the session, for the tool call log. Three shapes
+ * reach here (the MCP OAuth bearer is resolved separately, in mcp/auth.ts):
+ *
+ *   - an API key: the api-key plugin mints its session with `session.id` set
+ *     to the key's own id (better-auth api-key 1.6.12), so the id names it;
+ *   - a bearer SESSION token — the CLI's device login — recognised by the
+ *     presented bearer being that session's token (signed or bare);
+ *   - otherwise the browser's session cookie.
+ */
+const credentialFor = (
+  headers: Headers,
+  session: { readonly id: string; readonly token: string },
+  resolvedByApiKey: boolean,
+  names: CredentialNames,
+): Effect.Effect<PrincipalCredential> =>
+  Effect.gen(function* () {
+    if (resolvedByApiKey) {
+      return { kind: "api_key", id: session.id, name: yield* names.apiKeyName(session.id) };
+    }
+    const bearer = bearerToken(headers);
+    if (bearer !== undefined && session.token.length > 0 && bearer.startsWith(session.token)) {
+      return { kind: "cli", id: null, name: "CLI login" };
+    }
+    return { kind: "session", id: null, name: "Web console" };
+  });

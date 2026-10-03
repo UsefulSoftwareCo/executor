@@ -43,6 +43,8 @@ import {
   type ExecutorConfig,
   type FirstPartyOAuthClientConfig,
   type StorageFailure,
+  type ToolCallCaller,
+  type ToolCallClientKind,
 } from "@executor-js/sdk";
 import {
   makeHostedFetch,
@@ -180,6 +182,55 @@ export class RequestOrgSlug extends Context.Service<RequestOrgSlug, RequestOrgSl
   "@executor-js/api/RequestOrgSlug",
 ) {}
 
+// ---------------------------------------------------------------------------
+// RequestCaller — which credential this request (or MCP session) came in on.
+//
+// Only the host's auth layer sees the credential — the API key, the MCP OAuth
+// client, the browser cookie — and only the executor writes the tool call log.
+// This carries the one to the other, the same way `RequestOrgSlug` does:
+// provided per request from the resolved principal, read OPTIONALLY, so a host
+// that cannot tell (cloud's WorkOS path, CLI, tests) simply records the member
+// without a client. Audit metadata only; never an authorization input.
+// ---------------------------------------------------------------------------
+
+export interface RequestCallerShape {
+  readonly caller: ToolCallCaller;
+}
+
+export class RequestCaller extends Context.Service<RequestCaller, RequestCallerShape>()(
+  "@executor-js/api/RequestCaller",
+) {}
+
+/** The subset of a principal the caller is derived from — satisfied by both
+ *  the API `Principal` and host-mcp's Schema'd copy. */
+export interface CallerSource {
+  readonly email: string;
+  readonly name: string | null;
+  readonly credential?: {
+    readonly kind: ToolCallClientKind;
+    readonly id: string | null;
+    readonly name: string | null;
+  };
+}
+
+/**
+ * Provide {@link RequestCaller} from a resolved principal — or nothing, when
+ * the provider did not say which credential it saw.
+ */
+export const provideRequestCaller =
+  (source: CallerSource) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    source.credential === undefined
+      ? effect
+      : Effect.provideService(effect, RequestCaller, {
+          caller: {
+            kind: source.credential.kind,
+            id: source.credential.id,
+            name: source.credential.name,
+            actorLabel: source.email !== "" ? source.email : source.name,
+          },
+        });
+
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 const isLoopbackOrigin = (origin: string): boolean => {
@@ -297,6 +348,12 @@ export const makeScopedExecutor = <
       onNone: () => undefined,
       onSome: (o) => o.slug,
     });
+    // The credential behind this request, for the tool call log. Absent when
+    // the host's identity layer did not say.
+    const caller = Option.match(yield* Effect.serviceOption(RequestCaller), {
+      onNone: () => undefined,
+      onSome: (c) => c.caller,
+    });
 
     // EXPLICIT OAuth wiring: the redirect callback the host serves and sends to
     // providers is `${webBaseUrl}${oauthCallbackPath}` — the host's API mount
@@ -337,6 +394,7 @@ export const makeScopedExecutor = <
       ...(waitUntil !== undefined ? { waitUntil } : {}),
       onElicitation: "accept-all",
       ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+      ...(caller === undefined ? {} : { caller }),
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,
