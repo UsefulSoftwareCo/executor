@@ -409,3 +409,104 @@ describe("Durable Object platform reset noise", () => {
     expect(options.beforeSend(event)).toBeNull();
   });
 });
+
+describe("Sentry privacy boundary", () => {
+  it("rejects arbitrary values in classification tags and caller fingerprints", () => {
+    const secret = "SYNTHETIC_PRIVATE_MARKER";
+    const sent = beforeSendCloudEvent({
+      type: undefined,
+      fingerprint: [secret],
+      tags: {
+        operation: secret,
+        reason: secret,
+        status: secret,
+        otel_trace_id: secret,
+        otel_span_id: secret,
+        "mcp.do.cause_owner": secret,
+        code: secret,
+        "executor.ui.surface": secret,
+        "executor.ui.action": secret,
+      },
+      exception: { values: [{ type: secret, value: secret }] },
+    });
+    expect(sent).not.toBeNull();
+    expect(JSON.stringify(sent)).not.toContain(secret);
+    expect(sent?.exception?.values?.[0]?.type).toBe("Error");
+  });
+
+  it("retains known failure classifications and disables Sentry log payloads", () => {
+    const options = cloudSentryOptions({ SENTRY_DSN: "https://public@example.invalid/1" } as Env);
+    const sent = options.beforeSend({
+      type: undefined,
+      tags: { operation: "getOrganization", reason: "connect_timeout", status: 503 },
+    });
+    expect(sent?.tags).toEqual({
+      operation: "getOrganization",
+      reason: "connect_timeout",
+      status: "503",
+    });
+    expect(options.enableLogs).toBe(false);
+    expect(options.sendDefaultPii).toBe(false);
+  });
+
+  it("retains storage classifications without SQL or raw causes", () => {
+    const sent = beforeSendCloudEvent({
+      type: undefined,
+      tags: { operation: "connection.create", code: "22021" },
+      exception: { values: [{ type: "StorageError", value: "private SQL and bound values" }] },
+      extra: { cause: "private SQL and bound values" },
+    });
+    expect(sent?.tags).toEqual({ operation: "connection.create", code: "22021" });
+    expect(sent?.exception?.values?.[0]).toMatchObject({
+      type: "StorageError",
+      value: "connection.create failed (22021)",
+    });
+    expect(JSON.stringify(sent)).not.toContain("private SQL");
+  });
+
+  it("strips secrets from auto-captured errors while retaining diagnostic locations", () => {
+    const secret = "SYNTHETIC_PRIVATE_MARKER";
+    const sent = cloudSentryOptions({
+      SENTRY_DSN: "https://public@example.invalid/1",
+    } as Env).beforeSend({
+      type: undefined,
+      event_id: "safe-event-id",
+      message: secret,
+      user: { email: secret },
+      request: {
+        url: `https://example.test/?token=${secret}`,
+        headers: { authorization: secret },
+        data: secret,
+      },
+      extra: { cause: secret },
+      breadcrumbs: [{ message: secret }],
+      tags: { token: secret, otel_trace_id: traceId },
+      exception: {
+        values: [
+          {
+            type: "TypeError",
+            value: secret,
+            stacktrace: {
+              frames: [
+                {
+                  filename: `/assets/example.js?token=${secret}`,
+                  function: "handleRequest",
+                  lineno: 42,
+                  vars: { secret },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(sent)).not.toContain(secret);
+    expect(sent?.event_id).toBe("safe-event-id");
+    expect(sent?.tags?.otel_trace_id).toBe(traceId);
+    expect(sent?.exception?.values?.[0]?.stacktrace?.frames?.[0]).toMatchObject({
+      filename: "/assets/example.js",
+      function: "handleRequest",
+      lineno: 42,
+    });
+  });
+});

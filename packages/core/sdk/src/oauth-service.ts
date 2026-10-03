@@ -14,7 +14,7 @@
 // redeems the session, exchanges the code, and mints the connection.
 // ---------------------------------------------------------------------------
 
-import { Duration, Effect, Exit, Layer, Match, Option, Predicate, Schema } from "effect";
+import { Cause, Duration, Effect, Exit, Layer, Match, Option, Predicate, Schema } from "effect";
 import { FetchHttpClient, type HttpClient } from "effect/unstable/http";
 
 import { connectionIdentifier } from "./connection-name-identifier";
@@ -1100,7 +1100,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
                       {
                         owner: input.owner,
                         client: String(input.slug),
-                        cause,
+                        causeKind: Cause.isCause(cause) ? "Cause" : "Error",
                       },
                     ).pipe(Effect.as(false)),
                   ),
@@ -2084,7 +2084,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         )
         .pipe(
           Effect.catch((failure) =>
-            Effect.logWarning("executor oauth expired-session sweep failed", { cause: failure }),
+            Effect.logWarning("executor oauth expired-session sweep failed", {
+              failureType: typeof failure,
+            }),
           ),
         );
 

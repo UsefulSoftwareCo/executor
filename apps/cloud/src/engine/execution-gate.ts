@@ -175,7 +175,7 @@ export const makeExecutionLimitGate = (checkBalance: ExecutionBalanceCheck) => {
         Effect.catch((error: unknown) =>
           Effect.gen(function* () {
             yield* Effect.sync(() => {
-              console.warn("[billing] execution balance check failed open:", error);
+              console.warn("[billing] execution balance check failed open");
             });
             yield* captureCauseEffect(error);
             return { blocked: false } as const satisfies GateDecision;

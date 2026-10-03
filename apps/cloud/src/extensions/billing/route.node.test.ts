@@ -6,7 +6,11 @@ import { MemberDirectory } from "@executor-js/api/server";
 import { UserStoreService } from "../../auth/context";
 import { WorkOSClient, type WorkOSClientService } from "../../auth/workos";
 import { WorkOsMirror, type WorkOsMirrorShape } from "../../auth/workos-mirror";
-import { resolveBillingOrganization } from "./route";
+import {
+  CHECKOUT_TAX_ID_PARAMS,
+  resolveBillingOrganization,
+  withCheckoutTaxIdCollection,
+} from "./route";
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -140,4 +144,22 @@ describe("billing route org selector", () => {
       expect(error).toMatchObject({ _tag: "HttpResponseError", status: 403 });
     }),
   );
+});
+
+describe("billing checkout tax ID collection", () => {
+  it("asks Stripe Checkout to collect a tax ID on attach", () => {
+    const body = withCheckoutTaxIdCollection("/api/billing/attach", {
+      planId: "team",
+      checkoutSessionParams: { locale: "auto", tax_id_collection: { enabled: false } },
+    });
+    expect(body).toEqual({
+      planId: "team",
+      checkoutSessionParams: { locale: "auto", ...CHECKOUT_TAX_ID_PARAMS },
+    });
+  });
+
+  it("leaves other billing routes unchanged", () => {
+    const body = { planId: "team" };
+    expect(withCheckoutTaxIdCollection("/api/billing/previewAttach", body)).toBe(body);
+  });
 });

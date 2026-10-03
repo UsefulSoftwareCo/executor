@@ -12,11 +12,10 @@ type RouteMatch = { readonly routeId: string; readonly params: Record<string, st
 type SpikeRouter = {
   matchRoutes(pathname: string): ReadonlyArray<RouteMatch>;
   buildLocation(options: unknown): { readonly href: string };
-  navigate(options: unknown): Promise<void>;
   load(): Promise<void>;
 };
 
-const make = (): SpikeRouter => {
+const make = (initialPath = "/"): SpikeRouter => {
   const rootRoute = createRootRoute();
   const orgScope = createRoute({
     getParentRoute: () => rootRoute,
@@ -38,7 +37,7 @@ const make = (): SpikeRouter => {
   // oxlint-disable-next-line executor/no-double-cast -- boundary: a test-local route tree must escape the package-global router Register types
   return createRouter({
     routeTree,
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    history: createMemoryHistory({ initialEntries: [initialPath] }),
   }) as unknown as SpikeRouter;
 };
 
@@ -84,8 +83,9 @@ describe("optional org-slug segment", () => {
   });
 
   it("inherits the slug param on relative navigations", async () => {
-    const router = make();
-    await router.navigate({ to: "/{-$orgSlug}", params: { orgSlug: "acme" } });
+    // Start on the slugged URL: without a DOM the router runs in server mode,
+    // where navigate() does not move the location.
+    const router = make("/acme");
     await router.load();
     // A link that only supplies its own params keeps the current orgSlug.
     const href = router.buildLocation({

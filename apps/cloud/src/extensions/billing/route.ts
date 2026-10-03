@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { Cause, Effect } from "effect";
+import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { autumnHandler } from "autumn-js/backend";
 
@@ -13,6 +13,29 @@ import {
 
 type BillingSession = {
   readonly userId: string;
+};
+
+const ATTACH_PATH = "/api/billing/attach";
+
+// Stripe Checkout hides the VAT / tax ID field unless the session asks for it.
+// Autumn always passes an existing Stripe customer, and Stripe then requires
+// `customer_update.name = "auto"` so it can save the business name. Set on the
+// server so every checkout gets it, whatever the client sends.
+export const CHECKOUT_TAX_ID_PARAMS = {
+  tax_id_collection: { enabled: true },
+  billing_address_collection: "required",
+  customer_update: { name: "auto", address: "auto" },
+} as const;
+
+export const withCheckoutTaxIdCollection = (pathname: string, body: unknown): unknown => {
+  if (pathname !== ATTACH_PATH || typeof body !== "object" || body === null) return body;
+  const { checkoutSessionParams, ...rest } = body as {
+    readonly checkoutSessionParams?: Record<string, unknown>;
+  };
+  return {
+    ...rest,
+    checkoutSessionParams: { ...checkoutSessionParams, ...CHECKOUT_TAX_ID_PARAMS },
+  };
 };
 
 export const resolveBillingOrganization = (request: Request, session: BillingSession) =>
@@ -84,7 +107,7 @@ const handler = Effect.gen(function* () {
       request: {
         url: url.pathname,
         method: request.method,
-        body,
+        body: withCheckoutTaxIdCollection(url.pathname, body),
       },
       customerId: org.id,
       customerData: {
@@ -104,7 +127,7 @@ const handler = Effect.gen(function* () {
   );
 
   if (statusCode >= 400) {
-    console.error("[autumn] upstream error:", statusCode, response);
+    console.error("[autumn] upstream error", { status: statusCode });
     return yield* new HttpResponseError({
       status: statusCode,
       code: "billing_request_failed",
@@ -116,7 +139,7 @@ const handler = Effect.gen(function* () {
 }).pipe(
   Effect.catchCause((err) => {
     if (isServerError(err)) {
-      console.error("[autumn] request failed:", Cause.pretty(err));
+      console.error("[autumn] request failed", { status: 500 });
     }
     return toErrorServerResponseEffect(err);
   }),

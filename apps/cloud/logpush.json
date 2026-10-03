@@ -1,0 +1,20 @@
+{
+  "output_options": {
+    "output_type": "ndjson",
+    "timestamp_format": "rfc3339",
+    "field_names": [
+      "CPUTimeMs",
+      "DispatchNamespace",
+      "Entrypoint",
+      "EventTimestampMs",
+      "EventType",
+      "Exceptions",
+      "Logs",
+      "Outcome",
+      "ScriptName",
+      "ScriptTags",
+      "ScriptVersion",
+      "WallTimeMs"
+    ]
+  }
+}

@@ -38,6 +38,7 @@ import {
   NonProtectedApi,
 } from "../auth/handlers";
 import { CloudAuthApi, CloudAuthPublicApi } from "../auth/api";
+import { AdminMfaRoutes } from "../auth/admin-mfa-routes";
 import { SessionAuthLive } from "../auth/middleware-live";
 import { runWorkOsEventsSync } from "../auth/workos-events-runner";
 import { makeWorkOsWebhookRoute } from "../auth/workos-webhook";
@@ -131,6 +132,7 @@ export const makeCloudExtensionRoutes = (
   });
 
   return [
+    AdminMfaRoutes.pipe(Layer.provide(requestScopedMiddleware(rsLive).layer)),
     SessionRoutes,
     OrgRoutes,
     AdminUsersRoutes,

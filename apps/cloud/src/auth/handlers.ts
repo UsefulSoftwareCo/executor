@@ -1,3 +1,4 @@
+import { ADMIN_MFA_COOKIE, readAdminMfaProof } from "./admin-mfa-proof";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { Clock, Duration, Effect, Predicate } from "effect";
@@ -506,7 +507,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               Effect.gen(function* () {
                 yield* Effect.logWarning(
                   "createOrganization: could not provision the Autumn customer",
-                  { organizationId: org.id, error },
+                  { organizationId: org.id },
                 );
                 yield* captureCauseEffect(error);
               }),
@@ -556,6 +557,18 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // earlier attempt failed after the mark can send it again and finish.
           const session = yield* selectedOrganization({ deleted: "allow" });
           const organizationId = session.organizationId;
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const verifiedSession = yield* workos.authenticateSealedSession(session.sealedSession);
+          const proof = verifiedSession
+            ? yield* readAdminMfaProof(
+                env.WORKOS_COOKIE_PASSWORD,
+                { userId: verifiedSession.userId, sessionId: verifiedSession.sessionId },
+                "verified",
+                request.cookies[ADMIN_MFA_COOKIE],
+                yield* Clock.currentTimeMillis,
+              )
+            : null;
+          if (!proof) return yield* new OrganizationDeletionForbidden();
 
           // Admin-only. `requireSelectedOrganization` already read the caller's
           // mirrored membership, required it ACTIVE (a pending admin invite is
@@ -616,10 +629,10 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
                     { organizationId },
                   ),
               ),
-              Effect.tapError((error) =>
+              Effect.tapError(() =>
                 Effect.logError(
                   "deleteOrganization: org marked deleted but the Autumn customer could not be deleted; retry the deletion",
-                  { organizationId, error },
+                  { organizationId },
                 ),
               ),
               Effect.mapError(() => new OrganizationDeletionIncomplete({ step: "billing" })),
@@ -659,10 +672,10 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
               s.deleteOrganizationCascade(organizationId, deletedAt),
             )
             .pipe(
-              Effect.tapError((error) =>
+              Effect.tapError(() =>
                 Effect.logError(
                   "deleteOrganization: org marked deleted, removed from WorkOS and Autumn, but local purge failed, tenant data and secrets orphaned; retry the deletion",
-                  { organizationId, error },
+                  { organizationId },
                 ),
               ),
             );

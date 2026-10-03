@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 // oxlint-disable-next-line executor/no-vitest-import -- boundary: vi.mock must come from vitest itself for mock hoisting to resolve
 import { vi } from "vitest";
 import { Cause, Effect } from "effect";
+import {
+  CurrentOrgWriteAccess,
+  currentOrgWriteAccess,
+  makeOrgWriteAccessState,
+  type OrgWriteAccess,
+} from "@executor-js/sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { defaultMcpResource } from "@executor-js/host-mcp";
 import {
@@ -18,7 +24,7 @@ import type {
 import {
   McpAgentSessionDOBase,
   type BuiltMcpServer,
-  type McpApprovalOwner,
+  type McpModelResumeCaller,
   type McpSessionInit,
   type McpSessionModelResumeResult,
   type SessionMeta,
@@ -249,8 +255,10 @@ const makeEngine = (
   resultForResume: (executionId: string, response: ResumeResponse) => ExecutionResult | null,
 ) => {
   const calls: ResumeCall[] = [];
+  const orgWriteAccesses: OrgWriteAccess[] = [];
   const resume = vi.fn((executionId: string, response: ResumeResponse) =>
-    Effect.sync(() => {
+    Effect.gen(function* () {
+      orgWriteAccesses.push(yield* currentOrgWriteAccess);
       calls.push({ executionId, response });
       return resultForResume(executionId, response);
     }),
@@ -266,7 +274,7 @@ const makeEngine = (
     // The fake forks nothing, so there is no sandbox fiber to end.
     shutdown: Effect.void,
   };
-  return { calls, engine, resume };
+  return { calls, engine, orgWriteAccesses, resume };
 };
 
 const sessionMeta = (input?: Partial<SessionMeta>): SessionMeta => ({
@@ -299,7 +307,7 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle>
   private readonly directory: McpExecutionOwnerDirectory | null;
   private readonly modelResumeForward: (
     owner: McpExecutionOwnerRoute,
-    identity: McpApprovalOwner,
+    identity: McpModelResumeCaller,
     executionId: string,
     response: ResumeResponse,
   ) => Effect.Effect<McpSessionModelResumeResult, unknown>;
@@ -337,7 +345,7 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle>
 
   protected override forwardModelResumeToOwner(
     owner: McpExecutionOwnerRoute,
-    identity: McpApprovalOwner,
+    identity: McpModelResumeCaller,
     executionId: string,
     response: ResumeResponse,
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
@@ -379,13 +387,21 @@ class HarnessSession extends McpAgentSessionDOBase<Cloudflare.Env, TestDbHandle>
     await this.fakeState.flushWaitUntil();
   }
 
+  /** Resume as the MCP `resume` tool does, under the request's write access. */
   async resumeViaModelTool(
     executionId: string,
     response: ResumeResponse,
+    orgWriteAccess: OrgWriteAccess = "denied",
   ): Promise<McpSessionModelResumeResult | null> {
-    const local = await Effect.runPromise(this["engine"]!.resume(executionId, response));
+    const bound = Effect.provideService(
+      CurrentOrgWriteAccess,
+      makeOrgWriteAccessState(orgWriteAccess),
+    );
+    const local = await Effect.runPromise(
+      this["engine"]!.resume(executionId, response).pipe(bound),
+    );
     if (local) return { status: "result", result: formatMcpExecutionOutcome(local) };
-    return Effect.runPromise(this.modelResumeFallback(executionId, response));
+    return Effect.runPromise(this.modelResumeFallback(executionId, response).pipe(bound));
   }
 
   pendingLease(executionId: string): PendingApprovalLeaseSnapshot | undefined {
@@ -466,7 +482,7 @@ describe("McpAgentSessionDOBase cross-session model resume", () => {
     const forward = vi.fn(
       (
         owner: McpExecutionOwnerRoute,
-        identity: McpApprovalOwner,
+        identity: McpModelResumeCaller,
         executionId: string,
         response: ResumeResponse,
       ) =>
@@ -532,6 +548,67 @@ describe("McpAgentSessionDOBase cross-session model resume", () => {
 
     expect(ownerEngine.resume).toHaveBeenCalledTimes(1);
     expect(ownerEngine.calls).toEqual([{ executionId: "exec_owner", response: approval }]);
+  });
+
+  for (const orgWriteAccess of ["allowed", "denied"] as const) {
+    it(`resumes the owning session under the requester's ${orgWriteAccess} workspace-write access`, async () => {
+      const { namespace } = makeDirectory();
+      const ownerEngine = makeEngine(() => completed("owner-result"));
+      const requesterEngine = makeEngine(() => null);
+      const sessions = new Map<string, HarnessSession>();
+      const sessionNamespace = {
+        idFromName: (name: string) => name,
+        get: (id: string) => sessions.get(id),
+      };
+      const sessionA = new HarnessSession({
+        sessionId: "session-a",
+        engine: ownerEngine.engine,
+        directoryNamespace: namespace,
+      });
+      const sessionB = new HarnessSession({
+        sessionId: "session-b",
+        engine: requesterEngine.engine,
+        directoryNamespace: namespace,
+        forwardModelResumeToOwner: (owner, identity, executionId, response) =>
+          Effect.promise(() =>
+            mcpSessionStub(sessionNamespace, owner.sessionId).resumeExecutionForModel(
+              executionId,
+              identity,
+              response,
+            ),
+          ),
+      });
+      sessions.set(mcpSessionDurableObjectName("session-a"), sessionA);
+      await sessionA.storeSessionMeta();
+      await sessionB.storeSessionMeta();
+      await sessionA.startPause("exec_owner");
+
+      await sessionB.resumeViaModelTool("exec_owner", approval, orgWriteAccess);
+
+      expect(ownerEngine.orgWriteAccesses).toEqual([orgWriteAccess]);
+    });
+  }
+
+  it("treats a forwarded resume without workspace-write access as denied", async () => {
+    const { namespace } = makeDirectory();
+    const ownerEngine = makeEngine(() => completed("owner-result"));
+    const sessionA = new HarnessSession({
+      sessionId: "session-a",
+      engine: ownerEngine.engine,
+      directoryNamespace: namespace,
+    });
+    await sessionA.storeSessionMeta();
+    await sessionA.startPause("exec_owner");
+
+    // A requester still running the previous deploy sends only the owner pair.
+    const legacyIdentity = { accountId: "acct_1", organizationId: "org_1" };
+    await sessionA.resumeExecutionForModel(
+      "exec_owner",
+      legacyIdentity as McpModelResumeCaller,
+      approval,
+    );
+
+    expect(ownerEngine.orgWriteAccesses).toEqual(["denied"]);
   });
 
   it("rejects identity mismatch without invoking the owning session engine", async () => {

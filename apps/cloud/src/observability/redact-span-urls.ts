@@ -90,6 +90,9 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
     // Work on a copy so the redaction decision is made from the current values
     // and applied through the caller's writer (span API vs direct mutation).
     const draft: Record<string, unknown> = { ...span.attributes };
+    for (const key of ["exception.message", "exception.stacktrace"]) {
+      if (key in draft) draft[key] = "[REDACTED]";
+    }
     const stripped = new Set(redactSpanUrlAttributes(draft));
     for (const [name, value] of Object.entries(draft)) {
       if (typeof value === "string" && value !== span.attributes[name]) write(name, value);
@@ -100,6 +103,9 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
     // own attributes get, since a link carries an arbitrary attribute bag.
     for (const link of span.links) {
       if (link.attributes === undefined) continue;
+      for (const key of ["exception.message", "exception.stacktrace"]) {
+        if (key in link.attributes) link.attributes[key] = "[REDACTED]";
+      }
       for (const key of redactSpanUrlAttributes(link.attributes)) stripped.add(key);
     }
 
@@ -110,6 +116,10 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
       if (name !== event.name) event.name = name;
       if (event.attributes === undefined) continue;
       for (const [key, value] of Object.entries(event.attributes)) {
+        if (key === "exception.message" || key === "exception.stacktrace") {
+          event.attributes[key] = "[REDACTED]";
+          continue;
+        }
         // Event attributes permit string[] exactly as span attributes do, so
         // array elements get the same free-text scrub, in place.
         if (Array.isArray(value)) {
@@ -124,8 +134,7 @@ export class UrlRedactingSpanProcessor implements SpanProcessor {
 
     const message = span.status.message;
     if (typeof message === "string") {
-      const redacted = redactUrlsInText(message);
-      if (redacted !== message) span.status.message = redacted;
+      span.status.message = "[REDACTED]";
     }
   }
 }

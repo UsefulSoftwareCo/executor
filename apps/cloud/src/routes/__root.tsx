@@ -27,6 +27,7 @@ import { AuthProvider, useAuth } from "../web/auth";
 import { loginPath } from "../auth/return-to";
 import { ONBOARDING_PATHS, PUBLIC_PATHS } from "../auth/route-paths";
 import { SupportOptions } from "../web/components/support-options";
+import { minimizeSentryEvent } from "../observability/sentry-privacy";
 import { Shell } from "../web/shell";
 import appCss from "@executor-js/react/globals.css?url";
 
@@ -35,6 +36,9 @@ if (typeof window !== "undefined" && import.meta.env.VITE_PUBLIC_SENTRY_DSN) {
     dsn: import.meta.env.VITE_PUBLIC_SENTRY_DSN,
     tunnel: "/api/sentry-tunnel",
     tracesSampleRate: 0,
+    sendDefaultPii: false,
+    enableLogs: false,
+    beforeSend: minimizeSentryEvent,
     replaysSessionSampleRate: 0.1,
     replaysOnErrorSampleRate: 1.0,
   });

@@ -64,10 +64,9 @@ export const forkReportMemberSeats = (
       waitUntil(Effect.runPromise(autumn.setMemberSeats(organizationId, seats)));
     });
   }).pipe(
-    Effect.catch((error) =>
+    Effect.catch(() =>
       Effect.logWarning("reportMemberSeats: seat recount failed", {
         organizationId,
-        error,
       }),
     ),
     Effect.withSpan("billing.reportMemberSeats"),

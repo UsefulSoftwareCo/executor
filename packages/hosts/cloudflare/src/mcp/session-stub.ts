@@ -5,6 +5,7 @@ import type {
   IncomingTraceHeaders,
   McpApprovalOwner,
   McpApprovalPrincipal,
+  McpModelResumeCaller,
   McpSessionApprovalResult,
   McpSessionModelResumeResult,
   McpSessionResumeApprovalResult,
@@ -35,7 +36,7 @@ export interface McpSessionStub {
   ) => Promise<McpSessionResumeApprovalResult>;
   readonly resumeExecutionForModel: (
     executionId: string,
-    identity: McpApprovalOwner,
+    identity: McpModelResumeCaller,
     response: ResumeResponse,
     incoming?: IncomingTraceHeaders,
   ) => Promise<McpSessionModelResumeResult>;

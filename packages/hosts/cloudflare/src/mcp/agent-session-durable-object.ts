@@ -21,7 +21,13 @@ import {
 } from "@executor-js/host-mcp/tool-server";
 import { defaultMcpResource, mcpResourceKey, type McpResource } from "@executor-js/host-mcp";
 import { decodeResumeResponse, type McpToolMode } from "@executor-js/host-mcp/browser-approval";
-import { ElicitationResponse } from "@executor-js/sdk";
+import {
+  CurrentOrgWriteAccess,
+  ElicitationResponse,
+  currentOrgWriteAccess,
+  makeOrgWriteAccessState,
+  type OrgWriteAccess,
+} from "@executor-js/sdk";
 
 import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
 import { classifyDurableObjectError, type DurableObjectFailure } from "./durable-object-errors";
@@ -95,6 +101,12 @@ export interface McpSessionProps extends Record<string, unknown> {
 export type McpApprovalOwner = {
   readonly accountId: string;
   readonly organizationId: string;
+};
+
+/** A model `resume` forwarded from another session of the same owner, carrying
+ *  the workspace-write access its own request was authenticated with. */
+export type McpModelResumeCaller = McpApprovalOwner & {
+  readonly orgWriteAccess: OrgWriteAccess;
 };
 
 /** Authenticated browser approver with a freshly resolved organization role. */
@@ -546,7 +558,7 @@ export abstract class McpAgentSessionDOBase<
 
   protected forwardModelResumeToOwner(
     _owner: McpExecutionOwnerRoute,
-    _identity: McpApprovalOwner,
+    _identity: McpModelResumeCaller,
     _executionId: string,
     _response: ResumeResponse,
   ): Effect.Effect<McpSessionModelResumeResult, unknown> {
@@ -1065,7 +1077,7 @@ export abstract class McpAgentSessionDOBase<
           try: () => candidate.dispose("cap"),
           catch: (cause: unknown) => cause,
         }).pipe(
-          Effect.catch((cause: unknown) =>
+          Effect.catch(() =>
             Effect.sync(() => {
               console.warn(
                 JSON.stringify({
@@ -1073,7 +1085,7 @@ export abstract class McpAgentSessionDOBase<
                   sessionId: candidate.sessionId,
                 }),
               );
-              console.error("[mcp-session] cap eviction request failed:", cause);
+              console.error("[mcp-session] cap eviction request failed");
             }),
           ),
         ),
@@ -1131,7 +1143,6 @@ export abstract class McpAgentSessionDOBase<
           sessionId: self.sessionIdForTelemetry(),
           resetKind: input.failure.kind,
           disposition: input.failure.disposition,
-          cause: Cause.pretty(input.cause),
         }),
       );
       yield* Effect.annotateCurrentSpan({
@@ -1184,16 +1195,12 @@ export abstract class McpAgentSessionDOBase<
   }): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      const first = Cause.prettyErrors(input.cause)[0];
       console.error(
         JSON.stringify({
           event: "mcp_execution_owner_directory_error",
           operation: input.operation,
           executionId: input.executionId,
           sessionId: self.sessionIdForTelemetry(),
-          exceptionType: first?.name ?? "Error",
-          exceptionMessage: first?.message ?? "unknown",
-          cause: Cause.pretty(input.cause),
         }),
       );
       yield* Effect.annotateCurrentSpan({
@@ -1210,16 +1217,12 @@ export abstract class McpAgentSessionDOBase<
   }): Effect.Effect<void> {
     const self = this;
     return Effect.gen(function* () {
-      const first = Cause.prettyErrors(input.cause)[0];
       console.error(
         JSON.stringify({
           event: "mcp_model_resume_forward_error",
           executionId: input.executionId,
           sessionId: self.sessionIdForTelemetry(),
           ownerSessionId: input.owner.sessionId,
-          exceptionType: first?.name ?? "Error",
-          exceptionMessage: first?.message ?? "unknown",
-          cause: Cause.pretty(input.cause),
         }),
       );
       yield* Effect.annotateCurrentSpan({
@@ -1523,7 +1526,7 @@ export abstract class McpAgentSessionDOBase<
           if (failure) {
             yield* self.recordDurableObjectReset({ operation: "init", failure, cause });
           } else {
-            console.error("[mcp-session] init failed:", Cause.pretty(cause));
+            console.error("[mcp-session] init failed");
             yield* self.captureCauseEffect(cause);
           }
           yield* self.recordCauseOnSpan(cause);
@@ -1678,7 +1681,7 @@ export abstract class McpAgentSessionDOBase<
 
   async resumeExecutionForModel(
     executionId: string,
-    identity: McpApprovalOwner,
+    identity: McpModelResumeCaller,
     response: ResumeResponse,
     incoming?: IncomingTraceHeaders,
   ): Promise<McpSessionModelResumeResult> {
@@ -1698,7 +1701,17 @@ export abstract class McpAgentSessionDOBase<
           return { status: "execution_expired" as const, ttlMs: PAUSED_APPROVAL_TIMEOUT_MS };
         }
 
-        const outcome = yield* self.resumeEngineWithLifecycle(executionId, response);
+        // This RPC runs outside any MCP request, so nothing else binds the
+        // caller's workspace-write access; without it the resume would rebind
+        // the paused execution to the fail-closed default and deny an admin's
+        // pending write. A caller that predates the field is treated as denied.
+        const orgWriteAccess: OrgWriteAccess =
+          identity.orgWriteAccess === "allowed" ? "allowed" : "denied";
+        const outcome = yield* self
+          .resumeEngineWithLifecycle(executionId, response)
+          .pipe(
+            Effect.provideService(CurrentOrgWriteAccess, makeOrgWriteAccessState(orgWriteAccess)),
+          );
         if (!outcome) {
           const alreadySettled = self.engine.isExecutionSettled
             ? yield* self.engine.isExecutionSettled(executionId)
@@ -1959,9 +1972,10 @@ export abstract class McpAgentSessionDOBase<
 
       const sessionMeta = yield* self.loadSessionMeta();
       if (!sessionMeta) return { status: "execution_forbidden" } as const;
-      const identity: McpApprovalOwner = {
+      const identity: McpModelResumeCaller = {
         accountId: sessionMeta.userId,
         organizationId: sessionMeta.organizationId,
+        orgWriteAccess: yield* currentOrgWriteAccess,
       };
       if (
         identity.accountId !== record.accountId ||
@@ -2047,10 +2061,7 @@ export abstract class McpAgentSessionDOBase<
       Effect.tapCause((cause) =>
         Effect.gen(function* () {
           yield* Effect.sync(() => {
-            console.error(
-              "[mcp-session] pending approval lease start failed:",
-              Cause.pretty(cause),
-            );
+            console.error("[mcp-session] pending approval lease start failed");
           });
           yield* self.captureCauseEffect(cause);
         }),
@@ -2074,10 +2085,7 @@ export abstract class McpAgentSessionDOBase<
           Effect.tapCause((cause) =>
             Effect.gen(function* () {
               yield* Effect.sync(() => {
-                console.error(
-                  "[mcp-session] pending approval lease expiration failed:",
-                  Cause.pretty(cause),
-                );
+                console.error("[mcp-session] pending approval lease expiration failed");
               });
               yield* self.captureCauseEffect(cause);
             }),

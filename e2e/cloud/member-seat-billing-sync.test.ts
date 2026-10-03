@@ -23,6 +23,7 @@ import { AccountHttpApi } from "@executor-js/api";
 import { scenario } from "../src/scenario";
 import { Api, Autumn, Billing, Mcp, Target } from "../src/services";
 import type { Identity } from "../src/target";
+import { verifyAdmin } from "./support/admin-mfa";
 
 // apps/cloud/src/extensions/billing/plans.ts → MEMBER_LIMITS.free, mirrored by
 // the free plan's members item in autumn.config.ts.
@@ -56,7 +57,8 @@ scenario(
     const identity = yield* target.newIdentity();
     const bearer = yield* mcp.mintBearer(emailOf(identity));
     const customerId = orgIdOf(bearer);
-    const client = yield* apiClient(AccountHttpApi, identity);
+    const verifiedIdentity = yield* verifyAdmin(target.baseUrl, identity);
+    const client = yield* apiClient(AccountHttpApi, verifiedIdentity);
 
     const seats = yield* autumn.expectMemberSeats(customerId, 1);
     expect(seats.granted, "the free plan's members item grants the advertised seats").toBe(

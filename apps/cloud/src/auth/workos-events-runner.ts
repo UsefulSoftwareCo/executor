@@ -103,7 +103,7 @@ export const runWorkOsEventsSync = (): Promise<void> =>
       Effect.scoped,
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
-          yield* Effect.logError("workos_events: sync run failed", cause);
+          yield* Effect.logError("workos_events: sync run failed");
           yield* captureCauseEffect(cause);
         }),
       ),

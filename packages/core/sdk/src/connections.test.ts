@@ -2630,10 +2630,11 @@ describe("tool catalog sync safety", () => {
         );
         expect(failureWarning).toBeDefined();
         expect(failureWarning).toContain("broken");
-        // Both halves: the failure and the cause that names what to fix. A bare
-        // structural render of the error drops the cause entirely.
-        expect(failureWarning).toContain("upstream listing refused");
-        expect(failureWarning).toContain("connect ECONNREFUSED");
+        // Keep the failure class and affected connection, without raw provider
+        // text or nested causes that can carry credentials or SQL values.
+        expect(failureWarning).toContain("StorageError");
+        expect(failureWarning).not.toContain("upstream listing refused");
+        expect(failureWarning).not.toContain("connect ECONNREFUSED");
         // The healthy peer is not swept into the failure.
         expect(failureWarning).not.toContain("healthy");
       }),

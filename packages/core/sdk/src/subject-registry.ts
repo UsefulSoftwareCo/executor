@@ -186,7 +186,7 @@ export const touchSubject = (db: FumaDb<any>, input: TouchSubjectInput): Effect.
       Effect.logWarning("executor subject touch failed", {
         tenant: input.tenant,
         externalId: input.externalId,
-        cause,
+        failureType: typeof cause,
       }),
     ),
     Effect.withSpan("executor.subject.touch"),

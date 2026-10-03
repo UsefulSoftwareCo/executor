@@ -7,7 +7,7 @@
 // `withObservability` (in @executor-js/api) wraps every handler effect; when
 // it sees an unmapped cause it asks `ErrorCapture.captureException` for a
 // trace id and fails with `InternalError({ traceId })`. The client gets
-// the opaque id, we get the full cause + stack in Sentry.
+// the opaque id; Sentry receives a minimized diagnostic event.
 // ---------------------------------------------------------------------------
 
 import * as Sentry from "@sentry/cloudflare";
@@ -15,16 +15,12 @@ import type { ErrorEvent, Scope } from "@sentry/cloudflare";
 import { Cause, Effect, Layer, Predicate } from "effect";
 import type * as Tracer from "effect/Tracer";
 
+import { minimizeDiagnosticTags, minimizeSentryEvent } from "./sentry-privacy";
+
 import { ErrorCapture } from "@executor-js/api";
 import { classifyDurableObjectError } from "@executor-js/cloudflare/mcp/durable-object-errors";
 import { withStableGroupingFingerprint } from "@executor-js/sdk/sentry-grouping";
 
-// Drizzle/postgres-js include the failing SQL (params + bound values) in
-// their error message. For OpenAPI source inserts that's 1MB+ of spec
-// text which blows past terminal scrollback and hides the actual pg
-// error. Sentry still receives the full, untruncated cause via
-// `setExtra`; only the dev-console mirror is capped.
-const MAX_CONSOLE_CAUSE_CHARS = 4_000;
 const OTEL_TRACE_ID_PATTERN = /^[0-9a-f]{32}$/;
 const OTEL_SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
 
@@ -51,11 +47,6 @@ export type OtelCorrelationContext = {
   readonly traceId: string;
   readonly spanId: string;
 };
-
-const truncate = (s: string): string =>
-  s.length <= MAX_CONSOLE_CAUSE_CHARS
-    ? s
-    : `${s.slice(0, MAX_CONSOLE_CAUSE_CHARS)}\n…[truncated ${s.length - MAX_CONSOLE_CAUSE_CHARS} chars]`;
 
 const validOtelContext = (context: OtelCorrelationContext): boolean =>
   OTEL_TRACE_ID_PATTERN.test(context.traceId) && OTEL_SPAN_ID_PATTERN.test(context.spanId);
@@ -212,7 +203,7 @@ export const beforeSendCloudEvent = (
   options?: { readonly logPayload?: boolean },
 ): ErrorEvent | null => {
   const reported = beforeSendWithOtelCorrelation(event, options);
-  return reported === null ? null : withStableGroupingFingerprint(reported);
+  return reported === null ? null : withStableGroupingFingerprint(minimizeSentryEvent(reported));
 };
 
 /**
@@ -230,8 +221,8 @@ export const beforeSendCloudEvent = (
 export const cloudSentryOptions = (env: Env) => ({
   dsn: env.SENTRY_DSN,
   tracesSampleRate: 0,
-  enableLogs: true,
-  sendDefaultPii: true,
+  enableLogs: false,
+  sendDefaultPii: false,
   skipOpenTelemetrySetup: true,
   beforeSend: (event: ErrorEvent) =>
     beforeSendCloudEvent(event, {
@@ -274,11 +265,12 @@ export const sentryPayloadForCause = (
 // operation and no reason in it at all. Tags survive, group, and are
 // searchable. Values are failure modes and operation names; never a query, a
 // value, or anything customer-derived.
-const CLASSIFICATION_TAG_FIELDS = ["operation", "reason", "status"] as const;
+const CLASSIFICATION_TAG_FIELDS = ["operation", "reason", "status", "code"] as const;
 
 /** The errors those fields are read from. An allowlist, because the fields are
  *  only known to be safe on the errors this app defines. */
 const CLASSIFIED_ERROR_TAGS = [
+  "StorageError",
   "UserStoreError",
   "WorkOSError",
   "McpSessionMetaUnavailableError",
@@ -323,7 +315,7 @@ const classificationTagsOf = (input: unknown): Readonly<Record<string, string>> 
       }
     }
   }
-  return tags;
+  return minimizeDiagnosticTags(tags);
 };
 
 export const captureCause = (
@@ -365,8 +357,15 @@ export const ErrorCaptureLive: Layer.Layer<ErrorCapture> = Layer.succeed(
   ErrorCapture.of({
     captureException: (cause) =>
       Effect.gen(function* () {
-        console.error("[api] unhandled cause:", truncate(Cause.pretty(cause)));
-        return (yield* captureCauseEffect(cause)) ?? "";
+        const eventId = (yield* captureCauseEffect(cause)) ?? "";
+        console.error(
+          JSON.stringify({
+            event: "api_unhandled_cause",
+            sentry_event_id: eventId,
+            tags: classificationTagsOf(cause),
+          }),
+        );
+        return eventId;
       }),
   }),
 );

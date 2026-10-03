@@ -1,4 +1,6 @@
-import { Context, Effect, Layer } from "effect";
+import { env } from "cloudflare:workers";
+import { ADMIN_MFA_COOKIE, readAdminMfaProof } from "../auth/admin-mfa-proof";
+import { Clock, Context, Effect, Layer } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import {
@@ -70,6 +72,19 @@ const OrgAuthMiddleware = HttpRouter.middleware<{
           Effect.orElseSucceed(() => null),
         );
         if (!org) return noOrganization();
+
+        const proof = yield* readAdminMfaProof(
+          env.WORKOS_COOKIE_PASSWORD,
+          { userId: result.userId, sessionId: result.sessionId },
+          "verified",
+          request.cookies[ADMIN_MFA_COOKIE],
+          yield* Clock.currentTimeMillis,
+        );
+        if (!proof)
+          return HttpServerResponse.jsonUnsafe(
+            { _tag: "Forbidden", message: "Verify your identity to open organization settings." },
+            { status: 403, headers: { "cache-control": "no-store" } },
+          );
 
         const session = sessionFromSealed(result, cookieValue);
         const auth = AuthContext.of({

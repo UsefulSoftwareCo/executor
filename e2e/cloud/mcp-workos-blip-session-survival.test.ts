@@ -1,3 +1,4 @@
+import { verifyAdmin } from "./support/admin-mfa";
 // Cloud: an MCP session's relationship to WorkOS after the membership mirror.
 //
 // Membership is authorized from the local mirror on every /mcp request
@@ -181,7 +182,7 @@ scenario(
 
     // An admin's org with one plain member, joined through the real invite →
     // accept flow. The member is the one whose access is revoked.
-    const admin = yield* target.newIdentity();
+    const admin = yield* verifyAdmin(target.baseUrl, yield* target.newIdentity());
     const invitee = yield* target.newIdentity({ org: false });
     const member = yield* joinOrg(target, admin, invitee);
     const bearer = yield* mcp.mintBearer(emailOf(member));

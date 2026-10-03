@@ -1,17 +1,6 @@
 import { Cause, Effect, Option, Predicate, Result } from "effect";
 import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
 
-const MAX_LOGGED_CAUSE_CHARS = 4_000;
-
-const truncate = (value: string): string =>
-  value.length <= MAX_LOGGED_CAUSE_CHARS
-    ? value
-    : `${value.slice(0, MAX_LOGGED_CAUSE_CHARS)}\n...[truncated ${
-        value.length - MAX_LOGGED_CAUSE_CHARS
-      } chars]`;
-
-const loggedCause = (cause: Cause.Cause<unknown>): string => truncate(Cause.pretty(cause));
-
 const objectValue = (value: unknown, key: string): unknown =>
   Predicate.hasProperty(value, key) ? value[key] : undefined;
 
@@ -65,7 +54,8 @@ export const logApiErrorCause = (
     path: requestPath(request),
     status: httpStatus(error),
     errorTag: errorTag(error),
-    cause: loggedCause(cause),
+    // Error causes can contain provider responses, request bodies, and secrets.
+    // Keep only the classification; never serialize the exception or its stack.
   });
 };
 

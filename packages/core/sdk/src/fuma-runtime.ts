@@ -4,6 +4,9 @@ import type { AnySchema, AnyTable, Schema as FumaSchema } from "@executor-js/fum
 
 export class StorageError extends Data.TaggedError("StorageError")<{
   readonly message: string;
+  /** Structured diagnostic inputs; reporting boundaries must allowlist their values. */
+  readonly operation?: string;
+  readonly code?: string;
   readonly cause: unknown;
 }> {}
 
@@ -210,6 +213,8 @@ export const fumaFailureFromCause = (label: string, cause: unknown): StorageFail
   }
   return new StorageError({
     message: stableMessage(label, causeCode(cause)),
+    operation: label,
+    code: causeCode(cause),
     cause,
   });
 };

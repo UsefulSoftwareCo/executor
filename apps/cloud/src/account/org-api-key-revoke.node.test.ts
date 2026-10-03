@@ -196,7 +196,7 @@ const providerWith = (accountId: string) => {
             stubDirectory,
             stubApiKeys,
             stubAutumn,
-            Layer.succeed(AccountCaller)({ session: session(accountId) }),
+            Layer.succeed(AccountCaller)({ session: session(accountId), adminVerified: false }),
           ),
         ),
       ),

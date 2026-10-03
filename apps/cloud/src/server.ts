@@ -13,6 +13,7 @@ import handler from "@tanstack/react-start/server-entry";
 import { isAppOwnedPath, servedByAppPlane } from "./app-paths";
 import { marketingProxyRequest } from "./edge/marketing";
 import { passthroughResponse } from "./edge/passthrough";
+import { withPrivateReferrerPolicy } from "./edge/referrer-policy";
 import { runWorkOsEventsSync } from "./auth/workos-events-runner";
 import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
@@ -303,7 +304,7 @@ const prewarmAppPlane = (ctx: ExecutionContext): void => {
   );
 };
 
-const cloudflareHandler: ExportedHandler<Env> = {
+const cloudflareHandler = {
   fetch: async (request, env, ctx) => {
     isolateRequestSeq += 1;
 
@@ -502,6 +503,10 @@ const cloudflareHandler: ExportedHandler<Env> = {
     await runWorkOsEventsSync();
     ctx.waitUntil(flushTracerProvider());
   },
-};
+} satisfies ExportedHandler<Env>;
 
-export default Sentry.withSentry(cloudSentryOptions, cloudflareHandler);
+export default Sentry.withSentry(cloudSentryOptions, {
+  ...cloudflareHandler,
+  fetch: async (request, env, ctx) =>
+    withPrivateReferrerPolicy(await cloudflareHandler.fetch(request, env, ctx)),
+});

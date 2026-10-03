@@ -1,16 +1,6 @@
-// Cloud (browser): a failed API request is reported as a titled error.
-//
-// The console reports handled UI failures to the crash reporter, and every
-// producer of one starts from an Effect `Cause` — a plain object with no name,
-// message or stack. Handed that directly, the reporter has nothing to title
-// the report with, so it files a message-less one and groups it on the
-// reporting frame: unrelated frontend failures all land in a single nameless
-// bucket that says only which function did the reporting, never what broke.
-//
-// The report is the product surface here, so this scenario reads it the way
-// the outside world does. The browser SDK is configured to POST its envelopes
-// same-origin (`tunnel`), so the suite intercepts that request and asserts on
-// the payload the page actually tried to send.
+// Inspect the browser's actual Sentry envelope for a failed API request.
+// Reporting must preserve classification and source positions while omitting
+// the response body, request credentials and raw error message.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
@@ -25,6 +15,9 @@ type ReportedException = {
   // that was not a real error and had to invent a stack for it — the stack of
   // whatever frame did the reporting.
   readonly mechanism?: { readonly synthetic?: boolean };
+  readonly stacktrace?: {
+    readonly frames?: ReadonlyArray<{ readonly filename?: string; readonly lineno?: number }>;
+  };
 };
 
 type ReportedEvent = {
@@ -51,7 +44,7 @@ const errorEventsIn = (body: string): ReadonlyArray<ReportedEvent> =>
     });
 
 scenario(
-  "Frontend errors · a failed API request is reported with a real message",
+  "Frontend errors · a failed API request is reported without request data",
   { timeout: 120_000 },
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -89,7 +82,7 @@ scenario(
           await route.fulfill({
             status: 500,
             contentType: "text/plain",
-            body: "upstream exploded",
+            body: "SYNTHETIC_PRIVATE_RESPONSE_MARKER",
           });
         });
         await revisit(page);
@@ -101,30 +94,40 @@ scenario(
       // notices failures, so wait for one rather than sleeping.
       await expect
         .poll(() => reportedFailures().map((failure) => failure.value ?? ""), {
-          message: "the reported failure says which request failed, and how",
+          message: "the failed API request produces a classified report",
           timeout: 20_000,
         })
-        .toContainEqual(expect.stringMatching(/500 .*\/api\/integrations/));
+        .toContain("API request failed (decode_or_transport)");
 
+      const serialized = JSON.stringify(reports);
+      expect(serialized).not.toContain("SYNTHETIC_PRIVATE_RESPONSE_MARKER");
+      expect(serialized).not.toContain("500 GET");
+      for (const credential of Object.values(identity.headers ?? {})) {
+        expect(serialized, "request credentials stay out of the report").not.toContain(credential);
+      }
+      const apiReports = reports.filter(
+        (event) => event.tags?.["executor.ui.surface"] === "api_client",
+      );
+      expect(apiReports.length).toBeGreaterThan(0);
+      for (const report of apiReports) {
+        expect(report.tags).toMatchObject({
+          "executor.ui.surface": "api_client",
+          "executor.ui.action": "decode_or_transport",
+          "executor.ui.severity": "error",
+        });
+      }
+      expect(
+        reportedFailures().some((failure) =>
+          failure.stacktrace?.frames?.some(
+            (frame) => frame.filename !== undefined && frame.lineno !== undefined,
+          ),
+        ),
+        "reported failures retain actionable source positions",
+      ).toBe(true);
       for (const failure of reportedFailures()) {
-        // A report with no message is the bug: it cannot be titled, so it
-        // groups on the reporting frame and swallows every other failure.
-        expect(failure.value ?? "", "every report carries a message").not.toBe("");
-        expect(failure.type ?? "", "every report carries an error name").not.toBe("");
-        // What a reporter falls back to when it is handed something that is
-        // not an error at all — the shape every message-less report had.
-        expect(failure.value ?? "", "no report is a bag of keys").not.toMatch(
-          /captured as exception with keys/,
-        );
-        // The other half of the bug, and the half a readable message can hide:
-        // handed a non-error, the reporter still has no stack of its own to
-        // group on and invents one from the reporting frame, so unrelated
-        // failures keep merging into a single bucket. Only a real error clears
-        // this flag.
-        expect(
-          failure.mechanism?.synthetic ?? false,
-          "the report carries the failure's own stack, not the reporter's frame",
-        ).toBe(false);
+        expect(failure.value).toBe("API request failed (decode_or_transport)");
+        expect(failure.type).toBeTruthy();
+        expect(failure.mechanism?.synthetic, "the failure carries its own stack").not.toBe(true);
       }
 
       await page.unroute("**/api/integrations");

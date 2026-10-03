@@ -1,3 +1,4 @@
+import { verifiedSettingsCookie } from "../../test-stubs/verified-settings";
 import { afterAll, describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Layer } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
@@ -239,6 +240,7 @@ const workosForCaller = (deleted: string[]) =>
     authenticateSealedSession: () =>
       Effect.succeed({
         userId: CALLER,
+        sessionId: "test-settings-session",
         email: "caller@placeholder.test",
         organizationId: ORG,
       }),
@@ -274,7 +276,10 @@ const deleteDomain = async (role: "admin" | "member") => {
   const response = await app.handler(
     new Request(`https://executor.test/org/domains/${DOMAIN}`, {
       method: "DELETE",
-      headers: { cookie: "wos-session=sealed", [ORG_SELECTOR_HEADER]: ORG },
+      headers: {
+        cookie: `wos-session=sealed; ${await verifiedSettingsCookie(CALLER)}`,
+        [ORG_SELECTOR_HEADER]: ORG,
+      },
     }),
     // beta.59: the handler type expects a context argument; this layer stack
     // needs none at runtime — pass undefined like the api.request-scope tests.

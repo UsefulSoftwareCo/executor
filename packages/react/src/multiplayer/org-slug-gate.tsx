@@ -47,7 +47,7 @@ export function OrgSlugGate(props: OrgSlugGateProps) {
   // Skip canonicalization whenever the router is currently sitting on a
   // not-found match — see the file header for why.
   const isNotFound = useRouterState({
-    select: (state) => state.matches.some((match) => match.globalNotFound),
+    select: (state) => state.matches.some((match) => match._notFound),
   });
 
   const needsCanonicalize = urlSlug !== activeSlug && !isNotFound;

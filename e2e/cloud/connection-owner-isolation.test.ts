@@ -1,3 +1,4 @@
+import { verifyAdmin } from "./support/admin-mfa";
 // Cloud-only: the connection OWNER model, with real multi-user organizations.
 // Every connection is filed under `owner: "org"` (shared with the whole tenant)
 // or `owner: "user"` (this subject's own). The org membership is built through
@@ -115,7 +116,8 @@ const orgSelectorOf = (identity: Identity): string => {
  *  Returns the member identity with its requests scoped to that org. */
 const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
   Effect.gen(function* () {
-    const inviteResponse = yield* postJson(target, "/api/account/members/invite", admin, {
+    const verifiedAdmin = yield* verifyAdmin(target.baseUrl, admin);
+    const inviteResponse = yield* postJson(target, "/api/account/members/invite", verifiedAdmin, {
       email: member.credentials?.email,
     });
     const invitation = (yield* Effect.promise(() => inviteResponse.json())) as { id: string };

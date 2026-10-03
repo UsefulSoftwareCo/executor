@@ -182,7 +182,7 @@ const make = Effect.sync(() => {
             // Silent billing data loss is worth paging on: autumn.trackExecution
             // is fire-and-forget so the caller doesn't handle it themselves.
             yield* Effect.sync(() => {
-              console.error("[billing] track failed:", error);
+              console.error("[billing] track failed");
             });
             yield* captureCauseEffect(error);
             yield* Effect.annotateCurrentSpan({ "autumn.track.failed": true });
@@ -217,7 +217,7 @@ const make = Effect.sync(() => {
           // Silent seat drift means wrong invoices, so failures page just
           // like a lost execution track.
           yield* Effect.sync(() => {
-            console.error("[billing] seat sync failed:", error);
+            console.error("[billing] seat sync failed");
           });
           yield* captureCauseEffect(error);
           yield* Effect.annotateCurrentSpan({ "autumn.members.failed": true });

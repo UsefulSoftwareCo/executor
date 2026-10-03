@@ -1,36 +1,12 @@
-// Cloud-only: what an operator SEES when a write is rejected by the database.
-//
-// The product guarantee: a storage failure is reported under a stable headline
-// built from the operation and the database's error code — never the statement
-// text, never the values that were bound into it. Two consequences, both of
-// them things production got wrong:
-//
-//   - The values bound into a rejected statement are customer data (the
-//     organization id, the connection name, whatever the user typed into the
-//     description). They must not appear in the report's headline.
-//   - The headline is the grouping key of the error reporter, so one defect that
-//     hits several tables — or the same table through several WHERE shapes —
-//     must arrive as ONE report, not one per statement.
-//
-// The failure is induced through the public typed API only: PostgreSQL cannot
-// store a NUL byte in a text column, so a connection whose description carries
-// one is rejected by the driver with SQLSTATE 22021 while the statement and its
-// bound parameters are already assembled. That is the same class of failure the
-// production reports came from, reachable without touching the database.
-//
-// Two surfaces are asserted, both public:
-//   1. What the CALLER gets — an opaque `InternalError` carrying only a trace
-//      id, with no driver text anywhere in the payload.
-//   2. What the OPERATOR gets — the server's own error log, where the trace id
-//      the caller received joins to the report the server filed. Its headline —
-//      the captured exception's type and message — is what the error reporter
-//      files the report under, and groups by.
+// Exercise a real rejected database write through the typed API. The caller
+// receives an opaque correlation ID; the operator gets the same ID plus the
+// operation and SQLSTATE, without SQL, bound values or raw driver causes.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { expect } from "@effect/vitest";
-import { Cause, Effect, Exit, Schedule } from "effect";
+import { Cause, Effect, Exit, Schedule, Schema } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
@@ -159,62 +135,39 @@ const readServerLog = (): string => {
   return texts.join("\n");
 };
 
-const REPORT_PREFIX = "[api] unhandled cause: ";
+const decodeReport = Schema.decodeUnknownOption(
+  Schema.Struct({
+    event: Schema.Literal("api_unhandled_cause"),
+    sentry_event_id: Schema.String,
+    tags: Schema.Record(Schema.String, Schema.String),
+  }),
+);
 
-/** A stack frame in the logged cause — where the report's headline stops. */
-const STACK_FRAME = /^\s+at /;
-
-interface FiledReport {
-  /** Type + message: what the reporter names and groups the report by. */
-  readonly headline: string;
-  /** The whole record, headline and chained cause — what a diagnosis reads. */
-  readonly full: string;
-}
-
-/**
- * The report the server filed for one request.
- *
- * The headline is the captured cause's type and message up to the first stack
- * frame — exactly what `Cause.prettyErrors` hands the reporter as the
- * exception. The message is multi-line whenever the driver's text is
- * (`Failed query: …\nparams: …`), so the whole headline has to be read, not
- * just its first line.
- *
- * Found by walking back from the correlation record carrying the caller's trace
- * id, so it is THIS request's report and not a neighbour's.
- */
-const reportFor = (traceId: string): Effect.Effect<FiledReport, string> =>
+/** Find the structured operator report by the ID returned to the caller. */
+const reportFor = (traceId: string) =>
   Effect.sync(() => {
-    const lines = readServerLog().split("\n");
-    const correlated = lines.findLastIndex(
-      (line) =>
-        line.includes('"event":"sentry_before_send_otel_correlation"') &&
-        line.includes(`"sentry_event_id":"${traceId}"`),
-    );
-    if (correlated === -1) return undefined;
-    const reported = lines
-      .slice(0, correlated)
-      .findLastIndex((line) => line.startsWith(REPORT_PREFIX));
-    if (reported === -1) return undefined;
-    const block = [
-      lines[reported]!.slice(REPORT_PREFIX.length),
-      ...lines.slice(reported + 1, correlated),
-    ];
-    const end = block.slice(1).findIndex((line) => STACK_FRAME.test(line));
-    return {
-      headline: block
-        .slice(0, end === -1 ? 1 : end + 1)
-        .join("\n")
-        .trimEnd(),
-      full: block.join("\n"),
-    };
+    for (const line of readServerLog().split("\n")) {
+      if (!line.startsWith("{")) continue;
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: mixed stdout includes non-JSON records
+      try {
+        const report = decodeReport(JSON.parse(line));
+        if (report._tag === "Some" && report.value.sentry_event_id === traceId) {
+          return {
+            headline: JSON.stringify(report.value.tags),
+            full: line,
+            tags: report.value.tags,
+          };
+        }
+      } catch {
+        /* Other stdout records are not diagnostic envelopes. */
+      }
+    }
+    return undefined;
   }).pipe(
     Effect.filterOrFail(
-      (report): report is FiledReport => report !== undefined,
+      (report) => report !== undefined,
       () => `no error report joined to trace id ${traceId} in the server log`,
     ),
-    // The log is a file the dev stack appends to; the write lands moments after
-    // the response. Poll rather than sleep (~20s ceiling).
     Effect.retry(Schedule.both(Schedule.spaced("500 millis"), Schedule.recurs(40))),
   );
 
@@ -261,12 +214,16 @@ scenario(
     expect(headline, "the report still names the failing operation").toContain("connection.create");
     expect(headline, "the report still names the database's error code").toContain("22021");
 
-    // Shaping the headline must not mean throwing the diagnosis away: the
-    // driver's own text is still filed with the report, one level down, where
-    // it informs a fix instead of naming the report.
-    expect(report.full, "the driver's statement is still filed under the report").toContain(
+    expect(report.tags).toMatchObject({ operation: "connection.create", code: "22021" });
+    for (const forbidden of [
       "Failed query",
-    );
+      "insert into",
+      "params:",
+      first.name,
+      first.description,
+    ]) {
+      expect(report.full, "the complete report omits SQL and caller data").not.toContain(forbidden);
+    }
 
     // The fan-out: the two writes bound different names, descriptions and
     // secrets, so their statements differ in every parameter. One defect, one
