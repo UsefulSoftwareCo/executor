@@ -15,6 +15,20 @@ const run = (value: unknown, code: string) => {
 };
 
 describe("native attachment delivery", () => {
+  it.effect("removes serialized attachment bytes from returns, logs, and emitted text", () =>
+    Effect.gen(function* () {
+      const media = { ...image, data: "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" };
+      const result = yield* run(
+        { ok: true, data: { content: [media] } },
+        'const r = await tools.slides.org.main.render({}); const text = JSON.stringify(r); console.log(text); emit({type:"text",text}); return text;',
+      );
+      expect(JSON.stringify({ result: result.result, logs: result.logs })).not.toContain(
+        media.data,
+      );
+      expect(result.output?.[0]).toEqual({ type: "content", content: media });
+      expect(JSON.stringify(result.output?.[1])).not.toContain(media.data);
+    }),
+  );
   it.effect("delivers every MCP attachment without emit or a download", () =>
     Effect.gen(function* () {
       const result = yield* run(

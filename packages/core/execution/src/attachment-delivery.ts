@@ -10,9 +10,18 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const withAttachmentDelivery = (invoker: SandboxToolInvoker) => {
   const attachments: Output[] = [];
   const seen = new Set<string>();
+  const bytes = new Set<string>();
+
+  const redact = (text: string): string => {
+    for (const encoded of bytes) {
+      if (encoded.length >= 16) text = text.replaceAll(encoded, "[attachment bytes omitted]");
+    }
+    return text;
+  };
 
   const capture = (value: unknown, deliver: boolean): unknown => {
     if (isToolFile(value)) {
+      bytes.add(value.data);
       const key = `${value.mimeType}:${value.data}`;
       if (deliver && !seen.has(key)) {
         seen.add(key);
@@ -26,7 +35,7 @@ export const withAttachmentDelivery = (invoker: SandboxToolInvoker) => {
       };
     }
     if (Array.isArray(value)) return value.map((item) => capture(item, deliver));
-    if (!isRecord(value)) return value;
+    if (!isRecord(value)) return typeof value === "string" ? redact(value) : value;
     // Failed calls must never deliver attachments, including nested MCP errors.
     deliver = deliver && value.ok !== false && value.isError !== true;
 
@@ -45,6 +54,7 @@ export const withAttachmentDelivery = (invoker: SandboxToolInvoker) => {
             }
           : undefined;
     if (binary) {
+      bytes.add(binary.data);
       const key = `${binary.mimeType}:${binary.data}`;
       if (deliver && !seen.has(key)) {
         seen.add(key);
@@ -94,15 +104,32 @@ export const withAttachmentDelivery = (invoker: SandboxToolInvoker) => {
         return undefined;
       };
       const explicitKeys = new Set<string>();
-      const explicit = (result.output ?? []).filter((item) => {
-        const identity = key(item);
-        if (identity === undefined) return true;
-        if (explicitKeys.has(identity)) return false;
-        explicitKeys.add(identity);
-        return true;
-      });
+      const explicit = (result.output ?? [])
+        .map((item) => {
+          if (
+            item.type === "content" &&
+            isRecord(item.content) &&
+            item.content.type === "text" &&
+            typeof item.content.text === "string"
+          ) {
+            return { ...item, content: { ...item.content, text: redact(item.content.text) } };
+          }
+          return item;
+        })
+        .filter((item) => {
+          const identity = key(item);
+          if (identity === undefined) return true;
+          if (explicitKeys.has(identity)) return false;
+          explicitKeys.add(identity);
+          return true;
+        });
       const output = [...attachments.filter((item) => !explicitKeys.has(key(item)!)), ...explicit];
-      return { ...result, result: compactResult, ...(output.length ? { output } : {}) };
+      return {
+        ...result,
+        result: compactResult,
+        ...(result.logs ? { logs: result.logs.map(redact) } : {}),
+        ...(output.length ? { output } : {}),
+      };
     },
   };
 };
