@@ -737,6 +737,28 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     metadataUrl?: URL,
   ): Effect.Effect<IssuerDiscovery, OAuthProtocolFailed> =>
     request(async (settings): Promise<{ server: oauth.AuthorizationServer } | IssuerMissing> => {
+      const withOpenIdAlgorithms = async (server: oauth.AuthorizationServer) => {
+        if (server.id_token_signing_alg_values_supported !== undefined) return server;
+        try {
+          const oidcResponse = await oauth.discoveryRequest(issuer, {
+            ...settings,
+            algorithm: "oidc",
+          });
+          if (oidcResponse.status === 200) {
+            const oidc = await issuerMetadata(issuer, oidcResponse);
+            if (oidc.id_token_signing_alg_values_supported !== undefined) {
+              server.id_token_signing_alg_values_supported =
+                oidc.id_token_signing_alg_values_supported;
+            }
+            if (server.jwks_uri === undefined && oidc.jwks_uri !== undefined) {
+              server.jwks_uri = oidc.jwks_uri;
+            }
+          }
+        } catch {
+          // OpenID Connect Discovery is optional when OAuth 2.0 metadata was already found.
+        }
+        return server;
+      };
       if (metadataUrl !== undefined) {
         const response = await settings[oauth.customFetch](metadataUrl.href, {
           method: "GET",
@@ -745,7 +767,11 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           redirect: "manual",
           signal: settings.signal,
         });
-        return { server: await issuerMetadata(issuer, discoveryResponse(response)) };
+        return {
+          server: await withOpenIdAlgorithms(
+            await issuerMetadata(issuer, discoveryResponse(response)),
+          ),
+        };
       }
       let unusable: unknown;
       let unavailable: number | undefined;
@@ -759,7 +785,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         if (response.status === 429 || response.status >= 500) unavailable ??= response.status;
         if (response.status !== 200) continue;
         try {
-          return { server: await issuerMetadata(issuer, response) };
+          const server = await issuerMetadata(issuer, response);
+          return { server: algorithm === "oauth2" ? await withOpenIdAlgorithms(server) : server };
         } catch (error) {
           unusable ??= withStatus(failure(error), 200);
         }
