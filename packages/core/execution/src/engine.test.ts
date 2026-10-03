@@ -44,6 +44,56 @@ const emptyPlugin = definePlugin(() => ({
 
 const makeExecutor = () => createExecutor(makeTestConfig({ plugins: [emptyPlugin()] as const }));
 
+describe("automatic attachment delivery through the execution engine", () => {
+  for (const mode of ["inline", "pausable", "operator"] as const) {
+    it.effect(`delivers native content in ${mode} mode without emit`, () =>
+      Effect.gen(function* () {
+        const image = { type: "image", mimeType: "image/gif", data: "R0lGODlh" };
+        const plugin = definePlugin(() => ({
+          id: "attachment-test" as const,
+          storage: () => ({}),
+          staticIntegrations: () => [
+            {
+              id: "delivery.files",
+              kind: "in-memory" as const,
+              name: "Files",
+              tools: [
+                tool({
+                  name: "render",
+                  description: "Render an attachment.",
+                  inputSchema: Schema.toStandardSchemaV1(
+                    Schema.toStandardJSONSchemaV1(Schema.Struct({})),
+                  ),
+                  execute: () => Effect.succeed({ content: [image] }),
+                }),
+              ],
+            },
+          ],
+        }));
+        const executor = yield* createExecutor(makeTestConfig({ plugins: [plugin()] as const }));
+        const engine = createExecutionEngine({ executor, codeExecutor: makeQuickJsExecutor() });
+        yield* Effect.addFinalizer(() =>
+          engine.shutdown.pipe(Effect.andThen(executor.close()), Effect.ignore),
+        );
+        const code = "return await tools.delivery.files.render({});";
+        const result =
+          mode === "inline"
+            ? yield* engine.execute(code, {
+                onElicitation: () => Effect.succeed({ action: "accept" }),
+              })
+            : yield* engine.executeWithPause(code, { autoApprove: mode === "operator" });
+        const completed =
+          "status" in result && result.status === "completed" ? result.result : result;
+        expect(completed).toMatchObject({ output: [{ type: "content", content: image }] });
+        expect(JSON.stringify(completed)).toContain("attachment");
+        expect(JSON.stringify("result" in completed ? completed.result : null)).not.toContain(
+          image.data,
+        );
+      }).pipe(Effect.scoped),
+    );
+  }
+});
+
 describe("executeWithPause failure propagation", () => {
   it.effect("surfaces a fast codeExecutor failure as an Exit.Failure", () =>
     Effect.gen(function* () {

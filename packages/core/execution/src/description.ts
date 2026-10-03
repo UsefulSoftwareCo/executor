@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { Connection, Executor } from "@executor-js/sdk/core";
+import type { Connection, Executor, Integration } from "@executor-js/sdk/core";
 
 /**
  * Builds the `execute` tool description dynamically.
@@ -10,7 +10,9 @@ import type { Connection, Executor } from "@executor-js/sdk/core";
  *      description small)
  *   2. Available integrations (the live, per-session inventory): the top-level
  *      integration slugs the user has connected, deduped across connections,
- *      names only. The same block is appended to the `execute` skill content.
+ *      each with its one-line capability description from the integration
+ *      catalog (user-editable via the integrations API). The same block is
+ *      appended to the `execute` skill content.
  */
 
 /** The header that opens the live integration inventory. Exported so the host
@@ -25,13 +27,19 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
       Effect.withSpan("executor.connections.list"),
     );
 
+    const integrations: readonly Integration[] = yield* executor.integrations.list().pipe(
+      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: same as the connections read above; ExecutionEngine.getDescription exposes no error channel
+      Effect.orDie,
+      Effect.withSpan("executor.integrations.list"),
+    );
+
     const description = yield* Effect.sync(() => {
       const lines = [
         "Execute TypeScript in a sandboxed runtime.",
         "",
         'Before writing code, call `skills({ name: "execute" })` for the workflow on how to use this tool.',
       ];
-      const inventory = formatIntegrationInventory(connections);
+      const inventory = formatIntegrationInventory(connections, integrations);
       if (inventory.length > 0) {
         lines.push("");
         lines.push(inventory);
@@ -69,14 +77,19 @@ const connectionPath = (connection: Connection): string => {
 };
 
 // The live inventory block: the top-level integrations the user has connected,
-// one bare line per integration slug (deduped across connections, sorted), no
-// per-connection prefixes and no descriptions. Empty string when nothing is
-// connected.
+// one line per integration slug (deduped across connections, sorted) with its
+// capability description when the catalog carries one. No per-connection
+// prefixes. Empty string when nothing is connected.
 const INVENTORY_LIMIT = 50;
 
-/** One inventory line per integration: `` - `slug` ``. Owned here beside the
- *  formatter below so {@link parseIntegrationInventory} cannot drift from it. */
-const INVENTORY_ITEM_PATTERN = /^- `([^`]+)`$/;
+/** Longest rendered capability description. The block is always-loaded prompt
+ *  context, so one scannable line per integration is the budget. */
+const INVENTORY_DESCRIPTION_LIMIT = 120;
+
+/** One inventory line per integration: `` - `slug` `` or
+ *  `` - `slug` — description ``. Owned here beside the formatter below so
+ *  {@link parseIntegrationInventory} cannot drift from it. */
+const INVENTORY_ITEM_PATTERN = /^- `([^`]+)`(?: — .*)?$/;
 
 /**
  * Recover the integration slugs from a built execute description — the exact
@@ -96,17 +109,53 @@ export const parseIntegrationInventory = (description: string): readonly string[
   return slugs;
 };
 
-const formatIntegrationInventory = (connections: readonly Connection[]): string => {
+/** One scannable line: first line of the catalog description, whitespace
+ *  collapsed, capped at {@link INVENTORY_DESCRIPTION_LIMIT} on a word edge. */
+const formatInventoryDescription = (description: string | null | undefined): string => {
+  if (!description) return "";
+  const flat = description.split("\n", 1)[0]!.replace(/\s+/g, " ").trim();
+  if (flat.length === 0) return "";
+  if (flat.length <= INVENTORY_DESCRIPTION_LIMIT) return flat;
+  const cut = flat.slice(0, INVENTORY_DESCRIPTION_LIMIT);
+  const edge = cut.lastIndexOf(" ");
+  return `${edge > 0 ? cut.slice(0, edge) : cut}…`;
+};
+
+const formatIntegrationInventory = (
+  connections: readonly Connection[],
+  integrations: readonly Integration[],
+): string => {
   const slugs = [...new Set(connections.map((connection) => String(connection.integration)))].sort(
     (a, b) => a.localeCompare(b),
   );
   if (slugs.length === 0) return "";
+  const descriptions = new Map(
+    integrations.map((integration) => [
+      String(integration.slug),
+      {
+        name: integration.name,
+        summary: formatInventoryDescription(integration.description),
+      },
+    ]),
+  );
   const shown = slugs.slice(0, INVENTORY_LIMIT);
   const lines = [
     INTEGRATION_INVENTORY_HEADER,
     "",
     "Integrations you have connected. Their tools live under `tools.<integration>.…`.",
-    ...shown.map((slug) => `- \`${slug}\``),
+    ...shown.map((slug) => {
+      const entry = descriptions.get(slug);
+      // Legacy rows store the slug or display name as the description; a
+      // suffix that only repeats the line's own slug adds nothing.
+      const summary =
+        entry &&
+        entry.summary.length > 0 &&
+        entry.summary.toLowerCase() !== slug.toLowerCase() &&
+        entry.summary.toLowerCase() !== entry.name.toLowerCase()
+          ? entry.summary
+          : "";
+      return summary ? `- \`${slug}\` — ${summary}` : `- \`${slug}\``;
+    }),
   ];
   if (slugs.length > shown.length) {
     lines.push(`- ... ${slugs.length - shown.length} more`);

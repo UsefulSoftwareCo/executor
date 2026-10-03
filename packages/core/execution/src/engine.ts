@@ -27,6 +27,7 @@ import {
 } from "./tool-invoker";
 import { ExecutionToolError } from "./errors";
 import { buildExecuteDescription } from "./description";
+import { withAttachmentDelivery } from "./attachment-delivery";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -727,8 +728,10 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       toolDiscoveryProvider,
       (path) => toolPaths.push(path),
     );
+    const delivery = withAttachmentDelivery(invoker);
     fiber = yield* Effect.forkDetach(
-      codeExecutor.execute(code, invoker).pipe(
+      codeExecutor.execute(code, delivery.invoker).pipe(
+        Effect.map(delivery.finish),
         Effect.map((result) => (toolPaths.length === 0 ? result : { ...result, toolPaths })),
         Effect.withSpan("executor.code.exec"),
       ),
@@ -866,7 +869,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       toolDiscoveryProvider,
       (path) => toolPaths.push(path),
     );
-    const result = yield* codeExecutor.execute(code, invoker).pipe(
+    const delivery = withAttachmentDelivery(invoker);
+    const result = yield* codeExecutor.execute(code, delivery.invoker).pipe(
+      Effect.map(delivery.finish),
       Effect.map((result) => (toolPaths.length === 0 ? result : { ...result, toolPaths })),
       Effect.withSpan("executor.code.exec"),
     );
