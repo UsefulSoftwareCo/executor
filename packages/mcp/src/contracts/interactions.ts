@@ -4,7 +4,7 @@ import { ApprovalRequestId, ToolInputs, ToolPending } from "@executor-js/sdk/cor
 import { FormElicitation } from "apps/contracts";
 /** Live tool questions have ephemeral identities, separate from persisted SDK approval IDs. */
 export const ElicitationRequestId = Schema.String.pipe(
-  Schema.check(Schema.isStartsWith("elc_"), Schema.isMinLength(5)),
+  Schema.check(Schema.isPattern(/^elc_[\s\S]+$/)),
   Schema.brand("elc"),
 );
 /** Both delivery modes answer one pending interaction through the same resume operation. */

@@ -23,7 +23,7 @@ export type JsonObject = typeof JsonObject.Type;
  */
 const Id = <const P extends string>(prefix: P) =>
   Schema.String.pipe(
-    Schema.check(Schema.isStartsWith(`${prefix}_`), Schema.isMinLength(prefix.length + 2)),
+    Schema.check(Schema.isPattern(new RegExp(`^${prefix}_[\\s\\S]+$`))),
     Schema.brand(prefix),
   );
 

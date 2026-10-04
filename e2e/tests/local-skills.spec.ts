@@ -8,6 +8,7 @@ import { TestLive, withCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Evidence } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { wholeStringInputPattern } from "../support/mcp-input-patterns.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
@@ -20,6 +21,8 @@ const Index = Schema.Struct({
     Schema.Struct({
       name: Schema.String,
       app: Schema.Struct({ id: Schema.String, slug: Schema.String }),
+      deployment: Schema.String,
+      profile: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -88,6 +91,37 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         expect(entries.map((skill) => skill.app.id).sort()).toEqual(
           [app.id, copy.id, guide.app.id].sort(),
         );
+        if (guide.profile === undefined)
+          return yield* Effect.die("The Executor app's skill summary must name its profile");
+        const listed = yield* client.use("Discover the skills input schema", (client) =>
+          client.listTools(),
+        );
+        expect(guide.deployment).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "skills", "deployment"),
+        );
+        expect(guide.profile).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "skills", "profile"),
+        );
+        const selected = yield* client.use(
+          "Read the guide with its returned deployment and profile",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "skills",
+                arguments: {
+                  app: guide.app.slug,
+                  name: guide.name,
+                  deployment: guide.deployment,
+                  profile: guide.profile,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Document)(selected.structuredContent)).deployment,
+        ).toBe(guide.deployment);
         const read = yield* client.use(
           "Read the app-owned app-authoring document",
           (client, signal) =>

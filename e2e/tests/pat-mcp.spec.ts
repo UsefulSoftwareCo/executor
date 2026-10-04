@@ -6,6 +6,7 @@ import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { wholeStringInputPattern } from "../support/mcp-input-patterns.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
@@ -303,6 +304,12 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
             }),
         );
         const pending = yield* Schema.decodeUnknownEffect(Pending)(paused.structuredContent);
+        const listed = yield* ownerClient.use("Discover the resume input schema", (client) =>
+          client.listTools(),
+        );
+        expect(pending.requestId).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "resume", "requestId"),
+        );
         const otherClient = yield* mcp.connect(other.key, "pat-other", { organization });
         const wrong = yield* otherClient.use(
           "A different PAT cannot resume this continuation",
