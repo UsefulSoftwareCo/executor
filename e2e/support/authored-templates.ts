@@ -128,7 +128,7 @@ export default defineApp({ accounts: ${accountsDeclaration} }, async ({ accounts
     ...(authenticated ? [{ path: "provider.ts", content: provider(name) }] : []),
     packageFile(
       kind === "mcp"
-        ? { "@modelcontextprotocol/sdk": "1.30.0" }
+        ? { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" }
         : kind === "graphql"
           ? { graphql: "16.11.0" }
           : {},
@@ -166,5 +166,5 @@ export const provider = defineProvider({
 });
 `,
   },
-  packageFile({ "@modelcontextprotocol/sdk": "1.30.0" }),
+  packageFile({ "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" }),
 ];

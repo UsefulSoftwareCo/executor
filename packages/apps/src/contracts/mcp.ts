@@ -1,3 +1,4 @@
+import { McpError as LegacyMcpError } from "./mcp-error-legacy.ts";
 import type { ProviderError } from "./provider-error.ts";
 /** MCP protocol data uses Effect Schema; executable tool methods use Effect. */
 import { type Effect, type Redacted, Schema } from "effect";
@@ -113,17 +114,18 @@ export interface McpTool extends Omit<McpToolMetadata, "outputSchema"> {
 /** The discovered catalog keyed by remote tool name. */
 export type McpTools = Readonly<Record<string, McpTool>>;
 
+/** Sanitized facts about one failed transport attempt. */
+export const McpFailure = Schema.Struct({
+  phase: LegacyMcpError.fields.phase,
+  reason: LegacyMcpError.fields.reason,
+  status: LegacyMcpError.fields.status,
+});
+
 /** Safe protocol/transport failure; no raw upstream payloads or credentials. */
 export class McpError extends Schema.TaggedError<McpError>()("McpError", {
-  phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
-  reason: Schema.Literals([
-    "request",
-    "unauthorized",
-    "invalid_response",
-    "timeout",
-    "invalid_input",
-  ]),
-  status: Schema.optional(Schema.Number),
+  ...McpFailure.fields,
+  initialized: Schema.optional(Schema.Boolean),
+  fallback: Schema.optional(McpFailure),
 }) {}
 
 /** Public process configuration. Credentials arrive through the selected account. */

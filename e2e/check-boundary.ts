@@ -81,6 +81,12 @@ const check = Effect.gen(function* () {
             specifier === "effect/unstable/httpapi"
           )
             return;
+          // This upstream fixture serves real MCP protocols without product implementations.
+          if (
+            label === `support${path.sep}mcp-protocol-upstream.ts` &&
+            specifier === "effect/unstable/ai"
+          )
+            return;
           if (label.startsWith(`viewer${path.sep}`) && specifier === "media-chrome/react") return;
           // The only database driver: runner-applied legacy rows for declared scenarios.
           if (label === legacyStorage && specifier === "@electric-sql/pglite") return;

@@ -1,4 +1,4 @@
-/** HTTP MCP helpers. Requires the optional @modelcontextprotocol/sdk peer. */
+/** HTTP MCP helpers. Requires the optional @modelcontextprotocol/client and @modelcontextprotocol/core peers. */
 import type { OperationKinds } from "./implementation/protocol-operations.ts";
 import { Effect } from "effect";
 import { mcpCatalog, type McpCatalogOptions } from "./implementation/mcp-catalog.ts";

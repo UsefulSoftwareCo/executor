@@ -19,7 +19,7 @@ import {
   ElicitationReply,
   FormElicitation,
 } from "../elicitation.ts";
-import { McpError } from "../mcp.ts";
+import { McpError } from "../mcp-error-legacy.ts";
 import { OAuth2Config } from "./oauth.ts";
 import { ProviderError } from "../provider-error.ts";
 import { OperationSchedule } from "../schedules.ts";

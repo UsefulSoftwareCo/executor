@@ -919,8 +919,14 @@ const parseSkillLoadFailed = (error: unknown): Option.Option<SkillLoadFailed> =>
 const parseMcpError = (error: unknown): Option.Option<McpError> =>
   Schema.decodeUnknownOption(McpError)(error).pipe(
     Option.map(
-      ({ phase, reason, status }) =>
-        new McpError({ phase, reason, ...(status === undefined ? {} : { status }) }),
+      ({ phase, reason, status, initialized, fallback }) =>
+        new McpError({
+          phase,
+          reason,
+          ...(status === undefined ? {} : { status }),
+          ...(initialized === undefined ? {} : { initialized }),
+          ...(fallback === undefined ? {} : { fallback }),
+        }),
     ),
   );
 

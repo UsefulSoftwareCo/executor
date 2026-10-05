@@ -81,7 +81,8 @@ assert(defineDatabase({ notes: table({ text: string() }) }));
       "@types/react@19.2.0",
       "react@19.2.0",
       "graphql@16.11.0",
-      "@modelcontextprotocol/sdk@1.30.0",
+      "@modelcontextprotocol/client@2.0.0",
+      "@modelcontextprotocol/core@2.0.0",
     ],
     consumer,
   );

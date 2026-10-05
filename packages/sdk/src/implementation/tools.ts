@@ -369,6 +369,8 @@ export const evaluationFailure = (
             phase: error.phase,
             reason: error.reason,
             ...(error.status === undefined ? {} : { status: error.status }),
+            ...(error.initialized === undefined ? {} : { initialized: error.initialized }),
+            ...(error.fallback === undefined ? {} : { fallback: error.fallback }),
           },
         }
       : {}),

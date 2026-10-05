@@ -40,8 +40,14 @@ export const safeFailure = (error: unknown, secrets: readonly string[]): HostRou
   }
   const mcp = Schema.decodeUnknownOption(McpError)(error);
   if (Option.isSome(mcp)) {
-    const { phase, reason, status } = mcp.value;
-    return new McpError({ phase, reason, ...(status === undefined ? {} : { status }) });
+    const { phase, reason, status, initialized, fallback } = mcp.value;
+    return new McpError({
+      phase,
+      reason,
+      ...(status === undefined ? {} : { status }),
+      ...(initialized === undefined ? {} : { initialized }),
+      ...(fallback === undefined ? {} : { fallback }),
+    });
   }
   if (Schema.is(HostDeclarationInvalid)(error)) return error;
   return new HostEvaluationFailed(failureDetail(error, secrets));

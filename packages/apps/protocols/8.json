@@ -1,0 +1,3605 @@
+{
+  "protocol": 8,
+  "schemas": {
+    "invocation": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["workflows"]
+                      }
+                    },
+                    "required": ["operation"],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["workflow-validate"]
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "input": {}
+                    },
+                    "required": ["operation", "name", "input"],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["workflow-run"]
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "input": {}
+                    },
+                    "required": ["operation", "name", "input"],
+                    "additionalProperties": true
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["webhooks"]
+                      }
+                    },
+                    "required": ["operation"],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["webhook-validate"]
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "subscriptionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sourceAccount": {
+                        "type": "string",
+                        "pattern": "^acc_",
+                        "minLength": 5
+                      },
+                      "callbackUrl": {
+                        "type": "string"
+                      },
+                      "secret": {
+                        "type": "string"
+                      },
+                      "config": {}
+                    },
+                    "required": [
+                      "operation",
+                      "name",
+                      "subscriptionId",
+                      "sourceAccount",
+                      "callbackUrl",
+                      "secret",
+                      "config"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["webhook-complete"]
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "subscriptionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sourceAccount": {
+                        "type": "string",
+                        "pattern": "^acc_",
+                        "minLength": 5
+                      },
+                      "callbackUrl": {
+                        "type": "string"
+                      },
+                      "secret": {
+                        "type": "string"
+                      },
+                      "config": {},
+                      "state": {}
+                    },
+                    "required": [
+                      "operation",
+                      "name",
+                      "subscriptionId",
+                      "sourceAccount",
+                      "callbackUrl",
+                      "secret",
+                      "config",
+                      "state"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["webhook-register"]
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "subscriptionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sourceAccount": {
+                        "type": "string",
+                        "pattern": "^acc_",
+                        "minLength": 5
+                      },
+                      "callbackUrl": {
+                        "type": "string"
+                      },
+                      "secret": {
+                        "type": "string"
+                      },
+                      "config": {}
+                    },
+                    "required": [
+                      "operation",
+                      "name",
+                      "subscriptionId",
+                      "sourceAccount",
+                      "callbackUrl",
+                      "secret",
+                      "config"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["webhook-unregister"]
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "subscriptionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sourceAccount": {
+                        "type": "string",
+                        "pattern": "^acc_",
+                        "minLength": 5
+                      },
+                      "callbackUrl": {
+                        "type": "string"
+                      },
+                      "secret": {
+                        "type": "string"
+                      },
+                      "config": {},
+                      "state": {}
+                    },
+                    "required": [
+                      "operation",
+                      "name",
+                      "subscriptionId",
+                      "sourceAccount",
+                      "callbackUrl",
+                      "secret",
+                      "config",
+                      "state"
+                    ],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "operation": {
+                        "type": "string",
+                        "enum": ["webhook-handle"]
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "subscriptionId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sourceAccount": {
+                        "type": "string",
+                        "pattern": "^acc_",
+                        "minLength": 5
+                      },
+                      "callbackUrl": {
+                        "type": "string"
+                      },
+                      "secret": {
+                        "type": "string"
+                      },
+                      "config": {},
+                      "state": {},
+                      "request": {
+                        "type": "object",
+                        "properties": {
+                          "url": {
+                            "type": "string"
+                          },
+                          "method": {
+                            "type": "string",
+                            "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+                          },
+                          "headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          },
+                          "body": {
+                            "type": "string",
+                            "maxLength": 1398104
+                          }
+                        },
+                        "required": ["url", "method", "headers", "body"],
+                        "additionalProperties": true
+                      }
+                    },
+                    "required": [
+                      "operation",
+                      "name",
+                      "subscriptionId",
+                      "sourceAccount",
+                      "callbackUrl",
+                      "secret",
+                      "config",
+                      "state",
+                      "request"
+                    ],
+                    "additionalProperties": true
+                  }
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["requirements"]
+                  }
+                },
+                "required": ["operation"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["inspect"]
+                  },
+                  "detail": {
+                    "type": "string",
+                    "enum": ["summary"]
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "scheduled": {
+                    "type": "boolean",
+                    "enum": [true]
+                  }
+                },
+                "required": ["operation"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["skills"]
+                  },
+                  "sources": {
+                    "type": "boolean",
+                    "enum": [true]
+                  }
+                },
+                "required": ["operation"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["query"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {}
+                },
+                "required": ["operation", "name", "input"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["mutate"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "input": {}
+                },
+                "required": ["operation", "name", "input"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["call"]
+                  },
+                  "tool": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": ["query", "mutation"]
+                  },
+                  "input": {}
+                },
+                "required": ["operation", "tool", "input"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["account-check"]
+                  },
+                  "requirement": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": ["operation", "requirement"],
+                "additionalProperties": true
+              }
+            ]
+          },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input": {}
+            },
+            "required": ["tool", "input"],
+            "additionalProperties": true
+          },
+          "replay": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fingerprint": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["key", "fingerprint"],
+            "additionalProperties": true
+          },
+          "deadline": {
+            "type": "number",
+            "minimum": 0
+          },
+          "workflowRun": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["command", "accounts"],
+        "additionalProperties": true
+      },
+      "definitions": {}
+    },
+    "request": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["workflows"]
+                  }
+                },
+                "required": ["operation"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["workflow-validate"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "input": {}
+                },
+                "required": ["operation", "name", "input"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["workflow-run"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "input": {}
+                },
+                "required": ["operation", "name", "input"],
+                "additionalProperties": true
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["webhooks"]
+                  }
+                },
+                "required": ["operation"],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["webhook-validate"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "subscriptionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceAccount": {
+                    "type": "string",
+                    "pattern": "^acc_",
+                    "minLength": 5
+                  },
+                  "callbackUrl": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  },
+                  "config": {}
+                },
+                "required": [
+                  "operation",
+                  "name",
+                  "subscriptionId",
+                  "sourceAccount",
+                  "callbackUrl",
+                  "secret",
+                  "config"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["webhook-complete"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "subscriptionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceAccount": {
+                    "type": "string",
+                    "pattern": "^acc_",
+                    "minLength": 5
+                  },
+                  "callbackUrl": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  },
+                  "config": {},
+                  "state": {}
+                },
+                "required": [
+                  "operation",
+                  "name",
+                  "subscriptionId",
+                  "sourceAccount",
+                  "callbackUrl",
+                  "secret",
+                  "config",
+                  "state"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["webhook-register"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "subscriptionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceAccount": {
+                    "type": "string",
+                    "pattern": "^acc_",
+                    "minLength": 5
+                  },
+                  "callbackUrl": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  },
+                  "config": {}
+                },
+                "required": [
+                  "operation",
+                  "name",
+                  "subscriptionId",
+                  "sourceAccount",
+                  "callbackUrl",
+                  "secret",
+                  "config"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["webhook-unregister"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "subscriptionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceAccount": {
+                    "type": "string",
+                    "pattern": "^acc_",
+                    "minLength": 5
+                  },
+                  "callbackUrl": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  },
+                  "config": {},
+                  "state": {}
+                },
+                "required": [
+                  "operation",
+                  "name",
+                  "subscriptionId",
+                  "sourceAccount",
+                  "callbackUrl",
+                  "secret",
+                  "config",
+                  "state"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "operation": {
+                    "type": "string",
+                    "enum": ["webhook-handle"]
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "subscriptionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceAccount": {
+                    "type": "string",
+                    "pattern": "^acc_",
+                    "minLength": 5
+                  },
+                  "callbackUrl": {
+                    "type": "string"
+                  },
+                  "secret": {
+                    "type": "string"
+                  },
+                  "config": {},
+                  "state": {},
+                  "request": {
+                    "type": "object",
+                    "properties": {
+                      "url": {
+                        "type": "string"
+                      },
+                      "method": {
+                        "type": "string",
+                        "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+                      },
+                      "headers": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "body": {
+                        "type": "string",
+                        "maxLength": 1398104
+                      }
+                    },
+                    "required": ["url", "method", "headers", "body"],
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "operation",
+                  "name",
+                  "subscriptionId",
+                  "sourceAccount",
+                  "callbackUrl",
+                  "secret",
+                  "config",
+                  "state",
+                  "request"
+                ],
+                "additionalProperties": true
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["requirements"]
+              }
+            },
+            "required": ["operation"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["inspect"]
+              },
+              "detail": {
+                "type": "string",
+                "enum": ["summary"]
+              },
+              "tools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "scheduled": {
+                "type": "boolean",
+                "enum": [true]
+              }
+            },
+            "required": ["operation"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["skills"]
+              },
+              "sources": {
+                "type": "boolean",
+                "enum": [true]
+              }
+            },
+            "required": ["operation"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["query"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input": {}
+            },
+            "required": ["operation", "name", "input"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["mutate"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input": {}
+            },
+            "required": ["operation", "name", "input"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["call"]
+              },
+              "tool": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["query", "mutation"]
+              },
+              "input": {}
+            },
+            "required": ["operation", "tool", "input"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["account-check"]
+              },
+              "requirement": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["operation", "requirement"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {}
+    },
+    "response": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "value": {},
+              "toolError": {
+                "type": "boolean",
+                "enum": [true]
+              }
+            },
+            "required": ["ok", "value"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [false]
+              },
+              "error": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/McpErrorEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/OpenapiResponseErrorEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/ProviderErrorEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/SkillLoadFailedEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/WorkflowFailureEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostRequestInvalidEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostAccountsInvalidEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostDeclarationInvalidEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostEvaluationFailedEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostOperationNotFoundEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostOperationFailedEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/DatabaseLimitExceededEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/DatabaseFieldReservedEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostToolNotFoundEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostInputInvalidEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostOutputInvalidEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostToolBlockedEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostToolApprovalRequiredEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostToolPolicyFailedEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/ElicitationFailedEncoded"
+                  },
+                  {
+                    "$ref": "#/$defs/HostKindMismatchEncoded"
+                  }
+                ]
+              }
+            },
+            "required": ["ok", "error"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {
+        "McpErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["McpError"]
+            },
+            "phase": {
+              "type": "string",
+              "enum": ["connect", "discover", "call", "schema", "transport"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": ["request", "unauthorized", "invalid_response", "timeout", "invalid_input"]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string",
+                      "enum": ["Infinity", "-Infinity", "NaN"]
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "initialized": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fallback": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "phase": {
+                      "type": "string",
+                      "enum": ["connect", "discover", "call", "schema", "transport"]
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "request",
+                        "unauthorized",
+                        "invalid_response",
+                        "timeout",
+                        "invalid_input"
+                      ]
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string",
+                              "enum": ["Infinity", "-Infinity", "NaN"]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["phase", "reason"],
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "phase", "reason"],
+          "additionalProperties": true
+        },
+        "OpenapiResponseErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["OpenapiResponseError"]
+            },
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "status": {
+              "type": "integer",
+              "minimum": 400,
+              "maximum": 599
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "recovery": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "instructions": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                }
+              },
+              "required": ["action", "instructions"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["_tag", "code", "status", "message"],
+          "additionalProperties": true
+        },
+        "ProviderErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["ProviderError"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": ["unauthorized", "forbidden", "rate_limited", "unavailable", "rejected"]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "accountId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^acc_",
+                  "minLength": 5
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        },
+        "SkillLoadFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["SkillLoadFailed"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "source",
+                "request",
+                "rate_limited",
+                "document",
+                "limit",
+                "changed",
+                "encoding"
+              ]
+            },
+            "message": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        },
+        "WorkflowFailureEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["WorkflowFailure"]
+            },
+            "step": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "unavailable",
+                "not_found",
+                "input",
+                "output",
+                "operation",
+                "approval",
+                "credentials",
+                "terminated",
+                "execution",
+                "conflict",
+                "engine"
+              ]
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": ["_tag", "reason", "retryable"],
+          "additionalProperties": true
+        },
+        "HostRequestInvalidEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostRequestInvalid"]
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostAccountsInvalidEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostAccountsInvalid"]
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostDeclarationInvalidEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostDeclarationInvalid"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["app", "storage", "service"]
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostEvaluationFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostEvaluationFailed"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["app", "storage", "service"]
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostOperationNotFoundEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostOperationNotFound"]
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostOperationFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostOperationFailed"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["app", "storage", "service"]
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "DatabaseLimitExceededEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["DatabaseLimitExceeded"]
+            },
+            "limit": {
+              "type": "string",
+              "enum": [
+                "scanCalls",
+                "directGets",
+                "rowsRead",
+                "rowsReturned",
+                "pageSize",
+                "bytesRead",
+                "writes",
+                "valueBytes"
+              ]
+            },
+            "maximum": {
+              "type": "integer"
+            },
+            "requested": {
+              "type": "integer"
+            }
+          },
+          "required": ["_tag", "limit", "maximum", "requested"],
+          "additionalProperties": true
+        },
+        "DatabaseFieldReservedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["DatabaseFieldReserved"]
+            },
+            "table": {
+              "type": "string"
+            },
+            "field": {
+              "type": "string",
+              "enum": ["id", "createdAt", "updatedAt"]
+            }
+          },
+          "required": ["_tag", "table", "field"],
+          "additionalProperties": true
+        },
+        "HostToolNotFoundEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostToolNotFound"]
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostInputInvalidEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostInputInvalid"]
+            },
+            "problems": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "maxItems": 10
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostOutputInvalidEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostOutputInvalid"]
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostToolBlockedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostToolBlocked"]
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostToolApprovalRequiredEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostToolApprovalRequired"]
+            },
+            "input": {},
+            "elicitation": {
+              "type": "object",
+              "properties": {
+                "_meta": {
+                  "anyOf": [
+                    {
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": ["form"]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "requestedSchema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": ["object"]
+                    },
+                    "properties": {
+                      "type": "object",
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": ["type", "properties"],
+                  "additionalProperties": true
+                }
+              },
+              "required": ["mode", "message", "requestedSchema"],
+              "additionalProperties": true
+            }
+          },
+          "required": ["_tag", "input", "elicitation"],
+          "additionalProperties": true
+        },
+        "HostToolPolicyFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostToolPolicyFailed"]
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "ElicitationFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["ElicitationFailed"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "unavailable",
+                "transaction",
+                "invalid-request",
+                "invalid-response",
+                "transport",
+                "expired",
+                "forbidden"
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        },
+        "HostKindMismatchEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostKindMismatch"]
+            },
+            "tool": {
+              "type": "string",
+              "minLength": 1
+            },
+            "requested": {
+              "type": "string",
+              "enum": ["query", "mutation"]
+            },
+            "actual": {
+              "type": "string",
+              "enum": ["query", "mutation"]
+            }
+          },
+          "required": ["_tag", "tool", "requested", "actual"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "requirements": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "skills": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "toolIndex": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "skillSources": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "scheduledTools": {
+                "type": "boolean",
+                "enum": [true]
+              }
+            },
+            "required": ["skills"],
+            "additionalProperties": true
+          },
+          "database": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "accounts": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": ["accounts"],
+        "additionalProperties": true
+      },
+      "definitions": {}
+    },
+    "catalog": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "schedules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timing": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": ["interval"]
+                              },
+                              "milliseconds": {
+                                "type": "integer",
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["kind", "milliseconds"],
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": ["cron"]
+                              },
+                              "calendar": {
+                                "type": "object",
+                                "properties": {
+                                  "expression": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "timezone": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": ["expression", "timezone"],
+                                "additionalProperties": true
+                              }
+                            },
+                            "required": ["kind", "calendar"],
+                            "additionalProperties": true
+                          }
+                        ]
+                      },
+                      "input": {}
+                    },
+                    "required": ["name", "timing", "input"],
+                    "additionalProperties": true
+                  }
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "router": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "inputSchema": {
+                  "type": "object"
+                },
+                "readOnly": {
+                  "type": "boolean"
+                },
+                "outputSchema": {
+                  "type": "object"
+                },
+                "annotations": {
+                  "type": "object",
+                  "properties": {
+                    "readOnlyHint": {
+                      "type": "boolean"
+                    },
+                    "destructiveHint": {
+                      "type": "boolean"
+                    },
+                    "idempotentHint": {
+                      "type": "boolean"
+                    },
+                    "openWorldHint": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                "_meta": {
+                  "type": "object"
+                }
+              },
+              "required": ["name", "description", "inputSchema"],
+              "additionalProperties": true
+            }
+          },
+          "routers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "src": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "sizes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "theme": {
+                        "type": "string",
+                        "enum": ["light", "dark"]
+                      }
+                    },
+                    "required": ["src"],
+                    "additionalProperties": true
+                  }
+                },
+                "tags": {
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                "skill": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "error": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/McpErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/ProviderErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/SkillLoadFailedEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/HostDeclarationInvalidEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/HostEvaluationFailedEncoded"
+                    }
+                  ]
+                }
+              },
+              "required": ["path"],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": ["tools", "routers"],
+        "additionalProperties": true
+      },
+      "definitions": {
+        "McpErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["McpError"]
+            },
+            "phase": {
+              "type": "string",
+              "enum": ["connect", "discover", "call", "schema", "transport"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": ["request", "unauthorized", "invalid_response", "timeout", "invalid_input"]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string",
+                      "enum": ["Infinity", "-Infinity", "NaN"]
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "initialized": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fallback": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "phase": {
+                      "type": "string",
+                      "enum": ["connect", "discover", "call", "schema", "transport"]
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "request",
+                        "unauthorized",
+                        "invalid_response",
+                        "timeout",
+                        "invalid_input"
+                      ]
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string",
+                              "enum": ["Infinity", "-Infinity", "NaN"]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["phase", "reason"],
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "phase", "reason"],
+          "additionalProperties": true
+        },
+        "ProviderErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["ProviderError"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": ["unauthorized", "forbidden", "rate_limited", "unavailable", "rejected"]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "accountId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^acc_",
+                  "minLength": 5
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        },
+        "SkillLoadFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["SkillLoadFailed"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "source",
+                "request",
+                "rate_limited",
+                "document",
+                "limit",
+                "changed",
+                "encoding"
+              ]
+            },
+            "message": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        },
+        "HostDeclarationInvalidEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostDeclarationInvalid"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["app", "storage", "service"]
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostEvaluationFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostEvaluationFailed"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["app", "storage", "service"]
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "catalogSummary": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "schedules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "timing": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": ["interval"]
+                              },
+                              "milliseconds": {
+                                "type": "integer",
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": ["kind", "milliseconds"],
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": ["cron"]
+                              },
+                              "calendar": {
+                                "type": "object",
+                                "properties": {
+                                  "expression": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "timezone": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "required": ["expression", "timezone"],
+                                "additionalProperties": true
+                              }
+                            },
+                            "required": ["kind", "calendar"],
+                            "additionalProperties": true
+                          }
+                        ]
+                      },
+                      "input": {}
+                    },
+                    "required": ["name", "timing", "input"],
+                    "additionalProperties": true
+                  }
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "router": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "readOnly": {
+                  "type": "boolean"
+                },
+                "annotations": {
+                  "type": "object",
+                  "properties": {
+                    "readOnlyHint": {
+                      "type": "boolean"
+                    },
+                    "destructiveHint": {
+                      "type": "boolean"
+                    },
+                    "idempotentHint": {
+                      "type": "boolean"
+                    },
+                    "openWorldHint": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "required": ["name", "description"],
+              "additionalProperties": true
+            }
+          },
+          "routers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "icons": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "src": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "sizes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "theme": {
+                        "type": "string",
+                        "enum": ["light", "dark"]
+                      }
+                    },
+                    "required": ["src"],
+                    "additionalProperties": true
+                  }
+                },
+                "tags": {
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                "skill": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "error": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/McpErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/ProviderErrorEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/SkillLoadFailedEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/HostDeclarationInvalidEncoded"
+                    },
+                    {
+                      "$ref": "#/$defs/HostEvaluationFailedEncoded"
+                    }
+                  ]
+                }
+              },
+              "required": ["path"],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": ["tools", "routers"],
+        "additionalProperties": true
+      },
+      "definitions": {
+        "McpErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["McpError"]
+            },
+            "phase": {
+              "type": "string",
+              "enum": ["connect", "discover", "call", "schema", "transport"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": ["request", "unauthorized", "invalid_response", "timeout", "invalid_input"]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string",
+                      "enum": ["Infinity", "-Infinity", "NaN"]
+                    }
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "initialized": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "fallback": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "phase": {
+                      "type": "string",
+                      "enum": ["connect", "discover", "call", "schema", "transport"]
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "request",
+                        "unauthorized",
+                        "invalid_response",
+                        "timeout",
+                        "invalid_input"
+                      ]
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string",
+                              "enum": ["Infinity", "-Infinity", "NaN"]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["phase", "reason"],
+                  "additionalProperties": true
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "phase", "reason"],
+          "additionalProperties": true
+        },
+        "ProviderErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["ProviderError"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": ["unauthorized", "forbidden", "rate_limited", "unavailable", "rejected"]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "accountId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^acc_",
+                  "minLength": 5
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        },
+        "SkillLoadFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["SkillLoadFailed"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "source",
+                "request",
+                "rate_limited",
+                "document",
+                "limit",
+                "changed",
+                "encoding"
+              ]
+            },
+            "message": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 100,
+                  "maximum": 599
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        },
+        "HostDeclarationInvalidEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostDeclarationInvalid"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["app", "storage", "service"]
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        },
+        "HostEvaluationFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["HostEvaluationFailed"]
+            },
+            "source": {
+              "type": "string",
+              "enum": ["app", "storage", "service"]
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "code": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": ["_tag"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "skills": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "skills": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "license": {
+                      "type": "string"
+                    },
+                    "compatibility": {
+                      "type": "string"
+                    },
+                    "metadata": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "allowed-tools": {
+                      "type": "string"
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "content": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["path", "content"],
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "required": ["name", "description", "files"],
+                  "additionalProperties": true
+                }
+              },
+              "dynamic": {
+                "type": "boolean"
+              },
+              "cached": {
+                "type": "boolean"
+              }
+            },
+            "required": ["skills", "dynamic"],
+            "additionalProperties": true
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "license": {
+                  "type": "string"
+                },
+                "compatibility": {
+                  "type": "string"
+                },
+                "metadata": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "allowed-tools": {
+                  "type": "string"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "content": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": true
+                  }
+                }
+              },
+              "required": ["name", "description", "files"],
+              "additionalProperties": true
+            }
+          }
+        ]
+      },
+      "definitions": {}
+    },
+    "elicitationRequest": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "_meta": {
+            "anyOf": [
+              {
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["form"]
+          },
+          "message": {
+            "type": "string"
+          },
+          "requestedSchema": {
+            "type": "object",
+            "properties": {
+              "$schema": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["object"]
+              },
+              "properties": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "type": {
+                              "type": "string",
+                              "enum": ["string"]
+                            },
+                            "enum": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "enumNames": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "default": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["type", "enum"],
+                          "additionalProperties": true
+                        },
+                        {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": ["string"]
+                                },
+                                "enum": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "default": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["type", "enum"],
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": ["string"]
+                                },
+                                "oneOf": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "const": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["const", "title"],
+                                    "additionalProperties": true
+                                  }
+                                },
+                                "default": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["type", "oneOf"],
+                              "additionalProperties": true
+                            }
+                          ]
+                        },
+                        {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": ["array"]
+                                },
+                                "minItems": {
+                                  "type": "integer"
+                                },
+                                "maxItems": {
+                                  "type": "integer"
+                                },
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": ["string"]
+                                    },
+                                    "enum": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "required": ["type", "enum"],
+                                  "additionalProperties": true
+                                },
+                                "default": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": ["type", "items"],
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": ["array"]
+                                },
+                                "minItems": {
+                                  "type": "integer"
+                                },
+                                "maxItems": {
+                                  "type": "integer"
+                                },
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "anyOf": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "const": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": ["const", "title"],
+                                        "additionalProperties": true
+                                      }
+                                    }
+                                  },
+                                  "required": ["anyOf"],
+                                  "additionalProperties": true
+                                },
+                                "default": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": ["type", "items"],
+                              "additionalProperties": true
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": ["string"]
+                        },
+                        "minLength": {
+                          "type": "integer"
+                        },
+                        "maxLength": {
+                          "type": "integer"
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": ["email", "uri", "date", "date-time"]
+                        },
+                        "default": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["type"],
+                      "additionalProperties": true
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": ["number", "integer"]
+                        },
+                        "minimum": {
+                          "type": "number"
+                        },
+                        "maximum": {
+                          "type": "number"
+                        },
+                        "default": {
+                          "type": "number"
+                        }
+                      },
+                      "required": ["type"],
+                      "additionalProperties": true
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": ["boolean"]
+                        },
+                        "default": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": ["type"],
+                      "additionalProperties": true
+                    }
+                  ]
+                }
+              },
+              "required": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["type", "properties"],
+            "additionalProperties": true
+          }
+        },
+        "required": ["mode", "message", "requestedSchema"],
+        "additionalProperties": true
+      },
+      "definitions": {}
+    },
+    "elicitationReply": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "response": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "_meta": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "action": {
+                        "type": "string",
+                        "enum": ["accept"]
+                      },
+                      "content": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    "required": ["action"],
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "_meta": {
+                        "anyOf": [
+                          {
+                            "type": "object"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "action": {
+                        "type": "string",
+                        "enum": ["cancel", "decline"]
+                      }
+                    },
+                    "required": ["action"],
+                    "additionalProperties": true
+                  }
+                ]
+              }
+            },
+            "required": ["ok", "response"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [false]
+              },
+              "error": {
+                "$ref": "#/$defs/ElicitationFailedEncoded"
+              }
+            },
+            "required": ["ok", "error"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {
+        "ElicitationFailedEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["ElicitationFailed"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "unavailable",
+                "transaction",
+                "invalid-request",
+                "invalid-response",
+                "transport",
+                "expired",
+                "forbidden"
+              ]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "workflowStep": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["do"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "options": {
+                "type": "object",
+                "properties": {
+                  "retries": {
+                    "type": "object",
+                    "properties": {
+                      "limit": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "delay": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "backoff": {
+                        "type": "string",
+                        "enum": ["constant", "linear", "exponential"]
+                      }
+                    },
+                    "required": ["limit", "delay"],
+                    "additionalProperties": true
+                  },
+                  "timeout": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "required": ["operation", "name", "options"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["sleep"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "duration": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                ]
+              }
+            },
+            "required": ["operation", "name", "duration"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["until"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "timestamp": {
+                "type": "number"
+              }
+            },
+            "required": ["operation", "name", "timestamp"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["context"]
+              }
+            },
+            "required": ["operation"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["invoke"]
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["query", "mutation"]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "input": {},
+              "stepId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timeout": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": ["operation", "kind", "name", "input", "stepId", "timeout"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {}
+    },
+    "workflowStepReply": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "value": {}
+            },
+            "required": ["ok", "value"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [false]
+              },
+              "error": {
+                "$ref": "#/$defs/WorkflowFailureEncoded"
+              }
+            },
+            "required": ["ok", "error"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {
+        "WorkflowFailureEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["WorkflowFailure"]
+            },
+            "step": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "errorName": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "unavailable",
+                "not_found",
+                "input",
+                "output",
+                "operation",
+                "approval",
+                "credentials",
+                "terminated",
+                "execution",
+                "conflict",
+                "engine"
+              ]
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": ["_tag", "reason", "retryable"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "workflowControl": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["start"]
+              },
+              "workflow": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "input": {},
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["operation", "workflow", "input"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["get"]
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["operation", "run"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["list"]
+              },
+              "workflow": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "cursor": {
+                "type": "string",
+                "minLength": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            "required": ["operation"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["terminate"]
+              },
+              "run": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["operation", "run"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {}
+    },
+    "cacheCommand": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["read"]
+              },
+              "keys": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "required": ["operation", "keys"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["acquire"]
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "refresh": {
+                "type": "boolean"
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["operation", "key", "refresh"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["claim"]
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["operation", "key", "version"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["publish"]
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "lease": {
+                "type": "string"
+              },
+              "entry": {
+                "type": "object",
+                "properties": {
+                  "value": {},
+                  "version": {
+                    "type": "string"
+                  },
+                  "freshUntil": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "staleUntil": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "required": ["value", "version", "freshUntil", "staleUntil"],
+                "additionalProperties": true
+              }
+            },
+            "required": ["operation", "key", "lease", "entry"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["release"]
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "lease": {
+                "type": "string"
+              }
+            },
+            "required": ["operation", "key", "lease"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["renew"]
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "lease": {
+                "type": "string"
+              }
+            },
+            "required": ["operation", "key", "lease"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["write"]
+              },
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "entry": {
+                      "type": "object",
+                      "properties": {
+                        "value": {},
+                        "version": {
+                          "type": "string"
+                        },
+                        "freshUntil": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "staleUntil": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "required": ["value", "version", "freshUntil", "staleUntil"],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": ["key", "entry"],
+                  "additionalProperties": true
+                }
+              }
+            },
+            "required": ["operation", "entries"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": ["invalidate"]
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": ["operation", "key"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {}
+    },
+    "cacheReply": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "value": {}
+            },
+            "required": ["ok", "value"],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "enum": [false]
+              },
+              "error": {
+                "$ref": "#/$defs/CacheErrorEncoded"
+              }
+            },
+            "required": ["ok", "error"],
+            "additionalProperties": true
+          }
+        ]
+      },
+      "definitions": {
+        "CacheErrorEncoded": {
+          "type": "object",
+          "properties": {
+            "_tag": {
+              "type": "string",
+              "enum": ["CacheError"]
+            },
+            "reason": {
+              "type": "string",
+              "enum": ["unavailable", "storage", "invalid", "capacity", "timeout"]
+            }
+          },
+          "required": ["_tag", "reason"],
+          "additionalProperties": true
+        }
+      }
+    },
+    "accountCheck": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "accountInfo": {
+            "type": "object",
+            "properties": {
+              "externalId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "username": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "email": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "avatarUrl": {
+                "type": "string"
+              },
+              "profileUrl": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      },
+      "definitions": {}
+    },
+    "accounts": {
+      "dialect": "draft-2020-12",
+      "schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "definitions": {}
+    }
+  }
+}

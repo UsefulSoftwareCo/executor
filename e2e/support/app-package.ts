@@ -130,7 +130,7 @@ export const appPackageFixture = Effect.gen(function* () {
   const runtime = yield* fs
     .readFileString(runtimeFile)
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimePackage))));
-  yield* fs.writeFileString(runtimeFile, JSON.stringify({ ...runtime, protocol: 8 }));
+  yield* fs.writeFileString(runtimeFile, JSON.stringify({ ...runtime, protocol: 9 }));
   archives.set("/unsupported.tgz", yield* pack(path.join(extracted, "package")));
 
   for (const [name, dependencies, content] of [

@@ -204,7 +204,10 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
+                dependencies: withApps({
+                  "@modelcontextprotocol/client": "2.0.0",
+                  "@modelcontextprotocol/core": "2.0.0",
+                }),
               }),
             },
             // Port 9 on loopback refuses connections, so the second server fails fast.
@@ -336,7 +339,10 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
               {
                 path: "package.json",
                 content: JSON.stringify({
-                  dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
+                  dependencies: withApps({
+                    "@modelcontextprotocol/client": "2.0.0",
+                    "@modelcontextprotocol/core": "2.0.0",
+                  }),
                 }),
               },
               {

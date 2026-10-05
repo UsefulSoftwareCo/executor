@@ -56,7 +56,8 @@ export { protocol3 } from "./protocols/3.ts";
 export { protocol4 } from "./protocols/4.ts";
 export { protocol5 } from "./protocols/5.ts";
 export { protocol6 } from "./protocols/6.ts";
-export { protocol7, AccountCheckCommand, CredentialHost } from "./protocols/7.ts";
+export { protocol7 } from "./protocols/7.ts";
+export { protocol8, AccountCheckCommand, CredentialHost } from "./protocols/8.ts";
 export { AccountCheckResult, AccountInfo } from "./provider.ts";
 import {
   HostAccountsInvalid,
@@ -77,8 +78,8 @@ import {
   ResolvedAccounts,
   type SkillCatalogResponse,
   type TrustedToolApproval,
-} from "./protocols/7.ts";
-export { DeclaredRequirements, HostRequest } from "./protocols/7.ts";
+} from "./protocols/8.ts";
+export { DeclaredRequirements, HostRequest } from "./protocols/8.ts";
 export {
   DeclaredAuthMethod,
   DeclaredProvider,
@@ -112,7 +113,7 @@ export {
   HostError,
   HostResponse,
   HostInvocation,
-} from "./protocols/7.ts";
+} from "./protocols/8.ts";
 /** Raw host inputs; the host boundary parses and redacts these immediately. */
 export type ResolvedAccountsInput = typeof ResolvedAccounts.Encoded;
 

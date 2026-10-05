@@ -44,8 +44,8 @@ tools' hints. Quick-add MCP apps are generated with the MCP rule above.
 
 ## Remote MCP tools
 
-Import `mcpRouter` from `apps/mcp`. Add `@modelcontextprotocol/sdk` (currently
-`1.30.0`) to the app's `package.json` dependencies. The dashboard's quick add
+Import `mcpRouter` from `apps/mcp`. Add `@modelcontextprotocol/client` and
+`@modelcontextprotocol/core` (currently `2.0.0` for both) to the app's `package.json` dependencies. The dashboard's quick add
 generates this for public and OAuth servers. A public server needs no account:
 
 ```ts
@@ -124,7 +124,8 @@ tools: router({
 ## Local stdio MCP tools
 
 Import `stdioRouter` from `apps/mcp/stdio` and declare
-`@modelcontextprotocol/sdk` in the app's dependencies. The HTTP helper never
+`@modelcontextprotocol/client` and `@modelcontextprotocol/core` (currently `2.0.0`
+for both) in the app's dependencies. The HTTP helper never
 imports this process adapter. Pass the command, literal arguments, and an
 optional working directory. Declare each secret environment variable as a
 `secrets` field; pass the chosen `account.fields` as the child's environment

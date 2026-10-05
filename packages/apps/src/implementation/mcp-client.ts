@@ -1,11 +1,7 @@
 import type { ProviderError } from "../contracts/provider-error.ts";
 /** Shared MCP pagination, wire parsing and calls. Transport owns connection lifetime. */
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type {
-  JsonSchemaType,
-  jsonSchemaValidator,
-} from "@modelcontextprotocol/sdk/validation/types.js";
-import { ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { Client } from "@modelcontextprotocol/client";
+import type { JsonSchemaType, jsonSchemaValidator } from "@modelcontextprotocol/client";
 import { Effect, Exit, Option, Schema } from "effect";
 import {
   defaultMcpClientLimits,
@@ -67,7 +63,6 @@ export function mcpClient(
           try: (signal) =>
             client.request(
               { method: "tools/list", params: cursor === undefined ? {} : { cursor } },
-              ListToolsResultSchema,
               { signal, timeout: timeoutMs },
             ),
           catch: (error) => failure("discover", error),
@@ -118,9 +113,9 @@ export function mcpClient(
   ).pipe(Effect.withSpan("provider.mcp.discover"));
 
   /** Call once with one account, retaining content and MCP tool-error results. */
-  const call = (name: string, input: JsonObject, context: McpToolContext) =>
-    withClient("call", (client) => mcpCall(client, name, input, context, timeoutMs, failure)).pipe(
-      Effect.withSpan("provider.mcp.call", { attributes: { "mcp.tool.name": name } }),
+  const call = (tool: McpToolMetadata, input: JsonObject, context: McpToolContext) =>
+    withClient("call", (client) => mcpCall(client, tool, input, context, timeoutMs, failure)).pipe(
+      Effect.withSpan("provider.mcp.call", { attributes: { "mcp.tool.name": tool.name } }),
     );
 
   return { list, call };

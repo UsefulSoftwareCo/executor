@@ -21,12 +21,12 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-| Import           | Helper          | App dependency              |
-| ---------------- | --------------- | --------------------------- |
-| `apps/mcp`       | `mcpRouter`     | `@modelcontextprotocol/sdk` |
-| `apps/mcp/stdio` | `stdioRouter`   | `@modelcontextprotocol/sdk` |
-| `apps/graphql`   | `graphqlRouter` | `graphql`                   |
-| `apps/openapi`   | `openapiRouter` | None                        |
+| Import           | Helper          | App dependency                                               |
+| ---------------- | --------------- | ------------------------------------------------------------ |
+| `apps/mcp`       | `mcpRouter`     | `@modelcontextprotocol/client`, `@modelcontextprotocol/core` |
+| `apps/mcp/stdio` | `stdioRouter`   | `@modelcontextprotocol/client`, `@modelcontextprotocol/core` |
+| `apps/graphql`   | `graphqlRouter` | `graphql`                                                    |
+| `apps/openapi`   | `openapiRouter` | None                                                         |
 
 MCP and GraphQL are optional peers. Subpath imports isolate their module graphs;
 optional peers keep unused libraries out of the dependency installation. The
@@ -39,7 +39,10 @@ a host with process support.
 Declare the needed peer in the deployed app's `package.json`, for example:
 
 ```json
-{ "name": "deepwiki", "dependencies": { "@modelcontextprotocol/sdk": "1.30.0" } }
+{
+  "name": "deepwiki",
+  "dependencies": { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" }
+}
 ```
 
 Product runtimes compile authored source and declared dependencies inside workerd,
@@ -110,7 +113,7 @@ Helpers are ordinary app libraries. The SDK still builds and invokes one app
 model with the configured account selections; there is no protocol dispatcher.
 Existing retained builds keep their bundled code until a new deployment.
 
-The packaged runtime uses host protocol 1. A package missing that runtime or using
+The packaged runtime uses host protocol 8. A package missing that runtime or using
 an unsupported protocol fails at build time; it is never replaced silently with
 the host's framework. An unsuccessful update preserves the active deployment.
 Beta compatibility is checked with an earlier package fixture, not a promise to

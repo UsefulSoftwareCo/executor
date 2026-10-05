@@ -192,11 +192,15 @@ const mcpPresentation = ({
   phase,
   reason,
   status,
-}: {
-  readonly phase: McpError["phase"];
-  readonly reason: McpError["reason"];
-  readonly status?: number | undefined;
-}) => {
+  initialized,
+  fallback,
+}: Pick<McpError, "phase" | "reason" | "status" | "initialized" | "fallback">) => {
+  const details =
+    (initialized === true ? " The Streamable HTTP session failed after initialization." : "") +
+    (fallback === undefined
+      ? ""
+      : ` Legacy SSE fallback also failed${fallback.status === undefined ? "" : ` (HTTP ${fallback.status})`}${fallback.reason === "timeout" ? " because it timed out" : ""}.`);
+  const describe = (message: string) => message + details;
   const http = status === undefined ? "" : ` (HTTP ${status})`;
   const stage =
     phase === "connect" || phase === "transport"
@@ -209,7 +213,7 @@ const mcpPresentation = ({
     case "timeout":
       return {
         title: "MCP server did not respond",
-        description: `The app’s MCP server did not respond in time while ${stage}.`,
+        description: describe(`The app’s MCP server did not respond in time while ${stage}.`),
         recovery: {
           action: "Try again later. If this continues, check the MCP server’s status.",
           instructions,
@@ -219,7 +223,7 @@ const mcpPresentation = ({
     case "unauthorized":
       return {
         title: "MCP server rejected the credentials",
-        description: `The app’s MCP server rejected the credentials${http}.`,
+        description: describe(`The app’s MCP server rejected the credentials${http}.`),
         recovery: {
           action: "Check the account’s credentials. Update its API key or reconnect its sign-in.",
           instructions,
@@ -230,14 +234,16 @@ const mcpPresentation = ({
       return {
         title: "MCP server response not supported",
         // Includes Executor refusing to follow the server to another origin.
-        description: `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.`,
+        description: describe(
+          `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.`,
+        ),
         recovery: { action: "Check that the app points at a supported MCP server.", instructions },
         retryable: false,
       };
     case "invalid_input":
       return {
         title: "MCP server settings are invalid",
-        description: "The app’s MCP server URL or settings are invalid.",
+        description: describe("The app’s MCP server URL or settings are invalid."),
         recovery: { action: "Correct the app’s MCP server URL or settings.", instructions },
         retryable: false,
       };
@@ -246,7 +252,9 @@ const mcpPresentation = ({
       if (status === 408 || status === 425)
         return {
           title: "MCP server asked to retry",
-          description: `The app’s MCP server could not handle the request yet while ${stage}${http}.`,
+          description: describe(
+            `The app’s MCP server could not handle the request yet while ${stage}${http}.`,
+          ),
           recovery: {
             action: "Try again later. If this continues, check the MCP server’s status.",
             instructions,
@@ -256,7 +264,7 @@ const mcpPresentation = ({
       return status === undefined
         ? {
             title: "MCP server unreachable",
-            description: `Executor could not reach the app’s MCP server while ${stage}.`,
+            description: describe(`Executor could not reach the app’s MCP server while ${stage}.`),
             recovery: {
               action: "Try again. If this continues, check the MCP server’s address and status.",
               instructions,
@@ -265,7 +273,9 @@ const mcpPresentation = ({
           }
         : {
             title: "MCP server refused the request",
-            description: `The app’s MCP server refused the request while ${stage}${http}.`,
+            description: describe(
+              `The app’s MCP server refused the request while ${stage}${http}.`,
+            ),
             recovery: {
               action: "Check the app’s MCP server URL and access requirements.",
               instructions,
@@ -299,6 +309,8 @@ export const AppEvaluationFailed = UserFacingError.define({
         phase: McpError.fields.phase,
         reason: McpError.fields.reason,
         status: McpError.fields.status,
+        initialized: McpError.fields.initialized,
+        fallback: McpError.fields.fallback,
       }),
     ),
   },

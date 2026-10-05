@@ -10,7 +10,7 @@
 import { Schema } from "effect";
 import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
 import { ElicitationReply, FormElicitation } from "../elicitation.ts";
-import { McpError } from "../mcp.ts";
+import { McpError } from "../mcp-error-legacy.ts";
 import { ProviderError } from "../provider-error.ts";
 import { RouterIcon } from "../router.ts";
 import { OperationSchedule } from "../schedules.ts";

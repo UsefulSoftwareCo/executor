@@ -425,7 +425,10 @@ return { items: [...small.items, ...large.items] };`;
                 {
                   path: "package.json",
                   content: JSON.stringify({
-                    dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
+                    dependencies: withApps({
+                      "@modelcontextprotocol/client": "2.0.0",
+                      "@modelcontextprotocol/core": "2.0.0",
+                    }),
                   }),
                 },
                 { path: "index.ts", content: stalledAppSource(origin) },

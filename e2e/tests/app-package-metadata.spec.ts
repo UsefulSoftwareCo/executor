@@ -66,7 +66,8 @@ layer(HostedLive, { excludeTestServices: true })("App package metadata", (it) =>
           // New apps pin the exact apps release the host ships, and the MCP SDK it is built with.
           expect(metadata.dependencies).toEqual({
             apps: appsVersion,
-            "@modelcontextprotocol/sdk": "1.30.0",
+            "@modelcontextprotocol/client": "2.0.0",
+            "@modelcontextprotocol/core": "2.0.0",
           });
           const source = before.files.find((file) => file.path === "index.ts");
           expect(source?.content).not.toMatch(/\bname\s*:/);

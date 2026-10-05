@@ -14,7 +14,7 @@ import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-d
 import { OpenapiResponseError } from "../api-response-error.ts";
 import { ElicitationFailed, ElicitationReply, FormElicitation } from "../elicitation.ts";
 import { FailureDetail } from "../failure.ts";
-import { McpError } from "../mcp.ts";
+import { McpError } from "../mcp-error-legacy.ts";
 import { ProviderError } from "../provider-error.ts";
 import { JsonValue } from "../schema.ts";
 import { SkillLoadFailed } from "../skills.ts";

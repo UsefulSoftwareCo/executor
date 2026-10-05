@@ -172,7 +172,12 @@ const control = (origin: string, data?: Schema.Json) =>
 const source = (url: string, cached: boolean, accounts: boolean, unbound = false) => [
   {
     path: "package.json",
-    content: JSON.stringify({ dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }) }),
+    content: JSON.stringify({
+      dependencies: withApps({
+        "@modelcontextprotocol/client": "2.0.0",
+        "@modelcontextprotocol/core": "2.0.0",
+      }),
+    }),
   },
   {
     path: "index.ts",

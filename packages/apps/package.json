@@ -1,6 +1,6 @@
 {
   "name": "apps",
-  "version": "0.0.1-beta.22",
+  "version": "0.0.1-beta.23",
   "private": true,
   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
   "type": "module",
@@ -49,7 +49,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260729.1",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/core": "2.0.0",
     "@types/node": "^26.6.1",
     "@types/react": "^19.2.0",
     "esbuild": "0.28.2",
@@ -58,12 +59,16 @@
     "typescript-5": "npm:typescript@5.9.3"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/core": "^2.0.0",
     "graphql": "^16.11.0",
     "react": "^19.2.0"
   },
   "peerDependenciesMeta": {
-    "@modelcontextprotocol/sdk": {
+    "@modelcontextprotocol/client": {
+      "optional": true
+    },
+    "@modelcontextprotocol/core": {
       "optional": true
     },
     "graphql": {
