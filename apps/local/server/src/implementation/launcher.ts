@@ -22,49 +22,45 @@ const openBrowser = (url: Redacted.Redacted<string>, platform: string) =>
     if (code !== 0) return yield* new StartupFailed({ stage: "browser" });
   }).pipe(Effect.mapError(() => new StartupFailed({ stage: "browser" })));
 
-/** Print a link from the server already running on this data directory's keys and port. */
-const pair = (platform: string) =>
-  Effect.gen(function* () {
-    const failed = () => Effect.fail(new StartupFailed({ stage: "pair" }));
-    const settings = yield* savedConfiguration(platform);
-    const client = yield* HttpApiClient.make(LocalAuthApi, {
-      baseUrl: `http://127.0.0.1:${settings.port}`,
-      transformClient: (client) =>
-        client.pipe(HttpClient.mapRequest(HttpClientRequest.bearerToken(settings.apiKey))),
-    }).pipe(Effect.provide(FetchHttpClient.layer));
-    const link = yield* client.auth.pair().pipe(
-      Effect.catchTags({
-        PairingUnauthorized: () =>
-          Effect.fail(
-            new LocalConfigurationError({
-              reason: "misconfigured",
-              message: `The server on 127.0.0.1:${settings.port} did not accept the API key for ${settings.directory}. It probably uses another data directory: set EXECUTOR_DATA_DIR to the folder it uses. Nothing was changed.`,
-            }),
-          ),
-        HttpClientError: (error) =>
-          Effect.fail(
-            error.reason._tag === "TransportError"
-              ? new LocalConfigurationError({
-                  reason: "io",
-                  message: `No Executor server answered on 127.0.0.1:${settings.port}. Start Executor first, or set EXECUTOR_PORT to the port it listens on. Nothing was changed.`,
-                })
-              : new StartupFailed({ stage: "pair" }),
-          ),
-        AuthForbidden: failed,
-        AuthStorageError: failed,
-        SchemaError: failed,
-      }),
-    );
-    return yield* Console.log(Redacted.value(link.url));
-  });
-
 /**
  * Start headless/browser/desktop using one server; pairing an existing server never opens storage.
  * `installation` is the running CLI's own file, which tells the update notice how it was installed.
  */
 export const launch = (mode: LaunchMode, platform: string, installation?: string) =>
   Effect.gen(function* () {
-    if (mode === "pair") return yield* pair(platform);
+    if (mode === "pair") {
+      const failed = () => Effect.fail(new StartupFailed({ stage: "pair" }));
+      const settings = yield* savedConfiguration(platform);
+      const client = yield* HttpApiClient.make(LocalAuthApi, {
+        baseUrl: `http://127.0.0.1:${settings.port}`,
+        transformClient: (client) =>
+          client.pipe(HttpClient.mapRequest(HttpClientRequest.bearerToken(settings.apiKey))),
+      }).pipe(Effect.provide(FetchHttpClient.layer));
+      const link = yield* client.auth.pair().pipe(
+        Effect.catchTags({
+          PairingUnauthorized: () =>
+            Effect.fail(
+              new LocalConfigurationError({
+                reason: "misconfigured",
+                message: `The server on 127.0.0.1:${settings.port} did not accept the API key for ${settings.directory}. It probably uses another data directory: set EXECUTOR_DATA_DIR to the folder it uses. Nothing was changed.`,
+              }),
+            ),
+          HttpClientError: (error) =>
+            Effect.fail(
+              error.reason._tag === "TransportError"
+                ? new LocalConfigurationError({
+                    reason: "io",
+                    message: `No Executor server answered on 127.0.0.1:${settings.port}. Start Executor first, or set EXECUTOR_PORT to the port it listens on. Nothing was changed.`,
+                  })
+                : new StartupFailed({ stage: "pair" }),
+            ),
+          AuthForbidden: failed,
+          AuthStorageError: failed,
+          SchemaError: failed,
+        }),
+      );
+      return yield* Console.log(Redacted.value(link.url));
+    }
     const settings = yield* localConfiguration(platform);
     const bootstrap = mode === "desktop" ? yield* readDesktopBootstrap : undefined;
     const server = yield* startLocalServer(settings, bootstrap);

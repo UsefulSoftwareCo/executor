@@ -679,8 +679,7 @@ export const scenarios = {
   },
   localPair: {
     file: "local-pair.spec.ts",
-    title:
-      "local pair prints a link from the running server's data directory and explains a wrong directory or port without creating keys",
+    title: "local pair prints a link and explains a wrong directory or port without creating keys",
     targets: {
       local: scheduled,
       cloud: na("Local CLI pairing"),

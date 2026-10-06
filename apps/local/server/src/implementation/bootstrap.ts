@@ -415,62 +415,60 @@ export const savedConfiguration = (platform: string) =>
       });
     if (Option.isSome(explicitApi)) return yield* config;
     const marker = path.join(directory, "installation.json");
-    if (!(yield* fs.exists(marker)))
+    const installation = (yield* fs.exists(marker))
+      ? yield* fs
+          .readFileString(marker)
+          .pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Installation))),
+            Effect.mapError(invalid),
+          )
+      : undefined;
+    if (installation === undefined || installation.state === "pending")
       return yield* new LocalConfigurationError({
         reason: "credential-missing",
         message: `${directory} has no saved keys. Start Executor first, or set EXECUTOR_DATA_DIR to the folder the running server uses. No new keys were created.`,
       });
-    const installation = yield* fs
-      .readFileString(marker)
-      .pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Installation))),
-        Effect.mapError(invalid),
-      );
+    if (installation.state === "external")
+      return yield* new LocalConfigurationError({
+        reason: "credential-missing",
+        message:
+          "This directory uses supplied keys. Set its original EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY. No replacement keys were created.",
+      });
     const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Keys));
-    const keys = yield* Effect.gen(function* () {
-      switch (installation.state) {
-        case "external":
-          return yield* new LocalConfigurationError({
-            reason: "credential-missing",
-            message:
-              "This directory uses supplied keys. Set its original EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY. No replacement keys were created.",
-          });
-        case "pending":
-          return yield* new LocalConfigurationError({
-            reason: "credential-missing",
-            message:
-              "This directory has not finished its first start. Start Executor once to create its keys. No new keys were created.",
-          });
-        case "file": {
-          const keyFile = path.join(directory, "keys.json");
-          return yield* fs.readFileString(keyFile).pipe(
+    const keyFile = path.join(directory, "keys.json");
+    const keys =
+      installation.state === "file"
+        ? yield* fs.readFileString(keyFile).pipe(
             Effect.flatMap(decode),
             Effect.mapError((error) => keyFileUnusable(keyFile, error)),
+          )
+        : yield* credentialEntry(installation.id).pipe(
+            Effect.flatMap((entry) =>
+              Effect.tryPromise({
+                try: (signal) => entry.getPassword(signal),
+                catch: classify(platform),
+              }),
+            ),
+            Effect.mapError((failure) =>
+              failure.kind === "denied"
+                ? new LocalConfigurationError({
+                    reason: "credential-denied",
+                    message: `Access to the OS credential store was denied, or the store is locked (${failure.reason}). Allow access or unlock the store, then try again. Nothing was changed.`,
+                  })
+                : unavailable(failure.reason, false),
+            ),
+            Effect.flatMap((stored) =>
+              stored === undefined || stored === null
+                ? Effect.fail(
+                    new LocalConfigurationError({
+                      reason: "credential-missing",
+                      message:
+                        "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
+                    }),
+                  )
+                : decode(stored).pipe(Effect.mapError(invalid)),
+            ),
           );
-        }
-        case "ready": {
-          const storeFailed = (failure: StoreFailure) =>
-            failure.kind === "denied"
-              ? new LocalConfigurationError({
-                  reason: "credential-denied",
-                  message: `Access to the OS credential store was denied, or the store is locked (${failure.reason}). Allow access or unlock the store, then try again. Nothing was changed.`,
-                })
-              : unavailable(failure.reason, false);
-          const entry = yield* credentialEntry(installation.id).pipe(Effect.mapError(storeFailed));
-          const stored = yield* Effect.tryPromise({
-            try: (signal) => entry.getPassword(signal),
-            catch: classify(platform),
-          }).pipe(Effect.mapError(storeFailed));
-          if (stored === undefined || stored === null)
-            return yield* new LocalConfigurationError({
-              reason: "credential-missing",
-              message:
-                "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
-            });
-          return yield* decode(stored).pipe(Effect.mapError(invalid));
-        }
-      }
-    });
     return yield* config.pipe(
       Effect.provideService(
         ConfigProvider.ConfigProvider,

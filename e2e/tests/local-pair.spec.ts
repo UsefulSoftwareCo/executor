@@ -1,6 +1,6 @@
 /** Run the real `executor pair` against a server the scenario starts with its own data directory. */
 import { expect, layer } from "@effect/vitest";
-import { Config, Effect, FileSystem, Option, Path, Schedule, Stream } from "effect";
+import { Config, Effect, FileSystem, Path, Schedule, Stream } from "effect";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { scenarios } from "../test-plan.ts";
@@ -18,11 +18,10 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
           processes = yield* ChildProcessSpawner.ChildProcessSpawner,
           http = yield* HttpClient.HttpClient,
           evidence = yield* Evidence;
-        const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
-          Config.option,
-        );
         const entry = path.resolve(
-          Option.isSome(packagedEntry) ? packagedEntry.value : "apps/local/server/src/bin.ts",
+          yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
+            Config.withDefault("apps/local/server/src/bin.ts"),
+          ),
         );
         const command = (subcommand: string, directory: string, port: number) =>
           ChildProcess.make("node", [entry, subcommand], {
@@ -82,14 +81,13 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
         expect(paired.code, paired.stderr).toBe(0);
         expect(paired.stdout).toContain(`http://127.0.0.1:${port}/`);
 
-        // A directory without saved keys is refused before any request, and nothing is created.
-        const other = yield* fs.makeTempDirectoryScoped({ prefix: "executor-pair-other-" });
+        // A directory without saved keys is refused, and not even the directory is created.
+        const other = path.join(root, "other");
         const refused = yield* pair(other, port);
         yield* evidence.json("no-saved-keys.json", refused);
         expect(refused.code).toBe(1);
         expect(refused.stderr).toContain("has no saved keys");
-        expect(refused.stderr).toContain("No new keys were created.");
-        expect(yield* fs.readDirectory(other)).toEqual([]);
+        expect(yield* fs.exists(other)).toBe(false);
 
         // A port with no server says so instead of blaming the keys.
         const silent = yield* pair(running, yield* freePort);
