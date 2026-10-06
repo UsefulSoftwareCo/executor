@@ -1,10 +1,15 @@
 /** Local launcher behavior. Runtime process APIs are supplied only at entry points. */
-import { Console, Effect, Redacted } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Console, Effect, Predicate, Redacted } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+} from "effect/unstable/http";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { LocalAuthApi } from "../contracts/auth.ts";
-import { localConfiguration } from "./bootstrap.ts";
+import { LocalConfigurationError, localConfiguration } from "./bootstrap.ts";
 import { StartupFailed, type LaunchMode } from "../contracts/startup.ts";
 import { readDesktopBootstrap, startLocalServer } from "../node.ts";
 import { updateNotice } from "./update-notice.ts";
@@ -35,9 +40,23 @@ export const launch = (mode: LaunchMode, platform: string, installation?: string
         transformClient: (client) =>
           client.pipe(HttpClient.mapRequest(HttpClientRequest.bearerToken(settings.apiKey))),
       }).pipe(Effect.provide(FetchHttpClient.layer));
-      const link = yield* client.auth
-        .pair()
-        .pipe(Effect.mapError(() => new StartupFailed({ stage: "pair" })));
+      const link = yield* client.auth.pair().pipe(
+        Effect.mapError((error) => {
+          if (Predicate.isTagged(error, "PairingUnauthorized")) {
+            return new LocalConfigurationError({
+              reason: "misconfigured",
+              message: `The server on port ${settings.port} did not accept the API key saved in ${settings.directory}. Run \`executor pair\` with the same EXECUTOR_DATA_DIR and keys as the running server.`,
+            });
+          }
+          if (HttpClientError.isHttpClientError(error) && error.reason._tag === "TransportError") {
+            return new LocalConfigurationError({
+              reason: "misconfigured",
+              message: `No Executor server answered on 127.0.0.1:${settings.port}. Start it first, or set EXECUTOR_PORT to the port it listens on.`,
+            });
+          }
+          return new StartupFailed({ stage: "pair" });
+        }),
+      );
       return yield* Console.log(Redacted.value(link.url));
     }
     const bootstrap = mode === "desktop" ? yield* readDesktopBootstrap : undefined;
