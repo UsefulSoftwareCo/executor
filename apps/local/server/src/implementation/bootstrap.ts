@@ -390,6 +390,109 @@ export const localConfiguration = (platform: string) =>
     ),
   );
 
+/**
+ * Read one directory's saved keys for a client of its running server, such as `executor pair`.
+ * Unlike `localConfiguration` it never creates the directory, an installation record or keys, and
+ * takes no lock: the server holds none once started, and nothing here is written.
+ */
+export const savedConfiguration = (platform: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const base = yield* ConfigProvider.ConfigProvider;
+    const directory = path.resolve(
+      yield* Config.String("EXECUTOR_DATA_DIR").pipe(Config.withDefault(".local/executor")),
+    );
+    const explicitApi = yield* Config.Redacted("EXECUTOR_API_KEY").pipe(Config.option);
+    const explicitEncryption = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY").pipe(
+      Config.option,
+    );
+    if (Option.isSome(explicitApi) !== Option.isSome(explicitEncryption))
+      return yield* new LocalConfigurationError({
+        reason: "misconfigured",
+        message:
+          "Supply both EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY, or leave both unset to use the saved keys.",
+      });
+    if (Option.isSome(explicitApi)) return yield* config;
+    const marker = path.join(directory, "installation.json");
+    if (!(yield* fs.exists(marker)))
+      return yield* new LocalConfigurationError({
+        reason: "credential-missing",
+        message: `${directory} has no saved keys. Start Executor first, or set EXECUTOR_DATA_DIR to the folder the running server uses. No new keys were created.`,
+      });
+    const installation = yield* fs
+      .readFileString(marker)
+      .pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Installation))),
+        Effect.mapError(invalid),
+      );
+    const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Keys));
+    const keys = yield* Effect.gen(function* () {
+      switch (installation.state) {
+        case "external":
+          return yield* new LocalConfigurationError({
+            reason: "credential-missing",
+            message:
+              "This directory uses supplied keys. Set its original EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY. No replacement keys were created.",
+          });
+        case "pending":
+          return yield* new LocalConfigurationError({
+            reason: "credential-missing",
+            message:
+              "This directory has not finished its first start. Start Executor once to create its keys. No new keys were created.",
+          });
+        case "file": {
+          const keyFile = path.join(directory, "keys.json");
+          return yield* fs.readFileString(keyFile).pipe(
+            Effect.flatMap(decode),
+            Effect.mapError((error) => keyFileUnusable(keyFile, error)),
+          );
+        }
+        case "ready": {
+          const storeFailed = (failure: StoreFailure) =>
+            failure.kind === "denied"
+              ? new LocalConfigurationError({
+                  reason: "credential-denied",
+                  message: `Access to the OS credential store was denied, or the store is locked (${failure.reason}). Allow access or unlock the store, then try again. Nothing was changed.`,
+                })
+              : unavailable(failure.reason, false);
+          const entry = yield* credentialEntry(installation.id).pipe(Effect.mapError(storeFailed));
+          const stored = yield* Effect.tryPromise({
+            try: (signal) => entry.getPassword(signal),
+            catch: classify(platform),
+          }).pipe(Effect.mapError(storeFailed));
+          if (stored === undefined || stored === null)
+            return yield* new LocalConfigurationError({
+              reason: "credential-missing",
+              message:
+                "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
+            });
+          return yield* decode(stored).pipe(Effect.mapError(invalid));
+        }
+      }
+    });
+    return yield* config.pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown({
+          EXECUTOR_DATA_DIR: directory,
+          EXECUTOR_API_KEY: Redacted.value(keys.apiKey),
+          EXECUTOR_ENCRYPTION_KEY: Redacted.value(keys.encryptionKey),
+        }).pipe(ConfigProvider.orElse(base)),
+      ),
+    );
+  }).pipe(
+    Effect.catchTag("PlatformError", () =>
+      Effect.fail(
+        new LocalConfigurationError({
+          reason: "io",
+          message:
+            "Executor could not read its installation record or key file. Check the data directory permissions. Nothing was changed.",
+        }),
+      ),
+    ),
+  );
+
 const unchanged = (reason: LocalConfigurationReason, message: string) =>
   new LocalConfigurationError({ reason, message: `${message} The API key was not changed.` });
 

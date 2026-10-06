@@ -677,6 +677,16 @@ export const scenarios = {
       "self-host": na("Local process startup"),
     },
   },
+  localPair: {
+    file: "local-pair.spec.ts",
+    title:
+      "local pair prints a link from the running server's data directory and explains a wrong directory or port without creating keys",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI pairing"),
+      "self-host": na("Local CLI pairing"),
+    },
+  },
   optimisticObservability: {
     fixtures: "actors",
     file: "optimistic-observability.spec.ts",
