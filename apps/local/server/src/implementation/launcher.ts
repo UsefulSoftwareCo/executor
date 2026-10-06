@@ -37,7 +37,7 @@ const pair = (platform: string) =>
           Effect.fail(
             new LocalConfigurationError({
               reason: "misconfigured",
-              message: `The server on 127.0.0.1:${settings.port} did not accept the API key saved in ${settings.directory}. It probably uses another data directory: set EXECUTOR_DATA_DIR to the folder it uses. Nothing was changed.`,
+              message: `The server on 127.0.0.1:${settings.port} did not accept the API key for ${settings.directory}. It probably uses another data directory: set EXECUTOR_DATA_DIR to the folder it uses. Nothing was changed.`,
             }),
           ),
         HttpClientError: (error) =>
