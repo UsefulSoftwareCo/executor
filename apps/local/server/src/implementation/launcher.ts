@@ -25,6 +25,7 @@ const openBrowser = (url: Redacted.Redacted<string>, platform: string) =>
 /** Print a link from the server already running on this data directory's keys and port. */
 const pair = (platform: string) =>
   Effect.gen(function* () {
+    const failed = () => Effect.fail(new StartupFailed({ stage: "pair" }));
     const settings = yield* savedConfiguration(platform);
     const client = yield* HttpApiClient.make(LocalAuthApi, {
       baseUrl: `http://127.0.0.1:${settings.port}`,
@@ -49,9 +50,9 @@ const pair = (platform: string) =>
                 })
               : new StartupFailed({ stage: "pair" }),
           ),
-        AuthForbidden: () => Effect.fail(new StartupFailed({ stage: "pair" })),
-        AuthStorageError: () => Effect.fail(new StartupFailed({ stage: "pair" })),
-        SchemaError: () => Effect.fail(new StartupFailed({ stage: "pair" })),
+        AuthForbidden: failed,
+        AuthStorageError: failed,
+        SchemaError: failed,
       }),
     );
     return yield* Console.log(Redacted.value(link.url));

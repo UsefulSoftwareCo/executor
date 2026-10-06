@@ -487,7 +487,7 @@ export const savedConfiguration = (platform: string) =>
         new LocalConfigurationError({
           reason: "io",
           message:
-            "Executor could not read its installation record or key file. Check the data directory permissions. Nothing was changed.",
+            "Executor could not check for its installation record. Check the data directory permissions. Nothing was changed.",
         }),
       ),
     ),
