@@ -138,6 +138,21 @@ const resolvePath = Effect.fn("OpenApi.resolvePath")(function* (
     );
     resolved = resolved.replaceAll(`{${param.name}}`, encoded);
     resolved = resolved.replaceAll(`{+${param.name}}`, encoded);
+    const wildcard = `{*${param.name}}`;
+    if (resolved.includes(wildcard)) {
+      // Catch-alls preserve separators, but dot segments would let URL
+      // normalization escape the operation's static prefix.
+      const segments = String(value).split("/");
+      if (segments.some((segment) => segment === "." || segment === "..")) {
+        return yield* new OpenApiInvocationError({
+          message: `Wildcard path parameter ${param.name} must not contain dot segments`,
+          statusCode: Option.none(),
+        });
+      }
+      // Bind the unprefixed parameter name and escape every segment, including
+      // percent signs, query delimiters and fragment delimiters.
+      resolved = resolved.replaceAll(wildcard, segments.map(encodeURIComponent).join("/"));
+    }
   }
 
   const remaining = [...resolved.matchAll(/\{([^{}]+)\}/g)]
