@@ -6,6 +6,7 @@ ENV EXECUTOR_BUILD_VERSION=$EXECUTOR_BUILD_VERSION EXECUTOR_ENVIRONMENT=self-hos
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY package.json bun.lock ./
+COPY .gitignore ./
 COPY patches ./patches
 COPY tsconfig.json ./
 COPY packages ./packages
