@@ -483,6 +483,66 @@ describe("graphqlPlugin real protocol server", () => {
     }),
   );
 
+  for (const headerName of [undefined, "User-Agent", "user-agent", "uSeR-aGeNt"]) {
+    it.effect(
+      `preserves request headers across introspection and invocation (${headerName ?? "default"})`,
+      () =>
+        Effect.gen(function* () {
+          const server = yield* serveGreetingServer;
+          const executor = yield* makeExecutor();
+          const userAgent = headerName ? "example-client/2.0" : "executor-graphql";
+          yield* executor.graphql.addIntegration({
+            endpoint: server.endpoint,
+            slug: "request_headers",
+            headers: {
+              Accept: "application/json",
+              "X-API-Version": "1",
+              ...(headerName ? { [headerName]: userAgent } : {}),
+            },
+            authenticationTemplate: [
+              {
+                slug: "header",
+                kind: "apikey",
+                placements: [{ carrier: "header", name: "Authorization" }],
+              },
+            ],
+          });
+          yield* createOrgConnection(executor, {
+            integration: "request_headers",
+            name: "main",
+            template: "header",
+            value: "test-credential",
+          });
+          const query = yield* executor.execute(
+            toolAddr("request_headers", "main", "query.hello"),
+            { name: "Ada" },
+          );
+          const mutation = yield* executor.execute(
+            toolAddr("request_headers", "main", "mutation.setGreeting"),
+            { message: "hi" },
+          );
+          expect(query).toEqual({ ok: true, data: { hello: "Hello Ada" } });
+          expect(mutation.ok).toBe(true);
+          const requests = yield* server.requests;
+          expect(requests.some((request) => request.payload.query?.includes("__schema"))).toBe(
+            true,
+          );
+          expect(requests.some((request) => request.payload.query?.startsWith("query Hello"))).toBe(
+            true,
+          );
+          expect(
+            requests.some((request) => request.payload.query?.startsWith("mutation SetGreeting")),
+          ).toBe(true);
+          for (const request of requests) {
+            expect(request.headers["user-agent"]).toBe(userAgent);
+            expect(request.headers.accept).toBe("application/json");
+            expect(request.headers["x-api-version"]).toBe("1");
+            expect(request.headers.authorization).toBe("test-credential");
+          }
+        }),
+    );
+  }
+
   it.effect("sends named operations derived from the field name", () =>
     Effect.gen(function* () {
       const server = yield* serveGreetingServer;

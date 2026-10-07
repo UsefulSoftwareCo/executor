@@ -107,6 +107,9 @@ export const invoke = Effect.fn("GraphQL.invoke")(function* (
 
   let request = HttpClientRequest.post(requestEndpoint).pipe(
     HttpClientRequest.setHeader("Content-Type", "application/json"),
+    // Match introspection even on runtimes that do not supply a User-Agent.
+    // Resolved headers below can override the default, case-insensitively.
+    HttpClientRequest.setHeader("User-Agent", "executor-graphql"),
     HttpClientRequest.bodyJsonUnsafe({
       query: operationString,
       variables: Object.keys(variables).length > 0 ? variables : undefined,
