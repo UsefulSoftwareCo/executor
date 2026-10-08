@@ -818,22 +818,27 @@ describe("tools.schema policy read", () => {
       }
 
       const visible = new Set((yield* executor.tools.list()).map((tool) => String(tool.address)));
-      const addresses = [addr(VERCEL, "deploy"), addr(VERCEL, "delete"), addr(GITHUB, "list")];
-      for (const address of addresses) {
+      for (const address of [addr(VERCEL, "delete"), addr(GITHUB, "list")]) {
+        expect(yield* executor.tools.schema(address)).toBeNull();
+        expect(yield* executor.tools.schema(address, { typeScript: false })).toBeNull();
+      }
+      for (const address of [addr(VERCEL, "deploy")]) {
         const full = yield* executor.tools.schema(address);
         const lean = yield* executor.tools.schema(address, { typeScript: false });
         expect(full !== null).toBe(visible.has(String(address)));
         expect(lean !== null).toBe(visible.has(String(address)));
-        if (full && lean) {
-          expect(lean.inputTypeScript).toBeUndefined();
-          expect(lean.outputTypeScript).toBeUndefined();
-          expect(lean.typeScriptDefinitions).toBeUndefined();
+        expect(full).not.toBeNull();
+        expect(lean).not.toBeNull();
+        {
+          expect(lean!.inputTypeScript).toBeUndefined();
+          expect(lean!.outputTypeScript).toBeUndefined();
+          expect(lean!.typeScriptDefinitions).toBeUndefined();
           const {
             inputTypeScript: _i,
             outputTypeScript: _o,
             typeScriptDefinitions: _d,
             ...rest
-          } = full;
+          } = full!;
           expect({ ...lean }).toEqual(rest);
         }
       }
