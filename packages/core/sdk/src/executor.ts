@@ -3638,30 +3638,32 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // reconnect re-syncs tools anyway); at worst the skipped
         // `tools_synced_at` stamp makes the next read re-attempt the sync.
         const stampSyncedWithHealth = (reason: string, health?: HealthCheckResult) =>
-          findConnectionRow(ref).pipe(
-            Effect.flatMap((fresh) =>
-              fresh === null
-                ? Effect.void
-                : core
-                    .updateMany("connection", {
-                      where: (b: AnyCb) =>
-                        b.and(
-                          connectionWhere(b),
-                          b("updated_at", "=", fresh.updated_at),
-                          fresh.tools_synced_at == null
-                            ? b.isNull("tools_synced_at")
-                            : b("tools_synced_at", "=", fresh.tools_synced_at),
-                        ),
-                      set:
-                        oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
-                          ? { tools_synced_at: Date.now() }
-                          : {
-                              tools_synced_at: Date.now(),
-                              last_health: health ?? toolSyncHealth(reason),
-                              updated_at: new Date(),
-                            },
-                    })
-                    .pipe(Effect.asVoid),
+          transaction(
+            findConnectionRow(ref).pipe(
+              Effect.flatMap((fresh) =>
+                fresh === null
+                  ? Effect.void
+                  : core
+                      .updateMany("connection", {
+                        where: (b: AnyCb) =>
+                          b.and(
+                            connectionWhere(b),
+                            b("updated_at", "=", fresh.updated_at),
+                            fresh.tools_synced_at == null
+                              ? b.isNull("tools_synced_at")
+                              : b("tools_synced_at", "=", fresh.tools_synced_at),
+                          ),
+                        set:
+                          oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
+                            ? { tools_synced_at: Date.now() }
+                            : {
+                                tools_synced_at: Date.now(),
+                                last_health: health ?? toolSyncHealth(reason),
+                                updated_at: new Date(),
+                              },
+                      })
+                      .pipe(Effect.asVoid),
+              ),
             ),
           );
 

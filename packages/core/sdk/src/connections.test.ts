@@ -2612,6 +2612,13 @@ const makeHealthHarness = (options?: {
           return (context: unknown) =>
             interceptHealthWrites((value as (context: unknown) => FumaDb).call(target, context));
         }
+        if (prop === "transaction") {
+          return (run: (tx: FumaDb) => Promise<unknown>) =>
+            (value as (run: (tx: FumaDb) => Promise<unknown>) => Promise<unknown>).call(
+              target,
+              (tx) => run(interceptHealthWrites(tx)),
+            );
+        }
         if (prop === "updateMany") {
           return async (
             table: string,
