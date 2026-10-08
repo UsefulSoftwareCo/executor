@@ -7,6 +7,7 @@ import {
   IntegrationSlug,
   ProviderItemId,
   ProviderKey,
+  ToolAddress,
   ToolName,
   createExecutor,
   definePlugin,
@@ -97,6 +98,240 @@ const bareIntegrationPlugin = definePlugin(() => ({
 const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
 
 describe("buildExecuteDescription", () => {
+  it.effect("names every permitted integration beyond 50, with prose only for the first 50", () =>
+    Effect.gen(function* () {
+      const slugs = Array.from({ length: 56 }, (_, index) =>
+        IntegrationSlug.make(`integration_${String(index).padStart(3, "0")}`),
+      );
+      const inventoryPlugin = definePlugin(() => ({
+        id: "inventory-plugin" as const,
+        credentialProviders: [memoryProvider()],
+        storage: () => ({}),
+        resolveTools: () => oneTool("list"),
+        extension: (ctx) => ({
+          seed: (slug: IntegrationSlug) =>
+            ctx.core.integrations.register({
+              slug,
+              name: String(slug),
+              description: `Read records from ${slug}.`,
+              config: {},
+            }),
+        }),
+      }))();
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [inventoryPlugin] as const }),
+      );
+      // Reverse insertion order so the assertions also check sorting.
+      for (const slug of [...slugs].reverse()) {
+        yield* executor["inventory-plugin"].seed(slug);
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration: slug,
+          template: TEMPLATE,
+          value: "token",
+        });
+      }
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: slugs[55]!,
+        template: TEMPLATE,
+        value: "token",
+      });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: `${slugs[0]}.*`,
+        action: "block",
+      });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: `${slugs[55]}.*`,
+        action: "require_approval",
+      });
+
+      const description = yield* buildExecuteDescription(executor);
+      const expected = slugs.slice(1).map(String);
+      const callable = [
+        ...new Set((yield* executor.tools.list()).map((tool) => String(tool.integration))),
+      ].sort();
+      expect(callable).toEqual(expected);
+      expect(parseIntegrationInventory(description)).toEqual(expected);
+      const lines = description.split("\n").filter((line) => line.startsWith("- `"));
+      expect(lines).toHaveLength(55);
+      expect(lines.slice(0, 50)).toEqual(
+        expected.slice(0, 50).map((slug) => `- \`${slug}\` — Read records from ${slug}.`),
+      );
+      expect(lines.slice(50)).toEqual(expected.slice(50).map((slug) => `- \`${slug}\``));
+      expect(description).not.toContain("- ...");
+    }),
+  );
+
+  it.effect("keeps tools that require approval from policy or plugin annotations", () =>
+    Effect.gen(function* () {
+      const approvalSlug = IntegrationSlug.make("approval");
+      const approvalPlugin = definePlugin(() => ({
+        id: "approval-plugin" as const,
+        storage: () => ({}),
+        resolveTools: () =>
+          Effect.succeed({
+            tools: [
+              {
+                name: ToolName.make("write"),
+                description: "Write records.",
+                annotations: { requiresApproval: true },
+              },
+            ],
+          }),
+        extension: (ctx) => ({
+          seed: () =>
+            ctx.core.integrations.register({
+              slug: approvalSlug,
+              description: "Write records.",
+              config: {},
+            }),
+        }),
+      }))();
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [githubPlugin, approvalPlugin] as const }),
+      );
+      yield* executor["github-plugin"].seed();
+      yield* executor["approval-plugin"].seed();
+      for (const integration of [GITHUB, approvalSlug]) {
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration,
+          template: TEMPLATE,
+          value: "token",
+        });
+      }
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "github.*",
+        action: "require_approval",
+      });
+      const tools = yield* executor.tools.list();
+      expect(tools).toHaveLength(2);
+      expect(
+        tools.find((tool) => tool.integration === approvalSlug)?.annotations?.requiresApproval,
+      ).toBe(true);
+      expect(
+        (yield* executor.policies.resolve(ToolAddress.make("tools.github.org.main.issues.list")))
+          .action,
+      ).toBe("require_approval");
+      expect(parseIntegrationInventory(yield* buildExecuteDescription(executor))).toEqual([
+        "approval",
+        "github",
+      ]);
+    }),
+  );
+
+  it.effect("keeps an org connection exception to an integration block", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [githubPlugin] as const }));
+      yield* executor["github-plugin"].seed();
+      for (const name of ["allowed", "blocked"]) {
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make(name),
+          integration: GITHUB,
+          template: TEMPLATE,
+          value: "token",
+        });
+      }
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "block" });
+      expect(parseIntegrationInventory(yield* buildExecuteDescription(executor))).toEqual([]);
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "github.org.allowed.*",
+        action: "approve",
+      });
+      expect((yield* executor.tools.list()).map((tool) => String(tool.address))).toEqual([
+        "tools.github.org.allowed.issues.list",
+      ]);
+      expect(parseIntegrationInventory(yield* buildExecuteDescription(executor))).toEqual([
+        "github",
+      ]);
+    }),
+  );
+
+  it.effect("keeps an org block when a user approves a specific connection", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [githubPlugin] as const }));
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "user",
+        name: ConnectionName.make("personal"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "token",
+      });
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "block" });
+      yield* executor.policies.create({
+        owner: "user",
+        pattern: "github.user.personal.*",
+        action: "approve",
+      });
+      expect(
+        (yield* executor.policies.resolve(
+          ToolAddress.make("tools.github.user.personal.issues.list"),
+        )).action,
+      ).toBe("block");
+      expect(yield* executor.tools.list()).toEqual([]);
+      expect(yield* executor.connections.list()).toHaveLength(1);
+      expect(parseIntegrationInventory(yield* buildExecuteDescription(executor))).toEqual([]);
+    }),
+  );
+
+  it.effect("follows the host catalog scope while retaining approval-gated namespaces", () =>
+    Effect.gen(function* () {
+      const config = makeTestConfig({ plugins: [githubPlugin, slackPlugin] as const });
+      const executor = yield* createExecutor(config);
+      yield* executor["github-plugin"].seed();
+      yield* executor["slack-plugin"].seed();
+      for (const integration of [GITHUB, SLACK]) {
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration,
+          template: TEMPLATE,
+          value: "token",
+        });
+      }
+      let visibleIntegration = "github";
+      const hostScopePlugin = definePlugin(() => ({
+        id: "host-scope-plugin" as const,
+        storage: () => ({}),
+        toolPolicyProvider: () => ({
+          list: () =>
+            Effect.succeed([
+              {
+                id: "host-grant",
+                pattern: `${visibleIntegration}.org.main.*`,
+                action: "require_approval" as const,
+                position: "a0",
+              },
+            ]),
+        }),
+      }))();
+      const scoped = yield* createExecutor({
+        ...config,
+        plugins: [githubPlugin, slackPlugin, hostScopePlugin] as const,
+      });
+      expect(yield* executor.connections.list()).toHaveLength(2);
+      expect((yield* scoped.tools.list()).map((tool) => String(tool.integration))).toEqual([
+        "github",
+      ]);
+      expect(parseIntegrationInventory(yield* buildExecuteDescription(scoped))).toEqual(["github"]);
+      visibleIntegration = "slack";
+      expect((yield* scoped.tools.list()).map((tool) => String(tool.integration))).toEqual([
+        "slack",
+      ]);
+      expect(parseIntegrationInventory(yield* buildExecuteDescription(scoped))).toEqual(["slack"]);
+    }),
+  );
+
   it.effect("lists the connected integrations, not the connection prefixes", () =>
     Effect.gen(function* () {
       const executor = yield* createExecutor(

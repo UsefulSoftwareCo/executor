@@ -121,7 +121,8 @@ const connectionPath = (connection: Connection): string => {
 // integration slug (deduped across connections, sorted) with its capability
 // description when the catalog carries one. No per-connection prefixes. Empty
 // string when nothing is connected.
-const INVENTORY_LIMIT = 50;
+// Cap capability prose, while naming every callable integration.
+const INVENTORY_DESCRIBED_INTEGRATION_LIMIT = 50;
 
 /** Longest rendered capability description. The block is always-loaded prompt
  *  context, so one scannable line per integration is the budget. */
@@ -179,12 +180,12 @@ const formatIntegrationInventory = (
       },
     ]),
   );
-  const shown = slugs.slice(0, INVENTORY_LIMIT);
   const lines = [
     INTEGRATION_INVENTORY_HEADER,
     "",
     "Integrations you have connected. Their tools live under `tools.<integration>.…`.",
-    ...shown.map((slug) => {
+    ...slugs.map((slug, index) => {
+      if (index >= INVENTORY_DESCRIBED_INTEGRATION_LIMIT) return `- \`${slug}\``;
       const entry = descriptions.get(slug);
       // Legacy rows store the slug or display name as the description; a
       // suffix that only repeats the line's own slug adds nothing.
@@ -198,8 +199,5 @@ const formatIntegrationInventory = (
       return summary ? `- \`${slug}\` — ${summary}` : `- \`${slug}\``;
     }),
   ];
-  if (slugs.length > shown.length) {
-    lines.push(`- ... ${slugs.length - shown.length} more`);
-  }
   return lines.join("\n");
 };

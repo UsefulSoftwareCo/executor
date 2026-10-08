@@ -4,7 +4,19 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type * as Cause from "effect/Cause";
 
-import type { ExecutionEngine } from "@executor-js/execution";
+import {
+  buildExecuteDescription,
+  parseIntegrationInventory,
+  type ExecutionEngine,
+} from "@executor-js/execution";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  IntegrationSlug,
+  ToolName,
+  definePlugin,
+} from "@executor-js/sdk";
+import { makeTestExecutor, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
 import { readSearchToolsEnabled } from "./browser-approval";
 import { createExecutorMcpServer, type ExecutorMcpServerConfig } from "./tool-server";
@@ -41,9 +53,8 @@ const makeRecordingEngine = (): {
   };
 };
 
-// The inventory block exactly as `buildExecuteDescription` renders it,
-// including an overflow marker and a slug that cannot form a legal MCP tool
-// name (which registration must skip, not fail on).
+// A legacy inventory block, including an overflow marker and an invalid MCP
+// tool slug, both of which registration must skip.
 const DESCRIPTION_WITH_INVENTORY = [
   "Execute TypeScript in a sandboxed runtime.",
   "",
@@ -84,6 +95,77 @@ const toolNames = async (client: Client): Promise<string[]> =>
 // ---------------------------------------------------------------------------
 
 describe("MCP host — per-integration search tools", () => {
+  it("derives all search tools from a built inventory with more than 50 permitted integrations", async () => {
+    const slugs = Array.from({ length: 56 }, (_, index) =>
+      IntegrationSlug.make(`integration_${String(index).padStart(3, "0")}`),
+    );
+    const inventoryPlugin = definePlugin(() => ({
+      id: "inventory-plugin" as const,
+      storage: () => ({}),
+      resolveTools: () =>
+        Effect.succeed({ tools: [{ name: ToolName.make("list"), description: "Read records." }] }),
+      extension: (ctx) => ({
+        seed: (slug: IntegrationSlug) =>
+          ctx.core.integrations.register({
+            slug,
+            name: String(slug),
+            description: `Read records from ${slug}.`,
+            config: {},
+          }),
+      }),
+    }))();
+    const description = await Effect.runPromise(
+      Effect.gen(function* () {
+        const executor = yield* makeTestExecutor({
+          plugins: [memoryCredentialsPlugin(), inventoryPlugin] as const,
+        });
+        for (const slug of [...slugs].reverse()) {
+          yield* executor["inventory-plugin"].seed(slug);
+          yield* executor.connections.create({
+            owner: "org",
+            name: ConnectionName.make("main"),
+            integration: slug,
+            template: AuthTemplateSlug.make("apiKey"),
+            value: "token",
+          });
+        }
+        yield* executor.policies.create({
+          owner: "org",
+          pattern: `${slugs[0]}.*`,
+          action: "block",
+        });
+        yield* executor.policies.create({
+          owner: "org",
+          pattern: `${slugs[55]}.*`,
+          action: "require_approval",
+        });
+        expect(
+          (yield* executor.tools.list()).map((tool) => String(tool.integration)).sort(),
+        ).toEqual(slugs.slice(1).map(String));
+        return yield* buildExecuteDescription(executor);
+      }).pipe(Effect.scoped),
+    );
+    const expected = slugs.slice(1).map(String);
+    expect(parseIntegrationInventory(description)).toEqual(expected);
+    expect(description).toContain(`- \`${slugs[50]}\` — Read records from ${slugs[50]}.`);
+    expect(description.split("\n")).toContain(`- \`${slugs[51]}\``);
+    expect(description).not.toContain("- ...");
+
+    const { engine, executed } = makeRecordingEngine();
+    await withClient({ engine, description, searchToolsEnabled: true }, async (client) => {
+      const names = (await toolNames(client)).filter((name) => name.startsWith("search_"));
+      expect(names.sort()).toEqual(expected.map((slug) => `search_${slug}`));
+      const result = await client.callTool({
+        name: `search_${slugs[55]}`,
+        arguments: { query: "records" },
+      });
+      expect(result.isError ?? false).toBe(false);
+      expect(executed).toEqual([
+        `return tools.search(${JSON.stringify({ query: "records", namespace: String(slugs[55]) })})`,
+      ]);
+    });
+  });
+
   it("registers none by default: the option is opt-in", async () => {
     const { engine } = makeRecordingEngine();
     await withClient({ engine, description: DESCRIPTION_WITH_INVENTORY }, async (client) => {
@@ -130,7 +212,7 @@ describe("MCP host — per-integration search tools", () => {
   });
 
   it("keeps each serialized definition small — the whole point is cheap context", async () => {
-    // A session serves one of these per connected integration (up to 50), so
+    // A session serves one of these per callable integration, so
     // definition bytes multiply. 300 serialized chars/tool keeps the full
     // surface around ~2k tokens; the original shipped shape was 551 chars/tool
     // (~5k tokens for 30 integrations), which defeated the feature's purpose.
