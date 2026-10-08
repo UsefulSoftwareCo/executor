@@ -42,6 +42,19 @@ const PAYLOAD_VERSION = "v1";
 /** Derive a 32-byte AES key from an arbitrary-length master key string. */
 const deriveKey = (master: string): Buffer => scryptSync(master, KEY_SALT, 32);
 
+// Plugin factories run for each session. Only key derivation is reusable:
+// providers below still bind fresh storage and ownership for each executor.
+// Keep one entry so rotating a host key replaces the cache without retaining
+// every key a long-lived process has used. Existing providers keep their key.
+let cachedKey: { readonly master: string; readonly derived: Buffer } | undefined;
+
+const pluginKey = (master: string): Buffer => {
+  if (cachedKey?.master === master) return cachedKey.derived;
+  const derived = deriveKey(master);
+  cachedKey = { master, derived };
+  return derived;
+};
+
 const encryptSecret = (key: Buffer, plaintext: string): Effect.Effect<string, StorageError> =>
   Effect.try({
     try: () => {
@@ -138,7 +151,7 @@ export const encryptedSecretsPlugin = definePlugin((options?: EncryptedSecretsPl
     // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: a secret store with no master key is unsafe; fail loud at construction
     throw new Error("encryptedSecretsPlugin requires a non-empty `key`");
   }
-  const derivedKey = deriveKey(master);
+  const derivedKey = pluginKey(master);
   return {
     id: "encryptedSecrets" as const,
     storage: () => ({}),
