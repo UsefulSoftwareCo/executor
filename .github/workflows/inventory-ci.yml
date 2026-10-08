@@ -1,0 +1,107 @@
+name: Inventory CI
+
+on:
+  pull_request:
+    branches:
+      - inventory-descriptions
+  push:
+    branches:
+      - inventory-descriptions
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inventory-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DO_NOT_TRACK: "1"
+  EXECUTOR_DISABLE_ANALYTICS: "1"
+  EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
+
+jobs:
+  checks:
+    name: Inventory ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Format
+            command: bun run format:check
+          - name: Lint
+            command: bun run lint
+          - name: Typecheck
+            command: bunx turbo run typecheck --filter='./packages/core/*' --filter='./packages/hosts/*' --filter=@executor-js/host-selfhost --concurrency=2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-inventory-bun-${{ hashFiles('bun.lock', 'package.json', 'patches/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-inventory-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run check:patches
+      - run: ${{ matrix.command }}
+
+  tests:
+    name: Inventory ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Core and hosts tests
+            browsers: true
+            # Forward worker limits, the browser path and telemetry opt-outs.
+            command: bunx turbo run test --filter='./packages/core/*' --filter='./packages/hosts/*' --concurrency=1 --env-mode=loose
+          - name: Selfhost tests
+            browsers: false
+            command: bun run --cwd apps/host-selfhost test
+    env:
+      VITEST_MAX_WORKERS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-inventory-bun-${{ hashFiles('bun.lock', 'package.json', 'patches/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-inventory-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run check:patches
+      - uses: actions/cache@v4
+        if: matrix.browsers
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-inventory-playwright-${{ hashFiles('bun.lock') }}
+      # The MCP Apps shell suite drives a real Chromium. Use the workspace's
+      # pinned Playwright and install its Linux libraries on the hosted runner.
+      - name: Install Chromium
+        if: matrix.browsers
+        working-directory: e2e
+        run: |
+          bunx playwright install --with-deps chromium
+          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(bun -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')" >> "$GITHUB_ENV"
+      - run: ${{ matrix.command }}
+      - name: Report quarantined assertion
+        if: always()
+        run: |
+          echo '::notice title=Quarantined e2e assertion::Passthrough credential header: https://github.com/justcarlson/executor/issues/22'
+          echo 'The passthrough credential-header e2e assertion is quarantined in [#22](https://github.com/justcarlson/executor/issues/22). Core and host credential tests remain enabled.' >> "$GITHUB_STEP_SUMMARY"
