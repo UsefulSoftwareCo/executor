@@ -147,6 +147,208 @@ describe("tool usage storage", () => {
   });
 });
 
+const legacyTable = `CREATE TABLE executor_tool_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp_ms INTEGER NOT NULL,
+  member_hash TEXT NOT NULL,
+  mcp_tool TEXT NOT NULL CHECK (mcp_tool IN ('search','invoke','integrations','skills')),
+  target_tool TEXT CHECK (length(target_tool) <= 512),
+  integration_slug TEXT CHECK (length(integration_slug) <= 64),
+  traffic_class TEXT NOT NULL CHECK (traffic_class IN ('agent','benchmark','monitor')),
+  status TEXT NOT NULL CHECK (status IN ('ok','error','blocked')),
+  duration_ms REAL NOT NULL CHECK (duration_ms >= 0),
+  response_bytes INTEGER NOT NULL CHECK (response_bytes >= 0)
+)`;
+
+describe("tool usage schema migration", () => {
+  it("rebuilds a pre-execute table once, keeping ids, rows, index and state", async () => {
+    const client = database();
+    const now = Date.now();
+    await client.batch(
+      [
+        legacyTable,
+        "CREATE INDEX IF NOT EXISTS executor_tool_usage_time ON executor_tool_usage(timestamp_ms)",
+        `CREATE TABLE executor_tool_usage_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL,
+          dropped_events INTEGER NOT NULL DEFAULT 0, write_failures INTEGER NOT NULL DEFAULT 0
+        )`,
+        "INSERT INTO executor_tool_usage_state (id, salt, dropped_events, write_failures) VALUES (1, 'legacy-salt', 4, 2)",
+        usageInsert(
+          event({ timestampMs: now, mcpTool: "search", targetTool: null, integrationSlug: null }),
+        ),
+        usageInsert(event({ timestampMs: now, durationMs: 5 })),
+        usageInsert(event({ timestampMs: now, status: "blocked" })),
+        "DELETE FROM executor_tool_usage WHERE id = 2",
+      ],
+      "write",
+    );
+    await expect(
+      client.execute(usageInsert(event({ timestampMs: now, mcpTool: "execute" }))),
+    ).rejects.toThrow();
+
+    const salt = await initializeToolUsage(client);
+    expect(salt).toBe("legacy-salt");
+    const rows = await client.execute(
+      "SELECT id, mcp_tool, target_tool, status, duration_ms FROM executor_tool_usage ORDER BY id",
+    );
+    expect(rows.rows.map((row) => [row.id, row.mcp_tool, row.target_tool, row.status])).toEqual([
+      [1, "search", null, "ok"],
+      [3, "invoke", "tools.sample.org.test.read", "blocked"],
+    ]);
+    const state = await client.execute("SELECT * FROM executor_tool_usage_state");
+    expect(state.rows[0]).toMatchObject({
+      salt: "legacy-salt",
+      dropped_events: 4,
+      write_failures: 2,
+    });
+    const schema = await client.execute(
+      "SELECT type, name FROM sqlite_master WHERE name LIKE 'executor_tool_usage%' ORDER BY name",
+    );
+    expect(schema.rows.map((row) => [row.type, row.name])).toEqual([
+      ["table", "executor_tool_usage"],
+      ["table", "executor_tool_usage_state"],
+      ["index", "executor_tool_usage_time"],
+    ]);
+
+    await client.execute(usageInsert(event({ timestampMs: now, mcpTool: "execute" })));
+    const inserted = await client.execute(
+      "SELECT id, mcp_tool FROM executor_tool_usage ORDER BY id",
+    );
+    expect(inserted.rows.map((row) => [row.id, row.mcp_tool])).toEqual([
+      [1, "search"],
+      [3, "invoke"],
+      [4, "execute"],
+    ]);
+
+    const definition = await client.execute(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'executor_tool_usage'",
+    );
+    expect(await initializeToolUsage(client)).toBe("legacy-salt");
+    const again = await client.execute(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'executor_tool_usage'",
+    );
+    expect(again.rows[0]!.sql).toBe(definition.rows[0]!.sql);
+    expect((await client.execute("SELECT COUNT(*) AS n FROM executor_tool_usage")).rows[0]!.n).toBe(
+      3,
+    );
+    expect(
+      (
+        await client.execute(
+          "SELECT name FROM sqlite_master WHERE name = 'executor_tool_usage_new'",
+        )
+      ).rows,
+    ).toHaveLength(0);
+  });
+
+  for (const deletion of ["highest", "hole", "all"] as const) {
+    it(`preserves the sequence high-water value with ${deletion} IDs deleted`, async () => {
+      const client = database();
+      await client.batch(
+        [
+          legacyTable,
+          usageInsert(event()),
+          usageInsert(event()),
+          usageInsert(event()),
+          `DELETE FROM executor_tool_usage WHERE ${deletion === "highest" ? "id = 3" : deletion === "hole" ? "id = 2" : "1 = 1"}`,
+        ],
+        "write",
+      );
+      const before = await client.execute("SELECT * FROM executor_tool_usage ORDER BY id");
+      const salt = await initializeToolUsage(client);
+      expect((await client.execute("SELECT * FROM executor_tool_usage ORDER BY id")).rows).toEqual(
+        before.rows,
+      );
+      expect(
+        (await client.execute("SELECT seq FROM sqlite_sequence WHERE name = 'executor_tool_usage'"))
+          .rows[0]!.seq,
+      ).toBe(3);
+      expect(await initializeToolUsage(client)).toBe(salt);
+      await client.execute(usageInsert(event({ mcpTool: "execute" })));
+      expect(
+        (await client.execute("SELECT MAX(id) AS id FROM executor_tool_usage")).rows[0]!.id,
+      ).toBe(4);
+    });
+  }
+
+  it("migrates an empty legacy table that never allocated an ID", async () => {
+    const client = database();
+    await client.execute(legacyTable);
+    await initializeToolUsage(client);
+    await client.execute(usageInsert(event({ mcpTool: "execute" })));
+    expect((await client.execute("SELECT id FROM executor_tool_usage")).rows[0]!.id).toBe(1);
+  });
+
+  it("rolls back a failed migration and can retry without losing sequence or state", async () => {
+    const client = database();
+    await client.batch(
+      [
+        legacyTable,
+        usageInsert(event()),
+        usageInsert(event()),
+        "DELETE FROM executor_tool_usage WHERE id = 2",
+        // Deliberately conflict with the index creation after the table swap.
+        "CREATE TABLE executor_tool_usage_time (id INTEGER)",
+      ],
+      "write",
+    );
+    await expect(initializeToolUsage(client)).rejects.toThrow();
+    expect(
+      (await client.execute("SELECT sql FROM sqlite_master WHERE name = 'executor_tool_usage'"))
+        .rows[0]!.sql,
+    ).not.toContain("'execute'");
+    expect(
+      (await client.execute("SELECT seq FROM sqlite_sequence WHERE name = 'executor_tool_usage'"))
+        .rows[0]!.seq,
+    ).toBe(2);
+    expect(
+      (
+        await client.execute(
+          "SELECT name FROM sqlite_master WHERE name = 'executor_tool_usage_new'",
+        )
+      ).rows,
+    ).toHaveLength(0);
+    await client.execute("DROP TABLE executor_tool_usage_time");
+    await initializeToolUsage(client);
+    await client.execute(usageInsert(event({ mcpTool: "execute" })));
+    expect(
+      (await client.execute("SELECT MAX(id) AS id FROM executor_tool_usage")).rows[0]!.id,
+    ).toBe(3);
+  });
+
+  it("counts execute rows beside invoke in the integration ranking", async () => {
+    const client = database();
+    await initializeToolUsage(client);
+    const now = Date.now();
+    await client.batch(
+      [
+        usageInsert(event({ timestampMs: now, durationMs: 1 })),
+        usageInsert(event({ timestampMs: now, mcpTool: "execute", durationMs: 3 })),
+        usageInsert(
+          event({ timestampMs: now, mcpTool: "execute", targetTool: null, integrationSlug: null }),
+        ),
+        usageInsert(
+          event({ timestampMs: now, mcpTool: "search", targetTool: null, integrationSlug: null }),
+        ),
+      ],
+      "write",
+    );
+    const integrations = await client.execute(
+      integrationUsageSummaryQuery({ fromMs: now, toMs: now + 1, trafficClass: "agent", limit: 5 }),
+    );
+    expect(integrations.rows).toHaveLength(1);
+    expect(integrations.rows[0]).toMatchObject({ integration_slug: "sample", calls: 2, p95_ms: 3 });
+    const tools = await client.execute(
+      toolUsageSummaryQuery({ fromMs: now, toMs: now + 1, trafficClass: "agent", limit: 5 }),
+    );
+    expect(tools.rows.map((row) => [row.mcp_tool, row.target_tool, row.calls])).toEqual([
+      ["execute", null, 1],
+      ["execute", "tools.sample.org.test.read", 1],
+      ["invoke", "tools.sample.org.test.read", 1],
+      ["search", null, 1],
+    ]);
+  });
+});
+
 describe("tool usage summary", () => {
   it("ranks repeated calls and calculates nearest-rank percentiles for a half-open window", async () => {
     const client = database();

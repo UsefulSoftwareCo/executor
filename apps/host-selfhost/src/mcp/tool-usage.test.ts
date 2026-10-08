@@ -7,6 +7,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   observeToolUsageServer,
   observeToolUsageTransport,
+  USAGE_EXECUTE_MAX_TARGETS,
+  usageExecuteTargets,
   usageTarget,
   usageStatus,
 } from "./tool-usage";
@@ -191,6 +193,436 @@ describe("tool usage MCP boundary", () => {
         },
       }),
     ).toBe("blocked");
+  });
+
+  it("links a reentrant resume to execute, retains original traffic and ignores invalid and replayed resumes", async () => {
+    const events: ToolUsageEvent[] = [];
+    const executionId = "exec_00000000-0000-4000-8000-000000000001";
+    const request = (id: number, name: string, args: object = {}): JSONRPCMessage => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    const result = (id: number, structuredContent: object): JSONRPCMessage => ({
+      jsonrpc: "2.0",
+      id,
+      result: { content: [], structuredContent },
+    });
+    let eventsAfterInvalid: readonly ToolUsageEvent[] = [];
+    const terminal = {
+      status: "completed",
+      toolCalls: [
+        { path: "sample.org.test.read", status: "ok" },
+        { path: "sample.org.test.write", status: "blocked" },
+      ],
+      result: "result-secret",
+      logs: ["log-secret"],
+    };
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async (message) => {
+        if ("id" in message && message.id === 1) {
+          // The client answers immediately, before the pause send resolves.
+          transport.onmessage!(
+            request(2, "resume", {
+              executionId,
+              action: "bad",
+              content: { secret: "argument-secret" },
+            }),
+          );
+          await transport.send({
+            jsonrpc: "2.0",
+            id: 2,
+            error: { code: -32602, message: "error-secret" },
+          });
+          eventsAfterInvalid = [...events];
+          transport.onmessage!(request(3, "resume", { executionId, action: "accept" }), {
+            requestInfo: { headers: { "x-executor-traffic-class": "benchmark" } },
+          });
+          await transport.send(result(3, terminal));
+        }
+      },
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    transport.onmessage!(request(1, "execute", { code: "code-secret" }), {
+      requestInfo: { headers: { "x-executor-traffic-class": "monitor" } },
+    });
+    await transport.send(
+      result(1, {
+        status: "waiting_for_interaction",
+        executionId,
+        interaction: { args: { secret: "interaction-secret" } },
+      }),
+    );
+    transport.onmessage!(request(4, "resume", { executionId, action: "accept" }));
+    await transport.send(result(4, terminal));
+    transport.onmessage!(
+      request(5, "resume", { executionId: "argument-secret", action: "accept" }),
+    );
+    await transport.send(result(5, terminal));
+    transport.onclose!();
+    expect(eventsAfterInvalid).toEqual([]);
+    expect(
+      events.map((event) => [event.mcpTool, event.targetTool, event.status, event.trafficClass]),
+    ).toEqual([
+      ["execute", "tools.sample.org.test.read", "ok", "monitor"],
+      ["execute", "tools.sample.org.test.write", "blocked", "monitor"],
+    ]);
+    expect(
+      events.every(
+        (event) => event.responseBytes === Buffer.byteLength(JSON.stringify(result(3, terminal))),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(events)).not.toMatch(
+      /code-secret|argument-secret|interaction-secret|result-secret|log-secret|error-secret|exec_/,
+    );
+  });
+
+  it("bounds paused observations and reports unfinished executions as losses", async () => {
+    const events: ToolUsageEvent[] = [];
+    let lost = 0;
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(
+      transport,
+      memberHash,
+      (event) => events.push(event),
+      () => lost++,
+    );
+    await transport.start();
+    for (let id = 0; id < 1025; id++) {
+      transport.onmessage!({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "execute", arguments: { code: "code-secret" } },
+      });
+      await transport.send({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          structuredContent: {
+            status: "user_approval_required",
+            executionId: `exec_00000000-0000-4000-8000-${id.toString(16).padStart(12, "0")}`,
+            approvalUrl: "url-secret",
+          },
+        },
+      });
+    }
+    expect(lost).toBe(1);
+    expect(events).toEqual([]);
+    // A different session cannot attribute an execution it never observed.
+    const unrelated: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(unrelated, memberHash, (event) => events.push(event));
+    await unrelated.start();
+    unrelated.onmessage!({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "resume",
+        arguments: { executionId: "exec_00000000-0000-4000-8000-000000000001" },
+      },
+    });
+    await unrelated.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { structuredContent: { status: "completed", toolPaths: ["sample.org.test.read"] } },
+    });
+    transport.onclose!();
+    expect(lost).toBe(1025);
+    expect(events).toEqual([]);
+    transport.onclose!();
+    expect(lost).toBe(1025);
+  });
+
+  it("preserves terminal resume send failures and records the targets once as execute errors", async () => {
+    const events: ToolUsageEvent[] = [];
+    const executionId = "exec_00000000-0000-4000-8000-000000000001";
+    // oxlint-disable-next-line executor/no-error-constructor -- boundary: exercise the native transport rejection contract
+    const failure = new TypeError("transport-secret");
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: (message) => {
+        if ("id" in message && message.id === 2) {
+          // oxlint-disable-next-line executor/no-promise-reject -- boundary: simulate terminal response delivery failure
+          return Promise.reject(failure);
+        }
+        return Promise.resolve();
+      },
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    transport.onmessage!({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "execute" },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { structuredContent: { status: "waiting_for_interaction", executionId } },
+    });
+    transport.onmessage!({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "resume", arguments: { executionId, action: "accept" } },
+    });
+    const terminal = {
+      structuredContent: {
+        status: "completed",
+        toolCalls: [{ path: "sample.org.test.read", status: "ok" }],
+      },
+    };
+    await expect(transport.send({ jsonrpc: "2.0", id: 2, result: terminal })).rejects.toBe(failure);
+    transport.onmessage!({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "resume", arguments: { executionId, action: "accept" } },
+    });
+    await transport.send({ jsonrpc: "2.0", id: 3, result: terminal });
+    transport.onclose!();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      mcpTool: "execute",
+      targetTool: "tools.sample.org.test.read",
+      status: "error",
+    });
+    expect(JSON.stringify(events)).not.toMatch(/transport-secret|exec_/);
+  });
+
+  it("records one execute event per distinct connected tool, or one without a target", async () => {
+    const events: ToolUsageEvent[] = [];
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    const request = (id: number): JSONRPCMessage => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "execute", arguments: { code: "code-secret" } },
+    });
+    transport.onmessage!(request(1));
+    transport.onmessage!(request(2));
+    transport.onmessage!(request(3));
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [{ type: "text", text: "result-secret" }],
+        structuredContent: {
+          status: "completed",
+          result: "result-secret",
+          toolPaths: [
+            "sample.org.test.read",
+            "tools.other.user.mine.write",
+            "sample.org.test.read",
+            "bearer secret@example.test",
+            7,
+          ],
+          logs: ["log-secret"],
+        },
+      },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { content: [], structuredContent: { status: "completed", result: 42, logs: [] } },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        isError: true,
+        content: [{ type: "text", text: "Error: error-secret" }],
+        structuredContent: { status: "error", error: "error-secret", logs: [] },
+      },
+    });
+    expect(
+      events.map((event) => [event.mcpTool, event.targetTool, event.integrationSlug, event.status]),
+    ).toEqual([
+      ["execute", "tools.sample.org.test.read", "sample", "ok"],
+      ["execute", "tools.other.user.mine.write", "other", "ok"],
+      ["execute", null, null, "ok"],
+      ["execute", null, null, "error"],
+    ]);
+    expect(events[0]!.durationMs).toBe(events[1]!.durationMs);
+    expect(events[0]!.responseBytes).toBe(events[1]!.responseBytes);
+    expect(events[0]!.responseBytes).toBeGreaterThan(0);
+    expect(JSON.stringify(events)).not.toMatch(/code-secret|result-secret|log-secret|error-secret/);
+  });
+
+  it("caps execute targets and ignores unexpected shapes", () => {
+    const many = Array.from(
+      { length: USAGE_EXECUTE_MAX_TARGETS + 5 },
+      (_, index) => `sample.org.test.read${index}`,
+    );
+    expect(
+      usageExecuteTargets({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [], structuredContent: { toolPaths: many } },
+      }),
+    ).toHaveLength(USAGE_EXECUTE_MAX_TARGETS);
+    expect(
+      usageExecuteTargets({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [], structuredContent: { toolPaths: "sample.org.test.read" } },
+      }),
+    ).toEqual([]);
+    expect(
+      usageExecuteTargets({ jsonrpc: "2.0", id: 1, error: { code: -32603, message: "x" } }),
+    ).toEqual([]);
+  });
+
+  it("reduces mixed outcomes per path, validates shapes and still updates targets after the cap", () => {
+    const targets = usageExecuteTargets({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        structuredContent: {
+          toolCalls: [
+            null,
+            7,
+            "secret",
+            {},
+            { path: "sample.org.test.bad", status: "error-secret" },
+            { path: "secret@example.test", status: "error" },
+            { path: "sample.org.test." + "x".repeat(512), status: "ok" },
+            ...Array.from({ length: 35 }, (_, index) => ({
+              path: `sample.org.test.read${index}`,
+              status: "ok",
+              args: "argument-secret",
+              result: "result-secret",
+            })),
+            { path: "tools.sample.org.test.read0", status: "error" },
+            { path: "sample.org.test.read0", status: "blocked" },
+            { path: "sample.org.test.read0", status: "ok" },
+            { path: "sample.org.test.read1", status: "error" },
+          ],
+          toolPaths: ["sample.org.test.read0"],
+        },
+      },
+    });
+    expect(targets).toHaveLength(32);
+    expect(targets[0]).toEqual({
+      targetTool: "tools.sample.org.test.read0",
+      integrationSlug: "sample",
+      status: "blocked",
+    });
+    expect(targets[1]!.status).toBe("error");
+    expect(targets[31]!.targetTool).toBe("tools.sample.org.test.read31");
+    expect(JSON.stringify(targets)).not.toMatch(/secret|args|result/);
+    for (const toolCalls of [
+      null,
+      3,
+      "secret",
+      {},
+      [null, { path: "sample.org.test.read", status: "constructor" }],
+    ]) {
+      expect(
+        usageExecuteTargets({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { structuredContent: { toolCalls } },
+        }),
+      ).toEqual([]);
+      expect(
+        usageExecuteTargets({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            structuredContent: {
+              toolCalls,
+              toolPaths: ["sample.org.test.read"],
+            },
+          },
+        }),
+      ).toEqual([{ targetTool: "tools.sample.org.test.read", integrationSlug: "sample" }]);
+    }
+  });
+
+  it("records per-target failures on completed scripts and execution errors on attributed failed scripts", async () => {
+    const events: ToolUsageEvent[] = [];
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    const calls = [
+      { path: "sample.org.test.read", status: "ok", args: "argument-secret" },
+      { path: "other.user.mine.write", status: "error", error: "error-secret" },
+      { path: "sample.org.test.hidden", status: "blocked", result: "result-secret" },
+      { path: "sample.org.test.read", status: "error" },
+    ];
+    for (const id of [1, 2]) {
+      transport.onmessage!({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "execute", arguments: { code: "code-secret" } },
+      });
+    }
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [],
+        structuredContent: {
+          status: "completed",
+          toolCalls: calls,
+          toolPaths: ["sample.org.test.read"],
+          logs: ["log-secret"],
+          result: "result-secret",
+        },
+      },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        isError: true,
+        content: [],
+        structuredContent: {
+          status: "error",
+          toolCalls: calls,
+          toolPaths: ["sample.org.test.read"],
+          error: "script-secret",
+        },
+      },
+    });
+    expect(events.map(({ targetTool, status }) => [targetTool, status])).toEqual([
+      ["tools.sample.org.test.read", "error"],
+      ["tools.other.user.mine.write", "error"],
+      ["tools.sample.org.test.hidden", "blocked"],
+      ["tools.sample.org.test.read", "error"],
+      ["tools.other.user.mine.write", "error"],
+      ["tools.sample.org.test.hidden", "error"],
+    ]);
+    expect(events[0]!.durationMs).toBe(events[2]!.durationMs);
+    expect(events[0]!.responseBytes).toBe(events[2]!.responseBytes);
+    expect(JSON.stringify(events)).not.toMatch(/secret|args|logs|result/);
   });
 
   it("does not retain malformed target values", () => {

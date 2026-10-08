@@ -400,20 +400,79 @@ describe("formatExecuteResult output identity", () => {
       status: "completed",
       result: { issues: [] },
       toolName: "linear.org.work.issues.list",
+      toolPaths: ["linear.org.work.issues.list"],
       logs: [],
     });
   });
 
-  it("omits a tool name when distinct connected tools were used", () => {
+  it("omits a tool name but lists distinct paths in first-call order when several tools were used", () => {
     const result = {
       result: { issues: [], projects: [] },
       logs: [],
-      toolPaths: ["linear.org.work.issues.list", "linear.org.work.projects.list"],
+      toolPaths: [
+        "linear.org.work.projects.list",
+        "linear.org.work.issues.list",
+        "linear.org.work.projects.list",
+      ],
     } as ExecuteResult & { readonly toolPaths: readonly string[] };
 
     const formatted = formatExecuteResult(result);
 
     expect(formatted.structured).not.toHaveProperty("toolName");
+    expect(formatted.structured["toolPaths"]).toEqual([
+      "linear.org.work.projects.list",
+      "linear.org.work.issues.list",
+    ]);
+  });
+
+  it("omits tool paths when no connected tool was called", () => {
+    const formatted = formatExecuteResult({ result: 1, logs: [], toolPaths: [] });
+
+    expect(formatted.structured).not.toHaveProperty("toolPaths");
+    expect(formatted.structured).not.toHaveProperty("toolName");
+  });
+
+  it("retains successful paths and outcome identifiers in script-error envelopes", () => {
+    const formatted = formatExecuteResult({
+      result: null,
+      error: "script-secret",
+      logs: ["log-secret"],
+      toolPaths: ["sample.org.main.read"],
+      toolCalls: [{ path: "sample.org.main.read", status: "ok" }],
+    });
+    expect(formatted.isError).toBe(true);
+    expect(formatted.structured).toMatchObject({
+      status: "error",
+      toolPaths: ["sample.org.main.read"],
+      toolCalls: [{ path: "sample.org.main.read", status: "ok" }],
+    });
+    expect(formatted.structured).not.toHaveProperty("toolName");
+  });
+
+  it("caps outcome identifiers and reduces repeats after the cap without retaining extra fields", () => {
+    const calls = Array.from({ length: 35 }, (_, index) => ({
+      path: `sample.org.main.read${index}`,
+      status: "ok" as const,
+      args: "argument-secret",
+      result: "result-secret",
+      error: "error-secret",
+    }));
+    const formatted = formatExecuteResult({
+      result: null,
+      toolCalls: [
+        ...calls,
+        { path: "sample.org.main.read0", status: "error" },
+        { path: "tools.sample.org.main.read0", status: "blocked" },
+        { path: "sample.org.main.read0", status: "ok" },
+        { path: "bearer secret@example.test", status: "error" },
+        { path: "sample.org.main." + "x".repeat(512), status: "error" },
+      ],
+    });
+    expect(formatted.structured["toolCalls"]).toEqual([
+      { path: "sample.org.main.read0", status: "blocked" },
+      ...calls.slice(1, 32).map(({ path, status }) => ({ path, status })),
+    ]);
+    expect(JSON.stringify(formatted.structured)).not.toMatch(/secret|args|error/);
   });
 
   it("truncates a long preview with the exact suffix and untouched structured value", () => {

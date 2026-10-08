@@ -1,9 +1,19 @@
 # Tool usage metrics
 
-Self-host records authenticated `search`, `invoke`, `integrations`, and `skills`
-MCP calls. Every repeated call counts, including validation errors and denied
-invokes. This does not instrument tools called inside codemode `execute`, other
-hosts, unauthenticated requests, or calls rejected before MCP tool dispatch.
+Self-host records authenticated `search`, `invoke`, `integrations`, `skills`,
+and `execute` MCP calls. Every repeated call counts, including validation
+errors and denied invokes. An `execute` call records one row per distinct
+connected tool the sandbox attempted, capped at 32 targets in first-call order
+(or one row with no target when it attempted none). Each target's status is the
+most severe outcome of its repeated calls: `blocked`, then `error`, then `ok`.
+A script or transport failure sets every attributed row to `error`. Successful
+calls before a script failure retain their target. Duration and response bytes
+are those of the whole execution. Older engines with only successful `toolPaths`
+retain their existing attribution and execution status. Approval pauses defer
+recording until the logical execution completes. Model and browser resumes
+remain attributed to the original `execute`; repeated pauses, concurrent
+resumes, and replayed results do not add execution rows. This does not instrument other hosts,
+unauthenticated requests, or calls rejected before MCP tool dispatch.
 
 Each event has the call-start timestamp in milliseconds, an HMAC-SHA256 member
 pseudonym scoped to its organization, MCP tool name, canonical invoke target,
@@ -12,22 +22,34 @@ bytes. Discovery calls have no target or integration. Malformed invoke targets
 have neither. The address must contain identifiers and be at most 512 bytes.
 The local pseudonymization salt persists in the metrics state table. Member
 IDs, email addresses, session IDs, headers, arguments, results, and error text
-are never stored. Keep the database within its existing private access boundary.
+are never stored. Execute telemetry reads only validated target identifiers
+and the fixed `ok`, `error`, and `blocked` outcomes. Code and logs are never
+stored. Keep the database within its existing private access boundary.
 
 Response bytes count the complete serialized JSON-RPC response in UTF-8, before
-HTTP/SSE framing or compression. Duration ends after transport send completes.
+HTTP/SSE framing or compression. For paused executions, bytes count only the
+terminal response. Duration starts at the original `execute` and ends after
+the terminal transport send, including approval wait time. Timestamp, member
+pseudonym, and traffic class remain those of the original call.
 The fixed hidden-tool refusal is counted as `blocked`; this includes unknown
 addresses because the existing response deliberately combines both cases.
-Transport failures and abandoned calls count as `error` (zero response bytes
-when no response was produced). Results and policies keep their existing behavior.
+Terminal transport failures and abandoned active calls count as `error`
+(zero response bytes when no response was produced). A paused session closed
+without a terminal outcome counts as observation loss. Results and policies
+keep their existing behavior.
 
 The observer uses public SDK transport callbacks. It does not inspect SDK
 private fields or change search, schema, catalog refresh, or encrypted secrets.
 PRs #17 and #18 and the refresh work for issue #8 can merge in either order.
 
 The `executor_tool_usage` table shares the existing libSQL client with the
-host. No second write connection opens. Writes run in batches once per second,
-with at most 1,024 queued events and 1,024 active tracked calls per MCP session.
+host. The schema migration preserves rows, IDs, the AUTOINCREMENT high-water
+value (including deleted IDs), the salt, and loss counters in one write batch.
+No second write connection opens. Writes run in batches once per second,
+with at most 1,024 queued events. Each MCP transport retains at most 1,024
+active tracked calls, 1,024 paused executions, and 1,024 in-flight resume request
+IDs. Each paused entry holds only the original call metadata and a validated
+opaque execution ID; the execution ID is never stored in usage rows.
 Retention runs at startup, each flush, and hourly while idle: seven days and
 at most 100,000 rows. SQLite reuses deleted space; the table reaches a bounded
 high-water size. A shutdown drains the queue. A crash can lose up to one second
@@ -54,7 +76,7 @@ The CLI opens SQLite read-only. It emits JSON with top tools and integrations ra
 status counts, nearest-rank p50/p95 duration, and total response bytes for the
 half-open time window. It also reports retention limits, oldest/newest retained
 timestamps, and cumulative loss counters. It omits member pseudonyms. The
-default window is seven days; `--traffic all` includes probes. Integration ranks combine invoke targets by integration slug to rank adapters. Only retained events can be summarized.
+default window is seven days; `--traffic all` includes probes. Integration ranks combine invoke and execute targets by integration slug to rank adapters. Only retained events can be summarized.
 
 Measure request overhead locally:
 

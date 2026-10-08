@@ -48,6 +48,11 @@ export type ExecuteResult = {
   logs?: string[];
   /** Successful connected-tool paths observed during this execution. */
   toolPaths?: readonly string[];
+  /** Distinct attempted connected tools and bounded outcomes; no call payloads. */
+  toolCalls?: readonly {
+    readonly path: string;
+    readonly status: "ok" | "error" | "blocked";
+  }[];
 };
 
 /**
