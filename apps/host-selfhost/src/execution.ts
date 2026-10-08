@@ -56,6 +56,8 @@ export const SelfHostHostConfig: Layer.Layer<HostConfig> = Layer.sync(HostConfig
     webBaseUrl: config.webBaseUrl,
     oauthCallbackPath: "/api/oauth/callback",
     toolsSyncTtlMs: config.toolsSyncTtlMs,
+    // The server and database outlive requests, so refresh can finish after a read.
+    toolsSyncGraceMs: 0,
     onIntegrationChange: (event) =>
       selfHostAnalytics.record(
         event.kind === "added" ? "integration_added" : "integration_removed",

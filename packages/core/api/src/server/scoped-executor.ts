@@ -126,6 +126,8 @@ export interface HostConfigShape {
    * operator knob.
    */
   readonly toolsSyncTtlMs?: number | null;
+  /** Wait budget for stale catalog refresh. Zero serves persisted rows immediately. */
+  readonly toolsSyncGraceMs?: number | null;
   /**
    * Forwarded to `ExecutorConfig.waitUntil`: the host's keep-alive
    * for background work that outlives a request (stale tool-catalog rebuilds
@@ -334,6 +336,9 @@ export const makeScopedExecutor = <
       fetch: hostedFetch,
       onIntegrationChange: config.onIntegrationChange,
       ...(config.toolsSyncTtlMs !== undefined ? { toolsSyncTtlMs: config.toolsSyncTtlMs } : {}),
+      ...(config.toolsSyncGraceMs !== undefined
+        ? { toolsSyncGraceMs: config.toolsSyncGraceMs }
+        : {}),
       ...(waitUntil !== undefined ? { waitUntil } : {}),
       onElicitation: "accept-all",
       ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
