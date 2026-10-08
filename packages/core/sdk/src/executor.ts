@@ -1248,18 +1248,24 @@ const rowToTool = (
 };
 
 // Compare the persisted payload, including JSON key order. Timestamps and
-// storage IDs do not belong to the catalog. Keep row order significant too.
+// storage IDs do not belong to the catalog. Database row order is unspecified;
+// tools and definitions each have a unique name within their connection.
 const catalogRowsMatch = (
   stored: readonly Record<string, unknown>[],
   proposed: readonly Record<string, unknown>[],
   columns: readonly string[],
-): boolean =>
-  stored.length === proposed.length &&
-  stored.every(
-    (row, index) =>
+): boolean => {
+  if (stored.length !== proposed.length) return false;
+  const byName = new Map(proposed.map((row) => [row["name"], row]));
+  return stored.every((row) => {
+    const candidate = byName.get(row["name"]);
+    return (
+      candidate !== undefined &&
       JSON.stringify(columns.map((column) => row[column])) ===
-      JSON.stringify(columns.map((column) => proposed[index]![column])),
-  );
+        JSON.stringify(columns.map((column) => candidate[column]))
+    );
+  });
+};
 
 // Projects a tool's annotations onto the schema view. Plugins persist extra
 // keys alongside the declared contract (the mcp plugin stores its upstream tool
@@ -5766,7 +5772,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         );
       }
       yield* Effect.all(rebuilds, {
-        concurrency: STALE_TOOLS_SYNC_CONCURRENCY,
+        // Zero-grace hosts serve the saved catalog immediately. Spawning a
+        // whole wave of stdio servers steals their request CPUs even when the
+        // JS fiber yields. Let these detached scans discover one at a time;
+        // readers that wait for convergence retain the parallel listing bound.
+        concurrency: config.toolsSyncGraceMs === 0 ? 1 : STALE_TOOLS_SYNC_CONCURRENCY,
       });
     });
 
@@ -5786,17 +5796,35 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // failures log and the stale-but-working catalog stays — so the fork
     // swallows its scan errors the same way each rebuild already swallows its
     // own.
+    let staleSyncFiber: Fiber.Fiber<void, never> | null = null;
     const awaitStaleSyncWithinGrace = (graceMs: number) =>
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkDetach(
-          syncStaleConnectionTools.pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("executor stale tool sync scan failed", {
-                error: describeSyncFailure(error),
+        const fiber = yield* Effect.suspend(() => {
+          // Overlapping reads share the scan, including discoveries queued
+          // behind a slow server. Per-connection single-flight alone cannot
+          // deduplicate work that has not reached the front of that queue yet.
+          if (staleSyncFiber !== null) return Effect.succeed(staleSyncFiber);
+          return Effect.forkDetach(
+            syncStaleConnectionTools.pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("executor stale tool sync scan failed", {
+                  error: describeSyncFailure(error),
+                }),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  staleSyncFiber = null;
+                }),
+              ),
+            ),
+          ).pipe(
+            Effect.tap((running) =>
+              Effect.sync(() => {
+                staleSyncFiber = running;
               }),
             ),
-          ),
-        );
+          );
+        });
         // On hosts that cancel request-scoped I/O once the response settles
         // (Cloudflare Workers), hand the host the rebuilds' completion so the
         // catalog still converges after the read stops waiting.

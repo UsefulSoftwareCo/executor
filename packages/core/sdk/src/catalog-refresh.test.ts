@@ -20,6 +20,7 @@ const catalog: ResolveToolsResult = {
       outputSchema: { type: "array", items: { type: "string" } },
       annotations: { requiresApproval: false },
     },
+    { name: ToolName.make("alpha"), description: "Another tool" },
   ],
   definitions: { Id: { type: "string" } },
 };
@@ -95,7 +96,7 @@ describe("file-backed catalog refresh", () => {
           (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
         );
         const started = yield* Deferred.make<void>();
-        const completions: Promise<void>[] = [];
+        const completions: Promise<unknown>[] = [];
         let refreshing = false;
         let discoveries = 0;
         const count = 30;
@@ -173,7 +174,7 @@ describe("file-backed catalog refresh", () => {
         );
         const started = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
-        const completions: Promise<void>[] = [];
+        const completions: Promise<unknown>[] = [];
         let refreshing = false;
         const fixture = definePlugin(() => ({
           id: "refresh-fixture" as const,
@@ -219,13 +220,100 @@ describe("file-backed catalog refresh", () => {
         yield* Deferred.await(started);
         const explicit = yield* Effect.forkChild(executor.connections.refresh(ref));
         const during = yield* Fiber.join(read);
-        expect(during).toHaveLength(1);
+        expect(during).toHaveLength(catalog.tools.length);
         yield* Deferred.succeed(release, undefined);
         const result = yield* Fiber.join(explicit);
-        expect(result[0]?.inputSchema).toEqual(catalog.tools[0]?.inputSchema);
-        expect(result[0]?.outputSchema).toEqual(catalog.tools[0]?.outputSchema);
-        expect(result[0]?.description).toBe("List items");
+        const retained = result.find((tool) => String(tool.name) === "list");
+        expect(retained?.inputSchema).toEqual(catalog.tools[0]?.inputSchema);
+        expect(retained?.outputSchema).toEqual(catalog.tools[0]?.outputSchema);
+        expect(retained?.description).toBe("List items");
         yield* Effect.promise(() => Promise.all(completions));
+      }),
+    ),
+  );
+
+  it.effect("replaces changed descriptions, schemas, annotations, definitions and tool sets", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const dir = yield* Effect.acquireRelease(
+          Effect.promise(() => mkdtemp(join(tmpdir(), "executor-catalog-"))),
+          (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+        );
+        let listing = catalog;
+        const fixture = definePlugin(() => ({
+          id: "refresh-fixture" as const,
+          storage: () => ({}),
+          describeAuthMethods: () => [
+            { id: "none", label: "No authentication", kind: "none", template: "none" },
+          ],
+          resolveTools: () => Effect.sync(() => listing),
+          invokeTool: () => Effect.succeed(null),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: integration,
+                description: "Refresh fixture",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({
+          dataDir: dir,
+          plugins: [memoryCredentialsPlugin(), fixture] as const,
+        });
+        yield* Effect.addFinalizer(() => Effect.promise(() => config.testDb.close()));
+        const executor = yield* createExecutor(config);
+        yield* executor["refresh-fixture"].seed();
+        yield* executor.connections.create({ ...ref, template: NO_AUTH_TEMPLATE, inputs: {} });
+        const variants: readonly ResolveToolsResult[] = [
+          { ...catalog, tools: [{ ...catalog.tools[0]!, description: "Changed description" }] },
+          { ...catalog, tools: [{ ...catalog.tools[0]!, inputSchema: { type: "string" } }] },
+          { ...catalog, tools: [{ ...catalog.tools[0]!, outputSchema: { type: "number" } }] },
+          {
+            ...catalog,
+            tools: [{ ...catalog.tools[0]!, annotations: { requiresApproval: true } }],
+          },
+          { ...catalog, definitions: { Id: { type: "number" }, Extra: { type: "boolean" } } },
+          { ...catalog, definitions: {} },
+          {
+            tools: [...catalog.tools, { name: ToolName.make("added"), description: "Added tool" }],
+          },
+          { tools: [{ name: ToolName.make("replacement"), description: "Replacement tool" }] },
+          { tools: [] },
+        ];
+        for (const variant of variants) {
+          listing = variant;
+          const refreshed = yield* executor.connections.refresh(ref);
+          expect(refreshed.map((tool) => String(tool.name))).toEqual(
+            variant.tools.map((tool) => String(tool.name)),
+          );
+          const tools = yield* Effect.promise(() => config.db.findMany("tool", {}));
+          expect(
+            tools
+              .map((row) => ({
+                name: row.name,
+                description: row.description,
+                input_schema: row.input_schema,
+                output_schema: row.output_schema,
+                annotations: row.annotations,
+              }))
+              .sort((a, b) => String(a.name).localeCompare(String(b.name))),
+          ).toEqual(
+            variant.tools
+              .map((tool) => ({
+                name: tool.name,
+                description: tool.description ?? "",
+                input_schema: tool.inputSchema ?? null,
+                output_schema: tool.outputSchema ?? null,
+                annotations: tool.annotations ?? null,
+              }))
+              .sort((a, b) => String(a.name).localeCompare(String(b.name))),
+          );
+          const definitions = yield* Effect.promise(() => config.db.findMany("definition", {}));
+          expect(Object.fromEntries(definitions.map((row) => [row.name, row.schema]))).toEqual(
+            variant.definitions ?? {},
+          );
+        }
       }),
     ),
   );
