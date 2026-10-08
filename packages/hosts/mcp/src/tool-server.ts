@@ -96,6 +96,7 @@ import {
   resolveIntegrationAlias,
   SEARCH_INVOKE_SKILL,
 } from "./passthrough-tools";
+import { codemodeInstructions } from "./codemode-instructions";
 import type { McpToolMode } from "./browser-approval";
 
 // ---------------------------------------------------------------------------
@@ -1766,11 +1767,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             // per host.
             capabilities: { resources: {}, tools: {} },
             jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
-            ...(passthrough
-              ? {
-                  instructions: passthroughInstructions(),
-                }
-              : {}),
+            instructions: passthrough ? passthroughInstructions() : codemodeInstructions(),
           },
         ),
     ).pipe(Effect.withSpan("mcp.host.create_server"));
