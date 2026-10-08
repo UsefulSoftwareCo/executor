@@ -316,6 +316,7 @@ export const makeExecutorToolInvoker = (
   options: {
     readonly invokeOptions: InvokeOptions;
     readonly onConnectedToolCall?: (path: string) => void;
+    readonly onConnectedToolOutcome?: (path: string, status: "ok" | "error" | "blocked") => void;
   },
 ): SandboxToolInvoker => ({
   invoke: Effect.fn("mcp.tool.dispatch")(function* ({ path, args }) {
@@ -325,6 +326,17 @@ export const makeExecutorToolInvoker = (
     });
 
     const address = pathToAddress(path);
+    // Telemetry accepts identifiers only, even when the sandbox supplies a malformed path.
+    const telemetryPath =
+      String(address).length <= 512 &&
+      /^tools\.[a-zA-Z0-9_-]{1,64}\.(?:org|user)\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_.-]+$/.test(
+        String(address),
+      )
+        ? addressToPath(String(address))
+        : undefined;
+    const reportOutcome = (status: "ok" | "error" | "blocked") => {
+      if (telemetryPath) options.onConnectedToolOutcome?.(telemetryPath, status);
+    };
     const result = yield* executor.execute(address, args, options.invokeOptions).pipe(
       Effect.catchTag("CredentialResolutionError", (err) =>
         Effect.succeed(
@@ -343,6 +355,7 @@ export const makeExecutorToolInvoker = (
           return Effect.succeed(ToolResult.fail(expected));
         }
         if (isElicitationDeclinedError(err)) {
+          reportOutcome("blocked");
           return Effect.fail(
             new ExecutionToolError({
               message: `Tool "${addressToPath(String(err.address))}" requires approval but the request was ${err.action === "cancel" ? "cancelled" : "declined"} by the user.`,
@@ -356,6 +369,7 @@ export const makeExecutorToolInvoker = (
         // can't leak through Error.message into the sandbox. The full
         // cause is logged with the same correlation id so operators can
         // still trace the failure.
+        reportOutcome("error");
         const correlationId = newCorrelationId();
         return Effect.logError("tool dispatch failed", cause).pipe(
           Effect.annotateLogs({
@@ -381,6 +395,13 @@ export const makeExecutorToolInvoker = (
     // Expected failures resolve through the success channel, so without the
     // outcome annotation the dispatch span reads as healthy even when the
     // caller hit an upstream error or auth wall.
+    reportOutcome(
+      !isToolResult(result) || result.ok
+        ? "ok"
+        : result.error.code === "tool_blocked"
+          ? "blocked"
+          : "error",
+    );
     yield* annotateToolResultOutcome(result);
     const connectedToolPath = parseToolAddress(String(address))
       ? addressToPath(String(address))

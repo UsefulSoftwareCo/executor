@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, expect, it } from "@effect/vitest";
+import { createClient } from "@libsql/client";
 import { Effect, Schema } from "effect";
 import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/sdk";
 import { makeScopedExecutor } from "@executor-js/api/server";
@@ -37,6 +38,7 @@ const decodeSummary = Schema.decodeUnknownSync(
         calls: Schema.Number,
         ok: Schema.Number,
         blocked: Schema.Number,
+        error: Schema.Number,
       }),
     ),
     integrations: Schema.Array(
@@ -54,6 +56,14 @@ const decodeExecute = Schema.decodeUnknownSync(
       structuredContent: Schema.Struct({
         status: Schema.String,
         toolPaths: Schema.optional(Schema.Array(Schema.String)),
+        toolCalls: Schema.optional(
+          Schema.Array(
+            Schema.Struct({
+              path: Schema.String,
+              status: Schema.Literals(["ok", "error", "blocked"]),
+            }),
+          ),
+        ),
       }),
     }),
   }),
@@ -62,9 +72,11 @@ const decodeExecute = Schema.decodeUnknownSync(
 const dbPath = join(dir, "usage.db");
 const BASE = "http://localhost:4788";
 
-// A loopback OpenAPI target: the sandbox only reports connected tools whose
-// call succeeded, so the fixture integration must answer for real.
-const target: Server = createServer((_request, response) => {
+// Real HTTP results pass through the OpenAPI plugin and sandbox invoker.
+let flakyCalls = 0;
+const target: Server = createServer((request, response) => {
+  const failed = request.url === "/fail" || (request.url === "/flaky" && ++flakyCalls % 2 === 0);
+  response.statusCode = failed ? 400 : 200;
   response.setHeader("content-type", "application/json");
   response.end(JSON.stringify({ secret: "upstream-secret" }));
 });
@@ -88,6 +100,18 @@ const fixtureSpec = JSON.stringify({
     "/read": {
       get: { operationId: "readFirst", responses: { "200": { description: "ok" } } },
     },
+    "/fail": {
+      get: { operationId: "readFailed", responses: { "400": { description: "error" } } },
+    },
+    "/blocked": {
+      get: { operationId: "readBlocked", responses: { "200": { description: "ok" } } },
+    },
+    "/flaky": {
+      get: {
+        operationId: "readFlaky",
+        responses: { "200": { description: "ok" }, "400": { description: "error" } },
+      },
+    },
     "/other": {
       get: { operationId: "readOther", responses: { "200": { description: "ok" } } },
     },
@@ -108,6 +132,11 @@ const addOrgIntegration = async (organizationId: string): Promise<void> => {
         spec: { kind: "blob", value: fixtureSpec },
         slug: "fixture",
         baseUrl: "",
+      });
+      yield* admin.policies.create({
+        owner: "org",
+        pattern: "fixture.org.shared.blocked.readBlocked",
+        action: "block",
       });
       yield* admin.connections.create({
         owner: "org",
@@ -231,8 +260,48 @@ it("records authenticated HTTP passthrough and sandbox execute calls and exposes
       "fixture.org.shared.read.readFirst",
       "fixture.org.shared.other.readOther",
     ]);
+    expect(executed.result.structuredContent.toolCalls).toEqual([
+      { path: "fixture.org.shared.read.readFirst", status: "ok" },
+      { path: "fixture.org.shared.other.readOther", status: "ok" },
+    ]);
     const none = decodeExecute(await execute(8, "execute", { code: "return 6 * 7;" }));
     expect(none.result.structuredContent).not.toHaveProperty("toolPaths");
+    expect(none.result.structuredContent).not.toHaveProperty("toolCalls");
+    const mixed = decodeExecute(
+      await execute(9, "execute", {
+        code: [
+          "await tools.fixture.org.shared.read.readFirst({});",
+          "await tools.fixture.org.shared.fail.readFailed({});",
+          "await tools.fixture.org.shared.blocked.readBlocked({});",
+          "await tools.fixture.org.shared.flaky.readFlaky({});",
+          "await tools.fixture.org.shared.flaky.readFlaky({});",
+          "return 42;",
+        ].join("\n"),
+      }),
+    );
+    expect(mixed.result.structuredContent.status).toBe("completed");
+    expect(mixed.result.structuredContent.toolPaths).toEqual([
+      "fixture.org.shared.read.readFirst",
+      "fixture.org.shared.flaky.readFlaky",
+    ]);
+    expect(mixed.result.structuredContent.toolCalls).toEqual([
+      { path: "fixture.org.shared.read.readFirst", status: "ok" },
+      { path: "fixture.org.shared.fail.readFailed", status: "error" },
+      { path: "fixture.org.shared.blocked.readBlocked", status: "blocked" },
+      { path: "fixture.org.shared.flaky.readFlaky", status: "error" },
+    ]);
+    const failed = decodeExecute(
+      await execute(10, "execute", {
+        code: "await tools.fixture.org.shared.read.readFirst({}); console.log('log-secret'); throw new Error('script-secret');",
+      }),
+    );
+    expect(failed.result.structuredContent.status).toBe("error");
+    expect(failed.result.structuredContent.toolPaths).toEqual([
+      "fixture.org.shared.read.readFirst",
+    ]);
+    expect(failed.result.structuredContent.toolCalls).toEqual([
+      { path: "fixture.org.shared.read.readFirst", status: "ok" },
+    ]);
   } finally {
     await app.dispose();
   }
@@ -241,24 +310,41 @@ it("records authenticated HTTP passthrough and sandbox execute calls and exposes
   expect(summary.tools.find((tool) => tool.mcp_tool === "invoke")!.blocked).toBe(1);
   const executes = summary.tools
     .filter((tool) => tool.mcp_tool === "execute")
-    .map((tool) => [tool.target_tool, tool.integration_slug, tool.calls, tool.ok]);
+    .map((tool) => [
+      tool.target_tool,
+      tool.integration_slug,
+      tool.calls,
+      tool.ok,
+      tool.error,
+      tool.blocked,
+    ]);
   expect(executes).toEqual(
     expect.arrayContaining([
-      ["tools.fixture.org.shared.read.readFirst", "fixture", 1, 1],
-      ["tools.fixture.org.shared.other.readOther", "fixture", 1, 1],
-      [null, null, 1, 1],
+      ["tools.fixture.org.shared.read.readFirst", "fixture", 3, 2, 1, 0],
+      ["tools.fixture.org.shared.other.readOther", "fixture", 1, 1, 0, 0],
+      ["tools.fixture.org.shared.fail.readFailed", "fixture", 1, 0, 1, 0],
+      ["tools.fixture.org.shared.flaky.readFlaky", "fixture", 1, 0, 1, 0],
+      ["tools.fixture.org.shared.blocked.readBlocked", "fixture", 1, 0, 0, 1],
+      [null, null, 1, 1, 0, 0],
     ]),
   );
-  expect(executes).toHaveLength(3);
+  expect(executes).toHaveLength(6);
   // Execute targets rank beside the denied passthrough invoke, by integration.
   expect(summary.integrations).toEqual([
-    { integration_slug: "fixture", calls: 2 },
+    { integration_slug: "fixture", calls: 7 },
     { integration_slug: "sample", calls: 1 },
   ]);
-  expect(summary.tools.reduce((count, tool) => count + tool.calls, 0)).toBe(8);
+  expect(summary.tools.reduce((count, tool) => count + tool.calls, 0)).toBe(13);
   expect(summary.losses.dropped_events).toBe(0);
   expect(output).not.toMatch(
     /argument-secret|invoke-secret|code-secret|upstream-secret|admin@usage.test|admin-pass/,
+  );
+  const metricsDb = createClient({ url: `file:${dbPath}` });
+  const rows = await metricsDb.execute("SELECT * FROM executor_tool_usage");
+  metricsDb.close();
+  expect(rows.rows).toHaveLength(13);
+  expect(JSON.stringify(rows.rows)).not.toMatch(
+    /argument-secret|invoke-secret|code-secret|upstream-secret|script-secret|log-secret|admin@usage.test|admin-pass|toolCalls|toolPaths/,
   );
   rmSync(dir, { recursive: true, force: true });
 });

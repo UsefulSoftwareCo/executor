@@ -3,9 +3,13 @@
 Self-host records authenticated `search`, `invoke`, `integrations`, `skills`,
 and `execute` MCP calls. Every repeated call counts, including validation
 errors and denied invokes. An `execute` call records one row per distinct
-connected tool the sandbox code called successfully (or one row with no target
-when it called none); its duration and response bytes are those of the whole
-execution, not of each tool. This does not instrument other hosts,
+connected tool the sandbox attempted, capped at 32 targets in first-call order
+(or one row with no target when it attempted none). Each target's status is the
+most severe outcome of its repeated calls: `blocked`, then `error`, then `ok`.
+A script or transport failure sets every attributed row to `error`. Successful
+calls before a script failure retain their target. Duration and response bytes
+are those of the whole execution. Older engines with only successful `toolPaths`
+retain their existing attribution and execution status. This does not instrument other hosts,
 unauthenticated requests, or calls rejected before MCP tool dispatch.
 
 Each event has the call-start timestamp in milliseconds, an HMAC-SHA256 member
@@ -15,7 +19,9 @@ bytes. Discovery calls have no target or integration. Malformed invoke targets
 have neither. The address must contain identifiers and be at most 512 bytes.
 The local pseudonymization salt persists in the metrics state table. Member
 IDs, email addresses, session IDs, headers, arguments, results, and error text
-are never stored. Keep the database within its existing private access boundary.
+are never stored. Execute telemetry reads only validated target identifiers
+and the fixed `ok`, `error`, and `blocked` outcomes. Code and logs are never
+stored. Keep the database within its existing private access boundary.
 
 Response bytes count the complete serialized JSON-RPC response in UTF-8, before
 HTTP/SSE framing or compression. Duration ends after transport send completes.
@@ -29,7 +35,9 @@ private fields or change search, schema, catalog refresh, or encrypted secrets.
 PRs #17 and #18 and the refresh work for issue #8 can merge in either order.
 
 The `executor_tool_usage` table shares the existing libSQL client with the
-host. No second write connection opens. Writes run in batches once per second,
+host. The schema migration preserves rows, IDs, the AUTOINCREMENT high-water
+value (including deleted IDs), the salt, and loss counters in one write batch.
+No second write connection opens. Writes run in batches once per second,
 with at most 1,024 queued events and 1,024 active tracked calls per MCP session.
 Retention runs at startup, each flush, and hourly while idle: seven days and
 at most 100,000 rows. SQLite reuses deleted space; the table reaches a bounded

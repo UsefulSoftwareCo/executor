@@ -240,6 +240,81 @@ describe("tool usage schema migration", () => {
     ).toHaveLength(0);
   });
 
+  for (const deletion of ["highest", "hole", "all"] as const) {
+    it(`preserves the sequence high-water value with ${deletion} IDs deleted`, async () => {
+      const client = database();
+      await client.batch(
+        [
+          legacyTable,
+          usageInsert(event()),
+          usageInsert(event()),
+          usageInsert(event()),
+          `DELETE FROM executor_tool_usage WHERE ${deletion === "highest" ? "id = 3" : deletion === "hole" ? "id = 2" : "1 = 1"}`,
+        ],
+        "write",
+      );
+      const before = await client.execute("SELECT * FROM executor_tool_usage ORDER BY id");
+      const salt = await initializeToolUsage(client);
+      expect((await client.execute("SELECT * FROM executor_tool_usage ORDER BY id")).rows).toEqual(
+        before.rows,
+      );
+      expect(
+        (await client.execute("SELECT seq FROM sqlite_sequence WHERE name = 'executor_tool_usage'"))
+          .rows[0]!.seq,
+      ).toBe(3);
+      expect(await initializeToolUsage(client)).toBe(salt);
+      await client.execute(usageInsert(event({ mcpTool: "execute" })));
+      expect(
+        (await client.execute("SELECT MAX(id) AS id FROM executor_tool_usage")).rows[0]!.id,
+      ).toBe(4);
+    });
+  }
+
+  it("migrates an empty legacy table that never allocated an ID", async () => {
+    const client = database();
+    await client.execute(legacyTable);
+    await initializeToolUsage(client);
+    await client.execute(usageInsert(event({ mcpTool: "execute" })));
+    expect((await client.execute("SELECT id FROM executor_tool_usage")).rows[0]!.id).toBe(1);
+  });
+
+  it("rolls back a failed migration and can retry without losing sequence or state", async () => {
+    const client = database();
+    await client.batch(
+      [
+        legacyTable,
+        usageInsert(event()),
+        usageInsert(event()),
+        "DELETE FROM executor_tool_usage WHERE id = 2",
+        // Deliberately conflict with the index creation after the table swap.
+        "CREATE TABLE executor_tool_usage_time (id INTEGER)",
+      ],
+      "write",
+    );
+    await expect(initializeToolUsage(client)).rejects.toThrow();
+    expect(
+      (await client.execute("SELECT sql FROM sqlite_master WHERE name = 'executor_tool_usage'"))
+        .rows[0]!.sql,
+    ).not.toContain("'execute'");
+    expect(
+      (await client.execute("SELECT seq FROM sqlite_sequence WHERE name = 'executor_tool_usage'"))
+        .rows[0]!.seq,
+    ).toBe(2);
+    expect(
+      (
+        await client.execute(
+          "SELECT name FROM sqlite_master WHERE name = 'executor_tool_usage_new'",
+        )
+      ).rows,
+    ).toHaveLength(0);
+    await client.execute("DROP TABLE executor_tool_usage_time");
+    await initializeToolUsage(client);
+    await client.execute(usageInsert(event({ mcpTool: "execute" })));
+    expect(
+      (await client.execute("SELECT MAX(id) AS id FROM executor_tool_usage")).rows[0]!.id,
+    ).toBe(3);
+  });
+
   it("counts execute rows beside invoke in the integration ranking", async () => {
     const client = database();
     await initializeToolUsage(client);

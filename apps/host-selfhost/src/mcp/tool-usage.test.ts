@@ -284,6 +284,137 @@ describe("tool usage MCP boundary", () => {
     ).toEqual([]);
   });
 
+  it("reduces mixed outcomes per path, validates shapes and still updates targets after the cap", () => {
+    const targets = usageExecuteTargets({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        structuredContent: {
+          toolCalls: [
+            null,
+            7,
+            "secret",
+            {},
+            { path: "sample.org.test.bad", status: "error-secret" },
+            { path: "secret@example.test", status: "error" },
+            { path: "sample.org.test." + "x".repeat(512), status: "ok" },
+            ...Array.from({ length: 35 }, (_, index) => ({
+              path: `sample.org.test.read${index}`,
+              status: "ok",
+              args: "argument-secret",
+              result: "result-secret",
+            })),
+            { path: "tools.sample.org.test.read0", status: "error" },
+            { path: "sample.org.test.read0", status: "blocked" },
+            { path: "sample.org.test.read0", status: "ok" },
+            { path: "sample.org.test.read1", status: "error" },
+          ],
+          toolPaths: ["sample.org.test.read0"],
+        },
+      },
+    });
+    expect(targets).toHaveLength(32);
+    expect(targets[0]).toEqual({
+      targetTool: "tools.sample.org.test.read0",
+      integrationSlug: "sample",
+      status: "blocked",
+    });
+    expect(targets[1]!.status).toBe("error");
+    expect(targets[31]!.targetTool).toBe("tools.sample.org.test.read31");
+    expect(JSON.stringify(targets)).not.toMatch(/secret|args|result/);
+    for (const toolCalls of [
+      null,
+      3,
+      "secret",
+      {},
+      [null, { path: "sample.org.test.read", status: "constructor" }],
+    ]) {
+      expect(
+        usageExecuteTargets({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { structuredContent: { toolCalls } },
+        }),
+      ).toEqual([]);
+      expect(
+        usageExecuteTargets({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            structuredContent: {
+              toolCalls,
+              toolPaths: ["sample.org.test.read"],
+            },
+          },
+        }),
+      ).toEqual([{ targetTool: "tools.sample.org.test.read", integrationSlug: "sample" }]);
+    }
+  });
+
+  it("records per-target failures on completed scripts and execution errors on attributed failed scripts", async () => {
+    const events: ToolUsageEvent[] = [];
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    const calls = [
+      { path: "sample.org.test.read", status: "ok", args: "argument-secret" },
+      { path: "other.user.mine.write", status: "error", error: "error-secret" },
+      { path: "sample.org.test.hidden", status: "blocked", result: "result-secret" },
+      { path: "sample.org.test.read", status: "error" },
+    ];
+    for (const id of [1, 2]) {
+      transport.onmessage!({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "execute", arguments: { code: "code-secret" } },
+      });
+    }
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [],
+        structuredContent: {
+          status: "completed",
+          toolCalls: calls,
+          toolPaths: ["sample.org.test.read"],
+          logs: ["log-secret"],
+          result: "result-secret",
+        },
+      },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        isError: true,
+        content: [],
+        structuredContent: {
+          status: "error",
+          toolCalls: calls,
+          toolPaths: ["sample.org.test.read"],
+          error: "script-secret",
+        },
+      },
+    });
+    expect(events.map(({ targetTool, status }) => [targetTool, status])).toEqual([
+      ["tools.sample.org.test.read", "error"],
+      ["tools.other.user.mine.write", "error"],
+      ["tools.sample.org.test.hidden", "blocked"],
+      ["tools.sample.org.test.read", "error"],
+      ["tools.other.user.mine.write", "error"],
+      ["tools.sample.org.test.hidden", "error"],
+    ]);
+    expect(events[0]!.durationMs).toBe(events[2]!.durationMs);
+    expect(events[0]!.responseBytes).toBe(events[2]!.responseBytes);
+    expect(JSON.stringify(events)).not.toMatch(/secret|args|logs|result/);
+  });
+
   it("does not retain malformed target values", () => {
     expect(usageTarget("bearer secret@example.test")).toEqual({
       targetTool: null,

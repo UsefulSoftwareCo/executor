@@ -80,6 +80,14 @@ const usageMigration = async (client: Client): Promise<string[]> => {
     usageTableDefinition("executor_tool_usage_new"),
     `INSERT INTO executor_tool_usage_new (${USAGE_COLUMNS})
       SELECT ${USAGE_COLUMNS} FROM executor_tool_usage ORDER BY id`,
+    // Preserve AUTOINCREMENT history, including a deleted highest id or an empty table.
+    `INSERT INTO sqlite_sequence (name, seq)
+      SELECT 'executor_tool_usage_new', seq FROM sqlite_sequence
+      WHERE name = 'executor_tool_usage' AND NOT EXISTS
+        (SELECT 1 FROM sqlite_sequence WHERE name = 'executor_tool_usage_new')`,
+    `UPDATE sqlite_sequence SET seq = MAX(seq, COALESCE(
+      (SELECT seq FROM sqlite_sequence WHERE name = 'executor_tool_usage'), 0))
+      WHERE name = 'executor_tool_usage_new'`,
     "DROP TABLE executor_tool_usage",
     "ALTER TABLE executor_tool_usage_new RENAME TO executor_tool_usage",
   ];

@@ -36,24 +36,52 @@ const trafficClass = (extra?: MessageExtraInfo): ToolUsageEvent["trafficClass"] 
   return value === "benchmark" || value === "monitor" ? value : "agent";
 };
 
+type UsageExecuteTarget = UsageTarget & { readonly status?: ToolUsageEvent["status"] };
+const outcomeSeverity = { ok: 0, error: 1, blocked: 2 } as const;
+
 /**
- * Connected tools a sandbox execution called, read only from the structured
- * `toolPaths` identifiers the engine already returns; never code, arguments,
- * logs or results. Malformed entries are skipped; the list is deduplicated and
- * capped. Empty when the execution called no tool or the shape is unexpected.
+ * Connected tools a sandbox execution attempted, read only from structured
+ * identifiers and enum outcomes; never code, arguments, logs or results.
+ * Older engines provide successful `toolPaths` without per-target outcomes.
  */
-export const usageExecuteTargets = (message: JSONRPCMessage): UsageTarget[] => {
+export const usageExecuteTargets = (message: JSONRPCMessage): UsageExecuteTarget[] => {
   if (!("result" in message)) return [];
   const structured = message.result.structuredContent;
-  if (typeof structured !== "object" || structured === null || !("toolPaths" in structured))
-    return [];
-  const paths = structured.toolPaths;
-  if (!Array.isArray(paths)) return [];
-  const targets = new Map<string, UsageTarget>();
-  for (const path of paths) {
-    if (targets.size >= USAGE_EXECUTE_MAX_TARGETS) break;
-    const target = usageTarget(path);
-    if (target.targetTool !== null) targets.set(target.targetTool, target);
+  if (typeof structured !== "object" || structured === null) return [];
+  const calls = "toolCalls" in structured ? structured.toolCalls : undefined;
+  const paths = "toolPaths" in structured ? structured.toolPaths : undefined;
+  const targets = new Map<string, UsageExecuteTarget>();
+  if (Array.isArray(calls)) {
+    for (const call of calls) {
+      if (
+        typeof call !== "object" ||
+        call === null ||
+        (call.status !== "ok" && call.status !== "error" && call.status !== "blocked")
+      )
+        continue;
+      const status: "ok" | "error" | "blocked" = call.status;
+      const target = usageTarget(call.path);
+      if (target.targetTool === null) continue;
+      const previous = targets.get(target.targetTool);
+      if (
+        previous
+          ? outcomeSeverity[status] > outcomeSeverity[previous.status ?? "ok"]
+          : targets.size < USAGE_EXECUTE_MAX_TARGETS
+      ) {
+        targets.set(target.targetTool, { ...target, status });
+      }
+    }
+  }
+  if (Array.isArray(paths)) {
+    for (const path of paths) {
+      const target = usageTarget(path);
+      if (
+        target.targetTool !== null &&
+        !targets.has(target.targetTool) &&
+        targets.size < USAGE_EXECUTE_MAX_TARGETS
+      )
+        targets.set(target.targetTool, target);
+    }
   }
   return [...targets.values()];
 };
@@ -98,12 +126,12 @@ export const observeToolUsageTransport = (
 ): void => {
   const attempts = new Map<RequestId, Attempt>();
   // An execute call records one event per distinct connected tool it called,
-  // each carrying the whole execution's status, duration and response size.
+  // each carrying its outcome and the whole execution's duration and response size.
   const complete = (
     id: RequestId,
     status: ToolUsageEvent["status"],
     responseBytes: number,
-    targets: readonly UsageTarget[] = [],
+    targets: readonly UsageExecuteTarget[] = [],
   ) => {
     const attempt = attempts.get(id);
     if (!attempt) return;
@@ -117,7 +145,11 @@ export const observeToolUsageTransport = (
         targetTool: target.targetTool,
         integrationSlug: target.integrationSlug,
         trafficClass: attempt.trafficClass,
-        status,
+        // A script or transport failure makes every attributed row an execution error.
+        status:
+          status === "error"
+            ? "error"
+            : (("status" in target ? target.status : undefined) ?? status),
         durationMs,
         responseBytes,
       });

@@ -432,6 +432,49 @@ describe("formatExecuteResult output identity", () => {
     expect(formatted.structured).not.toHaveProperty("toolName");
   });
 
+  it("retains successful paths and outcome identifiers in script-error envelopes", () => {
+    const formatted = formatExecuteResult({
+      result: null,
+      error: "script-secret",
+      logs: ["log-secret"],
+      toolPaths: ["sample.org.main.read"],
+      toolCalls: [{ path: "sample.org.main.read", status: "ok" }],
+    });
+    expect(formatted.isError).toBe(true);
+    expect(formatted.structured).toMatchObject({
+      status: "error",
+      toolPaths: ["sample.org.main.read"],
+      toolCalls: [{ path: "sample.org.main.read", status: "ok" }],
+    });
+    expect(formatted.structured).not.toHaveProperty("toolName");
+  });
+
+  it("caps outcome identifiers and reduces repeats after the cap without retaining extra fields", () => {
+    const calls = Array.from({ length: 35 }, (_, index) => ({
+      path: `sample.org.main.read${index}`,
+      status: "ok" as const,
+      args: "argument-secret",
+      result: "result-secret",
+      error: "error-secret",
+    }));
+    const formatted = formatExecuteResult({
+      result: null,
+      toolCalls: [
+        ...calls,
+        { path: "sample.org.main.read0", status: "error" },
+        { path: "tools.sample.org.main.read0", status: "blocked" },
+        { path: "sample.org.main.read0", status: "ok" },
+        { path: "bearer secret@example.test", status: "error" },
+        { path: "sample.org.main." + "x".repeat(512), status: "error" },
+      ],
+    });
+    expect(formatted.structured["toolCalls"]).toEqual([
+      { path: "sample.org.main.read0", status: "blocked" },
+      ...calls.slice(1, 32).map(({ path, status }) => ({ path, status })),
+    ]);
+    expect(JSON.stringify(formatted.structured)).not.toMatch(/secret|args|error/);
+  });
+
   it("truncates a long preview with the exact suffix and untouched structured value", () => {
     const value = { data: "é🎉".repeat(12_000) };
     const pretty = JSON.stringify(value, null, 2);

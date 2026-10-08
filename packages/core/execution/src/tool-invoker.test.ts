@@ -29,7 +29,7 @@ import {
 } from "@executor-js/sdk/testing";
 import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 import type { CodeExecutor, ExecuteResult } from "@executor-js/codemode-core";
-import { createExecutionEngine } from "./engine";
+import { createExecutionEngine, formatExecuteResult } from "./engine";
 import { ExecutionToolError } from "./errors";
 import {
   describeTool,
@@ -2058,4 +2058,148 @@ describe("pause/resume with multiple elicitations", () => {
       expect(yield* engine.pausedExecutionCount()).toBe(0);
     }),
   );
+});
+
+describe("connected tool outcome metadata", () => {
+  it.effect(
+    "reports real successes, tool failures and policy denials separately from successful paths",
+    () =>
+      Effect.gen(function* () {
+        const executor = yield* makeExecutorWith([crmPlugin, errorPlugin] as const);
+        yield* provision(executor as never, [
+          { pluginId: "crm-test", integration: "crm" },
+          { pluginId: "error-test", integration: "records" },
+        ]);
+        yield* Effect.addFinalizer(() => executor.close().pipe(Effect.ignore));
+        const paths: string[] = [];
+        const calls: { path: string; status: string }[] = [];
+        const invoker = makeExecutorToolInvoker(executor, {
+          invokeOptions: { onElicitation: acceptAll },
+          onConnectedToolCall: (path) => paths.push(path),
+          onConnectedToolOutcome: (path, status) => calls.push({ path, status }),
+        });
+        yield* invoker.invoke({
+          path: "crm.org.main.listContacts",
+          args: { secret: "argument-secret" },
+        });
+        yield* invoker.invoke({ path: "records.org.main.queryRows", args: {} });
+        yield* executor.policies.create({
+          owner: "org",
+          pattern: "crm.org.main.listContacts",
+          action: "block",
+        });
+        const blocked = yield* invoker.invoke({ path: "crm.org.main.listContacts", args: {} });
+        expect(blocked).toMatchObject({ ok: false, error: { code: "tool_blocked" } });
+        expect(paths).toEqual(["crm.org.main.listContacts"]);
+        expect(calls).toEqual([
+          { path: "crm.org.main.listContacts", status: "ok" },
+          { path: "records.org.main.queryRows", status: "error" },
+          { path: "crm.org.main.listContacts", status: "blocked" },
+        ]);
+        yield* invoker.invoke({ path: "bad.org.main.secret@example.test", args: {} });
+        expect(calls).toHaveLength(3);
+        expect(JSON.stringify(calls)).not.toMatch(/secret|DisplayName|args/);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports a real approval decline as blocked even when invocation fails", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([crmPlugin] as const);
+      yield* provision(executor as never, [{ pluginId: "crm-test", integration: "crm" }]);
+      yield* Effect.addFinalizer(() => executor.close().pipe(Effect.ignore));
+      const calls: { path: string; status: string }[] = [];
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: {
+          onElicitation: () => Effect.succeed(ElicitationResponse.make({ action: "decline" })),
+        },
+        onConnectedToolOutcome: (path, status) => calls.push({ path, status }),
+      });
+      yield* Effect.exit(
+        invoker.invoke({
+          path: "crm.org.main.createContact",
+          args: { email: "argument-secret@example.test" },
+        }),
+      );
+      expect(calls).toEqual([{ path: "crm.org.main.createContact", status: "blocked" }]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports an invocation defect as an error without passing the cause to telemetry", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([unmarkedErrorPlugin] as const);
+      yield* provision(executor as never, [
+        { pluginId: "unmarked-error-test", integration: "unmarked" },
+      ]);
+      yield* Effect.addFinalizer(() => executor.close().pipe(Effect.ignore));
+      const calls: { path: string; status: string }[] = [];
+      const invoker = makeExecutorToolInvoker(executor, {
+        invokeOptions: { onElicitation: acceptAll },
+        onConnectedToolOutcome: (path, status) => calls.push({ path, status }),
+      });
+      yield* Effect.exit(invoker.invoke({ path: "unmarked.org.main.explode", args: {} }));
+      expect(calls).toEqual([{ path: "unmarked.org.main.explode", status: "error" }]);
+    }).pipe(Effect.scoped),
+  );
+
+  for (const mode of ["inline", "pausable", "operator"] as const) {
+    it.effect(
+      `retains real tool outcomes on completed and script-error responses in ${mode} mode`,
+      () =>
+        Effect.gen(function* () {
+          const executor = yield* makeExecutorWith([crmPlugin, errorPlugin] as const);
+          yield* provision(executor as never, [
+            { pluginId: "crm-test", integration: "crm" },
+            { pluginId: "error-test", integration: "records" },
+          ]);
+          yield* executor.policies.create({
+            owner: "org",
+            pattern: "crm.org.main.createContact",
+            action: "block",
+          });
+          const engine = createExecutionEngine({ executor, codeExecutor });
+          yield* Effect.addFinalizer(() =>
+            engine.shutdown.pipe(Effect.andThen(executor.close()), Effect.ignore),
+          );
+          const run = (code: string) =>
+            mode === "inline"
+              ? engine.execute(code, { onElicitation: acceptAll })
+              : engine.executeWithPause(code, { autoApprove: mode === "operator" }).pipe(
+                  Effect.map((outcome) => {
+                    return outcome.status === "completed"
+                      ? outcome.result
+                      : { result: null, error: "Unexpected pause" };
+                  }),
+                );
+          const completed = yield* run(
+            [
+              "await tools.crm.org.main.listContacts({});",
+              "await tools.records.org.main.queryRows({});",
+              "await tools.crm.org.main.createContact({ email: 'argument-secret@example.test' });",
+              "await tools.records.org.main.queryRows({});",
+              "return 42;",
+            ].join("\n"),
+          );
+          expect(completed.error).toBeUndefined();
+          expect(completed.toolPaths).toEqual(["crm.org.main.listContacts"]);
+          expect(formatExecuteResult(completed).structured).toMatchObject({
+            status: "completed",
+            toolName: "crm.org.main.listContacts",
+            toolCalls: [
+              { path: "crm.org.main.listContacts", status: "ok" },
+              { path: "records.org.main.queryRows", status: "error" },
+              { path: "crm.org.main.createContact", status: "blocked" },
+            ],
+          });
+          const failed = yield* run(
+            "await tools.crm.org.main.listContacts({}); throw new Error('script-secret');",
+          );
+          expect(failed.error).toContain("script-secret");
+          expect(formatExecuteResult(failed).structured).toMatchObject({
+            status: "error",
+            toolPaths: ["crm.org.main.listContacts"],
+            toolCalls: [{ path: "crm.org.main.listContacts", status: "ok" }],
+          });
+        }).pipe(Effect.scoped),
+    );
+  }
 });
