@@ -511,6 +511,35 @@ describe("tool discovery", () => {
     }),
   );
 
+  it.effect("ranks an integration's tools when the query names it by display name", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeSearchExecutor();
+
+      // "People" is nowhere in the crm slug, names, or descriptions.
+      const without = yield* searchTools(executor, "people contact", 5);
+      expect(without.items.map((match) => match.path)).toEqual([]);
+
+      const aliases = new Map([["crm", "People Desk"]]);
+      const withAlias = yield* searchTools(executor, "people contact", 5, {
+        integrationAliases: aliases,
+      });
+      expect(withAlias.items.map((match) => match.integration)).toEqual(["crm", "crm"]);
+      expect(withAlias.items.map((match) => match.path)).toEqual([
+        "crm.org.main.createContact",
+        "crm.org.main.listContacts",
+      ]);
+
+      // Alias text only ever adds signal; a query that already matched keeps its order.
+      const before = yield* searchTools(executor, "github issues", 5);
+      const after = yield* searchTools(executor, "github issues", 5, {
+        integrationAliases: new Map([["github", "GitHub"]]),
+      });
+      expect(after.items.map((match) => match.path)).toEqual(
+        before.items.map((match) => match.path),
+      );
+    }),
+  );
+
   it.effect("returns no matches for empty queries instead of listing arbitrary tools", () =>
     Effect.gen(function* () {
       const executor = yield* makeSearchExecutor();

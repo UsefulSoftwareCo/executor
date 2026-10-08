@@ -20,7 +20,9 @@ import {
   COMPACT_DESCRIPTION_LIMIT,
   compactArguments,
   compactDescription,
+  integrationAliasText,
   passthroughCallCode,
+  resolveIntegrationAlias,
 } from "./passthrough-tools";
 import {
   createExecutorMcpServer,
@@ -203,6 +205,58 @@ describe("passthrough catalog", () => {
 // ---------------------------------------------------------------------------
 // Wire flags
 // ---------------------------------------------------------------------------
+
+describe("integration aliases", () => {
+  const catalog = [
+    { slug: "google_gmail", name: "Gmail", description: "Send and read mail" },
+    { slug: "google_calendar", name: "Google Calendar", description: "Events and calendars" },
+    { slug: "cloudflare-dns", name: "Cloudflare DNS", description: "Zones and records" },
+    { slug: "scrape_api", name: "ScrapeCreators", description: "Social media scraping" },
+    { slug: "plex", name: "Plex", description: "Media server" },
+  ];
+
+  it("resolves exact slugs, squashed names, word subsets, then descriptions", () => {
+    expect(resolveIntegrationAlias("plex", catalog)).toEqual({ kind: "exact", slug: "plex" });
+    expect(resolveIntegrationAlias("gmail", catalog)).toEqual({
+      kind: "alias",
+      slug: "google_gmail",
+    });
+    expect(resolveIntegrationAlias("Google Calendar", catalog)).toEqual({
+      kind: "alias",
+      slug: "google_calendar",
+    });
+    expect(resolveIntegrationAlias("googlegmail", catalog)).toEqual({
+      kind: "alias",
+      slug: "google_gmail",
+    });
+    expect(resolveIntegrationAlias("cloudflare_dns", catalog)).toEqual({
+      kind: "alias",
+      slug: "cloudflare-dns",
+    });
+    expect(resolveIntegrationAlias("scrapecreators", catalog)).toEqual({
+      kind: "alias",
+      slug: "scrape_api",
+    });
+    expect(resolveIntegrationAlias("mail", catalog)).toEqual({
+      kind: "alias",
+      slug: "google_gmail",
+    });
+    expect(resolveIntegrationAlias("google", catalog)).toEqual({
+      kind: "ambiguous",
+      slugs: ["google_calendar", "google_gmail"],
+    });
+    expect(resolveIntegrationAlias("notion", catalog)).toEqual({ kind: "none" });
+    expect(resolveIntegrationAlias("  ", catalog)).toEqual({ kind: "none" });
+  });
+
+  it("adds display-name words the slug lacks as ranking text", () => {
+    expect([...integrationAliasText(catalog)]).toEqual([
+      ["google_calendar", "googlecalendar"],
+      ["cloudflare-dns", "cloudflaredns"],
+      ["scrape_api", "creators scrapecreators"],
+    ]);
+  });
+});
 
 describe("compact search hits", () => {
   it("keeps the first sentence of a description within the limit", () => {
@@ -462,7 +516,18 @@ describe("passthrough mode server", () => {
       }),
     ];
     await withClient(
-      { engine, mode: "passthrough", tools: toolPort(catalog, schemaReads) },
+      {
+        engine,
+        mode: "passthrough",
+        tools: toolPort(catalog, schemaReads),
+        integrations: {
+          list: () =>
+            Effect.succeed([
+              { slug: IntegrationSlug.make("github"), name: "GitHub", description: "" },
+              { slug: IntegrationSlug.make("github_other"), name: "Other", description: "" },
+            ]),
+        },
+      },
       async (client) => {
         const args = {
           query: "issues",
@@ -494,6 +559,130 @@ describe("passthrough mode server", () => {
           nextOffset: null,
         });
         expect(schemaReads).toHaveLength(2);
+      },
+    );
+  });
+
+  it("accepts integration aliases in search and integrations, and ranks by display name", async () => {
+    const { engine } = makeRecordingEngine();
+    const lists: string[] = [];
+    const catalog = [
+      projection({ integration: "google_gmail", name: "users.messages.send" }),
+      projection({ integration: "google_gmail", name: "users.messages.list" }),
+      projection({ integration: "google_calendar", name: "events.list" }),
+      projection({
+        integration: "scrape_api",
+        name: "profiles.get",
+        description: "Fetch a profile",
+      }),
+    ];
+    const account = (integration: string) => ({
+      integration,
+      owner: "org" as const,
+      name: "main",
+      identityLabel: null,
+      description: null,
+      lastHealth: null,
+    });
+    await withClient(
+      {
+        engine,
+        mode: "passthrough",
+        tools: toolPort(catalog, [], lists),
+        connections: {
+          list: () =>
+            Effect.succeed([
+              account("google_gmail"),
+              account("google_calendar"),
+              account("scrape_api"),
+            ]),
+        },
+        integrations: {
+          list: () =>
+            Effect.succeed([
+              { slug: IntegrationSlug.make("google_gmail"), name: "Gmail", description: "Mail" },
+              {
+                slug: IntegrationSlug.make("google_calendar"),
+                name: "Google Calendar",
+                description: "Events",
+              },
+              {
+                slug: IntegrationSlug.make("scrape_api"),
+                name: "ScrapeCreators",
+                description: "Scraping",
+              },
+            ]),
+        },
+      },
+      async (client) => {
+        // An alias narrows the list read to the resolved slug and reports it.
+        const alias = await client.callTool({
+          name: "search",
+          arguments: { query: "send", integration: "gmail", limit: 3 },
+        });
+        expect(alias.structuredContent).toMatchObject({
+          integration: "google_gmail",
+          total: 1,
+          items: [{ id: "tools.google_gmail.org.main.users.messages.send" }],
+        });
+        // An ambiguous alias searches every candidate and lists them.
+        const ambiguous = await client.callTool({
+          name: "search",
+          arguments: { query: "list", integration: "google" },
+        });
+        expect(ambiguous.structuredContent).toMatchObject({
+          integrations: ["google_calendar", "google_gmail"],
+          total: 2,
+        });
+        expect(
+          decodeSearchItems(ambiguous.structuredContent)
+            .items.map((item) => item.id)
+            .sort(),
+        ).toEqual([
+          "tools.google_calendar.org.main.events.list",
+          "tools.google_gmail.org.main.users.messages.list",
+        ]);
+        // An unknown value stays an exact filter (no hits) and explains itself.
+        const unknown = await client.callTool({
+          name: "search",
+          arguments: { query: "send", integration: "notion" },
+        });
+        expect(unknown.structuredContent).toMatchObject({
+          items: [],
+          total: 0,
+          hint: expect.stringContaining('No integration matches "notion"'),
+        });
+        // Query words naming an integration by display name rank its tools.
+        const byName = await client.callTool({
+          name: "search",
+          arguments: { query: "scrapecreators profile", limit: 3 },
+        });
+        expect(decodeSearchItems(byName.structuredContent).items.map((item) => item.id)).toEqual([
+          "tools.scrape_api.org.main.profiles.get",
+        ]);
+        // integrations accepts the same aliases.
+        const accounts = await client.callTool({
+          name: "integrations",
+          arguments: { integration: "gmail" },
+        });
+        expect(accounts.structuredContent).toMatchObject({
+          integration: "google_gmail",
+          total: 1,
+          items: [{ integration: "google_gmail" }],
+        });
+        const both = await client.callTool({
+          name: "integrations",
+          arguments: { integration: "google" },
+        });
+        expect(both.structuredContent).toMatchObject({
+          integrations: ["google_calendar", "google_gmail"],
+          total: 2,
+        });
+        const none = await client.callTool({
+          name: "integrations",
+          arguments: { integration: "notion" },
+        });
+        expect(none.structuredContent).toMatchObject({ total: 0, hint: expect.any(String) });
       },
     );
   });
