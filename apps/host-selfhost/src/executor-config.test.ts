@@ -2,6 +2,9 @@ import { afterEach, beforeEach, expect, test } from "@effect/vitest";
 
 import { loadConfig } from "./config";
 import executorConfig from "../executor.config";
+import { Effect } from "effect";
+import { HostConfig } from "@executor-js/api/server";
+import { SelfHostHostConfig } from "./execution";
 
 const ENV_NAME = "EXECUTOR_ALLOW_STDIO_MCP";
 const SECRET_ENV_NAME = "EXECUTOR_SECRET_KEY";
@@ -11,6 +14,15 @@ const originalSecret = process.env[SECRET_ENV_NAME];
 const originalTtl = process.env[TTL_ENV_NAME];
 const RATE_LIMIT_ENV_NAME = "EXECUTOR_DISABLE_AUTH_RATE_LIMIT";
 const originalRateLimit = process.env[RATE_LIMIT_ENV_NAME];
+
+test("self-host serves persisted catalogs without waiting for remote refresh", async () => {
+  const config = await Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* HostConfig;
+    }).pipe(Effect.provide(SelfHostHostConfig)),
+  );
+  expect(config.toolsSyncGraceMs).toBe(0);
+});
 
 beforeEach(() => {
   process.env[SECRET_ENV_NAME] = originalSecret ?? "executor-config-test-secret";
