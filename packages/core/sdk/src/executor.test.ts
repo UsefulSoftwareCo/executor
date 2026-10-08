@@ -775,6 +775,48 @@ describe("createExecutor", () => {
     }),
   );
 
+  it.effect("tools.schemas serves the same views and definitions as tools.schema", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [demoPlugin] as const,
+        coreTools: { webBaseUrl: "http://localhost:3000" },
+      });
+      yield* executor.demo.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: CONN,
+        integration: INTEG,
+        template: TEMPLATE,
+        from: {
+          provider: ProviderKey.make("memory"),
+          id: ProviderItemId.make("v"),
+        },
+      });
+      // A catalog tool with definitions, a schemaless one, a static core
+      // tool, and a missing one, in one batch.
+      const addresses = [
+        addr("inspect"),
+        addr("run"),
+        ToolAddress.make("executor.coreTools.integrations.list"),
+        addr("absent"),
+      ];
+      const batched = yield* executor.tools.schemas(addresses);
+      const single = yield* Effect.forEach(addresses, (address) => executor.tools.schema(address));
+      expect(batched).toEqual(single);
+      expect(Object.keys(batched[0]?.schemaDefinitions ?? {}).sort()).toEqual([
+        "Cat",
+        "Collar",
+        "Dog",
+        "Owner",
+        "Pet",
+      ]);
+      expect(batched[0]?.inputTypeScript).toContain("pet");
+      expect(batched[1]?.name).toBe("run");
+      expect(batched[2]?.name).toBe("coreTools.integrations.list");
+      expect(batched[3]).toBeNull();
+    }),
+  );
+
   it.effect("execute dispatches a connection-produced tool to the owning plugin", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({

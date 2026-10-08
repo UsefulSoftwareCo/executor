@@ -475,6 +475,14 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
       address: ToolAddress,
       options?: ToolSchemaOptions,
     ) => Effect.Effect<ToolSchemaView | null, StorageFailure>;
+    /** The `schema` view for several addresses in one read: one policy
+     *  snapshot for the set, one catalog read and one definitions read per
+     *  connection. Answers in input order, `null` where `schema` answers
+     *  `null`. */
+    readonly schemas: (
+      addresses: readonly ToolAddress[],
+      options?: ToolSchemaOptions,
+    ) => Effect.Effect<readonly (ToolSchemaView | null)[], StorageFailure>;
   };
 
   readonly providers: {
@@ -5531,12 +5539,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       };
     };
 
-    // `forToolId` narrows the global rule read to rows that can match that one
-    // tool: an exact pattern (no `*` segment) matches only when it equals the
-    // tool id, so every other exact row is irrelevant to its resolution. The
-    // remaining rows keep their relative order, so the answer is unchanged.
+    // `forToolIds` narrows the global rule read to rows that can match those
+    // tools: an exact pattern (no `*` segment) matches only when it equals a
+    // tool id, so every other exact row is irrelevant to their resolution. The
+    // remaining rows keep their relative order, so each answer is unchanged.
     const listActivePolicyRuleSet = (
-      forToolId?: string,
+      forToolIds?: string | readonly string[],
     ): Effect.Effect<ActivePolicyRuleSet, StorageFailure> =>
       activeToolPolicyProvider
         ? // Batched per-operation resolver: fetch all policy + connection state
@@ -5565,11 +5573,18 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         : core
             .findMany(
               "tool_policy",
-              forToolId === undefined
+              forToolIds === undefined
                 ? {}
                 : {
                     where: (b: AnyCb) =>
-                      b.or(b("pattern", "=", forToolId), b("pattern", "contains", "*")),
+                      b.or(
+                        typeof forToolIds === "string"
+                          ? b("pattern", "=", forToolIds)
+                          : forToolIds.length === 0
+                            ? false
+                            : b("pattern", "in", [...forToolIds]),
+                        b("pattern", "contains", "*"),
+                      ),
                   },
             )
             .pipe(
@@ -5856,74 +5871,78 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         return tools;
       });
 
-    const toolSchema = (
-      address: ToolAddress,
-      options?: ToolSchemaOptions,
-    ): Effect.Effect<ToolSchemaView | null, StorageFailure> =>
-      Effect.gen(function* () {
-        const includeTypeScript = options?.typeScript ?? true;
-        const staticEntry = staticTools.get(String(address));
-        if (staticEntry) {
-          const tool = staticToolToTool(staticEntry);
-          const policyRules = yield* listActivePolicyRuleSet(normalizedPolicyId(tool));
-          const effective = yield* resolvePolicyFromRuleSet(
-            normalizedPolicyId(tool),
-            policyRules,
-            tool.annotations?.requiresApproval,
-          );
-          if (effective.action === "block") return null;
-          const preview = includeTypeScript
-            ? yield* Effect.tryPromise({
-                try: () =>
-                  buildToolTypeScriptPreview({
-                    inputSchema: tool.inputSchema,
-                    outputSchema: tool.outputSchema,
-                    defs: new Map(),
-                  }),
-                catch: (cause) =>
-                  storageFailureFromUnknown(
-                    "Failed to build static tool TypeScript preview",
-                    cause,
-                  ),
-              }).pipe(Effect.option)
-            : Option.none();
-          return ToolSchemaView.make({
-            address,
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-            outputSchema: tool.outputSchema,
-            inputTypeScript: Option.getOrUndefined(preview)?.inputTypeScript,
-            outputTypeScript: Option.getOrUndefined(preview)?.outputTypeScript,
-            typeScriptDefinitions: Option.getOrUndefined(preview)?.typeScriptDefinitions,
-            annotations: toolAnnotationsView(tool.annotations),
-          });
-        }
+    // ------------------------------------------------------------------
+    // Schema views. `toolSchema` and `toolSchemas` share these builders, so a
+    // batched read serves the same view per address as a single read. Policy
+    // visibility is the caller's: a builder runs only for a tool that already
+    // resolved as not blocked.
+    // ------------------------------------------------------------------
 
-        const parsed = parseToolAddress(String(address));
-        if (!parsed) return null;
-        // Same id `normalizedPolicyId` derives from the row this lookup returns.
-        const policyRules = yield* listActivePolicyRuleSet(
-          `${parsed.integration}.${parsed.owner}.${parsed.connection}.${parsed.tool}`,
-        );
-        const row = yield* core.findFirst("tool", {
+    const staticToolSchemaView = (
+      address: ToolAddress,
+      tool: Tool,
+      includeTypeScript: boolean,
+    ): Effect.Effect<ToolSchemaView, StorageFailure> =>
+      Effect.gen(function* () {
+        const preview = includeTypeScript
+          ? yield* Effect.tryPromise({
+              try: () =>
+                buildToolTypeScriptPreview({
+                  inputSchema: tool.inputSchema,
+                  outputSchema: tool.outputSchema,
+                  defs: new Map(),
+                }),
+              catch: (cause) =>
+                storageFailureFromUnknown("Failed to build static tool TypeScript preview", cause),
+            }).pipe(Effect.option)
+          : Option.none();
+        return ToolSchemaView.make({
+          address,
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          outputSchema: tool.outputSchema,
+          inputTypeScript: Option.getOrUndefined(preview)?.inputTypeScript,
+          outputTypeScript: Option.getOrUndefined(preview)?.outputTypeScript,
+          typeScriptDefinitions: Option.getOrUndefined(preview)?.typeScriptDefinitions,
+          annotations: toolAnnotationsView(tool.annotations),
+        });
+      });
+
+    type ConnectionIdentity = Pick<ParsedToolAddress, "owner" | "integration" | "connection">;
+
+    // Every definition a connection persisted, decoded once. A view only
+    // attaches the subgraph its schemas reference.
+    const connectionDefinitions = (
+      identity: ConnectionIdentity,
+    ): Effect.Effect<ReadonlyMap<string, unknown>, StorageFailure> =>
+      core
+        .findMany("definition", {
           where: (b: AnyCb) =>
             b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-              b("name", "=", String(parsed.tool)),
+              byOwner(identity.owner)(b),
+              b("integration", "=", String(identity.integration)),
+              b("connection", "=", String(identity.connection)),
             ),
-        });
-        if (!row) return null;
-        const tool = rowToTool(row);
-        const effective = yield* resolvePolicyFromRuleSet(
-          normalizedPolicyId(tool),
-          policyRules,
-          tool.annotations?.requiresApproval,
+        })
+        .pipe(
+          Effect.map((definitionRows) => {
+            const defs = new Map<string, unknown>();
+            for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
+            return defs;
+          }),
         );
-        if (effective.action === "block") return null;
 
+    const catalogToolSchemaView = (input: {
+      readonly address: ToolAddress;
+      readonly parsed: ParsedToolAddress;
+      readonly row: ToolRow;
+      readonly tool: Tool;
+      readonly includeTypeScript: boolean;
+      readonly definitions: Effect.Effect<ReadonlyMap<string, unknown>, StorageFailure>;
+    }): Effect.Effect<ToolSchemaView, StorageFailure> =>
+      Effect.gen(function* () {
+        const { address, parsed, row, tool, includeTypeScript } = input;
         const runtime = runtimes.get(row.plugin_id);
         const projected = runtime?.plugin.projectToolSchema
           ? yield* runtime.plugin
@@ -5963,17 +5982,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               ? observedShapeToJsonSchema(observed)
               : undefined;
 
-        const definitionRows = yield* core.findMany("definition", {
-          where: (b: AnyCb) =>
-            b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-            ),
-        });
-        const defs = new Map<string, unknown>();
-        for (const def of definitionRows) defs.set(def.name, decodeJsonColumn(def.schema));
-
+        const defs = yield* input.definitions;
         const referenced = collectReferencedDefinitions([inputSchema, effectiveOutputSchema], defs);
         // Compile against the referenced subgraph only. The compiler walks
         // every definition it is handed (its parser scans the whole `$defs`
@@ -6017,6 +6026,191 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           typeScriptDefinitions: Option.getOrUndefined(view)?.typeScriptDefinitions,
           annotations: toolAnnotationsView(tool.annotations),
         });
+      });
+
+    const toolSchema = (
+      address: ToolAddress,
+      options?: ToolSchemaOptions,
+    ): Effect.Effect<ToolSchemaView | null, StorageFailure> =>
+      Effect.gen(function* () {
+        const includeTypeScript = options?.typeScript ?? true;
+        const staticEntry = staticTools.get(String(address));
+        if (staticEntry) {
+          const tool = staticToolToTool(staticEntry);
+          const policyRules = yield* listActivePolicyRuleSet(normalizedPolicyId(tool));
+          const effective = yield* resolvePolicyFromRuleSet(
+            normalizedPolicyId(tool),
+            policyRules,
+            tool.annotations?.requiresApproval,
+          );
+          if (effective.action === "block") return null;
+          return yield* staticToolSchemaView(address, tool, includeTypeScript);
+        }
+
+        const parsed = parseToolAddress(String(address));
+        if (!parsed) return null;
+        // Same id `normalizedPolicyId` derives from the row this lookup returns.
+        const policyRules = yield* listActivePolicyRuleSet(
+          `${parsed.integration}.${parsed.owner}.${parsed.connection}.${parsed.tool}`,
+        );
+        const row = yield* core.findFirst("tool", {
+          where: (b: AnyCb) =>
+            b.and(
+              byOwner(parsed.owner)(b),
+              b("integration", "=", String(parsed.integration)),
+              b("connection", "=", String(parsed.connection)),
+              b("name", "=", String(parsed.tool)),
+            ),
+        });
+        if (!row) return null;
+        const tool = rowToTool(row);
+        const effective = yield* resolvePolicyFromRuleSet(
+          normalizedPolicyId(tool),
+          policyRules,
+          tool.annotations?.requiresApproval,
+        );
+        if (effective.action === "block") return null;
+        return yield* catalogToolSchemaView({
+          address,
+          parsed,
+          row,
+          tool,
+          includeTypeScript,
+          definitions: connectionDefinitions(parsed),
+        });
+      });
+
+    // Several addresses in one read. Passthrough search used to call
+    // `toolSchema` once per hit, and each call read the policy rows, the tool
+    // row and the connection's whole definition set again. Here the policy
+    // snapshot is read once for the set, tool rows once per connection, and
+    // definitions once per connection with a visible hit. Each address still
+    // resolves against the same rows `toolSchema` would read for it, so the
+    // views are the same; revocation still lands between calls.
+    const toolSchemas = (
+      addresses: readonly ToolAddress[],
+      options?: ToolSchemaOptions,
+    ): Effect.Effect<readonly (ToolSchemaView | null)[], StorageFailure> =>
+      Effect.gen(function* () {
+        if (addresses.length === 0) return [];
+        const includeTypeScript = options?.typeScript ?? true;
+
+        type Pending =
+          | { readonly kind: "static"; readonly tool: Tool }
+          | { readonly kind: "catalog"; readonly parsed: ParsedToolAddress; readonly group: string }
+          | null;
+        const groups = new Map<string, { identity: ConnectionIdentity; names: Set<string> }>();
+        const pending: Pending[] = addresses.map((address) => {
+          const staticEntry = staticTools.get(String(address));
+          if (staticEntry) return { kind: "static", tool: staticToolToTool(staticEntry) };
+          const parsed = parseToolAddress(String(address));
+          if (!parsed) return null;
+          const group = `${parsed.owner}\u0000${parsed.integration}\u0000${parsed.connection}`;
+          const entry = groups.get(group) ?? { identity: parsed, names: new Set<string>() };
+          entry.names.add(String(parsed.tool));
+          groups.set(group, entry);
+          return { kind: "catalog", parsed, group };
+        });
+
+        const policyIds = pending.flatMap((entry) =>
+          entry === null
+            ? []
+            : entry.kind === "static"
+              ? [normalizedPolicyId(entry.tool)]
+              : [
+                  `${entry.parsed.integration}.${entry.parsed.owner}.${entry.parsed.connection}.${entry.parsed.tool}`,
+                ],
+        );
+        const policyRules = yield* listActivePolicyRuleSet(policyIds);
+
+        const rowsByGroup = new Map<string, ReadonlyMap<string, ToolRow>>();
+        for (const [group, { identity, names }] of groups) {
+          const rows = yield* core.findMany("tool", {
+            where: (b: AnyCb) =>
+              b.and(
+                byOwner(identity.owner)(b),
+                b("integration", "=", String(identity.integration)),
+                b("connection", "=", String(identity.connection)),
+                b("name", "in", [...names]),
+              ),
+          });
+          rowsByGroup.set(group, new Map(rows.map((row) => [row.name, row])));
+        }
+
+        // Resolve visibility first, so definitions load only for a
+        // connection that serves at least one visible hit.
+        type Visible =
+          | { readonly kind: "static"; readonly address: ToolAddress; readonly tool: Tool }
+          | {
+              readonly kind: "catalog";
+              readonly address: ToolAddress;
+              readonly parsed: ParsedToolAddress;
+              readonly group: string;
+              readonly row: ToolRow;
+              readonly tool: Tool;
+            }
+          | null;
+        const visible: Visible[] = [];
+        for (const [index, entry] of pending.entries()) {
+          const address = addresses[index]!;
+          if (entry === null) {
+            visible.push(null);
+            continue;
+          }
+          if (entry.kind === "static") {
+            const effective = yield* resolvePolicyFromRuleSet(
+              normalizedPolicyId(entry.tool),
+              policyRules,
+              entry.tool.annotations?.requiresApproval,
+            );
+            visible.push(
+              effective.action === "block" ? null : { kind: "static", address, tool: entry.tool },
+            );
+            continue;
+          }
+          const row = rowsByGroup.get(entry.group)?.get(String(entry.parsed.tool));
+          if (!row) {
+            visible.push(null);
+            continue;
+          }
+          const tool = rowToTool(row);
+          const effective = yield* resolvePolicyFromRuleSet(
+            normalizedPolicyId(tool),
+            policyRules,
+            tool.annotations?.requiresApproval,
+          );
+          visible.push(
+            effective.action === "block"
+              ? null
+              : { kind: "catalog", address, parsed: entry.parsed, group: entry.group, row, tool },
+          );
+        }
+
+        const definitionsByGroup = new Map<string, ReadonlyMap<string, unknown>>();
+        for (const entry of visible) {
+          if (entry === null || entry.kind !== "catalog" || definitionsByGroup.has(entry.group)) {
+            continue;
+          }
+          definitionsByGroup.set(entry.group, yield* connectionDefinitions(entry.parsed));
+        }
+
+        return yield* Effect.forEach(
+          visible,
+          (entry) =>
+            entry === null
+              ? Effect.succeed(null)
+              : entry.kind === "static"
+                ? staticToolSchemaView(entry.address, entry.tool, includeTypeScript)
+                : catalogToolSchemaView({
+                    address: entry.address,
+                    parsed: entry.parsed,
+                    row: entry.row,
+                    tool: entry.tool,
+                    includeTypeScript,
+                    definitions: Effect.succeed(definitionsByGroup.get(entry.group)!),
+                  }),
+          { concurrency: 4 },
+        );
       });
 
     // ------------------------------------------------------------------
@@ -7343,6 +7537,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       tools: {
         list: toolsList,
         schema: toolSchema,
+        schemas: toolSchemas,
       },
       providers: {
         list: providersList,

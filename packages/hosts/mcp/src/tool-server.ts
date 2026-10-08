@@ -326,8 +326,9 @@ export type McpIntegrationsPort = {
   >;
 };
 
-/** The same list and schema APIs used by codemode discovery. */
-export type McpToolsPort = Pick<Executor["tools"], "list" | "schema">;
+/** The same list and schema APIs used by codemode discovery, plus the batched
+ *  schema read a search page uses. */
+export type McpToolsPort = Pick<Executor["tools"], "list" | "schema" | "schemas">;
 
 /** A passthrough session was requested but the host gave the factory no
  *  catalog to serve. A configuration defect, not a runtime condition. */
@@ -1505,47 +1506,44 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                 offset,
                 integrationAliases: integrationAliasText(catalog),
               });
-              const candidates = yield* Effect.forEach(
-                page.items,
-                (match) =>
-                  Effect.gen(function* () {
-                    const address = ToolAddress.make(`tools.${match.path}`);
-                    const identity = parseToolAddress(String(address));
-                    if (!identity) return null;
-                    // Search returns JSON Schema only; skip the TypeScript preview.
-                    const schema = yield* tools.schema(address, { typeScript: false });
-                    // Visibility can change between listing and schema lookup.
-                    if (!schema) return null;
-                    const identityFields = {
-                      id: String(address),
-                      name: match.name,
-                      integration: identity.integration,
-                      owner: identity.owner,
-                      connection: identity.connection,
+              const addresses = page.items.map((match) => ToolAddress.make(`tools.${match.path}`));
+              // One read for the page: one policy snapshot, one catalog and
+              // one definitions read per connection. Search returns JSON
+              // Schema only; skip the TypeScript preview.
+              const schemas = yield* tools.schemas(addresses, { typeScript: false });
+              const candidates = page.items.map((match, index) => {
+                const address = addresses[index]!;
+                const identity = parseToolAddress(String(address));
+                if (!identity) return null;
+                const schema = schemas[index] ?? null;
+                // Visibility can change between listing and schema lookup.
+                if (!schema) return null;
+                const identityFields = {
+                  id: String(address),
+                  name: match.name,
+                  integration: identity.integration,
+                  owner: identity.owner,
+                  connection: identity.connection,
+                };
+                const annotations = schema.annotations ? { annotations: schema.annotations } : {};
+                // Compact hits carry what a model needs to choose a tool
+                // and usually to call it; the full schema is one more
+                // search away (`detail: "full"`) or comes back with an
+                // invoke validation error.
+                return detail === "full"
+                  ? {
+                      ...identityFields,
+                      description: match.description,
+                      inputSchema: passthroughInputSchema(schema),
+                      ...annotations,
+                    }
+                  : {
+                      ...identityFields,
+                      description: compactDescription(match.description),
+                      arguments: compactArguments(schema.inputSchema, schema.schemaDefinitions),
+                      ...annotations,
                     };
-                    const annotations = schema.annotations
-                      ? { annotations: schema.annotations }
-                      : {};
-                    // Compact hits carry what a model needs to choose a tool
-                    // and usually to call it; the full schema is one more
-                    // search away (`detail: "full"`) or comes back with an
-                    // invoke validation error.
-                    return detail === "full"
-                      ? {
-                          ...identityFields,
-                          description: match.description,
-                          inputSchema: passthroughInputSchema(schema),
-                          ...annotations,
-                        }
-                      : {
-                          ...identityFields,
-                          description: compactDescription(match.description),
-                          arguments: compactArguments(schema.inputSchema, schema.schemaDefinitions),
-                          ...annotations,
-                        };
-                  }),
-                { concurrency: 4 },
-              );
+              });
               const result = {
                 ...page,
                 items: candidates.filter(Predicate.isNotNull),
