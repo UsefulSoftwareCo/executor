@@ -601,7 +601,11 @@ const matchesNamespace = (tool: SearchableTool, namespace?: string): boolean => 
   return isPrefixMatch(integrationTokens) || isPrefixMatch(pathTokens);
 };
 
-const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResult | null => {
+const scoreToolMatch = (
+  tool: SearchableTool,
+  query: string,
+  integrationAliases?: ReadonlyMap<string, string>,
+): ToolDiscoveryResult | null => {
   const normalizedQuery = normalizeSearchText(query);
   const queryTokens = tokenizeSearchText(query);
 
@@ -610,7 +614,12 @@ const scoreToolMatch = (tool: SearchableTool, query: string): ToolDiscoveryResul
   }
 
   const path = prepareField(tool.path);
-  const integration = prepareField(tool.integration);
+  // The integration field carries the slug plus any alias text the caller
+  // knows for it (its display name), so a query word that names the
+  // integration the way a person would ("gmail", "Google Calendar") scores
+  // and counts toward coverage the same as the slug's own tokens.
+  const alias = integrationAliases?.get(tool.integration);
+  const integration = prepareField(alias ? `${tool.integration} ${alias}` : tool.integration);
   const name = prepareField(tool.name);
   const description = prepareField(tool.description);
 
@@ -675,7 +684,13 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   executor: { readonly tools: Pick<Executor["tools"], "list"> },
   query: string,
   limit = 12,
-  options?: { readonly namespace?: string; readonly offset?: number },
+  options?: {
+    readonly namespace?: string;
+    readonly offset?: number;
+    /** Extra searchable text per integration slug (its display name), so
+     *  query words naming the integration rank its tools. */
+    readonly integrationAliases?: ReadonlyMap<string, string>;
+  },
 ) {
   const offset = options?.offset ?? 0;
   yield* Effect.annotateCurrentSpan({
@@ -733,7 +748,7 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
         }))
     : searchable
         .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
-        .map((tool: SearchableTool) => scoreToolMatch(tool, query))
+        .map((tool: SearchableTool) => scoreToolMatch(tool, query, options?.integrationAliases))
         .filter(Predicate.isNotNull)
         .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 

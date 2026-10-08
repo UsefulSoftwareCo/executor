@@ -89,8 +89,11 @@ import { MCP_ORG_WRITE_ACCESS_HEADER } from "./seams";
 import {
   compactArguments,
   compactDescription,
+  integrationAliasText,
+  type IntegrationResolution,
   passthroughCallCode,
   passthroughInstructions,
+  resolveIntegrationAlias,
   SEARCH_INVOKE_SKILL,
 } from "./passthrough-tools";
 import type { McpToolMode } from "./browser-approval";
@@ -1269,6 +1272,32 @@ const passthroughInputSchema = (view: ToolSchemaView): unknown =>
     new Map(Object.entries(view.schemaDefinitions ?? {})),
   );
 
+/**
+ * The slugs an `integration` argument selects, and the envelope fields that
+ * tell the model how the alias resolved. An exact slug adds nothing; an alias
+ * reports the slug it became; an ambiguous alias reports every candidate and
+ * selects all of them; an unknown value stays an exact filter and adds a hint.
+ */
+const selectedIntegrations = (
+  resolution: IntegrationResolution | undefined,
+  input: string | undefined,
+): { readonly slugs: ReadonlySet<string> | null; readonly envelope: Record<string, unknown> } => {
+  if (resolution === undefined || input === undefined) return { slugs: null, envelope: {} };
+  if (resolution.kind === "exact") return { slugs: new Set([resolution.slug]), envelope: {} };
+  if (resolution.kind === "alias")
+    return { slugs: new Set([resolution.slug]), envelope: { integration: resolution.slug } };
+  if (resolution.kind === "ambiguous")
+    return { slugs: new Set(resolution.slugs), envelope: { integrations: resolution.slugs } };
+  // Keep the value as an exact filter (it may be a slug the metadata catalog
+  // does not list), and say what to do if it was a typo.
+  return {
+    slugs: new Set([input]),
+    envelope: {
+      hint: `No integration matches "${input}". Call integrations to list the connected slugs.`,
+    },
+  };
+};
+
 /** Register discovery over the existing APIs, with no catalog work at connection time. */
 const registerPassthroughTools = <E extends Cause.YieldableError>(
   server: McpServer,
@@ -1304,7 +1333,12 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
           description:
             "List connected integrations and accounts visible to you. Returns integration descriptions, account labels, exact search filters, and last recorded health (null means unchecked). One item per account; use nextOffset for more. Does not load tool schemas or check credentials.",
           inputSchema: {
-            integration: z.string().trim().min(1).optional().describe("Exact integration slug."),
+            integration: z
+              .string()
+              .trim()
+              .min(1)
+              .optional()
+              .describe("Integration slug, or an unambiguous alias such as gmail."),
             owner: z.enum(["org", "user"]).optional(),
             limit: z.number().int().min(1).max(50).default(20),
             offset: z.number().int().min(0).default(0),
@@ -1319,12 +1353,25 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                 integrations.list(),
               ]);
               const metadata = new Map(catalog.map((item) => [String(item.slug), item]));
+              const selected = selectedIntegrations(
+                integration === undefined
+                  ? undefined
+                  : resolveIntegrationAlias(
+                      integration,
+                      catalog.map((item) => ({
+                        slug: String(item.slug),
+                        name: item.name,
+                        description: item.description,
+                      })),
+                    ),
+                integration,
+              );
               const visible = accounts
                 .flatMap((account) => {
                   const item = metadata.get(account.integration);
                   if (
                     !item ||
-                    (integration !== undefined && account.integration !== integration) ||
+                    (selected.slugs !== null && !selected.slugs.has(account.integration)) ||
                     (owner !== undefined && account.owner !== owner)
                   )
                     return [];
@@ -1360,6 +1407,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                 total: visible.length,
                 hasMore,
                 nextOffset: hasMore ? offset + items.length : null,
+                ...selected.envelope,
               };
               return {
                 content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -1386,7 +1434,9 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
               .trim()
               .min(1)
               .optional()
-              .describe("Exact integration slug from integrations."),
+              .describe(
+                "Integration slug from integrations, or an unambiguous alias such as gmail (resolved slug is returned as integration).",
+              ),
             owner: z.enum(["org", "user"]).optional(),
             connection: z
               .string()
@@ -1410,24 +1460,55 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
         ({ query, integration, owner, connection, limit, offset, detail }, extra) =>
           boundary(
             Effect.gen(function* () {
+              // Catalog metadata is cheap and lets `integration` accept the
+              // name a person would use ("gmail" → google_gmail) and lets
+              // query words that name an integration rank its tools.
+              const catalog = (yield* integrations.list()).map((item) => ({
+                slug: String(item.slug),
+                name: item.name,
+                description: item.description,
+              }));
+              const selected = selectedIntegrations(
+                integration === undefined
+                  ? undefined
+                  : resolveIntegrationAlias(integration, catalog),
+                integration,
+              );
+              // One slug narrows the list read itself (the fast path); several
+              // candidates read the whole visible catalog once and keep theirs.
+              const exactSlug =
+                selected.slugs !== null && selected.slugs.size === 1
+                  ? [...selected.slugs][0]
+                  : undefined;
               const discovery = {
                 tools: {
                   list: (filter?: Parameters<McpToolsPort["list"]>[0]) =>
                     tools
                       .list({
                         ...filter,
-                        ...(integration === undefined
+                        ...(exactSlug === undefined
                           ? {}
-                          : { integration: IntegrationSlug.make(integration) }),
+                          : { integration: IntegrationSlug.make(exactSlug) }),
                         ...(owner === undefined ? {} : { owner }),
                         ...(connection === undefined
                           ? {}
                           : { connection: ConnectionName.make(connection) }),
                       })
-                      .pipe(Effect.map((items) => items.filter((tool) => tool.static !== true))),
+                      .pipe(
+                        Effect.map((items) =>
+                          items.filter(
+                            (tool) =>
+                              tool.static !== true &&
+                              (selected.slugs === null || selected.slugs.has(tool.integration)),
+                          ),
+                        ),
+                      ),
                 },
               };
-              const page = yield* searchTools(discovery, query, limit, { offset });
+              const page = yield* searchTools(discovery, query, limit, {
+                offset,
+                integrationAliases: integrationAliasText(catalog),
+              });
               const candidates = yield* Effect.forEach(
                 page.items,
                 (match) =>
@@ -1469,7 +1550,11 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                   }),
                 { concurrency: 4 },
               );
-              const result = { ...page, items: candidates.filter(Predicate.isNotNull) };
+              const result = {
+                ...page,
+                items: candidates.filter(Predicate.isNotNull),
+                ...selected.envelope,
+              };
               return {
                 content: [{ type: "text" as const, text: JSON.stringify(result) }],
                 structuredContent: result,
