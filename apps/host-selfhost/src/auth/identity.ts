@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect";
 
 import { IdentityProvider, NoOrganization, Unauthorized } from "@executor-js/api/server";
 
+import { bearerShapeMemoFor, bearerTokenOf } from "./bearer-shape";
 import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 import { findInstanceMembership, type InstanceOrgRole } from "./membership";
 
@@ -19,14 +20,6 @@ import { findInstanceMembership, type InstanceOrgRole } from "./membership";
 // `betterAuthIdentityLayer` is the only production provider. The trivial fake
 // identities tests inject live in `src/testing/test-app.ts`.
 // ---------------------------------------------------------------------------
-
-const bearerToken = (headers: Headers): string | undefined => {
-  const authorization = headers.get("authorization");
-  if (!authorization) return undefined;
-  return authorization.toLowerCase().startsWith("bearer ")
-    ? authorization.slice(7).trim() || undefined
-    : undefined;
-};
 
 /**
  * Require the caller's CURRENT membership in the self-host instance
@@ -56,6 +49,9 @@ export const requireInstanceMembership = (
 //     resolution fails we retry with the Bearer value as x-api-key, which (with
 //     enableSessionForAPIKeys) mints the owner's session. This is what lets a
 //     generated API key authenticate the API + MCP endpoint as a Bearer token.
+//     A bearer that last resolved this way is remembered (./bearer-shape) and
+//     tried as an API key first next time, skipping the session lookup that
+//     cannot match it; the key is still verified on every request.
 // Single-org instance, so organizationName is the boot-cached org name.
 // ---------------------------------------------------------------------------
 
@@ -64,21 +60,41 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
     Effect.gen(function* () {
       const betterAuth = yield* BetterAuth;
       const { auth, organizationId, organizationName, organizationSlug } = betterAuth;
+      const bearerShapes = bearerShapeMemoFor(auth);
+
+      type Resolved = Awaited<ReturnType<typeof auth.api.getSession>>;
+      const sessionFor = (headers: Headers): Effect.Effect<Resolved> =>
+        Effect.promise(() => auth.api.getSession({ headers })).pipe(
+          Effect.withSpan("selfhost.identity.session"),
+        );
+      const apiKeySessionFor = (token: string): Effect.Effect<Resolved> =>
+        Effect.tryPromise({
+          try: () => auth.api.getSession({ headers: { "x-api-key": token } }),
+          catch: () => "api-key session lookup failed",
+        }).pipe(
+          Effect.orElseSucceed(() => null),
+          Effect.tap((resolved) =>
+            Effect.sync(() => {
+              if (resolved) bearerShapes.rememberApiKey(token);
+              else bearerShapes.forget(token);
+            }),
+          ),
+          Effect.withSpan("selfhost.identity.api_key_session"),
+        );
+
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
-            let resolved = yield* Effect.promise(() =>
-              auth.api.getSession({ headers: request.headers }),
-            );
-            if (!resolved) {
-              const token = bearerToken(request.headers);
-              if (token) {
-                resolved = yield* Effect.tryPromise({
-                  try: () => auth.api.getSession({ headers: { "x-api-key": token } }),
-                  catch: () => "api-key session lookup failed",
-                }).pipe(Effect.orElseSucceed(() => null));
-              }
-            }
+            const token = bearerTokenOf(request.headers);
+            // A bearer that last resolved as an API key goes straight to the
+            // key lookup. Should the key no longer resolve, the memo forgets
+            // it and the full order below runs unchanged.
+            let resolved: Resolved =
+              token !== undefined && bearerShapes.isApiKey(token)
+                ? yield* apiKeySessionFor(token)
+                : null;
+            if (!resolved) resolved = yield* sessionFor(request.headers);
+            if (!resolved && token !== undefined) resolved = yield* apiKeySessionFor(token);
             // No session resolved from any credential shape -> unauthenticated.
             // The middleware's failure strategy renders this as a 401.
             if (!resolved) return yield* new Unauthorized();
@@ -99,7 +115,7 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
               betterAuth,
               resolved.user.id,
               resolvedOrganizationId,
-            );
+            ).pipe(Effect.withSpan("selfhost.identity.org_role"));
             return {
               kind: "member" as const,
               accountId: resolved.user.id,

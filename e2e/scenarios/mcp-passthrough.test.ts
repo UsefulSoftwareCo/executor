@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage } from "node:http";
 
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import { HttpClient } from "effect/unstable/http";
 import { composePluginApi } from "@executor-js/api/server";
 import { openApiHttpPlugin } from "@executor-js/plugin-openapi/api";
 import {
@@ -149,9 +150,9 @@ const rawResultOf = (result: { readonly raw: unknown }) =>
     isError?: boolean;
   };
 
-const passthroughJourney = (
-  verifyCredentialHeader: (actual: string | undefined, expected: string) => void,
-) =>
+scenario(
+  "Passthrough · a session connected with mode=passthrough serves search and invoke with schemas and enforced blocks",
+  { timeout: 180_000 },
   Effect.scoped(
     Effect.gen(function* () {
       const target = yield* Target;
@@ -356,13 +357,27 @@ const passthroughJourney = (
           ).structuredContent;
           expect(other.items.some((tool) => tool.integration === otherSlug)).toBe(true);
 
+          // A local port probe can GET / before invoke. Keep such a request in
+          // the ledger so selecting the first GET reproduces #22 every run.
+          yield* HttpClient.get(upstream.url).pipe(Effect.flatMap((response) => response.text));
+          expect(upstream.requests).toContainEqual({
+            method: "GET",
+            path: "/",
+            authorization: undefined,
+            body: "",
+          });
+
           // --- A read call reaches the upstream with the connection's credential. ---
           const listed = yield* passthrough.call("invoke", { tool: listTool, arguments: {} });
           expect(listed.ok, `the read call completes: ${listed.text}`).toBe(true);
           expect(listed.text, "the upstream payload comes back").toContain("existing");
-          const listReq = upstream.requests.find((r) => r.method === "GET");
-          expect(listReq, "the GET reached the upstream").toBeDefined();
-          verifyCredentialHeader(listReq?.authorization, `Bearer tok_${slug}`);
+          const listRequests = upstream.requests.filter(
+            (r) => r.method === "GET" && r.path === "/notes",
+          );
+          expect(listRequests, "one GET /notes reached the upstream").toHaveLength(1);
+          expect(listRequests[0]?.authorization, "the connection's credential was applied").toBe(
+            `Bearer tok_${slug}`,
+          );
 
           // --- An approval-gated call runs to completion: no pause, no resume. ---
           const created = yield* passthrough.call("invoke", {
@@ -374,7 +389,9 @@ const passthroughJourney = (
           );
           expect(created.text, "the call did not pause").not.toContain("Execution paused");
           expect(created.text, "the call did not ask for a resume").not.toContain("executionId");
-          const createReq = upstream.requests.find((r) => r.method === "POST");
+          const createReq = upstream.requests.find(
+            (r) => r.method === "POST" && r.path === "/notes",
+          );
           expect(createReq, "the POST reached the upstream").toBeDefined();
           expect(createReq?.body, "the JSON body went over the wire").toContain('"text":"hello"');
           expect(
@@ -443,24 +460,5 @@ const passthroughJourney = (
         }),
       );
     }),
-  );
-
-scenario(
-  "Passthrough · a session connected with mode=passthrough serves search and invoke with schemas and enforced blocks",
-  { timeout: 180_000 },
-  passthroughJourney(() => {
-    // Only the credential-header assertion is quarantined below. All other
-    // discovery, payload, approval, validation and policy assertions still run.
-  }),
-);
-
-scenario(
-  "Passthrough · credential header [QUARANTINED #22]",
-  {
-    timeout: 180_000,
-    skip: "Credential-header assertion flake: https://github.com/justcarlson/executor/issues/22",
-  },
-  passthroughJourney((actual, expected) => {
-    expect(actual, "the connection's credential was applied").toBe(expected);
-  }),
+  ),
 );
