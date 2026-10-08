@@ -20,6 +20,7 @@ import {
   type InProcessBrowserApprovalStore,
 } from "./browser-approval-store";
 import { jsonRpcErrorBody, preInitializeMethodNotFound } from "./envelope";
+import { serverInitiatedMessagesPossible, standaloneStreamNotOffered } from "./standalone-stream";
 import {
   McpSessionStore,
   MCP_ORG_WRITE_ACCESS_HEADER,
@@ -396,6 +397,15 @@ export const makeInMemoryMcpSessionStore = (
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
     owners.set(sessionId, { principal, resource });
     touch(sessionId);
+    // A standalone stream this client can never hear anything on is refused
+    // with 405 (see ./standalone-stream) rather than held open for nothing.
+    // Checked after ownership so a foreign bearer still gets its 403.
+    if (
+      request.method === "GET" &&
+      !serverInitiatedMessagesPossible(servers.get(sessionId)?.server.getClientCapabilities())
+    ) {
+      return Effect.succeed(standaloneStreamNotOffered());
+    }
     // Claim before the await, release in the finalizer — `runHandleRequest`
     // already recovers every failure to a 500, but `ensuring` also covers an
     // interrupt, so the counter cannot be left permanently raised (which would

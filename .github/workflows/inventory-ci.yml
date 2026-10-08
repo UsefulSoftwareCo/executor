@@ -100,8 +100,41 @@ jobs:
           bunx playwright install --with-deps chromium
           echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$(bun -e 'import { chromium } from "playwright"; console.log(chromium.executablePath())')" >> "$GITHUB_ENV"
       - run: ${{ matrix.command }}
-      - name: Report quarantined assertion
+
+  passthrough:
+    name: Inventory Passthrough e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-inventory-bun-${{ hashFiles('bun.lock', 'package.json', 'patches/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-inventory-bun-
+      - run: bun install --frozen-lockfile
+      - run: bun run check:patches
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-inventory-playwright-${{ hashFiles('bun.lock') }}
+      - name: Install Chromium
+        working-directory: e2e
+        run: bunx playwright install --with-deps chromium
+      - name: Run passthrough journey with credential assertion
+        working-directory: e2e
+        run: bunx vitest run --project selfhost scenarios/mcp-passthrough.test.ts
+      - name: Upload passthrough evidence
         if: always()
-        run: |
-          echo '::notice title=Quarantined e2e assertion::Passthrough credential header: https://github.com/justcarlson/executor/issues/22'
-          echo 'The passthrough credential-header e2e assertion is quarantined in [#22](https://github.com/justcarlson/executor/issues/22). Core and host credential tests remain enabled.' >> "$GITHUB_STEP_SUMMARY"
+        uses: actions/upload-artifact@v4
+        with:
+          name: inventory-passthrough-e2e
+          path: e2e/runs/selfhost/
+          retention-days: 7

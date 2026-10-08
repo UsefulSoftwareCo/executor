@@ -359,7 +359,11 @@ const mcpDispatch = (resource: McpResource) =>
     // request. Non-authenticated outcomes render directly. Session teardown is
     // only safe after the store can validate the authenticated principal and MCP
     // resource; an auth-level Forbidden may not carry either.
-    const outcome = yield* auth.authenticate(request);
+    const outcome = yield* auth.authenticate(request).pipe(
+      Effect.withSpan("mcp.envelope.authenticate", {
+        attributes: { "http.method": request.method },
+      }),
+    );
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       return fromWebResponse(renderAuthError(auth, request, outcome));
     }
