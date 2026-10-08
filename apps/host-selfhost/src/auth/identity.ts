@@ -1,10 +1,10 @@
 import { Effect, Layer } from "effect";
 
-import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
+import { IdentityProvider, NoOrganization, Unauthorized } from "@executor-js/api/server";
 
-import { isPrivileged } from "../admin/require-admin";
 import { bearerShapeMemoFor, bearerTokenOf } from "./bearer-shape";
 import { BetterAuth, type BetterAuthHandle } from "./better-auth";
+import { findInstanceMembership, type InstanceOrgRole } from "./membership";
 
 // ---------------------------------------------------------------------------
 // The self-host identity seam — the production implementation of the shared
@@ -22,38 +22,21 @@ import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve workspace-write authority from the caller's current membership in
- * the self-host instance organization. Both ordinary API/MCP requests and the
- * browser-decision adapter use this exact lookup so a role change takes effect
- * at the mutation decision, without trusting the global Better Auth user role.
- * Lookup failures fail closed to member authority.
- *
- * This reads the `member` row directly — the same row, by the same
- * `(userId, organizationId)` key, that the organization plugin's
- * `getActiveMemberRole` endpoint answers from. That endpoint sits behind the
- * session middleware, so calling it with the request's credential verified
- * the credential a second time on every request: for an API key, a second
- * hash, lookup and `lastRequest` write. The caller already holds the
- * authenticated user id, so the row is read once and the credential once.
+ * Require the caller's CURRENT membership in the self-host instance
+ * organization and resolve workspace-write authority from it. Ordinary
+ * API/MCP requests and the browser-decision adapter use this exact lookup, so
+ * removing a member denies their next request and a role change takes effect
+ * at the next mutation decision, without trusting the global Better Auth user
+ * role. A missing row — and a lookup failure — fails `NoOrganization` (403).
  */
-export const resolveSelfHostOrgRole = (
+export const requireInstanceMembership = (
   betterAuth: BetterAuthHandle,
   userId: string,
   organizationId: string,
-): Effect.Effect<"admin" | "member"> =>
-  Effect.tryPromise(async () => {
-    const context = await betterAuth.auth.$context;
-    return context.adapter.findOne<{ readonly role?: string | null }>({
-      model: "member",
-      where: [
-        { field: "userId", value: userId },
-        { field: "organizationId", value: organizationId },
-      ],
-    });
-  }).pipe(
-    Effect.orElseSucceed(() => null),
-    Effect.map((membership) =>
-      membership?.role != null && isPrivileged(membership.role) ? "admin" : "member",
+): Effect.Effect<InstanceOrgRole, NoOrganization> =>
+  findInstanceMembership(betterAuth, userId, organizationId).pipe(
+    Effect.flatMap((membership) =>
+      membership ? Effect.succeed(membership.role) : Effect.fail(new NoOrganization()),
     ),
   );
 
@@ -118,14 +101,17 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // Single-org instance: every authenticated user belongs to the one
             // seeded org. Cookie/bearer-session logins are pinned to it by the
             // session hook; API-key-minted sessions carry no active org, so we
-            // default to the seeded org rather than rejecting with NoOrganization.
+            // default to the seeded org. Whether the user STILL belongs to it
+            // is decided below, on every request.
             const resolvedOrganizationId = resolved.session.activeOrganizationId ?? organizationId;
-            // The workspace role, resolved against the INSTANCE org exactly as
-            // the admin gate does (require-admin.ts): the explicit
-            // `organizationId` query keeps a caller-controlled active org from
-            // answering for an org they own elsewhere. FAIL CLOSED to "member"
-            // — an infra fault demotes rather than escalates.
-            const orgRole = yield* resolveSelfHostOrgRole(
+            // The credential names a user; the member row names a member. A
+            // user with no row in the INSTANCE org (removed, or never added) is
+            // refused with NoOrganization (403) — a removed member loses API
+            // and MCP access on their next request, whichever credential they
+            // hold. The workspace role comes from the same row, resolved
+            // against the instance org exactly as the admin gate does
+            // (require-admin.ts). Lookup failures fail closed to a refusal.
+            const orgRole = yield* requireInstanceMembership(
               betterAuth,
               resolved.user.id,
               resolvedOrganizationId,

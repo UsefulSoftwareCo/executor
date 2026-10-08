@@ -9,7 +9,7 @@ import type {
 } from "@executor-js/host-mcp";
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
-import { resolveSelfHostOrgRole } from "../auth/identity";
+import { requireInstanceMembership } from "../auth/identity";
 import type { SelfHostDbHandle } from "../db/self-host-db";
 import type { SelfHostConfig } from "../config";
 import { selfHostMcpAuth } from "./auth";
@@ -87,20 +87,27 @@ type BetterAuthSession = NonNullable<
 const principalFromSession = (
   resolved: BetterAuthSession,
   betterAuth: BetterAuthHandle,
-): Effect.Effect<Principal> => {
+): Effect.Effect<Principal | null> => {
   const organizationId = resolved.session.activeOrganizationId ?? betterAuth.organizationId;
-  return resolveSelfHostOrgRole(betterAuth, resolved.user.id, organizationId).pipe(
-    Effect.map((orgRole) => ({
-      accountId: resolved.user.id,
-      organizationId,
-      organizationName: betterAuth.organizationName,
-      email: resolved.user.email,
-      name: resolved.user.name ?? null,
-      avatarUrl: resolved.user.image ?? null,
-      roles: parseRoles(resolved.user.role ?? null),
-      orgRoleModel: "organization" as const,
-      orgRole,
-    })),
+  // A session names a user; the member row names a member. A removed member's
+  // session must not reach a paused execution or record an approval decision.
+  return requireInstanceMembership(betterAuth, resolved.user.id, organizationId).pipe(
+    Effect.catchTag("NoOrganization", () => Effect.succeed(null)),
+    Effect.map((orgRole) =>
+      orgRole === null
+        ? null
+        : ({
+            accountId: resolved.user.id,
+            organizationId,
+            organizationName: betterAuth.organizationName,
+            email: resolved.user.email,
+            name: resolved.user.name ?? null,
+            avatarUrl: resolved.user.image ?? null,
+            roles: parseRoles(resolved.user.role ?? null),
+            orgRoleModel: "organization" as const,
+            orgRole,
+          } satisfies Principal),
+    ),
   );
 };
 
@@ -126,6 +133,7 @@ const makeApprovalHandler =
     );
     if (!session) return jsonResponse({ error: "Unauthorized" }, 401);
     const principal = await Effect.runPromise(principalFromSession(session, betterAuth));
+    if (!principal) return jsonResponse({ error: "Forbidden" }, 403);
 
     return (
       (await store.handlePausedRequest(request, principal)) ??
