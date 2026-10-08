@@ -400,19 +400,35 @@ describe("formatExecuteResult output identity", () => {
       status: "completed",
       result: { issues: [] },
       toolName: "linear.org.work.issues.list",
+      toolPaths: ["linear.org.work.issues.list"],
       logs: [],
     });
   });
 
-  it("omits a tool name when distinct connected tools were used", () => {
+  it("omits a tool name but lists distinct paths in first-call order when several tools were used", () => {
     const result = {
       result: { issues: [], projects: [] },
       logs: [],
-      toolPaths: ["linear.org.work.issues.list", "linear.org.work.projects.list"],
+      toolPaths: [
+        "linear.org.work.projects.list",
+        "linear.org.work.issues.list",
+        "linear.org.work.projects.list",
+      ],
     } as ExecuteResult & { readonly toolPaths: readonly string[] };
 
     const formatted = formatExecuteResult(result);
 
+    expect(formatted.structured).not.toHaveProperty("toolName");
+    expect(formatted.structured["toolPaths"]).toEqual([
+      "linear.org.work.projects.list",
+      "linear.org.work.issues.list",
+    ]);
+  });
+
+  it("omits tool paths when no connected tool was called", () => {
+    const formatted = formatExecuteResult({ result: 1, logs: [], toolPaths: [] });
+
+    expect(formatted.structured).not.toHaveProperty("toolPaths");
     expect(formatted.structured).not.toHaveProperty("toolName");
   });
 

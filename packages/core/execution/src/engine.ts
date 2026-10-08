@@ -147,10 +147,13 @@ const truncate = (value: string, max: number): string =>
     ? `${value.slice(0, max)}\n... [truncated ${value.length - max} chars]`
     : value;
 
-const soleConnectedToolName = (toolPaths: readonly string[] | undefined): string | undefined => {
-  const names = [...new Set(toolPaths ?? [])];
-  return names.length === 1 ? names[0] : undefined;
-};
+/** Distinct connected tool paths in first-call order; never the call trace. */
+const distinctConnectedToolPaths = (toolPaths: readonly string[] | undefined): string[] => [
+  ...new Set(toolPaths ?? []),
+];
+
+const soleConnectedToolName = (toolPaths: readonly string[]): string | undefined =>
+  toolPaths.length === 1 ? toolPaths[0] : undefined;
 
 export const formatExecuteResult = (
   result: ExecuteResult,
@@ -197,13 +200,15 @@ export const formatExecuteResult = (
       ? `(no return value; ${emittedNote})`
       : "(no result)";
   const parts = [resultPart, ...(logText ? [`\nLogs:\n${logText}`] : [])];
-  const toolName = soleConnectedToolName(result.toolPaths);
+  const toolPaths = distinctConnectedToolPaths(result.toolPaths);
+  const toolName = soleConnectedToolName(toolPaths);
   return {
     text: parts.join("\n"),
     structured: {
       status: "completed",
       result: result.result ?? null,
       ...(toolName ? { toolName } : {}),
+      ...(toolPaths.length > 0 ? { toolPaths } : {}),
       ...emittedField,
       logs: result.logs ?? [],
     },

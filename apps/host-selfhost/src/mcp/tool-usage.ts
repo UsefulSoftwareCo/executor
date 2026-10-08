@@ -11,26 +11,51 @@ import { TOOL_USAGE_MAX_PENDING, type ToolUsageEvent } from "./tool-usage-store"
 type Attempt = Omit<ToolUsageEvent, "status" | "durationMs" | "responseBytes"> & {
   readonly started: number;
 };
-const trackedTools = new Set(["search", "invoke", "integrations", "skills"]);
+const trackedTools = new Set(["search", "invoke", "integrations", "skills", "execute"]);
 const unavailable = "Tool not found or blocked by policy. Search for an available tool.";
 
+/** Distinct connected tools counted per execution; the rest of a longer list is not retained. */
+export const USAGE_EXECUTE_MAX_TARGETS = 32;
+
+type UsageTarget = { readonly targetTool: string | null; readonly integrationSlug: string | null };
+const noTarget: UsageTarget = { targetTool: null, integrationSlug: null };
+
 /** Addresses contain identifiers only; malformed values are never retained. */
-export const usageTarget = (
-  value: unknown,
-): { targetTool: string | null; integrationSlug: string | null } => {
-  if (typeof value !== "string" || value.length > 512)
-    return { targetTool: null, integrationSlug: null };
+export const usageTarget = (value: unknown): UsageTarget => {
+  if (typeof value !== "string" || value.length > 512) return noTarget;
   const canonical = value.startsWith("tools.") ? value : `tools.${value}`;
   const match =
     /^tools\.([a-zA-Z0-9_-]{1,64})\.(?:org|user)\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_.-]+$/.exec(canonical);
   return match && canonical.length <= 512
     ? { targetTool: canonical, integrationSlug: match[1]! }
-    : { targetTool: null, integrationSlug: null };
+    : noTarget;
 };
 
 const trafficClass = (extra?: MessageExtraInfo): ToolUsageEvent["trafficClass"] => {
   const value = extra?.requestInfo?.headers["x-executor-traffic-class"];
   return value === "benchmark" || value === "monitor" ? value : "agent";
+};
+
+/**
+ * Connected tools a sandbox execution called, read only from the structured
+ * `toolPaths` identifiers the engine already returns; never code, arguments,
+ * logs or results. Malformed entries are skipped; the list is deduplicated and
+ * capped. Empty when the execution called no tool or the shape is unexpected.
+ */
+export const usageExecuteTargets = (message: JSONRPCMessage): UsageTarget[] => {
+  if (!("result" in message)) return [];
+  const structured = message.result.structuredContent;
+  if (typeof structured !== "object" || structured === null || !("toolPaths" in structured))
+    return [];
+  const paths = structured.toolPaths;
+  if (!Array.isArray(paths)) return [];
+  const targets = new Map<string, UsageTarget>();
+  for (const path of paths) {
+    if (targets.size >= USAGE_EXECUTE_MAX_TARGETS) break;
+    const target = usageTarget(path);
+    if (target.targetTool !== null) targets.set(target.targetTool, target);
+  }
+  return [...targets.values()];
 };
 
 export const usageStatus = (message: JSONRPCMessage): ToolUsageEvent["status"] => {
@@ -72,21 +97,31 @@ export const observeToolUsageTransport = (
   onDrop: () => void = () => {},
 ): void => {
   const attempts = new Map<RequestId, Attempt>();
-  const complete = (id: RequestId, status: ToolUsageEvent["status"], responseBytes: number) => {
+  // An execute call records one event per distinct connected tool it called,
+  // each carrying the whole execution's status, duration and response size.
+  const complete = (
+    id: RequestId,
+    status: ToolUsageEvent["status"],
+    responseBytes: number,
+    targets: readonly UsageTarget[] = [],
+  ) => {
     const attempt = attempts.get(id);
     if (!attempt) return;
     attempts.delete(id);
-    record({
-      timestampMs: attempt.timestampMs,
-      memberHash: attempt.memberHash,
-      mcpTool: attempt.mcpTool,
-      targetTool: attempt.targetTool,
-      integrationSlug: attempt.integrationSlug,
-      trafficClass: attempt.trafficClass,
-      status,
-      durationMs: Math.max(0, performance.now() - attempt.started),
-      responseBytes,
-    });
+    const durationMs = Math.max(0, performance.now() - attempt.started);
+    for (const target of targets.length > 0 ? targets : [attempt]) {
+      record({
+        timestampMs: attempt.timestampMs,
+        memberHash: attempt.memberHash,
+        mcpTool: attempt.mcpTool,
+        targetTool: target.targetTool,
+        integrationSlug: target.integrationSlug,
+        trafficClass: attempt.trafficClass,
+        status,
+        durationMs,
+        responseBytes,
+      });
+    }
   };
   const start = transport.start.bind(transport);
   transport.start = async () => {
@@ -105,7 +140,7 @@ export const observeToolUsageTransport = (
         const target =
           tool === "invoke" && typeof args === "object" && args !== null && "tool" in args
             ? usageTarget(args.tool)
-            : { targetTool: null, integrationSlug: null };
+            : noTarget;
         // Drop incomplete observations rather than invent a completion status.
         if (attempts.size >= TOOL_USAGE_MAX_PENDING) {
           attempts.delete(attempts.keys().next().value!);
@@ -126,14 +161,12 @@ export const observeToolUsageTransport = (
   };
   const send = transport.send.bind(transport);
   transport.send = async (message, options) => {
-    if (
-      !("id" in message) ||
-      message.id === undefined ||
-      "method" in message ||
-      !attempts.has(message.id)
-    )
+    if (!("id" in message) || message.id === undefined || "method" in message)
       return send(message, options);
+    const attempt = attempts.get(message.id);
+    if (!attempt) return send(message, options);
     let status = usageStatus(message);
+    const targets = attempt.mcpTool === "execute" ? usageExecuteTargets(message) : [];
     let bytes = 0;
     // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: metrics sizing must never alter SDK results, even for non-serializable responses
     try {
@@ -149,7 +182,7 @@ export const observeToolUsageTransport = (
       // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: preserve the original SDK transport rejection
       throw error;
     } finally {
-      complete(message.id, status, bytes);
+      complete(message.id, status, bytes, targets);
     }
   };
   const close = transport.onclose;

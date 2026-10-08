@@ -8,7 +8,7 @@ export const TOOL_USAGE_MAX_PENDING = 1024;
 export interface ToolUsageEvent {
   readonly timestampMs: number;
   readonly memberHash: string;
-  readonly mcpTool: "search" | "invoke" | "integrations" | "skills";
+  readonly mcpTool: "search" | "invoke" | "integrations" | "skills" | "execute";
   readonly targetTool: string | null;
   readonly integrationSlug: string | null;
   readonly trafficClass: "agent" | "benchmark" | "monitor";
@@ -47,21 +47,49 @@ export const usageRetention = (now: number, maxEvents = TOOL_USAGE_MAX_EVENTS): 
   },
 ];
 
-export const initializeToolUsage = async (client: Client): Promise<string> => {
-  await client.batch(
-    [
-      `CREATE TABLE IF NOT EXISTS executor_tool_usage (
+const USAGE_COLUMNS =
+  "id, timestamp_ms, member_hash, mcp_tool, target_tool, integration_slug, traffic_class, status, duration_ms, response_bytes";
+
+const usageTableDefinition = (name: string): string => `CREATE TABLE IF NOT EXISTS ${name} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp_ms INTEGER NOT NULL,
       member_hash TEXT NOT NULL,
-      mcp_tool TEXT NOT NULL CHECK (mcp_tool IN ('search','invoke','integrations','skills')),
+      mcp_tool TEXT NOT NULL CHECK (mcp_tool IN ('search','invoke','integrations','skills','execute')),
       target_tool TEXT CHECK (length(target_tool) <= 512),
       integration_slug TEXT CHECK (length(integration_slug) <= 64),
       traffic_class TEXT NOT NULL CHECK (traffic_class IN ('agent','benchmark','monitor')),
       status TEXT NOT NULL CHECK (status IN ('ok','error','blocked')),
       duration_ms REAL NOT NULL CHECK (duration_ms >= 0),
       response_bytes INTEGER NOT NULL CHECK (response_bytes >= 0)
-    )`,
+    )`;
+
+/**
+ * One-time rebuild for tables created before `execute` joined the `mcp_tool`
+ * CHECK. SQLite cannot alter a CHECK in place, so copy every row (ids kept)
+ * into a table with the current definition and swap it in. The state table
+ * and its salt are untouched. Runs inside the initialization write batch.
+ */
+const usageMigration = async (client: Client): Promise<string[]> => {
+  const existing = await client.execute({
+    sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'executor_tool_usage'",
+    args: [],
+  });
+  const definition = existing.rows[0]?.sql;
+  if (typeof definition !== "string" || definition.includes("'execute'")) return [];
+  return [
+    usageTableDefinition("executor_tool_usage_new"),
+    `INSERT INTO executor_tool_usage_new (${USAGE_COLUMNS})
+      SELECT ${USAGE_COLUMNS} FROM executor_tool_usage ORDER BY id`,
+    "DROP TABLE executor_tool_usage",
+    "ALTER TABLE executor_tool_usage_new RENAME TO executor_tool_usage",
+  ];
+};
+
+export const initializeToolUsage = async (client: Client): Promise<string> => {
+  await client.batch(
+    [
+      ...(await usageMigration(client)),
+      usageTableDefinition("executor_tool_usage"),
       "CREATE INDEX IF NOT EXISTS executor_tool_usage_time ON executor_tool_usage(timestamp_ms)",
       `CREATE TABLE IF NOT EXISTS executor_tool_usage_state (
       id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL,

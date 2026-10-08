@@ -14,7 +14,9 @@ const summaryQuery = (
   const columns =
     dimension === "tool" ? "mcp_tool, target_tool, integration_slug" : "integration_slug";
   const filter =
-    dimension === "integration" ? "AND mcp_tool = 'invoke' AND integration_slug IS NOT NULL" : "";
+    dimension === "integration"
+      ? "AND mcp_tool IN ('invoke','execute') AND integration_slug IS NOT NULL"
+      : "";
   return {
     sql: `WITH ranked AS (
       SELECT ${columns}, status, duration_ms, response_bytes,
@@ -38,7 +40,7 @@ const summaryQuery = (
 export const toolUsageSummaryQuery = (window: ToolUsageWindow): Exclude<InStatement, string> =>
   summaryQuery(window, "tool");
 
-/** Combine all attempted invoke targets for each integration. */
+/** Combine all attempted invoke and sandbox execute targets for each integration. */
 export const integrationUsageSummaryQuery = (
   window: ToolUsageWindow,
 ): Exclude<InStatement, string> => summaryQuery(window, "integration");

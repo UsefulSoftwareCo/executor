@@ -1,9 +1,12 @@
 # Tool usage metrics
 
-Self-host records authenticated `search`, `invoke`, `integrations`, and `skills`
-MCP calls. Every repeated call counts, including validation errors and denied
-invokes. This does not instrument tools called inside codemode `execute`, other
-hosts, unauthenticated requests, or calls rejected before MCP tool dispatch.
+Self-host records authenticated `search`, `invoke`, `integrations`, `skills`,
+and `execute` MCP calls. Every repeated call counts, including validation
+errors and denied invokes. An `execute` call records one row per distinct
+connected tool the sandbox code called successfully (or one row with no target
+when it called none); its duration and response bytes are those of the whole
+execution, not of each tool. This does not instrument other hosts,
+unauthenticated requests, or calls rejected before MCP tool dispatch.
 
 Each event has the call-start timestamp in milliseconds, an HMAC-SHA256 member
 pseudonym scoped to its organization, MCP tool name, canonical invoke target,
@@ -54,7 +57,7 @@ The CLI opens SQLite read-only. It emits JSON with top tools and integrations ra
 status counts, nearest-rank p50/p95 duration, and total response bytes for the
 half-open time window. It also reports retention limits, oldest/newest retained
 timestamps, and cumulative loss counters. It omits member pseudonyms. The
-default window is seven days; `--traffic all` includes probes. Integration ranks combine invoke targets by integration slug to rank adapters. Only retained events can be summarized.
+default window is seven days; `--traffic all` includes probes. Integration ranks combine invoke and execute targets by integration slug to rank adapters. Only retained events can be summarized.
 
 Measure request overhead locally:
 

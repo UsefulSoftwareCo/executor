@@ -7,6 +7,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   observeToolUsageServer,
   observeToolUsageTransport,
+  USAGE_EXECUTE_MAX_TARGETS,
+  usageExecuteTargets,
   usageTarget,
   usageStatus,
 } from "./tool-usage";
@@ -191,6 +193,95 @@ describe("tool usage MCP boundary", () => {
         },
       }),
     ).toBe("blocked");
+  });
+
+  it("records one execute event per distinct connected tool, or one without a target", async () => {
+    const events: ToolUsageEvent[] = [];
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    const request = (id: number): JSONRPCMessage => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "execute", arguments: { code: "code-secret" } },
+    });
+    transport.onmessage!(request(1));
+    transport.onmessage!(request(2));
+    transport.onmessage!(request(3));
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        content: [{ type: "text", text: "result-secret" }],
+        structuredContent: {
+          status: "completed",
+          result: "result-secret",
+          toolPaths: [
+            "sample.org.test.read",
+            "tools.other.user.mine.write",
+            "sample.org.test.read",
+            "bearer secret@example.test",
+            7,
+          ],
+          logs: ["log-secret"],
+        },
+      },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { content: [], structuredContent: { status: "completed", result: 42, logs: [] } },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        isError: true,
+        content: [{ type: "text", text: "Error: error-secret" }],
+        structuredContent: { status: "error", error: "error-secret", logs: [] },
+      },
+    });
+    expect(
+      events.map((event) => [event.mcpTool, event.targetTool, event.integrationSlug, event.status]),
+    ).toEqual([
+      ["execute", "tools.sample.org.test.read", "sample", "ok"],
+      ["execute", "tools.other.user.mine.write", "other", "ok"],
+      ["execute", null, null, "ok"],
+      ["execute", null, null, "error"],
+    ]);
+    expect(events[0]!.durationMs).toBe(events[1]!.durationMs);
+    expect(events[0]!.responseBytes).toBe(events[1]!.responseBytes);
+    expect(events[0]!.responseBytes).toBeGreaterThan(0);
+    expect(JSON.stringify(events)).not.toMatch(/code-secret|result-secret|log-secret|error-secret/);
+  });
+
+  it("caps execute targets and ignores unexpected shapes", () => {
+    const many = Array.from(
+      { length: USAGE_EXECUTE_MAX_TARGETS + 5 },
+      (_, index) => `sample.org.test.read${index}`,
+    );
+    expect(
+      usageExecuteTargets({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [], structuredContent: { toolPaths: many } },
+      }),
+    ).toHaveLength(USAGE_EXECUTE_MAX_TARGETS);
+    expect(
+      usageExecuteTargets({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [], structuredContent: { toolPaths: "sample.org.test.read" } },
+      }),
+    ).toEqual([]);
+    expect(
+      usageExecuteTargets({ jsonrpc: "2.0", id: 1, error: { code: -32603, message: "x" } }),
+    ).toEqual([]);
   });
 
   it("does not retain malformed target values", () => {
