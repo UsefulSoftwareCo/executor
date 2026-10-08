@@ -469,6 +469,29 @@ const serveLatchedMutableServer = () =>
   });
 
 describe("MCP stale-refresh grace budget", () => {
+  it.live("zero grace returns cached tools while a listing is parked, then converges", () =>
+    Effect.gen(function* () {
+      const fixture = yield* serveLatchedMutableServer();
+      const executor = yield* makeCatalogTestExecutor(fixture.url, {
+        toolsSyncTtlMs: 0,
+        toolsSyncGraceMs: 0,
+      });
+      const before = toolNames(yield* executor.tools.list());
+      expect(before).toContain("alpha");
+      yield* fixture.rename;
+      yield* fixture.arm;
+      const cached = yield* executor.tools.list().pipe(Effect.timeoutOption("500 millis"));
+      expect(Option.isSome(cached)).toBe(true);
+      expect(toolNames(Option.getOrThrow(cached))).toEqual(before);
+      yield* fixture.release;
+      const converged = yield* Effect.gen(function* () {
+        while (!toolNames(yield* executor.tools.list()).includes("beta")) {
+          yield* Effect.sleep("10 millis");
+        }
+      }).pipe(Effect.timeoutOption("10 seconds"));
+      expect(Option.isSome(converged)).toBe(true);
+    }),
+  );
   // `it.live` (real clock): the grace timeout must actually fire while a real
   // HTTP listing stays parked.
   it.live("a read outlasting the grace serves the stored catalog, then converges", () =>
