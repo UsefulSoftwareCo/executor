@@ -1247,6 +1247,26 @@ const rowToTool = (
   };
 };
 
+// Compare the persisted payload, including JSON key order. Timestamps and
+// storage IDs do not belong to the catalog. Database row order is unspecified;
+// tools and definitions each have a unique name within their connection.
+const catalogRowsMatch = (
+  stored: readonly Record<string, unknown>[],
+  proposed: readonly Record<string, unknown>[],
+  columns: readonly string[],
+): boolean => {
+  if (stored.length !== proposed.length) return false;
+  const byName = new Map(proposed.map((row) => [row["name"], row]));
+  return stored.every((row) => {
+    const candidate = byName.get(row["name"]);
+    return (
+      candidate !== undefined &&
+      JSON.stringify(columns.map((column) => row[column])) ===
+        JSON.stringify(columns.map((column) => candidate[column]))
+    );
+  });
+};
+
 // Projects a tool's annotations onto the schema view. Plugins persist extra
 // keys alongside the declared contract (the mcp plugin stores its upstream tool
 // name and `_meta` there so they survive to invokeTool), so the three declared
@@ -3538,12 +3558,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     const persistCatalog = <A, E>(effect: Effect.Effect<A, E>) =>
       catalogPersistLock.withPermits(1)(transaction(effect));
 
+    let catalogReaders = 0;
+    let catalogReadersDone: Deferred.Deferred<void> | null = null;
+    const yieldBackgroundCatalog = Effect.sleep(0).pipe(
+      Effect.andThen(
+        Effect.suspend(() =>
+          catalogReadersDone === null ? Effect.void : Deferred.await(catalogReadersDone),
+        ),
+      ),
+    );
+
     const produceConnectionToolsUnshared = (
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
       mode: () => "explicit" | "background",
-    ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
+    ): Effect.Effect<readonly Tool[] | null, IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
+        // A detached fiber still shares the request's event loop. Give pending
+        // HTTP I/O a turn between background listings, including fast failures.
+        if (mode() === "background") yield* yieldBackgroundCatalog;
         const runtime = runtimes.get(integrationRow.plugin_id);
         const keys = yield* Effect.try({
           try: () => ownedKeys(ref.owner),
@@ -3605,30 +3638,32 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // reconnect re-syncs tools anyway); at worst the skipped
         // `tools_synced_at` stamp makes the next read re-attempt the sync.
         const stampSyncedWithHealth = (reason: string, health?: HealthCheckResult) =>
-          findConnectionRow(ref).pipe(
-            Effect.flatMap((fresh) =>
-              fresh === null
-                ? Effect.void
-                : core
-                    .updateMany("connection", {
-                      where: (b: AnyCb) =>
-                        b.and(
-                          connectionWhere(b),
-                          b("updated_at", "=", fresh.updated_at),
-                          fresh.tools_synced_at == null
-                            ? b.isNull("tools_synced_at")
-                            : b("tools_synced_at", "=", fresh.tools_synced_at),
-                        ),
-                      set:
-                        oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
-                          ? { tools_synced_at: Date.now() }
-                          : {
-                              tools_synced_at: Date.now(),
-                              last_health: health ?? toolSyncHealth(reason),
-                              updated_at: new Date(),
-                            },
-                    })
-                    .pipe(Effect.asVoid),
+          transaction(
+            findConnectionRow(ref).pipe(
+              Effect.flatMap((fresh) =>
+                fresh === null
+                  ? Effect.void
+                  : core
+                      .updateMany("connection", {
+                        where: (b: AnyCb) =>
+                          b.and(
+                            connectionWhere(b),
+                            b("updated_at", "=", fresh.updated_at),
+                            fresh.tools_synced_at == null
+                              ? b.isNull("tools_synced_at")
+                              : b("tools_synced_at", "=", fresh.tools_synced_at),
+                          ),
+                        set:
+                          oauthReauthRequiredFromProviderState(fresh.provider_state) !== null
+                            ? { tools_synced_at: Date.now() }
+                            : {
+                                tools_synced_at: Date.now(),
+                                last_health: health ?? toolSyncHealth(reason),
+                                updated_at: new Date(),
+                              },
+                      })
+                      .pipe(Effect.asVoid),
+              ),
             ),
           );
 
@@ -3687,6 +3722,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
           );
 
+        if (mode() === "background") yield* yieldBackgroundCatalog;
+
         if (result.incomplete === true) {
           // Non-authoritative listing (integration unreachable, auth not ready).
           // Keep the existing catalog — replacing it would wipe working tools
@@ -3700,6 +3737,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             integration: String(ref.integration),
             connection: String(ref.name),
           });
+          // Background scans discard the return value. Loading every schema
+          // here made a wave of failed listings monopolize the event loop.
+          // An explicit waiter can read the retained catalog after completion.
+          if (mode() === "background") return null;
           const keptRows = yield* core.findMany("tool", { where });
           return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
         }
@@ -3709,8 +3750,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           runtime.plugin.remoteToolCatalog === true &&
           result.tools.length === 0
         ) {
-          const keptRows = yield* core.findMany("tool", { where });
-          if (keptRows.length > 0) {
+          const keptCount = yield* core.count("tool", { where });
+          if (keptCount > 0) {
             const reason =
               "background tool sync produced an authoritative empty catalog for a connection with existing tools";
             yield* stampSyncedWithHealth(reason);
@@ -3718,8 +3759,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               reason,
               integration: String(ref.integration),
               connection: String(ref.name),
-              existingToolCount: keptRows.length,
+              existingToolCount: keptCount,
             });
+            if (mode() === "background") return null;
+            const keptRows = yield* core.findMany("tool", { where });
             return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
           }
         }
@@ -3753,16 +3796,51 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        yield* persistCatalog(
+        // Compare outside the write transaction. Most remote re-listings are
+        // unchanged; they need one freshness UPDATE, not a delete/reinsert of
+        // every schema. Keep the compare and replacement under the same permit.
+        yield* catalogPersistLock.withPermits(1)(
           Effect.gen(function* () {
-            yield* core.deleteMany("tool", { where });
-            yield* core.deleteMany("definition", { where });
-            yield* core.createMany("tool", toolRows);
-            yield* core.createMany("definition", definitionRows);
-            yield* stampSynced(existingRow);
+            const toolColumns = [
+              "plugin_id",
+              "name",
+              "description",
+              "input_schema",
+              "output_schema",
+              "annotations",
+            ] as const;
+            const definitionColumns = ["plugin_id", "name", "schema"] as const;
+            const storedTools = yield* core.findMany("tool", { where, select: toolColumns });
+            const storedDefinitions = yield* core.findMany("definition", {
+              where,
+              select: definitionColumns,
+            });
+            const unchanged = yield* Effect.try({
+              try: () =>
+                catalogRowsMatch(storedTools, toolRows, toolColumns) &&
+                catalogRowsMatch(storedDefinitions, definitionRows, definitionColumns),
+              catch: (cause) => storageFailureFromUnknown("comparing tool catalog", cause),
+            });
+            if (mode() === "background") yield* yieldBackgroundCatalog;
+            if (unchanged) {
+              // Even one UPDATE must use the transaction queue. Otherwise it
+              // can join an unrelated SQLite transaction and roll back with it.
+              yield* transaction(stampSynced(existingRow));
+            } else {
+              yield* transaction(
+                Effect.gen(function* () {
+                  yield* core.deleteMany("tool", { where });
+                  yield* core.deleteMany("definition", { where });
+                  yield* core.createMany("tool", toolRows);
+                  yield* core.createMany("definition", definitionRows);
+                  yield* stampSynced(existingRow);
+                }),
+              );
+            }
           }),
         );
 
+        if (mode() === "background") return null;
         return result.tools.map((tool: ToolDef) =>
           rowToTool(
             {
@@ -3787,7 +3865,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     type ToolProductionError = IntegrationNotFoundError | StorageFailure;
     interface ToolProductionInFlight {
-      readonly deferred: Deferred.Deferred<readonly Tool[], ToolProductionError>;
+      readonly deferred: Deferred.Deferred<readonly Tool[] | null, ToolProductionError>;
       mode: "explicit" | "background";
     }
     const toolProductionInFlight = new Map<string, ToolProductionInFlight>();
@@ -3798,14 +3876,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<readonly Tool[], ToolProductionError> =>
       Effect.suspend(() => {
         const key = `${ref.owner}:${String(ref.integration)}:${String(ref.name)}`;
+        const awaitProduction = (entry: ToolProductionInFlight) =>
+          Deferred.await(entry.deferred).pipe(
+            Effect.flatMap((tools) =>
+              tools !== null
+                ? Effect.succeed(tools)
+                : requestedMode === "background"
+                  ? Effect.succeed([] as readonly Tool[])
+                  : core
+                      .findMany("tool", {
+                        where: (b: AnyCb) =>
+                          b.and(
+                            byOwner(ref.owner)(b),
+                            b("integration", "=", String(ref.integration)),
+                            b("connection", "=", String(ref.name)),
+                          ),
+                      })
+                      .pipe(Effect.map((rows) => rows.map((row) => rowToTool(row)))),
+            ),
+          );
         const existing = toolProductionInFlight.get(key);
         if (existing) {
           if (requestedMode === "explicit") existing.mode = "explicit";
-          return Deferred.await(existing.deferred);
+          return awaitProduction(existing);
         }
 
         const entry: ToolProductionInFlight = {
-          deferred: Deferred.makeUnsafe<readonly Tool[], ToolProductionError>(),
+          deferred: Deferred.makeUnsafe<readonly Tool[] | null, ToolProductionError>(),
           mode: requestedMode,
         };
         toolProductionInFlight.set(key, entry);
@@ -3814,7 +3911,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           Effect.flatMap((exit) => Deferred.done(entry.deferred, exit)),
           Effect.ensuring(Effect.sync(() => void toolProductionInFlight.delete(key))),
         );
-        return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(entry.deferred)));
+        return Effect.forkDetach(run).pipe(Effect.andThen(awaitProduction(entry)));
       });
 
     // ------------------------------------------------------------------
@@ -5689,7 +5786,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         );
       }
       yield* Effect.all(rebuilds, {
-        concurrency: STALE_TOOLS_SYNC_CONCURRENCY,
+        // Zero-grace hosts serve the saved catalog immediately. Spawning a
+        // whole wave of stdio servers steals their request CPUs even when the
+        // JS fiber yields. Let these detached scans discover one at a time;
+        // readers that wait for convergence retain the parallel listing bound.
+        concurrency: config.toolsSyncGraceMs === 0 ? 1 : STALE_TOOLS_SYNC_CONCURRENCY,
       });
     });
 
@@ -5709,17 +5810,35 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // failures log and the stale-but-working catalog stays — so the fork
     // swallows its scan errors the same way each rebuild already swallows its
     // own.
+    let staleSyncFiber: Fiber.Fiber<void, never> | null = null;
     const awaitStaleSyncWithinGrace = (graceMs: number) =>
       Effect.gen(function* () {
-        const fiber = yield* Effect.forkDetach(
-          syncStaleConnectionTools.pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("executor stale tool sync scan failed", {
-                error: describeSyncFailure(error),
+        const fiber = yield* Effect.suspend(() => {
+          // Overlapping reads share the scan, including discoveries queued
+          // behind a slow server. Per-connection single-flight alone cannot
+          // deduplicate work that has not reached the front of that queue yet.
+          if (staleSyncFiber !== null) return Effect.succeed(staleSyncFiber);
+          return Effect.forkDetach(
+            syncStaleConnectionTools.pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("executor stale tool sync scan failed", {
+                  error: describeSyncFailure(error),
+                }),
+              ),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  staleSyncFiber = null;
+                }),
+              ),
+            ),
+          ).pipe(
+            Effect.tap((running) =>
+              Effect.sync(() => {
+                staleSyncFiber = running;
               }),
             ),
-          ),
-        );
+          );
+        });
         // On hosts that cancel request-scoped I/O once the response settles
         // (Cloudflare Workers), hand the host the rebuilds' completion so the
         // catalog still converges after the read stops waiting.
@@ -5730,69 +5849,86 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
-      Effect.gen(function* () {
-        if (toolsSyncGraceMs === null) {
-          yield* syncStaleConnectionTools;
-        } else {
-          yield* awaitStaleSyncWithinGrace(toolsSyncGraceMs);
-        }
-        // Projected: the list surface is metadata (address, description,
-        // annotations) — loading every tool's input/output schema JSON made
-        // an unbounded list scale with schema bytes, not tool count.
-        const rows = yield* core.findMany("tool", {
-          where: (b: AnyCb) =>
-            b.and(
-              filter?.integration === undefined
-                ? true
-                : b("integration", "=", String(filter.integration)),
-              filter?.owner === undefined ? true : b("owner", "=", filter.owner),
-              filter?.connection === undefined
-                ? true
-                : b("connection", "=", String(filter.connection)),
-            ),
-          select: TOOL_INVOCATION_COLUMNS,
-        });
-        const includeBlocked = filter?.includeBlocked ?? false;
-        const policyRules = yield* listActivePolicyRuleSet();
-        // Only tools whose integration is still in the catalog. A tool row
-        // whose integration was removed is an orphan (a removal that could
-        // not reach this subject's rows): listing it invites an invoke that
-        // cannot resolve its config and a reconnect that cannot mint.
-        const catalogSlugs = yield* listCatalogSlugs();
-        const tools: Tool[] = [];
-        for (const row of rows) {
-          if (!catalogSlugs.has(String(row.integration))) continue;
-          const tool = rowToTool(row);
-          if (!matchesToolFilter(tool, filter)) continue;
-          if (!includeBlocked) {
-            const toolId = normalizedPolicyId(tool);
-            const requiresApproval = tool.annotations?.requiresApproval;
-            // Resolve in-line when the rule set needs no I/O; a per-tool
-            // Effect here dominated large catalog listings.
-            const effective =
-              resolvePolicyFromRuleSetSync(toolId, policyRules, requiresApproval) ??
-              (yield* resolvePolicyFromRuleSet(toolId, policyRules, requiresApproval));
-            if (effective.action === "block") continue;
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          // Zero-grace reads never wait for discovery. Keep its next CPU/DB
+          // phase parked until all current catalog readers have finished.
+          if (toolsSyncGraceMs === 0 && catalogReaders++ === 0) {
+            catalogReadersDone = Deferred.makeUnsafe<void>();
           }
-          tools.push(tool);
-        }
-        for (const entry of staticTools.values()) {
-          const tool = staticToolToTool(entry);
-          if (!matchesToolFilter(tool, filter)) continue;
-          if (!includeBlocked) {
-            const toolId = normalizedPolicyId(tool);
-            const requiresApproval = tool.annotations?.requiresApproval;
-            // Resolve in-line when the rule set needs no I/O; a per-tool
-            // Effect here dominated large catalog listings.
-            const effective =
-              resolvePolicyFromRuleSetSync(toolId, policyRules, requiresApproval) ??
-              (yield* resolvePolicyFromRuleSet(toolId, policyRules, requiresApproval));
-            if (effective.action === "block") continue;
-          }
-          tools.push(tool);
-        }
-        return tools;
-      });
+        }),
+        () =>
+          Effect.gen(function* () {
+            if (toolsSyncGraceMs === null) {
+              yield* syncStaleConnectionTools;
+            } else {
+              yield* awaitStaleSyncWithinGrace(toolsSyncGraceMs);
+            }
+            // Projected: the list surface is metadata (address, description,
+            // annotations) — loading every tool's input/output schema JSON made
+            // an unbounded list scale with schema bytes, not tool count.
+            const rows = yield* core.findMany("tool", {
+              where: (b: AnyCb) =>
+                b.and(
+                  filter?.integration === undefined
+                    ? true
+                    : b("integration", "=", String(filter.integration)),
+                  filter?.owner === undefined ? true : b("owner", "=", filter.owner),
+                  filter?.connection === undefined
+                    ? true
+                    : b("connection", "=", String(filter.connection)),
+                ),
+              select: TOOL_INVOCATION_COLUMNS,
+            });
+            const includeBlocked = filter?.includeBlocked ?? false;
+            const policyRules = yield* listActivePolicyRuleSet();
+            // Only tools whose integration is still in the catalog. A tool row
+            // whose integration was removed is an orphan (a removal that could
+            // not reach this subject's rows): listing it invites an invoke that
+            // cannot resolve its config and a reconnect that cannot mint.
+            const catalogSlugs = yield* listCatalogSlugs();
+            const tools: Tool[] = [];
+            for (const row of rows) {
+              if (!catalogSlugs.has(String(row.integration))) continue;
+              const tool = rowToTool(row);
+              if (!matchesToolFilter(tool, filter)) continue;
+              if (!includeBlocked) {
+                const toolId = normalizedPolicyId(tool);
+                const requiresApproval = tool.annotations?.requiresApproval;
+                // Resolve in-line when the rule set needs no I/O; a per-tool
+                // Effect here dominated large catalog listings.
+                const effective =
+                  resolvePolicyFromRuleSetSync(toolId, policyRules, requiresApproval) ??
+                  (yield* resolvePolicyFromRuleSet(toolId, policyRules, requiresApproval));
+                if (effective.action === "block") continue;
+              }
+              tools.push(tool);
+            }
+            for (const entry of staticTools.values()) {
+              const tool = staticToolToTool(entry);
+              if (!matchesToolFilter(tool, filter)) continue;
+              if (!includeBlocked) {
+                const toolId = normalizedPolicyId(tool);
+                const requiresApproval = tool.annotations?.requiresApproval;
+                // Resolve in-line when the rule set needs no I/O; a per-tool
+                // Effect here dominated large catalog listings.
+                const effective =
+                  resolvePolicyFromRuleSetSync(toolId, policyRules, requiresApproval) ??
+                  (yield* resolvePolicyFromRuleSet(toolId, policyRules, requiresApproval));
+                if (effective.action === "block") continue;
+              }
+              tools.push(tool);
+            }
+            return tools;
+          }),
+        () =>
+          Effect.suspend(() => {
+            if (toolsSyncGraceMs !== 0 || --catalogReaders !== 0) return Effect.void;
+            const done = catalogReadersDone!;
+            catalogReadersDone = null;
+            return Deferred.succeed(done, undefined);
+          }),
+      );
 
     // ------------------------------------------------------------------
     // Schema views. `toolSchema` and `toolSchemas` share these builders, so a
