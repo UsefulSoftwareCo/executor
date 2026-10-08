@@ -19,6 +19,7 @@ import {
 } from "@executor-js/sdk/core";
 import type { SandboxToolInvoker } from "@executor-js/codemode-core";
 import { ExecutionToolError } from "./errors";
+import { integrationAliasText, resolveIntegrationAlias } from "./integration-aliases";
 
 const OPAQUE_DEFECT_MESSAGE = "Internal tool error";
 const TOOL_DESCRIBE_SUGGESTION_LIMIT = 5;
@@ -702,7 +703,14 @@ const scoreToolMatch = (
 
 /** What `tools.search()` calls inside the sandbox. */
 export const searchTools = Effect.fn("executor.tools.search")(function* (
-  executor: { readonly tools: Pick<Executor["tools"], "list"> },
+  executor: {
+    readonly tools: Pick<Executor["tools"], "list">;
+    /** The integration catalog, when the caller has one. With it, `namespace`
+     *  accepts an unambiguous alias (`gmail` → `google_gmail`) and query words
+     *  that name an integration by display name rank its tools. Passthrough
+     *  resolves both before calling and passes a discovery object without it. */
+    readonly integrations?: Pick<Executor["integrations"], "list">;
+  },
   query: string,
   limit = 12,
   options?: {
@@ -737,6 +745,34 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
     } satisfies PagedResult<ToolDiscoveryResult>;
   }
 
+  // The namespace an agent typed, resolved against the catalog when one is
+  // available: an unambiguous alias becomes the slug for both enumeration and
+  // ranked search. An exact slug, an ambiguous alias (`google` naming two
+  // integrations) and an unknown name keep today's token-prefix behaviour, so
+  // no existing result changes.
+  let namespace = hasNamespace ? options!.namespace!.trim() : undefined;
+  let integrationAliases = options?.integrationAliases;
+  if (executor.integrations !== undefined) {
+    const catalog = (yield* executor.integrations.list().pipe(
+      Effect.mapError(
+        (cause) =>
+          new ExecutionToolError({
+            message: "Failed to list integrations for search",
+            cause,
+          }),
+      ),
+    )).map((integration) => ({
+      slug: String(integration.slug),
+      name: integration.name,
+      description: integration.description,
+    }));
+    if (namespace !== undefined) {
+      const resolved = resolveIntegrationAlias(namespace, catalog);
+      if (resolved.kind === "alias") namespace = resolved.slug;
+    }
+    integrationAliases ??= integrationAliasText(catalog);
+  }
+
   const all = yield* executor.tools.list({ includeAnnotations: false }).pipe(
     Effect.mapError(
       (cause) =>
@@ -758,7 +794,7 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
   // `executor.integrations.list`'s per-integration toolCount.
   const ranked: readonly ToolDiscoveryResult[] = emptyQuery
     ? searchable
-        .filter((tool) => tool.integration === options?.namespace?.trim())
+        .filter((tool) => tool.integration === namespace)
         .sort((left, right) => left.path.localeCompare(right.path))
         .map((tool) => ({
           path: tool.path,
@@ -768,8 +804,8 @@ export const searchTools = Effect.fn("executor.tools.search")(function* (
           ...(tool.description !== undefined ? { description: tool.description } : {}),
         }))
     : searchable
-        .filter((tool: SearchableTool) => matchesNamespace(tool, options?.namespace))
-        .map((tool: SearchableTool) => scoreToolMatch(tool, query, options?.integrationAliases))
+        .filter((tool: SearchableTool) => matchesNamespace(tool, namespace))
+        .map((tool: SearchableTool) => scoreToolMatch(tool, query, integrationAliases))
         .filter(Predicate.isNotNull)
         .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
 
