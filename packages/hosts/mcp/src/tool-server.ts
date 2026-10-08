@@ -1631,12 +1631,17 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
 ): Effect.Effect<McpServer, McpPassthroughUnavailableError> =>
   Effect.gen(function* () {
     const engine = "engine" in config ? config.engine : createExecutionEngine(config);
-    const description =
-      config.description ??
-      (yield* engine.getDescription.pipe(Effect.withSpan("mcp.host.get_description")));
-    // The same live integration inventory the description carries, re-used by
-    // the `skills` tool so the `execute` guide lists what is connected too.
-    const executeInventory = extractInventory(description);
+    // The `execute` description reads the live connection and integration
+    // inventory, two catalog reads per session. Codemode needs it at
+    // construction: it is the `execute` tool's description and the source of
+    // the per-integration search tools. Passthrough registers neither, so it
+    // reads the description only on demand (the `execute` guide from `skills`),
+    // once per session — a session that never asks never pays for it.
+    const loadDescription = yield* Effect.cached(
+      config.description !== undefined
+        ? Effect.succeed(config.description)
+        : engine.getDescription.pipe(Effect.withSpan("mcp.host.get_description")),
+    );
     // Artifacts are on unless this connection opted out (`?artifacts=false`).
     // One flag decides the whole surface: the tools, the shell resource, and
     // the skills catalog below.
@@ -1666,6 +1671,10 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           "passthrough mode requires tool list/schema, connection list, and integration list APIs",
       });
     }
+    const description = passthrough ? "" : yield* loadDescription;
+    // The same live integration inventory the description carries, re-used by
+    // the `skills` tool so the `execute` guide lists what is connected too.
+    const executeInventory = loadDescription.pipe(Effect.map(extractInventory));
 
     // Captured at construction time. SDK callbacks fire later (often
     // deferred past the outer Effect's await), so we use the runtime to
@@ -2200,7 +2209,12 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
           },
         },
         ({ name }, extra) =>
-          runToolEffect(Effect.succeed(skillsResult(name, executeInventory, skillCatalog)), extra),
+          runToolEffect(
+            executeInventory.pipe(
+              Effect.map((inventory) => skillsResult(name, inventory, skillCatalog)),
+            ),
+            extra,
+          ),
       ),
     ).pipe(
       Effect.withSpan("mcp.host.register_tool", {
