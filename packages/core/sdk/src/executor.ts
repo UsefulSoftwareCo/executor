@@ -3821,7 +3821,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             });
             if (mode() === "background") yield* yieldBackgroundCatalog;
             if (unchanged) {
-              yield* stampSynced(existingRow);
+              // Even one UPDATE must use the transaction queue. Otherwise it
+              // can join an unrelated SQLite transaction and roll back with it.
+              yield* transaction(stampSynced(existingRow));
             } else {
               yield* transaction(
                 Effect.gen(function* () {

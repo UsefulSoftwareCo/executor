@@ -26,6 +26,79 @@ const catalog: ResolveToolsResult = {
 };
 
 describe("file-backed catalog refresh", () => {
+  it.effect("keeps an unchanged refresh stamp after an unrelated transaction rolls back", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const dir = yield* Effect.acquireRelease(
+          Effect.promise(() => mkdtemp(join(tmpdir(), "executor-catalog-"))),
+          (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+        );
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const fixture = definePlugin(() => ({
+          id: "refresh-fixture" as const,
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          describeAuthMethods: () => [
+            { id: "none", label: "No authentication", kind: "none", template: "none" },
+          ],
+          resolveTools: () => Effect.succeed(catalog),
+          invokeTool: () => Effect.succeed(null),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: integration,
+                description: "Refresh fixture",
+                config: {},
+              }),
+            rollback: () =>
+              ctx.transaction(
+                Effect.gen(function* () {
+                  yield* ctx.connections.update(ref, { description: "Rolled back description" });
+                  yield* Deferred.succeed(held, undefined);
+                  yield* Deferred.await(release);
+                  return yield* Effect.fail("rollback" as const);
+                }),
+              ),
+          }),
+        }))();
+        const config = makeTestConfig({
+          dataDir: dir,
+          plugins: [memoryCredentialsPlugin(), fixture] as const,
+        });
+        yield* Effect.addFinalizer(() => Effect.promise(() => config.testDb.close()));
+        const executor = yield* createExecutor(config);
+        yield* executor["refresh-fixture"].seed();
+        yield* executor.connections.create({ ...ref, template: NO_AUTH_TEMPLATE, inputs: {} });
+        const before = yield* executor.connections.get(ref);
+        const tools = yield* Effect.promise(() => config.db.findMany("tool", {}));
+        const definitions = yield* Effect.promise(() => config.db.findMany("definition", {}));
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", {
+            set: { tools_synced_at: null },
+          }),
+        );
+        const writer = yield* Effect.forkChild(executor["refresh-fixture"].rollback());
+        yield* Deferred.await(held);
+        const refresh = yield* Effect.forkChild(executor.connections.refresh(ref));
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+        const finishedEarly = refresh.pollUnsafe() !== undefined;
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(writer).pipe(Effect.flip)).toBe("rollback");
+        yield* Fiber.join(refresh);
+        expect(finishedEarly).toBe(false);
+        expect(
+          (yield* Effect.promise(() => config.db.findFirst("connection", {})))?.tools_synced_at,
+        ).not.toBeNull();
+        expect((yield* executor.connections.get(ref))?.description).toBe(before?.description);
+        expect(yield* Effect.promise(() => config.db.findMany("tool", {}))).toEqual(tools);
+        expect(yield* Effect.promise(() => config.db.findMany("definition", {}))).toEqual(
+          definitions,
+        );
+      }),
+    ),
+  );
+
   it.effect("prioritizes cached reads and releases discovery if a reader is interrupted", () =>
     Effect.scoped(
       Effect.gen(function* () {
