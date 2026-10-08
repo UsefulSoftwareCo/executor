@@ -42,7 +42,7 @@ const EXECUTE_SKILL_BODY = [
   "## Rules",
   "",
   "- `tools.search()` returns paginated, ranked matches: `{ items, total, hasMore, nextOffset }`. Best-first. Use short intent phrases like `github issues`, `repo details`, or `create calendar event`.",
-  '- When you already know the namespace, narrow with `tools.search({ namespace: "github", query: "issues" })`.',
+  '- When you already know the integration, narrow with `tools.search({ namespace: "github", query: "issues", limit: 3 })`. `namespace` accepts the slug or an unambiguous alias (`gmail` resolves to `google_gmail`); an alias that fits several integrations is used as a prefix instead.',
   "- `tools.executor.coreTools.connections.list({})` returns saved connections with `{ address, integration, owner, name, ... }`. The `address` field includes the leading `tools.` root.",
   "- Tool calls return a value union: `{ ok: true, data }` for success or `{ ok: false, error: { code, message, status?, details?, retryable? } }` for expected tool/domain failures. Branch on `result.ok`.",
   "- `data` is the upstream payload itself. HTTP-backed tools (OpenAPI) also set `http: { status, headers }` beside `data` — read `result.http?.headers` for pagination (Link) or rate-limit headers.",
