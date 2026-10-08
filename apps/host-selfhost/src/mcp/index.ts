@@ -87,10 +87,9 @@ type BetterAuthSession = NonNullable<
 const principalFromSession = (
   resolved: BetterAuthSession,
   betterAuth: BetterAuthHandle,
-  headers: Headers,
 ): Effect.Effect<Principal> => {
   const organizationId = resolved.session.activeOrganizationId ?? betterAuth.organizationId;
-  return resolveSelfHostOrgRole(betterAuth, headers, organizationId).pipe(
+  return resolveSelfHostOrgRole(betterAuth, resolved.user.id, organizationId).pipe(
     Effect.map((orgRole) => ({
       accountId: resolved.user.id,
       organizationId,
@@ -126,9 +125,7 @@ const makeApprovalHandler =
       }).pipe(Effect.orElseSucceed(() => null)),
     );
     if (!session) return jsonResponse({ error: "Unauthorized" }, 401);
-    const principal = await Effect.runPromise(
-      principalFromSession(session, betterAuth, request.headers),
-    );
+    const principal = await Effect.runPromise(principalFromSession(session, betterAuth));
 
     return (
       (await store.handlePausedRequest(request, principal)) ??

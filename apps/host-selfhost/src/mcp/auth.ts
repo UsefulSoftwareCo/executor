@@ -12,6 +12,7 @@ import {
 } from "@executor-js/host-mcp";
 
 import { isPrivileged } from "../admin/require-admin";
+import { bearerShapeMemoFor, bearerTokenOf } from "../auth/bearer-shape";
 import { BetterAuth } from "../auth/better-auth";
 import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org-path";
 
@@ -245,7 +246,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
         Effect.gen(function* () {
           const session = yield* Effect.promise(() =>
             auth.api.getMcpSession({ headers: request.headers }),
-          );
+          ).pipe(Effect.withSpan("selfhost.auth.oauth_session"));
           if (!session) return null;
           // GOTCHA: getMcpSession does NOT validate accessTokenExpiresAt — an
           // expired token still resolves. Reject it here.
@@ -260,6 +261,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
        * session can never bind to a subject-less credential if that changes. */
       const authenticateSession = (request: Request): Effect.Effect<Principal | null> =>
         fallback.authenticate(request).pipe(
+          Effect.withSpan("selfhost.auth.identity"),
           Effect.map((principal) => (isPlatformPrincipal(principal) ? null : principal)),
           Effect.catchTags({
             Unauthorized: () => Effect.succeed(null),
@@ -270,12 +272,19 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
 
       /**
        * Try the OAuth bearer ONLY when a Bearer header is present (no
-       * getMcpSession round-trip on cookie requests), then the cookie/api-key
-       * fallback. Self-host always pins an org, so the outcome is always
-       * Authenticated or Unauthorized.
+       * getMcpSession round-trip on cookie requests) and the bearer is not
+       * one the identity seam last resolved as an API key, then the
+       * cookie/api-key fallback. Self-host always pins an org, so the outcome
+       * is always Authenticated or Unauthorized.
        */
+      const bearerShapes = bearerShapeMemoFor(auth);
+      const isRememberedApiKey = (request: Request): boolean => {
+        const token = bearerTokenOf(request.headers);
+        return token !== undefined && bearerShapes.isApiKey(token);
+      };
+
       const authenticate = (request: Request): Effect.Effect<AuthOutcome> =>
-        (hasBearer(request)
+        (hasBearer(request) && !isRememberedApiKey(request)
           ? authenticateOAuthBearer(request).pipe(
               Effect.flatMap((principal) =>
                 principal ? Effect.succeed(principal) : authenticateSession(request),

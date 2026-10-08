@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect";
 import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
 
 import { isPrivileged } from "../admin/require-admin";
+import { bearerShapeMemoFor, bearerTokenOf } from "./bearer-shape";
 import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 
 // ---------------------------------------------------------------------------
@@ -20,34 +21,40 @@ import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 // identities tests inject live in `src/testing/test-app.ts`.
 // ---------------------------------------------------------------------------
 
-const bearerToken = (headers: Headers): string | undefined => {
-  const authorization = headers.get("authorization");
-  if (!authorization) return undefined;
-  return authorization.toLowerCase().startsWith("bearer ")
-    ? authorization.slice(7).trim() || undefined
-    : undefined;
-};
-
 /**
  * Resolve workspace-write authority from the caller's current membership in
  * the self-host instance organization. Both ordinary API/MCP requests and the
  * browser-decision adapter use this exact lookup so a role change takes effect
  * at the mutation decision, without trusting the global Better Auth user role.
  * Lookup failures fail closed to member authority.
+ *
+ * This reads the `member` row directly — the same row, by the same
+ * `(userId, organizationId)` key, that the organization plugin's
+ * `getActiveMemberRole` endpoint answers from. That endpoint sits behind the
+ * session middleware, so calling it with the request's credential verified
+ * the credential a second time on every request: for an API key, a second
+ * hash, lookup and `lastRequest` write. The caller already holds the
+ * authenticated user id, so the row is read once and the credential once.
  */
 export const resolveSelfHostOrgRole = (
   betterAuth: BetterAuthHandle,
-  headers: Headers | Record<string, string>,
+  userId: string,
   organizationId: string,
 ): Effect.Effect<"admin" | "member"> =>
-  Effect.tryPromise(() =>
-    betterAuth.auth.api.getActiveMemberRole({
-      headers,
-      query: { organizationId },
-    }),
-  ).pipe(
+  Effect.tryPromise(async () => {
+    const context = await betterAuth.auth.$context;
+    return context.adapter.findOne<{ readonly role?: string | null }>({
+      model: "member",
+      where: [
+        { field: "userId", value: userId },
+        { field: "organizationId", value: organizationId },
+      ],
+    });
+  }).pipe(
     Effect.orElseSucceed(() => null),
-    Effect.map((membership) => (membership && isPrivileged(membership.role) ? "admin" : "member")),
+    Effect.map((membership) =>
+      membership?.role != null && isPrivileged(membership.role) ? "admin" : "member",
+    ),
   );
 
 // ---------------------------------------------------------------------------
@@ -59,6 +66,9 @@ export const resolveSelfHostOrgRole = (
 //     resolution fails we retry with the Bearer value as x-api-key, which (with
 //     enableSessionForAPIKeys) mints the owner's session. This is what lets a
 //     generated API key authenticate the API + MCP endpoint as a Bearer token.
+//     A bearer that last resolved this way is remembered (./bearer-shape) and
+//     tried as an API key first next time, skipping the session lookup that
+//     cannot match it; the key is still verified on every request.
 // Single-org instance, so organizationName is the boot-cached org name.
 // ---------------------------------------------------------------------------
 
@@ -67,26 +77,41 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
     Effect.gen(function* () {
       const betterAuth = yield* BetterAuth;
       const { auth, organizationId, organizationName, organizationSlug } = betterAuth;
+      const bearerShapes = bearerShapeMemoFor(auth);
+
+      type Resolved = Awaited<ReturnType<typeof auth.api.getSession>>;
+      const sessionFor = (headers: Headers): Effect.Effect<Resolved> =>
+        Effect.promise(() => auth.api.getSession({ headers })).pipe(
+          Effect.withSpan("selfhost.identity.session"),
+        );
+      const apiKeySessionFor = (token: string): Effect.Effect<Resolved> =>
+        Effect.tryPromise({
+          try: () => auth.api.getSession({ headers: { "x-api-key": token } }),
+          catch: () => "api-key session lookup failed",
+        }).pipe(
+          Effect.orElseSucceed(() => null),
+          Effect.tap((resolved) =>
+            Effect.sync(() => {
+              if (resolved) bearerShapes.rememberApiKey(token);
+              else bearerShapes.forget(token);
+            }),
+          ),
+          Effect.withSpan("selfhost.identity.api_key_session"),
+        );
+
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
-            let resolved = yield* Effect.promise(() =>
-              auth.api.getSession({ headers: request.headers }),
-            );
-            // The credential shape that resolved the session — the SAME headers
-            // are what the membership-role lookup below must present.
-            let sessionHeaders: Headers | Record<string, string> = request.headers;
-            if (!resolved) {
-              const token = bearerToken(request.headers);
-              if (token) {
-                const apiKeyHeaders = { "x-api-key": token };
-                resolved = yield* Effect.tryPromise({
-                  try: () => auth.api.getSession({ headers: apiKeyHeaders }),
-                  catch: () => "api-key session lookup failed",
-                }).pipe(Effect.orElseSucceed(() => null));
-                sessionHeaders = apiKeyHeaders;
-              }
-            }
+            const token = bearerTokenOf(request.headers);
+            // A bearer that last resolved as an API key goes straight to the
+            // key lookup. Should the key no longer resolve, the memo forgets
+            // it and the full order below runs unchanged.
+            let resolved: Resolved =
+              token !== undefined && bearerShapes.isApiKey(token)
+                ? yield* apiKeySessionFor(token)
+                : null;
+            if (!resolved) resolved = yield* sessionFor(request.headers);
+            if (!resolved && token !== undefined) resolved = yield* apiKeySessionFor(token);
             // No session resolved from any credential shape -> unauthenticated.
             // The middleware's failure strategy renders this as a 401.
             if (!resolved) return yield* new Unauthorized();
@@ -102,9 +127,9 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
             // — an infra fault demotes rather than escalates.
             const orgRole = yield* resolveSelfHostOrgRole(
               betterAuth,
-              sessionHeaders,
+              resolved.user.id,
               resolvedOrganizationId,
-            );
+            ).pipe(Effect.withSpan("selfhost.identity.org_role"));
             return {
               kind: "member" as const,
               accountId: resolved.user.id,
