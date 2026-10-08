@@ -16,6 +16,19 @@ describe("skills registry", () => {
     expect(EXECUTE_SKILL.body).toContain("read `result.data.connections`");
   });
 
+  // The workflow steers to the fastest path: a narrowed, small search, then
+  // the call. Describing a tool is the exception, not a fixed step.
+  it("opens the execute workflow with a namespaced search of limit 3", () => {
+    const workflow = EXECUTE_SKILL.body.slice(
+      EXECUTE_SKILL.body.indexOf("## Workflow"),
+      EXECUTE_SKILL.body.indexOf("## Rules"),
+    );
+    expect(workflow).toContain('namespace: "<integration slug or alias>", limit: 3');
+    expect(workflow).not.toContain("limit: 12");
+    expect(workflow).toContain("Only when the argument shape is unknown");
+    expect(workflow.indexOf("tools.search(")).toBeLessThan(workflow.indexOf("tools[path](input)"));
+  });
+
   it("finds a skill by exact name and misses unknown names", () => {
     expect(findSkill("execute")).toBe(EXECUTE_SKILL);
     expect(findSkill("Execute")).toBeUndefined();
