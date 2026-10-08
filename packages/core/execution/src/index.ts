@@ -25,6 +25,12 @@ export {
   skillCatalogFor,
   type Skill,
 } from "./skills";
+export {
+  integrationAliasText,
+  resolveIntegrationAlias,
+  type IntegrationCatalogEntry,
+  type IntegrationResolution,
+} from "./integration-aliases";
 export { PROVIDED_GLOBAL_NAMES } from "./provided-globals";
 export { ExecutionToolError } from "./errors";
 export {
