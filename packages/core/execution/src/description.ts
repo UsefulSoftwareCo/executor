@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { Connection, Executor, Integration } from "@executor-js/sdk/core";
+import type { Connection, Executor, Integration, Tool } from "@executor-js/sdk/core";
 
 /**
  * Builds the `execute` tool description dynamically.
@@ -9,10 +9,18 @@ import type { Connection, Executor, Integration } from "@executor-js/sdk/core";
  *      behind the `skills` tool, see ./skills.ts, to keep this always-loaded
  *      description small)
  *   2. Available integrations (the live, per-session inventory): the top-level
- *      integration slugs the user has connected, deduped across connections,
- *      each with its one-line capability description from the integration
- *      catalog (user-editable via the integrations API). The same block is
- *      appended to the `execute` skill content.
+ *      integration slugs the user has connected AND can call at least one tool
+ *      of, deduped across connections, each with its one-line capability
+ *      description from the integration catalog (user-editable via the
+ *      integrations API). The same block is appended to the `execute` skill
+ *      content.
+ *
+ * Why the tool-visibility filter: `connections.list()` is not policy-scoped.
+ * A member whose org blocks an integration's tools, or whose host scope omits
+ * it, still owns its connections, so the plain connection inventory names
+ * namespaces whose `tools.search` returns nothing (justcarlson/executor#29).
+ * `tools.list` already applies the caller's effective policy, so the inventory
+ * keeps only the integrations with at least one tool visible there.
  */
 
 /** The header that opens the live integration inventory. Exported so the host
@@ -33,13 +41,41 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
       Effect.withSpan("executor.integrations.list"),
     );
 
+    // The integrations the caller can actually call into: policy-filtered
+    // (blocked tools are omitted by default) and catalog-scoped, the same read
+    // `tools.search` serves. `null` when the read fails: the description is
+    // built during session init and has no error channel (see the reads
+    // above), so a storage fault here degrades to the unfiltered connection
+    // inventory — a few extra lines the model may search in vain — instead of
+    // failing the whole session or hiding every integration.
+    const callableIntegrations: ReadonlySet<string> | null = yield* executor.tools
+      .list({ includeAnnotations: false })
+      .pipe(
+        Effect.map(
+          (tools: readonly Tool[]) => new Set(tools.map((tool) => String(tool.integration))),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning("execute description tool inventory read failed", { error }).pipe(
+            Effect.as(null),
+          ),
+        ),
+        Effect.withSpan("executor.tools.list"),
+      );
+
+    const listed =
+      callableIntegrations === null
+        ? connections
+        : connections.filter((connection) =>
+            callableIntegrations.has(String(connection.integration)),
+          );
+
     const description = yield* Effect.sync(() => {
       const lines = [
         "Execute TypeScript in a sandboxed runtime.",
         "",
         'Before writing code, call `skills({ name: "execute" })` for the workflow on how to use this tool.',
       ];
-      const inventory = formatIntegrationInventory(connections, integrations);
+      const inventory = formatIntegrationInventory(listed, integrations);
       if (inventory.length > 0) {
         lines.push("");
         lines.push(inventory);
@@ -53,6 +89,10 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
 
     yield* Effect.annotateCurrentSpan({
       "executor.connection_count": connections.length,
+      // How many connections the tool-visibility filter dropped; -1 when the
+      // tools read failed and the inventory fell back to the unfiltered list.
+      "executor.connection_hidden_count":
+        callableIntegrations === null ? -1 : connections.length - listed.length,
       "schema.kind": "execute",
       // Connection inventory so a failing session build (which runs this during
       // init) names the callable prefixes it resolved without listing tools.
@@ -76,10 +116,11 @@ const connectionPath = (connection: Connection): string => {
   return address.startsWith("tools.") ? address.slice("tools.".length) : address;
 };
 
-// The live inventory block: the top-level integrations the user has connected,
-// one line per integration slug (deduped across connections, sorted) with its
-// capability description when the catalog carries one. No per-connection
-// prefixes. Empty string when nothing is connected.
+// The live inventory block: the top-level integrations the user has connected
+// (pre-filtered by the caller to those with a visible tool), one line per
+// integration slug (deduped across connections, sorted) with its capability
+// description when the catalog carries one. No per-connection prefixes. Empty
+// string when nothing is connected.
 const INVENTORY_LIMIT = 50;
 
 /** Longest rendered capability description. The block is always-loaded prompt

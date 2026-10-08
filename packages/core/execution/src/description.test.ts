@@ -7,6 +7,7 @@ import {
   IntegrationSlug,
   ProviderItemId,
   ProviderKey,
+  ToolName,
   createExecutor,
   definePlugin,
   type CredentialProvider,
@@ -38,13 +39,19 @@ const SLACK = IntegrationSlug.make("slack");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
 
 // The execute description lists the top-level integrations the user has
-// connected: one line per integration slug, deduped across connections, with
-// the integration's capability description when the catalog carries a real one
-// (legacy slug/name-only descriptions are suppressed).
+// connected and can call at least one tool of: one line per integration slug,
+// deduped across connections, with the integration's capability description
+// when the catalog carries a real one (legacy slug/name-only descriptions are
+// suppressed). Each test plugin produces one tool per connection so its
+// integration qualifies; `bareIntegrationPlugin` below produces none.
+const oneTool = (name: string) =>
+  Effect.succeed({ tools: [{ name: ToolName.make(name), description: name }] });
+
 const githubPlugin = definePlugin(() => ({
   id: "github-plugin" as const,
   credentialProviders: [memoryProvider()],
   storage: () => ({}),
+  resolveTools: () => oneTool("issues.list"),
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
@@ -58,12 +65,30 @@ const githubPlugin = definePlugin(() => ({
 const slackPlugin = definePlugin(() => ({
   id: "slack-plugin" as const,
   storage: () => ({}),
+  resolveTools: () => oneTool("chat.post"),
   extension: (ctx) => ({
     seed: () =>
       ctx.core.integrations.register({
         slug: SLACK,
         name: "Slack",
         description: "Send and read workspace messages.",
+        config: {},
+      }),
+  }),
+}))();
+
+// An integration whose connections carry no tools (the plugin produces none):
+// nothing is callable under `tools.bare.…`, so the inventory omits it.
+const BARE = IntegrationSlug.make("bare");
+const bareIntegrationPlugin = definePlugin(() => ({
+  id: "bare-plugin" as const,
+  storage: () => ({}),
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: BARE,
+        name: "Bare",
+        description: "Registered with connections but no tools.",
         config: {},
       }),
   }),
@@ -184,6 +209,7 @@ describe("buildExecuteDescription", () => {
         id: "verbose-plugin" as const,
         credentialProviders: [memoryProvider()],
         storage: () => ({}),
+        resolveTools: () => oneTool("say"),
         extension: (ctx) => ({
           seed: () =>
             ctx.core.integrations.register({
@@ -225,6 +251,104 @@ describe("buildExecuteDescription", () => {
       expect(description).not.toContain("## Available integrations");
     }),
   );
+
+  // justcarlson/executor#29: the inventory is what the model picks a namespace
+  // from, so an integration with no callable tool for this caller must not be
+  // listed — a `tools.search` under it returns nothing and invites a retry.
+  it.effect("drops an integration whose tools the org policy blocks", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [slackPlugin, githubPlugin] as const }),
+      );
+      yield* executor["slack-plugin"].seed();
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: SLACK,
+        template: TEMPLATE,
+        value: "slack-token",
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
+      // Both are listed before the block lands.
+      expect(parseIntegrationInventory(yield* buildExecuteDescription(executor))).toEqual([
+        "github",
+        "slack",
+      ]);
+
+      yield* executor.policies.create({ owner: "org", pattern: "slack.*", action: "block" });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      expect(description).toContain("## Available integrations");
+      expect(description).toContain("- `github`");
+      expect(description).not.toContain("- `slack`");
+      expect(description).not.toContain("workspace messages");
+      // The connection itself still exists; only the inventory hides it.
+      expect((yield* executor.connections.list()).map((c) => String(c.integration))).toContain(
+        "slack",
+      );
+    }),
+  );
+
+  it.effect("drops an integration whose connections carry no tools", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [bareIntegrationPlugin, githubPlugin] as const }),
+      );
+      yield* executor["bare-plugin"].seed();
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("main"),
+        integration: BARE,
+        template: TEMPLATE,
+        value: "bare-token",
+      });
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
+      // The catalog really holds nothing under `bare`.
+      expect(yield* executor.tools.list({ integration: BARE })).toEqual([]);
+
+      const description = yield* buildExecuteDescription(executor);
+
+      expect(description).toContain("- `github`");
+      expect(description).not.toContain("- `bare`");
+      expect(description).not.toContain("no tools");
+    }),
+  );
+
+  it.effect("omits the section when every connected integration is blocked", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(makeTestConfig({ plugins: [githubPlugin] as const }));
+      yield* executor["github-plugin"].seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: ConnectionName.make("prod"),
+        integration: GITHUB,
+        template: TEMPLATE,
+        value: "org-token",
+      });
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "block" });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      expect(description).toContain("Execute TypeScript in a sandboxed runtime");
+      expect(description).not.toContain("## Available integrations");
+      expect(parseIntegrationInventory(description)).toEqual([]);
+    }),
+  );
 });
 
 describe("parseIntegrationInventory", () => {
@@ -253,6 +377,35 @@ describe("parseIntegrationInventory", () => {
       const description = yield* buildExecuteDescription(executor);
 
       expect(parseIntegrationInventory(description)).toEqual(["github", "slack"]);
+    }),
+  );
+
+  it.effect("round-trips the policy-filtered list, not the raw connections", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor(
+        makeTestConfig({ plugins: [slackPlugin, githubPlugin, bareIntegrationPlugin] as const }),
+      );
+      yield* executor["slack-plugin"].seed();
+      yield* executor["github-plugin"].seed();
+      yield* executor["bare-plugin"].seed();
+      for (const integration of [SLACK, GITHUB, BARE]) {
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration,
+          template: TEMPLATE,
+          value: "token",
+        });
+      }
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "block" });
+
+      const description = yield* buildExecuteDescription(executor);
+
+      // github is blocked, bare has no tools; only slack is callable.
+      expect(parseIntegrationInventory(description)).toEqual(["slack"]);
+      expect(
+        [...new Set((yield* executor.connections.list()).map((c) => String(c.integration)))].sort(),
+      ).toEqual(["bare", "github", "slack"]);
     }),
   );
 
