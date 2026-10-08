@@ -26,6 +26,82 @@ const catalog: ResolveToolsResult = {
 };
 
 describe("file-backed catalog refresh", () => {
+  it.effect("prioritizes cached reads and releases discovery if a reader is interrupted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const dir = yield* Effect.acquireRelease(
+          Effect.promise(() => mkdtemp(join(tmpdir(), "executor-catalog-"))),
+          (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
+        );
+        const reading = yield* Deferred.make<void>();
+        const releaseRead = yield* Deferred.make<void>();
+        const completions: Promise<unknown>[] = [];
+        let holdRead = false;
+        let discoveries = 0;
+        const fixture = definePlugin(() => ({
+          id: "refresh-fixture" as const,
+          storage: () => ({}),
+          remoteToolCatalog: true,
+          describeAuthMethods: () => [
+            { id: "none", label: "No authentication", kind: "none", template: "none" },
+          ],
+          resolveTools: () =>
+            Effect.sync(() => {
+              discoveries += 1;
+              return catalog;
+            }),
+          toolPolicyProvider: () => ({
+            list: () =>
+              Effect.gen(function* () {
+                if (holdRead) {
+                  yield* Deferred.succeed(reading, undefined);
+                  yield* Deferred.await(releaseRead);
+                }
+                return [{ id: "allow", pattern: "*", action: "approve" as const, position: "a0" }];
+              }),
+          }),
+          invokeTool: () => Effect.succeed(null),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: integration,
+                description: "Refresh fixture",
+                config: {},
+              }),
+          }),
+        }))();
+        const config = makeTestConfig({
+          dataDir: dir,
+          plugins: [memoryCredentialsPlugin(), fixture] as const,
+        });
+        yield* Effect.addFinalizer(() => Effect.promise(() => config.testDb.close()));
+        const executor = yield* createExecutor({
+          ...config,
+          toolsSyncGraceMs: 0,
+          waitUntil: (promise) => completions.push(promise),
+        });
+        yield* executor["refresh-fixture"].seed();
+        yield* executor.connections.create({ ...ref, template: NO_AUTH_TEMPLATE, inputs: {} });
+        const before = yield* executor.tools.list();
+        yield* Effect.promise(() => Promise.all(completions));
+        yield* Effect.promise(() =>
+          config.db.updateMany("connection", { set: { tools_synced_at: null } }),
+        );
+        discoveries = 0;
+        holdRead = true;
+        const reader = yield* Effect.forkChild(executor.tools.list());
+        yield* Deferred.await(reading);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        expect(discoveries).toBe(0);
+        yield* Fiber.interrupt(reader);
+        holdRead = false;
+        yield* Effect.promise(() => Promise.all(completions));
+        expect(discoveries).toBe(1);
+        expect(yield* executor.tools.list()).toEqual(before);
+      }),
+    ),
+  );
+
   it.effect("keeps identical tool and definition rows while reads overlap discovery", () =>
     Effect.scoped(
       Effect.gen(function* () {
