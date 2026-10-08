@@ -435,6 +435,7 @@ export {
   type ExecutorDbFactory,
   type ExecutorDbInput,
   type ParsedToolAddress,
+  type ToolSchemaOptions,
   DEFAULT_TOOLS_SYNC_GRACE_MS,
   STALE_TOOLS_SYNC_CONCURRENCY,
   createExecutor,

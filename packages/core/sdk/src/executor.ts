@@ -157,8 +157,10 @@ import {
   isValidPattern,
   matchPattern,
   positionForNewPattern,
+  prepareToolPolicies,
   resolveEffectivePolicy,
   rowToToolPolicy,
+  type PreparedToolPolicies,
   type CreateToolPolicyInput,
   type EffectivePolicy,
   type RemoveToolPolicyInput,
@@ -469,7 +471,10 @@ export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
 
   readonly tools: {
     readonly list: (filter?: ToolListFilter) => Effect.Effect<readonly Tool[], StorageFailure>;
-    readonly schema: (address: ToolAddress) => Effect.Effect<ToolSchemaView | null, StorageFailure>;
+    readonly schema: (
+      address: ToolAddress,
+      options?: ToolSchemaOptions,
+    ) => Effect.Effect<ToolSchemaView | null, StorageFailure>;
   };
 
   readonly providers: {
@@ -851,6 +856,12 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
    * like `platformView`'s blanket `writes: "denied"`.
    */
   readonly orgWrites?: OrgWriteAccess | "request";
+}
+
+/** Options for `executor.tools.schema`. */
+export interface ToolSchemaOptions {
+  /** Build the TypeScript preview fields (default `true`). */
+  readonly typeScript?: boolean;
 }
 
 /** Default freshness window for remote-catalog connections (see
@@ -5391,7 +5402,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // ------------------------------------------------------------------
 
     type ActivePolicyRuleSet =
-      | { readonly kind: "global"; readonly rows: readonly ToolPolicyRow[] }
+      | {
+          readonly kind: "global";
+          readonly rows: readonly ToolPolicyRow[];
+          /** Sorted and indexed once per snapshot; resolves each tool in O(matches). */
+          readonly prepared: PreparedToolPolicies;
+        }
       | {
           readonly kind: "provider";
           readonly provider: ToolPolicyProvider;
@@ -5414,11 +5430,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     };
 
+    // `sortedRules` must already be in `compareProviderPolicyRule` order; the
+    // rule set sorts once per snapshot instead of once per tool.
     const resolveProviderPolicyFromRules = (
       toolId: string,
-      rules: readonly ToolPolicyProviderRule[],
+      sortedRules: readonly ToolPolicyProviderRule[],
     ): EffectivePolicy => {
-      for (const rule of [...rules].sort(compareProviderPolicyRule)) {
+      for (const rule of sortedRules) {
         if (!matchPattern(rule.pattern, toolId)) continue;
         return {
           action: rule.action,
@@ -5436,7 +5454,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       };
     };
 
-    const listActivePolicyRuleSet = (): Effect.Effect<ActivePolicyRuleSet, StorageFailure> =>
+    // `forToolId` narrows the global rule read to rows that can match that one
+    // tool: an exact pattern (no `*` segment) matches only when it equals the
+    // tool id, so every other exact row is irrelevant to its resolution. The
+    // remaining rows keep their relative order, so the answer is unchanged.
+    const listActivePolicyRuleSet = (
+      forToolId?: string,
+    ): Effect.Effect<ActivePolicyRuleSet, StorageFailure> =>
       activeToolPolicyProvider
         ? // Batched per-operation resolver: fetch all policy + connection state
           // once, then resolve every tool in this operation against that
@@ -5458,32 +5482,54 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 Effect.map((rules) => ({
                   kind: "provider" as const,
                   provider: activeToolPolicyProvider!,
-                  rules,
+                  rules: [...rules].sort(compareProviderPolicyRule),
                 })),
               )
         : core
-            .findMany("tool_policy", {})
-            .pipe(Effect.map((rows) => ({ kind: "global" as const, rows })));
+            .findMany(
+              "tool_policy",
+              forToolId === undefined
+                ? {}
+                : {
+                    where: (b: AnyCb) =>
+                      b.or(b("pattern", "=", forToolId), b("pattern", "contains", "*")),
+                  },
+            )
+            .pipe(
+              Effect.map((rows) => ({
+                kind: "global" as const,
+                rows,
+                prepared: prepareToolPolicies(rows, ownerRankForRow),
+              })),
+            );
+
+    // Synchronous resolution for rule sets that need no further I/O. Returns
+    // `undefined` only for a provider that resolves per tool.
+    const resolvePolicyFromRuleSetSync = (
+      toolId: string,
+      ruleSet: ActivePolicyRuleSet,
+      defaultRequiresApproval?: boolean,
+    ): EffectivePolicy | undefined =>
+      ruleSet.kind === "prepared"
+        ? ruleSet.resolve({ toolId, defaultRequiresApproval })
+        : ruleSet.kind === "provider"
+          ? ruleSet.provider.resolve
+            ? undefined
+            : resolveProviderPolicyFromRules(toolId, ruleSet.rules ?? [])
+          : ruleSet.prepared.resolveEffective(toolId, defaultRequiresApproval);
 
     const resolvePolicyFromRuleSet = (
       toolId: string,
       ruleSet: ActivePolicyRuleSet,
       defaultRequiresApproval?: boolean,
-    ): Effect.Effect<EffectivePolicy, StorageFailure> =>
-      ruleSet.kind === "prepared"
-        ? Effect.succeed(ruleSet.resolve({ toolId, defaultRequiresApproval }))
-        : ruleSet.kind === "provider"
-          ? ruleSet.provider.resolve
-            ? ruleSet.provider.resolve({ toolId, defaultRequiresApproval })
-            : Effect.succeed(resolveProviderPolicyFromRules(toolId, ruleSet.rules ?? []))
-          : Effect.succeed(
-              resolveEffectivePolicy(
-                toolId,
-                ruleSet.rows,
-                ownerRankForRow,
-                defaultRequiresApproval,
-              ),
-            );
+    ): Effect.Effect<EffectivePolicy, StorageFailure> => {
+      if (ruleSet.kind === "provider" && ruleSet.provider.resolve) {
+        return ruleSet.provider.resolve({ toolId, defaultRequiresApproval });
+      }
+      return Effect.succeed(
+        resolvePolicyFromRuleSetSync(toolId, ruleSet, defaultRequiresApproval)!,
+      );
+    };
 
     // ------------------------------------------------------------------
     // Tools (read surface)
@@ -5704,11 +5750,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tool = rowToTool(row);
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
-            const effective = yield* resolvePolicyFromRuleSet(
-              normalizedPolicyId(tool),
-              policyRules,
-              tool.annotations?.requiresApproval,
-            );
+            const toolId = normalizedPolicyId(tool);
+            const requiresApproval = tool.annotations?.requiresApproval;
+            // Resolve in-line when the rule set needs no I/O; a per-tool
+            // Effect here dominated large catalog listings.
+            const effective =
+              resolvePolicyFromRuleSetSync(toolId, policyRules, requiresApproval) ??
+              (yield* resolvePolicyFromRuleSet(toolId, policyRules, requiresApproval));
             if (effective.action === "block") continue;
           }
           tools.push(tool);
@@ -5717,11 +5765,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           const tool = staticToolToTool(entry);
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
-            const effective = yield* resolvePolicyFromRuleSet(
-              normalizedPolicyId(tool),
-              policyRules,
-              tool.annotations?.requiresApproval,
-            );
+            const toolId = normalizedPolicyId(tool);
+            const requiresApproval = tool.annotations?.requiresApproval;
+            // Resolve in-line when the rule set needs no I/O; a per-tool
+            // Effect here dominated large catalog listings.
+            const effective =
+              resolvePolicyFromRuleSetSync(toolId, policyRules, requiresApproval) ??
+              (yield* resolvePolicyFromRuleSet(toolId, policyRules, requiresApproval));
             if (effective.action === "block") continue;
           }
           tools.push(tool);
@@ -5731,28 +5781,35 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const toolSchema = (
       address: ToolAddress,
+      options?: ToolSchemaOptions,
     ): Effect.Effect<ToolSchemaView | null, StorageFailure> =>
       Effect.gen(function* () {
-        const policyRules = yield* listActivePolicyRuleSet();
+        const includeTypeScript = options?.typeScript ?? true;
         const staticEntry = staticTools.get(String(address));
         if (staticEntry) {
           const tool = staticToolToTool(staticEntry);
+          const policyRules = yield* listActivePolicyRuleSet(normalizedPolicyId(tool));
           const effective = yield* resolvePolicyFromRuleSet(
             normalizedPolicyId(tool),
             policyRules,
             tool.annotations?.requiresApproval,
           );
           if (effective.action === "block") return null;
-          const preview = yield* Effect.tryPromise({
-            try: () =>
-              buildToolTypeScriptPreview({
-                inputSchema: tool.inputSchema,
-                outputSchema: tool.outputSchema,
-                defs: new Map(),
-              }),
-            catch: (cause) =>
-              storageFailureFromUnknown("Failed to build static tool TypeScript preview", cause),
-          }).pipe(Effect.option);
+          const preview = includeTypeScript
+            ? yield* Effect.tryPromise({
+                try: () =>
+                  buildToolTypeScriptPreview({
+                    inputSchema: tool.inputSchema,
+                    outputSchema: tool.outputSchema,
+                    defs: new Map(),
+                  }),
+                catch: (cause) =>
+                  storageFailureFromUnknown(
+                    "Failed to build static tool TypeScript preview",
+                    cause,
+                  ),
+              }).pipe(Effect.option)
+            : Option.none();
           return ToolSchemaView.make({
             address,
             name: tool.name,
@@ -5768,6 +5825,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
         const parsed = parseToolAddress(String(address));
         if (!parsed) return null;
+        // Same id `normalizedPolicyId` derives from the row this lookup returns.
+        const policyRules = yield* listActivePolicyRuleSet(
+          `${parsed.integration}.${parsed.owner}.${parsed.connection}.${parsed.tool}`,
+        );
         const row = yield* core.findFirst("tool", {
           where: (b: AnyCb) =>
             b.and(
@@ -5842,16 +5903,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // map per node), so passing the connection's full component set made a
         // single describe of a large spec cost seconds of CPU on the shared
         // session isolate. Unreferenced definitions never appear in the output.
-        const preview = yield* Effect.tryPromise({
-          try: () =>
-            buildToolTypeScriptPreview({
-              inputSchema,
-              outputSchema: effectiveOutputSchema,
-              defs: new Map(Object.entries(referenced)),
-            }),
-          catch: (cause) =>
-            storageFailureFromUnknown("Failed to build tool TypeScript preview", cause),
-        }).pipe(Effect.option);
+        // Callers that only need JSON Schema (MCP passthrough search/invoke)
+        // skip the TypeScript compile, the dominant cost of a schema read.
+        const preview = includeTypeScript
+          ? yield* Effect.tryPromise({
+              try: () =>
+                buildToolTypeScriptPreview({
+                  inputSchema,
+                  outputSchema: effectiveOutputSchema,
+                  defs: new Map(Object.entries(referenced)),
+                }),
+              catch: (cause) =>
+                storageFailureFromUnknown("Failed to build tool TypeScript preview", cause),
+            }).pipe(Effect.option)
+          : Option.none();
 
         const view = preview;
         return ToolSchemaView.make({

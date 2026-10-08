@@ -254,6 +254,147 @@ export const resolveEffectivePolicy = (
   return match ? liftUser(match) : liftPlugin(defaultRequiresApproval);
 };
 
+// ---------------------------------------------------------------------------
+// Prepared resolution — the same answer as `resolveToolPolicy`, built once per
+// rule snapshot and reused for every tool in an operation. `resolveToolPolicy`
+// re-sorts the whole rule list and re-splits every pattern for each tool, so a
+// catalog listing paid O(tools × rules·log rules) string work. Here the rules
+// are sorted once, patterns are split once, exact patterns (no `*` segment)
+// become a map lookup, and wildcard patterns are bucketed by their literal
+// first segment. Each owner still contributes its first matching rule by the
+// global sort order, and owners are combined in the order their first match
+// was found, so ties between owners keep the same winner.
+// ---------------------------------------------------------------------------
+
+interface PreparedRule {
+  /** Index in the global (ownerRank, position, id) sort order. */
+  readonly index: number;
+  readonly match: PolicyMatch;
+  /** Split pattern; only set for wildcard rules. */
+  readonly segments: readonly string[];
+}
+
+interface PreparedOwnerRules {
+  /** Exact patterns → the owner's earliest rule with that pattern. */
+  readonly exact: Map<string, PreparedRule>;
+  /** Wildcard patterns keyed by their literal first segment, in sort order. */
+  readonly wildcardByHead: Map<string, PreparedRule[]>;
+  /** Wildcard patterns whose first segment is `*` (includes universal `*`). */
+  readonly wildcardAnyHead: PreparedRule[];
+}
+
+/** `matchPattern` over pre-split segments. Kept in lockstep with it. */
+const matchSegments = (
+  patternSegments: readonly string[],
+  toolSegments: readonly string[],
+): boolean => {
+  for (let i = 0; i < patternSegments.length; i++) {
+    const seg = patternSegments[i]!;
+    if (seg === "*") {
+      if (i === patternSegments.length - 1) return toolSegments.length >= i;
+      if (i >= toolSegments.length) return false;
+      continue;
+    }
+    if (i >= toolSegments.length || toolSegments[i] !== seg) return false;
+  }
+  return patternSegments.length === toolSegments.length;
+};
+
+/** First rule in `rules` (sort order) that matches and sorts before `best`. */
+const firstWildcardMatch = (
+  rules: readonly PreparedRule[] | undefined,
+  toolSegments: readonly string[],
+  best: PreparedRule | undefined,
+): PreparedRule | undefined => {
+  if (!rules) return best;
+  for (const rule of rules) {
+    if (best && rule.index > best.index) return best;
+    if (matchSegments(rule.segments, toolSegments)) return rule;
+  }
+  return best;
+};
+
+export interface PreparedToolPolicies {
+  /** Same result as `resolveToolPolicy(toolId, policies, ownerRank)`. */
+  readonly resolve: (toolId: string) => PolicyMatch | undefined;
+  /** Same result as `resolveEffectivePolicy(toolId, policies, ownerRank, d)`. */
+  readonly resolveEffective: (toolId: string, defaultRequiresApproval?: boolean) => EffectivePolicy;
+}
+
+export const prepareToolPolicies = (
+  policies: readonly ToolPolicyRow[],
+  ownerRank: (row: Pick<ToolPolicyRow, "owner">) => number,
+): PreparedToolPolicies => {
+  const sorted = [...policies].sort((a, b) => {
+    const sa = ownerRank(a);
+    const sb = ownerRank(b);
+    if (sa !== sb) return sa - sb;
+    return comparePolicyRow(a, b);
+  });
+  const owners = new Map<string, PreparedOwnerRules>();
+  sorted.forEach((row, index) => {
+    let ownerRules = owners.get(row.owner);
+    if (!ownerRules) {
+      ownerRules = { exact: new Map(), wildcardByHead: new Map(), wildcardAnyHead: [] };
+      owners.set(row.owner, ownerRules);
+    }
+    const match: PolicyMatch = {
+      action: row.action as ToolPolicyAction,
+      pattern: row.pattern,
+      policyId: row.id,
+    };
+    const segments = row.pattern.split(".");
+    // `matchPattern` treats only a whole `*` segment as a wildcard; any other
+    // pattern matches exactly when it equals the tool id.
+    if (row.pattern !== "*" && !segments.includes("*")) {
+      if (!ownerRules.exact.has(row.pattern)) {
+        ownerRules.exact.set(row.pattern, { index, match, segments: [] });
+      }
+      return;
+    }
+    const rule: PreparedRule = { index, match, segments: row.pattern === "*" ? ["*"] : segments };
+    const head = rule.segments[0]!;
+    if (head === "*") {
+      ownerRules.wildcardAnyHead.push(rule);
+    } else {
+      const bucket = ownerRules.wildcardByHead.get(head);
+      if (bucket) bucket.push(rule);
+      else ownerRules.wildcardByHead.set(head, [rule]);
+    }
+  });
+  const ownerList = [...owners.values()];
+
+  const resolve = (toolId: string): PolicyMatch | undefined => {
+    if (ownerList.length === 0) return undefined;
+    const toolSegments = toolId.split(".");
+    const found: PreparedRule[] = [];
+    for (const ownerRules of ownerList) {
+      let best = ownerRules.exact.get(toolId);
+      best = firstWildcardMatch(
+        ownerRules.wildcardByHead.get(toolSegments[0]!),
+        toolSegments,
+        best,
+      );
+      best = firstWildcardMatch(ownerRules.wildcardAnyHead, toolSegments, best);
+      if (best) found.push(best);
+    }
+    // `resolveToolPolicy` combines owners in the order their first match
+    // appears in the global sort; equal restriction keeps the earlier one.
+    found.sort((a, b) => a.index - b.index);
+    let selected: PolicyMatch | undefined;
+    for (const rule of found) selected = moreRestrictive(selected, rule.match);
+    return selected;
+  };
+
+  return {
+    resolve,
+    resolveEffective: (toolId, defaultRequiresApproval) => {
+      const match = resolve(toolId);
+      return match ? liftUser(match) : liftPlugin(defaultRequiresApproval);
+    },
+  };
+};
+
 export const effectivePolicyFromSorted = (
   toolId: string,
   sortedPolicies: readonly (Pick<ToolPolicy, "pattern" | "action" | "id"> &
