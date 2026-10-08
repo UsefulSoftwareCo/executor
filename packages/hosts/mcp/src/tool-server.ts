@@ -1427,7 +1427,8 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                     const address = ToolAddress.make(`tools.${match.path}`);
                     const identity = parseToolAddress(String(address));
                     if (!identity) return null;
-                    const schema = yield* tools.schema(address);
+                    // Search returns JSON Schema only; skip the TypeScript preview.
+                    const schema = yield* tools.schema(address, { typeScript: false });
                     // Visibility can change between listing and schema lookup.
                     if (!schema) return null;
                     return {
@@ -1490,7 +1491,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
               });
               if (!visible.some((tool) => tool.static !== true && tool.address === address))
                 return unavailable;
-              const schema = yield* tools.schema(address);
+              const schema = yield* tools.schema(address, { typeScript: false });
               if (!schema) return unavailable;
               // The SDK validator checks this dynamic JSON schema at the MCP boundary.
               const validate = validator.getValidator<unknown>(

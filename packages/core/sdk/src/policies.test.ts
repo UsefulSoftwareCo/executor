@@ -790,3 +790,54 @@ describe("approve / require_approval interaction with annotations", () => {
     }),
   );
 });
+
+describe("tools.schema policy read", () => {
+  it.effect("narrowed rule reads keep list and schema visibility identical", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      // Exact rules for other tools never match; wildcard and exact rules for
+      // the tool itself decide. Mix both owners' worth of shapes.
+      yield* executor.policies.create({ owner: "org", pattern: "*", action: "block" });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: `vercel.org.${CONN}.deploy`,
+        action: "approve",
+      });
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "approve" });
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: `github.org.${CONN}.list`,
+        action: "block",
+      });
+      for (const name of ["a", "b", "c"]) {
+        yield* executor.policies.create({
+          owner: "org",
+          pattern: `vercel.org.${CONN}.${name}`,
+          action: "approve",
+        });
+      }
+
+      const visible = new Set((yield* executor.tools.list()).map((tool) => String(tool.address)));
+      const addresses = [addr(VERCEL, "deploy"), addr(VERCEL, "delete"), addr(GITHUB, "list")];
+      for (const address of addresses) {
+        const full = yield* executor.tools.schema(address);
+        const lean = yield* executor.tools.schema(address, { typeScript: false });
+        expect(full !== null).toBe(visible.has(String(address)));
+        expect(lean !== null).toBe(visible.has(String(address)));
+        if (full && lean) {
+          expect(lean.inputTypeScript).toBeUndefined();
+          expect(lean.outputTypeScript).toBeUndefined();
+          expect(lean.typeScriptDefinitions).toBeUndefined();
+          const {
+            inputTypeScript: _i,
+            outputTypeScript: _o,
+            typeScriptDefinitions: _d,
+            ...rest
+          } = full;
+          expect({ ...lean }).toEqual(rest);
+        }
+      }
+      expect([...visible].sort()).toEqual([String(addr(VERCEL, "deploy"))]);
+    }),
+  );
+});
