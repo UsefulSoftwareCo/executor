@@ -635,6 +635,167 @@ describe("blocked tools", () => {
   );
 });
 
+describe("tools.schemas", () => {
+  /** Count core reads per table, so a batch proves how many policy, tool and
+   *  definition reads it spends. */
+  const countingDb = (db: FumaDb, reads: Record<string, number>): FumaDb => {
+    const wrap = (inner: FumaDb): FumaDb =>
+      new Proxy(inner, {
+        get(target, property) {
+          if (property === "withContext") {
+            return (context: unknown) =>
+              wrap((target.withContext as (value: unknown) => FumaDb)(context));
+          }
+          if (property === "findMany" || property === "findFirst") {
+            return (...args: Parameters<FumaDb["findMany"]>) => {
+              const [table] = args;
+              reads[table] = (reads[table] ?? 0) + 1;
+              return (target[property] as (...inner: typeof args) => unknown)(...args);
+            };
+          }
+          return Reflect.get(target, property);
+        },
+      });
+    return wrap(db);
+  };
+
+  const setupCounting = () =>
+    Effect.gen(function* () {
+      const reads: Record<string, number> = {};
+      const config = makeTestConfig({ plugins: [policyTestPlugin()] as const });
+      const executor = yield* createExecutor({ ...config, db: countingDb(config.db, reads) });
+      yield* Effect.addFinalizer(() =>
+        executor
+          .close()
+          .pipe(Effect.andThen(Effect.promise(() => config.testDb.close())), Effect.ignore),
+      );
+      yield* executor.ptest.seed();
+      for (const integration of [VERCEL, GITHUB]) {
+        yield* executor.connections.create({
+          owner: "org",
+          name: CONN,
+          integration,
+          template: TEMPLATE,
+          from: { provider: ProviderKey.make("memory"), id: ProviderItemId.make("v") },
+        });
+      }
+      const reset = () => {
+        for (const key of Object.keys(reads)) delete reads[key];
+      };
+      return { executor, reads, reset };
+    });
+
+  it.effect("answers per address exactly as schema does, in input order", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*.*.delete",
+        action: "block",
+      });
+      yield* executor.policies.create({ owner: "org", pattern: "github.*", action: "approve" });
+      const addresses = [
+        addr(VERCEL, "deploy"),
+        addr(VERCEL, "delete"),
+        addr(GITHUB, "list"),
+        addr(VERCEL, "missing"),
+        ToolAddress.make("not-a-tool-address"),
+        addr(VERCEL, "deploy"),
+      ];
+      const batched = yield* executor.tools.schemas(addresses);
+      const single = yield* Effect.forEach(addresses, (address) => executor.tools.schema(address));
+      expect(batched).toEqual(single);
+      expect(batched.map((view) => view?.name ?? null)).toEqual([
+        "deploy",
+        null,
+        "list",
+        null,
+        null,
+        "deploy",
+      ]);
+      expect(batched[0]?.annotations).toEqual(single[0]?.annotations);
+      expect(batched[2]?.inputTypeScript).toEqual(single[2]?.inputTypeScript);
+
+      const compact = yield* executor.tools.schemas(addresses, { typeScript: false });
+      expect(compact).toEqual(
+        yield* Effect.forEach(addresses, (address) =>
+          executor.tools.schema(address, { typeScript: false }),
+        ),
+      );
+      expect(compact[0]?.inputTypeScript).toBeUndefined();
+      expect(yield* executor.tools.schemas([])).toEqual([]);
+    }),
+  );
+
+  it.effect("sees a policy change between calls", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      const addresses = [addr(VERCEL, "deploy"), addr(VERCEL, "delete")];
+      const before = yield* executor.tools.schemas(addresses);
+      expect(before.map((view) => view?.name)).toEqual(["deploy", "delete"]);
+
+      const rule = yield* executor.policies.create({
+        owner: "org",
+        pattern: "vercel.*",
+        action: "block",
+      });
+      const blocked = yield* executor.tools.schemas(addresses);
+      expect(blocked).toEqual([null, null]);
+      expect(blocked).toEqual(
+        yield* Effect.forEach(addresses, (address) => executor.tools.schema(address)),
+      );
+
+      yield* executor.policies.remove({ id: String(rule.id), owner: "org" });
+      const restored = yield* executor.tools.schemas(addresses);
+      expect(restored.map((view) => view?.name)).toEqual(["deploy", "delete"]);
+    }),
+  );
+
+  it.effect("keeps a user block over an org approve for the same tool", () =>
+    Effect.gen(function* () {
+      const executor = yield* setupExecutor();
+      yield* executor.policies.create({ owner: "org", pattern: "vercel.*", action: "approve" });
+      yield* executor.policies.create({
+        owner: "user",
+        pattern: "vercel.*.*.deploy",
+        action: "block",
+      });
+      const addresses = [addr(VERCEL, "deploy"), addr(VERCEL, "delete")];
+      const batched = yield* executor.tools.schemas(addresses);
+      expect(batched.map((view) => view?.name ?? null)).toEqual([null, "delete"]);
+      expect(batched).toEqual(
+        yield* Effect.forEach(addresses, (address) => executor.tools.schema(address)),
+      );
+    }),
+  );
+
+  it.effect("reads policy once per batch, and tools and definitions once per connection", () =>
+    Effect.gen(function* () {
+      const { executor, reads, reset } = yield* setupCounting();
+      const addresses = [
+        addr(VERCEL, "deploy"),
+        addr(VERCEL, "delete"),
+        addr(GITHUB, "list"),
+        addr(VERCEL, "missing"),
+      ];
+
+      reset();
+      yield* Effect.forEach(addresses, (address) =>
+        executor.tools.schema(address, { typeScript: false }),
+      );
+      expect(reads.tool_policy).toBe(4);
+      expect(reads.tool).toBe(4);
+      expect(reads.definition).toBe(3);
+
+      reset();
+      yield* executor.tools.schemas(addresses, { typeScript: false });
+      expect(reads.tool_policy).toBe(1);
+      expect(reads.tool).toBe(2);
+      expect(reads.definition).toBe(2);
+    }).pipe(Effect.scoped),
+  );
+});
+
 describe("active tool-policy provider", () => {
   const staticPlugin = definePlugin(() => ({
     id: "toolkit-fixture" as const,
@@ -700,6 +861,11 @@ describe("active tool-policy provider", () => {
         ToolAddress.make("toolkit-fixture.ctl.hidden"),
       );
       expect(hiddenSchema).toBeNull();
+      const batched = yield* executor.tools.schemas([
+        ToolAddress.make("toolkit-fixture.ctl.hidden"),
+        ToolAddress.make("toolkit-fixture.ctl.allowed"),
+      ]);
+      expect(batched).toEqual([null, allowedSchema]);
 
       const allowed = yield* executor.execute(ToolAddress.make("toolkit-fixture.ctl.allowed"), {});
       expect(allowed).toBe("allowed");
