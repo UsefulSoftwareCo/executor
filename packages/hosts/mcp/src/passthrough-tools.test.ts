@@ -713,7 +713,18 @@ describe("passthrough mode server", () => {
           "search",
           "skills",
         ]);
-        expect(JSON.stringify(listed).length).toBeLessThan(4000);
+        // Every byte here is paid on every turn of every client; the long
+        // guide stays behind `skills`.
+        expect(JSON.stringify(listed).length).toBeLessThan(3600);
+        const instructions = client.getInstructions() ?? "";
+        expect(instructions.length).toBeLessThan(1000);
+        // The instructions name the three-call path in order, with an example.
+        const order = ["integrations({})", "search({", "invoke({", "Example:"].map((marker) =>
+          instructions.indexOf(marker),
+        );
+        expect(order.every((index) => index >= 0)).toBe(true);
+        expect(order[0]).toBeLessThan(order[1]!);
+        expect(order[1]).toBeLessThan(order[2]!);
         expect(lists).toEqual([]);
         expect(schemaReads).toEqual([]);
         const result = await client.callTool({

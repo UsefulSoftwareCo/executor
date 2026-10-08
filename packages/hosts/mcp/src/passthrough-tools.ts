@@ -23,13 +23,21 @@ export const passthroughCallCode = (address: string, args: unknown): string => {
   return `return await tools[${JSON.stringify(bare)}](${JSON.stringify(args ?? {})});`;
 };
 
-/** Describe the fixed search/invoke surface without listing the underlying catalog. */
+/**
+ * The server `instructions`: the shortest path from a request to a call,
+ * with one worked example. Everything longer lives in the search-invoke
+ * guide, which costs context only when a model asks for it.
+ */
 export const passthroughInstructions = (): string =>
-  'Use integrations to see connected accounts and skills({ name: "search-invoke" }) for the workflow. ' +
-  "Find connected integration tools with search, then call invoke with the returned tool ID and JSON arguments. " +
-  'Search returns compact hits (one-line description and an argument summary); pass detail: "full" with a small limit for complete input schemas. Use its nextOffset to get more matches. ' +
-  "Invoke can change external state; your client handles approval for each call. Workspace block policies remain enforced. " +
-  "No general execute or resume tools are exposed. When artifacts are enabled, use skills to read their guides.";
+  [
+    "Executor runs tools of connected integrations. Fastest path, three calls:",
+    "1. integrations({}) once, to learn the integration slugs and accounts (skip when you already know the slug).",
+    '2. search({ query: "<action words>", integration: "<slug or alias>", limit: 3 }). Hits are compact: id, one-line description, and an argument summary.',
+    "3. invoke({ tool: <hit id>, arguments: { ... } }).",
+    'Example: search({ query: "create issue", integration: "github", limit: 3 }) then invoke({ tool: "tools.github.org.main.issues.create", arguments: { title: "Bug" } }).',
+    'Use detail: "full" on search only when the argument summary is not enough; an invoke rejected for invalid arguments also returns the schema.',
+    'Invoke can change external state; your client handles approval and workspace blocks stay enforced. skills({ name: "search-invoke" }) has the long guide.',
+  ].join("\n");
 
 /** On-demand guidance for the JSON tool surface; no sandbox or artifact instructions. */
 export const SEARCH_INVOKE_SKILL: Skill = {
