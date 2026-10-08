@@ -9,7 +9,10 @@ most severe outcome of its repeated calls: `blocked`, then `error`, then `ok`.
 A script or transport failure sets every attributed row to `error`. Successful
 calls before a script failure retain their target. Duration and response bytes
 are those of the whole execution. Older engines with only successful `toolPaths`
-retain their existing attribution and execution status. This does not instrument other hosts,
+retain their existing attribution and execution status. Approval pauses defer
+recording until the logical execution completes. Model and browser resumes
+remain attributed to the original `execute`; repeated pauses, concurrent
+resumes, and replayed results do not add execution rows. This does not instrument other hosts,
 unauthenticated requests, or calls rejected before MCP tool dispatch.
 
 Each event has the call-start timestamp in milliseconds, an HMAC-SHA256 member
@@ -24,11 +27,16 @@ and the fixed `ok`, `error`, and `blocked` outcomes. Code and logs are never
 stored. Keep the database within its existing private access boundary.
 
 Response bytes count the complete serialized JSON-RPC response in UTF-8, before
-HTTP/SSE framing or compression. Duration ends after transport send completes.
+HTTP/SSE framing or compression. For paused executions, bytes count only the
+terminal response. Duration starts at the original `execute` and ends after
+the terminal transport send, including approval wait time. Timestamp, member
+pseudonym, and traffic class remain those of the original call.
 The fixed hidden-tool refusal is counted as `blocked`; this includes unknown
 addresses because the existing response deliberately combines both cases.
-Transport failures and abandoned calls count as `error` (zero response bytes
-when no response was produced). Results and policies keep their existing behavior.
+Terminal transport failures and abandoned active calls count as `error`
+(zero response bytes when no response was produced). A paused session closed
+without a terminal outcome counts as observation loss. Results and policies
+keep their existing behavior.
 
 The observer uses public SDK transport callbacks. It does not inspect SDK
 private fields or change search, schema, catalog refresh, or encrypted secrets.
@@ -38,7 +46,10 @@ The `executor_tool_usage` table shares the existing libSQL client with the
 host. The schema migration preserves rows, IDs, the AUTOINCREMENT high-water
 value (including deleted IDs), the salt, and loss counters in one write batch.
 No second write connection opens. Writes run in batches once per second,
-with at most 1,024 queued events and 1,024 active tracked calls per MCP session.
+with at most 1,024 queued events. Each MCP transport retains at most 1,024
+active tracked calls, 1,024 paused executions, and 1,024 in-flight resume request
+IDs. Each paused entry holds only the original call metadata and a validated
+opaque execution ID; the execution ID is never stored in usage rows.
 Retention runs at startup, each flush, and hourly while idle: seven days and
 at most 100,000 rows. SQLite reuses deleted space; the table reaches a bounded
 high-water size. A shutdown drains the queue. A crash can lose up to one second

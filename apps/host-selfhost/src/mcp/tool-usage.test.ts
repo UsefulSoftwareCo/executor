@@ -195,6 +195,216 @@ describe("tool usage MCP boundary", () => {
     ).toBe("blocked");
   });
 
+  it("links a reentrant resume to execute, retains original traffic and ignores invalid and replayed resumes", async () => {
+    const events: ToolUsageEvent[] = [];
+    const executionId = "exec_00000000-0000-4000-8000-000000000001";
+    const request = (id: number, name: string, args: object = {}): JSONRPCMessage => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+    const result = (id: number, structuredContent: object): JSONRPCMessage => ({
+      jsonrpc: "2.0",
+      id,
+      result: { content: [], structuredContent },
+    });
+    let eventsAfterInvalid: readonly ToolUsageEvent[] = [];
+    const terminal = {
+      status: "completed",
+      toolCalls: [
+        { path: "sample.org.test.read", status: "ok" },
+        { path: "sample.org.test.write", status: "blocked" },
+      ],
+      result: "result-secret",
+      logs: ["log-secret"],
+    };
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async (message) => {
+        if ("id" in message && message.id === 1) {
+          // The client answers immediately, before the pause send resolves.
+          transport.onmessage!(
+            request(2, "resume", {
+              executionId,
+              action: "bad",
+              content: { secret: "argument-secret" },
+            }),
+          );
+          await transport.send({
+            jsonrpc: "2.0",
+            id: 2,
+            error: { code: -32602, message: "error-secret" },
+          });
+          eventsAfterInvalid = [...events];
+          transport.onmessage!(request(3, "resume", { executionId, action: "accept" }), {
+            requestInfo: { headers: { "x-executor-traffic-class": "benchmark" } },
+          });
+          await transport.send(result(3, terminal));
+        }
+      },
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    transport.onmessage!(request(1, "execute", { code: "code-secret" }), {
+      requestInfo: { headers: { "x-executor-traffic-class": "monitor" } },
+    });
+    await transport.send(
+      result(1, {
+        status: "waiting_for_interaction",
+        executionId,
+        interaction: { args: { secret: "interaction-secret" } },
+      }),
+    );
+    transport.onmessage!(request(4, "resume", { executionId, action: "accept" }));
+    await transport.send(result(4, terminal));
+    transport.onmessage!(
+      request(5, "resume", { executionId: "argument-secret", action: "accept" }),
+    );
+    await transport.send(result(5, terminal));
+    transport.onclose!();
+    expect(eventsAfterInvalid).toEqual([]);
+    expect(
+      events.map((event) => [event.mcpTool, event.targetTool, event.status, event.trafficClass]),
+    ).toEqual([
+      ["execute", "tools.sample.org.test.read", "ok", "monitor"],
+      ["execute", "tools.sample.org.test.write", "blocked", "monitor"],
+    ]);
+    expect(
+      events.every(
+        (event) => event.responseBytes === Buffer.byteLength(JSON.stringify(result(3, terminal))),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(events)).not.toMatch(
+      /code-secret|argument-secret|interaction-secret|result-secret|log-secret|error-secret|exec_/,
+    );
+  });
+
+  it("bounds paused observations and reports unfinished executions as losses", async () => {
+    const events: ToolUsageEvent[] = [];
+    let lost = 0;
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(
+      transport,
+      memberHash,
+      (event) => events.push(event),
+      () => lost++,
+    );
+    await transport.start();
+    for (let id = 0; id < 1025; id++) {
+      transport.onmessage!({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "execute", arguments: { code: "code-secret" } },
+      });
+      await transport.send({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          structuredContent: {
+            status: "user_approval_required",
+            executionId: `exec_00000000-0000-4000-8000-${id.toString(16).padStart(12, "0")}`,
+            approvalUrl: "url-secret",
+          },
+        },
+      });
+    }
+    expect(lost).toBe(1);
+    expect(events).toEqual([]);
+    // A different session cannot attribute an execution it never observed.
+    const unrelated: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: async () => {},
+    };
+    observeToolUsageTransport(unrelated, memberHash, (event) => events.push(event));
+    await unrelated.start();
+    unrelated.onmessage!({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "resume",
+        arguments: { executionId: "exec_00000000-0000-4000-8000-000000000001" },
+      },
+    });
+    await unrelated.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { structuredContent: { status: "completed", toolPaths: ["sample.org.test.read"] } },
+    });
+    transport.onclose!();
+    expect(lost).toBe(1025);
+    expect(events).toEqual([]);
+    transport.onclose!();
+    expect(lost).toBe(1025);
+  });
+
+  it("preserves terminal resume send failures and records the targets once as execute errors", async () => {
+    const events: ToolUsageEvent[] = [];
+    const executionId = "exec_00000000-0000-4000-8000-000000000001";
+    // oxlint-disable-next-line executor/no-error-constructor -- boundary: exercise the native transport rejection contract
+    const failure = new TypeError("transport-secret");
+    const transport: Transport = {
+      start: async () => {},
+      close: async () => {},
+      send: (message) => {
+        if ("id" in message && message.id === 2) {
+          // oxlint-disable-next-line executor/no-promise-reject -- boundary: simulate terminal response delivery failure
+          return Promise.reject(failure);
+        }
+        return Promise.resolve();
+      },
+    };
+    observeToolUsageTransport(transport, memberHash, (event) => events.push(event));
+    await transport.start();
+    transport.onmessage!({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "execute" },
+    });
+    await transport.send({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { structuredContent: { status: "waiting_for_interaction", executionId } },
+    });
+    transport.onmessage!({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "resume", arguments: { executionId, action: "accept" } },
+    });
+    const terminal = {
+      structuredContent: {
+        status: "completed",
+        toolCalls: [{ path: "sample.org.test.read", status: "ok" }],
+      },
+    };
+    await expect(transport.send({ jsonrpc: "2.0", id: 2, result: terminal })).rejects.toBe(failure);
+    transport.onmessage!({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "resume", arguments: { executionId, action: "accept" } },
+    });
+    await transport.send({ jsonrpc: "2.0", id: 3, result: terminal });
+    transport.onclose!();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      mcpTool: "execute",
+      targetTool: "tools.sample.org.test.read",
+      status: "error",
+    });
+    expect(JSON.stringify(events)).not.toMatch(/transport-secret|exec_/);
+  });
+
   it("records one execute event per distinct connected tool, or one without a target", async () => {
     const events: ToolUsageEvent[] = [];
     const transport: Transport = {

@@ -55,6 +55,8 @@ const decodeExecute = Schema.decodeUnknownSync(
     result: Schema.Struct({
       structuredContent: Schema.Struct({
         status: Schema.String,
+        executionId: Schema.optional(Schema.String),
+        approvalUrl: Schema.optional(Schema.String),
         toolPaths: Schema.optional(Schema.Array(Schema.String)),
         toolCalls: Schema.optional(
           Schema.Array(
@@ -119,9 +121,13 @@ const fixtureSpec = JSON.stringify({
 });
 
 /** Register an org-owned connection on its own DB handle; WAL makes it visible to the app. */
-const addOrgIntegration = async (organizationId: string): Promise<void> => {
+const addOrgIntegration = async (
+  organizationId: string,
+  path = dbPath,
+  approval = false,
+): Promise<void> => {
   const seedDb = await createSelfHostDb({
-    path: dbPath,
+    path,
     namespace: "executor_selfhost",
     version: "1.0.0",
   });
@@ -138,6 +144,13 @@ const addOrgIntegration = async (organizationId: string): Promise<void> => {
         pattern: "fixture.org.shared.blocked.readBlocked",
         action: "block",
       });
+      if (approval) {
+        for (const pattern of [
+          "fixture.org.shared.other.readOther",
+          "fixture.org.shared.flaky.readFlaky",
+        ])
+          yield* admin.policies.create({ owner: "org", pattern, action: "require_approval" });
+      }
       yield* admin.connections.create({
         owner: "org",
         name: ConnectionName.make("shared"),
@@ -211,6 +224,171 @@ const openSession = async (
     return decodeResponse(await response.json());
   };
 };
+
+it("attributes real HTTP execution outcomes once across model and browser approval resumes", async () => {
+  const { makeSelfHostApiHandler } = await import("../app");
+  const pauseDbPath = join(dir, "pause.db");
+  const app = await makeSelfHostApiHandler({ dbPath: pauseDbPath });
+  const approvalStatuses: number[] = [];
+  const browserSessions: string[] = [];
+  const replays: unknown[] = [];
+  const replayOutcomes: unknown[] = [];
+  const expected: { mcp_tool: string; target_tool: string; status: string }[] = [];
+  const addExpected = (path: string, status: string) =>
+    expected.push({ mcp_tool: "execute", target_tool: `tools.fixture.org.shared.${path}`, status });
+  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: flush telemetry and close the app even when an assertion fails
+  try {
+    const login = await app.handler(
+      new Request(`${BASE}/api/auth/sign-in/email`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "admin@usage.test", password: "admin-pass-123456" }),
+      }),
+    );
+    expect(login.status).toBe(200);
+    const token = login.headers.get("set-auth-token")!;
+    const me = await app.handler(
+      new Request(`${BASE}/api/account/me`, {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+    );
+    await addOrgIntegration(decodeOrganization(await me.json()).organization.id, pauseDbPath, true);
+    let id = 2;
+    for (const mode of ["model", "browser"] as const) {
+      const call = await openSession(app.handler, token, `artifacts=0&elicitation_mode=${mode}`);
+      for (const action of ["accept", "decline", "cancel"] as const) {
+        const paused = decodeExecute(
+          await call(id++, "execute", {
+            code: [
+              "await tools.search({ query: 'argument-secret' });",
+              "await tools.fixture.org.shared.read.readFirst({});",
+              "await tools.fixture.org.shared.other.readOther({});",
+              "await tools.fixture.org.shared.fail.readFailed({});",
+              "await tools.fixture.org.shared.blocked.readBlocked({});",
+              "console.log('log-secret'); return 'code-secret';",
+            ].join("\n"),
+          }),
+        ).result.structuredContent;
+        expect(paused.status).toBe(
+          mode === "model" ? "waiting_for_interaction" : "user_approval_required",
+        );
+        expect(paused.toolCalls).toBeUndefined();
+        const executionId = paused.executionId!;
+        if (mode === "browser") {
+          const sessionId = new URL(paused.approvalUrl!).searchParams.get("mcp_session_id")!;
+          browserSessions.push(sessionId);
+          const approval = await app.handler(
+            new Request(`${BASE}/api/mcp-sessions/${sessionId}/executions/${executionId}/resume`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body: JSON.stringify({ action, content: { secret: "approval-secret" } }),
+            }),
+          );
+          approvalStatuses.push(approval.status);
+        }
+        const resumed = decodeExecute(await call(id++, "resume", { executionId, action })).result
+          .structuredContent;
+        expect(resumed.status).toBe(action === "accept" ? "completed" : "error");
+        expect(resumed.toolCalls).toEqual([
+          { path: "fixture.org.shared.read.readFirst", status: "ok" },
+          {
+            path: "fixture.org.shared.other.readOther",
+            status: action === "accept" ? "ok" : "blocked",
+          },
+          ...(action === "accept"
+            ? [
+                { path: "fixture.org.shared.fail.readFailed", status: "error" },
+                { path: "fixture.org.shared.blocked.readBlocked", status: "blocked" },
+              ]
+            : []),
+        ]);
+        addExpected("read.readFirst", action === "accept" ? "ok" : "error");
+        addExpected("other.readOther", action === "accept" ? "ok" : "error");
+        if (action === "accept") {
+          addExpected("fail.readFailed", "error");
+          addExpected("blocked.readBlocked", "blocked");
+        }
+        // Cached resume responses must not count another logical execution.
+        if (mode === "model") {
+          replays.push(
+            decodeExecute(await call(id++, "resume", { executionId, action })).result
+              .structuredContent,
+          );
+          replayOutcomes.push(resumed);
+        }
+      }
+    }
+    expect(browserSessions.every(Boolean)).toBe(true);
+    expect(approvalStatuses).toEqual([200, 200, 200]);
+    expect(replays).toEqual(replayOutcomes);
+    const call = await openSession(app.handler, token, "artifacts=0&elicitation_mode=model");
+    const initial = decodeExecute(
+      await call(id++, "execute", {
+        code: [
+          "await tools.fixture.org.shared.read.readFirst({});",
+          "await tools.fixture.org.shared.other.readOther({});",
+          "await tools.fixture.org.shared.flaky.readFlaky({});",
+          "throw new Error('script-secret');",
+        ].join("\n"),
+      }),
+    ).result.structuredContent;
+    const firstId = initial.executionId!;
+    const next = decodeExecute(
+      await call(id++, "resume", { executionId: firstId, action: "accept" }),
+    ).result.structuredContent;
+    expect(next.status).toBe("waiting_for_interaction");
+    expect(next.executionId).not.toBe(firstId);
+    expect(
+      decodeExecute(await call(id++, "resume", { executionId: firstId, action: "accept" })).result
+        .structuredContent,
+    ).toEqual(next);
+    const results = await Promise.all([
+      call(id++, "resume", { executionId: next.executionId!, action: "accept" }),
+      call(id++, "resume", { executionId: next.executionId!, action: "accept" }),
+    ]);
+    expect(decodeExecute(results[0]).result.structuredContent.status).toBe("error");
+    expect(decodeExecute(results[1]).result.structuredContent).toEqual(
+      decodeExecute(results[0]).result.structuredContent,
+    );
+    for (const path of ["read.readFirst", "other.readOther", "flaky.readFlaky"])
+      addExpected(path, "error");
+
+    // Native mode takes engine.execute, with no pause or resume boundary.
+    const inline = await openSession(app.handler, token, "artifacts=0&elicitation_mode=native");
+    const final = decodeExecute(
+      await inline(id++, "execute", {
+        code: [
+          "await tools.fixture.org.shared.read.readFirst({});",
+          "await tools.fixture.org.shared.fail.readFailed({});",
+          "await tools.fixture.org.shared.blocked.readBlocked({});",
+          "console.log('log-secret'); return 'code-secret';",
+        ].join("\n"),
+      }),
+    ).result.structuredContent;
+    expect(final.status).toBe("completed");
+    addExpected("read.readFirst", "ok");
+    addExpected("fail.readFailed", "error");
+    addExpected("blocked.readBlocked", "blocked");
+  } finally {
+    await app.dispose();
+  }
+  const metricsDb = createClient({ url: `file:${pauseDbPath}` });
+  const rows = await metricsDb.execute("SELECT * FROM executor_tool_usage ORDER BY id");
+  metricsDb.close();
+  expect(
+    rows.rows.map((row) => ({
+      mcp_tool: row.mcp_tool,
+      target_tool: row.target_tool,
+      status: row.status,
+    })),
+  ).toEqual(expected);
+  expect(
+    rows.rows.every((row) => Number(row.response_bytes) > 0 && Number(row.duration_ms) >= 0),
+  ).toBe(true);
+  expect(JSON.stringify(rows.rows)).not.toMatch(
+    /argument-secret|approval-secret|code-secret|upstream-secret|script-secret|log-secret|admin@usage.test|admin-pass|exec_|toolCalls|toolPaths/,
+  );
+});
 
 it("records authenticated HTTP passthrough and sandbox execute calls and exposes a read-only CLI summary", async () => {
   const { makeSelfHostApiHandler } = await import("../app");
