@@ -2353,7 +2353,10 @@ describe("tool catalog sync safety", () => {
               }
               return {
                 tools: [
-                  { name: ToolName.make(`deploy_${String(connection.name)}`), description: "d" },
+                  {
+                    name: ToolName.make(`deploy_${String(connection.name)}`),
+                    description: latched ? "updated" : "d",
+                  },
                 ],
               };
             }),

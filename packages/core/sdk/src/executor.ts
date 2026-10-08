@@ -1239,6 +1239,20 @@ const rowToTool = (
   };
 };
 
+// Compare the persisted payload, including JSON key order. Timestamps and
+// storage IDs do not belong to the catalog. Keep row order significant too.
+const catalogRowsMatch = (
+  stored: readonly Record<string, unknown>[],
+  proposed: readonly Record<string, unknown>[],
+  columns: readonly string[],
+): boolean =>
+  stored.length === proposed.length &&
+  stored.every(
+    (row, index) =>
+      JSON.stringify(columns.map((column) => row[column])) ===
+      JSON.stringify(columns.map((column) => proposed[index]![column])),
+  );
+
 // Projects a tool's annotations onto the schema view. Plugins persist extra
 // keys alongside the declared contract (the mcp plugin stores its upstream tool
 // name and `_meta` there so they survive to invokeTool), so the three declared
@@ -3534,8 +3548,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
       mode: () => "explicit" | "background",
-    ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
+    ): Effect.Effect<readonly Tool[] | null, IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
+        // A detached fiber still shares the request's event loop. Give pending
+        // HTTP I/O a turn between background listings, including fast failures.
+        if (mode() === "background") yield* Effect.sleep(0);
         const runtime = runtimes.get(integrationRow.plugin_id);
         const keys = yield* Effect.try({
           try: () => ownedKeys(ref.owner),
@@ -3679,6 +3696,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             ),
           );
 
+        if (mode() === "background") yield* Effect.sleep(0);
+
         if (result.incomplete === true) {
           // Non-authoritative listing (integration unreachable, auth not ready).
           // Keep the existing catalog — replacing it would wipe working tools
@@ -3692,6 +3711,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             integration: String(ref.integration),
             connection: String(ref.name),
           });
+          // Background scans discard the return value. Loading every schema
+          // here made a wave of failed listings monopolize the event loop.
+          // An explicit waiter can read the retained catalog after completion.
+          if (mode() === "background") return null;
           const keptRows = yield* core.findMany("tool", { where });
           return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
         }
@@ -3701,8 +3724,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           runtime.plugin.remoteToolCatalog === true &&
           result.tools.length === 0
         ) {
-          const keptRows = yield* core.findMany("tool", { where });
-          if (keptRows.length > 0) {
+          const keptCount = yield* core.count("tool", { where });
+          if (keptCount > 0) {
             const reason =
               "background tool sync produced an authoritative empty catalog for a connection with existing tools";
             yield* stampSyncedWithHealth(reason);
@@ -3710,8 +3733,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               reason,
               integration: String(ref.integration),
               connection: String(ref.name),
-              existingToolCount: keptRows.length,
+              existingToolCount: keptCount,
             });
+            if (mode() === "background") return null;
+            const keptRows = yield* core.findMany("tool", { where });
             return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
           }
         }
@@ -3745,16 +3770,49 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           created_at: now,
         }));
 
-        yield* persistCatalog(
+        // Compare outside the write transaction. Most remote re-listings are
+        // unchanged; they need one freshness UPDATE, not a delete/reinsert of
+        // every schema. Keep the compare and replacement under the same permit.
+        yield* catalogPersistLock.withPermits(1)(
           Effect.gen(function* () {
-            yield* core.deleteMany("tool", { where });
-            yield* core.deleteMany("definition", { where });
-            yield* core.createMany("tool", toolRows);
-            yield* core.createMany("definition", definitionRows);
-            yield* stampSynced(existingRow);
+            const toolColumns = [
+              "plugin_id",
+              "name",
+              "description",
+              "input_schema",
+              "output_schema",
+              "annotations",
+            ] as const;
+            const definitionColumns = ["plugin_id", "name", "schema"] as const;
+            const storedTools = yield* core.findMany("tool", { where, select: toolColumns });
+            const storedDefinitions = yield* core.findMany("definition", {
+              where,
+              select: definitionColumns,
+            });
+            const unchanged = yield* Effect.try({
+              try: () =>
+                catalogRowsMatch(storedTools, toolRows, toolColumns) &&
+                catalogRowsMatch(storedDefinitions, definitionRows, definitionColumns),
+              catch: (cause) => storageFailureFromUnknown("comparing tool catalog", cause),
+            });
+            if (mode() === "background") yield* Effect.sleep(0);
+            if (unchanged) {
+              yield* stampSynced(existingRow);
+            } else {
+              yield* transaction(
+                Effect.gen(function* () {
+                  yield* core.deleteMany("tool", { where });
+                  yield* core.deleteMany("definition", { where });
+                  yield* core.createMany("tool", toolRows);
+                  yield* core.createMany("definition", definitionRows);
+                  yield* stampSynced(existingRow);
+                }),
+              );
+            }
           }),
         );
 
+        if (mode() === "background") return null;
         return result.tools.map((tool: ToolDef) =>
           rowToTool(
             {
@@ -3779,7 +3837,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     type ToolProductionError = IntegrationNotFoundError | StorageFailure;
     interface ToolProductionInFlight {
-      readonly deferred: Deferred.Deferred<readonly Tool[], ToolProductionError>;
+      readonly deferred: Deferred.Deferred<readonly Tool[] | null, ToolProductionError>;
       mode: "explicit" | "background";
     }
     const toolProductionInFlight = new Map<string, ToolProductionInFlight>();
@@ -3790,14 +3848,33 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<readonly Tool[], ToolProductionError> =>
       Effect.suspend(() => {
         const key = `${ref.owner}:${String(ref.integration)}:${String(ref.name)}`;
+        const awaitProduction = (entry: ToolProductionInFlight) =>
+          Deferred.await(entry.deferred).pipe(
+            Effect.flatMap((tools) =>
+              tools !== null
+                ? Effect.succeed(tools)
+                : requestedMode === "background"
+                  ? Effect.succeed([] as readonly Tool[])
+                  : core
+                      .findMany("tool", {
+                        where: (b: AnyCb) =>
+                          b.and(
+                            byOwner(ref.owner)(b),
+                            b("integration", "=", String(ref.integration)),
+                            b("connection", "=", String(ref.name)),
+                          ),
+                      })
+                      .pipe(Effect.map((rows) => rows.map((row) => rowToTool(row)))),
+            ),
+          );
         const existing = toolProductionInFlight.get(key);
         if (existing) {
           if (requestedMode === "explicit") existing.mode = "explicit";
-          return Deferred.await(existing.deferred);
+          return awaitProduction(existing);
         }
 
         const entry: ToolProductionInFlight = {
-          deferred: Deferred.makeUnsafe<readonly Tool[], ToolProductionError>(),
+          deferred: Deferred.makeUnsafe<readonly Tool[] | null, ToolProductionError>(),
           mode: requestedMode,
         };
         toolProductionInFlight.set(key, entry);
@@ -3806,7 +3883,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           Effect.flatMap((exit) => Deferred.done(entry.deferred, exit)),
           Effect.ensuring(Effect.sync(() => void toolProductionInFlight.delete(key))),
         );
-        return Effect.forkDetach(run).pipe(Effect.andThen(Deferred.await(entry.deferred)));
+        return Effect.forkDetach(run).pipe(Effect.andThen(awaitProduction(entry)));
       });
 
     // ------------------------------------------------------------------
