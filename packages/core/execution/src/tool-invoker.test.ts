@@ -171,6 +171,8 @@ const withPrivateAnnotations = (annotations: ToolAnnotations) => ({
 const makeTestPlugin = (config: {
   readonly pluginId: string;
   readonly integration: string;
+  /** Catalog display name; omitted, the name falls back to the slug. */
+  readonly displayName?: string;
   readonly tools: readonly TestToolSpec[];
 }) => {
   const slug = IntegrationSlug.make(config.integration);
@@ -206,6 +208,7 @@ const makeTestPlugin = (config: {
       seed: () =>
         ctx.core.integrations.register({
           slug,
+          ...(config.displayName === undefined ? {} : { name: config.displayName }),
           description: config.integration,
           config: {},
         }),
@@ -537,6 +540,81 @@ describe("tool discovery", () => {
       expect(after.items.map((match) => match.path)).toEqual(
         before.items.map((match) => match.path),
       );
+    }),
+  );
+
+  it.effect("resolves a namespace alias through the integration catalog", () =>
+    Effect.gen(function* () {
+      const gmail = makeTestPlugin({
+        pluginId: "gmail-alias-test",
+        integration: "google_gmail",
+        displayName: "Gmail",
+        tools: [
+          {
+            name: "listMessages",
+            description: "List messages",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+          {
+            name: "sendMessage",
+            description: "Send a message",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed([]),
+          },
+        ],
+      });
+      const calendar = makeTestPlugin({
+        pluginId: "calendar-alias-test",
+        integration: "google_calendar",
+        displayName: "Google Calendar",
+        tools: [
+          {
+            name: "insertEvent",
+            description: "Create an event",
+            inputJsonSchema: EmptyInputJson,
+            validator: EmptyValidator,
+            handler: () => Effect.succeed({}),
+          },
+        ],
+      });
+      const executor = yield* makeExecutorWith([gmail, calendar] as const);
+      yield* provision(executor as never, [
+        { pluginId: "gmail-alias-test", integration: "google_gmail" },
+        { pluginId: "calendar-alias-test", integration: "google_calendar" },
+      ]);
+
+      // The production failure: "gmail" is not a token prefix of
+      // "google_gmail", so the namespace used to match nothing.
+      const ranked = yield* searchTools(executor, "list messages", 5, { namespace: "gmail" });
+      expect(ranked.items.map((item) => item.path)).toEqual(["google_gmail.org.main.listMessages"]);
+
+      // A display name resolves too, and enumeration scopes by the resolved slug.
+      const enumerated = yield* searchTools(executor, "", 10, { namespace: "Google Calendar" });
+      expect(enumerated.items.map((item) => item.path)).toEqual([
+        "google_calendar.org.main.insertEvent",
+      ]);
+      expect(enumerated.total).toBe(1);
+
+      // An ambiguous alias keeps today's semantics: exact-slug enumeration
+      // finds no integration named "google"; ranked search still prefix-matches.
+      const ambiguous = yield* searchTools(executor, "", 10, { namespace: "google" });
+      expect(ambiguous.total).toBe(0);
+      const prefix = yield* searchTools(executor, "event", 10, { namespace: "google" });
+      expect(prefix.items.map((item) => item.integration)).toEqual(["google_calendar"]);
+
+      // Display-name words rank an integration's tools without a namespace.
+      const byName = yield* searchTools(executor, "gmail send", 5);
+      expect(byName.items[0]?.path).toBe("google_gmail.org.main.sendMessage");
+
+      // A discovery object without the catalog (the passthrough path, which
+      // resolves aliases itself) is unchanged: nothing resolves.
+      const bare = yield* searchTools({ tools: executor.tools }, "list messages", 5, {
+        namespace: "gmail",
+      });
+      expect(bare.items).toEqual([]);
     }),
   );
 

@@ -94,6 +94,29 @@ const toolNames = async (client: Client): Promise<string[]> =>
 // Registration
 // ---------------------------------------------------------------------------
 
+describe("MCP host — codemode instructions", () => {
+  // Every byte here is paid on every turn of every sandbox session: a short
+  // search-then-call recipe, with the long guide behind `skills`.
+  it("serves short instructions that name the search-then-call path in order", async () => {
+    const { engine } = makeRecordingEngine();
+    await withClient({ engine, description: DESCRIPTION_WITH_INVENTORY }, async (client) => {
+      const instructions = client.getInstructions() ?? "";
+      expect(instructions.length).toBeGreaterThan(0);
+      expect(instructions.length).toBeLessThan(800);
+      const order = [
+        "tools.search({",
+        "limit: 3",
+        "tools[items[0].path](",
+        'skills({ name: "execute" })',
+      ].map((marker) => instructions.indexOf(marker));
+      expect(order.every((index) => index >= 0)).toBe(true);
+      expect(order[0]).toBeLessThan(order[2]!);
+      expect(order[2]).toBeLessThan(order[3]!);
+      expect(instructions).toContain("`gmail` resolves to `google_gmail`");
+    });
+  });
+});
+
 describe("MCP host — per-integration search tools", () => {
   it("derives all search tools from a built inventory with more than 50 permitted integrations", async () => {
     const slugs = Array.from({ length: 56 }, (_, index) =>
