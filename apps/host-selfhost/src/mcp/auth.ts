@@ -11,8 +11,9 @@ import {
   type Principal,
 } from "@executor-js/host-mcp";
 
-import { isPrivileged } from "../admin/require-admin";
+import { bearerShapeMemoFor, bearerTokenOf } from "../auth/bearer-shape";
 import { BetterAuth } from "../auth/better-auth";
+import { findInstanceMembership } from "../auth/membership";
 import { MCP_ORIGINAL_PATH_HEADER, mcpResourcePathFromOriginalPath } from "./org-path";
 
 // ---------------------------------------------------------------------------
@@ -157,7 +158,8 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
   Layer.effect(
     McpAuthProvider,
     Effect.gen(function* () {
-      const { auth, organizationId, organizationName, organizationSlug } = yield* BetterAuth;
+      const betterAuth = yield* BetterAuth;
+      const { auth, organizationId, organizationName, organizationSlug } = betterAuth;
       const fallback = yield* IdentityProvider;
 
       const asMetadata = oAuthDiscoveryMetadata(auth);
@@ -201,7 +203,11 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
       // Resolved once; `internalAdapter.findUserById` enriches an OAuth userId.
       const context = yield* Effect.promise(() => auth.$context);
 
-      /** Enrich a bare OAuth `userId` into the full provider-neutral principal. */
+      /** Enrich a bare OAuth `userId` into the full provider-neutral principal.
+       * `null` when the user is gone OR is no longer a member of the instance
+       * org: an OAuth token outlives a removed membership, so the member row
+       * is read on every request (../auth/membership.ts) and its absence
+       * refuses the token — the caller renders the 401 challenge. */
       const principalFromUserId = (userId: string): Effect.Effect<Principal | null> =>
         Effect.gen(function* () {
           const user = yield* Effect.promise(() => context.internalAdapter.findUserById(userId));
@@ -209,21 +215,10 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
           // The workspace role, read from the INSTANCE org's membership row
           // (an OAuth token carries no session, so the header-based
           // `getActiveMemberRole` gate is out of reach — the adapter query
-          // answers the same question against the same table). FAIL CLOSED to
-          // "member": an infra fault demotes rather than escalates.
-          const membership = yield* Effect.promise(() =>
-            context.adapter.findOne<{ readonly role?: string | null }>({
-              model: "member",
-              where: [
-                { field: "userId", value: userId },
-                { field: "organizationId", value: organizationId },
-              ],
-            }),
-          ).pipe(Effect.orElseSucceed(() => null));
-          const orgRole =
-            membership?.role != null && isPrivileged(membership.role)
-              ? ("admin" as const)
-              : ("member" as const);
+          // answers the same question against the same table). No row — or a
+          // lookup failure — refuses rather than admits.
+          const membership = yield* findInstanceMembership(betterAuth, userId, organizationId);
+          if (!membership) return null;
           return {
             accountId: user.id,
             // Single-org self-host: OAuth tokens carry no active org, so pin to
@@ -236,7 +231,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
             avatarUrl: user.image ?? null,
             roles: parseRoles(userRole(user)),
             orgRoleModel: "organization",
-            orgRole,
+            orgRole: membership.role,
           } satisfies Principal;
         });
 
@@ -245,7 +240,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
         Effect.gen(function* () {
           const session = yield* Effect.promise(() =>
             auth.api.getMcpSession({ headers: request.headers }),
-          );
+          ).pipe(Effect.withSpan("selfhost.auth.oauth_session"));
           if (!session) return null;
           // GOTCHA: getMcpSession does NOT validate accessTokenExpiresAt — an
           // expired token still resolves. Reject it here.
@@ -260,6 +255,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
        * session can never bind to a subject-less credential if that changes. */
       const authenticateSession = (request: Request): Effect.Effect<Principal | null> =>
         fallback.authenticate(request).pipe(
+          Effect.withSpan("selfhost.auth.identity"),
           Effect.map((principal) => (isPlatformPrincipal(principal) ? null : principal)),
           Effect.catchTags({
             Unauthorized: () => Effect.succeed(null),
@@ -270,12 +266,19 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
 
       /**
        * Try the OAuth bearer ONLY when a Bearer header is present (no
-       * getMcpSession round-trip on cookie requests), then the cookie/api-key
-       * fallback. Self-host always pins an org, so the outcome is always
-       * Authenticated or Unauthorized.
+       * getMcpSession round-trip on cookie requests) and the bearer is not
+       * one the identity seam last resolved as an API key, then the
+       * cookie/api-key fallback. Self-host always pins an org, so the outcome
+       * is always Authenticated or Unauthorized.
        */
+      const bearerShapes = bearerShapeMemoFor(auth);
+      const isRememberedApiKey = (request: Request): boolean => {
+        const token = bearerTokenOf(request.headers);
+        return token !== undefined && bearerShapes.isApiKey(token);
+      };
+
       const authenticate = (request: Request): Effect.Effect<AuthOutcome> =>
-        (hasBearer(request)
+        (hasBearer(request) && !isRememberedApiKey(request)
           ? authenticateOAuthBearer(request).pipe(
               Effect.flatMap((principal) =>
                 principal ? Effect.succeed(principal) : authenticateSession(request),
