@@ -68,31 +68,41 @@ const toolPort = (
   catalog: readonly Tool[],
   schemaReads: string[] = [],
   lists: string[] = [],
-): McpToolsPort => ({
-  list: (filter) =>
-    Effect.sync(() => {
-      lists.push("list");
-      return catalog.filter(
-        (tool) =>
-          (filter?.integration === undefined || tool.integration === filter.integration) &&
-          (filter?.owner === undefined || tool.owner === filter.owner) &&
-          (filter?.connection === undefined || tool.connection === filter.connection),
-      );
-    }),
-  schema: (address) =>
-    Effect.sync(() => {
-      schemaReads.push(String(address));
-      const tool = catalog.find((item) => item.address === address);
-      if (!tool) return null;
-      return {
-        address,
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-        annotations: tool.annotations,
-      } satisfies ToolSchemaView;
-    }),
-});
+  batches: string[][] = [],
+): McpToolsPort => {
+  const port: McpToolsPort = {
+    list: (filter) =>
+      Effect.sync(() => {
+        lists.push("list");
+        return catalog.filter(
+          (tool) =>
+            (filter?.integration === undefined || tool.integration === filter.integration) &&
+            (filter?.owner === undefined || tool.owner === filter.owner) &&
+            (filter?.connection === undefined || tool.connection === filter.connection),
+        );
+      }),
+    schema: (address) =>
+      Effect.sync(() => {
+        schemaReads.push(String(address));
+        const tool = catalog.find((item) => item.address === address);
+        if (!tool) return null;
+        return {
+          address,
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          annotations: tool.annotations,
+        } satisfies ToolSchemaView;
+      }),
+    // The batched read answers per address exactly as `schema` would.
+    schemas: (addresses, options) =>
+      Effect.suspend(() => {
+        batches.push(addresses.map(String));
+        return Effect.forEach(addresses, (address) => port.schema(address, options));
+      }),
+  };
+  return port;
+};
 
 /** A stub engine that records every executed code string and answers with a
  *  fixed value, so a test can prove a passthrough call became the expected
@@ -777,6 +787,58 @@ describe("passthrough mode server", () => {
     );
   });
 
+  it("reads a search page's schemas in one batch and drops hits the batch hides", async () => {
+    const { engine } = makeRecordingEngine();
+    const schemaReads: string[] = [];
+    const lists: string[] = [];
+    const batches: string[][] = [];
+    const catalog = Array.from({ length: 6 }, (_, i) =>
+      projection({
+        integration: "bench",
+        name: `record${i}`,
+        description: `benchmark record ${i}`,
+      }),
+    );
+    const port = toolPort(catalog, schemaReads, lists, batches);
+    const hidden = new Set<string>();
+    const tools: McpToolsPort = {
+      ...port,
+      // A policy change between listing and the schema read hides a hit.
+      schemas: (addresses, options) =>
+        port
+          .schemas(addresses, options)
+          .pipe(
+            Effect.map((views) =>
+              views.map((view, index) => (hidden.has(String(addresses[index])) ? null : view)),
+            ),
+          ),
+    };
+    await withClient({ engine, mode: "passthrough", tools }, async (client) => {
+      const page = await client.callTool({
+        name: "search",
+        arguments: { query: "benchmark record", limit: 4 },
+      });
+      const ids = decodeSearchItems(page.structuredContent).items.map((item) => item.id);
+      expect(ids).toHaveLength(4);
+      // One batch per search call, in result order; no per-hit reads outside it.
+      expect(batches).toEqual([ids]);
+      expect(schemaReads).toEqual(ids);
+
+      hidden.add(ids[1]!);
+      const again = await client.callTool({
+        name: "search",
+        arguments: { query: "benchmark record", limit: 4 },
+      });
+      expect(decodeSearchItems(again.structuredContent).items.map((item) => item.id)).toEqual([
+        ids[0],
+        ids[2],
+        ids[3],
+      ]);
+      expect(again.structuredContent).toMatchObject({ total: 6, hasMore: true, nextOffset: 4 });
+      expect(batches).toEqual([ids, ids]);
+    });
+  });
+
   it("uses current schemas and excludes static configuration tools", async () => {
     const recording = makeRecordingEngine();
     const dynamic = projection({
@@ -786,7 +848,11 @@ describe("passthrough mode server", () => {
     });
     const catalog = [dynamic, projection({ integration: "settings", name: "erase", static: true })];
     let current: ToolSchemaView = { address: dynamic.address, inputSchema: dynamic.inputSchema };
-    const tools: McpToolsPort = { ...toolPort(catalog), schema: () => Effect.succeed(current) };
+    const tools: McpToolsPort = {
+      ...toolPort(catalog),
+      schema: () => Effect.succeed(current),
+      schemas: (addresses) => Effect.succeed(addresses.map(() => current)),
+    };
     await withClient({ engine: recording.engine, mode: "passthrough", tools }, async (client) => {
       const hidden = await client.callTool({ name: "search", arguments: { query: "settings" } });
       expect(decodeSearchItems(hidden.structuredContent).items).toEqual([]);
