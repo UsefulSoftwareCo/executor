@@ -1331,14 +1331,14 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
         "integrations",
         {
           description:
-            "List connected integrations and accounts visible to you. Returns integration descriptions, account labels, exact search filters, and last recorded health (null means unchecked). One item per account; use nextOffset for more. Does not load tool schemas or check credentials.",
+            "List connected integrations and accounts: slug, name, owner, connection, last health. Call once to learn the exact slug for search; skip it when you already know the slug.",
           inputSchema: {
             integration: z
               .string()
               .trim()
               .min(1)
               .optional()
-              .describe("Integration slug, or an unambiguous alias such as gmail."),
+              .describe("Slug or alias (gmail resolves to google_gmail)."),
             owner: z.enum(["org", "user"]).optional(),
             limit: z.number().int().min(1).max(50).default(20),
             offset: z.number().int().min(0).default(0),
@@ -1421,21 +1421,21 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
         "search",
         {
           description:
-            "Search connected integration tools by action, integration, or account. Each hit has the tool ID, account details, a one-line description, and an argument summary (name, type, required). Pass the returned ID and arguments to invoke. Set detail to full for 1-3 hits when you need the complete JSON input schema. Use integrations to discover accounts, then pass exact integration, owner, and connection filters. Use nextOffset to page through matches.",
+            "Find tools by action words. Fastest: pass integration (slug or alias) and limit 3. Each hit has id, one-line description, and arguments (name (type, required)); pass id and arguments to invoke. detail: full adds the complete inputSchema (large) when the summary is not enough. Page with offset: nextOffset.",
           inputSchema: {
             query: z
               .string()
               .trim()
               .min(1)
               .max(500)
-              .describe("Keywords describing the tool or task, such as github create issue."),
+              .describe("Action words, such as create issue or list dns records."),
             integration: z
               .string()
               .trim()
               .min(1)
               .optional()
               .describe(
-                "Integration slug from integrations, or an unambiguous alias such as gmail (resolved slug is returned as integration).",
+                "Slug or alias (gmail resolves to google_gmail); the result reports the slug.",
               ),
             owner: z.enum(["org", "user"]).optional(),
             connection: z
@@ -1443,17 +1443,13 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
               .trim()
               .min(1)
               .optional()
-              .describe(
-                "Exact account name from integrations; pair with integration and owner to select one account.",
-              ),
+              .describe("Account name from integrations; pair with integration and owner."),
             limit: z.number().int().min(1).max(20).default(10),
             offset: z.number().int().min(0).default(0),
             detail: z
               .enum(["compact", "full"])
               .default("compact")
-              .describe(
-                "compact (default): one-line description plus an argument summary per hit. full: the complete JSON inputSchema per hit; use with a small limit.",
-              ),
+              .describe("full adds the complete inputSchema per hit; use with limit 1-3."),
           },
           annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
         },
@@ -1567,12 +1563,12 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
         "invoke",
         {
           description:
-            "Call one connected integration tool using the exact ID and JSON input schema returned by search. May read or change external state. Your client handles approval for this call; workspace blocks remain enforced.",
+            "Call one tool by the exact id from search with a JSON arguments object. Returns the tool's result; an invalid-arguments error includes the expected inputSchema, so correct and retry. May change external state; your client handles approval and workspace blocks stay enforced.",
           inputSchema: {
-            tool: z.string().min(1).describe("Exact tool ID returned by search."),
+            tool: z.string().min(1).describe("Exact id from a search hit."),
             arguments: z
               .record(z.string(), z.unknown())
-              .describe("Tool arguments matching the inputSchema returned by search."),
+              .describe("JSON object matching the hit's arguments summary or inputSchema."),
           },
           annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
         },
@@ -2187,7 +2183,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         {
           annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
           description: passthrough
-            ? 'Documentation for this server only, not harness or project skills. Call with no name to list guides, or skills({ name: "search-invoke" }) for account discovery, tool search, invocation, and pagination.'
+            ? 'Guides for this server only, not harness or project skills. skills({ name: "search-invoke" }) explains discovery, aliases, pagination, and approval; no name lists the guides.'
             : [
                 "Documentation for THIS server's own tools. Not a general skill reader: it serves a short, fixed set of how-to docs about using `execute` and artifacts here, and it cannot reach your harness's skills, a SKILL.md on disk, or any user- or project-authored skill. The argument is a name from its own catalog, never a path or an outside skill's id.",
                 "These docs hold the long-form guidance that would otherwise bloat another tool's always-loaded description.",
@@ -2199,7 +2195,9 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
               .string()
               .optional()
               .describe(
-                `A doc from this server's own catalog, e.g. "${passthrough ? "search-invoke" : "execute"}". Omit to list the catalog.`,
+                passthrough
+                  ? 'Guide name, e.g. "search-invoke". Omit to list guides.'
+                  : `A doc from this server's own catalog, e.g. "execute". Omit to list the catalog.`,
               ),
           },
         },
