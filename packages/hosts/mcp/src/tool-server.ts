@@ -87,6 +87,8 @@ import {
 } from "./artifact-bindings";
 import { MCP_ORG_WRITE_ACCESS_HEADER } from "./seams";
 import {
+  compactArguments,
+  compactDescription,
   passthroughCallCode,
   passthroughInstructions,
   SEARCH_INVOKE_SKILL,
@@ -1371,7 +1373,7 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
         "search",
         {
           description:
-            "Search connected integration tools by action, integration, or account. Returns matching tool IDs, account details, and full JSON input schemas. Pass the returned ID and arguments to invoke. Use integrations to discover accounts, then pass exact integration, owner, and connection filters. Use nextOffset to page through matches.",
+            "Search connected integration tools by action, integration, or account. Each hit has the tool ID, account details, a one-line description, and an argument summary (name, type, required). Pass the returned ID and arguments to invoke. Set detail to full for 1-3 hits when you need the complete JSON input schema. Use integrations to discover accounts, then pass exact integration, owner, and connection filters. Use nextOffset to page through matches.",
           inputSchema: {
             query: z
               .string()
@@ -1396,10 +1398,16 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
               ),
             limit: z.number().int().min(1).max(20).default(10),
             offset: z.number().int().min(0).default(0),
+            detail: z
+              .enum(["compact", "full"])
+              .default("compact")
+              .describe(
+                "compact (default): one-line description plus an argument summary per hit. full: the complete JSON inputSchema per hit; use with a small limit.",
+              ),
           },
           annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
         },
-        ({ query, integration, owner, connection, limit, offset }, extra) =>
+        ({ query, integration, owner, connection, limit, offset, detail }, extra) =>
           boundary(
             Effect.gen(function* () {
               const discovery = {
@@ -1431,16 +1439,33 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                     const schema = yield* tools.schema(address, { typeScript: false });
                     // Visibility can change between listing and schema lookup.
                     if (!schema) return null;
-                    return {
+                    const identityFields = {
                       id: String(address),
                       name: match.name,
                       integration: identity.integration,
                       owner: identity.owner,
                       connection: identity.connection,
-                      description: match.description,
-                      inputSchema: passthroughInputSchema(schema),
-                      ...(schema.annotations ? { annotations: schema.annotations } : {}),
                     };
+                    const annotations = schema.annotations
+                      ? { annotations: schema.annotations }
+                      : {};
+                    // Compact hits carry what a model needs to choose a tool
+                    // and usually to call it; the full schema is one more
+                    // search away (`detail: "full"`) or comes back with an
+                    // invoke validation error.
+                    return detail === "full"
+                      ? {
+                          ...identityFields,
+                          description: match.description,
+                          inputSchema: passthroughInputSchema(schema),
+                          ...annotations,
+                        }
+                      : {
+                          ...identityFields,
+                          description: compactDescription(match.description),
+                          arguments: compactArguments(schema.inputSchema, schema.schemaDefinitions),
+                          ...annotations,
+                        };
                   }),
                 { concurrency: 4 },
               );
@@ -1504,7 +1529,9 @@ const registerPassthroughTools = <E extends Cause.YieldableError>(
                   content: [
                     {
                       type: "text" as const,
-                      text: `Invalid arguments for tool ${id}: ${checked.errorMessage ?? "invalid"}`,
+                      // The schema rides along so the model can correct the
+                      // call without another search.
+                      text: `Invalid arguments for tool ${id}: ${checked.errorMessage ?? "invalid"}. Expected inputSchema: ${JSON.stringify(passthroughInputSchema(schema))}`,
                     },
                   ],
                 };
