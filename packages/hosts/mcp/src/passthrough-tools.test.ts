@@ -471,6 +471,40 @@ describe("passthrough mode server", () => {
     );
   });
 
+  it("reads the execute description only when a guide asks for it", async () => {
+    const { engine } = makeRecordingEngine();
+    let reads = 0;
+    const counting: ExecutionEngine = {
+      ...engine,
+      getDescription: Effect.sync(() => {
+        reads += 1;
+        return "test executor\n\n## Available integrations\n- github: issues";
+      }),
+    };
+    await withClient(
+      { engine: counting, mode: "passthrough", tools: toolPort(CATALOG) },
+      async (client) => {
+        // Session setup, the tool list, and a search never touch the inventory.
+        expect(reads).toBe(0);
+        await client.listTools();
+        await client.callTool({ name: "search", arguments: { query: "issues" } });
+        expect(reads).toBe(0);
+        // The guides read it once per session, then reuse it.
+        await client.callTool({ name: "skills", arguments: { name: "search-invoke" } });
+        await client.callTool({ name: "skills", arguments: {} });
+        expect(reads).toBe(1);
+      },
+    );
+    // Codemode registers the `execute` tool with the description, so it is read at build.
+    reads = 0;
+    await withClient({ engine: counting }, async (client) => {
+      expect(reads).toBe(1);
+      const guide = await client.callTool({ name: "skills", arguments: { name: "execute" } });
+      expect(JSON.stringify(guide.content)).toContain("## Available integrations");
+      expect(reads).toBe(1);
+    });
+  });
+
   it("serves only the search/invoke guide as text", async () => {
     const { engine } = makeRecordingEngine();
     await withClient({ engine, mode: "passthrough", tools: toolPort(CATALOG) }, async (client) => {

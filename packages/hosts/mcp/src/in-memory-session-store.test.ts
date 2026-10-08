@@ -613,6 +613,119 @@ interface JsonRpcErrorBody {
   readonly error: { readonly code: number; readonly message: string };
 }
 
+/** Open a session on a serving store with the given client capabilities. */
+const initializeWith = async (
+  sessions: ReturnType<typeof makeServingStore>["sessions"],
+  capabilities: Record<string, unknown>,
+): Promise<string> => {
+  const response = await dispatchPost(sessions, {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities,
+      clientInfo: { name: "stream-test", version: "1.0.0" },
+    },
+  });
+  expect(response.status).toBe(200);
+  const sessionId = response.headers.get("mcp-session-id") ?? "";
+  expect(sessionId).not.toBe("");
+  return sessionId;
+};
+
+const dispatchGet = (
+  sessions: ReturnType<typeof makeServingStore>["sessions"],
+  sessionId: string,
+  principal: Principal = TEST_PRINCIPAL,
+) =>
+  Effect.runPromise(
+    sessions.store.dispatch({
+      request: new Request("https://executor.test/mcp", {
+        method: "GET",
+        headers: { accept: "text/event-stream", "mcp-session-id": sessionId },
+      }),
+      principal,
+      resource: defaultMcpResource,
+      sessionId,
+      method: "GET",
+    }),
+  );
+
+// ---------------------------------------------------------------------------
+// The standalone GET stream, offered only where it can carry something.
+// ---------------------------------------------------------------------------
+
+describe("standalone GET stream through the in-memory session store", () => {
+  it("answers 405 for a session whose client can receive no server-initiated message", async () => {
+    const { sessions } = makeServingStore();
+    const sessionId = await initializeWith(sessions, {});
+
+    const result = await dispatchGet(sessions, sessionId);
+    expect(result).toBeInstanceOf(Response);
+    const response = result as Response;
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("POST, DELETE");
+    const body = (await response.json()) as JsonRpcErrorBody;
+    expect(body.error.code).toBe(-32000);
+    // The session itself is untouched: a POST on it still works.
+    const listed = await dispatchPostTo(sessions, sessionId, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/list",
+    });
+    expect(listed.status).toBe(200);
+    await sessions.close();
+  });
+
+  it("still opens the stream for a client that declared elicitation", async () => {
+    const { sessions } = makeServingStore();
+    const sessionId = await initializeWith(sessions, { elicitation: { form: {} } });
+
+    const result = await dispatchGet(sessions, sessionId);
+    expect(result).toBeInstanceOf(Response);
+    const response = result as Response;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    await response.body?.cancel();
+    await sessions.close();
+  });
+
+  it("keeps ownership ahead of the stream policy", async () => {
+    const { sessions } = makeServingStore();
+    const sessionId = await initializeWith(sessions, {});
+    const other: Principal = { ...TEST_PRINCIPAL, accountId: "acct_other" };
+    expect(await dispatchGet(sessions, sessionId, other)).toBe("forbidden");
+    await sessions.close();
+  });
+});
+
+const dispatchPostTo = (
+  sessions: ReturnType<typeof makeServingStore>["sessions"],
+  sessionId: string,
+  body: unknown,
+): Promise<Response> =>
+  Effect.runPromise(
+    sessions.store
+      .dispatch({
+        request: new Request("https://executor.test/mcp", {
+          method: "POST",
+          headers: { ...MCP_POST_HEADERS, "mcp-session-id": sessionId },
+          body: JSON.stringify(body),
+        }),
+        principal: TEST_PRINCIPAL,
+        resource: defaultMcpResource,
+        sessionId,
+        method: "POST",
+      })
+      .pipe(
+        Effect.map((result) => {
+          expect(result).toBeInstanceOf(Response);
+          return result as Response;
+        }),
+      ),
+  );
+
 describe("pre-initialize dispatch through the in-memory session store", () => {
   it("answers a valid unknown pre-session method with -32601 on a 200", async () => {
     const { sessions, buildCount } = makeServingStore();

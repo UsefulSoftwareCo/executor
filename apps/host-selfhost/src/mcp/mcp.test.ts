@@ -355,3 +355,104 @@ test("a browser approval uses the bootstrap admin's demoted membership at the si
     });
   }
 });
+
+const INITIALIZE = {
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "t", version: "1" },
+  },
+} as const;
+
+const streamRequest = (token: string, sessionId: string) =>
+  handler(
+    new Request(`${BASE}/mcp`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: "text/event-stream",
+        "mcp-session-id": sessionId,
+      },
+    }),
+  );
+
+test("a bearer API key authenticates every MCP request on its own and stops at revocation", async () => {
+  const admin = await signInBootstrap();
+  const created = await account(admin.token, "/api/account/api-keys", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "session setup" }),
+  });
+  expect(created.status).toBe(200);
+  const key = (await created.json()) as { id: string; value: string };
+
+  // The first request learns that this bearer is an API key; the next ones
+  // take the direct path and must resolve exactly the same.
+  await initSession(key.value);
+  const sessionId = await initSession(key.value);
+  const listed = await mcp(key.value, { jsonrpc: "2.0", id: 2, method: "tools/list" }, sessionId);
+  expect(listed.status).toBe(200);
+  await listed.text();
+
+  // A bearer that is neither a session nor a key is still refused.
+  const bogus = await mcp(`${key.value}x`, INITIALIZE);
+  expect(bogus.status).toBe(401);
+  await bogus.text();
+
+  // Revocation takes effect on the very next request, on the open session and
+  // on a new one alike: the key is verified every time.
+  const revoked = await account(
+    admin.token,
+    `/api/account/api-keys/${encodeURIComponent(key.id)}`,
+    {
+      method: "DELETE",
+    },
+  );
+  expect(revoked.status).toBe(200);
+  const onSession = await mcp(
+    key.value,
+    { jsonrpc: "2.0", id: 3, method: "tools/list" },
+    sessionId,
+  );
+  expect(onSession.status).toBe(401);
+  await onSession.text();
+  const fresh = await mcp(key.value, INITIALIZE);
+  expect(fresh.status).toBe(401);
+  await fresh.text();
+});
+
+test("GET /mcp is 405 for a session whose client can receive no server-initiated message", async () => {
+  const admin = await signInBootstrap();
+  const sessionId = await initSession(admin.token);
+
+  const stream = await streamRequest(admin.token, sessionId);
+  expect(stream.status).toBe(405);
+  expect(stream.headers.get("allow")).toBe("POST, DELETE");
+  const body = (await stream.json()) as { error: { code: number } };
+  expect(body.error.code).toBe(-32000);
+
+  // The session is unaffected.
+  const listed = await mcp(admin.token, { jsonrpc: "2.0", id: 2, method: "tools/list" }, sessionId);
+  expect(listed.status).toBe(200);
+  await listed.text();
+});
+
+test("GET /mcp still opens the stream for a client that declared elicitation", async () => {
+  const admin = await signInBootstrap();
+  const res = await mcp(admin.token, {
+    ...INITIALIZE,
+    params: { ...INITIALIZE.params, capabilities: { elicitation: {} } },
+  });
+  expect(res.status).toBe(200);
+  const sessionId = res.headers.get("mcp-session-id") ?? "";
+  expect(sessionId).not.toBe("");
+  await res.text();
+  await mcp(admin.token, { jsonrpc: "2.0", method: "notifications/initialized" }, sessionId);
+
+  const stream = await streamRequest(admin.token, sessionId);
+  expect(stream.status).toBe(200);
+  expect(stream.headers.get("content-type")).toContain("text/event-stream");
+  await stream.body?.cancel();
+});
