@@ -63,6 +63,8 @@ export const COMPACT_DESCRIPTION_LIMIT = 200;
 export const COMPACT_ARGUMENT_LIMIT = 12;
 /** Enum values spelled out in a compact argument summary. */
 const COMPACT_ENUM_LIMIT = 6;
+/** Keys named for a nested object argument. */
+const COMPACT_NESTED_KEY_LIMIT = 6;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -121,8 +123,26 @@ const typeLabel = (value: unknown, defs: ReadonlyMap<string, unknown>, depth = 0
     const items = depth < 1 ? typeLabel(node.items, defs, depth + 1) : "any";
     return items.includes("|") ? `(${items})[]` : `${items}[]`;
   }
-  if (type === undefined) return isRecord(node.properties) ? "object" : "any";
-  return type;
+  if (type === "object" || (type === undefined && isRecord(node.properties)))
+    return objectLabel(node, depth);
+  return type ?? "any";
+};
+
+/**
+ * `object{text*, title}`: the first-level keys of a nested object, required
+ * ones starred. OpenAPI tools wrap their inputs (`body`, `query`, `path`), so
+ * without this a summary would say only `body (object, required)`.
+ */
+const objectLabel = (node: Record<string, unknown>, depth: number): string => {
+  if (depth >= 1 || !isRecord(node.properties)) return "object";
+  const required = new Set(Array.isArray(node.required) ? node.required.map(String) : []);
+  const names = Object.keys(node.properties);
+  if (names.length === 0) return "object";
+  const shown = names
+    .slice(0, COMPACT_NESTED_KEY_LIMIT)
+    .map((name) => (required.has(name) ? `${name}*` : name));
+  const rest = names.length - shown.length;
+  return `object{${shown.join(", ")}${rest > 0 ? `, +${rest}` : ""}}`;
 };
 
 /**

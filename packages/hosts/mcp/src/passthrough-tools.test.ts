@@ -236,6 +236,11 @@ describe("compact search hits", () => {
             tags: { type: "array", items: { $ref: "#/$defs/Tag" } },
             either: { anyOf: [{ type: "string" }, { type: "number" }] },
             nested: { properties: { a: { type: "string" } } },
+            body: {
+              type: "object",
+              properties: { text: { type: "string" }, title: { type: "string" } },
+              required: ["text"],
+            },
             fixed: { const: 7 },
           },
           required: ["zone", "kind"],
@@ -243,8 +248,17 @@ describe("compact search hits", () => {
         { Zone: { type: "string" }, Tag: { type: "object", properties: {} } },
       ),
     ).toBe(
-      "zone (string, required); kind (A|AAAA|CNAME|MX|TXT|NS|…, required); optional (string); tags (object[]); either (string|number); nested (object); fixed (7)",
+      "zone (string, required); kind (A|AAAA|CNAME|MX|TXT|NS|…, required); optional (string); tags (object[]); either (string|number); nested (object{a}); body (object{text*, title}); fixed (7)",
     );
+    const wideBody = Object.fromEntries(
+      Array.from({ length: 9 }, (_, i) => [`k${i}`, { type: "string" }]),
+    );
+    expect(
+      compactArguments({
+        type: "object",
+        properties: { body: { type: "object", properties: wideBody } },
+      }),
+    ).toBe("body (object{k0, k1, k2, k3, k4, k5, +3})");
     const wide = Object.fromEntries(
       Array.from({ length: COMPACT_ARGUMENT_LIMIT + 3 }, (_, i) => [`p${i}`, { type: "string" }]),
     );
