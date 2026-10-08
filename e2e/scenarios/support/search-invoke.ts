@@ -1,7 +1,8 @@
 import { Schema } from "effect";
 import { ToolAnnotationsView } from "@executor-js/sdk";
 
-/** Parse the public search result, including schemas and account identity. */
+/** Parse the public search result: account identity plus either the compact
+ *  `arguments` summary (default) or the full `inputSchema` (`detail: "full"`). */
 export const decodeToolSearch = Schema.decodeUnknownSync(
   Schema.Struct({
     structuredContent: Schema.Struct({
@@ -12,7 +13,9 @@ export const decodeToolSearch = Schema.decodeUnknownSync(
           integration: Schema.String,
           owner: Schema.String,
           connection: Schema.String,
-          inputSchema: Schema.Record(Schema.String, Schema.Unknown),
+          description: Schema.optional(Schema.String),
+          arguments: Schema.optional(Schema.String),
+          inputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
           annotations: Schema.optional(ToolAnnotationsView),
         }),
       ),

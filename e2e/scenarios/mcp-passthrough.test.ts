@@ -304,12 +304,26 @@ scenario(
           expect(guide.ok).toBe(true);
           expect(guide.text).toContain("integrations({})");
           expect((yield* passthrough.call("skills", { name: "execute" })).ok).toBe(false);
+          const compact = decodeToolSearch(
+            (yield* passthrough.call("search", {
+              query: "notes",
+              integration: slug,
+              owner: "org",
+              connection: "main",
+            })).raw,
+          ).structuredContent;
+          // Default hits are compact: an argument summary, no inputSchema.
+          expect(compact.items.every((tool) => tool.inputSchema === undefined)).toBe(true);
+          expect(
+            compact.items.find((tool) => tool.id.endsWith(".createNote"))?.arguments,
+          ).toContain("text");
           const found = decodeToolSearch(
             (yield* passthrough.call("search", {
               query: "notes",
               integration: slug,
               owner: "org",
               connection: "main",
+              detail: "full",
             })).raw,
           ).structuredContent;
           expect(found.items.every((tool) => tool.integration === slug)).toBe(true);

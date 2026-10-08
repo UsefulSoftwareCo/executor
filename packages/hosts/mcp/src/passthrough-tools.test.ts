@@ -15,7 +15,13 @@ import {
 } from "@executor-js/sdk";
 
 import { readToolMode } from "./browser-approval";
-import { passthroughCallCode } from "./passthrough-tools";
+import {
+  COMPACT_ARGUMENT_LIMIT,
+  COMPACT_DESCRIPTION_LIMIT,
+  compactArguments,
+  compactDescription,
+  passthroughCallCode,
+} from "./passthrough-tools";
 import {
   createExecutorMcpServer,
   McpPassthroughUnavailableError,
@@ -197,6 +203,70 @@ describe("passthrough catalog", () => {
 // ---------------------------------------------------------------------------
 // Wire flags
 // ---------------------------------------------------------------------------
+
+describe("compact search hits", () => {
+  it("keeps the first sentence of a description within the limit", () => {
+    expect(compactDescription(undefined)).toBe("");
+    expect(compactDescription("  \nList DNS records. Supports paging.\nMore.")).toBe(
+      "List DNS records.",
+    );
+    expect(compactDescription("No. Period means something else here, keep going")).toBe(
+      "No. Period means something else here, keep going",
+    );
+    const long = `Create ${"x".repeat(400)} end`;
+    const compact = compactDescription(long);
+    expect(compact.length).toBe(COMPACT_DESCRIPTION_LIMIT);
+    expect(compact.endsWith("…")).toBe(true);
+  });
+
+  it("summarizes arguments with types, required first, enums, arrays, refs and a cap", () => {
+    expect(compactArguments(undefined)).toBe("none");
+    expect(compactArguments({ type: "object" })).toBe("none");
+    expect(compactArguments({ oneOf: [{ type: "string" }, { type: "object" }] })).toBe(
+      "see full schema",
+    );
+    expect(
+      compactArguments(
+        {
+          type: "object",
+          properties: {
+            optional: { type: ["string", "null"] },
+            zone: { $ref: "#/$defs/Zone" },
+            kind: { enum: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SRV"] },
+            tags: { type: "array", items: { $ref: "#/$defs/Tag" } },
+            either: { anyOf: [{ type: "string" }, { type: "number" }] },
+            nested: { properties: { a: { type: "string" } } },
+            body: {
+              type: "object",
+              properties: { text: { type: "string" }, title: { type: "string" } },
+              required: ["text"],
+            },
+            fixed: { const: 7 },
+          },
+          required: ["zone", "kind"],
+        },
+        { Zone: { type: "string" }, Tag: { type: "object", properties: {} } },
+      ),
+    ).toBe(
+      "zone (string, required); kind (A|AAAA|CNAME|MX|TXT|NS|…, required); optional (string); tags (object[]); either (string|number); nested (object{a}); body (object{text*, title}); fixed (7)",
+    );
+    const wideBody = Object.fromEntries(
+      Array.from({ length: 9 }, (_, i) => [`k${i}`, { type: "string" }]),
+    );
+    expect(
+      compactArguments({
+        type: "object",
+        properties: { body: { type: "object", properties: wideBody } },
+      }),
+    ).toBe("body (object{k0, k1, k2, k3, k4, k5, +3})");
+    const wide = Object.fromEntries(
+      Array.from({ length: COMPACT_ARGUMENT_LIMIT + 3 }, (_, i) => [`p${i}`, { type: "string" }]),
+    );
+    const summary = compactArguments({ type: "object", properties: wide });
+    expect(summary.split("; ")).toHaveLength(COMPACT_ARGUMENT_LIMIT + 1);
+    expect(summary.endsWith("; +3 more")).toBe(true);
+  });
+});
 
 describe("readToolMode", () => {
   const request = (query: string) => new Request(`https://example.test/mcp${query}`);
@@ -539,15 +609,75 @@ describe("passthrough mode server", () => {
         arguments: { tool: String(dynamic.address), arguments: {} },
       });
       expect(invalid.isError).toBe(true);
+      // The validation error carries the current schema so the model can
+      // correct the call without another search.
+      const [invalidText] = invalid.content as ReadonlyArray<{ text: string }>;
+      expect(invalidText?.text).toContain("Invalid arguments");
+      expect(invalidText?.text).toContain('"required":["title"]');
       expect(recording.executed).toEqual([]);
       const refreshed = await client.callTool({ name: "search", arguments: { query: "notes" } });
       expect(refreshed.structuredContent).toMatchObject({
+        items: [{ arguments: "title (string, required)" }],
+      });
+      const full = await client.callTool({
+        name: "search",
+        arguments: { query: "notes", detail: "full" },
+      });
+      expect(full.structuredContent).toMatchObject({
         items: [{ inputSchema: { required: ["title"] } }],
       });
     });
   });
 
-  it("returns schemas and account details from search and marks invoke destructive", async () => {
+  it("returns compact hits by default: identity, one-line description, argument summary", async () => {
+    const { engine } = makeRecordingEngine();
+    const catalog = [
+      projection({
+        integration: "github",
+        name: "issues.create",
+        description:
+          "Create an issue in a repository. Requires write access.\n\nLong second paragraph with details the model does not need to pick a tool.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            body: { $ref: "#/$defs/Body" },
+            labels: { type: "array", items: { type: "string" } },
+            state: { type: "string", enum: ["open", "closed"] },
+          },
+          required: ["title"],
+          $defs: { Body: { type: "string" } },
+        },
+      }),
+    ];
+    await withClient({ engine, mode: "passthrough", tools: toolPort(catalog) }, async (client) => {
+      const result = await client.callTool({
+        name: "search",
+        arguments: { query: "github issues create", limit: 1 },
+      });
+      expect(result.structuredContent).toEqual({
+        items: [
+          {
+            id: "tools.github.org.main.issues.create",
+            name: "issues.create",
+            integration: "github",
+            owner: "org",
+            connection: "main",
+            description: "Create an issue in a repository.",
+            arguments:
+              "title (string, required); body (string); labels (string[]); state (open|closed)",
+          },
+        ],
+        total: 1,
+        hasMore: false,
+        nextOffset: null,
+      });
+      expect(JSON.stringify(result.structuredContent)).not.toContain("inputSchema");
+      expect(JSON.stringify(result.structuredContent)).not.toContain("second paragraph");
+    });
+  });
+
+  it("returns full schemas and account details on request and marks invoke destructive", async () => {
     const { engine } = makeRecordingEngine();
     await withClient({ engine, mode: "passthrough", tools: toolPort(CATALOG) }, async (client) => {
       const listed = await client.listTools();
@@ -561,7 +691,7 @@ describe("passthrough mode server", () => {
       });
       const result = await client.callTool({
         name: "search",
-        arguments: { query: "github issues create", limit: 1 },
+        arguments: { query: "github issues create", limit: 1, detail: "full" },
       });
       expect(result.structuredContent).toMatchObject({
         items: [
