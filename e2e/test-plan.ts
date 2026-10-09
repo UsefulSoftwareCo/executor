@@ -2587,6 +2587,51 @@ export const scenarios = plan({
       local: na("Exercises the shared SDK account deletion through hosted APIs."),
     },
   },
+  credentialAdapterRenewal: {
+    fixtures: "actors",
+    file: "oauth-credential-adapter.spec.ts",
+    title:
+      "with a credential adapter configured, OAuth renewal runs inside the adapter, the rotated refresh token stays there, and the host's responses and traces never carry it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned self-host with the setting and uses a loopback adapter and issuer.",
+      ),
+      local: na(
+        "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
+      ),
+    },
+  },
+  credentialAdapterRefusals: {
+    fixtures: "actors",
+    file: "oauth-credential-adapter.spec.ts",
+    title:
+      "a credential adapter's refusals and outages are classified like the service's own answers: a refused client, a rate limit, an unknown error code and an outage keep the grant, invalid_grant reconnects",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned self-host with the setting and uses a loopback adapter and issuer.",
+      ),
+      local: na(
+        "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
+      ),
+    },
+  },
+  credentialAdapterRevocation: {
+    fixtures: "actors",
+    file: "oauth-credential-adapter.spec.ts",
+    title:
+      "deleting an account under a credential adapter revokes the refresh token the adapter holds",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned self-host with the setting and uses a loopback adapter and issuer.",
+      ),
+      local: na(
+        "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
+      ),
+    },
+  },
   setupDiagnostics: {
     fixtures: "actors",
     file: "setup-diagnostics.spec.ts",
