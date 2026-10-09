@@ -628,6 +628,56 @@ export const scenarios = plan({
       local: na("Hosted profile API fixture; Node adapter exercised by self-host"),
     },
   },
+  appCacheEntryCapacity: {
+    fixtures: "actors",
+    file: "app-cache-capacity.spec.ts",
+    title: "App cache reclaims old entries at the entry count limit",
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("Hosted API fixture; the cache implementation is shared with Local"),
+    },
+  },
+  appCacheCatalogCapacity: {
+    fixtures: "actors",
+    file: "app-cache-capacity.spec.ts",
+    title: "App catalogs recover when pressure evicts parts of a retained manifest",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted API fixture; the catalog cache implementation is shared with Local"),
+    },
+  },
+  appCacheProtectedCapacity: {
+    fixtures: "actors",
+    file: "app-cache-capacity.spec.ts",
+    title: "App cache rolls back pressure when every retained value has a live loader",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted API fixture; the cache implementation is shared with Local"),
+    },
+  },
+  appCacheCapacity: {
+    fixtures: "actors",
+    file: "app-cache-capacity.spec.ts",
+    title: "App cache reclaims old values at capacity and keeps valid calls working",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted API fixture; the cache implementation is shared with Local"),
+    },
+  },
+  appCacheReasons: {
+    fixtures: "actors",
+    file: "app-cache-capacity.spec.ts",
+    title: "App cache errors expose safe reasons to authored callers",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted API fixture; the cache implementation is shared with Local"),
+    },
+  },
   appCacheEvaluation: {
     fixtures: "actors",
     file: "app-cache-evaluation.spec.ts",

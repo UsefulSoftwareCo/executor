@@ -38,6 +38,9 @@ const initialize = (storage: CacheSqlStorage) =>
       bytes INTEGER NOT NULL, touched REAL NOT NULL, PRIMARY KEY(namespace, key)
     )`);
     storage.sql.exec("CREATE INDEX IF NOT EXISTS executor_cache_expiry ON executor_cache(stale)");
+    storage.sql.exec(
+      "CREATE INDEX IF NOT EXISTS executor_cache_oldest ON executor_cache(touched, namespace, key)",
+    );
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS executor_cache_usage (
       id INTEGER PRIMARY KEY CHECK (id = 0), bytes INTEGER NOT NULL, count INTEGER NOT NULL
     )`);
@@ -118,11 +121,51 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               now,
             );
           };
-          const bound = () => {
-            const totals = Schema.decodeUnknownSync(Usage)(
+          const usage = () =>
+            Schema.decodeUnknownSync(Usage)(
               storage.sql.exec("SELECT bytes, count FROM executor_cache_usage WHERE id = 0").one(),
             );
-            if (totals.bytes > cacheLimits.totalBytes || totals.count > cacheLimits.totalEntries)
+          const bound = (protectedKeys: readonly string[]) => {
+            const totals = usage();
+            if (totals.bytes <= cacheLimits.totalBytes && totals.count <= cacheLimits.totalEntries)
+              return;
+            // Reclaim in write-age order, not LRU: reads do not change touched. Leave room for
+            // another batch so pressure does not scan victims on every small write. Live leases
+            // and every entry this command installs are ineligible, even after publish clears its lease.
+            const bytes =
+              totals.bytes > cacheLimits.totalBytes
+                ? totals.bytes - cacheLimits.totalBytes + cacheLimits.batchBytes
+                : 0;
+            const count =
+              totals.count > cacheLimits.totalEntries
+                ? totals.count - cacheLimits.totalEntries + cacheLimits.batchEntries
+                : 0;
+            storage.sql.exec(
+              `WITH victims AS (
+                SELECT rowid, bytes,
+                  sum(bytes) OVER (ORDER BY touched, namespace, key) - bytes AS prior_bytes,
+                  row_number() OVER (ORDER BY touched, namespace, key) - 1 AS prior_count
+                FROM executor_cache
+                WHERE lease_until <= ? AND NOT (namespace = ? AND key IN (SELECT value FROM json_each(?)))
+                ORDER BY touched, namespace, key LIMIT ?
+              )
+              DELETE FROM executor_cache WHERE rowid IN (
+                SELECT rowid FROM victims WHERE prior_bytes < ? OR prior_count < ?
+              )`,
+              now,
+              namespace,
+              JSON.stringify(protectedKeys),
+              cacheLimits.totalEntries + cacheLimits.batchEntries,
+              bytes,
+              count,
+            );
+            const remaining = usage();
+            // No safe victim can make this command fit. Roll back its writes and reclamation;
+            // never remove a live fence or claim that an unretained direct write succeeded.
+            if (
+              remaining.bytes > cacheLimits.totalBytes ||
+              remaining.count > cacheLimits.totalEntries
+            )
               throw new CacheError({ reason: "capacity" });
           };
           const claim = (key: string) => {
@@ -138,7 +181,7 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               now + cacheLimits.leaseMs,
               now,
             );
-            bound();
+            bound([key]);
             return lease;
           };
           switch (command.operation) {
@@ -177,7 +220,7 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               const row = read(command.key);
               if (row?.lease !== command.lease || row.lease_until <= now) return false;
               write(command.key, command.entry);
-              bound();
+              bound([command.key]);
               return true;
             }
             case "write": {
@@ -188,7 +231,7 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               )
                 throw new CacheError({ reason: "capacity" });
               for (const { key, entry } of command.entries) write(key, entry);
-              bound();
+              bound(command.entries.map(({ key }) => key));
               return null;
             }
             case "invalidate":
