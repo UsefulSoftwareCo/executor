@@ -52,7 +52,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP event app removal", (it) =
             ),
           );
 
-          const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${emitter.id}`);
+          const removed = yield* api.request(
+            actors.owner,
+            "DELETE",
+            `${prefix}/apps/${emitter.id}`,
+          );
           expect(removed.status, JSON.stringify(removed.body)).toBe(200);
 
           // The same name gives the same slug, so the event name the client holds resolves again.
