@@ -1,0 +1,78 @@
+---
+// System / light / dark. Shared through SiteFooter by the marketing site and
+// the docs, so the choice is written where Blume's own theme script reads it:
+// "light" or "dark" under the "blume-theme" key, and no key for the system
+// setting. Each document's head script applies it before first paint.
+const choices = [
+  {
+    value: "system",
+    label: "Use system theme",
+    icon: '<rect x="2" y="3" width="12" height="8.5" rx="1.25"/><path d="M5.5 14h5M8 11.5V14"/>',
+  },
+  {
+    value: "light",
+    label: "Use light theme",
+    icon: '<circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.25M8 13.25v1.25M1.5 8h1.25M13.25 8h1.25M3.4 3.4l.9.9M11.7 11.7l.9.9M3.4 12.6l.9-.9M11.7 4.3l.9-.9"/>',
+  },
+  {
+    value: "dark",
+    label: "Use dark theme",
+    icon: '<path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1Z"/>',
+  },
+] as const;
+---
+
+<div role="group" aria-label="Theme" class="inline-flex items-center gap-0.5 rounded-full border border-rule p-0.5">
+  {choices.map((choice) => (
+    <button
+      type="button"
+      data-theme-choice={choice.value}
+      aria-pressed={choice.value === "system" ? "true" : "false"}
+      aria-label={choice.label}
+      title={choice.label}
+      class="grid size-7 cursor-pointer place-items-center rounded-full text-ink-3 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ink-3 aria-pressed:bg-surface-2 aria-pressed:text-ink aria-pressed:shadow-[0_0_0_1px_var(--color-rule)]"
+    >
+      <svg aria-hidden="true" class="size-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" set:html={choice.icon} />
+    </button>
+  ))}
+</div>
+
+<script>
+  const key = "blume-theme";
+  type Choice = "system" | "light" | "dark";
+  const isExplicit = (value: string | null | undefined): value is "light" | "dark" =>
+    value === "light" || value === "dark";
+  const systemDark = matchMedia("(prefers-color-scheme: dark)");
+
+  const stored = (): Choice => {
+    const value = localStorage.getItem(key);
+    return isExplicit(value) ? value : "system";
+  };
+
+  const apply = () => {
+    const choice = stored();
+    document.documentElement.dataset.theme =
+      choice === "system" ? (systemDark.matches ? "dark" : "light") : choice;
+    for (const button of document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]")) {
+      button.setAttribute("aria-pressed", String(button.dataset.themeChoice === choice));
+    }
+  };
+
+  // Delegated and registered once: the docs' client router swaps the footer
+  // markup on every navigation but runs this module only on the first load.
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest<HTMLButtonElement>("[data-theme-choice]");
+    if (!button) return;
+    const choice = button.dataset.themeChoice;
+    if (isExplicit(choice)) localStorage.setItem(key, choice);
+    else localStorage.removeItem(key);
+    apply();
+  });
+  systemDark.addEventListener("change", apply);
+  window.addEventListener("storage", (event) => {
+    if (event.key === key) apply();
+  });
+  document.addEventListener("astro:after-swap", apply);
+  apply();
+</script>

@@ -71,7 +71,10 @@ function TaskCard({
     [0.35, 0.35, 1, 1, 0.35, 0.35],
   );
   const done = useTransform(age, [0, 0.57, 0.65, 1.9, 2.1, stages.length], [0, 0, 1, 1, 0, 0]);
-  const borderColor = useTransform(done, [0, 1], ["#e4e4e4", "#ccc"]);
+  const borderColor = useTransform(
+    done,
+    (amount) => `color-mix(in oklab, var(--color-tone-80) ${amount * 100}%, var(--color-tone-89))`,
+  );
   const status = useTransform(age, (value): string => {
     if (value < 0.44) return "Waiting";
     if (value < 0.57) return "Running…";
@@ -80,18 +83,18 @@ function TaskCard({
   });
   return (
     <motion.div
-      className="absolute top-1/2 left-1/2 -mt-10.5 -ml-33 flex h-21 w-26 flex-col overflow-hidden rounded-[5px] border border-[#ddd] bg-white text-left"
+      className="absolute top-1/2 left-1/2 -mt-10.5 -ml-33 flex h-21 w-26 flex-col overflow-hidden rounded-[5px] border border-tone-87 bg-tone-100 text-left"
       style={{ x, opacity, borderColor }}
     >
-      <div className="px-2.5 pt-2 font-mono text-[6.5px] text-[#aaa]">{stage.stamp}</div>
+      <div className="px-2.5 pt-2 font-mono text-[6.5px] text-tone-67">{stage.stamp}</div>
       <motion.div
         className="flex flex-1 flex-col justify-center px-2.5"
         style={{ opacity: contentOpacity }}
       >
-        <div className="font-mono text-[9px] text-[#333]">{stage.title}</div>
-        <motion.div className="mt-1 text-[8px] leading-[1.5] text-[#888]">{status}</motion.div>
+        <div className="font-mono text-[9px] text-tone-20">{stage.title}</div>
+        <motion.div className="mt-1 text-[8px] leading-[1.5] text-tone-53">{status}</motion.div>
       </motion.div>
-      <motion.div className="px-2.5 pb-2 text-[7px] text-[#777]" style={{ opacity: done }}>
+      <motion.div className="px-2.5 pb-2 text-[7px] text-tone-47" style={{ opacity: done }}>
         ✓ {stage.completed}
       </motion.div>
     </motion.div>
@@ -102,7 +105,12 @@ function SleepClock({ progress }: { readonly progress: MotionValue<number> }) {
   const rotate = useTransform(progress, [0, 1], [0, 360]);
   return (
     <motion.svg viewBox="0 0 28 28" className="size-full" fill="none" style={{ rotate }}>
-      <path d="M14 7V14L18 16" stroke="#666" strokeWidth="1.25" strokeLinecap="round" />
+      <path
+        d="M14 7V14L18 16"
+        className="stroke-tone-40"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+      />
     </motion.svg>
   );
 }
@@ -134,29 +142,29 @@ function SleepStep({
   );
   return (
     <motion.div className="absolute top-1/2 left-1/2 -mt-3.5 -ml-7 h-7 w-14" style={{ x, opacity }}>
-      <span className="absolute inset-x-0 -top-4 text-center font-mono text-[7px] text-[#aaa]">
+      <span className="absolute inset-x-0 -top-4 text-center font-mono text-[7px] text-tone-67">
         sleep
       </span>
-      <span className="absolute inset-x-0 top-1/2 h-px bg-[#ddd]" />
+      <span className="absolute inset-x-0 top-1/2 h-px bg-tone-87" />
       <motion.span
-        className="absolute top-1/2 -mt-0.5 -ml-0.5 size-1 rounded-full bg-[#555]"
+        className="absolute top-1/2 -mt-0.5 -ml-0.5 size-1 rounded-full bg-tone-33"
         style={{ x: dotX, opacity: dotOpacity }}
       />
-      <div className="absolute inset-y-0 left-3.5 size-7 rounded-full bg-[#fafafa]">
+      <div className="absolute inset-y-0 left-3.5 size-7 rounded-full bg-tone-98">
         <svg viewBox="0 0 28 28" className="absolute inset-0 size-full -rotate-90" fill="none">
-          <circle cx="14" cy="14" r="12" stroke="#ddd" />
+          <circle cx="14" cy="14" r="12" className="stroke-tone-87" />
           <motion.circle
             cx="14"
             cy="14"
             r="12"
-            stroke="#888"
+            className="stroke-tone-53"
             strokeWidth="1.25"
             style={{ pathLength: progress }}
           />
         </svg>
         <SleepClock progress={progress} />
       </div>
-      <span className="absolute -inset-x-1 top-full mt-1.5 text-center font-mono text-[7px] text-[#999]">
+      <span className="absolute -inset-x-1 top-full mt-1.5 text-center font-mono text-[7px] text-tone-60">
         {stage.sleep}
       </span>
     </motion.div>

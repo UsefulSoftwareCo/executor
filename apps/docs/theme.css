@@ -54,3 +54,16 @@
   --blume-border: var(--color-rule);
   --blume-code-background: var(--color-surface-2);
 }
+
+/* Blume declares its own dark colours on this selector, so repeat the mapping
+   here; the marketing tokens it points at switch in dark-theme.css. The
+   accent is near-white in dark mode, so text on it takes the dark surface. */
+:root[data-theme="dark"] {
+  --blume-accent-foreground: var(--color-surface);
+  --blume-background: var(--color-surface);
+  --blume-foreground: var(--color-ink);
+  --blume-muted: var(--color-surface-2);
+  --blume-muted-foreground: var(--color-ink-2);
+  --blume-border: var(--color-rule);
+  --blume-code-background: var(--color-surface-2);
+}
