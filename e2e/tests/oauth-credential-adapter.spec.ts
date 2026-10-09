@@ -266,8 +266,19 @@ layer(HostedLive, { excludeTestServices: true })("OAuth credential adapter", (it
         yield* adapter.configure({ reseal: "unavailable" });
         const lost = yield* read(account.profile);
         expect(lost.status, JSON.stringify(lost.body)).toBe(500);
+        expect(lost.body).toMatchObject({ _tag: "CredentialsError" });
         expect(yield* refreshes).toBe(before + 4);
         yield* expectRenewed(account.profile, before + 5);
+        expect((yield* adapter.metrics).renewals).toBe(yield* refreshes);
+
+        // Some services send a null expires_in and the scope as an array. A store that passes the
+        // service's body on as it came renews like the host's own request, which normalizes both;
+        // the renewal is saved only after the host has read the tokens, so a renewal that failed
+        // to read them would lose the rotated refresh token.
+        yield* issuer.configure({
+          tokenShape: (tokens) => ({ ...tokens, expires_in: null, scope: ["read", "write"] }),
+        });
+        yield* expectRenewed(account.profile, before + 6);
         expect((yield* adapter.metrics).renewals).toBe(yield* refreshes);
       }),
     ),
