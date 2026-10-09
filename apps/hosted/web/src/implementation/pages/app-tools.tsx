@@ -19,7 +19,13 @@ import {
 import { ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
 import { Empty } from "@executor-js/ui/dashboard/common";
 import { AppSectionHeader, AppSectionTitle } from "@executor-js/ui/dashboard/app-section-header";
-import { appError, callToolAtom, toolDetailAtom, toolCatalogAtom } from "../../contracts/apps.ts";
+import {
+  appError,
+  callToolAtom,
+  toolDetailAtom,
+  toolCatalogAtom,
+  toolRunApprovalAtoms,
+} from "../../contracts/apps.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
@@ -114,6 +120,7 @@ export function AppTools({
               tool: tool.name,
               kind: tool.readOnly === true ? "query" : "mutation",
             })}
+            approval={(requestId) => toolRunApprovalAtoms({ organization, app: app.id, requestId })}
             detail={toolDetailAtom({ ...catalog, tool: tool.name })}
             Failure={ToolCallFailure}
             context={

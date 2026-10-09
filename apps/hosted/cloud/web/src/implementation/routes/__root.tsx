@@ -8,7 +8,7 @@ import { ClientOnly, createRootRoute, Outlet } from "@tanstack/react-router";
 import { PageError, PageNotFound } from "@executor-js/hosted-web/route-fallbacks";
 import { AuthBoundary } from "@executor-js/hosted-web/auth";
 import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
-import { TeamSetupBoundary } from "../components/team-setup.tsx";
+import { TeamSetupBoundary, TeamSetupPending } from "../components/team-setup.tsx";
 import { useLocation } from "@tanstack/react-router";
 import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
 import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
@@ -32,6 +32,8 @@ export const Route = createRootRoute({
     await restoreLastOrganization(serverDocument(), location.pathname);
   },
   component: () => <Root />,
+  // The entry gate reads memberships inside the root; the root shows the gate's loading view.
+  pendingComponent: TeamSetupPending,
   notFoundComponent: PageNotFound,
   errorComponent: PageError,
 });

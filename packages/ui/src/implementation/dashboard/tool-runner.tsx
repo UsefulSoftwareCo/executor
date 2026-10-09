@@ -3,13 +3,18 @@ import {
   AppProviderFailed,
   Json,
   type AccountId,
+  type ApprovalRequestId,
   type SelectedAccounts,
   type Tool,
+  type ToolResumeResult,
 } from "@executor-js/sdk";
-import { Cause, Exit, Option, Schema } from "effect";
+import type { BrowserToolRun } from "@executor-js/mcp/browser";
+import { Cause, Exit, Match, Option, Schema } from "effect";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { useCallback, useState, type ComponentType } from "react";
+import type { ToolRunApprovalAtoms } from "../../contracts/browser-approval.ts";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
+import { BrowserApprovalCard } from "./browser-approval.tsx";
 import { Button } from "../components/button.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs.tsx";
@@ -111,19 +116,80 @@ export function toolRunContext(
 }
 
 /**
+ * What happened after the person answered their own call's review. App code reported that the call
+ * needs approval and may already have made changes, so this states only what Executor did with the
+ * saved call: never that the tool did not run.
+ */
+const answered = (result: ToolResumeResult) =>
+  Match.value(result).pipe(
+    Match.discriminatorsExhaustive("status")({
+      completed: ({ toolError }) =>
+        toolError === true
+          ? "Approved. The tool ran and reported an error, shown below."
+          : "Approved. The tool ran, and its result is below.",
+      denied: () => "Declined. Executor will not resume this saved call.",
+      cancelled: () => "Cancelled. Executor will not resume this saved call.",
+      failed: ({ reason }) =>
+        Match.value(reason).pipe(
+          Match.when(
+            "context-changed",
+            () =>
+              "The app, profile or accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
+          ),
+          Match.when(
+            "execution-failed",
+            () =>
+              "The tool failed after you approved it. It may have already made changes. Check before running it again.",
+          ),
+          Match.when(
+            "expired",
+            () => "This request expired, so Executor will not resume this saved call.",
+          ),
+          Match.exhaustive,
+        ),
+      "already-consumed": () => "This request was already answered.",
+    }),
+  );
+
+/** The person reviews their own call; approving runs the saved call and shows its result here. */
+function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
+  const answer = useAtomValue(atoms.answer);
+  const result =
+    AsyncResult.isSuccess(answer) && answer.value.status === "answered"
+      ? answer.value.result
+      : undefined;
+  return (
+    <>
+      <BrowserApprovalCard
+        atoms={atoms}
+        completion={result === undefined ? undefined : answered(result)}
+      />
+      {result?.status === "completed" && (
+        <section aria-label="Tool result">
+          <Code code={JSON.stringify(result.value, null, 2)} copyable copyLabel="Copy result" />
+        </section>
+      )}
+    </>
+  );
+}
+
+/**
  * Run one tool with a form or JSON draft. The product binds the call to its exact app, profile
  * revision and deployment, and renders its own failures; provider failures keep the shared account
- * recovery.
+ * recovery. A call that needs approval waits for the person's review of the saved call.
  */
 export function ToolRunner<E>({
   tool,
   call,
+  approval,
   detail,
   Failure,
   context,
 }: {
   readonly tool: string;
-  readonly call: Atom.AtomResultFn<Json, Json, E>;
+  readonly call: Atom.AtomResultFn<Json, BrowserToolRun, E>;
+  /** The product's review of one pending call, read from the server rather than the draft. */
+  readonly approval: (requestId: ApprovalRequestId) => ToolRunApprovalAtoms;
   /** The selected tool's schemas seed the draft with its required inputs. */
   readonly detail: Query<Tool | undefined, unknown>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
@@ -139,6 +205,7 @@ export function ToolRunner<E>({
   // Form fields whose text does not parse, so the draft still holds their last good value.
   const [invalid, setInvalid] = useState<ReadonlySet<string>>(new Set());
   const [output, setOutput] = useState<string>();
+  const [review, setReview] = useState<ApprovalRequestId>();
   const [error, setError] = useState<"json" | "object" | Cause.Cause<E>>();
   const onInvalidChange = useCallback(
     (path: string, broken: boolean) =>
@@ -213,10 +280,12 @@ export function ToolRunner<E>({
           }
           setPending(true);
           setOutput(undefined);
+          setReview(undefined);
           const result = await run(input);
           setPending(false);
           if (Exit.isFailure(result)) setError(result.cause);
-          else setOutput(JSON.stringify(result.value, null, 2));
+          else if (result.value.status === "approval-required") setReview(result.value.requestId);
+          else setOutput(JSON.stringify(result.value.value, null, 2));
         }}
       >
         {/* No tab is selected until the schema decides between the form and JSON. */}
@@ -288,6 +357,7 @@ export function ToolRunner<E>({
       ) : (
         error !== undefined && <Failure cause={error} />
       )}
+      {review !== undefined && <ToolRunReview key={review} atoms={approval(review)} />}
       {output !== undefined && (
         <section aria-label="Tool result">
           <Code code={output} copyable copyLabel="Copy result" />

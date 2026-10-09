@@ -1338,7 +1338,7 @@ export function executeProgram(
             progress.callFibers.delete(fiber);
             const call = progress.calls[index];
             if (call === undefined) return;
-            // A call interrupted while it waited for approval never ran.
+            // A call interrupted while it waited for approval was never resumed.
             if (!(outcome === "interrupted" && call.outcome === "awaiting-approval"))
               call.outcome = outcome;
             call.durationMs = durationMs;

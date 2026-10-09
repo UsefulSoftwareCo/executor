@@ -1,6 +1,7 @@
 import { dashboardHttpClient, hydrated, requestKey } from "@executor-js/ui/contracts/http";
 import { observeBrowserTransport, observeBrowserResponse } from "@executor-js/telemetry/browser";
-import { DashboardRuntime } from "./telemetry.ts";
+import { BrowserAtoms, DashboardRuntime } from "./telemetry.ts";
+import { toolRunApproval } from "@executor-js/ui/contracts/browser-approval";
 import { LocalAppManagementApi } from "@executor-js/local-server/app-management";
 import {
   DashboardApi,
@@ -8,7 +9,14 @@ import {
   DashboardOverview,
   DashboardTools,
 } from "@executor-js/local-server/contracts";
-import type { AppId, DeploymentId, Json, ProfileId, ToolName } from "@executor-js/sdk";
+import type {
+  AppId,
+  ApprovalRequestId,
+  DeploymentId,
+  Json,
+  ProfileId,
+  ToolName,
+} from "@executor-js/sdk";
 import { Cause, Clock, Data, Effect, Option, Schedule, Schema, Stream } from "effect";
 import { HttpClientError } from "effect/http";
 import { AsyncResult, Atom, AtomHttpApi } from "effect/reactivity";
@@ -278,10 +286,19 @@ class CallKey extends Data.Class<{
 const calls = Atom.family(({ app, ...target }: CallKey) =>
   DashboardClient.runtime.fn((input: Json) =>
     Effect.flatMap(DashboardClient, (client) =>
-      client.dashboard.callTool({ params: { app }, payload: { ...target, input } }),
+      client.dashboard.runTool({ params: { app }, payload: { ...target, input } }),
     ),
   ),
 );
 /** Each tool call runs against the tab's exact profile revision and deployment. */
 export const callToolAtom = (key: ConstructorParameters<typeof CallKey>[0]) =>
   calls(new CallKey(key));
+const toolRunApprovals = Atom.family((endpoint: string) => toolRunApproval(BrowserAtoms, endpoint));
+/** One pending dashboard run's review; each request owns its answer state. */
+export const toolRunApprovalAtoms = (key: {
+  readonly app: AppId;
+  readonly requestId: ApprovalRequestId;
+}) =>
+  toolRunApprovals(
+    `/dashboard/api/apps/${encodeURIComponent(key.app)}/tools/approvals/${encodeURIComponent(key.requestId)}`,
+  );

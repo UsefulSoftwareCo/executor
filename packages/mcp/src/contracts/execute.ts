@@ -100,7 +100,8 @@ export const UnavailableApp = Schema.Struct({
 /**
  * One admitted tool call in call order. `interrupted` calls were still running when the
  * execution ended; the upstream may or may not have applied them. `awaiting-approval` calls
- * were still waiting for approval when the execution ended; they never ran.
+ * were still waiting for approval when the execution ended; Executor did not resume the saved
+ * call, though the tool may have had effects before it asked.
  */
 export const McpToolCall = Schema.Struct({
   name: Schema.String,

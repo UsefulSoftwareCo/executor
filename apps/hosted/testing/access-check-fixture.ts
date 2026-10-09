@@ -3,6 +3,9 @@
  * fails in transport, or refuses only after the render deadline, while the page's other reads run
  * normally. Both run the same organization middleware,
  * so no request from outside can produce that split. Production entry points never provide it.
+ *
+ * A second cookie stalls a document's in-process read of the sign-in settings while the browser's
+ * own read of the same route answers at once.
  */
 import { Cookies, HttpRouter } from "effect/http";
 import { Effect, Schema } from "effect";
@@ -13,6 +16,22 @@ import { AuthenticationUnavailable } from "@executor-js/hosted-server";
 export const accessCheckCookie = "executor-test-access-check";
 const Mode = Schema.Literals(["refuse", "unavailable", "fail", "stall"]);
 const accessPath = /^\/api\/organizations\/[^/]+\/access$/;
+/** The browser cookie that stalls the sign-in settings read of documents it requests. */
+export const signInSettingsCookie = "executor-test-sign-in-settings";
+const signInSettingsPath = "/api/auth/self-host/config";
+/** Past the dashboard's 10-second render deadline, as a read that never answers would be. */
+const stallMs = 12_000;
+
+/** Wait out a stall, or until the document gives up on the read. */
+const stall = (signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, stallMs);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
 /** No organization has this slug, so the product refuses it as it refuses any unknown one. */
 const refusedPath = "/api/organizations/access-check-refused/access";
 
@@ -20,9 +39,13 @@ const fixture = (pipeline: (request: Request) => Promise<Response>) => {
   const reads = new Set<Promise<unknown>>();
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    const mode = Schema.decodeUnknownOption(Mode)(
-      Cookies.parseHeader(request.headers.get("cookie") ?? "")[accessCheckCookie],
-    );
+    const cookies = Cookies.parseHeader(request.headers.get("cookie") ?? "");
+    if (url.pathname === signInSettingsPath && cookies[signInSettingsCookie] === "stall") {
+      await stall(request.signal);
+      request.signal.throwIfAborted();
+      return pipeline(request);
+    }
+    const mode = Schema.decodeUnknownOption(Mode)(cookies[accessCheckCookie]);
     if (mode._tag === "None" || !accessPath.test(url.pathname)) {
       const response = pipeline(request);
       const settled = response.then(
@@ -34,7 +57,7 @@ const fixture = (pipeline: (request: Request) => Promise<Response>) => {
       return response;
     }
     // Past the dashboard's 10-second render deadline, so the page renders without an answer.
-    if (mode.value === "stall") await new Promise((resolve) => setTimeout(resolve, 12_000));
+    if (mode.value === "stall") await new Promise((resolve) => setTimeout(resolve, stallMs));
     // The page's reads start with this check. Answering once they have settled means a document
     // that released them early would already hold their data.
     const answer = await pipeline(

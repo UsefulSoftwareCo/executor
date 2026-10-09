@@ -77,6 +77,7 @@ import {
   ToolElicitationFailed,
   ToolBlocked,
   ToolApprovalRequired,
+  ApprovalRequestId,
   ToolPolicyFailed,
   RequestInvalid,
   type ProviderDefinition,
@@ -88,6 +89,13 @@ import {
   CatalogImport,
   CustomAppInput,
 } from "@executor-js/catalog/contracts";
+import {
+  BrowserApprovalAnswer,
+  BrowserApprovalView,
+  BrowserToolRun,
+  BrowserToolRunAnswer,
+  ToolRunApprovalRefused,
+} from "@executor-js/mcp/browser";
 import { ConnectionSignIn } from "./account-connections.ts";
 import { AuthStorageError } from "./auth.ts";
 import { Schema } from "effect";
@@ -453,7 +461,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
-      HttpApiEndpoint.post("callTool", "/dashboard/api/apps/:app/tools/call", {
+      HttpApiEndpoint.post("runTool", "/dashboard/api/apps/:app/tools/run", {
         params: { app: AppId },
         payload: Schema.Struct({
           tool: ToolName,
@@ -464,7 +472,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           profile: Schema.optional(ProfileId),
           expectedProfileRevision: Schema.optional(ProfileRevision),
         }),
-        success: Json,
+        success: BrowserToolRun,
         error: [
           ...ProfileErrors,
           StorageError,
@@ -488,8 +496,44 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           ToolApprovalRequired,
           ToolPolicyFailed,
           RequestInvalid,
+          DashboardForbidden,
+          DashboardUnauthorized,
         ],
       }),
+    )
+    .add(
+      HttpApiEndpoint.get("toolApproval", "/dashboard/api/apps/:app/tools/approvals/:requestId", {
+        params: { app: AppId, requestId: ApprovalRequestId },
+        success: BrowserApprovalView,
+        error: [
+          StorageError,
+          AppNotFound,
+          RequestInvalid,
+          DashboardForbidden,
+          DashboardUnauthorized,
+          ToolRunApprovalRefused,
+        ],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post(
+        "answerToolApproval",
+        "/dashboard/api/apps/:app/tools/approvals/:requestId",
+        {
+          params: { app: AppId, requestId: ApprovalRequestId },
+          payload: BrowserApprovalAnswer,
+          success: BrowserToolRunAnswer,
+          error: [
+            StorageError,
+            CredentialsError,
+            AppNotFound,
+            RequestInvalid,
+            DashboardForbidden,
+            DashboardUnauthorized,
+            ToolRunApprovalRefused,
+          ],
+        },
+      ),
     )
     .add(
       HttpApiEndpoint.get("catalog", "/dashboard/api/catalog", {

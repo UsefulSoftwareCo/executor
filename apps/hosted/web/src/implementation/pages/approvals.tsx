@@ -4,6 +4,7 @@ import { BrowserApprovalCard } from "@executor-js/ui/dashboard/browser-approval"
 import { pendingApprovalsAtom, scheduledReviewAtoms } from "../../contracts/schedules.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
+import { ScheduledApprovalFrame } from "../components/page-pending.tsx";
 /** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
 export function ApprovalsPage() {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
@@ -26,18 +27,11 @@ export function ApprovalsPage() {
 export function ScheduledApprovalPage({ runId }: { readonly runId: string }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (
-    <main className="mx-auto w-full max-w-2xl p-4 md:p-6">
-      <Link
-        to="/org/$organizationSlug/approvals"
-        params={{ organizationSlug }}
-        className="mb-4 inline-flex text-sm text-muted-foreground"
-      >
-        Back to approvals
-      </Link>
+    <ScheduledApprovalFrame organizationSlug={organizationSlug}>
       <BrowserApprovalCard
         atoms={scheduledReviewAtoms({ organization, run: runId })}
         completion="Your response was saved. Approved runs continue in the background."
       />
-    </main>
+    </ScheduledApprovalFrame>
   );
 }

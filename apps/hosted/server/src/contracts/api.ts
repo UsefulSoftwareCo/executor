@@ -9,7 +9,13 @@ import { Context, Schema } from "effect";
 import { HostedGroups } from "./groups.ts";
 import { HostedMcpConnections } from "./mcp-connections.ts";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
-import { AuthenticationUnavailable, Principal, RequireUser, Unauthorized } from "./auth.ts";
+import {
+  AuthenticationUnavailable,
+  BrowserSessionOnly,
+  Principal,
+  RequireUser,
+  Unauthorized,
+} from "./auth.ts";
 import {
   HostedOrganization,
   OrganizationForbidden,
@@ -72,7 +78,8 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
       if (security.has(id)) throw new Error(`Duplicate product API operation: ${id}`);
       security.set(
         id,
-        [...middleware].some((service) => service.key === RequireUser.key)
+        [...middleware].some((service) => service.key === RequireUser.key) ||
+          Context.get(mergedAnnotations, BrowserSessionOnly)
           ? [{ browserSession: [] }]
           : [...middleware].some(
                 (service) =>

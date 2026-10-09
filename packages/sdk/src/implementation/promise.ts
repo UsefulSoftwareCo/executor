@@ -44,17 +44,20 @@ function run<A, B, E>(
 
 const invocationOptions = (
   options: Parameters<PromiseExecutor["tools"]["call"]>[1],
-): ToolInvocationOptions | undefined => {
+): ToolInvocationOptions => {
   const deliver = options?.elicitation;
-  return deliver === undefined
-    ? undefined
-    : {
-        elicitation: (request, signal) =>
-          Effect.tryPromise({
-            try: () => deliver(request, signal),
-            catch: () => new ElicitationFailed({ reason: "transport" }),
-          }),
-      };
+  return {
+    ...(deliver === undefined
+      ? {}
+      : {
+          elicitation: (request, signal) =>
+            Effect.tryPromise({
+              try: () => deliver(request, signal),
+              catch: () => new ElicitationFailed({ reason: "transport" }),
+            }),
+        }),
+    ...(options?.issuer === undefined ? {} : { issuer: options.issuer }),
+  };
 };
 
 /** Adapt an existing native client; each Promise call runs one decoded operation. */

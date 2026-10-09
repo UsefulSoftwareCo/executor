@@ -4,6 +4,7 @@ import { OrganizationEntry } from "@executor-js/hosted-web/organization";
 import { SetupPageFrame } from "@executor-js/hosted-web/pages/agent-setup";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { HostedEntry, HostedEntryLoading } from "@executor-js/hosted-web/entry";
+import { UnknownPagePending } from "@executor-js/hosted-web/page-pending";
 import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";
 import { IconPicker } from "@executor-js/hosted-web/icon-picker";
 import {
@@ -53,6 +54,17 @@ export function TeamSetupBoundary({ children }: { readonly children: ReactNode }
   );
 }
 
+/**
+ * What the entry gate shows while it reads memberships. On the server that read suspends the root,
+ * so the root shows this too; no other page waits there, so any other page stays blank.
+ */
+export function TeamSetupPending() {
+  const { pathname } = useLocation();
+  if (pathname === "/mcp/authorize") return <McpConsentLoading />;
+  if (pathname === "/") return <HostedEntryLoading />;
+  return <UnknownPagePending fullScreen />;
+}
+
 /** The dedicated setup route owns its membership check, form, and completion navigation. */
 export function CreateTeamPage() {
   // Keep the supplied membership snapshot available for the confirmed-write handoff.
@@ -78,7 +90,7 @@ function OrganizationEntryGate({
   const organizations = useAtomValue(organizationsAtom);
   const refresh = useAtomRefresh(organizationsAtom);
   return AsyncResult.builder(organizations)
-    .onInitial(() => (destination === "mcp" ? <McpConsentLoading /> : <HostedEntryLoading />))
+    .onInitial(() => <TeamSetupPending />)
     .onFailure(() => (
       <HostedEntry title="Unable to load your organizations" description="Try again to continue.">
         <Button onClick={refresh}>Try again</Button>

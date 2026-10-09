@@ -2,31 +2,59 @@ import { signInCallback } from "@executor-js/hosted-web/contracts/navigation";
 import { BrowserAtoms } from "@executor-js/hosted-web/contracts/telemetry";
 import { AuthFailed, authRequest, sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { createAuthClient } from "better-auth/client";
-import { dashboardAuthClientOptions, hydratedResult } from "@executor-js/ui/contracts/http";
-import { Effect, Schema } from "effect";
+import { browserOnly, dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
+import { Effect, Option, Schema } from "effect";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { SignInSettings } from "./document.ts";
 import { invalidate } from "@executor-js/ui/contracts/mutations";
 
 /** Self-host sign-in methods do not expose the shared organization's native client. */
 const authClient = createAuthClient({ ...dashboardAuthClientOptions });
 
-const Configuration = Schema.Struct({ setup: Schema.Boolean, sso: Schema.Boolean });
-
 /**
- * The server exposes only setup availability and whether the operator enabled SSO. It arrives
- * with the page, so the sign-in form the server rendered is the one the browser keeps.
+ * Settings the browser reads itself, when the server did not send them with a sign-in page. The
+ * server renders the page's loading state instead of reading them again.
  */
-export const configurationAtom = BrowserAtoms.atom(
-  authRequest((options) => authClient.$fetch<unknown>("/self-host/config", options)).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Configuration)),
-    Effect.catchTag("SchemaError", () =>
-      Effect.fail(
-        new AuthFailed({ message: "Unable to load sign-in settings. Reload to try again." }),
+const liveConfiguration = browserOnly(
+  BrowserAtoms.atom(
+    authRequest((options) => authClient.$fetch<unknown>("/self-host/config", options)).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(SignInSettings)),
+      Effect.catchTag("SchemaError", () =>
+        Effect.fail(
+          new AuthFailed({ message: "Unable to load sign-in settings. Reload to try again." }),
+        ),
       ),
     ),
   ),
-).pipe(
-  hydratedResult({ key: "self-host:configuration", success: Configuration, error: AuthFailed }),
 );
+
+/** The settings the server read for this sign-in page, sent to the browser with it. */
+const entryConfiguration = Atom.make<Option.Option<SignInSettings>>(Option.none()).pipe(
+  Atom.serializable({ key: "self-host:sign-in-settings", schema: Schema.Option(SignInSettings) }),
+  Atom.keepAlive,
+);
+
+/**
+ * The server exposes only setup availability and whether the operator enabled SSO. A sign-in
+ * document arrives with them, so the server renders the form the visit needs and the browser
+ * keeps it; a page the browser opens itself reads them.
+ */
+export const configurationAtom = Atom.readable(
+  (get) => {
+    const entry = get(entryConfiguration);
+    return Option.isSome(entry)
+      ? AsyncResult.success<SignInSettings, AuthFailed>(entry.value)
+      : get(liveConfiguration);
+  },
+  (refresh) => {
+    refresh(entryConfiguration);
+    refresh(liveConfiguration);
+  },
+);
+
+/** Server rendering starts from the settings it read for this sign-in page. */
+export const signInInitialValues = (settings: SignInSettings | null) =>
+  settings === null ? [] : [Atom.initialValue(entryConfiguration, Option.some(settings))];
 
 /** Explicit self-host credential flow selected by the user. */
 export type SelfHostSignIn =

@@ -4,10 +4,10 @@ import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequ
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { developmentDashboard } from "@executor-js/dashboard-start/development";
-import { hostedDocumentContext } from "@executor-js/hosted-server/document";
 import { singleResourceOrigin } from "@executor-js/mcp-auth/grants";
 import { Config, Console, Effect, Layer, Path } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { selfHostDocumentContext } from "../src/implementation/web.ts";
 
 const isApiPath = (pathname: string) =>
   pathname === "/api" ||
@@ -107,7 +107,7 @@ const main = Effect.scoped(
         const lastSegment = pathname.slice(pathname.lastIndexOf("/") + 1);
         if (pathname.startsWith("/@") || lastSegment.includes(".")) return yield* dashboard.handler;
         if (request.method === "GET")
-          return yield* dashboard.document(hostedDocumentContext(singleResourceOrigin(origin)));
+          return yield* dashboard.document(selfHostDocumentContext(singleResourceOrigin(origin)));
         return yield* dashboard.handler;
       }),
     ).pipe(HttpRouter.provideRequest(FetchHttpClient.layer));

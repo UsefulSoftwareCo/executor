@@ -8,7 +8,6 @@ import {
 } from "@executor-js/hosted-web/pages/login";
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
-import { Spinner } from "@executor-js/ui/components/spinner";
 import { Cause, Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -18,6 +17,7 @@ import {
   type SelfHostSignIn,
 } from "../../contracts/auth.ts";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { SelfHostLoginPending } from "../components/login-pending.tsx";
 
 /** Password login and first-run setup; only an operator-configured SSO button is shown. */
 export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps) {
@@ -62,11 +62,7 @@ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps
     AsyncResult.isInitial(session) ||
     AsyncResult.isInitial(config)
   )
-    return (
-      <div className="auth-pending min-h-dvh flex items-center justify-center gap-4">
-        <Spinner />
-      </div>
-    );
+    return <SelfHostLoginPending />;
   if (AsyncResult.isFailure(config))
     return (
       <main className="auth-page flex flex-col min-h-dvh items-center justify-center p-[24px]">

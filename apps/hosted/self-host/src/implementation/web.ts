@@ -1,9 +1,42 @@
 /** Dashboard serving for both self-host runtimes. Only file access differs between them. */
 import { dashboardDocument } from "@executor-js/dashboard-start/document";
+import type { DocumentApi } from "@executor-js/dashboard-start/document-api";
 import { hostedDocumentContext } from "@executor-js/hosted-server/document";
-import { singleResourceOrigin } from "@executor-js/mcp-auth/grants";
-import { Config, Effect, FileSystem, Path, Result } from "effect";
+import { SignInSettings } from "@executor-js/hosted-self-host-web/document";
+import { singleResourceOrigin, type ResourceOrigins } from "@executor-js/mcp-auth/grants";
+import { Config, Effect, FileSystem, Path, Result, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
+
+/**
+ * The in-process read takes milliseconds. A read still running after this is stuck, and sign-in
+ * renders without it rather than wait for the renderer's own deadline.
+ */
+const signInSettingsDeadline = "2 seconds";
+
+/**
+ * Sign-in also reads whether first-run setup is open and whether SSO is configured, so the server
+ * renders the form this visit gets instead of a placeholder that changes size when it arrives.
+ * No other page reads them, so no other page waits for them. Settings that cannot be read in time
+ * are left to the browser, which asks again and reports a failure.
+ */
+export const selfHostDocumentContext = (resourceOrigins: ResourceOrigins) => (api: DocumentApi) =>
+  Effect.gen(function* () {
+    const document = yield* hostedDocumentContext(resourceOrigins)(api);
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const { pathname } = new URL(request.url, "http://localhost");
+    if (pathname !== "/login" && pathname !== "/login/") return { ...document, signIn: null };
+    const signIn = yield* Effect.tryPromise((signal) =>
+      api.apiFetch("/api/auth/self-host/config", { signal }).then((response) => response.json()),
+    ).pipe(
+      // A refusal's body is not settings, so it fails decoding like a lost response.
+      Effect.flatMap(Schema.decodeUnknownEffect(SignInSettings)),
+      Effect.timeout(signInSettingsDeadline),
+      Effect.tapError((error) => Effect.logWarning("Sign-in settings unavailable", error)),
+      Effect.orElseSucceed(() => null),
+      Effect.withSpan("dashboard.sign-in-settings"),
+    );
+    return { ...document, signIn };
+  });
 
 /** The renderer is loaded on the first page request; API-only processes never load React. */
 const document = dashboardDocument({
@@ -13,7 +46,7 @@ const document = dashboardDocument({
   // Self-host serves its MCP and API resources on its single origin.
   context: (api) =>
     Config.String("BETTER_AUTH_URL").pipe(
-      Effect.flatMap((origin) => hostedDocumentContext(singleResourceOrigin(origin))(api)),
+      Effect.flatMap((origin) => selfHostDocumentContext(singleResourceOrigin(origin))(api)),
     ),
 });
 

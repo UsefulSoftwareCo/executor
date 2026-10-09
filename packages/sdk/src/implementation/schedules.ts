@@ -307,10 +307,10 @@ export const makeSchedules = (
       yield* apps.get({ app: run.app, owner: input.owner });
       if (run.status !== "awaiting-approval" || run.requestId === null)
         return yield* new ScheduleNotFound();
-      const pending = yield* approvals
+      const { invocation, expiresAt } = yield* approvals
         .get(run.requestId, run.owner)
         .pipe(Effect.catchTag("ToolApprovalNotFound", () => new ScheduleNotFound()));
-      return { run: publicRun(run), ...pending };
+      return { run: publicRun(run), invocation, expiresAt };
     });
   const operations = {
     definitions: (input: typeof ScheduleInputs.definitions.Type) => definitions(input),

@@ -1,5 +1,7 @@
 import { Skeleton } from "../components/skeleton.tsx";
+import { Spinner } from "../components/spinner.tsx";
 import type { ReactNode } from "react";
+import { LoadingRows } from "./context.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
 
 /** One placeholder shares the footprint of an installed app card. */
@@ -147,4 +149,40 @@ export function InventoryPageSkeleton({
       {apps ? <AppCardsSkeleton /> : <AccountRowsSkeleton />}
     </PageFrame>
   );
+}
+
+export const approvalsTitle = "Approvals";
+export const approvalsDescription = "Review scheduled runs before they continue.";
+
+/** The approvals list while its code or the pending runs load. */
+export function ApprovalsPending() {
+  return (
+    <PageFrame>
+      <PageHeader title={approvalsTitle} description={approvalsDescription} />
+      <LoadingRows />
+    </PageFrame>
+  );
+}
+
+/** The card a browser approval renders in, from loading through its result. */
+export function ApprovalCard({ children }: { readonly children: ReactNode }) {
+  return <section className="rounded-xl border bg-card p-6 shadow-sm sm:p-8">{children}</section>;
+}
+
+/** An approval request that has not loaded yet. */
+export function ApprovalCardPending() {
+  return (
+    <ApprovalCard>
+      <Spinner />
+    </ApprovalCard>
+  );
+}
+
+/** The column webhook setup renders in, from loading through its form. */
+export function WebhookSetupFrame({ children }: { readonly children: ReactNode }) {
+  return <section className="page mx-auto w-full max-w-xl gap-4">{children}</section>;
+}
+
+export function WebhookSetupLoading() {
+  return <p className="muted">Loading webhook setup…</p>;
 }

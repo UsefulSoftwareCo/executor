@@ -2,6 +2,7 @@ import { useState, type ComponentType } from "react";
 import { Cause, Exit, Option, Redacted, Schema } from "effect";
 import type { AsyncResult } from "effect/reactivity";
 import { QueryResult } from "./context.tsx";
+import { WebhookSetupFrame, WebhookSetupLoading } from "./loading.tsx";
 import type { WebhookSetupView, WebhookSubscription } from "@executor-js/sdk";
 import type { WebhookSetupSubmission } from "../../contracts/webhook-setup.ts";
 import type { FailureProps } from "../../contracts/dashboard.ts";
@@ -36,12 +37,12 @@ export function WebhookSetupPage<E>({
   readonly retry: () => void;
 }) {
   return (
-    <section className="page mx-auto w-full max-w-xl gap-4">
+    <WebhookSetupFrame>
       <QueryResult
         result={result}
         Failure={Failure}
         retry={retry}
-        pending={<p className="muted">Loading webhook setup…</p>}
+        pending={<WebhookSetupLoading />}
       >
         {(current) => (
           <SetupForm
@@ -54,7 +55,7 @@ export function WebhookSetupPage<E>({
           />
         )}
       </QueryResult>
-    </section>
+    </WebhookSetupFrame>
   );
 }
 function CopyValue({

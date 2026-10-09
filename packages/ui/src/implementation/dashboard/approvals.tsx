@@ -1,6 +1,7 @@
 import { LocalTime, timeOfDay } from "../components/local-time.tsx";
 import { EmptyState } from "./empty-state.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
+import { approvalsDescription, approvalsTitle } from "./loading.tsx";
 import type { ComponentType, ReactNode } from "react";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ApprovalListItem } from "../../contracts/schedules.ts";
@@ -19,7 +20,7 @@ export function ApprovalsPage<E>({
 }) {
   return (
     <PageFrame>
-      <PageHeader title="Approvals" description="Review scheduled runs before they continue." />
+      <PageHeader title={approvalsTitle} description={approvalsDescription} />
       <QueryView query={query} Failure={Failure}>
         {(items) =>
           items.length === 0 ? (

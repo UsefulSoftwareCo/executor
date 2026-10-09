@@ -110,7 +110,8 @@ const errorMessage = Match.type<HostedError>().pipe(
       "This tool changed between a query and a mutation. Reload the app’s tools and try again.",
     ToolBlocked: (error) => `${error.description} ${error.recovery.action}`,
     ToolApprovalRequired: () =>
-      "The tool requires approval. The tool did not run. Approval handling is not available yet.",
+      "The tool needs approval, which this request cannot give, so Executor will not run the call from here. Run it from the app’s Tools tab to review it.",
+    ToolRunApprovalRefused: (error) => `${error.description} ${error.recovery.action}`,
     ToolPolicyFailed: () =>
       "The tool's approval policy could not be evaluated. The tool did not run. Check the policy code.",
     RequestInvalid: () => "The request is invalid. Check the input and try again.",

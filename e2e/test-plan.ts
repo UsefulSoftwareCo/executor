@@ -326,6 +326,39 @@ export const scenarios = plan({
       local: na("Hosted authorization policy"),
     },
   },
+  hostedToolRunnerApprovals: {
+    fixtures: "actors",
+    file: "tool-runner-approvals.spec.ts",
+    title:
+      "Hosted dashboard runs of approval-gated tools show the saved call and run it only after the person approves",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local covers the same review in its tool runner scenario."),
+    },
+  },
+  hostedToolRunnerApprovalOrigins: {
+    fixtures: "actors",
+    file: "tool-runner-approvals.spec.ts",
+    title:
+      "Hosted dashboard approval routes refuse MCP and scheduled approvals, which still complete in their own flow",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local covers approvals from the SDK in its tool runner scenario."),
+    },
+  },
+  hostedToolRunnerApprovalMembers: {
+    fixtures: "actors",
+    file: "tool-runner-approvals.spec.ts",
+    title:
+      "Hosted dashboard approvals without a profile are read and answered only by the member who started the run",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local does not have organization memberships."),
+    },
+  },
   activeDeploymentResume: {
     fixtures: "actors",
     file: "active-deployment-tools.spec.ts",
@@ -1229,6 +1262,26 @@ export const scenarios = plan({
       local: scheduled,
       "self-host": na("Hosted tool runs are covered by its organization scenarios."),
       cloud: na("Hosted tool runs are covered by its organization scenarios."),
+    },
+  },
+  localToolRunnerForgedApproval: {
+    file: "local-tool-runner.spec.ts",
+    title:
+      "A tool that writes and then reports it needs approval is declined without the runner claiming it did not run",
+    targets: {
+      local: scheduled,
+      "self-host": na("The runner's completion copy is shared; local exercises it."),
+      cloud: na("The runner's completion copy is shared; local exercises it."),
+    },
+  },
+  localToolRunnerRefusal: {
+    file: "local-tool-runner.spec.ts",
+    title:
+      "A request the Tools tab may not review shows why and how to start a new run instead of a retry",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted refusals are covered by its dashboard approval member scenario."),
+      cloud: na("Hosted refusals are covered by its dashboard approval member scenario."),
     },
   },
   appBrowser: {
@@ -3485,6 +3538,37 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This journey checks hosted session entry and organization references."),
+    },
+  },
+  routeLoading: {
+    fixtures: "actors",
+    file: "route-loading.spec.ts",
+    title:
+      "Before a route's data or code arrives, it shows that route's own heading and loading shape, never another page's",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local renders complete documents and has no hosted sign-in, accounts or groups."),
+    },
+  },
+  signInSettingsStalled: {
+    file: "sign-in-settings.spec.ts",
+    title:
+      "Self-host sign-in renders without waiting for a stalled settings read, the browser reads them itself, and no other page waits for them",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud's sign-in has no instance settings to read."),
+      local: na("Local has no hosted sign-in."),
+    },
+  },
+  signInSettingsSso: {
+    file: "sign-in-settings.spec.ts",
+    title:
+      "On a self-host instance with SSO, sign-in opened after a session ends draws nothing until its form arrives, and the form fits",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud's sign-in has no instance settings to read."),
+      local: na("Local has no hosted sign-in."),
     },
   },
   frameworkDiscovery: {

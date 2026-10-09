@@ -22,7 +22,7 @@ import {
   OrganizationForbidden,
   RequireOrganization,
 } from "./organization.ts";
-import { Forbidden } from "./auth.ts";
+import { BrowserSessionOnly, Forbidden } from "./auth.ts";
 
 /** Each host supplies current membership/account checks and any execution admission policy. */
 export class ScheduledAuthority extends Context.Service<
@@ -92,7 +92,7 @@ export const HostedSchedules = HttpApiGroup.make("schedules")
       params: { ...organization, run: ScheduledRunId },
       success: BrowserApprovalView,
       error: errors,
-    }),
+    }).annotate(BrowserSessionOnly, true),
   )
   .add(
     HttpApiEndpoint.post("answer", `${prefix}/scheduled-runs/:run/approval`, {
@@ -100,6 +100,6 @@ export const HostedSchedules = HttpApiGroup.make("schedules")
       payload: BrowserApprovalAnswer,
       success: BrowserApprovalAcknowledgement,
       error: errors,
-    }),
+    }).annotate(BrowserSessionOnly, true),
   )
   .middleware(RequireOrganization);

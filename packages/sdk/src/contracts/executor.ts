@@ -9,10 +9,21 @@ import { StorageHost, type Credentials } from "./storage.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
-import type { ToolInvocationOptions, ToolListOptions } from "./tools.ts";
+import type {
+  ToolApproval,
+  ToolApprovalNotFound,
+  ToolInvocationOptions,
+  ToolListOptions,
+} from "./tools.ts";
 import type { App } from "./apps.ts";
 import type { Account } from "./account.ts";
-import type { AccountConnectionId, AccountId, StorageError } from "./shared.ts";
+import type {
+  AccountConnectionId,
+  AccountId,
+  ApprovalRequestId,
+  OwnerId,
+  StorageError,
+} from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
 import { RepositoryHost, type RepositoryBackend } from "./source.ts";
 import type { RegistryOptions } from "./registry.ts";
@@ -187,8 +198,19 @@ type FlatExecutor = {
 /** App-related namespaces remain beneath apps, including workflow execution management. */
 export type Executor = Omit<
   FlatExecutor,
-  "apps" | "appWorkflows" | "appWorkflowRuns" | "appProfiles"
+  "apps" | "appWorkflows" | "appWorkflowRuns" | "appProfiles" | "tools"
 > & {
+  readonly tools: FlatExecutor["tools"] & {
+    /**
+     * Host-only: read a pending request and its issuer, so the host that issued it can show the
+     * saved call. The owner is a filter, not authorization; consumed and expired requests are not
+     * found. The host authorizes the reader and refuses requests it did not issue.
+     */
+    readonly approval: (input: {
+      readonly requestId: ApprovalRequestId;
+      readonly owner?: OwnerId;
+    }) => Effect.Effect<ToolApproval, StorageError | ToolApprovalNotFound>;
+  };
   readonly apps: FlatExecutor["apps"] & {
     readonly profiles: FlatExecutor["appProfiles"];
     readonly workflows: FlatExecutor["appWorkflows"];
@@ -217,5 +239,6 @@ export type PromiseExecutor = Promisify<
     | typeof StorageHost
     | "scheduler"
     | "events"
-  >
+    | "tools"
+  > & { readonly tools: Omit<Executor["tools"], "approval"> }
 >;

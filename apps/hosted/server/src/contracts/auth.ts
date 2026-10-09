@@ -44,6 +44,13 @@ export const Forbidden = UserFacingError.define({
 });
 /** Parsed Forbidden failure. */
 export type Forbidden = typeof Forbidden.Type;
+/**
+ * An operation that refuses every Authorization header. Its handler enforces that; this annotation
+ * makes the OpenAPI document list only the browser session for it.
+ */
+export const BrowserSessionOnly = Context.Reference<boolean>("hosted/BrowserSessionOnly", {
+  defaultValue: () => false,
+});
 /** The session store is unavailable; this must not be treated as signed out. */
 export const AuthenticationUnavailable = UserFacingError.define({
   tag: "AuthenticationUnavailable",

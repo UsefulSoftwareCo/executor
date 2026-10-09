@@ -4,13 +4,21 @@ import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   BrowserApprovalFailed,
   type BrowserApprovalAtoms,
+  type BrowserApprovalFailure,
+  type ReviewAtoms,
 } from "../../contracts/browser-approval.ts";
-import type { PendingInteraction, ElicitationResponse } from "@executor-js/mcp/browser";
+import {
+  ToolRunApprovalRefused,
+  type PendingInteraction,
+  type ElicitationResponse,
+} from "@executor-js/mcp/browser";
 import { Cause, Exit, Match } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../components/button.tsx";
 import { Code } from "./code.tsx";
+import { ErrorNotice } from "./error-notice.tsx";
+import { ApprovalCard } from "./loading.tsx";
 import { Input } from "../components/input.tsx";
 import { Spinner } from "../components/spinner.tsx";
 
@@ -29,18 +37,24 @@ const defaults = (request: PendingInteraction) =>
       ],
     ),
   );
-const failureMessage = (cause: Cause.Cause<BrowserApprovalFailed>) => {
+const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
   const error = Cause.squash(cause);
-  return error instanceof BrowserApprovalFailed
-    ? Match.value(error.reason).pipe(
-        Match.when("unauthorized", () => "Sign in again to review this request."),
-        Match.when("forbidden", () => "Your account cannot review this request."),
-        Match.when("invalid-answer", () => "Check the form fields and try again."),
-        Match.when("unavailable", () => "This request is no longer available."),
-        Match.when("network", () => "Cannot reach Executor. Try again."),
-        Match.exhaustive,
-      )
-    : "Cannot load this request. Try again.";
+  return error instanceof ToolRunApprovalRefused
+    ? `${error.description} ${error.recovery.action}`
+    : error instanceof BrowserApprovalFailed
+      ? Match.value(error.reason).pipe(
+          Match.when("unauthorized", () => "Sign in again to review this request."),
+          Match.when("forbidden", () => "Your account cannot review this request."),
+          Match.when("invalid-answer", () => "Check the form fields and try again."),
+          Match.when("unavailable", () => "This request is no longer available."),
+          Match.when("network", () => "Cannot reach Executor. Try again."),
+          Match.exhaustive,
+        )
+      : "Cannot load this request. Try again.";
+};
+const refusal = (cause: Cause.Cause<BrowserApprovalFailure>) => {
+  const error = Cause.squash(cause);
+  return error instanceof ToolRunApprovalRefused ? error : undefined;
 };
 
 /** Authentication is provided by the product; the server independently checks every read and answer. */
@@ -60,10 +74,11 @@ export function BrowserApprovalCard({
   atoms,
   completion,
 }: {
-  readonly atoms: BrowserApprovalAtoms;
+  readonly atoms: ReviewAtoms;
   readonly completion?: ReactNode;
 }) {
   const view = useAtomValue(atoms.view);
+  const refused = AsyncResult.isFailure(view) ? refusal(view.cause) : undefined;
   const refresh = useAtomRefresh(atoms.view);
   const expires =
     AsyncResult.isSuccess(view) && view.value.status === "pending"
@@ -75,8 +90,11 @@ export function BrowserApprovalCard({
     return () => clearTimeout(timer);
   }, [expires, refresh]);
   return (
-    <section className="rounded-xl border bg-card p-6 shadow-sm sm:p-8">
-      {AsyncResult.isFailure(view) ? (
+    <ApprovalCard>
+      {refused !== undefined ? (
+        // Reading again cannot change a refusal, so it shows its cause and recovery, not a retry.
+        <ErrorNotice error={refused} context="Reviewing a tool request from the Tools tab" />
+      ) : AsyncResult.isFailure(view) ? (
         <>
           <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
             Cannot open this request
@@ -101,7 +119,7 @@ export function BrowserApprovalCard({
       ) : (
         <ApprovalResult status={view.value.status} completion={completion} />
       )}
-    </section>
+    </ApprovalCard>
   );
 }
 function ApprovalResult({
@@ -133,7 +151,7 @@ function ApprovalForm({
   readonly completion?: ReactNode;
   readonly request: PendingInteraction;
   readonly appName: string | undefined;
-  readonly atoms: BrowserApprovalAtoms;
+  readonly atoms: ReviewAtoms;
 }) {
   const [values, setValues] = useState(() => defaults(request));
   const [persist, setPersist] = useState("");

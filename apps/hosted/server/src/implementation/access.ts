@@ -21,7 +21,8 @@ import type {
   SelectedAccounts,
 } from "@executor-js/sdk/core";
 import { Effect, Result } from "effect";
-import { CurrentUserId } from "../contracts/auth.ts";
+import { HttpServerRequest } from "effect/http";
+import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
 import {
   CurrentOrganization,
   OrganizationForbidden,
@@ -29,6 +30,11 @@ import {
 } from "../contracts/organization.ts";
 import type { AccountAccess } from "../contracts/resource-access.ts";
 
+/** A person's own decisions come from their signed-in browser, never from an API credential. */
+export const browserOnly = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  if (request.headers.authorization !== undefined) return yield* new Forbidden();
+});
 /** Membership was checked by middleware; administrative actions require the current role. */
 export const requireOrganizationAdmin = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;

@@ -795,6 +795,7 @@ export const makeTools = (
             yield* invocation(state, parsed.tool, kind, result.failure.input),
             args,
             result.failure.elicitation,
+            options?.issuer,
           );
         }
         return yield* Effect.fail(runtimeFailure(identity, state)(result.failure));
@@ -806,12 +807,14 @@ export const makeTools = (
           Effect.flatMap(({ owner }) => approvals.prune(owner)),
         )
         .pipe(Effect.withSpan("sdk.tools.pruneApprovals")),
+    approval: (input: Parameters<Executor["tools"]["approval"]>[0]) =>
+      approvals.get(input.requestId, input.owner).pipe(Effect.withSpan("sdk.tools.approval")),
     resume: (input: Parameters<Executor["tools"]["resume"]>[0], options?: ToolInvocationOptions) =>
       Schema.decodeUnknownEffect(ToolInputs.resume)(input, { onExcessProperty: "error" })
         .pipe(
           Effect.mapError(() => new RequestInvalid()),
           Effect.flatMap((input) =>
-            approvals.resume(input, (saved, originalInput) =>
+            approvals.resume(input, options?.issuer, (saved, originalInput) =>
               Effect.gen(function* () {
                 const checked = yield* snapshot(db, {
                   app: saved.app,

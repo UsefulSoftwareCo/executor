@@ -56,9 +56,20 @@ export type ToolApprovalLimits = typeof ToolApprovalLimits.Type;
 /** Current consume-once approval lifetime; this does not extend a live tool invocation. */
 export const defaultToolApprovalLimits = ToolApprovalLimits.make({ ttlMs: 15 * 60 * 1000 });
 
-/** Per-invocation host capabilities. These are not HTTP payloads and never enter approval storage. */
+/**
+ * Names where a host issued a call, such as one person's run from its dashboard. A pending approval
+ * saves it, and only a resume that presents the same issuer can consume the request, so each
+ * approval is answered only through the flow that issued it. Opaque to the SDK.
+ */
+export const ToolApprovalIssuer = Schema.NonEmptyString.pipe(Schema.brand("ToolApprovalIssuer"));
+export type ToolApprovalIssuer = typeof ToolApprovalIssuer.Type;
+/**
+ * Per-invocation host context. These are not HTTP payloads, so a remote caller cannot present an
+ * issuer. Only `issuer` enters approval storage.
+ */
 export interface ToolInvocationOptions {
   readonly elicitation?: ElicitationHandler;
+  readonly issuer?: ToolApprovalIssuer;
 }
 /** How an in-process caller with its own wait bound reads a tool listing. Not an HTTP input. */
 export interface ToolListOptions {
@@ -887,10 +898,11 @@ export const ToolApprovalRequired = ApiError.define({
   tag: "ToolApprovalRequired",
   status: 409,
   fields: { app: AppId, deployment: DeploymentId, tool: ToolName },
+  // App code reports that approval is required, so this never claims the tool did not run.
   message: ({ tool }) =>
-    `“${tool}” needs approval before it runs, and this request cannot present an approval prompt. The tool did not run.`,
+    `“${tool}” needs approval, and this request cannot present an approval prompt. Executor will not run the call from this request.`,
   recorded: () =>
-    "The tool needs approval before it runs, and this request cannot present an approval prompt. The tool did not run.",
+    "The tool needs approval, and this request cannot present an approval prompt. Executor will not run the call from this request.",
 });
 export type ToolApprovalRequired = typeof ToolApprovalRequired.Type;
 
@@ -962,7 +974,17 @@ export const ToolResumeResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("already-consumed"), requestId: ApprovalRequestId }),
 ]);
 export type ToolResumeResult = typeof ToolResumeResult.Type;
-/** Unknown request or a request outside an optional owner filter. */
+/**
+ * A pending request a host reads to show the person the call it would resume. The arguments are the
+ * saved invocation's. The issuer is the host's own record; the host refuses requests it did not issue.
+ */
+export const ToolApproval = Schema.Struct({
+  invocation: ToolInvocation,
+  expiresAt: Schema.Number,
+  issuer: Schema.optional(ToolApprovalIssuer),
+});
+export type ToolApproval = typeof ToolApproval.Type;
+/** Unknown request, a request outside an optional owner filter, or one issued to another flow. */
 export class ToolApprovalNotFound extends Schema.TaggedError<ToolApprovalNotFound>()(
   "ToolApprovalNotFound",
   {

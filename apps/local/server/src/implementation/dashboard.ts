@@ -8,8 +8,11 @@ import {
   OwnerId,
   AppNameTaken,
   HttpUrl,
-  ToolApprovalRequired,
+  RequestInvalid,
+  ToolApprovalIssuer,
+  ToolApprovalNotFound,
   type AppId,
+  type ApprovalRequestId,
   type ProfileId,
   type AccountId,
   type ExecutorDatabase,
@@ -19,7 +22,13 @@ import {
   type ToolRouter,
   type Executor,
 } from "@executor-js/sdk/core";
-import { Effect, Layer, Redacted, Result, Stream } from "effect";
+import { Effect, Layer, Redacted, Result, Schema, Stream } from "effect";
+import { ApprovalResponse, approvalElicitation } from "apps/contracts";
+import {
+  ToolRunApprovalRefused,
+  type BrowserApprovalView,
+  type BrowserToolRun,
+} from "@executor-js/mcp/browser";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
@@ -42,6 +51,25 @@ import {
   type AppAccountTarget,
 } from "../contracts/dashboard.ts";
 
+/** A person's own decisions come from their paired browser, never from the API key. */
+export const browserOnly = (config: ServerConfig, auth: LocalAuth) =>
+  Effect.gen(function* () {
+    const request = yield* localRequest(config.port, config.browserOrigin).pipe(
+      Effect.mapError(() => new DashboardForbidden()),
+    );
+    if (
+      request.headers.authorization !== undefined ||
+      (request.method === "POST" && request.headers.origin !== requestOrigin(config, request))
+    )
+      return yield* new DashboardForbidden();
+    if (!(yield* auth.valid(request.cookies[sessionCookie(config)])))
+      return yield* new DashboardUnauthorized();
+  });
+/**
+ * The paired browser's own runs. Their approvals are saved with this issuer, so only the dashboard
+ * can read or answer them; MCP, schedules and `/v1/tools/call` save no issuer.
+ */
+const dashboardRun = ToolApprovalIssuer.make("dashboard");
 /** Authenticate local browser and bearer requests using the same session boundary. */
 export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
   Layer.succeed(DashboardAccess, (response) =>
@@ -109,6 +137,20 @@ export const dashboard = (
           }),
         );
   const access = dashboardAccess(config, auth);
+  /** Only the dashboard's own runs are reviewed here. The arguments shown and resumed are the saved invocation's. */
+  const reviewedTool = (app: AppId, requestId: ApprovalRequestId) =>
+    Effect.gen(function* () {
+      yield* browserOnly(config, auth);
+      const pending = yield* executor.tools.approval({ requestId, owner });
+      // MCP, scheduled and API approvals are answered only in their own flow.
+      if (pending.issuer !== dashboardRun)
+        return yield* new ToolRunApprovalRefused({
+          reason: pending.issuer === undefined ? "unrecorded" : "another-person",
+        });
+      if (pending.invocation.app !== app) return yield* new ToolApprovalNotFound({ requestId });
+      const found = yield* executor.apps.get({ app });
+      return { ...pending, appName: found.name };
+    });
   // Database reads infer dependencies in the shared storage service, including reads in SDK calls.
   const overview = Effect.gen(function* () {
     const { apps, accounts, health, providers } = yield* Effect.all(
@@ -462,19 +504,56 @@ export const dashboard = (
           ),
         ),
       )
-      // Approval policy still applies: a call that needs review does not run from the dashboard.
-      .handle("callTool", ({ params, payload }) =>
-        executor.tools.call({ ...params, ...payload }).pipe(
-          Effect.flatMap((result) =>
+      // The paired browser is the person running the tool, so approval waits for their review.
+      .handle("runTool", ({ params, payload }) =>
+        Effect.andThen(
+          browserOnly(config, auth),
+          executor.tools.call({ ...params, ...payload }, { issuer: dashboardRun }),
+        ).pipe(
+          Effect.map((result): BrowserToolRun =>
             result.status === "approval-required"
-              ? Effect.fail(
-                  new ToolApprovalRequired({
-                    app: result.invocation.app,
-                    deployment: result.invocation.deployment,
-                    tool: result.invocation.tool,
-                  }),
-                )
-              : Effect.succeed(result.value),
+              ? { status: result.status, requestId: result.requestId }
+              : { status: result.status, value: result.value },
+          ),
+        ),
+      )
+      .handle("toolApproval", ({ params }) =>
+        reviewedTool(params.app, params.requestId).pipe(
+          Effect.map(({ invocation, expiresAt, appName }): BrowserApprovalView => ({
+            status: "pending",
+            appName,
+            request: {
+              status: "approval-required",
+              requestId: params.requestId,
+              invocation,
+              // Built from the saved call, so the prompt shows exactly what approval resumes.
+              elicitation: approvalElicitation(invocation.tool, invocation.input),
+              expiresAt,
+            },
+          })),
+          Effect.catchTag("ToolApprovalNotFound", () =>
+            Effect.succeed({ status: "unavailable" as const }),
+          ),
+        ),
+      )
+      .handle("answerToolApproval", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* reviewedTool(params.app, params.requestId);
+          const response = yield* Schema.decodeUnknownEffect(ApprovalResponse)(
+            payload.response,
+          ).pipe(Effect.mapError(() => new RequestInvalid()));
+          // The SDK checks the issuer again before it consumes the request.
+          const result = yield* executor.tools.resume(
+            { requestId: params.requestId, owner, response },
+            { issuer: dashboardRun },
+          );
+          return result.status === "already-consumed" ||
+            (result.status === "failed" && result.reason === "expired")
+            ? { status: "unavailable" as const }
+            : { status: "answered" as const, result };
+        }).pipe(
+          Effect.catchTag("ToolApprovalNotFound", () =>
+            Effect.succeed({ status: "unavailable" as const }),
           ),
         ),
       )

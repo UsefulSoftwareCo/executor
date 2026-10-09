@@ -206,8 +206,10 @@ const errorMessage = Match.type<DashboardError>().pipe(
     ToolApprovalRequired: () =>
       message(
         "Approval required",
-        "This call needs approval, which the dashboard cannot give yet. Run it from an MCP client.",
+        "This call needs approval, which this request cannot give, so Executor will not run it from here. Run it again from the Tools tab to review it.",
       ),
+    ToolRunApprovalRefused: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
     ToolPolicyFailed: () =>
       message(
         "Approval policy failed",

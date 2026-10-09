@@ -119,7 +119,11 @@ export function AccountShell({
   );
 }
 
-/** The same frame while the account bundle loads, with the pending page the address names. */
+/**
+ * The same frame while the account bundle or its data loads, with the pending page the address
+ * names. It reads no data: on the server a pending read here would suspend the fallback itself,
+ * and the document would show the router's root fallback instead. The way back waits with it.
+ */
 export function AccountPending({
   banner,
   support,
@@ -133,7 +137,13 @@ export function AccountPending({
   const { pathname } = useLocation();
   const [, section] = pathname.split("/").filter(Boolean);
   return (
-    <AccountShell banner={banner} support={support}>
+    <DashboardFrame
+      account
+      organization={<OrganizationSwitcherSkeleton />}
+      navigation={<AccountNavigation />}
+      banner={banner}
+      support={support}
+    >
       {section === "tokens" ? (
         <TokensPending />
       ) : section === "security" ? (
@@ -141,6 +151,6 @@ export function AccountPending({
       ) : (
         <ProfilePending />
       )}
-    </AccountShell>
+    </DashboardFrame>
   );
 }

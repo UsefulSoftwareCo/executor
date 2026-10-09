@@ -5,7 +5,6 @@ import { CurrentOrganization } from "../contracts/organization.ts";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { HttpApiBuilder } from "effect/http-api";
-import { HttpServerRequest } from "effect/http";
 import {
   RequestInvalid,
   StorageError,
@@ -24,6 +23,7 @@ import {
   OrganizationId,
 } from "../contracts/organization.ts";
 import {
+  browserOnly,
   currentOwner,
   executionManagerOwner,
   ownProfile,
@@ -62,10 +62,6 @@ export const makeScheduledAuthority = (executor: Executor) =>
         );
       });
   });
-const browserOnly = Effect.gen(function* () {
-  const request = yield* HttpServerRequest.HttpServerRequest;
-  if (request.headers.authorization !== undefined) return yield* new Forbidden();
-});
 const wake = Effect.flatten(ScheduleWakeup);
 /** Shared handlers retain product ownership and reuse the existing browser approval contract. */
 export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules", (handlers) =>

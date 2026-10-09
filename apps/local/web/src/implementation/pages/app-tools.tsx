@@ -17,7 +17,13 @@ import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
 import { ToolRunner, toolRunContext } from "@executor-js/ui/dashboard/tool-runner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Key01Icon } from "@hugeicons/core-free-icons";
-import { callToolAtom, toolDetailAtom, toolsAtom, toolCatalogAtom } from "../../contracts/api.ts";
+import {
+  callToolAtom,
+  toolDetailAtom,
+  toolsAtom,
+  toolCatalogAtom,
+  toolRunApprovalAtoms,
+} from "../../contracts/api.ts";
 import {
   appToolReadiness,
   accountSetupFailure,
@@ -227,6 +233,7 @@ function LiveAppTools({
             tool: tool.name,
             kind: tool.readOnly === true ? "query" : "mutation",
           })}
+          approval={(requestId) => toolRunApprovalAtoms({ app: app.id, requestId })}
           detail={toolDetailAtom({ ...catalog, tool: tool.name })}
           Failure={Failure}
           context={profile === undefined ? undefined : toolRunContext(label, selection, accounts)}

@@ -24,10 +24,10 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@executor-js/ui/components/dialog";
-import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
 import { useOrganizationRoute } from "../components/organization.tsx";
+import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { groupsAtom, saveGroupAtom, removeGroupAtom } from "../../contracts/groups.ts";
 import { appError, type HostedError } from "../../contracts/errors.ts";
@@ -40,25 +40,16 @@ export function GroupsPage({ id }: { readonly id?: string }) {
   const result = useAtomValue(groupsAtom(organization));
   const refresh = useAtomRefresh(groupsAtom(organization));
   const data = AsyncResult.value(result);
-  useDocumentTitle(productTitle("Groups"));
+  useDocumentTitle(productTitle(groupsTitle));
   return (
-    <PageFrame>
-      <PageHeader title="Groups" description="Organize the people in your team." />
+    <GroupsFrame>
       {AsyncResult.isFailure(result) && <HostedFailure cause={result.cause} retry={refresh} />}
       {Option.isSome(data) ? (
         <GroupContent key={`${organization}:${id ?? "list"}`} data={data.value} id={id} />
       ) : (
-        !AsyncResult.isFailure(result) && (
-          <div
-            role="status"
-            aria-label="Loading groups"
-            className="min-h-48 rounded-lg border bg-muted/30 p-5 text-sm text-muted-foreground"
-          >
-            Loading groups…
-          </div>
-        )
+        !AsyncResult.isFailure(result) && <GroupsLoading />
       )}
-    </PageFrame>
+    </GroupsFrame>
   );
 }
 function GroupContent({
