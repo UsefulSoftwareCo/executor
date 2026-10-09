@@ -249,7 +249,9 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             page
               .getByRole("button", { name: "Manage Supplied name", exact: true })
               .click()
-              .then(() => page.getByRole("menuitem", { name: "Rename", exact: true }).waitFor())
+              .then(() =>
+                page.getByRole("menuitem", { name: "Edit details", exact: true }).waitFor(),
+              )
               // Let the menu finish opening so the checkpoint shows it, not its fade-in.
               .then(() =>
                 page
@@ -260,23 +262,23 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
               )
               .then(() => page.getByRole("menuitem").allTextContents()),
           ),
-        ).toEqual(["Rename", "Update credentials"]);
+        ).toEqual(["Edit details", "Update credentials"]);
         yield* browser.checkpoint("Unselected account menu");
         yield* browser.use("Close the unselected account's menu", (page) =>
           page.keyboard.press("Escape"),
         );
 
         // An unselected account's menu opens the same dialogs as a selected one.
-        const edit = yield* browser.use("Rename an unselected account", (page) =>
+        const edit = yield* browser.use("Edit an unselected account's details", (page) =>
           page
             .getByRole("button", { name: "Manage Supplied name", exact: true })
             .click()
-            .then(() => page.getByRole("menuitem", { name: "Rename", exact: true }).click())
+            .then(() => page.getByRole("menuitem", { name: "Edit details", exact: true }).click())
             .then(() => page.getByRole("dialog", { name: "Edit account", exact: true }))
             .then((dialog) => dialog.waitFor({ state: "visible" }).then(() => dialog)),
         );
-        yield* browser.checkpoint("Rename from an unselected account");
-        yield* browser.use("Cancel renaming", () =>
+        yield* browser.checkpoint("Edit details from an unselected account");
+        yield* browser.use("Cancel editing the details", () =>
           edit
             .getByRole("button", { name: "Cancel", exact: true })
             .click()

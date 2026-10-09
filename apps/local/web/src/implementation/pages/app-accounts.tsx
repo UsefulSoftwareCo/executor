@@ -177,7 +177,9 @@ export function AppAccounts({
             >
               {saved && (
                 <>
-                  <DropdownMenuItem onSelect={() => setRenaming(saved.id)}>Rename</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setRenaming(saved.id)}>
+                    Edit details
+                  </DropdownMenuItem>
                   {requirement !== undefined && (
                     <DropdownMenuItem onSelect={() => replace(slot, saved.id)}>
                       {requirement.definition.auth[saved.method]?.type === "oauth2"
