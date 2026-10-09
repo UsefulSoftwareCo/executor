@@ -126,8 +126,11 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
                 "Remove the binding without disconnecting the saved account",
                 (page) =>
                   page
-                    .getByRole("button", { name: `Remove ${account.label}`, exact: true })
-                    .click(),
+                    .getByRole("button", { name: `Manage ${account.label}`, exact: true })
+                    .click()
+                    .then(() =>
+                      page.getByRole("menuitem", { name: "Remove", exact: true }).click(),
+                    ),
               );
               // No other app uses the managed key, so the page offers to delete it; keep it.
               yield* browser.use("Keep the managed account when offered its deletion", (page) =>
@@ -313,7 +316,9 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           }),
           yield* api.request(actors.owner, "GET", "/api/auth/api-key/list"),
         );
-        expect(nativeKeys.apiKeys.filter((key) => key.name === "Executor app")).toHaveLength(1);
+        expect(
+          nativeKeys.apiKeys.filter((key) => key.name === "Executor app (created automatically)"),
+        ).toHaveLength(1);
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account}`, {
             label: "My Executor key",

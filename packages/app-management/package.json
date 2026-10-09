@@ -14,13 +14,13 @@
     "./contracts/source-display": "./src/contracts/source-display.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@executor-js/app-registry": "workspace:*",
+    "@effect/platform-node": "4.0.1",
     "@executor-js/app-source": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/sdk": "workspace:*",
+    "@executor-js/utils": "workspace:*",
     "@napi-rs/keyring": "2.1.0",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "effect": "4.0.1",
     "jsonc-parser": "3.3.1",
     "prettier": "3.9.8",
     "proper-lockfile": "4.1.2"

@@ -18,12 +18,18 @@ import {
   approvedOperation,
   nativeOperation,
   operationDeclaration,
+  type OperationChild,
   type OperationDeclaration,
   type RouterChild,
   type RouterDeclaration,
 } from "./operations.ts";
 
-export type { RouterChild, RouterDeclaration } from "./operations.ts";
+export type {
+  OperationChild,
+  OperationDeclaration,
+  RouterChild,
+  RouterDeclaration,
+} from "./operations.ts";
 
 /** Author metadata for a router. Instructions become a skill named after the router's path. */
 export interface RouterOptions {
@@ -111,17 +117,19 @@ const withOverrides = (overrides: RouterMeta | undefined) =>
 /**
  * Declare a router whose tools are discovered when read. `list` returns tools with names relative
  * to this router; mark queries with `readOnly: true`. `resolve` receives one of those names.
+ * The router carries the handler contexts of the operations `resolve` returns, so `defineApp`
+ * checks them like a static router's.
  */
-export const dynamicRouter = (source: {
+export const dynamicRouter = <Query = unknown, Mutation = unknown>(source: {
   readonly meta?: () => RouterOptions | Promise<RouterOptions>;
   readonly list: () => readonly HostedTool[] | Promise<readonly HostedTool[]>;
   readonly resolve: (
     name: string,
   ) =>
-    | OperationDeclaration<"query" | "mutation", unknown>
+    | OperationChild<Query, Mutation>
     | undefined
-    | Promise<OperationDeclaration<"query" | "mutation", unknown> | undefined>;
-}): RouterDeclaration => {
+    | Promise<OperationChild<Query, Mutation> | undefined>;
+}): RouterDeclaration<Query, Mutation> => {
   const meta = source.meta;
   return routerDeclaration({
     kind: "dynamic",
@@ -129,16 +137,16 @@ export const dynamicRouter = (source: {
       ? {}
       : {
           meta: () =>
-            fromPromise(async () => meta())().pipe(
+            fromPromise(async () => meta(), "router")().pipe(
               Effect.flatMap((options) => Schema.decodeUnknownEffect(RouterMeta)(options)),
             ),
         }),
     list: () =>
-      fromPromise(async () => source.list())().pipe(
+      fromPromise(async () => source.list(), "router")().pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedTool))),
       ),
     resolve: (name) =>
-      fromPromise(async () => source.resolve(name))().pipe(
+      fromPromise(async () => source.resolve(name), "router")().pipe(
         Effect.map((value) => {
           if (value === undefined) return undefined;
           const operation = nativeOperation(value);

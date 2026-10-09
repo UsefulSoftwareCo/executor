@@ -1,6 +1,6 @@
 /** Adapt the local API once. Live streams remain live; no hosted concepts enter these contracts. */
 import { Effect } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import type { CustomAppInput } from "@executor-js/catalog/contracts";
 import type { InstallApp } from "@executor-js/ui/contracts/dashboard";
 import type { AppId } from "@executor-js/sdk";

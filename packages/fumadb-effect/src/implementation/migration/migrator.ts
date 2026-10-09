@@ -7,7 +7,7 @@
  * `up` / `down` functions, and applies transformers.
  */
 import { Effect, Option } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { SqlError } from "effect/sql/SqlError";
 import { MigrationError } from "../../contracts/errors.ts";
 import { applyNameVariants } from "../../contracts/schema/names.ts";
 import {

@@ -1,6 +1,6 @@
 import { Cause, Effect, Schema } from "effect";
-import { HttpServerRequest, type HttpServerResponse } from "effect/unstable/http";
-import type { HttpServerError } from "effect/unstable/http/HttpServerError";
+import { HttpServerRequest, type HttpServerResponse } from "effect/http";
+import type { HttpServerError } from "effect/http/HttpServerError";
 
 const Initialize = Schema.Struct({
   jsonrpc: Schema.Literal("2.0"),

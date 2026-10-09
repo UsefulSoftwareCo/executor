@@ -1,7 +1,7 @@
 /** The HTTP client dashboard reads use in the browser and while rendering on the server. */
 import { Effect, Layer, type Schema } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 /**
  * Server-rendered reads have no page location to resolve relative URLs against, so they address

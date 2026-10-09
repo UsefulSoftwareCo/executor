@@ -12,34 +12,18 @@
  * Metrics stay per event. Their delta histograms report each event's own
  * minimum and maximum, which an isolate-wide registry cannot reconstruct.
  */
-import {
-  Context,
-  Duration,
-  Effect,
-  Layer,
-  Logger,
-  Metric,
-  Redacted,
-  Schedule,
-  Scope,
-} from "effect";
-import {
-  HttpBody,
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { Context, Duration, Effect, Layer, Logger, Metric, Redacted, Scope } from "effect";
+import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import {
   OtlpExporter,
   OtlpLogger,
   OtlpMetrics,
   OtlpSerialization,
   OtlpTracer,
-} from "effect/unstable/observability";
+} from "effect/observability";
 import { CurrentTelemetryConfig, type TelemetryConfig, type TelemetryTarget } from "./config.ts";
 import { spanAttributes } from "./span-attributes.ts";
-import { telemetryHttpClient } from "./transport.ts";
+import { retryTelemetryExport, telemetryHttpClient } from "./transport.ts";
 
 type ResourceSpans = OtlpTracer.TraceData["resourceSpans"][number];
 type ResourceLogs = OtlpLogger.LogsData["resourceLogs"][number];
@@ -83,17 +67,6 @@ const buffering = (pending: Pending) =>
 
 /** The buffering exporters never post, so their URL only names the signal. */
 const buffered = (signal: string) => `https://buffer.invalid/v1/${signal}`;
-
-/** Effect's exporter policy: honor a 429's Retry-After, otherwise wait a second. */
-const retryDelay = (error: unknown) => {
-  const after =
-    HttpClientError.isHttpClientError(error) &&
-    error.reason._tag === "StatusCodeError" &&
-    error.reason.response.status === 429
-      ? Number(error.reason.response.headers["retry-after"] ?? 5)
-      : 1;
-  return Duration.seconds(Number.isFinite(after) && after >= 0 ? after : 5);
-};
 
 /**
  * Build the isolate's span and log exporters and return the Layer each event
@@ -155,13 +128,7 @@ export const isolateTelemetry = (
       HttpClient.transformResponse(
         Effect.provideService(HttpClient.TracerPropagationEnabled, false),
       ),
-      HttpClient.retryTransient({
-        times: 3,
-        schedule: Schedule.forever.pipe(
-          Schedule.passthrough,
-          Schedule.addDelay(({ output }) => Effect.succeed(retryDelay(output))),
-        ),
-      }),
+      retryTelemetryExport,
     );
     // The telemetry client records each failed attempt with its safe reason.
     const post = (label: string, target: TelemetryTarget, body: HttpBody.HttpBody) =>

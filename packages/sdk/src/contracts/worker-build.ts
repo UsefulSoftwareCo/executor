@@ -34,7 +34,7 @@ export type WorkerFramework = typeof WorkerFramework.Type;
  */
 export const FrameworkIdentity = Schema.Struct({
   version: Schema.NonEmptyString,
-  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
 });
 export type FrameworkIdentity = typeof FrameworkIdentity.Type;
 

@@ -6,12 +6,27 @@ export const reportInput = object({
 });
 /** Read reports through the same operation from a workflow, agent or UI. */
 export const listReports = query({ input: object({}) }, async (ctx: QueryCtx) =>
-  ctx.db.reports.withIndex("by_creation").collect(),
+  ctx.sql
+    .exec(
+      "SELECT id, repository, open_issues AS openIssues FROM reports ORDER BY created_at LIMIT 1000",
+    )
+    .toArray(),
 );
-/** A workflow's replay receipt commits with this insert. */
+/** Run as a workflow step, its receipt commits in this transaction, so the insert happens once. */
 export const saveReport = mutation(
   { input: object({ repository: string(), openIssues: number() }) },
-  async (ctx: MutationCtx, input) => ctx.db.reports.insert(input),
+  async (ctx: MutationCtx, input) =>
+    ctx.sql.transaction((tx) =>
+      tx
+        .exec(
+          "INSERT INTO reports (id, repository, open_issues, created_at) VALUES (?, ?, ?, ?) RETURNING id",
+          crypto.randomUUID(),
+          input.repository,
+          input.openIssues,
+          Date.now(),
+        )
+        .one(),
+    ),
 );
 /** Start a background run without holding an agent invocation open for its result. */
 export const startReport = mutation({ input: reportInput }, async (ctx: MutationCtx, input) =>

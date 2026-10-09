@@ -22,15 +22,22 @@ const binding = "EXECUTOR_TELEMETRY";
  * Test stages share one retained set and are told apart by the environment field, so a
  * destroyed test stage removes only its ingest token.
  */
+export const telemetryDatasets = Effect.gen(function* () {
+  const shared = Option.isSome(yield* testStage.pipe(Effect.orDie));
+  const owner = shared ? "test" : yield* Stage;
+  return {
+    shared,
+    names: {
+      traces: `executor-next-${owner}-traces`,
+      logs: `executor-next-${owner}-logs`,
+      metrics: `executor-next-${owner}-metrics`,
+    },
+  };
+});
+
 export const telemetryResources = Effect.gen(function* () {
   const stage = yield* Stage;
-  const shared = Option.isSome(yield* testStage.pipe(Effect.orDie));
-  const owner = shared ? "test" : stage;
-  const names = {
-    traces: `executor-next-${owner}-traces`,
-    logs: `executor-next-${owner}-logs`,
-    metrics: `executor-next-${owner}-metrics`,
-  };
+  const { shared, names } = yield* telemetryDatasets;
   // Axiom marks ownership per stage; every test stage takes the shared datasets over on deploy.
   const dataset = (
     id: string,

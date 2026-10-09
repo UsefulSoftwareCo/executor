@@ -3,12 +3,7 @@ import type { HostPipeline } from "@executor-js/dashboard-start/in-process";
 import type { Effect, Layer } from "effect";
 import type { LocalAuth } from "../implementation/auth.ts";
 import type { ServerConfig } from "./config.ts";
-import type {
-  HttpPlatform,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import type { HttpPlatform, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** Wrap an HTTP handler while preserving its errors and required services. */
 export type LocalHttpMiddleware = <E, R>(
@@ -42,10 +37,10 @@ export interface LocalWeb {
   readonly fallback: LocalHttpHandler;
 }
 
-/** Optional adapters owned by the local browser or desktop composition. */
+/** The product and optional adapters owned by the CLI or desktop composition. */
 export interface LocalServerOptions {
-  /** The product reported by analytics; the desktop backend is `desktop`. */
-  readonly product?: "local" | "desktop" | undefined;
+  /** The product reported by analytics: the CLI or the desktop backend. */
+  readonly product: "cli" | "desktop";
   /** The Node edge supplies its platform names for analytics. */
   readonly platform?: { readonly os: string; readonly arch: string } | undefined;
   readonly oauthCallback?: LocalOAuthCallback | undefined;

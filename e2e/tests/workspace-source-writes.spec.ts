@@ -1,12 +1,12 @@
 /** Working-source reads follow every kind of write, including when Cloud has stored the old source. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Redacted, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { Workspace } from "../support/app-authoring.ts";
+import { Committed, Workspace } from "../support/app-authoring.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { storedWorkspace } from "../support/workspace-cache.ts";
@@ -124,7 +124,10 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source writes", (it)
           message: "Commit source",
         });
         expect(committed.status).toBe(200);
-        expect(yield* read).toEqual(yield* body(Workspace, committed));
+        expect(yield* read).toEqual({
+          revision: (yield* body(Committed, committed)).revision,
+          files: files("committed"),
+        });
       }),
     ),
   );

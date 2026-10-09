@@ -1,5 +1,7 @@
 import { Profile, ProfileId, ProfileErrors } from "@executor-js/sdk/core";
+import { ApiError } from "@executor-js/utils/api-error";
 import { RequiredAction } from "./authorization.ts";
+import { requireAccount } from "./account-grants.ts";
 /** Hosted sharing policy stays separate from SDK tenant ownership and saved bindings. */
 import {
   App,
@@ -16,7 +18,7 @@ import {
   AppNotFound,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { Principal } from "./auth.ts";
 import { GroupId } from "./groups.ts";
 import {
@@ -86,10 +88,18 @@ export const ConnectionAccess = Schema.Struct({
     }).pipe(Schema.encodeKeys({ profile: "installation" })),
   ),
 });
+const accessConflicts = {
+  changed: "Sharing changed since it was read. Read it again and reapply the edit.",
+  groups_changed:
+    "A selected group was removed or you left it. Choose current groups and try again.",
+  creator_unavailable: "Only me needs the app's creator, who is no longer in this organization.",
+  personal_account: "A personal account cannot be shared. Share a shared account instead.",
+} as const;
 /** A stale revision or removed group must preserve the editor's draft. */
-export class AccessConflict extends Schema.TaggedError<AccessConflict>()(
-  "AccessConflict",
-  {
+export const AccessConflict = ApiError.define({
+  tag: "AccessConflict",
+  status: 409,
+  fields: {
     reason: Schema.Literals([
       "changed",
       "groups_changed",
@@ -97,8 +107,10 @@ export class AccessConflict extends Schema.TaggedError<AccessConflict>()(
       "personal_account",
     ]),
   },
-  { httpApiStatus: 409 },
-) {}
+  message: ({ reason }) => accessConflicts[reason],
+  recorded: ({ reason }) => accessConflicts[reason],
+});
+export type AccessConflict = typeof AccessConflict.Type;
 const organization = { organization: OrganizationReference };
 const app = { ...organization, app: AppId };
 const account = { ...organization, account: AccountId };
@@ -158,7 +170,7 @@ export const HostedResourceAccess = HttpApiGroup.make("resourceAccess")
       params: account,
       success: AccountAccess,
       error: errors,
-    }).annotate(RequiredAction, "read"),
+    }).pipe(requireAccount.inspect),
   )
   .add(
     HttpApiEndpoint.patch(
@@ -170,6 +182,6 @@ export const HostedResourceAccess = HttpApiGroup.make("resourceAccess")
         success: AccountAccess,
         error: errors,
       },
-    ).annotate(RequiredAction, "manage"),
+    ).pipe(requireAccount.share),
   )
   .middleware(RequireOrganization);

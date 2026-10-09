@@ -1,6 +1,6 @@
 /** Keeps one backend running: restarts it with backoff and stops after a crash loop. */
 import { Clock, Duration, Effect, Fiber, Option, Redacted, Ref, Scope, Semaphore } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import type { DesktopBootstrap } from "@executor-js/local-server/auth";
 import type { DesktopFailed, DesktopRecovery } from "../contracts/desktop.ts";
 import { classifyBackendExit, type BackendExit, type BackendRun } from "./backend.ts";

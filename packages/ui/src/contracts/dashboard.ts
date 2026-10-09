@@ -20,7 +20,7 @@ import type {
   DeploymentDisplay,
   SourceDisplayFile,
 } from "@executor-js/app-management/contracts/source-display";
-import type { Atom, AsyncResult } from "effect/unstable/reactivity";
+import type { Atom, AsyncResult } from "effect/reactivity";
 import { Schema, type Cause } from "effect";
 import type { ComponentType, ReactNode } from "react";
 
@@ -131,6 +131,8 @@ export interface FailureProps<E> {
   readonly cause: Cause.Cause<E>;
   readonly retry?: (() => void) | undefined;
   readonly retrying?: boolean | undefined;
+  /** Forms ask for `compact`: the failure sits among their fields, without a card or error code. */
+  readonly layout?: "inline" | "compact" | undefined;
 }
 /** Only error-independent presentation belongs in context. Queries keep their own error types. */
 export interface DashboardBindings {

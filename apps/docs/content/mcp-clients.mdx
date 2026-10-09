@@ -11,7 +11,7 @@ The endpoint is your origin plus `/mcp`:
 
 | Where | Endpoint |
 | --- | --- |
-| Hosted | `https://v2.executor.sh/mcp` |
+| Hosted | `https://mcp.executor.sh/mcp` |
 | Self-host | `<your origin>/mcp` |
 | Local | `http://127.0.0.1:4312/mcp` |
 
@@ -27,7 +27,7 @@ Claude Code has its own command. `--scope user` adds Executor for every project.
 <Steps>
   <Step title="Add the server">
     ```bash
-    claude mcp add --transport http --scope user executor 'https://v2.executor.sh/mcp'
+    claude mcp add --transport http --scope user executor 'https://mcp.executor.sh/mcp'
     ```
   </Step>
   <Step title="Run /mcp inside Claude Code">
@@ -45,7 +45,7 @@ Use the installer. It detects the client and writes its configuration for you.
 <CodeGroup>
 
 ```bash Installer
-npx add-mcp 'https://v2.executor.sh/mcp' --transport http --name executor
+npx add-mcp 'https://mcp.executor.sh/mcp' --transport http --name executor
 ```
 
 ```json By hand
@@ -53,7 +53,7 @@ npx add-mcp 'https://v2.executor.sh/mcp' --transport http --name executor
   "mcpServers": {
     "executor": {
       "type": "http",
-      "url": "https://v2.executor.sh/mcp"
+      "url": "https://mcp.executor.sh/mcp"
     }
   }
 }
@@ -106,7 +106,7 @@ behalf with `resume`. To answer in your browser instead, add the mode to the URL
 before you connect:
 
 ```bash
-claude mcp add --transport http --scope user executor 'https://v2.executor.sh/mcp?elicitation_mode=browser'
+claude mcp add --transport http --scope user executor 'https://mcp.executor.sh/mcp?elicitation_mode=browser'
 ```
 
 The mode is fixed when the connection is approved. To change it, connect again

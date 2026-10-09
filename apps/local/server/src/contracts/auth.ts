@@ -1,12 +1,13 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ApiError } from "@executor-js/utils/api-error";
 /** Local browser pairing and the private desktop bootstrap protocol. */
 import { Schema, type Effect } from "effect";
 import { AppId } from "@executor-js/sdk";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 /** Ephemeral proof of local possession, redacted immediately at ingress. */
 export const BootstrapToken = Schema.RedactedFromValue(
-  Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
 );
 /** An exchange requires a valid, unused bootstrap credential. */
 export class PairingRejected extends Schema.TaggedError<PairingRejected>()(
@@ -33,11 +34,12 @@ export const AuthForbidden = UserFacingError.define({
 /** Parsed AuthForbidden failure. */
 export type AuthForbidden = typeof AuthForbidden.Type;
 /** Programmatic pairing requires the local API key. Browser pairing uses a verified session. */
-export class PairingUnauthorized extends Schema.TaggedError<PairingUnauthorized>()(
-  "PairingUnauthorized",
-  {},
-  { httpApiStatus: 401 },
-) {}
+export const PairingUnauthorized = ApiError.define({
+  tag: "PairingUnauthorized",
+  status: 401,
+  message: "This request needs the local server's API key or a paired browser session.",
+});
+export type PairingUnauthorized = typeof PairingUnauthorized.Type;
 /** Session persistence failed; never treat an unavailable store as a signed-out browser. */
 export const AuthStorageError = UserFacingError.define({
   tag: "AuthStorageError",
@@ -55,7 +57,7 @@ export const AuthStorageError = UserFacingError.define({
 /** Parsed AuthStorageError failure. */
 export type AuthStorageError = typeof AuthStorageError.Type;
 /** SHA-256 digest of an opaque browser credential, never the credential itself. */
-export const SessionHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)).pipe(
+export const SessionHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)).pipe(
   Schema.brand("SessionHash"),
 );
 export type SessionHash = typeof SessionHash.Type;

@@ -20,19 +20,23 @@ export const Todo = object({ id: string(), title: string() });`,
   },
   {
     path: "index.ts",
-    content: `import { array, boolean, defineApp, defineDatabase, mutation, object, query, string, table, router } from "apps";
+    content: `import { array, boolean, defineApp, mutation, object, query, string, router } from "apps";
 import { Todo } from "./schema.ts";
-const database = defineDatabase({ todos: table({ title: string() }) });
-export const list = query({ input: object({}), output: array(Todo) }, async ({ db }) =>
-  await db.todos.withIndex("by_creation").collect());
-export const add = mutation({ input: object({ title: string() }), output: Todo }, async ({ db }, input) =>
-  await db.todos.insert(input));
-export const remove = mutation({ input: object({ id: string() }), output: boolean() }, async ({ db }, { id }) =>
-  await db.todos.delete(id));
-export default defineApp({ accounts: {}, database }, { tools: router({
+export const list = query({ input: object({}), output: array(Todo) }, async ({ sql }) =>
+  sql.exec("SELECT id, title FROM todos ORDER BY seq").toArray());
+export const add = mutation({ input: object({ title: string() }), output: Todo }, async ({ sql }, input) =>
+  sql.exec("INSERT INTO todos (id, title) VALUES (?, ?) RETURNING id, title", crypto.randomUUID(), input.title).one());
+export const remove = mutation({ input: object({ id: string() }), output: boolean() }, async ({ sql }, { id }) =>
+  sql.exec("DELETE FROM todos WHERE id = ? RETURNING id", id).toArray().length > 0);
+export default defineApp({ accounts: {} }, { tools: router({
    list,
    add, remove,
  }) });`,
+  },
+  {
+    path: "migrations/0001_todos.sql",
+    content:
+      "CREATE TABLE todos (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, title TEXT NOT NULL);\n",
   },
   {
     path: "package.json",

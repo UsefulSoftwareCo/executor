@@ -8,7 +8,7 @@ import {
 } from "@executor-js/dashboard-start/document";
 import type { LocalDocumentContext } from "@executor-js/local-web/document";
 import { Effect, Path } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer, isRunnableDevEnvironment } from "vite";
 import type { ServerConfig } from "../contracts/config.ts";
 import { StartupFailed } from "../contracts/startup.ts";

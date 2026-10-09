@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { Workspace, saveAndDeploy } from "../support/app-authoring.ts";
+import { Committed, Workspace, saveAndDeploy } from "../support/app-authoring.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { holdQuery } from "../support/query-transition.ts";
@@ -66,7 +66,7 @@ layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) 
           message: "Private working edit",
         });
         expect(edited.status).toBe(200);
-        const ahead = yield* body(Workspace, edited);
+        const ahead = yield* body(Committed, edited);
         const copyInput = { from: { app: original.id }, name: `${name} own copy` };
         expect(
           (yield* api.request(yield* api.session(), "POST", `${prefix}/apps/copies`, copyInput))

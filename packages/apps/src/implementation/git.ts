@@ -159,6 +159,7 @@ const objectId = async (type: ObjectType, data: Uint8Array) => {
   const whole = new Uint8Array(header.byteLength + data.byteLength);
   whole.set(header);
   whole.set(data, header.byteLength);
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-1", whole)));
 };
 
@@ -223,6 +224,7 @@ const unpack = async (pack: Uint8Array, limits: { readonly objectBytes: number }
       }
       if (object === undefined) continue;
       resolved.set(offset, object);
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- this module's own hashing
       objects.set(await objectId(object.type, object.data), object);
       pending.delete(offset);
       progressed = true;
@@ -246,6 +248,7 @@ export const parseTreeFetch = async (
   path: string | undefined,
   limits: { readonly objectBytes: number },
 ) => {
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- this module's own unpacking
   const objects = await unpack(packfile(bytes), limits);
   const head = objects.get(commit);
   if (head?.type !== "commit") throw new GitProtocolError("missing commit");

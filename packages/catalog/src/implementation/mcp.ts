@@ -1,19 +1,13 @@
 /** Remote MCP imports retain ordinary source. Catalogs stay live and account-specific. */
-import { Effect } from "effect";
-import { FetchHttpClient, HttpBody, HttpClient } from "effect/unstable/http";
-import { discoversResourceOAuth } from "@executor-js/sdk/core";
-import { generateMcpSource } from "@executor-js/app-templates";
-import { parseDestination, type HostEgress, type UrlPolicy } from "@executor-js/utils/url-policy";
-import { CatalogImportFailed } from "../contracts/catalog.ts";
+import { Effect, Match, Schema } from "effect";
+import { generateMcpSource, type McpSourceAccess } from "@executor-js/app-templates";
+import { parseDestination, type UrlPolicy } from "@executor-js/utils/url-policy";
+import { CatalogImportFailed, type CatalogHost } from "../contracts/catalog.ts";
+import { McpDetection, McpRequestSignal, McpSignal } from "../contracts/detection.ts";
+import { detectMcpAccess } from "./detection.ts";
 
 const fail = (code: CatalogImportFailed["code"], reason: string) =>
   new CatalogImportFailed({ code, reason });
-
-const setupRequired = () =>
-  fail(
-    "agent_setup_required",
-    "Executor could not confirm that this MCP server uses OAuth or needs no sign-in. Copy the setup prompt and add it with your agent.",
-  );
 
 const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
   Effect.gen(function* () {
@@ -38,93 +32,140 @@ const mcpUrl = (value: string | undefined, policy: UrlPolicy) =>
     return url.href;
   });
 
-const protocolVersion = "2025-11-25";
+const agent = "Copy the setup prompt and add it with your agent.";
 
-/**
- * Initialize without credentials under the host's egress. Only a successful initialization or a
- * sign-in rejection answers the question; tools are never listed or called.
- */
-const initialize = (url: string, egress: HostEgress) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const client = HttpClient.withScope(egress.client);
-      const response = yield* client.post(url, {
-        headers: { accept: "application/json, text/event-stream" },
-        body: HttpBody.jsonUnsafe({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "initialize",
-          params: {
-            protocolVersion,
-            capabilities: {},
-            clientInfo: { name: "executor-import-check", version: "1.0.0" },
-          },
-        }),
+/** The request that decided the outcome: tools/list when it ran, otherwise initialize. */
+const decidingRequest = (signals: ReadonlyArray<McpSignal>) =>
+  signals.filter(Schema.is(McpRequestSignal)).at(-1);
+
+/** Why advertised OAuth could not be used, from the last metadata lookup. */
+const oauthProblem = (signals: ReadonlyArray<McpSignal>) => {
+  const blocked = "an address in its OAuth settings is not allowed by this Executor instance";
+  const last = signals.filter((signal) => !Schema.is(McpRequestSignal)(signal)).at(-1);
+  return last === undefined
+    ? "its OAuth settings could not be used"
+    : McpSignal.match(last, {
+        McpRequest: () => "its OAuth settings could not be used",
+        ResourceMetadata: ({ result }) =>
+          result === "blocked"
+            ? blocked
+            : result === "mismatch"
+              ? "its protected-resource metadata names a different server"
+              : result === "missing"
+                ? "the protected-resource metadata its challenge names is missing"
+                : "its protected-resource metadata is not valid",
+        AuthorizationServerMetadata: ({ result }) =>
+          result === "blocked"
+            ? blocked
+            : result === "missing"
+              ? "its authorization server publishes no OAuth metadata"
+              : result === "unsupported"
+                ? "its authorization server does not support authorization-code sign-in with PKCE (S256)"
+                : "its authorization server metadata cannot be used to prepare sign-in",
       });
-      const session = response.headers["mcp-session-id"];
-      if (response.status >= 200 && response.status < 300 && session !== undefined)
-        // A public server can allocate a session for this check; release it.
-        yield* Effect.addFinalizer(() =>
-          Effect.scoped(
-            client.del(url, {
-              headers: { "mcp-session-id": session, "mcp-protocol-version": protocolVersion },
-            }),
-          ).pipe(Effect.timeout("1 second"), Effect.ignore),
-        );
-      return response.status;
-    }),
-  ).pipe(
-    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-    Effect.mapError(() =>
-      fail("mcp_probe", "Could not reach this MCP server. Check the URL and try again."),
-    ),
-    Effect.timeout("10 seconds"),
-    Effect.catchTag("TimeoutError", () =>
-      Effect.fail(
-        fail("mcp_timeout", "The MCP server did not respond within 10 seconds. Try again."),
-      ),
-    ),
+};
+
+/** Status text for the request that decided an outcome. */
+const statusOf = (signals: ReadonlyArray<McpSignal>, fallback: string) => {
+  const request = decidingRequest(signals);
+  return request === undefined ? fallback : `HTTP ${request.status}`;
+};
+
+/** A server that rejected anonymous use and advertises no OAuth needs other credentials. */
+const credentialsRequired = ({
+  scheme,
+  signals,
+}: typeof McpDetection.cases.CredentialsRequired.Type) => {
+  const challenge = Match.value(scheme).pipe(
+    Match.when("bearer", () => " and a Bearer challenge"),
+    Match.when("basic", () => " and a Basic challenge"),
+    Match.when("other", () => " and a sign-in challenge"),
+    Match.when("unspecified", () => ""),
+    Match.exhaustive,
   );
+  const method = decidingRequest(signals)?.method ?? "initialize";
+  return {
+    code: "agent_setup_required" as const,
+    reason: `This MCP server needs an API key or other credentials. It rejected an anonymous ${method} request with ${statusOf(signals, "an error")}${challenge} and advertises no OAuth sign-in. ${agent}`,
+  };
+};
+
+/** Why nothing could be decided. Transient causes can be retried; the rest need an agent. */
+const undetermined = ({ reason, signals }: typeof McpDetection.cases.Undetermined.Type) => {
+  const request = decidingRequest(signals);
+  const status = statusOf(signals, "no answer");
+  return Match.value(reason).pipe(
+    Match.when("unavailable", () => ({
+      code: "mcp_probe" as const,
+      reason: "The MCP server could not respond right now. Try again later.",
+    })),
+    Match.when("unreachable", () => ({
+      code: "mcp_probe" as const,
+      reason: "Could not reach this MCP server. Check the URL and try again.",
+    })),
+    Match.when("timeout", () => ({
+      code: "mcp_timeout" as const,
+      reason: "The MCP server did not respond in time. Try again.",
+    })),
+    Match.when("redirected", () => ({
+      code: "agent_setup_required" as const,
+      reason: `This MCP server redirected the request (${status}). Use the address it redirects to, or copy the setup prompt and add it with your agent.`,
+    })),
+    Match.when("refused", () => ({
+      code: "agent_setup_required" as const,
+      reason: `This MCP server refused Executor's request with a web page (${status}) instead of an MCP or sign-in response. Its firewall may block requests from this Executor host. ${agent}`,
+    })),
+    Match.when("not_mcp", () => ({
+      code: "agent_setup_required" as const,
+      reason: `This URL did not answer an MCP initialize request (${status}${request !== undefined && request.status < 300 ? " without an initialize result" : ""}). Check that it is the server's MCP endpoint, or copy the setup prompt and add it with your agent.`,
+    })),
+    Match.when("initialize_error", () => ({
+      code: "agent_setup_required" as const,
+      reason: `This MCP server returned an error to an anonymous initialize request. ${agent}`,
+    })),
+    Match.when("tools_error", () => ({
+      code: "agent_setup_required" as const,
+      reason: `This MCP server initialized without credentials but did not list its tools (${status}). ${agent}`,
+    })),
+    Match.when("oauth_unusable", () => ({
+      code: "agent_setup_required" as const,
+      reason: `This MCP server requires sign-in and advertises OAuth, but ${oauthProblem(signals)}. ${agent}`,
+    })),
+    Match.exhaustive,
+  );
+};
 
 /**
- * Quick add accepts only servers whose connection is known: public servers, and servers that
- * reject anonymous use and advertise OAuth. Everything else is set up with an agent.
+ * Generate source for a server whose connection was confirmed; never embed credentials. Public
+ * servers and servers whose OAuth an account connection can complete are added directly. Every
+ * other outcome fails with a reason naming the signals that decided it, and the detection itself.
  */
-const access = (url: string, discovery: string, egress: HostEgress) =>
-  Effect.gen(function* () {
-    const status = yield* initialize(url, egress);
-    if (status >= 200 && status < 300) return "none" as const;
-    if (status === 429 || status >= 500)
-      return yield* fail(
-        "mcp_probe",
-        "The MCP server could not respond right now. Try again later.",
-      );
-    if (status !== 401 && status !== 403) return yield* setupRequired();
-    const oauth = yield* discoversResourceOAuth(discovery, {
-      httpClient: egress.client,
-      urlPolicy: egress.policy,
-    });
-    if (!oauth) return yield* setupRequired();
-    return "oauth" as const;
-  }).pipe(Effect.withSpan("catalog.mcp.access"));
-
-/** Generate source for a server whose connection method was confirmed; never embed credentials. */
 export const generateMcpApp = (
   input: {
     readonly name: string;
     readonly url: string | undefined;
     readonly oauthDiscoveryUrl?: string | undefined;
   },
-  egress: HostEgress,
+  host: CatalogHost,
 ) =>
   Effect.gen(function* () {
-    const url = yield* mcpUrl(input.url, egress.policy);
-    const discovery = yield* mcpUrl(input.oauthDiscoveryUrl ?? url, egress.policy);
-    const method = yield* access(url, discovery, egress);
-    yield* Effect.annotateCurrentSpan("catalog.mcp.auth", method);
-    return yield* generateMcpSource(
-      input.name,
-      url,
-      method === "oauth" ? { discover: discovery } : undefined,
-    );
+    const url = yield* mcpUrl(input.url, host.egress.policy);
+    const discovery = yield* mcpUrl(input.oauthDiscoveryUrl ?? url, host.egress.policy);
+    const detection = yield* detectMcpAccess({ url, discovery }, host);
+    type Decision = Effect.Effect<McpSourceAccess, CatalogImportFailed>;
+    const failed = (failure: {
+      readonly code: CatalogImportFailed["code"];
+      readonly reason: string;
+    }): Decision => Effect.fail(new CatalogImportFailed({ ...failure, detection }));
+    const access = yield* McpDetection.match(detection, {
+      OAuth: (): Decision => Effect.succeed({ kind: "oauth", discover: discovery }),
+      Anonymous: ({ oauth }): Decision =>
+        Effect.succeed({
+          kind: "public",
+          ...(oauth === undefined ? {} : { offersOAuth: { discover: discovery } }),
+        }),
+      CredentialsRequired: (required) => failed(credentialsRequired(required)),
+      Undetermined: (unknown) => failed(undetermined(unknown)),
+    });
+    return yield* generateMcpSource(input.name, url, access);
   }).pipe(Effect.catchTag("TemplateError", (error) => Effect.fail(fail(error.code, error.reason))));

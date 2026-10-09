@@ -1,7 +1,7 @@
 import { RequiredAction } from "./authorization.ts";
 /** Organization-authorized management of ordinary app webhook subscriptions. */
 import { Schema } from "effect";
-import { HttpApiGroup, HttpApiEndpoint } from "effect/unstable/httpapi";
+import { HttpApiGroup, HttpApiEndpoint } from "effect/http-api";
 import {
   AppId,
   ProfileId,

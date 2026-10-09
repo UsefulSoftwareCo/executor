@@ -1,7 +1,7 @@
 /** Terminal capture analysis and video export run after all test processes have exited. */
 import { resolveTerminalControlBinary } from "@kitlangton/terminal-control";
 import { Effect, FileSystem, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** A raw Terminal Control capture, distinct from a rendered video. */
 export const terminalCaptureType = "application/x-terminal-control";

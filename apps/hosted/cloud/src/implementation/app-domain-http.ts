@@ -1,6 +1,6 @@
 /** Observe provider quota responses without retaining credentials, URLs, or response bodies. */
 import { Effect, Layer } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 
 /** The domain controller's real HTTP client, with bounded Cloudflare quota diagnostics. */
 export const appDomainHttpClient = Layer.effect(

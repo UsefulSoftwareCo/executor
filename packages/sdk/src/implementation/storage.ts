@@ -1,12 +1,12 @@
 /** Runtime storage and the explicit, transactional migration boundary. */
 import { Effect, Option } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { sqlAdapter } from "fumadb-effect/sql";
 import type { Provider as SqlProvider } from "fumadb-effect";
 import { makeReactiveStore } from "@executor-js/reactivity";
 import { StorageError } from "../contracts/shared.ts";
 import { bindOrm } from "./reactive-orm.ts";
-import { executorDatabase, storageIndexes, storageSchemas } from "./storage-migrations.ts";
+import { currentIndexes, executorDatabase, storageSchemas } from "./storage-migrations.ts";
 
 /** Capture caller-owned SQL. Migrations accept only fresh or supported version 4 databases. */
 export const makeExecutorStorage = (options: { readonly provider: SqlProvider }) =>
@@ -14,7 +14,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
     const sql = yield* SqlClient.SqlClient;
     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
-    const db = bindOrm(client.orm("4.0.5"), sql, reactivity);
+    const db = bindOrm(client.orm("4.0.7"), sql, reactivity);
     const checkMigration = Effect.gen(function* () {
       const migrator = yield* client.createMigrator;
       const version = yield* migrator.version;
@@ -33,7 +33,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
         // A new database needs the current layout and all of its indexes, not
         // historical data conversions. FumaDB's direct diff omits custom steps.
         yield* (yield* migrator.migrateToLatest()).execute;
-        yield* Effect.forEach(storageIndexes, (statement) => sql.unsafe(statement).unprepared, {
+        yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
           discard: true,
         });
       } else {
@@ -46,7 +46,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.mapError(() => new StorageError()),
     );
-    return { orm: (_version: "4.0.5") => db, reactivity, checkMigration, migrate };
+    return { orm: (_version: "4.0.7") => db, reactivity, checkMigration, migrate };
   });
 /** Caller-owned, Effect-native persistence with commit-driven subscriptions. */
 export type ExecutorDatabase = Effect.Success<ReturnType<typeof makeExecutorStorage>>;

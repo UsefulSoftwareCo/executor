@@ -43,7 +43,7 @@ try {
     consumer,
   );
   const example = `import assert from "node:assert/strict";
-import { defineApp, object, query, router, string, defineDatabase, table } from "apps";
+import { defineApp, object, query, router, string } from "apps";
 import { createAppHandler, hostContext } from "apps/host";
 const greet = query({ input: object({ name: string() }) }, async (_ctx, input) => ({ message: "Hello " + input.name }));
 const app = defineApp({ accounts: {} }, { tools: router({ greet }) });
@@ -51,7 +51,6 @@ const handler = createAppHandler(app);
 const response = await handler(new Request("https://fixture.test", { method: "POST", body: JSON.stringify({ operation: "call", tool: "greet", kind: "query", input: { name: "Ada" } }) }), hostContext({}));
 assert.equal(response.status, 200);
 assert.deepEqual(await response.json(), { ok: true, value: { message: "Hello Ada" } });
-assert(defineDatabase({ notes: table({ text: string() }) }));
 `;
   await writeFile(join(consumer, "example.mjs"), example);
   run("node", ["example.mjs"], consumer);
@@ -96,9 +95,12 @@ assert(defineDatabase({ notes: table({ text: string() }) }));
   run("node", ["exports.mjs"], consumer);
   await writeFile(
     join(consumer, "example.ts"),
-    `import { defineApp, object, query, router, string, defineDatabase, table, type QueryContext } from "apps";
-const requirements = { accounts: {}, database: defineDatabase({ notes: table({ text: string() }) }) };
-const greet = query({ input: object({ name: string() }) }, async (_ctx: QueryContext<typeof requirements>, input) => {
+    `import { defineApp, object, query, router, string, type QueryContext } from "apps";
+const requirements = { accounts: {} };
+const greet = query({ input: object({ name: string() }) }, async (ctx: QueryContext<typeof requirements>, input) => {
+  const rows: number = ctx.sql.exec<{ n: number }>("SELECT 1 AS n").one().n;
+  // @ts-expect-error Queries receive read-only SQL, which has no transactions.
+  ctx.sql.transaction(() => rows);
   const name: string = input.name;
   // @ts-expect-error The published declarations must preserve input inference.
   const wrong: number = input.name;

@@ -8,11 +8,11 @@ import {
   AppId,
   DeploymentId,
   StorageError,
+  StorageHost,
   type Executor,
-  type ExecutorDatabase,
 } from "@executor-js/sdk/core";
 import { Effect, Redacted, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import {
   OrganizationDefaults,
   OrganizationDefaultsPending,
@@ -31,11 +31,13 @@ const State = Schema.Struct({
 });
 const Accounts = Schema.Struct({ accounts: Schema.Record(Schema.String, AccountId) });
 
-/** Install once, then create missing user accounts or repair automatic selections. Completed setup is read-only. */
+/**
+ * Install once, then create missing user accounts or repair automatic selections. Completed setup
+ * is read-only. The Executor app calls this installation's API at its resource origin.
+ */
 export const organizationDefaults = (
   executor: Executor,
-  origin: string,
-  storage: ExecutorDatabase,
+  resourceOrigin: string,
   document: Effect.Effect<HostedApiDocument>,
   requireVerifiedEmail = true,
 ) =>
@@ -64,7 +66,7 @@ export const organizationDefaults = (
         const owner = organizationOwner(organization);
         if (!state.initialized) {
           const { defaultExecutorAppSource } = yield* executorApp;
-          const source = yield* defaultExecutorAppSource(origin, yield* document);
+          const source = yield* defaultExecutorAppSource(resourceOrigin, yield* document);
           const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
           if (existing === undefined) {
             yield* executor.apps.deploy({ owner, name: "Executor", files: source.files }).pipe(
@@ -107,7 +109,7 @@ export const organizationDefaults = (
           const deployment = yield* executor.apps.source({ owner, app: app.id });
           if (deployment.id !== app.activeDeployment) return;
           const { defaultExecutorAppSource } = yield* executorApp;
-          const source = yield* defaultExecutorAppSource(origin, yield* document);
+          const source = yield* defaultExecutorAppSource(resourceOrigin, yield* document);
           if (!sourceFilesEqual(deployment.files, source.files)) {
             // A failed upgrade keeps the working installation, and member setup continues.
             const upgraded = yield* Effect.gen(function* () {
@@ -139,10 +141,10 @@ export const organizationDefaults = (
           const deployment = yield* executor.apps.source({ owner, app: app.id });
           if (deployment.id !== app.activeDeployment) return;
           const { defaultExecutorAppSource, executorAppSource } = yield* executorApp;
-          const source = yield* defaultExecutorAppSource(origin, yield* document);
+          const source = yield* defaultExecutorAppSource(resourceOrigin, yield* document);
           if (!sourceFilesEqual(deployment.files, source.files)) {
             // Upgrade only the untouched, unconfigured catalog version. Preserve user edits and connections.
-            const catalog = yield* executorAppSource(origin, yield* document);
+            const catalog = yield* executorAppSource(resourceOrigin, yield* document);
             if (!sourceFilesEqual(deployment.files, catalog.files)) return;
             const workspace = yield* executor.apps.workspace({ owner, app: app.id });
             if (!pinnedOnly(workspace.files, deployment.files)) return;
@@ -164,17 +166,13 @@ export const organizationDefaults = (
                 .get({ owner, account: id })
                 .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)));
         };
-        const existingProfile = yield* storage
-          .orm("4.0.5")
-          .findFirst("profiles", {
-            where: (b) =>
-              b.and(
-                b("app", "=", app.id),
-                b("subject", "=", user.userId),
-                b("idempotencyKey", "=", "executor-default"),
-              ),
-          })
-          .pipe(Effect.mapError(() => new StorageError()));
+        const existingProfile =
+          (yield* executor.apps.profiles.list({
+            app: app.id,
+            owner,
+            subject: user.userId,
+            idempotencyKey: "executor-default",
+          }))[0] ?? null;
         const saved = yield* savedAccount(state.accounts);
         // A recorded account that was deliberately deleted is not a new-user setup.
         // Keep that intent: inventory reads must not recreate credentials or choose a replacement.
@@ -193,8 +191,7 @@ export const organizationDefaults = (
         )
           return;
         // Build/network work finished above. Only account creation or selection repair needs the lock.
-        yield* storage
-          .orm("4.0.5")
+        yield* executor[StorageHost]
           .transaction(
             Effect.gen(function* () {
               // Only metadata changes, so take the non-key lock. It still serializes member
@@ -209,7 +206,9 @@ export const organizationDefaults = (
               const state = yield* Schema.decodeUnknownEffect(Accounts)(rows[0]).pipe(
                 Effect.mapError(() => new StorageError()),
               );
-              yield* sql`select id from executor_apps where id = ${app.id} and owner = ${owner} for update`.pipe(
+              // Serialize member setup per app without touching the SDK's rows; the SDK read
+              // below runs inside this transaction and observes a committed deployment.
+              yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-defaults:${app.id}`}, 0))`.pipe(
                 Effect.mapError(() => new StorageError()),
               );
               const locked = yield* executor.apps.get({ owner, app: app.id });
@@ -244,7 +243,8 @@ export const organizationDefaults = (
                           owner,
                           provider: requirement.provider,
                           method: "apiKey",
-                          label: user.name,
+                          // Email sign-ups have no name; say whose access this is instead.
+                          label: "Your Executor access",
                           fields: Redacted.make({ token: Redacted.value(token), organization }),
                         })
                         .pipe(personalAccountCreation(user.userId))
@@ -266,10 +266,7 @@ export const organizationDefaults = (
               return saved === undefined;
             }),
           )
-          .pipe(
-            Effect.catchTag("SqlError", () => Effect.fail(new StorageError())),
-            Effect.uninterruptible,
-          );
+          .pipe(Effect.uninterruptible);
       }).pipe(
         Effect.scoped,
         Effect.ensuring(

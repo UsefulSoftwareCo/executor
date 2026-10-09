@@ -1,7 +1,7 @@
 /** Local organization member switching; production never mounts these handlers. */
 import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 import { Effect, Redacted, Schema } from "effect";
-import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { DevtoolsState } from "@executor-js/devtools/contracts";
 import {
   DevtoolsOperatorId,

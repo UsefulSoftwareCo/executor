@@ -1,5 +1,6 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import { appHref } from "../content/site-origin.ts";
 
 const googleServices = [
   {
@@ -84,7 +85,7 @@ const googleServices = [
         <div class="nav-links flex items-center gap-[1.4rem] text-[0.82rem] [&_a]:[color:var(--color-ink-2)] [&_a]:no-underline [&_a:hover]:text-ink max-[760px]:[&_>_a:not(.nav-cta)]:hidden">
           <a href="https://executor.sh/privacy">Privacy</a>
           <a href="https://executor.sh/terms">Terms</a>
-          <a href="/login" class="nav-cta [.nav-links_&]:py-[0.55rem] [.nav-links_&]:px-[0.8rem] [.nav-links_&]:border [.nav-links_&]:border-ink [.nav-links_&]:rounded-[0.2rem] [.nav-links_&]:text-surface [.nav-links_&]:bg-ink">Open Executor <span aria-hidden="true">→</span></a>
+          <a href={appHref("/login")} class="nav-cta [.nav-links_&]:py-[0.55rem] [.nav-links_&]:px-[0.8rem] [.nav-links_&]:border [.nav-links_&]:border-ink [.nav-links_&]:rounded-[0.2rem] [.nav-links_&]:text-surface [.nav-links_&]:bg-ink">Open Executor <span aria-hidden="true">→</span></a>
         </div>
       </div>
     </nav>

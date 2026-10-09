@@ -13,7 +13,7 @@ import {
 } from "apps/ui/auth";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
 import { Clock, Effect, Option, Redacted, Ref, Schema, Semaphore } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { appFromHost, appOrigin, appSessionCookie } from "../contracts/app-ui.ts";
 import { PairingRejected, type AppSessionTarget, type SessionHash } from "../contracts/auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";

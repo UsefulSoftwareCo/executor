@@ -20,13 +20,13 @@ transactions use Effect SQL's fiber-scoped transaction connection.
   variant schemas, name variants (upstream `schema/*`).
 - `query`: condition builder, ORM abstraction (`Orm<S, R>`), joins, upsert,
   soft foreign-key engine (upstream `query/*`).
-- `sql`: the single shipped adapter, built on `effect/unstable/sql`
+- `sql`: the single shipped adapter, built on `effect/sql`
   `SqlClient`. Supports `postgresql`, `cockroachdb`, `mysql`, `sqlite`,
   `mssql` (upstream `adapters/kysely/*`).
 - `migration`: schema diff, migrator engine, DDL generation per provider,
   database introspection (`from-database` mode), SQLite table-recreate
   transformer (upstream `migration-engine/*` + `adapters/kysely/migration/*`).
-- `cli`: an `effect/unstable/cli` command tree mirroring upstream `cli/`.
+- `cli`: an `effect/cli` command tree mirroring upstream `cli/`.
 
 ## What is out of scope (deliberately)
 

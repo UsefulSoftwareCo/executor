@@ -222,11 +222,11 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect((yield* setup()).mode).toBe("saved");
         const reconnect = yield* body(
           Resource,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            `${prefix}/accounts/${savedAccount}/connections`,
-          ),
+          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
+            requirement: "service",
+            profile,
+            account: savedAccount,
+          }),
         );
         yield* browser.use("Open the existing account for reconnection", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
@@ -289,7 +289,12 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             )
             .then(() =>
               page
-                .waitForURL((url) => url.searchParams.get("account") === savedAccount)
+                // A reconnect through the app returns to that app's accounts.
+                .waitForURL(
+                  (url) =>
+                    url.pathname === `/org/${actors.organization.slug}/apps/${app.id}` &&
+                    url.searchParams.get("view") === "accounts",
+                )
                 .then(() =>
                   page
                     .getByRole("button", { name: /^Manage Recovery account/ })

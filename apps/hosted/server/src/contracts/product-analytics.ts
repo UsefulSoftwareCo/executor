@@ -123,10 +123,10 @@ export const recordUsage = (event: UsageEvent, properties: UsageProperties = {})
   });
 
 const ErrorTag = Schema.Struct({
-  _tag: Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/)),
+  _tag: Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/u)),
 });
 const ErrorReason = Schema.Struct({
-  reason: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_-]{0,63}$/)),
+  reason: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_-]{0,63}$/u)),
 });
 
 /** Export bounded error discriminators only, never a message, cause, or other serialized field. */

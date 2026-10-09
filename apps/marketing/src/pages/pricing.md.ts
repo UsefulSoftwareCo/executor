@@ -1,7 +1,7 @@
 import type { APIRoute } from "astro";
 
 import { markdownResponse, pricingTiers } from "../content/site-copy";
-import { siteOrigin } from "../content/site-origin.ts";
+import { appOrigin, siteOrigin } from "../content/site-origin.ts";
 
 // ---------------------------------------------------------------------------
 // `/pricing.md` — Executor Cloud pricing as Markdown.
@@ -10,7 +10,7 @@ import { siteOrigin } from "../content/site-origin.ts";
 // data lives in src/content/site-copy.ts and both surfaces read it.
 // ---------------------------------------------------------------------------
 
-const tierSections = pricingTiers(siteOrigin).map(
+const tierSections = pricingTiers(appOrigin).map(
   ({ name, price, audience, featuresLabel, features, cta }) =>
     [
       `## ${name}`,

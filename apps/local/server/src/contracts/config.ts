@@ -21,7 +21,7 @@ export const ServerConfig = Schema.Struct({
   port: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 65535 })),
   apiKey: Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32))),
   encryptionKey: Schema.RedactedFromValue(
-    Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/)),
+    Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/u)),
   ),
   mcp: McpLimits.pipe(Schema.withDecodingDefault(Effect.succeed(defaultMcpLimits))),
   urlPolicy: UrlPolicy.pipe(Schema.withDecodingDefault(Effect.succeed(defaultUrlPolicy))),

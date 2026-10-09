@@ -9,7 +9,7 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -518,7 +518,36 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
           );
         });
+        /**
+         * What the latest search loaded, as its `mcp.search.discovery` span records it: spans on
+         * a Workers I/O clock cannot time its CPU, which grows with these counts.
+         */
+        const searchDiscovery = Effect.gen(function* () {
+          const request = (yield* evidence.requests)
+            .filter((entry) => entry.path === "/mcp")
+            .at(-1);
+          if (request === undefined) return yield* Effect.fail(new Error("Missing MCP request"));
+          return yield* telemetry.query(request.traceId).pipe(
+            Effect.flatMap((result) => {
+              const span = result.data.find(
+                ({ span }) => span.operationName === "mcp.search.discovery",
+              )?.span;
+              return span === undefined
+                ? Effect.fail(new Error("Missing search discovery span"))
+                : Effect.succeed({
+                    apps: Number(span.tags["executor.discovery.apps"]),
+                    tools: Number(span.tags["executor.discovery.tools"]),
+                  });
+            }),
+            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
+          );
+        });
         expect(yield* revisions("First listing")).toEqual(["revision_1"]);
+        // A search loads every app it may rank: at least this app and its revision tool.
+        const loaded = yield* searchDiscovery;
+        expect(loaded.apps).toBeGreaterThanOrEqual(1);
+        expect(loaded.tools).toBeGreaterThanOrEqual(1);
+        expect(Number.isInteger(loaded.tools)).toBe(true);
         // That evaluation filled the cold app cache, a change that keeps it from being reused;
         // the next one reads the warm cache and is kept.
         expect(yield* revisions("Listing from the warm app cache")).toEqual(["revision_1"]);
@@ -538,6 +567,96 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         yield* control(origin, { version: 3, notify: true });
         expect((yield* app.call("fixture_0000")).status).toBe(200);
         expect(yield* revisions("After tools/list_changed")).toEqual(["revision_3"]);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.mcpExecuteSignatures.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const origin = yield* fixture();
+        yield* control(origin, { count: 200, delayMs: 0 });
+        const app = yield* deploy(`${origin}/mcp`, true);
+        const key = yield* body(
+          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+          yield* app.api.request(app.actors.owner, "POST", "/api/auth/api-key/create", {
+            name: "Execute signatures",
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          app.api
+            .request(app.actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+            .pipe(Effect.orDie),
+        );
+        const client = yield* (yield* McpClient).connect(key.key, "execute-signatures", {
+          organization: app.actors.organization.id,
+        });
+        const evidence = yield* Evidence,
+          telemetry = yield* Telemetry;
+        const Executed = Schema.Struct({
+          structuredContent: Schema.Struct({
+            execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Json }),
+          }),
+        });
+        /**
+         * Runs one program. Returns its value, the tools its catalog held and the signatures its
+         * CodeMode runtime rendered, as the request's `mcp.catalog` and `mcp.execute` spans record.
+         */
+        const run = (step: string, code: string) =>
+          Effect.gen(function* () {
+            const result = yield* client.use(step, (client, signal) =>
+              client.callTool({ name: "execute", arguments: { code } }, undefined, {
+                signal,
+                timeout: 55_000,
+              }),
+            );
+            const { value } = (yield* Schema.decodeUnknownEffect(Executed)(result))
+              .structuredContent.execution;
+            const request = (yield* evidence.requests)
+              .filter((entry) => entry.path === "/mcp")
+              .at(-1);
+            if (request === undefined) return yield* Effect.fail(new Error("Missing MCP request"));
+            const recorded = yield* telemetry.query(request.traceId).pipe(
+              Effect.flatMap((trace) => {
+                const span = (name: string) =>
+                  trace.data.find(({ span }) => span.operationName === name)?.span;
+                const rendered = span("mcp.execute")?.tags["executor.codemode.signatures_rendered"];
+                const tools = span("mcp.catalog")?.tags["executor.discovery.tools"];
+                return rendered === undefined || tools === undefined
+                  ? Effect.fail(new Error(`Missing execute spans for ${step}`))
+                  : Effect.succeed({ rendered: Number(rendered), tools: Number(tools) });
+              }),
+              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
+            );
+            return { value, ...recorded };
+          });
+
+        // Executor's own search ranks its listing projections; the program's runtime renders none.
+        const searched = yield* run(
+          "Executor search",
+          `return await tools.search({ query: "fixture_0007", limit: 5 });`,
+        );
+        expect(searched.rendered).toBe(0);
+        const path = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+        )(searched.value).pipe(
+          Effect.map(({ items }) => items.find((item) => item.path.endsWith("fixture_0007"))?.path),
+        );
+        expect(path).toBeDefined();
+
+        // A program that calls one tool reaches the app's 200, and renders none of their signatures.
+        const called = yield* run("One tool call", `return await ${String(path)}({});`);
+        expect(called.tools).toBeGreaterThanOrEqual(200);
+        expect(called.rendered).toBe(0);
+
+        // CodeMode's own search() reads its search index, so it renders every reachable tool.
+        const indexed = yield* run(
+          "CodeMode search",
+          `return await search({ query: "fixture_0007" });`,
+        );
+        expect(indexed.tools).toBeGreaterThanOrEqual(200);
+        expect(indexed.rendered).toBeGreaterThanOrEqual(indexed.tools);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

@@ -5,17 +5,16 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
-    "./contracts": "./src/contracts/registry.ts",
-    "./storage": "./src/implementation/storage.ts",
-    "./client": "./src/client.ts"
+    "./storage": "./src/implementation/storage.ts"
   },
   "dependencies": {
     "@executor-js/sdk": "workspace:*",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@executor-js/utils": "workspace:*",
+    "effect": "4.0.1",
     "fumadb-effect": "workspace:*"
   },
   "devDependencies": {
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/platform-node": "4.0.1",
     "@executor-js/app-source": "workspace:*"
   }
 }

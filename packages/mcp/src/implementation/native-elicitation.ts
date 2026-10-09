@@ -1,6 +1,6 @@
 /** Native approval delivery holds only the active MCP request; codemode remains parked while the user decides. */
 import { Clock, Effect, Option, Schema } from "effect";
-import { McpSchema } from "effect/unstable/ai";
+import { McpSchema } from "effect/ai";
 import { NativeElicitationFailed } from "../contracts/elicitation.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import type { makeExecutions } from "./executions.ts";

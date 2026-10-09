@@ -6,7 +6,7 @@
  * an adapter's operations need; consumers provide it with a `Layer`.
  */
 import type { Effect, Option } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { SqlError } from "effect/sql/SqlError";
 import type { Migrator } from "./migration.ts";
 import type { Orm } from "./query.ts";
 import type { AnySchema } from "./schema/schema.ts";

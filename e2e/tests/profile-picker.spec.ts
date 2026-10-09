@@ -371,7 +371,7 @@ layer(HostedLive, { excludeTestServices: true })("Profile picker", (it) => {
               [actors.organization.id, actors.organization.slug].map(
                 (org) => `/api/organizations/${org}/apps/${app.id}/profiles`,
               ),
-              "fail",
+              "undeclared",
               { allRequests: true },
             );
             yield* advanceToReconciliation;

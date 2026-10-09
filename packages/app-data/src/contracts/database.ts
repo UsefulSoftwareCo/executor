@@ -152,7 +152,7 @@ const limitMessages: Record<DatabaseLimit, (maximum: number, requested: number) 
   directGets: (maximum, requested) =>
     `This invocation made ${count(requested)} get(id) calls, including those made by update and delete; the limit is ${count(maximum)}. Split the work across workflow steps or mutations.`,
   rowsRead: (maximum, requested) =>
-    `This invocation scanned ${count(requested)} rows; the limit is ${count(maximum)}. Narrow the index range, or page with paginate() across calls or workflow steps.`,
+    `This invocation read ${count(requested)} rows; the limit is ${count(maximum)}. Read fewer rows per call, through an index or a LIMIT, or split the work across calls or workflow steps.`,
   rowsReturned: (maximum, requested) =>
     `This invocation returned ${count(requested)} rows; the limit is ${count(maximum)}. collect() fails rather than truncating. Page with paginate() across calls or workflow steps.`,
   pageSize: (maximum, requested) =>
@@ -160,7 +160,7 @@ const limitMessages: Record<DatabaseLimit, (maximum: number, requested: number) 
   bytesRead: (maximum, requested) =>
     `This invocation read ${count(requested)} bytes; the limit is ${count(maximum)}. Read fewer or smaller rows per call, or page with paginate() across calls or workflow steps.`,
   writes: (maximum, requested) =>
-    `This mutation made ${count(requested)} writes; the limit is ${count(maximum)}. Split large ingests into batches, one batch per mutation or workflow step.`,
+    `This invocation wrote ${count(requested)} rows; the limit is ${count(maximum)}. Split large ingests into batches, one batch per mutation or workflow step.`,
   valueBytes: (maximum, requested) =>
     `A row encodes to ${count(requested)} bytes; each row may use at most ${count(maximum)}. Store large content outside the row or split it across rows.`,
 };

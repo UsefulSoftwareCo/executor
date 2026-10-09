@@ -17,7 +17,7 @@ directory is the route; `index.mdx` is the docs root. Frontmatter needs a
 Write internal links as bare routes — `/mcp-clients`, not `/docs/mcp-clients`.
 `deployment.base` in `blume.config.ts` moves the whole site under `/docs` and
 rewrites the links, the sitemap, the canonicals and `llms.txt` to match. The one
-deliberate exception is the absolute `https://v2.executor.sh` link on the index
+deliberate exception is the absolute `https://app.executor.sh` link on the index
 page: it points at the hosted dashboard, which is not a docs page, so it must
 not pick up the base. `blume audit` reports it as a warning for that reason.
 

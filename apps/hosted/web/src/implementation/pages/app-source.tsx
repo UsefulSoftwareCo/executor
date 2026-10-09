@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from "@executor-js/ui/components/dialog";
 import { Exit, type Cause } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useContext, useState } from "react";
 import {
   activateAppAtom,

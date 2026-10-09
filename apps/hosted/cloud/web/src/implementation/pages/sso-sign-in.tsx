@@ -8,7 +8,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import { Cause, Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { ssoSignInAtom } from "../../contracts/sso.ts";
 

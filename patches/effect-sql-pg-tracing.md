@@ -1,14 +1,15 @@
 # PostgreSQL connection tracing
 
-The Effect snapshot pinned at `c7d1ffff` traces SQL statements and transactions,
+`@effect/sql-pg` 4.0.1 traces SQL statements and transactions,
 but its physical PostgreSQL connection acquisition has no span. A slow first
 transaction therefore includes an unexplained interval before its first query.
 
-`@effect%2Fsql-pg@c7d1ffff.patch` adds a client `sql.connect` span around the
+`@effect%2Fsql-pg@4.0.1.patch` adds a client `sql.connect` span around the
 driver's existing network connection and authentication effect. It ends when
 PostgreSQL sends `ReadyForQuery`, or on failure or interruption. It adds no URL,
 credentials, query text, or connection attributes. Password/config resolution
-and later query execution are outside this span.
+and later query execution are outside this span. The span records its
+`db.connect.attempt`, starting at 1.
 
 The patch changes both source and distributed JavaScript. It preserves lazy
 pool acquisition, reuse, dead-connection replacement, idle release, and scoped
@@ -16,12 +17,24 @@ socket cleanup. It does not open a connection to measure it. The existing
 `SqlClient.reserve` API could measure explicit reservation, but would require
 an extra eager acquisition in application code.
 
-The patch key uses the exact package URL, not its shared prerelease version.
-Bun 1.3.11 accepts and applies this key with `bun install --frozen-lockfile`.
-Its `bun patch --commit` command crashes for this URL dependency, so this patch
-and the corresponding text lock entry were generated directly. Keep the key
-aligned with the package URL when upgrading, and remove this patch if upstream
-adds equivalent connection tracing.
+The patch is generated with `bun patch` against the npm release. Regenerate it
+when upgrading, and remove it if upstream adds equivalent connection tracing.
+4.0.1 drains an interrupted statement through `drainAborted`; the wire span wraps
+that unchanged cancellation path.
+
+## Connection retries
+
+The patch also adds a `connectRetries` option (default `0`) to `PgConnection`
+and `PgClient` configuration. A connection attempt that fails with a retryable
+reason, such as a transport error or `connectTimeout`, is made again up to that
+many times. Each attempt has its own `connectTimeout`. Nothing has been sent on
+a connection before `ReadyForQuery`, so this never repeats a statement; query
+failures are not retried. Authentication failures are not retryable. A retried
+attempt's span also records the previous failure's fixed driver message as
+`db.connect.retry_reason`, for example `PgConnection: Connection timed out`;
+server error text stays out of the span. Cloud's Worker event and Durable
+Object pools set one retry (see `cloudDatabasePool` in
+`apps/hosted/cloud/src/infrastructure/database.ts`).
 
 ## Statement wire timing
 

@@ -1,7 +1,8 @@
 /** Hosted organization groups. Account and app grants are separate later capabilities. */
 import { Context, Effect, Schema } from "effect";
-import type { SqlClient } from "effect/unstable/sql";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { ApiError } from "@executor-js/utils/api-error";
+import type { SqlClient } from "effect/sql";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   OrganizationReference,
   OrganizationForbidden,
@@ -50,23 +51,34 @@ export const GroupsView = Schema.Struct({
   canManage: Schema.Boolean,
 });
 /** The group is missing or unavailable to this viewer; inaccessible group IDs disclose nothing. */
-export class GroupNotFound extends Schema.TaggedError<GroupNotFound>()(
-  "GroupNotFound",
-  {},
-  { httpApiStatus: 404 },
-) {}
+export const GroupNotFound = ApiError.define({
+  tag: "GroupNotFound",
+  status: 404,
+  message: "This group does not exist, or you are not a member of it.",
+});
+export type GroupNotFound = typeof GroupNotFound.Type;
+const groupConflicts = {
+  changed: "The group changed since it was read. Read it again and reapply the edit.",
+  name_taken: "Another group in this organization already uses this name.",
+  members_changed:
+    "The group's members changed since they were read. Read them again and reapply the edit.",
+} as const;
 /** Safe conflicts preserve the user's draft; no partial edit is committed. */
-export class GroupConflict extends Schema.TaggedError<GroupConflict>()(
-  "GroupConflict",
-  { reason: Schema.Literals(["changed", "name_taken", "members_changed"]) },
-  { httpApiStatus: 409 },
-) {}
+export const GroupConflict = ApiError.define({
+  tag: "GroupConflict",
+  status: 409,
+  fields: { reason: Schema.Literals(["changed", "name_taken", "members_changed"]) },
+  message: ({ reason }) => groupConflicts[reason],
+  recorded: ({ reason }) => groupConflicts[reason],
+});
+export type GroupConflict = typeof GroupConflict.Type;
 /** Storage failures contain no raw database details. */
-export class GroupsUnavailable extends Schema.TaggedError<GroupsUnavailable>()(
-  "GroupsUnavailable",
-  {},
-  { httpApiStatus: 503 },
-) {}
+export const GroupsUnavailable = ApiError.define({
+  tag: "GroupsUnavailable",
+  status: 503,
+  message: "Executor could not read or save groups. Try again.",
+});
+export type GroupsUnavailable = typeof GroupsUnavailable.Type;
 /** Lazy request-owned database acquisition; an isolate must never retain a live client. */
 export class GroupDatabase extends Context.Service<
   GroupDatabase,

@@ -3,7 +3,7 @@ import { requireAccountAccess } from "./resource-policy.ts";
 import type { WebhookId } from "@executor-js/sdk/core";
 /** Private setup shares SDK state without making secret exchange available to MCP credentials. */
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { AppId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { Authentication, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";

@@ -1,18 +1,12 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
-import { getAccount } from "./accounts.ts";
+import { AccountGrants } from "./proofs/account-access.ts";
 /** Sharing writes are atomic; metadata visibility and credential use remain separate. */
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { teamAppPending } from "./provisioning.ts";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import {
-  StorageError,
-  type AppId,
-  type AccountId,
-  type Provider,
-  type ProviderId,
-} from "@executor-js/sdk/core";
+import { HttpApiBuilder } from "effect/http-api";
+import { StorageError, type AppId, type Provider, type ProviderId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
@@ -115,9 +109,10 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     );
     const pendingApp =
       policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
-        ? yield* teamAppPending(actor.organization).pipe(
-            Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
-          )
+        ? yield* teamAppPending(
+            actor.organization,
+            (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
         : false;
     return { apps: appEntries, accounts: accountEntries.flat(), pendingApp };
   });
@@ -151,14 +146,16 @@ export const shareApp = (
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/** Personal account ownership cannot be changed by editing shared-account grants. */
+/**
+ * Personal account ownership cannot be changed by editing shared-account grants. The share grant
+ * checks management up front; it is checked again under the transaction's lock.
+ */
 export const shareAccount = (
-  account: AccountId,
   audience: typeof SharedAudience.Type,
   revision: typeof AccessRevision.Type,
 ) =>
   Effect.gen(function* () {
-    yield* getAccount((yield* CurrentOrganization).owner, account);
+    const { account } = yield* AccountGrants.share;
     const sql = yield* policyDatabase;
     yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -194,14 +191,7 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
         .handle("shareApp", ({ params, payload }) =>
           shareApp(params.app, payload.audience, payload.revision),
         )
-        .handle("account", ({ params }) =>
-          Effect.gen(function* () {
-            yield* getAccount((yield* CurrentOrganization).owner, params.account);
-            return yield* requireAccountAccess(params.account, "read");
-          }),
-        )
-        .handle("shareAccount", ({ params, payload }) =>
-          shareAccount(params.account, payload.audience, payload.revision),
-        );
+        .handle("account", () => Effect.map(AccountGrants.inspect, (grant) => grant.access))
+        .handle("shareAccount", ({ payload }) => shareAccount(payload.audience, payload.revision));
     }),
 );

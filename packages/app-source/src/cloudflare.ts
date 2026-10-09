@@ -4,7 +4,7 @@
  * operation, so Worker startup and requests that never touch app source skip them.
  */
 import { Effect } from "effect";
-import type { AppCodeId, RepositoryBackend } from "./contracts/repositories.ts";
+import type { AppCodeId, RepositoryBackend } from "@executor-js/sdk/core";
 import type { ArtifactsTokens } from "./contracts/artifacts-tokens.ts";
 export type { ArtifactsToken, ArtifactsTokens } from "./contracts/artifacts-tokens.ts";
 

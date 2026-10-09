@@ -3,13 +3,13 @@
 import { Schema } from "effect";
 
 /** Opaque correlation ID; possession alone does not authorize an app session. */
-export const AppSignInId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)).pipe(
+export const AppSignInId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)).pipe(
   Schema.brand("AppSignInId"),
 );
 export type AppSignInId = typeof AppSignInId.Type;
 /** Authentication proofs are redacted at the HTTP boundary. */
 export const AppSignInCode = Schema.RedactedFromValue(
-  Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
 );
 /** A path on the current app origin, including its query and fragment; never a redirect to another host or host-owned route. */
 export const AppReturnPath = Schema.String.check(

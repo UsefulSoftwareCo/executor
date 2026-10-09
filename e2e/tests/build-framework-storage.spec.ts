@@ -185,9 +185,11 @@ layer(HostedLive, { excludeTestServices: true })("Build framework storage", (it)
           return;
         }
 
-        // The deploy retains a small record, then keeps it and its framework decoded in the
-        // deploying isolate and writes both to the colo cache. The first call links them from
-        // memory and reads nothing from R2.
+        // The deploy retains a small record and writes it and its framework to the colo cache.
+        // The runner's first call links them from there, or from its own memory, and reads
+        // nothing from R2. Another app on this apps release may be reading the same framework in
+        // this isolate at that moment; the call then waits for that read and takes it from memory
+        // ("shared").
         const retain = yield* retained(deployed.traceId, "cold-load-deploy");
         expect(
           Number(retain.tags["executor.build.retained_bytes"]),
@@ -202,13 +204,11 @@ layer(HostedLive, { excludeTestServices: true })("Build framework storage", (it)
         const loads = spans.filter((span) => span.operationName === "runtime.cloud.build.cached");
         expect(loads, "One cold Worker start loads its build once").toHaveLength(1);
         const load = loads[0]!;
-        expect(load.tags["executor.build.cache"], "The deploy kept the record decoded").toBe(
-          "memory",
-        );
+        expect(load.tags["executor.build.cache"], "The deploy cached the record").toBe("hit");
         expect(
-          load.tags["executor.build.framework_cache"],
-          "The deploy kept the framework decoded",
-        ).toBe("memory");
+          ["hit", "memory", "shared"],
+          "The deploy cached the framework, or the runner holds it decoded",
+        ).toContain(load.tags["executor.build.framework_cache"]);
         expect(load.tags["executor.build.framework"]).toBe(retain.tags["executor.build.framework"]);
         expect(
           spans.filter((span) => span.operationName === "storage.blob.get"),

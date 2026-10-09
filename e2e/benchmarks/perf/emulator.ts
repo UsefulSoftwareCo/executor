@@ -18,7 +18,7 @@
  * Data is generated; nothing is derived from customer content.
  */
 import { Clock, Effect, Layer, Option, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 export interface EmulatorSpec {
   readonly tools: number;

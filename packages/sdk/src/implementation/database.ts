@@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
 /** Bound query handle sharing the host connection and reactive transaction context. */
 export type Query = ReturnType<typeof database>;
 /** Select the latest migrated storage schema. */
-export const database = (storage: ExecutorDatabase) => storage.orm("4.0.5");
+export const database = (storage: ExecutorDatabase) => storage.orm("4.0.7");
 /**
  * Run a lazy native query without leaking SQL or driver details. The query's own
  * FumaDB span covers the same interval, so this boundary adds no span of its own.

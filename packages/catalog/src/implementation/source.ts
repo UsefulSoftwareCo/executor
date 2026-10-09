@@ -1,6 +1,6 @@
 /** Network adapter for the public, read-only integrations.sh feed. */
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { CatalogFeed, CatalogUnavailable, type CatalogSource } from "../contracts/catalog.ts";
 
 /**

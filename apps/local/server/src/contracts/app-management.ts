@@ -1,6 +1,6 @@
 /** Local app authoring preserves the dashboard pairing and storage error contract. */
 import { AppIdentity, appManagementApi, frameworkApi } from "@executor-js/app-management/contracts";
-import { HttpApiMiddleware } from "effect/unstable/httpapi";
+import { HttpApiMiddleware } from "effect/http-api";
 import { DashboardForbidden, DashboardUnauthorized } from "./dashboard.ts";
 import { AuthStorageError } from "./auth.ts";
 

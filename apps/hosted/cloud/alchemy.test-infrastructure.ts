@@ -6,6 +6,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { retain } from "alchemy/RemovalPolicy";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Layer } from "effect";
+import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-settings.ts";
 
 export default Alchemy.Stack(
   "executor-test-infrastructure",
@@ -47,7 +48,6 @@ export default Alchemy.Stack(
       "AXIOM_ORG_ID",
       "EXECUTOR_APP_DOMAIN_ZONE",
       "CLOUD_PLACEMENT_REGION",
-      "OAUTH_PROXY_PRODUCTION_URL",
       "AUTH_EMAIL_DOMAIN",
     ] as const)
       yield* GitHub.Variable(name, {
@@ -55,6 +55,12 @@ export default Alchemy.Stack(
         name,
         value: yield* Config.NonEmptyString(name),
       }).pipe(retain());
+    // Test stages sign in through production's proxy, at the edge where its social sign-ins return.
+    yield* GitHub.Variable("OAUTH_PROXY_PRODUCTION_URL", {
+      ...target,
+      name: "OAUTH_PROXY_PRODUCTION_URL",
+      value: productionSocialCallbackOrigin,
+    }).pipe(retain());
     for (const name of [
       "TEST_STAGE_DATABASE_ADMIN_URL",
       "CLOUDFLARE_API_TOKEN",

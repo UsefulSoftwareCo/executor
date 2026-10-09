@@ -1,13 +1,17 @@
 import { hostedProfileHandlers } from "./profiles.ts";
-import { appManagementHandlers, frameworkHandlers } from "@executor-js/app-management";
+import {
+  AppGitOrigins,
+  appManagementHandlers,
+  frameworkHandlers,
+} from "@executor-js/app-management";
 import { HostedAppManagementApi, HostedFrameworkApi } from "../contracts/app-management.ts";
 import { hostedAppAccess } from "../app-management.ts";
 import { hostedResourceAccessHandlers } from "./resource-access.ts";
 import { hostedScheduleHandlers } from "./schedules.ts";
 /** Shared hosted handlers. No Cloudflare, Node, or local-product dependencies. */
 import { Effect, Layer } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerRequest } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerRequest } from "effect/http";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { ApiAuthentication, CurrentPrincipal } from "../contracts/auth.ts";
@@ -48,6 +52,7 @@ const apiContext = HttpApiBuilder.group(HostedApi, "context", (handlers) =>
           organization: grant.access.organization,
           slug: grant.organizationSlug,
           role: grant.access.role,
+          gitOrigins: (yield* AppGitOrigins)(request),
         };
       }),
     );

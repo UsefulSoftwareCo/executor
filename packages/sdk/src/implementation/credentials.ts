@@ -1,7 +1,8 @@
 /** Reusable AES-GCM credential encryption; the configured key stays outside the database and app runtime. */
 import { CredentialsError, JsonObject } from "../contracts/shared.ts";
 import type { Credentials } from "../contracts/storage.ts";
-import { Effect, Encoding, Redacted, Result, Schema } from "effect";
+import { Effect, Redacted, Result, Schema } from "effect";
+import { Hex } from "effect/encoding";
 
 /** Import a configured 256-bit key. Envelopes bind ciphertext to its stable resource ID. */
 export const aesGcmCredentials = (
@@ -9,7 +10,7 @@ export const aesGcmCredentials = (
   crypto: Crypto,
 ): Effect.Effect<Credentials, CredentialsError> =>
   Effect.gen(function* () {
-    const bytes = yield* Encoding.decodeHex(Redacted.value(secret)).pipe(
+    const bytes = yield* Hex.decode(Redacted.value(secret)).pipe(
       Result.mapError(() => new CredentialsError()),
       Effect.fromResult,
     );

@@ -1,0 +1,192 @@
+diff --git a/dist/codemode.d.ts b/dist/codemode.d.ts
+index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..fd7548c869cd8aa895d679975b730866e543e120 100644
+--- a/dist/codemode.d.ts
++++ b/dist/codemode.d.ts
+@@ -141,6 +141,8 @@ export type Result = typeof Result.Type;
+ export type Runtime<R = never> = {
+     readonly catalog: () => ReadonlyArray<ToolDescription>;
+     readonly execute: (code: string) => Effect.Effect<Result, never, R>;
++    /** Tool signatures this runtime has rendered for its catalog and its programs' `search()`. */
++    readonly signaturesRendered: () => number;
+ };
+ /** Executes one Effect-native CodeMode program without constructing a reusable runtime. */
+ export declare const execute: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>) => Effect.Effect<Result, never, Services<Provided>>;
+diff --git a/dist/codemode.js b/dist/codemode.js
+index e94b56b920a396f6bae79fb51cd60bd07b83d591..4f73e846180e65455d7abe4750b611ab9a340f9c 100644
+--- a/dist/codemode.js
++++ b/dist/codemode.js
+@@ -65,6 +65,7 @@ export const make = (options = {}) => {
+     const prepared = ToolRuntime.prepare(tools);
+     return {
+         catalog: () => prepared.catalog,
+-        execute: (code) => executeWithLimits({ ...options, code }, limits, prepared.searchIndex),
++        execute: (code) => executeWithLimits({ ...options, code }, limits, prepared.searchIndexOnUse),
++        signaturesRendered: prepared.signaturesRendered,
+     };
+ };
+diff --git a/dist/interpreter/execute.d.ts b/dist/interpreter/execute.d.ts
+index e17d5849420a0266e37bf14b7f0fc257ebce2818..aeb177171d6c924b02c4174edb767bc70aa232b4 100644
+--- a/dist/interpreter/execute.d.ts
++++ b/dist/interpreter/execute.d.ts
+@@ -1,4 +1,4 @@
+ import { Effect } from "effect";
+ import type { ExecuteOptions, ResolvedExecutionLimits, Result } from "../codemode.js";
+ import { ToolRuntime, type Services } from "../tool-runtime.js";
+-export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndex"]) => Effect.Effect<Result, never, Services<Provided>>;
++export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndexOnUse"]) => Effect.Effect<Result, never, Services<Provided>>;
+diff --git a/dist/openapi/index.js b/dist/openapi/index.js
+index 1702476510e1019a2a2b6b7e14423c84a350e8c9..2425925a7bd394917d57f36b84e6f0fa29e5f79e 100644
+--- a/dist/openapi/index.js
++++ b/dist/openapi/index.js
+@@ -1,4 +1,4 @@
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";
+ import { make } from "../tool.js";
+ import { invoke } from "./runtime.js";
+ import { componentDefinitions, hasDirectionalSchemas, inputSchema, isRecord, methods, nonEmptyString, operationInput, operationOutput, operationPath, operationSecurityRequirements, securityRequirements, securitySchemes, specServerUrl, validateBaseUrl, } from "./spec.js";
+diff --git a/dist/openapi/runtime.d.ts b/dist/openapi/runtime.d.ts
+index 86ae0c3d2183e89bc3d83c1548d860bc8d69c78b..2da6eeb1b50263f69bc593a4fe0eb0cc4cc3a1d3 100644
+--- a/dist/openapi/runtime.d.ts
++++ b/dist/openapi/runtime.d.ts
+@@ -1,4 +1,4 @@
+ import { Effect } from "effect";
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";
+ import type { Plan } from "./types.js";
+ export declare const invoke: (plan: Plan, input: unknown) => Effect.Effect<unknown, unknown, HttpClient.HttpClient>;
+diff --git a/dist/openapi/runtime.js b/dist/openapi/runtime.js
+index 0fa6088d164442dfc9c41fff6ab71357f7386317..4e2d042f4f2b20b800bd26cd270014eee6b8dac6 100644
+--- a/dist/openapi/runtime.js
++++ b/dist/openapi/runtime.js
+@@ -1,5 +1,5 @@
+ import { Effect, Option, Schema, Stream } from "effect";
+-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
++import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+ import { ToolError, toolError } from "../tool-error.js";
+ import { isRecord, own } from "./spec.js";
+ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+diff --git a/dist/openapi/types.d.ts b/dist/openapi/types.d.ts
+index 52d2cb7dbb75f6998a9dd2a4ad4e8a780ba9ceb0..80e1db35c82b1434144608a797077030f2c386b1 100644
+--- a/dist/openapi/types.d.ts
++++ b/dist/openapi/types.d.ts
+@@ -1,5 +1,5 @@
+ import { Effect } from "effect";
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";
+ import type { Tool, JsonSchema } from "../tool.js";
+ /** A parsed OpenAPI 3.x document. YAML must be parsed by the host. */
+ export type Document = Record<string, unknown>;
+diff --git a/dist/openapi/types.js b/dist/openapi/types.js
+index bc386d2cd78bffa1bd1f76bf98509183f61c57d1..483cc3fd953ab434bf0209462d9a88ddce404fb0 100644
+--- a/dist/openapi/types.js
++++ b/dist/openapi/types.js
+@@ -1,2 +1,2 @@
+ import { Effect } from "effect";
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";
+diff --git a/dist/tool-runtime.d.ts b/dist/tool-runtime.d.ts
+index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..e44130a9e6ee52aef45c5e9c84f4c91c6f1a8812 100644
+--- a/dist/tool-runtime.d.ts
++++ b/dist/tool-runtime.d.ts
+@@ -48,6 +48,10 @@ export declare const copyOut: (value: unknown, mode: CopyOutMode) => unknown;
+ export type DiscoveryPlan = {
+     readonly catalog: ReadonlyArray<ToolDescription>;
+     readonly searchIndex: ReadonlyArray<SearchEntry>;
++    /** Renders the search index on its first call. */
++    readonly searchIndexOnUse: () => ReadonlyArray<SearchEntry>;
++    /** Tool signatures rendered so far for the catalog and the search index. */
++    readonly signaturesRendered: () => number;
+ };
+ export type SearchEntry = {
+     readonly description: ToolDescription;
+@@ -55,7 +59,7 @@ export type SearchEntry = {
+ };
+ /** Exact callable signature of the built-in `search` function, for host-owned instructions. */
+ export declare const searchSignature: string;
+-export declare const searchIndex: <R>(tools: Tools<R>) => ReadonlyArray<SearchEntry>;
++export declare const searchIndex: <R>(tools: Tools<R>) => () => ReadonlyArray<SearchEntry>;
+ export declare const prepare: <R>(tools: Tools<R>) => DiscoveryPlan;
+ export type ToolRuntime<R = never> = {
+     readonly root: ToolReference;
+@@ -64,5 +68,5 @@ export type ToolRuntime<R = never> = {
+     readonly search: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>;
+     readonly keys: (path: ReadonlyArray<string>) => ReadonlyArray<string>;
+ };
+-export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>) => ToolRuntime<R>;
++export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: () => ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>) => ToolRuntime<R>;
+ export * as ToolRuntime from "./tool-runtime.js";
+diff --git a/dist/tool-runtime.js b/dist/tool-runtime.js
+index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d87f8bb18 100644
+--- a/dist/tool-runtime.js
++++ b/dist/tool-runtime.js
+@@ -227,18 +227,20 @@ const termForms = (term) => {
+         forms.push(term.slice(0, -1));
+     return forms;
+ };
++// The index renders every tool's signature, so it is derived only when a program searches.
+ const makeSearchTool = (searchIndex) => ({
+     _tag: "CodeModeTool",
+     description: "Search available tools",
+     input: SearchInput,
+     output: SearchOutput,
+     execute: (input) => Effect.sync(() => {
++        const entries = searchIndex();
+         const request = input;
+         const query = request.query ?? "";
+         const offset = request.offset ?? 0;
+         const scoped = request.namespace === undefined
+-            ? searchIndex
+-            : searchIndex.filter((entry) => entry.description.path === request.namespace ||
++            ? entries
++            : entries.filter((entry) => entry.description.path === request.namespace ||
+                 entry.description.path.startsWith(`${request.namespace}.`));
+         const trimmed = query.trim();
+         const pathQuery = trimmed.startsWith("tools.") ? trimmed.slice("tools.".length) : trimmed;
+@@ -276,7 +278,7 @@ const makeSearchTool = (searchIndex) => ({
+ });
+ /** Exact callable signature of the built-in `search` function, for host-owned instructions. */
+ export const searchSignature = (() => {
+-    const tool = makeSearchTool([]);
++    const tool = makeSearchTool(() => []);
+     return `search(input: ${inputTypeScript(tool, true)}): ${outputTypeScript(tool, true)}`;
+ })();
+ const toSearchEntry = (visible) => ({
+@@ -290,12 +292,35 @@ const toSearchEntry = (visible) => ({
+         .join("\n")
+         .toLowerCase(),
+ });
+-export const searchIndex = (tools) => visibleTools(tools).map(toSearchEntry);
++const lazily = (derive) => {
++    let derived;
++    return () => (derived ??= derive());
++};
++/** The search index of the tools as they are now, rendered on the first search. */
++export const searchIndex = (tools) => {
++    const visible = visibleTools(tools);
++    return lazily(() => visible.map(toSearchEntry));
++};
++/** The catalog and search index, each derived on first use from the tools as they are now. */
+ export const prepare = (tools) => {
+     const visible = visibleTools(tools);
++    // Each signature this plan renders is counted, so a host can see that unread lists cost nothing.
++    let rendered = 0;
++    const counted = (render) => (tool) => {
++        rendered += 1;
++        return render(tool);
++    };
++    const catalog = lazily(() => visible.map(counted(describeTool)));
++    const index = lazily(() => visible.map(counted(toSearchEntry)));
+     return {
+-        catalog: visible.map(describeTool),
+-        searchIndex: visible.map(toSearchEntry),
++        get catalog() {
++            return catalog();
++        },
++        get searchIndex() {
++            return index();
++        },
++        searchIndexOnUse: index,
++        signaturesRendered: () => rendered,
+     };
+ };
+ const lookup = (root, segments) => segments.reduce((node, segment) => node?.children.get(segment), root);

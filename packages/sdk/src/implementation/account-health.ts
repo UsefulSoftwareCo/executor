@@ -25,12 +25,17 @@ import type { makeOAuth } from "./oauth.ts";
 
 /**
  * A check answers an interactive request, so the whole check, including credential renewal and
- * one retry, ends well inside common idle-connection limits; self-host's server closes a silent
- * request after about ten seconds.
+ * one retry, has a fixed limit. It leaves room for servers that are slow to start a session: in
+ * production, one MCP connection in twenty takes over 2.5 seconds to list its tools. Self-host's
+ * listener allows 30 seconds without a response.
  */
-const checkMillis = 6_000;
-/** The app's own deadline for one attempt, never past the whole check's. */
-const attemptMillis = 5_000;
+const checkMillis = 15_000;
+/**
+ * The app's own deadline, shared by its attempts, ends this long before the whole check. The
+ * provider's `health` receives it as `deadline`, so a check such as `mcpHealth` can give up in time
+ * to say why before the host stops waiting.
+ */
+const reportMillis = 1_000;
 
 type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolve" | "renewRejected">;
 type ListApps = (input: {
@@ -48,6 +53,7 @@ type CheckRow = {
   readonly checkedAt: Date;
   readonly info: unknown;
   readonly infoCheckedAt: Date | null;
+  readonly message: string | null;
 };
 
 /** The slot whose provider check covers this account in the app's active deployment. */
@@ -81,11 +87,24 @@ const statusOf = (error: unknown): AccountCheckStatus =>
           )
         : "check_failed";
 
-/** The message of an error the app's check threw. Other failures keep their causes private. */
-const messageOf = (error: unknown): string | undefined =>
-  Schema.is(HostOperationFailed)(error) && error.message !== undefined && error.message !== ""
-    ? error.message
-    : undefined;
+/**
+ * Why a check failed: the message of an error the app's check threw, the answer of a service that
+ * refused it without a recognized reason, or, once the app's deadline passed, that it ran out of
+ * time. The host reports an app that outlasts its deadline as an engine failure, so the time is what
+ * tells. Other failures keep their causes private.
+ */
+const messageOf = (error: unknown, late: boolean): string | undefined => {
+  if (Schema.is(HostOperationFailed)(error) && error.message !== undefined && error.message !== "")
+    return error.message;
+  if (Schema.is(ProviderError)(error) && error.reason === "rejected") {
+    const stated =
+      error.upstream === undefined
+        ? ""
+        : `: ${error.upstream.code}${error.upstream.message === undefined ? "" : ` (${error.upstream.message})`}`;
+    return `${error.status === undefined ? "The service refused the check" : `The service answered HTTP ${error.status}`}${stated}.`;
+  }
+  return late ? `The check did not finish within ${checkMillis / 1_000} seconds.` : undefined;
+};
 
 export const makeAccountHealth = (
   db: Query,
@@ -119,6 +138,7 @@ export const makeAccountHealth = (
                     current:
                       row.deployment === app.activeDeployment &&
                       row.credentialGeneration === account.credentialGeneration,
+                    ...(row.message === null ? {} : { message: row.message }),
                   };
             return { app: app.id, checkable: checkedSlot(app, account) !== undefined, check };
           }),
@@ -204,26 +224,23 @@ export const makeAccountHealth = (
         Effect.mapError(() => new StorageError()),
       );
       const startedAt = yield* Clock.currentTimeMillis;
-      const finishBy = startedAt + checkMillis;
+      const deadline = startedAt + checkMillis - reportMillis;
       const definition = target.required.definition;
       const attempt = (fields: JsonObject) =>
-        Effect.gen(function* () {
-          const deadline = Math.min((yield* Clock.currentTimeMillis) + attemptMillis, finishBy);
-          return yield* runtime.checkAccount({
-            app: app.id,
-            build: deployment.build,
-            requirement: target.slot,
-            deadline,
-            accounts: Redacted.make({
-              [target.slot]: {
-                id: account.id,
-                provider: grantedDefinition(definition, account.allowedHosts),
-                method: account.method,
-                generation: account.credentialGeneration,
-                fields,
-              },
-            }),
-          });
+        runtime.checkAccount({
+          app: app.id,
+          build: deployment.build,
+          requirement: target.slot,
+          deadline,
+          accounts: Redacted.make({
+            [target.slot]: {
+              id: account.id,
+              provider: grantedDefinition(definition, account.allowedHosts),
+              method: account.method,
+              generation: account.credentialGeneration,
+              fields,
+            },
+          }),
         });
       const outcome = yield* Effect.gen(function* () {
         const fields = yield* decodeFields(yield* oauth.resolve(account, definition));
@@ -240,6 +257,7 @@ export const makeAccountHealth = (
         if (sameFields(renewed, fields)) return yield* Effect.fail(refused);
         return yield* attempt(renewed);
       }).pipe(Effect.timeout(checkMillis), Effect.result);
+      const late = (yield* Clock.currentTimeMillis) >= deadline;
       // Authorization and storage failures belong to the caller, not the account.
       if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
         return yield* Effect.fail(outcome.failure);
@@ -257,6 +275,7 @@ export const makeAccountHealth = (
         credentialGeneration: account.credentialGeneration,
         status,
         checkedAt,
+        message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
         ...(info === undefined ? {} : { info, infoCheckedAt: checkedAt }),
       };
       const existing = yield* query(() =>
@@ -308,7 +327,7 @@ export const makeAccountHealth = (
       const deployment = yield* Schema.decodeUnknownEffect(StoredDeployment)(row).pipe(
         Effect.mapError(() => new StorageError()),
       );
-      const deadline = (yield* Clock.currentTimeMillis) + attemptMillis;
+      const deadline = (yield* Clock.currentTimeMillis) + checkMillis - reportMillis;
       const outcome = yield* runtime
         .checkAccount({
           app: app.id,
@@ -326,11 +345,12 @@ export const makeAccountHealth = (
           }),
         })
         .pipe(Effect.timeout(checkMillis), Effect.result);
+      const late = (yield* Clock.currentTimeMillis) >= deadline;
       if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
         return yield* Effect.fail(outcome.failure);
       if (Result.isSuccess(outcome))
         return { status: "healthy" as const, info: outcome.success.accountInfo ?? null };
-      const message = messageOf(outcome.failure);
+      const message = messageOf(outcome.failure, late);
       return {
         status: statusOf(outcome.failure),
         info: null,

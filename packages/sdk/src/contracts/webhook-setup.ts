@@ -1,6 +1,6 @@
 /** Private setup operations. Products expose them only to authorized browser sessions, never management tokens. */
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { WebhookSubscription, WebhookTarget, WebhookErrors } from "./webhooks.ts";
 import { Json, JsonObject } from "./shared.ts";
 

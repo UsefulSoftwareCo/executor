@@ -9,7 +9,7 @@ import * as Provider from "alchemy/Provider";
 import { Stack } from "alchemy/Stack";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Layer, Redacted, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 
 /** Fields owned by deployment; other project settings remain untouched. */
 export interface PostHogProjectProps {

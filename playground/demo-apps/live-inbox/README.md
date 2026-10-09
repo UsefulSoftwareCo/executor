@@ -3,16 +3,15 @@
 A configured app owns its records. Activating a deployment or changing selected
 accounts keeps the same data. Adding another copy starts with separate data.
 
-`listMessages` reads typed records. The host records the tables actually read,
-including empty results. `receiveMessage` changes data in a transaction. A
-successful commit reruns relevant subscriptions, including subscribers connected
-through a different SDK instance sharing the same host storage.
+`listMessages` reads rows with plain SQL through `ctx.sql`. `receiveMessage`
+inserts one. A successful write reruns live subscriptions, including subscribers
+connected through a different SDK instance sharing the same host storage.
 
-Queries receive a read-only database. Mutations receive a writable one. Keep
-network requests outside mutations: they hold a database transaction, and a
-rollback cannot undo external effects. This first document store supports
-keyed get/set/remove and full table reads. Indexed queries and schema migration
-for authored tables remain follow-up work.
+Queries receive read-only SQL; mutations receive writable SQL. Each statement
+commits on its own, and `ctx.sql.transaction(...)` groups statements atomically.
+A transaction is synchronous, so network requests always happen between
+transactions, never inside one. The schema lives in `migrations/`; the host
+applies new migrations when you deploy.
 
 Use `executor.appData.query` or `executor.appData.mutate` with the configured app
 ID, operation name and JSON input. Native serving hosts use `subscribeAppQuery`

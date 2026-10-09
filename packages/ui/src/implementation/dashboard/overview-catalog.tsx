@@ -1,7 +1,7 @@
 import { useMemo, type ComponentType, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import { Option } from "effect";
-import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import { OverviewCardLoading } from "./app-loading.tsx";
 

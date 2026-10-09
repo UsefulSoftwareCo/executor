@@ -6,7 +6,7 @@ interface Props {
 const { file } = Astro.props;
 const name = file.path.slice(file.path.lastIndexOf("/") + 1);
 const active = file.path === "index.ts";
-const symbol = file.language === "md" ? "M↓" : file.language === "json" ? "{}" : file.language === "html" || file.language === "tsx" ? "<>" : "TS";
+const symbol = file.language === "md" ? "M↓" : file.language === "json" ? "{}" : file.language === "sql" ? "DB" : file.language === "html" || file.language === "tsx" ? "<>" : "TS";
 ---
 <li>
   <button

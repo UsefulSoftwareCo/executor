@@ -1,16 +1,18 @@
 import { Context, Deferred, Effect, Layer, Redacted, Schema } from "effect";
+import { expect } from "@effect/vitest";
 import { randomUUID } from "node:crypto";
 import { Browser } from "./browser.ts";
 import { holdOrganizationEntry } from "./organization-entry.ts";
 import { Emulators } from "./emulators.ts";
 import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
+import { targetHosts } from "./role-hosts.ts";
 
 const Organizations = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }),
 );
 const AuthFailure = Schema.Struct({
-  code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/)),
+  code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/u)),
 });
 class OnboardingFailed extends Schema.TaggedError<OnboardingFailed>()("OnboardingFailed", {
   operation: Schema.String,
@@ -35,7 +37,8 @@ const make = Effect.gen(function* () {
           page.waitForResponse((response) => {
             const url = new URL(response.url());
             return (
-              url.origin === target.metadata.origin && url.pathname === "/api/auth/sign-in/social"
+              url.origin === targetHosts(target).browser &&
+              url.pathname === "/api/auth/sign-in/social"
             );
           }),
           page
@@ -49,23 +52,10 @@ const make = Effect.gen(function* () {
           response.headers()["content-type"]?.includes("application/json")
             ? response.json()
             : Promise.resolve(undefined)
-          ).then((failure: unknown) => ({
-            status: response.status(),
-            failure,
-            retryAfter: response.headers()["x-retry-after"],
-          })),
+          ).then((failure: unknown) => ({ status: response.status(), failure })),
         ),
       );
-      let response = yield* submit;
-      if (response.status === 429) {
-        // Managed Cloud scenarios share an IP. Respect the real auth rate limit
-        // when another scenario has used the current sign-in allowance.
-        const seconds = yield* Schema.decodeUnknownEffect(
-          Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(60)),
-        )(Number(response.retryAfter));
-        yield* Effect.sleep(seconds * 1000);
-        response = yield* submit;
-      }
+      const response = yield* submit;
       if (response.status !== 200) {
         const failure = Schema.decodeUnknownOption(AuthFailure)(response.failure);
         return yield* new OnboardingFailed({
@@ -86,16 +76,32 @@ const make = Effect.gen(function* () {
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Organizations)));
   const emailSignIn = (email: string, mode: "signin" | "signup" = "signin") =>
     Effect.gen(function* () {
-      yield* openLogin;
+      const flow = mode === "signup" ? "Sign up" : "Sign in";
       if (mode === "signup") {
-        yield* browser.use("Choose account creation", (page) =>
-          page.getByRole("link", { name: "Sign up", exact: true }).click(),
+        // New visitors start from the site's primary call to action, which opens sign-up.
+        yield* browser.omitNetworkTrace;
+        yield* browser.use("Open the homepage", (page) => page.goto("/home"));
+        yield* browser.use("Choose Get started", (page) =>
+          page.getByRole("link", { name: "Get started", exact: true }).click(),
         );
         yield* browser.use("The sign-up view is ready", (page) =>
           page.getByRole("heading", { name: "Sign up", exact: true }).waitFor(),
         );
         yield* browser.checkpoint("Sign up with email or a social account");
-      }
+        // The address has an @ but no domain the server accepts; the error names the address.
+        yield* browser.use("Enter an email without a domain", (page) =>
+          page.getByLabel("Email", { exact: true }).fill("new-user@example"),
+        );
+        yield* browser.use("Submit the incomplete email", (page) =>
+          page.getByRole("button", { name: "Continue", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Read the email error", (page) =>
+            page.getByRole("alert").filter({ hasText: "email" }).innerText(),
+          ),
+        ).toBe("Enter a valid email address, such as name@example.com.");
+        yield* browser.checkpoint("Sign-up rejects an incomplete email");
+      } else yield* openLogin;
       yield* browser.use("Enter the synthetic email", (page) =>
         page.getByLabel("Email", { exact: true }).fill(email),
       );
@@ -103,15 +109,19 @@ const make = Effect.gen(function* () {
       yield* browser.use("Request a real sign-in code", (page) =>
         page.getByRole("button", { name: "Continue", exact: true }).click(),
       );
-      const code = yield* evidence.step(
+      const delivered = yield* evidence.step(
         "Read the delivered code from the mail emulator",
         emulators.mail(email, received),
       );
-      yield* browser.use("Enter the delivered sign-in code", (page) =>
-        page.getByLabel("Sign-in code", { exact: true }).fill(Redacted.value(code)),
+      // A first code creates the account, so its email says sign-up whichever view sent it.
+      if (mode === "signup") expect(delivered.subject).toBe("Your Executor sign-up code");
+      yield* browser.use("Enter the delivered code", (page) =>
+        page
+          .getByLabel(mode === "signup" ? "Sign-up code" : "Sign-in code", { exact: true })
+          .fill(Redacted.value(delivered.code)),
       );
-      yield* browser.use("Verify the sign-in code", (page) =>
-        page.getByRole("button", { name: "Sign in", exact: true }).click(),
+      yield* browser.use("Verify the code", (page) =>
+        page.getByRole("button", { name: flow, exact: true }).click(),
       );
       yield* browser.use("Sign-in advances to enrollment or the destination", (page) =>
         page.waitForFunction(
@@ -119,7 +129,7 @@ const make = Effect.gen(function* () {
             window.location.origin === origin &&
             (window.location.pathname !== "/login" ||
               document.querySelector("h1")?.textContent === "Create a passkey"),
-          target.metadata.origin,
+          targetHosts(target).browser,
         ),
       );
     });
@@ -146,7 +156,7 @@ const make = Effect.gen(function* () {
                 const url = new URL(response.url());
                 return (
                   response.request().isNavigationRequest() &&
-                  url.origin === target.metadata.origin &&
+                  url.origin === targetHosts(target).browser &&
                   url.pathname === "/create"
                 );
               }),
@@ -174,7 +184,7 @@ const make = Effect.gen(function* () {
         yield* memberships.release;
         yield* browser.use("Complete the OAuth callback into Cloud", (page) =>
           page.waitForURL(
-            (url) => url.origin === target.metadata.origin && url.pathname !== "/login",
+            (url) => url.origin === targetHosts(target).browser && url.pathname !== "/login",
           ),
         );
         yield* evidence.json("identity-provider.json", {
@@ -310,7 +320,7 @@ const make = Effect.gen(function* () {
           page.getByRole("button", { name: "Continue", exact: true }).click(),
         );
         yield* browser.use("Team creation opens agent setup", (page) =>
-          page.waitForURL(`${target.metadata.origin}/create/agent`),
+          page.waitForURL(`${targetHosts(target).browser}/create/agent`),
         );
         const teams = yield* organizations;
         if (teams.length !== 1 || teams[0]?.name !== name)
@@ -325,7 +335,7 @@ const make = Effect.gen(function* () {
         yield* browser.use("Reload keeps the agent instructions open", (page) =>
           page.getByRole("heading", { name: "Continue in your agent", exact: true }).waitFor(),
         );
-        const endpoint = `${target.metadata.origin}/mcp`;
+        const endpoint = `${targetHosts(target).mcp}/mcp`;
         yield* browser.use("The public MCP URL is visible", (page) =>
           page.getByText(endpoint, { exact: true }).waitFor(),
         );
@@ -348,7 +358,7 @@ const make = Effect.gen(function* () {
         );
         if (
           !prompt.includes(endpoint) ||
-          !prompt.includes(`${target.metadata.origin}/docs/`) ||
+          !prompt.includes(`${targetHosts(target).edge}/docs/`) ||
           !prompt.includes("help me get my first app set up")
         )
           return yield* new OnboardingFailed({
@@ -359,7 +369,7 @@ const make = Effect.gen(function* () {
           page.getByRole("link", { name: "Open dashboard", exact: false }).click(),
         );
         yield* browser.use("The new team opens Apps", (page) =>
-          page.waitForURL(`${target.metadata.origin}/org/${team.slug}/apps`),
+          page.waitForURL(`${targetHosts(target).browser}/org/${team.slug}/apps`),
         );
         yield* browser.use("The confirmed team stays open", (page) =>
           page
@@ -388,8 +398,12 @@ const make = Effect.gen(function* () {
       yield* browser.use("Sign out of Cloud", (page) =>
         page.getByRole("menuitem", { name: "Sign out", exact: true }).click(),
       );
+      // Cloud's browser origin opens sign-in for a signed-out visitor; elsewhere the public entry.
+      const entry = target.metadata.target === "cloud" ? "/login" : "/";
       yield* browser.use("Return to the public entry", (page) =>
-        page.waitForURL((url) => url.origin === target.metadata.origin && url.pathname === "/"),
+        page.waitForURL(
+          (url) => url.origin === targetHosts(target).browser && url.pathname === entry,
+        ),
       );
     }),
     passkey: Effect.gen(function* () {
@@ -434,7 +448,7 @@ const make = Effect.gen(function* () {
           );
           yield* browser.use("Passkey enrollment finishes", (page) =>
             page.waitForURL(
-              (url) => url.origin === target.metadata.origin && url.pathname === "/create",
+              (url) => url.origin === targetHosts(target).browser && url.pathname === "/create",
               { waitUntil: "domcontentloaded" },
             ),
           );
@@ -462,7 +476,8 @@ const make = Effect.gen(function* () {
           yield* browser.use("Passkey returns to the existing team", (page) =>
             page.waitForURL(
               (url) =>
-                url.origin === target.metadata.origin && /^\/org\/[^/]+\/apps$/.test(url.pathname),
+                url.origin === targetHosts(target).browser &&
+                /^\/org\/[^/]+\/apps$/.test(url.pathname),
             ),
           );
           yield* browser.checkpoint("Returning sign-in with the saved passkey");

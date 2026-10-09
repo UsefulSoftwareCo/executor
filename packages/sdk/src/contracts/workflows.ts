@@ -1,8 +1,9 @@
-import { DeploymentId, ProfileId } from "./shared.ts";
+import { DeploymentId, OwnerId, ProfileId } from "./shared.ts";
+import { SelectedAccounts } from "./apps.ts";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** App-scoped workflow discovery and run management share one HTTP contract. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   HostedWorkflow,
   WorkflowRun,
@@ -31,6 +32,12 @@ export const StartWorkflow = Schema.Struct({
 });
 /** Runs are addressed within their configured app, never globally by ID alone. */
 export const WorkflowTarget = Schema.Struct({ app: AppId, run: WorkflowRunId });
+/** What a retained run pinned when it started: the accounts it may use and its profile. */
+export const PinnedWorkflowRun = Schema.Struct({
+  accounts: SelectedAccounts,
+  profile: Schema.NullOr(ProfileId),
+});
+export type PinnedWorkflowRun = typeof PinnedWorkflowRun.Type;
 /** Bounded definition and history reads preserve product-owned authorization. */
 export const WorkflowApp = Schema.Struct({
   app: AppId,
@@ -42,6 +49,8 @@ export const ListWorkflowRuns = Schema.Struct({
   app: AppId,
   profile: Schema.optional(ProfileId),
   workflow: Schema.optional(WorkflowName),
+  /** Only the run started with this idempotency key, if it was retained. */
+  key: Schema.optional(Schema.NonEmptyString.check(Schema.isMaxLength(128))),
   limit: Schema.optional(
     Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 })),
   ),
@@ -94,6 +103,14 @@ export const AppWorkflowRunsGroup = HttpApiGroup.make("appWorkflowRuns")
     HttpApiEndpoint.get("get", `${path}/:run`, {
       params: WorkflowTarget.fields,
       success: WorkflowRun,
+      error: WorkflowErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("pinned", `${path}/:run/pinned`, {
+      params: WorkflowTarget.fields,
+      query: { owner: Schema.optional(OwnerId) },
+      success: PinnedWorkflowRun,
       error: WorkflowErrors,
     }),
   )

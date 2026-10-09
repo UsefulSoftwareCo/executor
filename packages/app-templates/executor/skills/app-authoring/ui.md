@@ -29,10 +29,13 @@ return await tools.executor.profiles["<management-profile-id>"].appUi.location({
 });
 ```
 
-The response is `{ url: "https://<app-slug>.<org-slug>.executor.website" }`
+The response is
+`{ status: "ready", url: "https://<app-slug>.<org-slug>.executor.website" }`
 on Executor Cloud. Self-host uses its configured app domain. Use the returned
-URL rather than constructing one. `url: null` means the app has no UI or the
-host has no app domain configured. Deployment builds and activates the UI;
+URL rather than constructing one. Before the first deployment it fails with
+`AppNotDeployed`. `url: null` with `status: "unavailable"` means the app has no
+UI or the host has no app domain configured; `"pending"` and `"failed"` report
+the setup of the team's app domain. Deployment builds and activates the UI;
 there is no separate publish step. Give the URL to the user to open in a
 browser. The browser completes sign-in using their Executor session. MCP
 credentials do not grant a browser session. A `403` response alone does not
@@ -48,14 +51,25 @@ schemas in a separate file. Use `client.queryAtom(reference, input, outputSchema
 with `useAppQuery` from `apps/react`, and `client.mutate(reference, input,
 outputSchema)` for explicit writes. `client.query(reference, input, outputSchema)`
 reads once. Both operation types may fetch external APIs. External changes do
-not invalidate subscriptions, and a database rollback cannot undo external
-effects. All callbacks use Promises; the framework runs Effect internally.
+not invalidate subscriptions, and rolling back a SQL transaction cannot undo
+external effects. All callbacks use Promises; the framework runs Effect internally.
 
 Do not include an app ID or credentials in browser code. The host binds both
-identity and authentication. Keep asset URLs relative to the document's base;
-compiled imports and `ui/public/` files are retained with the deployment. Each
+identity and authentication. Compiled imports and `ui/public/` files are retained
+with the deployment. Import images and fonts from scripts or CSS. In `ui/index.html`,
+reference files with relative URLs. From script code, request `ui/public/` files
+by absolute path, such as `fetch("/data.json")`. The page has no `<base>`, so
+links, `#` fragments and history URLs resolve against the page itself. Each
 activation automatically reloads open pages. SSR, React Server Components and
 public sharing are not part of this version.
+
+An app has one page, `ui/index.html`. Build further screens as React routes:
+any path without a dot serves that page. App responses send
+`Content-Security-Policy: frame-ancestors 'none'`, so no page can be framed,
+not even in an `<iframe>` on the app's own origin. `ui/public/` serves `.js`,
+`.css`, `.svg`, `.json`, `.map` and `.woff2` files with their types and every
+other file, `.html` included, as `text/plain`, so a second HTML file shows as
+source text rather than a page.
 
 ## Hook result
 

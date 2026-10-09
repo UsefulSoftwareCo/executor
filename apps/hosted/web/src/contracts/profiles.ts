@@ -3,7 +3,7 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { inventoryAtom } from "./organization.ts";
 /** Personal setup metadata is acknowledged before navigation; catalogs key on saved revisions. */
 import { Data, Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import type { AppId, ProfileId, ProfileInputs, Profile } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";

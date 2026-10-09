@@ -14,7 +14,7 @@ From the repository root:
 
 The cloud Site resource supplies `EXECUTOR_SITE_ORIGIN` from its canonical origin.
 Marketing prompts, Markdown endpoints, `llms.txt`, and docs metadata use that value.
-Standalone builds default to `https://v2.executor.sh`; malformed overrides fail the build.
+Standalone builds default to `https://executor.sh`; malformed overrides fail the build.
 Cloud dashboard docs links stay on the current origin. Local and self-host dashboards
 use the public v2 docs because they do not serve the cloud documentation assets.
 

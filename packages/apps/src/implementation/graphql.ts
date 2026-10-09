@@ -1,8 +1,11 @@
+import { owned } from "@executor-js/telemetry";
 import { httpProviderError, graphqlProviderError, accountProviderError } from "./provider-error.ts";
 import { ProviderError } from "../contracts/provider-error.ts";
+import { NetworkRefused } from "../contracts/network.ts";
+import { failOnNetworkRefusal } from "./network.ts";
 /** Discover GraphQL tools live; transport, decoding and cancellation stay in Effect. */
 import { Effect, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import {
   getIntrospectionQuery,
   Kind,
@@ -170,13 +173,15 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
               HttpClientRequest.bodyJsonUnsafe({ query, variables }),
             ),
           );
+          // Executor's network refused the request; its reason names the host or credential at fault.
+          yield* failOnNetworkRefusal(response);
           if (response.status < 200 || response.status >= 300)
             return yield* (
               httpProviderError(response.status, response.headers) ??
                 new GraphqlError({ phase, reason: "request", status: response.status })
             );
           const result = yield* response.json.pipe(
-            Effect.withSpan("provider.http.response.read"),
+            owned("upstream", "provider.http.response.read"),
             Effect.flatMap(Schema.decodeUnknownEffect(GraphqlResponse)),
             Effect.mapError(() => new GraphqlError({ phase, reason: "invalid_response" })),
           );
@@ -190,7 +195,7 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
           return result.data;
         }),
       ).pipe(
-        Effect.withSpan("provider.graphql.request", {
+        owned("upstream", "provider.graphql.request", {
           attributes: {
             "executor.operation": phase,
             "server.address": url.hostname,
@@ -206,7 +211,9 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
         Effect.mapError((error) =>
           error instanceof ProviderError && options.accountId !== undefined
             ? accountProviderError(error, options.accountId)
-            : error instanceof GraphqlError || error instanceof ProviderError
+            : error instanceof GraphqlError ||
+                error instanceof ProviderError ||
+                error instanceof NetworkRefused
               ? error
               : new GraphqlError({ phase, reason: "request" }),
         ),
@@ -214,7 +221,9 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
     const discover = request("discover", getIntrospectionQuery()).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(GraphqlIntrospection)),
       Effect.mapError((error) =>
-        error instanceof GraphqlError || error instanceof ProviderError
+        error instanceof GraphqlError ||
+        error instanceof ProviderError ||
+        error instanceof NetworkRefused
           ? error
           : new GraphqlError({ phase: "discover", reason: "invalid_response" }),
       ),
@@ -340,7 +349,7 @@ export const adaptGraphqlTool = (
             return yield* new GraphqlError({ phase: "call", reason: "invalid_response" });
           return value;
         }).pipe(
-          Effect.withSpan("provider.graphql.call", {
+          owned("upstream", "provider.graphql.call", {
             attributes: {
               "graphql.operation.type": kind,
               "executor.tool.name": name,
@@ -354,7 +363,7 @@ export const adaptGraphqlTool = (
 /** Low-level callers can still request a complete invocation-owned tool map. */
 export const graphqlToolsEffect = (
   input: GraphqlToolsOptions,
-): Effect.Effect<GraphqlTools, GraphqlError | ProviderError> =>
+): Effect.Effect<GraphqlTools, GraphqlError | ProviderError | NetworkRefused> =>
   Effect.gen(function* () {
     const client = yield* graphqlClientEffect(input);
     const definitions = yield* client.discover.pipe(Effect.flatMap(graphqlDefinitions));

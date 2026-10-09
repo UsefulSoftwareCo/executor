@@ -1,4 +1,4 @@
-/** Reusable setup lifecycle. Hosts own access checks and browser links; optional targets select the saved account. */
+/** Reusable setup lifecycle. Hosts own access checks and browser links; each target selects the saved account. */
 import { Clock, type Crypto, Effect, Schema } from "effect";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import {
@@ -18,8 +18,13 @@ import {
   finishConnection,
   lockConnection,
 } from "./connection-state.ts";
-import { captureConnectionTarget, targetProvider } from "./connection-target.ts";
+import {
+  captureConnectionTarget,
+  requireTargetProvider,
+  targetProvider,
+} from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
+import { storedProfile } from "./profiles.ts";
 
 /** Requests survive host restarts. Pending requests expire after thirty minutes. */
 export const makeAccountConnections = (
@@ -58,14 +63,12 @@ export const makeAccountConnections = (
     expiresAt: row.expiresAt,
     state: row.state,
   });
-  const get = (input: typeof GetAccountConnection.Type) =>
+  /** A connection for an app shows that app's declaration, whose hosts it will grant. */
+  const show = (row: ConnectionRow, shown: Provider | undefined) =>
     Effect.gen(function* () {
-      const row = yield* readConnection(db, input);
       return describe(
         row,
-        // A connection for an app shows that app's declaration, whose hosts it will grant.
-        (row.target === null ? undefined : yield* targetProvider(db, row.target, row.provider)) ??
-          (yield* provider(row.provider)),
+        shown ?? (yield* provider(row.provider)),
         row.reconnectAccount === null
           ? null
           : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
@@ -74,14 +77,25 @@ export const makeAccountConnections = (
             }),
       );
     });
+  /** Ended requests keep showing the provider they used, even after their app changed. */
+  const endedProvider = (row: ConnectionRow) =>
+    row.target === null ? Effect.succeed(undefined) : targetProvider(db, row.target, row.provider);
+  const get = (input: typeof GetAccountConnection.Type) =>
+    Effect.gen(function* () {
+      const row = yield* readConnection(db, input);
+      // A pending request offers only a sign-in its app still accepts.
+      return yield* show(
+        row,
+        row.state.status === "pending"
+          ? yield* requireTargetProvider(db, row)
+          : yield* endedProvider(row),
+      );
+    });
   return {
     get,
     create: (input: typeof CreateAccountConnection.Type) =>
       Effect.gen(function* () {
-        const destination =
-          input.target === undefined
-            ? { provider: input.provider, snapshot: null }
-            : yield* captureConnectionTarget(db, input.target);
+        const destination = yield* captureConnectionTarget(db, input.target);
         const resolved = yield* provider(destination.provider);
         let reconnectAccount: Account | null = null;
         if (input.account !== undefined) {
@@ -96,7 +110,7 @@ export const makeAccountConnections = (
           `con_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
         );
         const now = yield* Clock.currentTimeMillis;
-        const target = yield* Schema.encodeEffect(Schema.NullOr(StoredConnectionTarget))(
+        const target = yield* Schema.encodeEffect(StoredConnectionTarget)(
           destination.snapshot,
         ).pipe(Effect.mapError(() => new StorageError()));
         const created = {
@@ -117,10 +131,7 @@ export const makeAccountConnections = (
             revision: id,
           }),
         );
-        const shown =
-          destination.snapshot === null
-            ? undefined
-            : yield* targetProvider(db, destination.snapshot, resolved.id);
+        const shown = yield* targetProvider(db, destination.snapshot, resolved.id);
         return describe(created, shown ?? resolved, reconnectAccount);
       }).pipe(Effect.withSpan("sdk.connections.create")),
     cancel: (input: typeof GetAccountConnection.Type) =>
@@ -134,7 +145,9 @@ export const makeAccountConnections = (
                 set: { state: { status: "cancelled" }, oauthAttempt: null },
               }),
             );
-          return yield* get(input);
+          // A request whose app has changed can still be cancelled.
+          const cancelled = yield* readConnection(db, input);
+          return yield* show(cancelled, yield* endedProvider(cancelled));
         }),
       ).pipe(Effect.withSpan("sdk.connections.cancel")),
     submit: (input: typeof SubmitAccountConnection.Type) =>
@@ -143,6 +156,7 @@ export const makeAccountConnections = (
           const saved = yield* lockConnection(tx, input, crypto);
           if (saved.state.status === "completed") return saved.state.account;
           const row = yield* requireOpen(input, saved);
+          yield* requireTargetProvider(tx, row);
           const accounts = makeAccounts(tx, credentials, crypto, lifecycle);
           let account;
           if (row.reconnectAccount !== null) {
@@ -165,7 +179,22 @@ export const makeAccountConnections = (
               ...(input.label === undefined ? {} : { label: input.label }),
               fields: input.fields,
             });
-          if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
+          if (lifecycle)
+            yield* lifecycle.connectionCompleting({
+              id: row.id,
+              owner: row.owner,
+              reconnectAccount: row.reconnectAccount,
+              target:
+                row.target === null
+                  ? null
+                  : {
+                      app: row.target.app,
+                      profile: yield* storedProfile(tx, {
+                        app: row.target.app,
+                        profile: row.target.profile,
+                      }),
+                    },
+            });
           yield* finishConnection(tx, row, account);
           return account;
         }),

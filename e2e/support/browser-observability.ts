@@ -7,6 +7,7 @@ const Envelope = Schema.fromJsonString(Schema.Struct({ envelope: Schema.String }
 /** The safe subset of a delivered Sentry event that scenarios assert on. */
 export const SentryEvent = Schema.fromJsonString(
   Schema.Struct({
+    release: Schema.optional(Schema.String),
     tags: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
     request: Schema.optional(Schema.Struct({ url: Schema.optional(Schema.String) })),
     contexts: Schema.optional(

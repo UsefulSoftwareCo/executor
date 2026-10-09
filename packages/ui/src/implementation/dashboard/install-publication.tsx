@@ -1,7 +1,6 @@
 /** Public discovery passes the reviewed revision to the common copy operation. */
 import { useAtomValue } from "@effect/atom-react";
-import type { App } from "@executor-js/sdk";
-import type { Publication } from "@executor-js/app-registry/contracts";
+import type { App, Publication } from "@executor-js/sdk";
 import type { AppAcknowledgement, AppManagementProps } from "../../contracts/app-management.ts";
 import { AppCreateForm } from "./app-create.tsx";
 import { Button } from "../components/button.tsx";

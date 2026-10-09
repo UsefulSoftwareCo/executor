@@ -32,7 +32,7 @@ export const UploadedOrganizationIcon = Schema.Struct({
 );
 export type UploadedOrganizationIcon = typeof UploadedOrganizationIcon.Type;
 /** Opaque content digest within one uploader's namespace. */
-export const OrganizationIconKey = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+export const OrganizationIconKey = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 
 /** Same-origin uploaded images use a canonical path, never a protocol-relative URL. */
 export const OrganizationIconUrl = Schema.String.check(

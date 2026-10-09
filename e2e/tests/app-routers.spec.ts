@@ -2,12 +2,7 @@
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Redacted, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -183,9 +178,13 @@ const Executed = Schema.Struct({
   ),
 });
 const Search = Schema.Struct({
-  items: Schema.Array(
-    Schema.Struct({ path: Schema.String, description: Schema.String, signature: Schema.String }),
+  items: Schema.Array(Schema.Struct({ path: Schema.String, description: Schema.String })),
+  namespaces: Schema.Array(
+    Schema.Struct({ path: Schema.String, router: Schema.optional(Schema.String) }),
   ),
+});
+const Described = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ path: Schema.String, signature: Schema.String })),
 });
 
 layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
@@ -442,19 +441,24 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
           `return await tools.search({ query: "List open issues", namespace: ${JSON.stringify(app.slug)} });`,
         );
         const found = yield* Schema.decodeUnknownEffect(Search)(search.execution.value);
-        expect(
-          found.items.find((item) => item.path.endsWith(".issues.list"))?.description,
-        ).toContain(" / Issues: List open issues");
-        // The type an agent reads from search must accept what the same MCP tool returns.
+        // The router's title is listed once, with the namespace its tools share.
+        expect(found.items.find((item) => item.path.endsWith(".issues.list"))?.description).toBe(
+          "List open issues",
+        );
+        expect(found.namespaces).toContainEqual(
+          expect.objectContaining({ path: expect.stringMatching(/\.issues$/), router: "Issues" }),
+        );
+        // The type an agent reads from describe must accept what the same MCP tool returns.
         const docsTools = yield* execute(
-          "Search and call the MCP server's tools",
+          "Describe and call the MCP server's tools",
           `const found = await tools.search({ query: "Synthetic", namespace: ${JSON.stringify(app.slug)} });
+const described = await tools.search.describe({ paths: found.items.map((item) => item.path) });
 const docs = tools[${JSON.stringify(app.slug)}].docs;
-return { items: found.items, lookup: await docs.lookup({}), pages: await docs.search.pages({}) };`,
+return { items: described.items, lookup: await docs.lookup({}), pages: await docs.search.pages({}) };`,
         );
         const called = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
-            items: Search.fields.items,
+            items: Described.fields.items,
             lookup: Schema.Json,
             pages: Schema.Json,
           }),
@@ -462,7 +466,7 @@ return { items: found.items, lookup: await docs.lookup({}), pages: await docs.se
         const signature = (path: string) => {
           const found = called.items.find((item) => item.path.endsWith(path))?.signature;
           return found === undefined
-            ? Effect.die(`Missing searched tool ${path}: ${JSON.stringify(called.items)}`)
+            ? Effect.die(`Missing described tool ${path}: ${JSON.stringify(called.items)}`)
             : Effect.succeed(found);
         };
         expect(

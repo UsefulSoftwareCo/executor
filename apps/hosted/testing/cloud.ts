@@ -2,7 +2,7 @@
 import { Pool } from "pg";
 import { authSettings } from "@executor-js/hosted-server";
 import { Config, Effect, Layer, Schema, Redacted } from "effect";
-import { HttpRouter } from "effect/unstable/http";
+import { HttpRouter } from "effect/http";
 import { LocalDatabaseUrl } from "../cloud/src/contracts/database.ts";
 import { cloudSessionCookiePrefix } from "../cloud/src/contracts/browser.ts";
 import { TestAccountFailed, TestOrigin, testAccountAuth } from "./accounts.ts";

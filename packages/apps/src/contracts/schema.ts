@@ -11,7 +11,7 @@ export type JsonObject = typeof JsonObject.Type;
 
 /** Stable saved account identity supplied by a host, unchanged across refreshes. */
 export const AccountId = Schema.String.pipe(
-  Schema.check(Schema.isStartsWith("acc_"), Schema.isMinLength(5)),
+  Schema.check(Schema.isStartingWith("acc_"), Schema.isMinLength(5)),
   Schema.brand("acc"),
 );
 /** Parsed saved account identity. */

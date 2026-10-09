@@ -1,6 +1,6 @@
 /** Resolve background configuration failures for the selected profile. */
 import { type Profile, type ProfileInputs, type WebhookSubscription } from "@executor-js/sdk";
-import type { Atom } from "effect/unstable/reactivity";
+import type { Atom } from "effect/reactivity";
 import type { ComponentType, ReactNode } from "react";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import { QueryView } from "./context.tsx";

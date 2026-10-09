@@ -1,6 +1,6 @@
 /** Protect retained source refs even when ordinary app branches are force-pushed or deleted. */
 import { Effect } from "effect";
-import { SourceError, type RepositoryBackend } from "../contracts/repositories.ts";
+import { SourceError, type RepositoryBackend } from "@executor-js/sdk/core";
 
 const readPush = async (request: Request): Promise<Uint8Array> => {
   if (request.headers.has("content-encoding")) throw new SourceError({ reason: "protected" });

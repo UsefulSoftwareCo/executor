@@ -1,6 +1,6 @@
 /** Find previews deployed by older checkouts so they cannot escape the current lifetime policy. */
 import { Config, Effect, Schema } from "effect";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { TestStageSlug } from "../infrastructure/stage.ts";
 import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
 

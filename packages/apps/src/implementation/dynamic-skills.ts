@@ -7,5 +7,5 @@ import { fromPromise } from "./authoring.ts";
 export const dynamicSkills = (source: {
   readonly list: () => readonly AppSkillSource[] | Promise<readonly AppSkillSource[]>;
 }): DynamicSkills => ({
-  list: fromPromise(async () => source.list()),
+  list: fromPromise(async () => source.list(), "skills"),
 });

@@ -1,0 +1,28 @@
+diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
+index 822127c47b984159183c62c9d4da3005d2993cf4..5bf3478fe0b70cac1a12d39ac78c17865900d901 100644
+--- a/dist/NodeChildProcessSpawner.js
++++ b/dist/NodeChildProcessSpawner.js
+@@ -170,6 +170,9 @@ const make = /*#__PURE__*/Effect.gen(function* () {
+             // Create a sink to write to for input file descriptors
+             let sink = Sink.drain;
+             if (nodeStream && "write" in nodeStream) {
++              // Node opens every extra fd as a duplex socket and reads it. A child that exits
++              // without reading its input resets it; the sink only listens while it writes.
++              nodeStream.on("error", () => {});
+               sink = NodeSink.fromWritable({
+                 evaluate: () => nodeStream,
+                 onError: error => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
+diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
+index 26143d53daa5b41194d93681161ec223179d1f10..d90e7b9655ffeaf0713dc9aa983822629fd21d65 100644
+--- a/src/NodeChildProcessSpawner.ts
++++ b/src/NodeChildProcessSpawner.ts
+@@ -243,6 +243,9 @@ const make = Effect.gen(function*() {
+           // Create a sink to write to for input file descriptors
+           let sink: Sink.Sink<void, Uint8Array, never, PlatformError.PlatformError> = Sink.drain
+           if (nodeStream && "write" in nodeStream) {
++            // Node opens every extra fd as a duplex socket and reads it. A child that exits
++            // without reading its input resets it; the sink only listens while it writes.
++            nodeStream.on("error", () => {})
+             sink = NodeSink.fromWritable({
+               evaluate: () => nodeStream,
+               onError: (error) => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)

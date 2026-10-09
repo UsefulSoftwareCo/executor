@@ -1,71 +1,120 @@
 import { usePageUrl } from "@executor-js/dashboard-start/page";
-import type { OAuthSubmission } from "@executor-js/ui/contracts/credentials";
+import type { AccountOAuthProps, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
+import type { FailureProps } from "@executor-js/ui/contracts/dashboard";
 import { useAtomSet } from "@effect/atom-react";
-import type { Atom } from "effect/unstable/reactivity";
-import { Cause, Effect, Option, Schema } from "effect";
+import type { Atom } from "effect/reactivity";
+import { Cause, Effect, Exit, Option, Schema } from "effect";
+import type { ComponentType, ReactNode } from "react";
 import {
   OAuthClientUnavailable,
   OAuthSetupFailed,
   oauthClientEntryReasons,
   type Account,
+  type AppId,
+  type ProfileId,
   type Provider,
-  type AccountConnectionId,
   type OAuthStartResult,
 } from "@executor-js/sdk";
 import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
 import type { ConnectionGrant } from "@executor-js/local-server/account-connections";
 import { OAuthFields as SharedFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
-import { startOAuthAtom, oauthSetupAtom, type OAuthAppReturn } from "../../contracts/oauth.ts";
-import { reconnectAccountAtom } from "../../contracts/accounts.ts";
+import { oauthSetupAtom } from "../../contracts/oauth.ts";
+import type { appConnectionAtoms } from "../../contracts/app-connections.ts";
 import {
   startConnectionOAuthAtom,
   connectionOAuthSetupAtom,
 } from "../../contracts/account-connections.ts";
 import { openConnectionOAuth } from "../account-connections.ts";
 import { openOAuth } from "../oauth.ts";
-import { Failure } from "../components/common.tsx";
+import { ConnectionLinkFailure, Failure } from "../components/common.tsx";
 
-/** Local owns agent handoff grants, reconnect behavior, and the browser return intent. */
-export function OAuthFields({
-  provider,
-  method,
-  account,
-  connection,
-  onSaved,
-  returnTo,
-  onPendingChange,
-  disabled = false,
-}: {
+type FieldsProps = AccountOAuthProps & {
   readonly provider: Provider;
-  readonly method: string;
   readonly account?: Account;
-  readonly connection?: ConnectionGrant;
+  /** Where the sign-in goes once saved; the shared form shows it above Connect. */
+  readonly access?: ReactNode;
+};
+
+/** A sign-in for an app requirement on its app page; the browser returns to that app. */
+export function AppOAuthFields({
+  app,
+  atoms,
+  onSaved,
+  ...props
+}: FieldsProps & {
+  readonly app: AppId;
+  readonly atoms: ReturnType<typeof appConnectionAtoms>;
+  readonly onSaved: (account: Account, profile: ProfileId) => void;
+}) {
+  const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
+  const reconnect = props.account !== undefined;
+  return (
+    <Fields
+      {...props}
+      query={oauthSetupAtom({ provider: props.provider.id, method: props.method })}
+      Failure={Failure}
+      start={(client) => start({ method: props.method, ...client })}
+      onSaved={(account, started) => onSaved(account, started.profile)}
+      open={(authorizationUrl, started) =>
+        openOAuth(authorizationUrl, { app, profile: started.profile, reconnect })
+      }
+    />
+  );
+}
+
+/** A sign-in on an agent's connection link page, which keeps its grant across the redirect. */
+export function LinkOAuthFields({
+  grant,
+  onSaved,
+  ...props
+}: FieldsProps & {
+  readonly grant: ConnectionGrant;
   readonly onSaved: (account: Account) => void;
-  readonly returnTo?: typeof OAuthAppReturn.Type;
-  readonly onPendingChange?: (pending: boolean) => void;
-  readonly disabled?: boolean;
+}) {
+  const start = useAtomSet(startConnectionOAuthAtom, { mode: "promiseExit" });
+  return (
+    <Fields
+      {...props}
+      query={connectionOAuthSetupAtom({ ...grant, method: props.method })}
+      Failure={ConnectionLinkFailure}
+      start={(client) => start({ ...grant, method: props.method, ...client })}
+      onSaved={onSaved}
+      open={(authorizationUrl) => openConnectionOAuth(authorizationUrl, grant)}
+    />
+  );
+}
+
+function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+  provider,
+  account,
+  onSaved,
+  onPendingChange,
+  access,
+  disabled,
+  query,
+  Failure,
+  start,
+  open,
+}: FieldsProps & {
+  readonly query: Parameters<typeof OAuthSetup>[0]["query"];
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly start: (client: OAuthSubmission) => Promise<Exit.Exit<S, E>>;
+  readonly onSaved: (account: Account, started: S) => void;
+  readonly open: (authorizationUrl: string, started: S) => Effect.Effect<void>;
 }) {
   const page = usePageUrl();
-  const start = useAtomSet(startOAuthAtom, { mode: "promiseExit" });
-  const startConnection = useAtomSet(startConnectionOAuthAtom, { mode: "promiseExit" });
-  const reconnect = useAtomSet(reconnectAccountAtom, { mode: "promiseExit" });
-  type OAuthError = Effect.Error<
-    Awaited<ReturnType<typeof start | typeof startConnection | typeof reconnect>>
-  >;
-  const query = connection
-    ? connectionOAuthSetupAtom({ ...connection, method })
-    : oauthSetupAtom({ provider: provider.id, method });
   return (
     <OAuthSetup<Atom.Failure<typeof query>> query={query}>
       {({ setup, action, refresh }) => (
-        <SharedFields<OAuthStartResult & { readonly connection?: AccountConnectionId }, OAuthError>
+        <SharedFields<S, E>
           providerName={provider.definition.name}
           {...(account ? { account } : {})}
           Failure={Failure}
           setup={setup}
           setupAction={action}
+          access={access}
           disabled={disabled}
-          {...(onPendingChange ? { onPendingChange } : {})}
+          onPendingChange={onPendingChange}
           redirectUri={new URL(OAuthCallbackPath, page.origin).href}
           requiresClient={(cause) => {
             const failure = Cause.findErrorOption(cause);
@@ -77,23 +126,14 @@ export function OAuthFields({
             if (required) refresh();
             return required;
           }}
-          start={(client: OAuthSubmission) =>
-            connection
-              ? startConnection({ payload: { ...connection, method, ...client } })
-              : account
-                ? reconnect({ params: { account: account.id }, payload: client })
-                : start({ payload: { provider: provider.id, method, ...client } })
-          }
+          start={start}
           onAuthorized={(value) => {
             refresh();
             if (value.status === "completed") {
-              onSaved(value.account);
+              onSaved(value.account, value);
               return "done";
             }
-            if (connection) Effect.runSync(openConnectionOAuth(value.authorizationUrl, connection));
-            else if (value.connection !== undefined)
-              Effect.runSync(openOAuth(value.authorizationUrl, account?.id, returnTo));
-            else return "done";
+            Effect.runSync(open(value.authorizationUrl, value));
             return "navigating";
           }}
         />

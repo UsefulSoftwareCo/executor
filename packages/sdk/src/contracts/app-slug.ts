@@ -4,7 +4,7 @@ import { Schema } from "effect";
 const reserved = new Set(["search", "constructor", "prototype", "then"]);
 /** DNS-safe label, unique per owner. Reserved interpreter roots cannot be app addresses. */
 export const AppSlug = Schema.String.check(
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/),
+  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u),
   Schema.makeFilter((value) => !reserved.has(value)),
 ).pipe(Schema.brand("AppSlug"));
 /** Validated configured-app address. */

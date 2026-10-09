@@ -1,0 +1,1875 @@
+diff --git a/lib/Action.js b/lib/Action.js
+index 8d4f9b29e6d845414e76fc709c0ae26206c17af5..a26e84f0593159d30a8c77625b7cd62d71da83a9 100644
+--- a/lib/Action.js
++++ b/lib/Action.js
+@@ -6,7 +6,7 @@ import { toFqn } from "./FQN.js";
+ import { CurrentNamespace } from "./Namespace.js";
+ import * as Output from "./Output.js";
+ import { RuntimeContext } from "./RuntimeContext.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ export const isAction = (value) => typeof value === "object" && value !== null && value?.Kind === "action";
+ export function Action(...args) {
+     if (args.length === 0) {
+diff --git a/lib/Apply.js b/lib/Apply.js
+index 22a223eca67c519d34f7ced0f6cb9b2b85f53f14..1f37fdfec7d6c35a242ddea7a0f8d54b5e46025a 100644
+--- a/lib/Apply.js
++++ b/lib/Apply.js
+@@ -18,7 +18,7 @@ import * as Output from "./Output.js";
+ import {} from "./Plan.js";
+ import { findProviderByType, missingProviderError, tryFindProviderByType, } from "./Provider.js";
+ import { stampedMode } from "./ProviderMode.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ import { Stage } from "./Stage.js";
+ import { State, StateStoreError, } from "./State/index.js";
+ import { recordResourceOp } from "./Telemetry/Metrics.js";
+diff --git a/lib/Cloudflare/DNS/Record.d.ts b/lib/Cloudflare/DNS/Record.d.ts
+index 0479f3dd9e3c81946f3fe93e3a2dc141dde36cad..85c4aee7c16417940a699962bd81378a943082e8 100644
+--- a/lib/Cloudflare/DNS/Record.d.ts
++++ b/lib/Cloudflare/DNS/Record.d.ts
+@@ -30,6 +30,10 @@ export interface RecordDataByType {
+ /** Structured DNS record components accepted by Cloudflare. */
+ export type RecordData = RecordDataByType[keyof RecordDataByType];
+ export interface RecordCommonProps {
++    /** Authoritative zone name, when already known. Avoids a zone lookup for relative-name normalization. */
++    zoneName?: string;
++    /** Append a stable Alchemy instance marker to recover interrupted creates. Counts toward the zone comment limit. */
++    ownershipComment?: boolean;
+     /**
+      * Zone the record lives in. Stable — changing the zone triggers
+      * replacement.
+diff --git a/lib/Cloudflare/DNS/Record.js b/lib/Cloudflare/DNS/Record.js
+index 7a16857d17f5102bb155e07fbe591e7e713aea6e..941808a69c4fb2a6f18f291d77ab58cd1e4c07ae 100644
+--- a/lib/Cloudflare/DNS/Record.js
++++ b/lib/Cloudflare/DNS/Record.js
+@@ -1,9 +1,10 @@
++import { InstanceId } from "../../InstanceId.js";
+ import * as dns from "@distilled.cloud/cloudflare/dns";
+ import * as zones from "@distilled.cloud/cloudflare/zones";
+ import * as Data from "effect/Data";
+ import * as Effect from "effect/Effect";
+ import * as Stream from "effect/Stream";
+-import { Unowned } from "../../AdoptPolicy.js";
++import { Unowned, OwnedBySomeoneElse } from "../../AdoptPolicy.js";
+ import * as Provider from "../../Provider.js";
+ import { Resource } from "../../Resource.js";
+ import { arrayEqualsUnordered } from "../../Util/equal.js";
+@@ -126,7 +127,8 @@ export const RecordProvider = () => Provider.succeed(Record, {
+     reconcile: Effect.fn(function* ({ news, output }) {
+         // Inputs have been resolved to concrete strings by Plan.
+         const zoneId = news.zoneId;
+-        const body = buildMutableBody(news);
++        const ownership = `[alchemy:${yield* InstanceId}]`;
++        const body = { ...buildMutableBody(news), ...(news.ownershipComment ? { comment: `${news.comment ?? "Managed by Alchemy"} ${ownership}` } : {}) };
+         // 1. Observe by cached id first.
+         let observed;
+         if (output?.recordId) {
+@@ -142,7 +144,7 @@ export const RecordProvider = () => Provider.succeed(Record, {
+                 content: body.content,
+                 data: body.data,
+                 priority: news.priority,
+-            });
++            }, news.zoneName);
+             if (existing) {
+                 foundByScan = true;
+                 observed = existing;
+@@ -165,7 +167,7 @@ export const RecordProvider = () => Provider.succeed(Record, {
+                 content: body.content,
+                 data: body.data,
+                 priority: news.priority,
+-            }).pipe(Effect.flatMap((existing) => existing
++            }, news.zoneName).pipe(Effect.flatMap((existing) => existing
+                 ? Effect.succeed({ record: existing, raced: true })
+                 : Effect.fail(new Error(`Cloudflare reported an identical DNS record for ` +
+                     `(${news.name}, ${news.type}) but it could not be found`))))));
+@@ -177,6 +179,10 @@ export const RecordProvider = () => Provider.succeed(Record, {
+             if (created.raced)
+                 foundByScan = true;
+         }
++        if (news.ownershipComment && foundByScan && observed.id !== output?.recordId && !observed.comment?.endsWith(` ${ownership}`)) {
++          return yield* Effect.fail(new OwnedBySomeoneElse({ message: "DNS record was created by another owner", resourceType: Record.Type, physicalName: news.name }));
++        }
++
+         // 4. Sync — Cloudflare's update endpoint is PUT-style; resend
+         //    the full desired body when any mutable field differs.
+         if (!observed.id) {
+@@ -252,10 +258,10 @@ export const RecordProvider = () => Provider.succeed(Record, {
+                         : undefined,
+                 data: typeof olds?.content === "object" ? olds.content : output?.data,
+                 priority: olds?.priority,
+-            });
++            }, olds?.zoneName);
+             const attrs = toAttributes(observed, zoneId);
+             if (attrs)
+-                return Unowned(attrs);
++                return olds?.ownershipComment && observed?.comment?.endsWith(` [alchemy:${yield* InstanceId}]`) ? attrs : Unowned(attrs);
+         }
+         return undefined;
+     }),
+@@ -287,8 +293,8 @@ export class AmbiguousDnsRecordError extends Data.TaggedError("AmbiguousDnsRecor
+ //   - exactly one exact match -> that record
+ //   - no exact match          -> `undefined` (a new sibling record is created)
+ //   - several exact matches   -> fail with an actionable error
+-const findByNameType = (zoneId, name, type, match) => listExactByNameType(zoneId, name, type).pipe(Effect.flatMap((found) => {
+-    if (found.length > 0)
++const findByNameType = (zoneId, name, type, match, zoneName) => listExactByNameType(zoneId, zoneName === undefined ? name : normalizeRecordName(name, zoneName), type).pipe(Effect.flatMap((found) => {
++    if (found.length > 0 || zoneName !== undefined)
+         return Effect.succeed(found);
+     return zones.getZone({ zoneId }).pipe(Effect.flatMap((zone) => {
+         const normalizedName = normalizeRecordName(name, zone.name);
+diff --git a/lib/Cloudflare/Fetcher.js b/lib/Cloudflare/Fetcher.js
+index 42ce8028d052e3ad7b1916557dc34d9bb1f63fea..dedbdda5ba67840b3e6113d433c4ffc19f8c8214 100644
+--- a/lib/Cloudflare/Fetcher.js
++++ b/lib/Cloudflare/Fetcher.js
+@@ -56,7 +56,8 @@ export const fromCloudflareFetcher = (fetcher) => {
+         // "TypeError: Cannot reconstruct a Request with a used body".
+         const attempt = request.clone();
+         return Effect.promise((signal) => fetcher.fetch(attempt, {
+-            signal: signal,
++            // Keep inbound cancellation alive after the fetch promise resolves headers.
++            signal: AbortSignal.any([request.signal, signal]),
+         }));
+     }).pipe(
+     // The "Handler does not export a fetch()" window is a property of
+diff --git a/lib/Cloudflare/Providers.d.ts b/lib/Cloudflare/Providers.d.ts
+index f3e7aacfc9f0a9effecdd5db82ed93ed80e933ce..1358c49090d74eb3876ef1acf724326e81c6ad9d 100644
+--- a/lib/Cloudflare/Providers.d.ts
++++ b/lib/Cloudflare/Providers.d.ts
+@@ -8,9 +8,8 @@ import * as CloudflareEnvironment from "./CloudflareEnvironment.ts";
+ import * as Containers from "./Containers/index.ts";
+ import * as LoadBalancer from "./LoadBalancer/index.ts";
+ export { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+-declare const Providers_base: Provider.ProviderCollection<Providers, "Cloudflare">;
+-export declare class Providers extends Providers_base {
+-}
++import { Providers } from "../CloudflareRuntimeServices.js";
++export { Providers } from "../CloudflareRuntimeServices.js";
+ export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
+ /**
+  * Cloudflare providers, bindings, and credentials for Worker-based stacks.
+diff --git a/lib/Cloudflare/Providers.js b/lib/Cloudflare/Providers.js
+index e89caad90222691d243ead0316af8fc9c0e8d39c..a74cf96af5f63be2407edf1396e2dcdfb0ee388d 100644
+--- a/lib/Cloudflare/Providers.js
++++ b/lib/Cloudflare/Providers.js
+@@ -124,8 +124,8 @@ import * as Workflows from "./Workflows/Workflow.js";
+ import * as Zaraz from "./Zaraz/index.js";
+ import * as Zone from "./Zone/index.js";
+ export { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+-export class Providers extends Provider.ProviderCollection()("Cloudflare") {
+-}
++import { Providers } from "../CloudflareRuntimeServices.js";
++export { Providers } from "../CloudflareRuntimeServices.js";
+ /**
+  * Cloudflare providers, bindings, and credentials for Worker-based stacks.
+  */
+diff --git a/lib/Cloudflare/Workers/DurableObjectBridge.js b/lib/Cloudflare/Workers/DurableObjectBridge.js
+index b4cb603211e72e569a27265729ee8bc35c33e5af..52b2682d7a111918256108ef87daa3120d99e6cf 100644
+--- a/lib/Cloudflare/Workers/DurableObjectBridge.js
++++ b/lib/Cloudflare/Workers/DurableObjectBridge.js
+@@ -12,6 +12,7 @@ import { buildEventTelemetry } from "../../TelemetryRuntime.js";
+ import { DurableObjectState, fromDurableObjectState, } from "./DurableObjectState.js";
+ import { isScopeEjected, makeRequestEffect } from "./HttpServer.js";
+ import { fromWebSocket } from "./WebSocket.js";
++import { platformSpan } from "./cloudflare_workers.js";
+ import { getWorkerExport, handleRpcExit } from "./WorkerBridge.js";
+ /**
+  * Create a DurableObjectBridge class that proxies RPC method calls through
+@@ -36,24 +37,27 @@ export const makeDurableObjectBridge = (DurableObject, { entrypoint, stack, }) =
+         constructor(state, env) {
+             super(state, env);
+             this.#state = state;
+-            this.#instance = state.blockConcurrencyWhile(() => build((promise) => void state.waitUntil?.(promise)).then(({ context, runtimeContext, export: exported, telemetry }) => {
++            // Constructor resources belong to the object, not a transient Layer.provide scope.
++            // workerd has no teardown hook; failed construction must still release them.
++            const instanceScope = Scope.makeUnsafe();
++            this.#instance = state.blockConcurrencyWhile(() => platformSpan("alchemy.do.initialize", () => build((promise) => void state.waitUntil?.(promise)).then(({ context, runtimeContext, export: exported, telemetry }) => {
+                 const { constructor, services } = exported;
+                 const instanceRuntimeContext = {
+                     ...runtimeContext,
+                     makeCallback: makeDurableObjectCallbackFactory(this.#state),
+                 };
+-                const doContext = Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(context)));
++                const doContext = Layer.mergeAll(Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)), Layer.succeed(Scope.Scope, instanceScope)).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(context)));
+                 return constructor.pipe(Effect.provide(doContext), Effect.flatMap((instance) => Effect.suspend(() => {
+                     const seal = initializeAlarmCallbacks(this.#state);
+                     const instanceContext = Layer.succeed(RuntimeContext, instanceRuntimeContext).pipe(Layer.provideMerge(doContext));
+                     return instance.pipe(Effect.provide(instanceContext), Effect.ensuring(Effect.sync(seal)));
+-                })), Effect.map((instance) => ({
++                })), Effect.onExit((exit) => Exit.isFailure(exit) ? Scope.close(instanceScope, exit) : Effect.void), Effect.map((instance) => ({
+                     instance,
+                     services: Context.add(services, RuntimeContext, instanceRuntimeContext),
+                     context,
+                     telemetry,
+                 })), Effect.runPromise);
+-            }));
++            })));
+             return new Proxy(this, {
+                 get: (target, prop) => {
+                     const bind = (f) => typeof f === "function" ? f.bind(target) : f;
+@@ -89,8 +93,8 @@ export const makeDurableObjectBridge = (DurableObject, { entrypoint, stack, }) =
+         }
+         async #execute(fn, onExit) {
+             const scope = Scope.makeUnsafe();
+-            const { instance, services, context, telemetry } = await this.#instance;
+-            return fn(instance)
++            const { instance, services, context, telemetry } = await platformSpan("alchemy.do.wait", () => this.#instance);
++            return platformSpan("alchemy.do.response", () => fn(instance)
+                 .pipe(Effect.provide(Layer.mergeAll(Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)), Layer.succeed(Scope.Scope, scope), 
+             // The configured telemetry exporters, attached to the *call*
+             // scope by `buildEventTelemetry` so buffered telemetry
+@@ -101,14 +105,14 @@ export const makeDurableObjectBridge = (DurableObject, { entrypoint, stack, }) =
+                 ? onExit(exit, scope)
+                 : exit._tag === "Success"
+                     ? Promise.resolve(exit.value)
+-                    : Promise.reject(Cause.squash(exit.cause)))
++                    : Promise.reject(Cause.squash(exit.cause))))
+                 .finally(() => isScopeEjected(scope)
+                 ? undefined
+                 : this.ctx.waitUntil(
+                 // Match WorkerBridge: yield one macrotask so the
+                 // HttpMiddleware tracer's late span-end reaches the
+                 // telemetry exporter before the scope's flush finalizer.
+-                new Promise((resolve) => setTimeout(resolve, 0)).then(() => Effect.runPromise(Scope.close(scope, Exit.void)))));
++                new Promise((resolve) => setTimeout(resolve, 0)).then(() => platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))))));
+         }
+         async fetch(request) {
+             return this.#execute((instance) => instance.fetch
+diff --git a/lib/Cloudflare/Workers/HttpServer.js b/lib/Cloudflare/Workers/HttpServer.js
+index 968cab24040e446f672d210c8a2e4bc469a176c5..9d8ccabd04e30c39efb17f041c48097da7a27e35 100644
+--- a/lib/Cloudflare/Workers/HttpServer.js
++++ b/lib/Cloudflare/Workers/HttpServer.js
+@@ -1,7 +1,9 @@
+ import * as Deferred from "effect/Deferred";
+ import * as Effect from "effect/Effect";
+-import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
++import * as Scope from "effect/Scope";
++import * as Stream from "effect/Stream";
++import * as HttpBody from "effect/http/HttpBody";
+ import * as EffectHttp from "effect/http/HttpEffect";
+ import * as HttpServerRequest from "effect/http/HttpServerRequest";
+ import * as HttpServerResponse from "effect/http/HttpServerResponse";
+@@ -22,23 +24,41 @@ export const makeRequestEffect = (webRequest, handler) => {
+                 raw: webRequest.body,
+             }),
+         });
+-        return yield* toHandledWebResponse(safeHandler).pipe(Effect.provide([
+-            Layer.succeed(HttpServerRequest.HttpServerRequest, request),
+-            Layer.succeed(Request, webRequest),
+-        ]));
++        return yield* toHandledWebResponse(safeHandler, webRequest.signal).pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, request), Effect.provideService(Request, webRequest));
+     });
+ };
+-const toHandledWebResponse = (handler) => Effect.gen(function* () {
++const toHandledWebResponse = (handler, signal) => Effect.gen(function* () {
+     // `toHandled` exposes the final response through this callback, not its
+     // return value. Keep the assignment isolated here so callers get Response.
+     const context = yield* Effect.context();
++    const eventScope = yield* Scope.Scope;
+     const webResponse = yield* Deferred.make();
++    // Idle streams must release their request and event scopes on disconnect,
++    // even when there is no next notification to expose the closed socket.
++    const disconnected = Effect.callback((resume) => {
++      const onAbort = () => resume(Effect.void);
++      if (signal.aborted) return onAbort();
++      signal.addEventListener("abort", onAbort, { once: true });
++      return Effect.sync(() => signal.removeEventListener("abort", onAbort));
++    });
++    const toWeb = (request, response) => {
++        let transferred = request.method === "HEAD" ? response : EffectHttp.scopeTransferToStream(response);
++        const streaming = request.method !== "HEAD" && transferred.body instanceof HttpBody.Stream;
++        if (streaming && transferred.body instanceof HttpBody.Stream) {
++            const body = transferred.body;
++            transferred = HttpServerResponse.setBodyKeepHeaders(transferred, HttpBody.stream(
++                body.stream.pipe(
++            Stream.interruptWhen(disconnected),
++            Stream.onExit((exit) => Scope.close(eventScope, exit)),
++          ),
++                body.contentType, body.contentLength));
++        }
++        const web = HttpServerResponse.toWeb(transferred, { withoutBody: request.method === "HEAD", context });
++        if (streaming) EffectHttp.scopeDisableClose(eventScope);
++        return web;
++    };
+     yield* EffectHttp.toHandled(handler, (request, response) => Deferred.succeed(webResponse, 
+-    // Conversion to web response with options matches `EffectHttp.toWebHandler`'s callback.
+-    HttpServerResponse.toWeb(EffectHttp.scopeTransferToStream(response), {
+-        withoutBody: request.method === "HEAD",
+-        context,
+-    })));
++    toWeb(request, response))).pipe(Effect.forkScoped);
+     return yield* Deferred.await(webResponse);
+ });
+ export { isScopeEjected } from "../../Http.js";
+diff --git a/lib/Cloudflare/Workers/LocalWorkerProvider.js b/lib/Cloudflare/Workers/LocalWorkerProvider.js
+index 53bd66d331382b36ee33fc0488ce613579629fd9..92e0aa39bebb25d2dc1ec3e24033d99fa1f93a90 100644
+--- a/lib/Cloudflare/Workers/LocalWorkerProvider.js
++++ b/lib/Cloudflare/Workers/LocalWorkerProvider.js
+@@ -1080,7 +1080,10 @@ export const LocalWorkerProvider = () => LocalProvider.make(Worker, LOCAL_PROVID
+             const durableObjectNamespaces = {};
+             for (const { data } of bindings) {
+                 for (const binding of data?.bindings ?? []) {
+-                    if (binding.type === "durable_object_namespace") {
++                    // Foreign bindings may contain unresolved script-name Outputs during precreate.
++                    // Their namespace belongs to the host Worker and must not be declared here.
++                    if (binding.type === "durable_object_namespace" &&
++                        (!binding.scriptName || binding.scriptName === name)) {
+                         durableObjectNamespaces[binding.className] =
+                             binding.namespaceId ??
+                                 encodeURIComponent(`${binding.scriptName}-${binding.className}`);
+diff --git a/lib/Cloudflare/Workers/WorkerBridge.js b/lib/Cloudflare/Workers/WorkerBridge.js
+index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af166a4ec2 100644
+--- a/lib/Cloudflare/Workers/WorkerBridge.js
++++ b/lib/Cloudflare/Workers/WorkerBridge.js
+@@ -17,7 +17,7 @@ import { Self } from "../../Self.js";
+ import { StackContext } from "../../StackContext.js";
+ import { buildEventTelemetry } from "../../TelemetryRuntime.js";
+ import { CloudflareEnvironment } from "../CloudflareEnvironmentService.js";
+-import cloudflare_workers from "./cloudflare_workers.js";
++import cloudflare_workers, { platformSpan } from "./cloudflare_workers.js";
+ import { isScopeEjected } from "./HttpServer.js";
+ import { ErrorTag, encodeRpcError, toRpcStream, } from "./Rpc.js";
+ import { ExportedHandlerMethods, WorkerEnvironment, WorkerExecutionContext, deferredExecutionContext, fromExecutionContext, } from "./WorkerRuntime.js";
+@@ -32,10 +32,10 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+     });
+     const processEvent = (makeEffect, ctx, env, onExit) => {
+         const scope = Scope.makeUnsafe();
+-        return build((promise) => ctx.waitUntil(promise))
++        return platformSpan("alchemy.response", () => platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise)))
+             .then((built) => {
+             const [eff, services] = makeEffect(built);
+-            return eff.pipe(
++            return platformSpan("alchemy.handler", () => eff.pipe(
+             // Per-event services take precedence over the captured services
+             // and the built isolate context: the isolate context carries the
+             // *deferred* WorkerExecutionContext (yieldable in the top-level
+@@ -51,12 +51,12 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+             // so buffered telemetry flushes when the scope closes into
+             // `ctx.waitUntil` below — never on workerd's ephemeral
+             // isolate scope.
+-            Layer.effectContext(buildEventTelemetry(built.context, scope, built.telemetry()))).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(built.context)))), Effect.runPromiseExit);
++            Layer.effectContext(buildEventTelemetry(built.context, scope, built.telemetry()))).pipe(Layer.provideMerge(Layer.succeedContext(services)), Layer.provideMerge(Layer.succeedContext(built.context)))), Effect.runPromiseExit));
+         }, 
+         // A failed isolate build reaches callers as a defect exit so the RPC
+         // path can envelope-encode it like any other handler defect.
+         (error) => Exit.die(error))
+-            .then((exit) => onExit(exit, scope))
++            .then((exit) => onExit(exit, scope)))
+             .finally(() => isScopeEjected(scope)
+             ? undefined
+             : ctx.waitUntil(
+@@ -65,7 +65,7 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+             // Yield one macrotask before closing the scope so that span
+             // reaches the telemetry exporter's buffer before the scope's
+             // flush finalizer runs.
+-            new Promise((resolve) => setTimeout(resolve, 0)).then(() => Effect.runPromise(Scope.close(scope, Exit.void)))));
++            new Promise((resolve) => setTimeout(resolve, 0)).then(() => platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))))));
+     };
+     class WorkerBridge extends Base {
+         ctx;
+@@ -195,12 +195,12 @@ const getSharedBuild = (entrypoint, stack) => {
+      * `Config` read in user init) resets the memo and heals on the next event.
+      */
+     shared = (pin) => {
+-        const promise = (built ??= Effect.runPromise(Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
++        const promise = (built ??= platformSpan("alchemy.runtime.initialize", () => Effect.runPromise(Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
+         // Strip the build's memo map from the exposed context so a Layer the
+         // user `Effect.provide`s *inside a handler* builds per event instead
+         // of sharing one instance (pinned to the first request's IoContext)
+         // across concurrent events.
+-        Effect.map(Context.omit(Layer.CurrentMemoMap)))).catch((error) => {
++        Effect.map(Context.omit(Layer.CurrentMemoMap))))).catch((error) => {
+             built = undefined;
+             throw error;
+         }));
+diff --git a/lib/Cloudflare/Workers/cloudflare_workers.d.ts b/lib/Cloudflare/Workers/cloudflare_workers.d.ts
+index 9852684451c12099b69d55c6d86a76e566d6f1dd..c43196ba69953a2a65486a1cb75e8f76b34dd09e 100644
+--- a/lib/Cloudflare/Workers/cloudflare_workers.d.ts
++++ b/lib/Cloudflare/Workers/cloudflare_workers.d.ts
+@@ -2,3 +2,4 @@ import * as Effect from "effect/Effect";
+ declare const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")>;
+ export default cloudflare_workers;
+-//# sourceMappingURL=cloudflare_workers.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=cloudflare_workers.d.ts.map
++export declare const platformSpan: <A>(name: string, run: () => Promise<A>) => Promise<A>;
+\ No newline at end of file
+diff --git a/lib/Cloudflare/Workers/cloudflare_workers.js b/lib/Cloudflare/Workers/cloudflare_workers.js
+index a9ec2cb5cf000f5af377af80e3833146101ba9da..08d72a08c1a70b604d8bcaf41b4abdf0c5d517c0 100644
+--- a/lib/Cloudflare/Workers/cloudflare_workers.js
++++ b/lib/Cloudflare/Workers/cloudflare_workers.js
+@@ -9,7 +9,8 @@ import * as Effect from "effect/Effect";
+ // Type the import before chaining to avoid expanding the full module namespace
+ // while TypeScript infers the catch result.
+ const moduleImport = import("cloudflare:workers");
+-const modulePromise = moduleImport.catch(() => ({
++let tracing;
++const modulePromise = moduleImport.then((module) => { tracing = module.tracing; return module; }).catch(() => ({
+     env: {},
+     DurableObject: class {
+     },
+@@ -20,3 +21,18 @@ const modulePromise = moduleImport.catch(() => ({
+ const cloudflare_workers = Effect.promise(() => modulePromise);
+ export default cloudflare_workers;
+-//# sourceMappingURL=cloudflare_workers.js.map
+\ No newline at end of file
++//# sourceMappingURL=cloudflare_workers.js.map
++export const platformSpan = (name, run) => {
++  // Tail delivery gives each invocation a timing record even when native traces are sampled.
++  // Cloudflare clocks advance on I/O: CPU cost remains the platform's separate cpuTime field.
++  const measured = () => {
++    const started = performance.now();
++    return Promise.resolve().then(run).finally(() => {
++      if (name !== "alchemy.handler") console.log({
++        type: "alchemy.phase",
++        name,
++        durationMs: Math.max(0, performance.now() - started),
++      });
++    });
++  };
++  return tracing?.enterSpan === undefined ? measured() : tracing.enterSpan(name, measured);
++};
+\ No newline at end of file
+diff --git a/node_modules/alchemy/lib/CloudflareRuntimeServices.d.ts b/lib/CloudflareRuntimeServices.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..76f3a22b4035aef540256cf80df988cfa742a950
+--- /dev/null
++++ b/lib/CloudflareRuntimeServices.d.ts
+@@ -0,0 +1,4 @@
++import type { ProviderCollection } from "./Provider.js";
++export { CloudflareEnvironment } from "./Cloudflare/CloudflareEnvironmentService.js";
++declare const Providers_base: ProviderCollection<Providers, "Cloudflare">;
++export declare class Providers extends Providers_base {}
+diff --git a/node_modules/alchemy/lib/CloudflareRuntimeServices.js b/lib/CloudflareRuntimeServices.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..e0c1dc24df61f7021a118e242f5167e4387b5af9
+--- /dev/null
++++ b/lib/CloudflareRuntimeServices.js
+@@ -0,0 +1,3 @@
++import { ProviderCollection } from "./Provider.js";
++export { CloudflareEnvironment } from "./Cloudflare/CloudflareEnvironmentService.js";
++export class Providers extends ProviderCollection()("Cloudflare") {}
+diff --git a/lib/Output.js b/lib/Output.js
+index 7217516669a5bc98ba4aaf5339dbfff5974db302..2cfd15e6d1c27eff416b5ced5e5526cd568f7826 100644
+--- a/lib/Output.js
++++ b/lib/Output.js
+@@ -6,7 +6,7 @@ import { SingleShotGen } from "effect/Utils";
+ import { getRefMetadata, isRef } from "./Ref.js";
+ import { isResource } from "./Resource.js";
+ import { RuntimeContext, sanitizeKey } from "./RuntimeContext.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ import { Stage } from "./Stage.js";
+ import * as State from "./State/State.js";
+ import { isPlainData, isPrimitive } from "./Util/data.js";
+diff --git a/lib/PhysicalName.js b/lib/PhysicalName.js
+index f1ce8c88ffa08ccc13e89ac25e13f502b0b2093d..906664ca7e47acbb6d5fbd97eee53fb925767bc9 100644
+--- a/lib/PhysicalName.js
++++ b/lib/PhysicalName.js
+@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
+ import * as Effect from "effect/Effect";
+ import { base32 } from ".//Util/base32.js";
+ import { InstanceId } from "./InstanceId.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ import { Stage } from "./Stage.js";
+ // 8 base32 chars = 40 bits of the sha256 of the full untruncated name,
+ // appended when truncation occurs so names that differ only in the truncated
+diff --git a/lib/Resource.js b/lib/Resource.js
+index fb7eda687b7408085f398e51154bce78cd74517b..1c8be21404780a0c8762f785eb15c4a9105dbaac 100644
+--- a/lib/Resource.js
++++ b/lib/Resource.js
+@@ -13,7 +13,7 @@ import { ref as makeRef } from "./Ref.js";
+ import { RemovalPolicy } from "./RemovalPolicy.js";
+ import { RenamePolicy } from "./Rename.js";
+ import { Self } from "./Self.js";
+-import { Stack } from "./Stack.js";
++import { StackContext as Stack } from "./StackContext.js";
+ export const isResource = (value) => {
+     // Require the full resource identity (Type AND FQN), not just `Type`:
+     // user-authored prop objects legitimately carry a `Type` field (e.g.
+diff --git a/src/Action.ts b/src/Action.ts
+index 6e6ed7d006b5ed9d4189e51d7ba0968c04baeff9..c5d2a026b7384500c9a0bf484f95cfeff7c0efe9 100644
+--- a/src/Action.ts
++++ b/src/Action.ts
+@@ -8,7 +8,7 @@ import type { Input } from "./Input.ts";
+ import { CurrentNamespace, type NamespaceNode } from "./Namespace.ts";
+ import * as Output from "./Output.ts";
+ import { RuntimeContext } from "./RuntimeContext.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ 
+ /**
+  * An Action is a node in the dependency graph that runs an Effect with its
+diff --git a/src/Apply.ts b/src/Apply.ts
+index 473a9e7ebe81897693fbd09e70f77e4dd2f7a628..9b593060dfc2a45fedbe5c46c545ac3f74c24684 100644
+--- a/src/Apply.ts
++++ b/src/Apply.ts
+@@ -51,7 +51,7 @@ import {
+ } from "./Provider.ts";
+ import { stampedMode, type ProviderMode } from "./ProviderMode.ts";
+ import type { ResourceBinding } from "./Resource.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ import { Stage } from "./Stage.ts";
+ import {
+   type ActionState,
+diff --git a/src/Cloudflare/DNS/Record.ts b/src/Cloudflare/DNS/Record.ts
+index ea4c14420be9d549f937dde03059c329ef2eed42..57979ebbf8afc43351bee0efd66751877be49880 100644
+--- a/src/Cloudflare/DNS/Record.ts
++++ b/src/Cloudflare/DNS/Record.ts
+@@ -1,10 +1,11 @@
++import { InstanceId } from "../../InstanceId.ts";
+ import * as dns from "@distilled.cloud/cloudflare/dns";
+ import * as zones from "@distilled.cloud/cloudflare/zones";
+ import * as Data from "effect/Data";
+ import * as Effect from "effect/Effect";
+ import * as Stream from "effect/Stream";
+ 
+-import { Unowned } from "../../AdoptPolicy.ts";
++import { Unowned, OwnedBySomeoneElse } from "../../AdoptPolicy.ts";
+ import * as Provider from "../../Provider.ts";
+ import { Resource } from "../../Resource.ts";
+ import { arrayEqualsUnordered } from "../../Util/equal.ts";
+@@ -64,6 +65,10 @@ export interface RecordDataByType {
+ export type RecordData = RecordDataByType[keyof RecordDataByType];
+ 
+ export interface RecordCommonProps {
++  /** Authoritative zone name, when already known. Avoids a zone lookup for relative-name normalization. */
++  zoneName?: string;
++  /** Append a stable Alchemy instance marker to the comment to recover interrupted creates. Counts toward the zone comment limit. */
++  ownershipComment?: boolean;
+   /**
+    * Zone the record lives in. Stable — changing the zone triggers
+    * replacement.
+@@ -317,7 +322,8 @@ export const RecordProvider = () =>
+     reconcile: Effect.fn(function* ({ news, output }) {
+       // Inputs have been resolved to concrete strings by Plan.
+       const zoneId = news.zoneId as string;
+-      const body = buildMutableBody(news);
++      const ownership = `[alchemy:${yield* InstanceId}]`;
++      const body = { ...buildMutableBody(news), ...(news.ownershipComment ? { comment: `${news.comment ?? "Managed by Alchemy"} ${ownership}` } : {}) };
+ 
+       // 1. Observe by cached id first.
+       let observed: ObservedRecord | undefined;
+@@ -335,7 +341,7 @@ export const RecordProvider = () =>
+           content: body.content,
+           data: body.data,
+           priority: news.priority,
+-        });
++        }, news.zoneName);
+         if (existing) {
+           foundByScan = true;
+           observed = existing;
+@@ -364,7 +370,7 @@ export const RecordProvider = () =>
+               content: body.content,
+               data: body.data,
+               priority: news.priority,
+-            }).pipe(
++            }, news.zoneName).pipe(
+               Effect.flatMap((existing) =>
+                 existing
+                   ? Effect.succeed({ record: existing, raced: true } as const)
+@@ -386,6 +392,10 @@ export const RecordProvider = () =>
+         if (created.raced) foundByScan = true;
+       }
+ 
++      if (news.ownershipComment && foundByScan && observed.id !== output?.recordId && !observed.comment?.endsWith(` ${ownership}`)) {
++        return yield* Effect.fail(new OwnedBySomeoneElse({ message: "DNS record was created by another owner", resourceType: Record.Type, physicalName: news.name }));
++      }
++
+       // 4. Sync — Cloudflare's update endpoint is PUT-style; resend
+       //    the full desired body when any mutable field differs.
+       if (!observed.id) {
+@@ -474,9 +484,9 @@ export const RecordProvider = () =>
+                 : undefined,
+           data: typeof olds?.content === "object" ? olds.content : output?.data,
+           priority: olds?.priority,
+-        });
++        }, olds?.zoneName);
+         const attrs = toAttributes(observed, zoneId);
+-        if (attrs) return Unowned(attrs);
++        if (attrs) return olds?.ownershipComment && observed?.comment?.endsWith(` [alchemy:${yield* InstanceId}]`) ? attrs : Unowned(attrs);
+       }
+       return undefined;
+     }),
+@@ -540,10 +550,11 @@ const findByNameType = (
+   name: string,
+   type: RecordType,
+   match: RecordMatch,
++  zoneName?: string,
+ ) =>
+-  listExactByNameType(zoneId, name, type).pipe(
++  listExactByNameType(zoneId, zoneName === undefined ? name : normalizeRecordName(name, zoneName), type).pipe(
+     Effect.flatMap((found) => {
+-      if (found.length > 0) return Effect.succeed(found);
++      if (found.length > 0 || zoneName !== undefined) return Effect.succeed(found);
+ 
+       return zones.getZone({ zoneId }).pipe(
+         Effect.flatMap((zone) => {
+diff --git a/src/Cloudflare/Fetcher.ts b/src/Cloudflare/Fetcher.ts
+index 4e8378e0ee295d63ad7df0b62de62edee566acca..2cdca36bff63b0d1fdd7fd0c4b1d447d8689ff5d 100644
+--- a/src/Cloudflare/Fetcher.ts
++++ b/src/Cloudflare/Fetcher.ts
+@@ -96,7 +96,8 @@ export const fromCloudflareFetcher = (
+       const attempt = request.clone() as Request;
+       return Effect.promise((signal) =>
+         (fetcher as globalThis.Fetcher).fetch(attempt, {
+-          signal: signal,
++          // Keep inbound cancellation alive after the fetch promise resolves headers.
++          signal: AbortSignal.any([request.signal, signal]),
+         }),
+       );
+     }).pipe(
+diff --git a/src/Cloudflare/Providers.ts b/src/Cloudflare/Providers.ts
+index 1db2c4b09ad3cf4929cda741294fb19996798130..ab1c872fd5379b756b65d8ffb415b15c5c12d6f1 100644
+--- a/src/Cloudflare/Providers.ts
++++ b/src/Cloudflare/Providers.ts
+@@ -126,9 +126,8 @@ import * as Zone from "./Zone/index.ts";
+ 
+ export { Credentials } from "@distilled.cloud/cloudflare/Credentials";
+ 
+-export class Providers extends Provider.ProviderCollection<Providers>()(
+-  "Cloudflare",
+-) {}
++import { Providers } from "../CloudflareRuntimeServices.ts";
++export { Providers } from "../CloudflareRuntimeServices.ts";
+ 
+ export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
+ 
+diff --git a/src/Cloudflare/Workers/DurableObjectBridge.ts b/src/Cloudflare/Workers/DurableObjectBridge.ts
+index dcee2e55642885796fdc7b43e2c28a75cbbb3d80..1063667a480b32c4f468d400c3db575dc3a2529e 100644
+--- a/src/Cloudflare/Workers/DurableObjectBridge.ts
++++ b/src/Cloudflare/Workers/DurableObjectBridge.ts
+@@ -27,6 +27,7 @@ import {
+ } from "./DurableObjectState.ts";
+ import { isScopeEjected, makeRequestEffect } from "./HttpServer.ts";
+ import { fromWebSocket } from "./WebSocket.ts";
++import { platformSpan } from "./cloudflare_workers.ts";
+ import { getWorkerExport, handleRpcExit } from "./WorkerBridge.ts";
+ 
+ /**
+@@ -67,18 +68,21 @@ export const makeDurableObjectBridge =
+       constructor(state: cf.DurableObjectState, env: any) {
+         super(state as any, env);
+         this.#state = state;
++        // Constructor resources belong to the object, not a transient Layer.provide scope.
++        // workerd has no teardown hook; failed construction must still release them.
++        const instanceScope = Scope.makeUnsafe();
+ 
+         this.#instance = state.blockConcurrencyWhile(() =>
+-          build((promise) => void (state as any).waitUntil?.(promise)).then(
++          platformSpan("alchemy.do.initialize", () => build((promise) => void (state as any).waitUntil?.(promise)).then(
+             ({ context, runtimeContext, export: exported, telemetry }) => {
+               const { constructor, services } = exported;
+               const instanceRuntimeContext = {
+                 ...runtimeContext,
+                 makeCallback: makeDurableObjectCallbackFactory(this.#state),
+               };
+-              const doContext = Layer.succeed(
+-                DurableObjectState,
+-                fromDurableObjectState(this.#state),
++              const doContext = Layer.mergeAll(
++                Layer.succeed(DurableObjectState, fromDurableObjectState(this.#state)),
++                Layer.succeed(Scope.Scope, instanceScope),
+               ).pipe(
+                 Layer.provideMerge(Layer.succeedContext(services)),
+                 Layer.provideMerge(Layer.succeedContext(context)),
+@@ -98,6 +102,9 @@ export const makeDurableObjectBridge =
+                     );
+                   }),
+                 ),
++                Effect.onExit((exit) =>
++                  Exit.isFailure(exit) ? Scope.close(instanceScope, exit) : Effect.void,
++                ),
+                 Effect.map((instance) => ({
+                   instance,
+                   services: Context.add(
+@@ -111,7 +118,7 @@ export const makeDurableObjectBridge =
+                 Effect.runPromise,
+               );
+             },
+-          ),
++          )),
+         );
+ 
+         return new Proxy(this, {
+@@ -155,9 +162,9 @@ export const makeDurableObjectBridge =
+       ) {
+         const scope = Scope.makeUnsafe();
+ 
+-        const { instance, services, context, telemetry } = await this.#instance;
++        const { instance, services, context, telemetry } = await platformSpan("alchemy.do.wait", () => this.#instance);
+ 
+-        return fn(instance)
++        return platformSpan("alchemy.do.response", () => fn(instance)
+           .pipe(
+             Effect.provide(
+               Layer.mergeAll(
+@@ -186,7 +193,7 @@ export const makeDurableObjectBridge =
+               : exit._tag === "Success"
+                 ? Promise.resolve(exit.value)
+                 : Promise.reject(Cause.squash(exit.cause)),
+-          )
++          ))
+           .finally(() =>
+             isScopeEjected(scope)
+               ? undefined
+@@ -195,7 +202,7 @@ export const makeDurableObjectBridge =
+                   // HttpMiddleware tracer's late span-end reaches the
+                   // telemetry exporter before the scope's flush finalizer.
+                   new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
+-                    Effect.runPromise(Scope.close(scope, Exit.void)),
++                    platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))),
+                   ),
+                 ),
+           );
+diff --git a/src/Cloudflare/Workers/HttpServer.ts b/src/Cloudflare/Workers/HttpServer.ts
+index 8591c6fada9d49235ac0a11f8e56d8a7b058c639..cf1890debe96261e37959da1356924c4bd71555e 100644
+--- a/src/Cloudflare/Workers/HttpServer.ts
++++ b/src/Cloudflare/Workers/HttpServer.ts
+@@ -1,8 +1,10 @@
+ import type * as cf from "@cloudflare/workers-types";
+ import * as Deferred from "effect/Deferred";
+ import * as Effect from "effect/Effect";
+-import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
++import * as Scope from "effect/Scope";
++import * as Stream from "effect/Stream";
++import * as HttpBody from "effect/http/HttpBody";
+ import * as EffectHttp from "effect/http/HttpEffect";
+ import * as HttpServerRequest from "effect/http/HttpServerRequest";
+ import * as HttpServerResponse from "effect/http/HttpServerResponse";
+@@ -43,34 +45,55 @@ export const makeRequestEffect = <Req = never>(
+         }),
+     });
+ 
+-    return yield* toHandledWebResponse(safeHandler).pipe(
+-      Effect.provide([
+-        Layer.succeed(HttpServerRequest.HttpServerRequest, request),
+-        Layer.succeed(Request, webRequest as any),
+-      ]),
++    return yield* toHandledWebResponse(safeHandler, webRequest.signal).pipe(
++      Effect.provideService(HttpServerRequest.HttpServerRequest, request),
++      Effect.provideService(Request, webRequest as any),
+     );
+   }) as any;
+ };
+ 
+ const toHandledWebResponse = <Req>(
+   handler: Effect.Effect<HttpServerResponse.HttpServerResponse, never, Req>,
++  signal: AbortSignal,
+ ) =>
+   Effect.gen(function* () {
+     // `toHandled` exposes the final response through this callback, not its
+     // return value. Keep the assignment isolated here so callers get Response.
+     const context = yield* Effect.context();
++    const eventScope = yield* Scope.Scope;
+     const webResponse = yield* Deferred.make<Response>();
++    // Idle streams must release their request and event scopes on disconnect,
++    // even when there is no next notification to expose the closed socket.
++    const disconnected = Effect.callback<void>((resume) => {
++      const onAbort = () => resume(Effect.void);
++      if (signal.aborted) return onAbort();
++      signal.addEventListener("abort", onAbort, { once: true });
++      return Effect.sync(() => signal.removeEventListener("abort", onAbort));
++    });
+ 
++    const toWeb = (request: HttpServerRequest.HttpServerRequest, response: HttpServerResponse.HttpServerResponse) => {
++      let transferred = request.method === "HEAD" ? response : EffectHttp.scopeTransferToStream(response);
++      const streaming = request.method !== "HEAD" && transferred.body instanceof HttpBody.Stream;
++      if (streaming && transferred.body instanceof HttpBody.Stream) {
++        const body = transferred.body;
++        // The HTTP scope (and its root span) closes first. The outer event
++        // exporter closes only after that stream finalizer has completed.
++        transferred = HttpServerResponse.setBodyKeepHeaders(transferred, HttpBody.stream(
++          body.stream.pipe(
++            Stream.interruptWhen(disconnected),
++            Stream.onExit((exit) => Scope.close(eventScope, exit)),
++          ),
++          body.contentType,
++          body.contentLength,
++        ));
++      }
++      const web = HttpServerResponse.toWeb(transferred, { withoutBody: request.method === "HEAD", context });
++      if (streaming) EffectHttp.scopeDisableClose(eventScope);
++      return web;
++    };
+     yield* EffectHttp.toHandled(handler, (request, response) =>
+-      Deferred.succeed(
+-        webResponse,
+-        // Conversion to web response with options matches `EffectHttp.toWebHandler`'s callback.
+-        HttpServerResponse.toWeb(EffectHttp.scopeTransferToStream(response), {
+-          withoutBody: request.method === "HEAD",
+-          context,
+-        }),
+-      ),
+-    );
++      Deferred.succeed(webResponse, toWeb(request, response)),
++    ).pipe(Effect.forkScoped);
+     return yield* Deferred.await(webResponse);
+   });
+ 
+diff --git a/src/Cloudflare/Workers/LocalWorkerProvider.ts b/src/Cloudflare/Workers/LocalWorkerProvider.ts
+index 109a8af6b4ece7c5fe3279e7275bfecce12ed3fc..7b2d1dc594bb4a33940c3570fd9b02551ddc0987 100644
+--- a/src/Cloudflare/Workers/LocalWorkerProvider.ts
++++ b/src/Cloudflare/Workers/LocalWorkerProvider.ts
+@@ -1461,7 +1461,10 @@ export const LocalWorkerProvider = () =>
+           const durableObjectNamespaces: Record<string, string> = {};
+           for (const { data } of bindings) {
+             for (const binding of data?.bindings ?? []) {
+-              if (binding.type === "durable_object_namespace") {
++              // Foreign bindings may contain unresolved script-name Outputs during precreate.
++              // Their namespace belongs to the host Worker and must not be declared here.
++              if (binding.type === "durable_object_namespace" &&
++                  (!binding.scriptName || binding.scriptName === name)) {
+                 durableObjectNamespaces[binding.className] =
+                   binding.namespaceId ??
+                   encodeURIComponent(
+diff --git a/src/Cloudflare/Workers/WorkerBridge.ts b/src/Cloudflare/Workers/WorkerBridge.ts
+index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410392fb2fe 100644
+--- a/src/Cloudflare/Workers/WorkerBridge.ts
++++ b/src/Cloudflare/Workers/WorkerBridge.ts
+@@ -22,7 +22,7 @@ import { Self } from "../../Self.ts";
+ import { StackContext } from "../../StackContext.ts";
+ import { buildEventTelemetry } from "../../TelemetryRuntime.ts";
+ import { CloudflareEnvironment } from "../CloudflareEnvironmentService.ts";
+-import cloudflare_workers from "./cloudflare_workers.ts";
++import cloudflare_workers, { platformSpan } from "./cloudflare_workers.ts";
+ import { isScopeEjected } from "./HttpServer.ts";
+ import {
+   ErrorTag,
+@@ -90,11 +90,12 @@ export const makeWorkerBridge = (
+     ) => T | Promise<T>,
+   ): Promise<T> => {
+     const scope = Scope.makeUnsafe();
+-    return build((promise) => ctx.waitUntil(promise as Promise<any>))
++    return platformSpan("alchemy.response", () =>
++      platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise as Promise<any>)))
+       .then(
+         (built) => {
+           const [eff, services] = makeEffect(built);
+-          return eff.pipe(
++          return platformSpan("alchemy.handler", () => eff.pipe(
+             // Per-event services take precedence over the captured services
+             // and the built isolate context: the isolate context carries the
+             // *deferred* WorkerExecutionContext (yieldable in the top-level
+@@ -126,13 +127,13 @@ export const makeWorkerBridge = (
+               ),
+             ),
+             Effect.runPromiseExit,
+-          );
++          ));
+         },
+         // A failed isolate build reaches callers as a defect exit so the RPC
+         // path can envelope-encode it like any other handler defect.
+         (error) => Exit.die(error),
+       )
+-      .then((exit) => onExit(exit, scope))
++      .then((exit) => onExit(exit, scope)))
+       .finally(() =>
+         isScopeEjected(scope)
+           ? undefined
+@@ -143,7 +144,7 @@ export const makeWorkerBridge = (
+               // reaches the telemetry exporter's buffer before the scope's
+               // flush finalizer runs.
+               new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
+-                Effect.runPromise(Scope.close(scope, Exit.void)),
++                platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))),
+               ),
+             ),
+       );
+@@ -359,7 +360,7 @@ const getSharedBuild = (
+    * `Config` read in user init) resets the memo and heals on the next event.
+    */
+   shared = (pin) => {
+-    const promise = (built ??= Effect.runPromise(
++    const promise = (built ??= platformSpan("alchemy.runtime.initialize", () => Effect.runPromise(
+       Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
+         // Strip the build's memo map from the exposed context so a Layer the
+         // user `Effect.provide`s *inside a handler* builds per event instead
+@@ -367,7 +368,7 @@ const getSharedBuild = (
+         // across concurrent events.
+         Effect.map(Context.omit(Layer.CurrentMemoMap)),
+       ),
+-    ).catch((error) => {
++     )).catch((error) => {
+       built = undefined;
+       throw error;
+     }));
+diff --git a/src/Cloudflare/Workers/cloudflare_workers.ts b/src/Cloudflare/Workers/cloudflare_workers.ts
+index 635467ae7ce4d7667c384f8713f7d46ee5aad967..6a3ebd75d58ce2ee2ab903f4b6a5a9115b887852 100644
+--- a/src/Cloudflare/Workers/cloudflare_workers.ts
++++ b/src/Cloudflare/Workers/cloudflare_workers.ts
+@@ -11,8 +11,9 @@ import * as Effect from "effect/Effect";
+ // while TypeScript infers the catch result.
+ const moduleImport: Promise<typeof import("cloudflare:workers")> =
+   import("cloudflare:workers");
++let tracing: typeof import("cloudflare:workers").tracing | undefined;
+ const modulePromise: Promise<typeof import("cloudflare:workers")> =
+-  moduleImport.catch(
++  moduleImport.then((module) => { tracing = module.tracing; return module; }).catch(
+     () =>
+       ({
+         env: {},
+@@ -27,3 +28,20 @@ const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")> =
+   Effect.promise(() => modulePromise);
+ 
+ export default cloudflare_workers;
++
++/** Native invocation spans also cover work before the Effect tracer exists. */
++export const platformSpan = <A>(name: string, run: () => Promise<A>): Promise<A> => {
++  // Tail delivery gives each invocation a timing record even when native traces are sampled.
++  // Cloudflare clocks advance on I/O: CPU cost remains the platform's separate cpuTime field.
++  const measured = () => {
++    const started = performance.now();
++    return Promise.resolve().then(run).finally(() => {
++      if (name !== "alchemy.handler") console.log({
++        type: "alchemy.phase",
++        name,
++        durationMs: Math.max(0, performance.now() - started),
++      });
++    });
++  };
++  return tracing?.enterSpan === undefined ? measured() : tracing.enterSpan(name, measured);
++};
+diff --git a/node_modules/alchemy/src/CloudflareRuntimeServices.ts b/src/CloudflareRuntimeServices.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..80d163fdede1c86b5907a77d19e1c9d1c20c4da7
+--- /dev/null
++++ b/src/CloudflareRuntimeServices.ts
+@@ -0,0 +1,3 @@
++import { ProviderCollection } from "./Provider.ts";
++export { CloudflareEnvironment } from "./Cloudflare/CloudflareEnvironmentService.ts";
++export class Providers extends ProviderCollection<Providers>()("Cloudflare") {}
+diff --git a/src/Output.ts b/src/Output.ts
+index 226f641ade002be8916dc5ea578795442e73faf9..572f95aaeca44e56006a696a39ae06da1fb94ad6 100644
+--- a/src/Output.ts
++++ b/src/Output.ts
+@@ -7,7 +7,7 @@ import { SingleShotGen } from "effect/Utils";
+ import { getRefMetadata, isRef, type Ref } from "./Ref.ts";
+ import { isResource, type Resource, type ResourceLike } from "./Resource.ts";
+ import { RuntimeContext, sanitizeKey } from "./RuntimeContext.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ import { Stage } from "./Stage.ts";
+ import * as State from "./State/State.ts";
+ import { isPlainData, isPrimitive, type Primitive } from "./Util/data.ts";
+diff --git a/src/PhysicalName.ts b/src/PhysicalName.ts
+index e94afa3154879f3fc36be946633e4aba1ccd3360..8181033533a2e88a729b0b107d0991a6289fa950 100644
+--- a/src/PhysicalName.ts
++++ b/src/PhysicalName.ts
+@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
+ import * as Effect from "effect/Effect";
+ import { base32 } from ".//Util/base32.ts";
+ import { InstanceId } from "./InstanceId.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ import { Stage } from "./Stage.ts";
+ 
+ // 8 base32 chars = 40 bits of the sha256 of the full untruncated name,
+diff --git a/src/Resource.ts b/src/Resource.ts
+index b07a50d07003d6c78fae8ad2d1661f5dc6da61a0..d55689cc1f4d86e95f1733906984b326de55efe8 100644
+--- a/src/Resource.ts
++++ b/src/Resource.ts
+@@ -19,7 +19,7 @@ import { ref as makeRef } from "./Ref.ts";
+ import { RemovalPolicy } from "./RemovalPolicy.ts";
+ import { RenamePolicy } from "./Rename.ts";
+ import { Self } from "./Self.ts";
+-import { Stack } from "./Stack.ts";
++import { StackContext as Stack } from "./StackContext.ts";
+ 
+ export type ResourceConstructor<R extends ResourceLike, Req = never> = {
+   Type: R["Type"];
+diff --git a/lib/Bundle/Bundle.js b/lib/Bundle/Bundle.js
+--- a/lib/Bundle/Bundle.js
++++ b/lib/Bundle/Bundle.js
+@@ -4,6 +4,8 @@
+ import * as Schema from "effect/Schema";
+ import * as Stream from "effect/Stream";
+ import assert from "node:assert";
++import * as NodeFS from "node:fs";
++import * as NodePath from "node:path";
+ import { sha256, sha256Object } from "../Util/sha256.js";
+ import { bundleAnalyzerPlugin, } from "./BundleAnalyzerPlugin.js";
+ import { purePlugin } from "./PurePlugin.js";
+@@ -134,60 +136,400 @@
+     catch: bundleErrorFromUnknown,
+ }).pipe(Effect.flatMap(Effect.forEach(bundleFileFromOutputChunk)), Effect.flatMap(bundleOutputFromFiles));
+ /**
++ * Rebuild on macOS when a file of the module graph changes, from one
++ * recursive `fs.watch` over the graph's common directory.
++ *
++ * Rolldown's FSEvents watcher makes every watched directory its own watch
++ * root, and FSEvents holds a descriptor for that directory and each of its
++ * ancestors up to `/`. A workspace directory therefore costs as many
++ * descriptors as its path is deep, again for every Worker that imports it.
++ * Local Workers sharing workspace sources took the sidecar past OPEN_MAX
++ * (10,240); macOS `posix_spawn` refuses pipes above it, so every later
++ * workerd spawn failed with `spawn EBADF`. A recursive `fs.watch` is one
++ * FSEvents stream with no per-directory descriptors. Linux keeps rolldown's
++ * watcher: inotify needs no descriptor per directory, and a recursive
++ * `fs.watch` there would add a watch for every directory under the root.
++ *
++ * The watch covers each source before rolldown reads it. Changes during a
++ * build are kept and checked against the graph the build collected, so an
++ * edit made while it runs rebuilds again. A source whose stat changed after
++ * the build loaded it also rebuilds, since a new FSEvents stream starts
++ * asynchronously and may miss a change made just after it is created. The
++ * watched directory's inode is polled: when it or an ancestor moves, the
++ * graph rebuilds (reporting the missing entry) and the watch moves to the
++ * nearest directory that still exists. A move undone between two polls keeps
++ * the inode and may send no event, but sets the moved directory's change
++ * time; the poll then compares each source with what the build read.
++ * Plugins' `watchChange` hooks are not called.
++ */
++const watchModuleTree = (rolldown, inputOptions, outputOptions, start, fail, built) => {
++    let files = new Set();
++    // Directories between the watched directory and a file; renaming one
++    // moves the file.
++    let directories = new Set();
++    // The graph's common directory.
++    let root;
++    // The directory under watch: `root`, or its nearest existing ancestor
++    // once `root` has moved away.
++    let watched;
++    // Device and inode of `watched` when the watch started.
++    let identity;
++    // Change times of `watched` and its ancestors at the last idle poll.
++    let lineage;
++    let tree;
++    let poller;
++    // Watchers a build replaced by moving the watch; closed when it ends.
++    let replaced = [];
++    // Paths changed during the current build; `null` for an unnamed change.
++    let changed = new Set();
++    // Each source's stat when the current build loaded it.
++    let loaded = new Map();
++    let timer;
++    let building;
++    let again = false;
++    let closed = false;
++    // A graph file or a directory holding one changed. An event without a
++    // file name may be either.
++    const affects = (path) => path === null || files.has(path) || directories.has(path);
++    const inode = (path) => {
++        try {
++            const stat = NodeFS.statSync(path);
++            return `${stat.dev}:${stat.ino}`;
++        }
++        catch {
++            return undefined;
++        }
++    };
++    const stamp = (path) => {
++        try {
++            const stat = NodeFS.statSync(path);
++            return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
++        }
++        catch {
++            return "";
++        }
++    };
++    const changedAt = (path) => {
++        try {
++            return NodeFS.statSync(path).ctimeMs;
++        }
++        catch {
++            return undefined;
++        }
++    };
++    // A source changed after the current build read it.
++    const edited = () => [...loaded].some(([file, before]) => stamp(file) !== before);
++    // When `watched` moved or was replaced, watch where the graph is now and
++    // rebuild, which reports a missing entry. When it or an ancestor moved and
++    // came back, rebuild if a source changed meanwhile.
++    const poll = () => {
++        const target = watched;
++        NodeFS.stat(target, (error, stat) => {
++            if (closed || target !== watched)
++                return;
++            if (error === null && `${stat.dev}:${stat.ino}` === identity) {
++                let times = "";
++                for (let path = target; path !== NodePath.dirname(path); path = NodePath.dirname(path))
++                    times += `${changedAt(path)}:`;
++                // A build in progress compares its sources when it ends.
++                if (building === undefined && times !== lineage) {
++                    lineage = times;
++                    if (edited())
++                        schedule();
++                }
++                return;
++            }
++            observe();
++            if (building !== undefined)
++                changed.add(null);
++            else
++                schedule();
++        });
++    };
++    // Watch `root`, or its nearest existing ancestor while it is missing.
++    // The current watch stays while it contains `root` and has not moved. A
++    // replaced watcher keeps running until the build ends so nothing is
++    // missed while the new one starts.
++    const observe = () => {
++        if (closed || root === undefined)
++            return;
++        if (watched !== undefined &&
++            !NodePath.relative(watched, root).startsWith("..") &&
++            inode(watched) === identity)
++            return;
++        let next = root;
++        let current = inode(next);
++        while (current === undefined && next !== NodePath.dirname(next)) {
++            next = NodePath.dirname(next);
++            current = inode(next);
++        }
++        if (tree !== undefined)
++            replaced.push(tree);
++        watched = next;
++        identity = current;
++        tree = NodeFS.watch(next, { recursive: true }, (_event, name) => {
++            const path = name === null ? null : NodePath.join(next, name);
++            if (building !== undefined)
++                changed.add(path);
++            else if (affects(path))
++                schedule();
++        }).on("error", fail);
++        poller ??= setInterval(poll, 500).unref();
++    };
++    // Widen the root to contain `file`. The root never narrows.
++    const cover = (file) => {
++        if (closed || !NodePath.isAbsolute(file))
++            return;
++        const directory = NodePath.dirname(file);
++        let next = root ?? directory;
++        while (NodePath.relative(next, directory).startsWith(".."))
++            next = NodePath.dirname(next);
++        if (next === root)
++            return;
++        root = next;
++        observe();
++    };
++    const coverage = {
++        name: "alchemy:watch-sources",
++        load: {
++            filter: { id: { exclude: /[\\/]node_modules[\\/]/ } },
++            handler(id) {
++                if (!NodePath.isAbsolute(id))
++                    return;
++                loaded.set(id, stamp(id));
++                cover(id);
++            },
++        },
++    };
++    // Adopt the build's graph; true when a source changed after the build
++    // read it, or a change during the build affects the graph.
++    const settle = (next, failed) => {
++        const sources = next.filter((file) => NodePath.isAbsolute(file) &&
++            !file.split(NodePath.sep).includes("node_modules"));
++        // A failed build may stop before loading every module; keep watching
++        // the last complete graph so fixing any of its files rebuilds.
++        files = new Set(failed ? [...files, ...sources] : sources);
++        // Watch files a plugin added without rolldown loading them.
++        for (const file of files)
++            cover(file);
++        directories = new Set();
++        for (const file of files) {
++            let directory = NodePath.dirname(file);
++            while (directory !== watched && !directories.has(directory)) {
++                directories.add(directory);
++                directory = NodePath.dirname(directory);
++            }
++        }
++        for (const watcher of replaced)
++            watcher.close();
++        replaced = [];
++        return edited() || [...changed].some(affects);
++    };
++    const rebuild = async () => {
++        let failed = false;
++        let next = [];
++        try {
++            // Plugins' `options` hooks rewrite `input` in place (the virtual
++            // entries wrap it); rolldown's own watcher runs them once, so each
++            // build here starts from a copy of the caller's options.
++            const bundle = await rolldown.rolldown({
++                ...inputOptions,
++                plugins: [coverage, inputOptions.plugins],
++            });
++            try {
++                await bundle.write(outputOptions);
++            }
++            catch (error) {
++                failed = true;
++                fail(error);
++            }
++            finally {
++                next = await bundle.watchFiles;
++                await bundle.close();
++            }
++        }
++        catch (error) {
++            failed = true;
++            fail(error);
++        }
++        return settle(next, failed);
++    };
++    const run = () => {
++        if (building) {
++            again = true;
++            return;
++        }
++        changed = new Set();
++        loaded = new Map();
++        building = rebuild()
++            .catch((error) => {
++            fail(error);
++            return false;
++        })
++            .then((stale) => {
++            building = undefined;
++            built();
++            if ((stale || again) && !closed) {
++                again = false;
++                schedule();
++            }
++        });
++    };
++    const schedule = () => {
++        clearTimeout(timer);
++        timer = setTimeout(() => {
++            start();
++            run();
++        }, 50);
++    };
++    run();
++    return {
++        close: async () => {
++            closed = true;
++            clearTimeout(timer);
++            clearInterval(poller);
++            tree?.close();
++            for (const watcher of replaced)
++                watcher.close();
++            await building;
++        },
++    };
++};
++/**
++ * Local Workers start their watchers together, and each first build loads
++ * that Worker's whole module graph. Rolldown already spreads one build over
++ * every core, so first builds running side by side only multiply memory:
++ * seventeen Executor Workers took the dev sidecar to 9.6 GB and the kernel
++ * killed it. First builds in this process take turns. Rebuilds after an edit
++ * and deploy builds do not wait.
++ *
++ * A turn ends when the first build ends or fails, when the watcher closes or
++ * cannot start, and at the latest after {@link firstBuildTurn}: a build that
++ * hangs keeps running, and the next one starts beside it. A watcher that
++ * closes while it waits leaves the queue.
++ */
++const firstBuildTurn = 60_000;
++const firstBuilds = (() => {
++    let running = false;
++    const waiting = [];
++    const next = () => {
++        const start = waiting.shift();
++        if (start)
++            start();
++        else
++            running = false;
++    };
++    return {
++        /** Joins the queue. `release` ends the turn or leaves the queue; it is idempotent. */
++        join: () => {
++            let state = "waiting";
++            let timer;
++            let started;
++            const turn = new Promise((resolve) => (started = resolve));
++            const release = () => {
++                if (state === "waiting")
++                    waiting.splice(waiting.indexOf(start), 1);
++                else if (state === "running") {
++                    clearTimeout(timer);
++                    next();
++                }
++                state = "done";
++            };
++            const start = () => {
++                state = "running";
++                timer = setTimeout(() => {
++                    console.warn(`alchemy: a first build has run for ${firstBuildTurn / 1000} s; the next one starts beside it.`);
++                    release();
++                }, firstBuildTurn).unref();
++                started();
++            };
++            if (running)
++                waiting.push(start);
++            else {
++                running = true;
++                start();
++            }
++            return { turn, release };
++        },
++    };
++})();
++/**
+  * Watch for changes in the bundle and return a stream of bundle output.
+  * @param inputOptions - The input options for the bundle.
+  * @param outputOptions - The output options for the bundle.
+  * @returns A stream of Result instances containing either the bundle output or an error.
+  */
+-export const watch = (inputOptions, outputOptions, extra) => Stream.callback((queue) => Effect.acquireRelease(Effect.promise(async () => {
+-    const rolldown = await loadRolldown();
+-    const watcher = rolldown.watch({
+-        ...withAlchemyDefine(inputOptions),
+-        plugins: [
+-            inputOptions.plugins,
+-            await builtInPlugins(extra),
+-            // The watcher event listener does not receive the bundle output, so we grab it using a plugin.
+-            {
+-                name: "alchemy:watch-bundle",
+-                watchChange() {
+-                    Queue.offerUnsafe(queue, {
+-                        _tag: "Start",
+-                    });
+-                },
+-                generateBundle(_outputOptions, bundle) {
+-                    Queue.offerUnsafe(queue, {
+-                        _tag: "Success",
+-                        output: bundle,
+-                    });
++export const watch = (inputOptions, outputOptions, extra) => Stream.callback((queue) => Effect.gen(function* () {
++    // Waiting for the turn can be interrupted; closing the stream ends the
++    // turn or leaves the queue.
++    const { turn, release: built } = yield* Effect.acquireRelease(Effect.sync(firstBuilds.join), ({ release }) => Effect.sync(release));
++    yield* Effect.promise(() => turn);
++    const open = async () => {
++        const rolldown = await loadRolldown();
++        const start = () => {
++            Queue.offerUnsafe(queue, { _tag: "Start" });
++        };
++        const options = {
++            ...withAlchemyDefine(inputOptions),
++            plugins: [
++                inputOptions.plugins,
++                await builtInPlugins(extra),
++                // The watcher event listener does not receive the bundle output, so we grab it using a plugin.
++                {
++                    name: "alchemy:watch-bundle",
++                    watchChange: start,
++                    generateBundle(_outputOptions, bundle) {
++                        Queue.offerUnsafe(queue, {
++                            _tag: "Success",
++                            output: bundle,
++                        });
++                    },
+                 },
+-            },
+-        ],
+-        watch: {
+-            // Watching the full module graph of an Effect worker (all of
+-            // `effect`, `alchemy`, `@distilled.cloud/*`) registers thousands
+-            // of OS watch handles *per worker*; with several Effect workers
+-            // this exhausts the process fd table and the next `posix_spawn`
+-            // (workerd / docker) fails with `spawn EBADF`. Workspace packages
+-            // resolve to their real source paths (outside `node_modules`), so
+-            // they stay watched and local HMR is unaffected.
+-            exclude: ["**/node_modules/**"],
+-        },
+-        output: withDceDefault(outputOptions),
+-    });
+-    watcher.on("event", (event) => {
+-        if (event.code === "ERROR") {
+-            Queue.offerUnsafe(queue, {
++            ],
++        };
++        if (process.platform === "darwin") {
++            return watchModuleTree(rolldown, options, withDceDefault(outputOptions), start, (error) => Queue.offerUnsafe(queue, {
+                 _tag: "Error",
+-                error: bundleErrorFromUnknown(event.error),
+-            });
++                error: bundleErrorFromUnknown(error),
++            }), built);
+         }
+-        else if (event.code === "BUNDLE_END") {
+-            // This must be called to avoid resource leaks.
+-            event.result.close().catch(() => { });
+-        }
+-    });
+-    return watcher;
+-}), (watcher) => Effect.promise(() => watcher.close()))).pipe(Stream.mapEffect((event) => Effect.gen(function* () {
++        const watcher = rolldown.watch({
++            ...options,
++            watch: {
++                // Watching the full module graph of an Effect worker (all of
++                // `effect`, `alchemy`, `@distilled.cloud/*`) registers thousands
++                // of OS watch handles *per worker*; with several Effect workers
++                // this exhausts the process fd table and the next `posix_spawn`
++                // (workerd / docker) fails with `spawn EBADF`. Workspace packages
++                // resolve to their real source paths (outside `node_modules`), so
++                // they stay watched and local HMR is unaffected.
++                exclude: ["**/node_modules/**"],
++            },
++            output: withDceDefault(outputOptions),
++        });
++        watcher.on("event", (event) => {
++            if (event.code === "ERROR") {
++                built();
++                Queue.offerUnsafe(queue, {
++                    _tag: "Error",
++                    error: bundleErrorFromUnknown(event.error),
++                });
++            }
++            else if (event.code === "BUNDLE_END") {
++                built();
++                // This must be called to avoid resource leaks.
++                event.result.close().catch(() => { });
++            }
++        });
++        return watcher;
++    };
++    yield* Effect.acquireRelease(Effect.tryPromise({ try: open, catch: bundleErrorFromUnknown }), (watcher) => Effect.promise(() => watcher.close())).pipe(
++    // A watcher that cannot start reports why and gives its turn back.
++    Effect.catch((error) => Effect.sync(() => {
++        built();
++        Queue.offerUnsafe(queue, { _tag: "Error", error });
++    })));
++})).pipe(Stream.mapEffect((event) => Effect.gen(function* () {
+     if (event._tag !== "Success") {
+         return event;
+     }
+diff --git a/src/Bundle/Bundle.ts b/src/Bundle/Bundle.ts
+--- a/src/Bundle/Bundle.ts
++++ b/src/Bundle/Bundle.ts
+@@ -4,6 +4,8 @@
+ import * as Schema from "effect/Schema";
+ import * as Stream from "effect/Stream";
+ import assert from "node:assert";
++import * as NodeFS from "node:fs";
++import * as NodePath from "node:path";
+ import type * as rolldown from "rolldown";
+ import { sha256, sha256Object } from "../Util/sha256.ts";
+ import {
+@@ -253,6 +255,322 @@
+   );
+ 
+ /**
++ * Rebuild on macOS when a file of the module graph changes, from one
++ * recursive `fs.watch` over the graph's common directory.
++ *
++ * Rolldown's FSEvents watcher makes every watched directory its own watch
++ * root, and FSEvents holds a descriptor for that directory and each of its
++ * ancestors up to `/`. A workspace directory therefore costs as many
++ * descriptors as its path is deep, again for every Worker that imports it.
++ * Local Workers sharing workspace sources took the sidecar past OPEN_MAX
++ * (10,240); macOS `posix_spawn` refuses pipes above it, so every later
++ * workerd spawn failed with `spawn EBADF`. A recursive `fs.watch` is one
++ * FSEvents stream with no per-directory descriptors. Linux keeps rolldown's
++ * watcher: inotify needs no descriptor per directory, and a recursive
++ * `fs.watch` there would add a watch for every directory under the root.
++ *
++ * The watch covers each source before rolldown reads it. Changes during a
++ * build are kept and checked against the graph the build collected, so an
++ * edit made while it runs rebuilds again. A source whose stat changed after
++ * the build loaded it also rebuilds, since a new FSEvents stream starts
++ * asynchronously and may miss a change made just after it is created. The
++ * watched directory's inode is polled: when it or an ancestor moves, the
++ * graph rebuilds (reporting the missing entry) and the watch moves to the
++ * nearest directory that still exists. A move undone between two polls keeps
++ * the inode and may send no event, but sets the moved directory's change
++ * time; the poll then compares each source with what the build read.
++ * Plugins' `watchChange` hooks are not called.
++ */
++const watchModuleTree = (
++  rolldown: typeof import("rolldown"),
++  inputOptions: rolldown.InputOptions,
++  outputOptions: rolldown.OutputOptions,
++  start: () => void,
++  fail: (error: unknown) => void,
++  built: () => void,
++) => {
++  let files = new Set<string>();
++  // Directories between the watched directory and a file; renaming one
++  // moves the file.
++  let directories = new Set<string>();
++  // The graph's common directory.
++  let root: string | undefined;
++  // The directory under watch: `root`, or its nearest existing ancestor
++  // once `root` has moved away.
++  let watched: string | undefined;
++  // Device and inode of `watched` when the watch started.
++  let identity: string | undefined;
++  // Change times of `watched` and its ancestors at the last idle poll.
++  let lineage: string | undefined;
++  let tree: NodeFS.FSWatcher | undefined;
++  let poller: ReturnType<typeof setInterval> | undefined;
++  // Watchers a build replaced by moving the watch; closed when it ends.
++  let replaced: Array<NodeFS.FSWatcher> = [];
++  // Paths changed during the current build; `null` for an unnamed change.
++  let changed = new Set<string | null>();
++  // Each source's stat when the current build loaded it.
++  let loaded = new Map<string, string>();
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  let building: Promise<void> | undefined;
++  let again = false;
++  let closed = false;
++  // A graph file or a directory holding one changed. An event without a
++  // file name may be either.
++  const affects = (path: string | null) =>
++    path === null || files.has(path) || directories.has(path);
++  const inode = (path: string) => {
++    try {
++      const stat = NodeFS.statSync(path);
++      return `${stat.dev}:${stat.ino}`;
++    } catch {
++      return undefined;
++    }
++  };
++  const stamp = (path: string) => {
++    try {
++      const stat = NodeFS.statSync(path);
++      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
++    } catch {
++      return "";
++    }
++  };
++  const changedAt = (path: string) => {
++    try {
++      return NodeFS.statSync(path).ctimeMs;
++    } catch {
++      return undefined;
++    }
++  };
++  // A source changed after the current build read it.
++  const edited = () =>
++    [...loaded].some(([file, before]) => stamp(file) !== before);
++  // When `watched` moved or was replaced, watch where the graph is now and
++  // rebuild, which reports a missing entry. When it or an ancestor moved and
++  // came back, rebuild if a source changed meanwhile.
++  const poll = () => {
++    const target = watched!;
++    NodeFS.stat(target, (error, stat) => {
++      if (closed || target !== watched) return;
++      if (error === null && `${stat.dev}:${stat.ino}` === identity) {
++        let times = "";
++        for (
++          let path = target;
++          path !== NodePath.dirname(path);
++          path = NodePath.dirname(path)
++        )
++          times += `${changedAt(path)}:`;
++        // A build in progress compares its sources when it ends.
++        if (building === undefined && times !== lineage) {
++          lineage = times;
++          if (edited()) schedule();
++        }
++        return;
++      }
++      observe();
++      if (building !== undefined) changed.add(null);
++      else schedule();
++    });
++  };
++  // Watch `root`, or its nearest existing ancestor while it is missing.
++  // The current watch stays while it contains `root` and has not moved. A
++  // replaced watcher keeps running until the build ends so nothing is
++  // missed while the new one starts.
++  const observe = () => {
++    if (closed || root === undefined) return;
++    if (
++      watched !== undefined &&
++      !NodePath.relative(watched, root).startsWith("..") &&
++      inode(watched) === identity
++    )
++      return;
++    let next = root;
++    let current = inode(next);
++    while (current === undefined && next !== NodePath.dirname(next)) {
++      next = NodePath.dirname(next);
++      current = inode(next);
++    }
++    if (tree !== undefined) replaced.push(tree);
++    watched = next;
++    identity = current;
++    tree = NodeFS.watch(next, { recursive: true }, (_event, name) => {
++      const path = name === null ? null : NodePath.join(next, name);
++      if (building !== undefined) changed.add(path);
++      else if (affects(path)) schedule();
++    }).on("error", fail);
++    poller ??= setInterval(poll, 500).unref();
++  };
++  // Widen the root to contain `file`. The root never narrows.
++  const cover = (file: string) => {
++    if (closed || !NodePath.isAbsolute(file)) return;
++    const directory = NodePath.dirname(file);
++    let next = root ?? directory;
++    while (NodePath.relative(next, directory).startsWith(".."))
++      next = NodePath.dirname(next);
++    if (next === root) return;
++    root = next;
++    observe();
++  };
++  const coverage: rolldown.Plugin = {
++    name: "alchemy:watch-sources",
++    load: {
++      filter: { id: { exclude: /[\\/]node_modules[\\/]/ } },
++      handler(id) {
++        if (!NodePath.isAbsolute(id)) return;
++        loaded.set(id, stamp(id));
++        cover(id);
++      },
++    },
++  };
++  // Adopt the build's graph; true when a source changed after the build
++  // read it, or a change during the build affects the graph.
++  const settle = (next: ReadonlyArray<string>, failed: boolean) => {
++    const sources = next.filter(
++      (file) =>
++        NodePath.isAbsolute(file) &&
++        !file.split(NodePath.sep).includes("node_modules"),
++    );
++    // A failed build may stop before loading every module; keep watching
++    // the last complete graph so fixing any of its files rebuilds.
++    files = new Set(failed ? [...files, ...sources] : sources);
++    // Watch files a plugin added without rolldown loading them.
++    for (const file of files) cover(file);
++    directories = new Set();
++    for (const file of files) {
++      let directory = NodePath.dirname(file);
++      while (directory !== watched && !directories.has(directory)) {
++        directories.add(directory);
++        directory = NodePath.dirname(directory);
++      }
++    }
++    for (const watcher of replaced) watcher.close();
++    replaced = [];
++    return edited() || [...changed].some(affects);
++  };
++  const rebuild = async () => {
++    let failed = false;
++    let next: ReadonlyArray<string> = [];
++    try {
++      // Plugins' `options` hooks rewrite `input` in place (the virtual
++      // entries wrap it); rolldown's own watcher runs them once, so each
++      // build here starts from a copy of the caller's options.
++      const bundle = await rolldown.rolldown({
++        ...inputOptions,
++        plugins: [coverage, inputOptions.plugins],
++      });
++      try {
++        await bundle.write(outputOptions);
++      } catch (error) {
++        failed = true;
++        fail(error);
++      } finally {
++        next = await bundle.watchFiles;
++        await bundle.close();
++      }
++    } catch (error) {
++      failed = true;
++      fail(error);
++    }
++    return settle(next, failed);
++  };
++  const run = (): void => {
++    if (building) {
++      again = true;
++      return;
++    }
++    changed = new Set();
++    loaded = new Map();
++    building = rebuild()
++      .catch((error) => {
++        fail(error);
++        return false;
++      })
++      .then((stale) => {
++        building = undefined;
++        built();
++        if ((stale || again) && !closed) {
++          again = false;
++          schedule();
++        }
++      });
++  };
++  const schedule = () => {
++    clearTimeout(timer);
++    timer = setTimeout(() => {
++      start();
++      run();
++    }, 50);
++  };
++  run();
++  return {
++    close: async () => {
++      closed = true;
++      clearTimeout(timer);
++      clearInterval(poller);
++      tree?.close();
++      for (const watcher of replaced) watcher.close();
++      await building;
++    },
++  };
++};
++
++/**
++ * Local Workers start their watchers together, and each first build loads
++ * that Worker's whole module graph. Rolldown already spreads one build over
++ * every core, so first builds running side by side only multiply memory:
++ * seventeen Executor Workers took the dev sidecar to 9.6 GB and the kernel
++ * killed it. First builds in this process take turns. Rebuilds after an edit
++ * and deploy builds do not wait.
++ *
++ * A turn ends when the first build ends or fails, when the watcher closes or
++ * cannot start, and at the latest after {@link firstBuildTurn}: a build that
++ * hangs keeps running, and the next one starts beside it. A watcher that
++ * closes while it waits leaves the queue.
++ */
++const firstBuildTurn = 60_000;
++const firstBuilds = (() => {
++  let running = false;
++  const waiting: Array<() => void> = [];
++  const next = () => {
++    const start = waiting.shift();
++    if (start) start();
++    else running = false;
++  };
++  return {
++    /** Joins the queue. `release` ends the turn or leaves the queue; it is idempotent. */
++    join: () => {
++      let state: "waiting" | "running" | "done" = "waiting";
++      let timer: ReturnType<typeof setTimeout> | undefined;
++      let started!: () => void;
++      const turn = new Promise<void>((resolve) => (started = resolve));
++      const release = () => {
++        if (state === "waiting") waiting.splice(waiting.indexOf(start), 1);
++        else if (state === "running") {
++          clearTimeout(timer);
++          next();
++        }
++        state = "done";
++      };
++      const start = () => {
++        state = "running";
++        timer = setTimeout(() => {
++          console.warn(
++            `alchemy: a first build has run for ${firstBuildTurn / 1000} s; the next one starts beside it.`,
++          );
++          release();
++        }, firstBuildTurn).unref();
++        started();
++      };
++      if (running) waiting.push(start);
++      else {
++        running = true;
++        start();
++      }
++      return { turn, release };
++    },
++  };
++})();
++
++/**
+  * Watch for changes in the bundle and return a stream of bundle output.
+  * @param inputOptions - The input options for the bundle.
+  * @param outputOptions - The output options for the bundle.
+@@ -271,10 +589,20 @@
+         readonly output: rolldown.OutputBundle;
+       }
+   >((queue) =>
+-    Effect.acquireRelease(
+-      Effect.promise(async () => {
++    Effect.gen(function* () {
++      // Waiting for the turn can be interrupted; closing the stream ends the
++      // turn or leaves the queue.
++      const { turn, release: built } = yield* Effect.acquireRelease(
++        Effect.sync(firstBuilds.join),
++        ({ release }) => Effect.sync(release),
++      );
++      yield* Effect.promise(() => turn);
++      const open = async (): Promise<{ close(): Promise<void> }> => {
+         const rolldown = await loadRolldown();
+-        const watcher = rolldown.watch({
++        const start = () => {
++          Queue.offerUnsafe(queue, { _tag: "Start" });
++        };
++        const options: rolldown.InputOptions = {
+           ...withAlchemyDefine(inputOptions),
+           plugins: [
+             inputOptions.plugins,
+@@ -282,11 +610,7 @@
+             // The watcher event listener does not receive the bundle output, so we grab it using a plugin.
+             {
+               name: "alchemy:watch-bundle",
+-              watchChange() {
+-                Queue.offerUnsafe(queue, {
+-                  _tag: "Start",
+-                });
+-              },
++              watchChange: start,
+               generateBundle(_outputOptions, bundle) {
+                 Queue.offerUnsafe(queue, {
+                   _tag: "Success",
+@@ -295,6 +619,23 @@
+               },
+             },
+           ],
++        };
++        if (process.platform === "darwin") {
++          return watchModuleTree(
++            rolldown,
++            options,
++            withDceDefault(outputOptions),
++            start,
++            (error) =>
++              Queue.offerUnsafe(queue, {
++                _tag: "Error",
++                error: bundleErrorFromUnknown(error),
++              }),
++            built,
++          );
++        }
++        const watcher = rolldown.watch({
++          ...options,
+           watch: {
+             // Watching the full module graph of an Effect worker (all of
+             // `effect`, `alchemy`, `@distilled.cloud/*`) registers thousands
+@@ -309,19 +650,32 @@
+         });
+         watcher.on("event", (event) => {
+           if (event.code === "ERROR") {
++            built();
+             Queue.offerUnsafe(queue, {
+               _tag: "Error",
+               error: bundleErrorFromUnknown(event.error),
+             });
+           } else if (event.code === "BUNDLE_END") {
++            built();
+             // This must be called to avoid resource leaks.
+             event.result.close().catch(() => {});
+           }
+         });
+         return watcher;
+-      }),
+-      (watcher) => Effect.promise(() => watcher.close()),
+-    ),
++      };
++      yield* Effect.acquireRelease(
++        Effect.tryPromise({ try: open, catch: bundleErrorFromUnknown }),
++        (watcher) => Effect.promise(() => watcher.close()),
++      ).pipe(
++        // A watcher that cannot start reports why and gives its turn back.
++        Effect.catch((error) =>
++          Effect.sync(() => {
++            built();
++            Queue.offerUnsafe(queue, { _tag: "Error", error });
++          }),
++        ),
++      );
++    }),
+   ).pipe(
+     Stream.mapEffect((event) =>
+       Effect.gen(function* () {

@@ -1,6 +1,6 @@
 /** Durable lifecycle handoff, committed by the same transaction as auth changes. */
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 /** Install the current lifecycle queue after auth tables. Never backfill existing users or jobs. */
 export const migrateProvisioning = Effect.gen(function* () {

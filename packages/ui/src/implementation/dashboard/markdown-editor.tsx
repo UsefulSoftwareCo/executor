@@ -51,7 +51,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { HighlighterCore } from "shiki/core";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/button.tsx";
@@ -64,7 +64,7 @@ import { markdownProse } from "./markdown-prose.ts";
 
 /** Editing-only additions: code block colors, inline code chips, quotes, rules and GFM task items. */
 const editorProse =
-  "[&_.ProseMirror]:min-h-40 [&_.ProseMirror]:outline-none [&_.ProseMirror]:before:content-[attr(data-placeholder)] [&_.ProseMirror]:before:float-left [&_.ProseMirror]:before:h-0 [&_.ProseMirror]:before:pointer-events-none [&_.ProseMirror]:before:text-muted-foreground [&_:not(pre)>code]:rounded [&_:not(pre)>code]:bg-muted [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5 [&_blockquote]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:text-muted-foreground [&_hr]:my-6 [&_a]:underline [&_li>p]:my-1 [&_td>p]:my-0 [&_th>p]:my-0 [&_li[data-item-type=task]]:list-none [&_li[data-item-type=task]]:before:mr-2 [&_li[data-item-type=task]]:before:content-['☐'] [&_li[data-item-type=task][data-checked=true]]:before:content-['☑'] [&_li[data-item-type=task]>p]:inline [&_.selectedCell]:bg-accent [@media(prefers-color-scheme:_dark)]:[&_pre_span[style]]:text-[color:var(--shiki-dark)]!";
+  "[&_.ProseMirror]:min-h-40 [&_.ProseMirror]:outline-none [&_.ProseMirror]:before:content-[attr(data-placeholder)] [&_.ProseMirror]:before:float-left [&_.ProseMirror]:before:h-0 [&_.ProseMirror]:before:pointer-events-none [&_.ProseMirror]:before:text-muted-foreground [&_blockquote]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:pl-4 [&_blockquote]:text-muted-foreground [&_hr]:my-6 [&_a]:underline [&_[data-spread=false]>li>p]:my-0 [&_td>p]:my-0 [&_th>p]:my-0 [&_li[data-item-type=task]]:list-none [&_li[data-item-type=task]]:before:mr-2 [&_li[data-item-type=task]]:before:content-['☐'] [&_li[data-item-type=task][data-checked=true]]:before:content-['☑'] [&_li[data-item-type=task]>p]:inline [&_.selectedCell]:bg-accent [@media(prefers-color-scheme:_dark)]:[&_pre_span[style]]:text-[color:var(--shiki-dark)]!";
 
 /** The GFM preset gives title-less images a null title, which the schema rejects and drops. */
 const imageTitle = $remark("imageTitle", () => () => (tree) => {

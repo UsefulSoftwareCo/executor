@@ -1,6 +1,6 @@
 /** Migration plans, options, and storage adapter contracts. */
 import type { Effect, Option, Result } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { SqlError } from "effect/sql/SqlError";
 import type { MigrationError } from "./errors.ts";
 import type { LibraryConfig } from "./adapter.ts";
 import type { Provider, RelationMode } from "./provider.ts";

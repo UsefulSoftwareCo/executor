@@ -1,55 +1,32 @@
-import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
-import { AppManagementHost } from "@executor-js/app-management";
-import { createAppRegistry, makeRegistryStorage, storedRegistry } from "@executor-js/app-registry";
 /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { makeRegistryStorage } from "@executor-js/app-registry";
+import { clientMetadataSetting, hostedOAuthClientName } from "@executor-js/hosted-server";
+import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import {
-  HostedExecutor,
-  ScheduledAuthority,
-  makeScheduledAuthority,
-  OrganizationIcons,
-  makeOrganizationIcons,
-  OrganizationDefaults,
-  makeOrganizationRemovals,
-  OrganizationRemovals,
-  OrganizationRemovalUnavailable,
-  OrganizationTombstones,
-  withExecutorAnalytics,
-} from "@executor-js/hosted-server";
-import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
-import { postgresExecutor } from "@executor-js/hosted-server/database";
-import type { HostedApiDocument } from "@executor-js/hosted-server/contracts";
-import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
-import {
-  AppRepositoryRecovery,
-  recoverAppRepositories,
+  createExecutor,
+  httpEventSender,
   StorageError,
-  BlobStore,
-  defaultToolListingPolicy,
   makeExecutorStorage,
 } from "@executor-js/sdk/core";
+import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+import { SqlClient } from "effect/sql";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Config, Context, Effect, FiberSet, Layer, Option } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { SqlClient } from "effect/unstable/sql";
-import { cloudBuildAsset } from "../implementation/build-storage.ts";
-import { cachedBuildAssets } from "../implementation/asset-cache.ts";
-import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
-import { UiFailed } from "apps/ui/contracts";
+import { Context, Effect, FiberSet, Option } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { cachedDeploymentSources } from "../implementation/deployment-source-cache.ts";
-import { cloudAppSources } from "./source.ts";
+import type { AppSources } from "./source.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
-import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { cloudBlobs } from "./blobs.ts";
-import { cloudWorkflows } from "./workflows.ts";
+import { cloudWorkflows } from "./workflow-runtime.ts";
 import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
 import { cloudSecrets } from "./secrets.ts";
-import { cloudOrigin } from "./stage.ts";
+import { cloudOrigin, cloudResourceOrigins } from "./stage.ts";
+import { accountOAuthStatePrefix } from "../contracts/edge-paths.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
 /**
@@ -64,35 +41,31 @@ export const cloudEgress = Effect.gen(function* () {
 });
 
 /**
- * Callers select the API-owned token coordinator explicitly, including across Workers.
- * The event's SQL client comes from {@link InvocationDatabase}, shared with Better Auth.
- * Its SQL.PostgresLayer currently returns a lazy proxy: FumaDB's synchronous Statement.join
- * cannot inspect those deferred fragments. Resolve the native client before composing ORM
- * queries, using Alchemy's execution memo rather than an isolate-global pool.
+ * Build the executor from cloud inputs. Callers choose the app source backend: Git through the
+ * API-owned token coordinator, or none where no source is read. The event's SQL client comes from
+ * {@link InvocationDatabase}, shared with Better Auth. Its SQL.PostgresLayer currently returns a
+ * lazy proxy: FumaDB's synchronous Statement.join cannot inspect those deferred fragments, so the
+ * native client is resolved before composing ORM queries, through Alchemy's execution memo rather
+ * than an isolate-global pool. Product services live in `product.ts`; nothing here decides access.
  */
 export const cloudExecutor = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
-  tokens: ArtifactsTokens,
+  appSources: AppSources,
 ) {
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
   const origin = yield* cloudOrigin.pipe(Effect.orDie);
+  // New app webhooks register on the canonical API origin (`api.` once it is canonical); every
+  // origin keeps delivering, so existing subscriptions keep the URL they stored.
+  const webhookOrigin = (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0];
   const egress = yield* cloudEgress;
-  const clientMetadataUrl = yield* Config.String("EXECUTOR_OAUTH_CLIENT_METADATA_URL").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  );
+  // Deployed stages bind this to their own document; see `clientMetadataBinding`.
+  const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
-  const assets = yield* makeExecutionMemo(
-    cachedBuildAssets(origin, (build, path) =>
-      cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
-    ),
-  );
-  const appSources = yield* cloudAppSources(tokens);
   // App storage, hosted permission checks and Better Auth share the event's client.
-  const database = yield* InvocationDatabase;
+  const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
   const executor = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const key = yield* secrets.encryptionKey;
@@ -100,8 +73,10 @@ export const cloudExecutor = Effect.fn(function* (
       const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
         Effect.provideContext(services),
       );
-      // Stale metadata refreshes beside the request, inside this event's lifetime.
-      // Work offered once the event is closing is refused, so its caller releases what it holds.
+      // Stale metadata refreshes and tool listings nobody waits for run beside the request, inside
+      // this event's lifetime: until 20 s after it closes, when the remaining work is interrupted.
+      // Work offered once the event is closing is refused, so its caller releases what it holds,
+      // and work it accepted always has those 20 s.
       const refreshes = yield* FiberSet.make();
       let closing = false;
       yield* Effect.addFinalizer(() =>
@@ -117,161 +92,48 @@ export const cloudExecutor = Effect.fn(function* (
         Effect.suspend(() =>
           closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
         );
-      const { sources, repositories } = appSources(background);
-      const registryStorage = yield* makeRegistryStorage.pipe(Effect.provideContext(services));
-      const registry = storedRegistry(registryStorage, sources, origin);
-      const runtime = yield* makeRuntime;
-      const executor = yield* postgresExecutor(
-        key,
-        runtime,
-        yield* cachedDeploymentSources(origin, blobs),
-        sources,
-        {
+      return yield* createExecutor({
+        database: storage,
+        secret: key,
+        origin,
+        webhookOrigin,
+        git: appSources(background),
+        blobs: yield* cachedDeploymentSources(origin, blobs),
+        runtime: yield* makeRuntime,
+        workflows,
+        registry: { storage: yield* makeRegistryStorage.pipe(Effect.provideContext(services)) },
+        hooks: yield* hostedResourceLifecycle.pipe(Effect.provideContext(services)),
+        oauth: {
           httpClient: egress.client,
+          clientName: hostedOAuthClientName,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
+          // v1's edge forwards `executor.sh/api/oauth/callback` to v2 by this state prefix.
+          statePrefix: accountOAuthStatePrefix,
         },
-        {
-          storage,
-          webhookOrigin: origin,
-          workflows,
+        cache: {
           // One store per isolate, shared by every executor built in it.
-          declarations: isolateDeclarations,
+          memory: isolateDeclarations,
           // Every isolate reads the results each app's supervisor keeps when its own store misses.
-          durableDeclarations: durableDeclarations(databases),
-          // Background work lasts at most 20 s after its event closes. A listing nobody waits for
-          // stops well inside that, so a stalled app is remembered as timed out, not interrupted.
-          toolListings: { ...defaultToolListingPolicy, loadMillis: 15_000 },
-          background,
+          durable: durableDeclarations(databases),
         },
-      ).pipe(Effect.provideContext(services), Effect.provide(BrowserCrypto.layer));
-      const scheduleAuthority = yield* makeScheduledAuthority(executor).pipe(
-        Effect.provideContext(services),
-      );
-      return {
-        executor,
-        storage,
-        scheduleAuthority,
-        sources,
-        management: {
-          executor,
-          sources,
-          repositories,
-          registry,
-          blobs,
-          publisher: createAppRegistry({ storage: registryStorage, executor, sources }),
-          access: yield* hostedAppCapabilities.pipe(Effect.provideContext(services)),
+        // A tool listing nobody waits for runs until the event's background work ends, and is
+        // remembered as timed out if it has not finished by then.
+        background,
+        events: {
+          sender: httpEventSender(egress),
+          // The same event's client, which hosted permission checks already share.
+          authorize: hostedEventAuthority(
+            Effect.succeed(Context.get(services, SqlClient.SqlClient)),
+          ),
+          // Deployed Workers cannot reach loopback; the local development Worker can.
+          allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
-      };
+      }).pipe(Effect.provide(BrowserCrypto.layer));
     }).pipe(
       Effect.mapError(() => new StorageError()),
       Effect.withSpan("runtime.cloud.executor.initialize"),
     ),
   );
-  // Serving an app does not install the default management app. Keep its API
-  // document, templates and authoring files off the app-serving startup path.
-  // The document depends only on the origin, so the isolate keeps the first one
-  // generated for later provisioning runs instead of regenerating it per execution.
-  let document: HostedApiDocument | undefined;
-  const defaults = yield* makeExecutionMemo(
-    Effect.gen(function* () {
-      const { defaultApp, executorCloudApiDocument } = yield* Effect.promise(
-        () => import("../implementation/default-app.ts"),
-      );
-      const resources = yield* executor;
-      return yield* defaultApp(
-        resources.executor,
-        origin,
-        resources.storage,
-        Effect.sync(() => (document ??= executorCloudApiDocument(origin))),
-      ).pipe(Effect.provideContext(yield* database));
-    }).pipe(
-      Effect.mapError(() => new StorageError()),
-      Effect.withSpan("runtime.cloud.defaults.initialize"),
-    ),
-  );
-  // Removal tombstones share the same client. The request check that hides a
-  // removed organization and the workflow's writes read the same rows.
-  const removals = makeOrganizationRemovals(
-    database.pipe(
-      Effect.map((services) => Context.get(services, SqlClient.SqlClient)),
-      Effect.provide(RuntimeContext.phantom),
-      Effect.mapError(() => new OrganizationRemovalUnavailable()),
-    ),
-  );
-  // Alchemy's runtime requirement marks event-only operations; it is not a
-  // service supplied to request fibers. Keep the live caller scope and tracer.
-  return Layer.mergeAll(
-    Layer.succeed(OrganizationRemovals, removals.removals),
-    Layer.succeed(OrganizationTombstones, removals.tombstones),
-    Layer.succeed(
-      AppRepositoryRecovery,
-      executor.pipe(
-        Effect.flatMap((resources) =>
-          recoverAppRepositories({
-            database: resources.storage,
-            sources: resources.sources,
-            blobs,
-          }),
-        ),
-        Effect.provide(RuntimeContext.phantom),
-      ),
-    ),
-    Layer.succeed(
-      GroupDatabase,
-      database.pipe(
-        Effect.map((services) => Context.get(services, SqlClient.SqlClient)),
-        Effect.provide(RuntimeContext.phantom),
-        Effect.mapError(() => new GroupsUnavailable()),
-      ),
-    ),
-    Layer.succeed(ScheduledAuthority, (target) =>
-      executor.pipe(
-        Effect.flatMap((resources) => resources.scheduleAuthority(target)),
-        Effect.provide(RuntimeContext.phantom),
-      ),
-    ),
-    Layer.succeed(
-      AppDomainDatabase,
-      database.pipe(
-        Effect.map((services) => Context.get(services, SqlClient.SqlClient)),
-        Effect.provide(RuntimeContext.phantom),
-        Effect.mapError(() => new UiFailed({ reason: "unavailable" })),
-      ),
-    ),
-    Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),
-    Layer.succeed(HostedAppRuntime, {
-      asset: ({ build, path }) =>
-        assets.pipe(
-          Effect.flatMap((read) => read(build, path)),
-          Effect.provide(RuntimeContext.phantom),
-        ),
-    }),
-    Layer.succeed(
-      AppManagementHost,
-      executor.pipe(
-        Effect.map((resources) => ({
-          ...resources.management,
-          executor: withExecutorAnalytics(resources.management.executor),
-        })),
-        Effect.provide(RuntimeContext.phantom),
-      ),
-    ),
-    Layer.succeed(
-      HostedExecutor,
-      executor.pipe(
-        Effect.map((resources) => withExecutorAnalytics(resources.executor)),
-        Effect.provide(RuntimeContext.phantom),
-      ),
-    ),
-    Layer.succeed(
-      OrganizationDefaults,
-      OrganizationDefaults.of((organization, user) =>
-        defaults.pipe(
-          Effect.flatMap((initialize) => initialize(organization, user)),
-          Effect.provide(RuntimeContext.phantom),
-        ),
-      ),
-    ),
-  );
+  return { executor, database };
 });

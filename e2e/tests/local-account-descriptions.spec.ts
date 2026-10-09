@@ -29,6 +29,13 @@ const Executed = Schema.Struct({
     ok: Schema.Literal(true),
     value: Schema.Struct({
       items: Schema.Array(Schema.Struct({ path: Schema.String, description: Schema.String })),
+      namespaces: Schema.Array(
+        Schema.Struct({
+          path: Schema.String,
+          profile: Schema.optional(Schema.String),
+          accounts: Schema.optional(Schema.String),
+        }),
+      ),
     }),
   }),
 });
@@ -137,9 +144,10 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         );
         expect(selected.status).toBe(200);
 
-        // Agents read the selected account's label and description with each of its tools.
+        // Agents read the selected account's label and description once, with the profile's
+        // namespace, rather than with each of its tools.
         const client = yield* mcp.connect(target.apiKey, "local-account-descriptions");
-        const toolDescription = (step: string) =>
+        const searched = (step: string) =>
           client
             .use(step, (client, signal) =>
               client.callTool(
@@ -157,14 +165,22 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
               Effect.flatMap((result) =>
                 Schema.decodeUnknownEffect(Executed)(result.structuredContent),
               ),
-              Effect.map(
-                ({ execution }) =>
-                  execution.value.items.find((item) => item.path.endsWith(".records"))?.description,
-              ),
+              Effect.map(({ execution }) => {
+                const item = execution.value.items.find((item) => item.path.endsWith(".records"));
+                return {
+                  description: item?.description,
+                  namespace: execution.value.namespaces.find(
+                    (namespace) => item !== undefined && item.path.startsWith(`${namespace.path}.`),
+                  ),
+                };
+              }),
             );
-        expect(yield* toolDescription("Search with a described account")).toContain(
-          "(Work key) [Work key: Reads only; use the sandbox account for writes.]: List described fixture records",
-        );
+        const described = yield* searched("Search with a described account");
+        expect(described.description).toBe("List described fixture records");
+        expect(described.namespace).toMatchObject({
+          profile: "Work key",
+          accounts: "Work key: Reads only; use the sandbox account for writes.",
+        });
 
         // Renaming keeps the description; the agent reads the new label with it.
         const renamed = yield* body(
@@ -176,9 +192,10 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           label: "Production key",
           description: "Reads only;\n  use the sandbox account for writes.",
         });
-        expect(yield* toolDescription("Search after renaming")).toContain(
-          "(Production key) [Production key: Reads only; use the sandbox account for writes.]: List described fixture records",
-        );
+        expect((yield* searched("Search after renaming")).namespace).toMatchObject({
+          profile: "Production key",
+          accounts: "Production key: Reads only; use the sandbox account for writes.",
+        });
 
         // A null description removes it; the label stays and agents see no description.
         const cleared = yield* body(
@@ -188,9 +205,10 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         expect(cleared).toEqual({ id: created.id, label: "Production key", description: null });
         const read = yield* body(Account, yield* agent.send("GET", `/v1/accounts/${created.id}`));
         expect(read.description).toBeNull();
-        const plain = yield* toolDescription("Search after clearing the description");
-        expect(plain).toContain("(Production key): List described fixture records");
-        expect(plain).not.toContain("[");
+        const plain = yield* searched("Search after clearing the description");
+        expect(plain.description).toBe("List described fixture records");
+        expect(plain.namespace?.profile).toBe("Production key");
+        expect(plain.namespace).not.toHaveProperty("accounts");
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

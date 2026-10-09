@@ -4,7 +4,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
@@ -15,6 +15,8 @@ import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
+/** React reports a server/browser markup difference with one of these messages or codes. */
+const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Connection = Schema.Struct({
   state: Schema.Struct({
@@ -118,6 +120,30 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
         yield* browser.omitNetworkTrace;
         // A fresh browser context: it shares the session cookie but nothing from the start.
         yield* browser.login(actors.owner);
+        // The server renders the callback page itself. A page that throws while the server
+        // renders it is sent as the router's loading placeholder and only appears after the
+        // browser renders it again. Rendering reads nothing, so the link still works afterwards.
+        const html = yield* browser.use("Request the sign-in link's document", (page) =>
+          page
+            .context()
+            .request.get(`${signIn.callbackUrl.pathname}${signIn.callbackUrl.search}`, {
+              headers: { accept: "text/html" },
+            })
+            .then((document) => document.text()),
+        );
+        expect(html).toContain("Connecting account…");
+        expect(html).toContain("Finishing sign-in…");
+        const failures: string[] = [];
+        yield* browser.use("Watch hydration", (page) => {
+          page.on("console", (message) => {
+            if (message.type() === "error" && hydrationFailure.test(message.text()))
+              failures.push(message.text());
+          });
+          page.on("pageerror", (error) => {
+            if (hydrationFailure.test(String(error))) failures.push(String(error));
+          });
+          return Promise.resolve();
+        });
         const outcome = yield* openLink(
           "Open the emailed sign-in link in a new tab",
           signIn.callbackUrl,
@@ -125,6 +151,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
           signIn.app,
         );
         expect(outcome).toEqual({ connected: true, alert: null });
+        expect(failures).toEqual([]);
         const completed = yield* signIn.read;
         expect(completed.state.status).toBe("completed");
         if (completed.state.account !== undefined)

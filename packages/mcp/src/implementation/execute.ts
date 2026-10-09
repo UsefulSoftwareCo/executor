@@ -1,10 +1,11 @@
 /** Build a live catalog and execute code against configured apps. */
-import { CodeMode, Tool, toolError } from "@opencode-ai/codemode";
+import { CodeMode, Namespace, Tool, toolError } from "@opencode-ai/codemode";
 import { tokTypes, tokenizer, type Token } from "acorn";
 import {
   Json,
   AppSlug,
   JsonObject,
+  routerFailure,
   ToolApprovalRequired,
   ToolListingTimedOut,
   type App,
@@ -14,7 +15,7 @@ import {
   type Tool as AppTool,
   type ToolRouter,
 } from "@executor-js/sdk/core";
-import { Clock, Deferred, Duration, Effect, Option, Schema, Semaphore } from "effect";
+import { Clock, Deferred, Duration, Effect, JsonPointer, Option, Schema, Semaphore } from "effect";
 import { diagnostic, executionDiagnostic } from "./diagnostics.ts";
 import type { McpTarget } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
@@ -22,19 +23,100 @@ import {
   AppDiscoveryTimedOut,
   AppProfileRequired,
   defaultMcpRuntimeLimits,
+  defaultSearchLimits,
+  DescribeInput,
+  DescribeResult,
   SearchInput,
   SearchResult,
+  SearchItem,
+  searchPageBytes,
   type McpLimits,
+  type SearchNamespace,
   type McpToolCall,
   type UnavailableApp,
 } from "../contracts/execute.ts";
 
 type Catalog = Record<string, Record<string, Tool.Tool>>;
 
-// Equivalent JSON Schema normalization: the upstream signature renderer only
-// renders index signatures when additionalProperties is a schema, rather than true.
+/** Keywords that only document a schema; they never change which values it accepts. */
+const annotations = new Set([
+  "description",
+  "title",
+  "default",
+  "examples",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+]);
+/** Keywords that also judge `null`, so they cannot sit beside a `null` type unchanged. */
+const nullConstraints = new Set([
+  "$ref",
+  "$defs",
+  "definitions",
+  "const",
+  "enum",
+  "not",
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "if",
+  "then",
+  "else",
+]);
+const isNullSchema = (schema: Tool.JsonSchema) =>
+  schema.type === "null" && Object.keys(schema).length === 1;
+
+/**
+ * Optional and nullable values arrive as `anyOf: [value, { type: "null" }]`. The signature
+ * renderer documents only a property's own keywords, so the value's pattern, bounds, format and
+ * description would be lost. `{ ...value, type: [value.type, "null"] }` accepts the same values,
+ * because each remaining keyword of the value applies only to its own type, and it renders the
+ * same TypeScript type with those constraints in its documentation.
+ */
+function documentedNullable(schema: Tool.JsonSchema): Tool.JsonSchema {
+  const { anyOf, oneOf, ...rest } = schema;
+  const members = anyOf === undefined ? oneOf : oneOf === undefined ? anyOf : undefined;
+  if (members?.length !== 2 || !members.some(isNullSchema)) return schema;
+  const value = members.find((member) => !isNullSchema(member));
+  if (
+    value === undefined ||
+    typeof value.type !== "string" ||
+    value.type === "null" ||
+    Object.keys(value).some((key) => nullConstraints.has(key)) ||
+    !Object.keys(rest).every((key) => annotations.has(key))
+  )
+    return schema;
+  // The property's own documentation describes this use of the value, so it takes precedence.
+  return { ...value, ...rest, type: [value.type, "null"] };
+}
+
+/**
+ * Effect emits a property's documentation as `allOf: [{ description }]` when the property also
+ * has constraints JSON Schema cannot express. A member holding only annotations accepts every
+ * value, so moving its keywords onto the schema accepts the same values and puts the
+ * documentation where the signature renderer reads it. Members whose keywords the schema
+ * already has stay in `allOf`.
+ */
+function documentedAllOf(schema: Tool.JsonSchema): Tool.JsonSchema {
+  const { allOf, ...rest } = schema;
+  if (allOf === undefined) return schema;
+  let merged: Tool.JsonSchema = rest;
+  const kept: Array<Tool.JsonSchema> = [];
+  for (const member of allOf) {
+    const keys = Object.keys(member);
+    if (keys.length > 0 && keys.every((key) => annotations.has(key) && !Object.hasOwn(merged, key)))
+      merged = { ...merged, ...member };
+    else kept.push(member);
+  }
+  return kept.length === 0 ? merged : { ...merged, allOf: kept };
+}
+const documented = (schema: Tool.JsonSchema) => documentedNullable(documentedAllOf(schema));
+
+// Equivalent JSON Schema normalizations: the upstream signature renderer only renders index
+// signatures when additionalProperties is a schema, rather than true, and documents only a
+// property's own keywords.
 function renderableSchema(input: Tool.JsonSchema): Tool.JsonSchema {
-  return {
+  return documented({
     ...input,
     ...(input.type === "object" && input.additionalProperties !== false
       ? {
@@ -62,11 +144,24 @@ function renderableSchema(input: Tool.JsonSchema): Tool.JsonSchema {
       ? {}
       : {
           $defs: Object.fromEntries(
-            Object.entries(input.$defs).map(([name, schema]) => [name, renderableSchema(schema)]),
+            Object.entries(input.$defs).map(([name, schema]) => [name, renderedDefinition(schema)]),
           ),
         }),
-  };
+  });
 }
+/**
+ * Rendered `$defs` entries by definition. A kept listing's tools share one object per distinct
+ * definition, so each renders once, and listings are never mutated. A boolean schema is no key.
+ */
+const renderedDefinitions = new WeakMap<Tool.JsonSchema, Tool.JsonSchema>();
+const renderedDefinition = (schema: Tool.JsonSchema) => {
+  if (typeof schema !== "object" || schema === null) return renderableSchema(schema);
+  const known = renderedDefinitions.get(schema);
+  if (known !== undefined) return known;
+  const rendered = renderableSchema(schema);
+  renderedDefinitions.set(schema, rendered);
+  return rendered;
+};
 
 // Codemode treats dots as namespace separators. Leave ordinary names readable;
 // only escape characters needed to distinguish inaccessible/reserved segments.
@@ -80,10 +175,6 @@ function toolPath(name: string): string {
     })
     .join(".");
 }
-
-/** A tool's group, as shown in search results: the router's title, or its path. */
-const groupLabel = (router: ToolRouter | undefined) =>
-  router === undefined ? "" : ` / ${router.title ?? router.path}`;
 
 function listTools<E extends Error>(
   backend: McpBackend<E>,
@@ -138,32 +229,523 @@ const renderSchemas = (tool: AppTool) =>
     renderedSchemas.set(tool, rendered);
     return rendered;
   });
-/** One loaded target of an app, as its search descriptions depend on it. */
-type DescribedPart = {
-  readonly namespace: string;
-  readonly description: string;
-  readonly tools: ReadonlyArray<AppTool>;
+type RenderedSchemas = Effect.Success<ReturnType<typeof renderSchemas>>;
+
+/**
+ * A loaded target: an app's own tools, or one of its profiles. Search results list each target
+ * once instead of labelling every tool with it.
+ */
+type Target = {
+  readonly slug: string;
+  /** Canonical path below `tools`: the slug, or `slug.profiles.<id>`. */
+  readonly path: string;
+  readonly app: string;
+  readonly profile?: string;
+  readonly accounts?: string;
+  /** The target's routers by router path. The root router has path "". */
+  readonly routers: ReadonlyMap<string, ToolRouter>;
 };
-/** An app's rendered search descriptions, keyed by its first listed tool. */
-const renderedDescriptions = new WeakMap<
-  AppTool,
-  {
-    readonly slug: string;
-    readonly parts: ReadonlyArray<DescribedPart>;
-    readonly described: ReadonlyArray<CodeMode.ToolDescription>;
+/** One callable tool of a loaded target. */
+type Entry = {
+  /** Canonical path below `tools`. */
+  readonly path: string;
+  readonly tool: AppTool;
+  readonly schemas: RenderedSchemas;
+  /** The program's own tool at this path. */
+  readonly program: Tool.Tool;
+  readonly target: Target;
+};
+/** A search candidate: one tool, and the same tool under the app's other profiles. */
+type Candidate = { readonly entry: Entry; readonly others: ReadonlyArray<Entry> };
+
+/** What makes two profiles' tools the same tool for search: name aside, everything agents read. */
+const identities = new WeakMap<AppTool, string>();
+const identity = (tool: AppTool) => {
+  const known = identities.get(tool);
+  if (known !== undefined) return known;
+  const computed = JSON.stringify([
+    tool.description,
+    tool.router ?? null,
+    tool.inputSchema,
+    tool.outputSchema ?? null,
+  ]);
+  identities.set(tool, computed);
+  return computed;
+};
+
+/**
+ * Merge each tool that several of an app's targets expose with the same signature into one
+ * candidate at its first path. `entries` are in path order.
+ */
+const candidates = (entries: ReadonlyArray<Entry>): ReadonlyArray<Candidate> => {
+  const named = new Map<string, Array<Entry>>();
+  for (const entry of entries) {
+    const key = `${entry.target.slug}\u0000${entry.tool.name}`;
+    const known = named.get(key);
+    if (known === undefined) named.set(key, [entry]);
+    else known.push(entry);
   }
->();
-const sameParts = (left: ReadonlyArray<DescribedPart>, right: ReadonlyArray<DescribedPart>) =>
-  left.length === right.length &&
-  left.every((part, index) => {
-    const other = right[index];
-    return (
-      other !== undefined &&
-      part.namespace === other.namespace &&
-      part.description === other.description &&
-      part.tools.length === other.tools.length &&
-      part.tools.every((tool, position) => tool === other.tools[position])
+  const others = new Map<Entry, Array<Entry>>();
+  const merged = new Set<Entry>();
+  for (const group of named.values()) {
+    if (group.length < 2) continue;
+    const first = new Map<string, Entry>();
+    for (const entry of group) {
+      const kept = first.get(identity(entry.tool));
+      if (kept === undefined) {
+        first.set(identity(entry.tool), entry);
+        continue;
+      }
+      merged.add(entry);
+      const known = others.get(kept);
+      if (known === undefined) others.set(kept, [entry]);
+      else known.push(entry);
+    }
+  }
+  return entries.flatMap((entry) =>
+    merged.has(entry) ? [] : [{ entry, others: others.get(entry) ?? [] }],
+  );
+};
+
+/** Text CodeMode's search matches for every tool below a namespace. */
+const labels = (...parts: ReadonlyArray<string | undefined>) =>
+  parts.filter((part): part is string => part !== undefined && part !== "").join(" ");
+
+/**
+ * The names and descriptions of a tool's top-level input properties, after a top-level reference:
+ * the input text CodeMode's search matches.
+ */
+const inputLabels = new WeakMap<AppTool, string>();
+const inputLabel = (entry: Entry) => {
+  const known = inputLabels.get(entry.tool);
+  if (known !== undefined) return known;
+  const { input } = entry.schemas;
+  const reference = input.$ref?.match(/^#\/(?:\$defs|definitions)\/([^/]+)$/)?.[1];
+  const properties =
+    input.$ref === undefined
+      ? input.properties
+      : reference === undefined
+        ? undefined
+        : { ...input.definitions, ...input.$defs }[JsonPointer.unescapeToken(reference)]
+            ?.properties;
+  const computed = labels(
+    ...Object.entries(properties ?? {}).flatMap(([name, property]) => [
+      name,
+      typeof property.description === "string" ? property.description : undefined,
+    ]),
+  );
+  inputLabels.set(entry.tool, computed);
+  return computed;
+};
+/** A stand-in that CodeMode ranks by its description, without rendering a signature. */
+const rankingStubs = new WeakMap<AppTool, Tool.Tool>();
+const rankingStub = (entry: Entry) => {
+  const known = rankingStubs.get(entry.tool);
+  if (known !== undefined) return known;
+  const stub = Tool.make({
+    description: entry.tool.description,
+    input: { type: "object" },
+    execute: () => Effect.void,
+  });
+  rankingStubs.set(entry.tool, stub);
+  return stub;
+};
+
+/**
+ * The tool tree CodeMode ranks: every candidate at its own path, with its other text as namespace
+ * descriptions, which CodeMode's search matches for each tool below them: the app's name, the
+ * profile's label and accounts, router titles, and on each tool's own node its input labels and a
+ * merged tool's other profiles. CodeMode matches input labels and namespace descriptions with the
+ * same weight, so the stand-ins rank as the tools would without rendering their signatures.
+ */
+const rankingTree = (ranked: ReadonlyArray<Candidate>) => {
+  const tree: Record<string, Tool.Tool | Namespace.Namespace> = Object.create(null);
+  const apps = new Map<string, { names: Array<string>; namespaces: Map<string, Array<string>> }>();
+  const seen = new Set<Target>();
+  for (const { entry, others } of ranked) {
+    const { target } = entry;
+    const app = apps.get(target.slug) ?? { names: [target.app], namespaces: new Map() };
+    apps.set(target.slug, app);
+    // Namespaces are relative to the app's own namespace.
+    const note = (path: string, text: string) => {
+      if (text === "") return;
+      const key = path.slice(target.slug.length + 1);
+      app.namespaces.set(key, [...(app.namespaces.get(key) ?? []), text]);
+    };
+    if (!seen.has(target)) {
+      seen.add(target);
+      const root = target.routers.get("");
+      const own = labels(target.profile, target.accounts, root?.title, root?.description);
+      if (target.path === target.slug) app.names.push(own);
+      else note(target.path, own);
+      for (const [path, router] of target.routers)
+        if (path !== "")
+          note(`${target.path}.${toolPath(path)}`, labels(router.title, router.description));
+    }
+    note(
+      entry.path,
+      labels(
+        inputLabel(entry),
+        ...others.flatMap((other) => [other.target.profile, other.target.accounts]),
+      ),
     );
+    tree[entry.path] = rankingStub(entry);
+  }
+  // Each app's namespace and its tools' paths below it meet in one CodeMode node per segment.
+  for (const [slug, app] of apps) {
+    const name = labels(...app.names);
+    tree[slug] = Namespace.make({
+      ...(name === "" ? {} : { description: name }),
+      tools: Object.fromEntries(
+        [...app.namespaces].map(([path, texts]) => [
+          path,
+          Namespace.make({ description: labels(...texts), tools: {} }),
+        ]),
+      ),
+    });
+  }
+  return tree;
+};
+
+const RankedPage = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ path: Schema.String })),
+  remaining: Schema.Int,
+});
+type RankRequest = { readonly query: string; readonly offset: number; readonly limit: number };
+/** CodeMode's search over one set of candidates, as the paths it ranks for a request. */
+type Ranking = (
+  request: RankRequest,
+) => Effect.Effect<{ readonly paths: ReadonlyArray<string>; readonly remaining: number }>;
+/**
+ * Rank candidates with CodeMode's own `search()`, the same ranking a program's global `search()`
+ * uses. The pinned CodeMode exports no ranking function, so a one-line program calls it. The
+ * ranking holds only listing data, never an execution's own objects.
+ */
+const ranking = (ranked: ReadonlyArray<Candidate>): Ranking => {
+  const runtime = ranked.length === 0 ? undefined : CodeMode.make({ tools: rankingTree(ranked) });
+  return (request) =>
+    Effect.gen(function* () {
+      if (runtime === undefined) return { paths: [], remaining: 0 };
+      const result = yield* runtime.execute(`return search(${JSON.stringify(request)});`);
+      if (!result.ok) return yield* Effect.die(result.error.message);
+      const page = yield* Schema.decodeUnknownEffect(RankedPage)(result.value).pipe(Effect.orDie);
+      return { paths: page.items.map((item) => item.path), remaining: page.remaining };
+    });
+};
+/** Everything a ranking depends on: each candidate's path and listed tool, and every label. */
+const rankingBasis = (ranked: ReadonlyArray<Candidate>) => {
+  const basis: Array<unknown> = [];
+  const seen = new Set<Target>();
+  for (const { entry, others } of ranked) {
+    basis.push(entry.path, entry.tool, others.length);
+    for (const other of others) basis.push(other.target.profile, other.target.accounts);
+    if (seen.has(entry.target)) continue;
+    seen.add(entry.target);
+    basis.push(entry.target.app, entry.target.profile, entry.target.accounts);
+    for (const router of entry.target.routers.values())
+      basis.push(router.path, router.title, router.description);
+  }
+  return basis;
+};
+/**
+ * Rankings reused across executions. A kept tool listing serves the same tool objects, so a
+ * ranking is kept by its first candidate's tool, reused while its basis is unchanged, and goes
+ * when the listing does. Each tool keeps the last few, for the namespaces searched below it.
+ */
+const keptRankings = new WeakMap<
+  AppTool,
+  ReadonlyArray<{ readonly basis: ReadonlyArray<unknown>; readonly ranking: Ranking }>
+>();
+const rankingFor = (ranked: ReadonlyArray<Candidate>) => {
+  const anchor = ranked[0]?.entry.tool;
+  if (anchor === undefined) return ranking(ranked);
+  const basis = rankingBasis(ranked);
+  const kept = keptRankings.get(anchor) ?? [];
+  const same = kept.find(
+    (item) =>
+      item.basis.length === basis.length &&
+      item.basis.every((value, index) => value === basis[index]),
+  );
+  if (same !== undefined) return same.ranking;
+  const made = ranking(ranked);
+  keptRankings.set(anchor, [{ basis, ranking: made }, ...kept].slice(0, 4));
+  return made;
+};
+/** Ranks this execution's candidates and returns them in rank order. */
+const ranker = (ranked: ReadonlyArray<Candidate>) => {
+  const rank = rankingFor(ranked);
+  const byPath = new Map(
+    ranked.map((candidate) => [CodeMode.toolExpression(candidate.entry.path), candidate]),
+  );
+  return (request: RankRequest) =>
+    rank(request).pipe(
+      Effect.map(({ paths, remaining }) => ({
+        items: paths.flatMap((path) => {
+          const candidate = byPath.get(path);
+          return candidate === undefined ? [] : [candidate];
+        }),
+        remaining,
+      })),
+    );
+};
+type Ranker = ReturnType<typeof ranker>;
+
+/** CodeMode's signature for the schemas given, `(input: ...): Promise<...>`, without a path. */
+const signatureOf = (
+  input: Tool.JsonSchema,
+  output: Tool.JsonSchema | typeof Schema.Json | undefined,
+) => {
+  const [described] = CodeMode.make({
+    tools: {
+      t: Tool.make({ description: "", input, output, execute: () => Effect.die("render only") }),
+    },
+  }).catalog();
+  return described === undefined
+    ? Effect.die("CodeMode described no signature for a one-tool catalog")
+    : Effect.succeed(described.signature.slice("tools.t".length));
+};
+
+/**
+ * CodeMode's multi-line type on one line without its documentation comments. Its renderer puts
+ * each comment on lines of its own and ends every member with a comma; a comma before a closing
+ * brace is dropped outside string literals.
+ */
+const singleLine = (pretty: string) => {
+  const lines: Array<string> = [];
+  let comment = false;
+  for (const line of pretty.split("\n")) {
+    const text = line.trim();
+    if (comment) comment = text !== "*/";
+    else if (text.startsWith("/**")) comment = !text.endsWith("*/");
+    else lines.push(text);
+  }
+  const joined = lines.join(" ");
+  let result = "";
+  let quoted = false;
+  for (let index = 0; index < joined.length; index++) {
+    const character = joined.charAt(index);
+    if (quoted) {
+      if (character === "\\") {
+        result += character + joined.charAt(index + 1);
+        index++;
+        continue;
+      }
+      quoted = character !== '"';
+    } else if (character === '"') quoted = true;
+    else if (character === "," && joined.startsWith(" }", index + 1)) continue;
+    result += character;
+  }
+  return result;
+};
+
+/**
+ * A tool's input type on one line, before any cut. CodeMode renders a tool without output as
+ * `(input: <type>): Promise<void>`, or `(): Promise<void>` when its input is empty.
+ */
+const inputTypes = new WeakMap<AppTool, string>();
+const inputType = (entry: Entry) =>
+  Effect.gen(function* () {
+    const known = inputTypes.get(entry.tool);
+    if (known !== undefined) return known;
+    const rendered = yield* signatureOf(entry.schemas.input, undefined);
+    const prefix = "(input: ";
+    const suffix = "): Promise<void>";
+    const computed =
+      rendered === "(): Promise<void>"
+        ? "{}"
+        : rendered.startsWith(prefix) && rendered.endsWith(suffix)
+          ? singleLine(rendered.slice(prefix.length, -suffix.length))
+          : yield* Effect.die(`Unexpected CodeMode input signature: ${rendered.slice(0, 80)}`);
+    inputTypes.set(entry.tool, computed);
+    return computed;
+  });
+/** A tool's whole signature, `(input: ...): Promise<...>`, with its documentation. */
+const signatures = new WeakMap<AppTool, string>();
+const signature = (entry: Entry) =>
+  Effect.gen(function* () {
+    const known = signatures.get(entry.tool);
+    if (known !== undefined) return known;
+    const computed = yield* signatureOf(entry.schemas.input, entry.schemas.output ?? Schema.Json);
+    signatures.set(entry.tool, computed);
+    return computed;
+  });
+
+const cut = (text: string, characters: number) =>
+  text.length <= characters ? text : `${text.slice(0, characters - 1)}…`;
+/** The first line of a tool's description, or its title when it has none. */
+const summary = (tool: AppTool) =>
+  cut(
+    tool.description
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line !== "") ??
+      tool.title ??
+      "",
+    defaultSearchLimits.descriptionChars,
+  );
+
+/** A target's namespace, as results list it once. */
+const targetNamespace = (target: Target): SearchNamespace => ({
+  path: CodeMode.toolExpression(target.path),
+  app: target.app,
+  ...(target.profile === undefined ? {} : { profile: target.profile }),
+  ...(target.accounts === undefined ? {} : { accounts: target.accounts }),
+});
+/** The namespaces an entry's path sits in: its target, and its router when that has a title. */
+const namespacesOf = (entry: Entry): ReadonlyArray<SearchNamespace> => {
+  const { target } = entry;
+  const router =
+    entry.tool.router === undefined ? undefined : target.routers.get(entry.tool.router);
+  return [
+    targetNamespace(target),
+    ...(router?.title === undefined
+      ? []
+      : [
+          {
+            path: CodeMode.toolExpression(`${target.path}.${toolPath(router.path)}`),
+            app: target.app,
+            router: router.title,
+          },
+        ]),
+  ];
+};
+const encoder = new TextEncoder();
+const jsonBytes = (value: unknown) => encoder.encode(JSON.stringify(value)).byteLength;
+
+/** One `.name` or `["name"]` member of a tool expression. */
+const expressionMember =
+  /^(?:\.([A-Za-z_$][\w$]*)|\[("(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*")\])/;
+/**
+ * The canonical path of a name an agent passes: a tool expression such as
+ * `tools.acme.profiles["ins_1"].issues` becomes `acme.profiles.ins_1.issues`, and `tools` alone
+ * becomes "". Other names are already canonical paths.
+ */
+const canonical = (name: string) => {
+  const trimmed = name.trim();
+  if (trimmed !== "tools" && !trimmed.startsWith("tools.") && !trimmed.startsWith("tools["))
+    return trimmed;
+  const segments: Array<string> = [];
+  for (let rest = trimmed.slice("tools".length); rest !== "";) {
+    const member = expressionMember.exec(rest);
+    if (member === null) return trimmed;
+    const [matched, identifier, quoted] = member;
+    segments.push(identifier ?? (quoted === undefined ? "" : String(JSON.parse(quoted))));
+    rest = rest.slice(matched.length);
+  }
+  return segments.join(".");
+};
+/** Whether a canonical path lies in a canonical namespace. */
+const within = (path: string, namespace: string) =>
+  path === namespace || path.startsWith(`${namespace}.`);
+
+/** Loads the apps named (or every app) and returns their tools in path order. */
+type Searchable<E> = (
+  names: ReadonlyArray<string> | "all",
+) => Effect.Effect<ReadonlyArray<Entry>, E>;
+
+/**
+ * One page of ranked tools. Items are added in rank order until the next would take the page past
+ * its byte budget, so a page never exceeds the execute output limit; it always holds at least one
+ * match. `remaining` and `next` count from the last item the page holds. A namespace's apps load
+ * once per execution, so its ranker is kept in `rankers` for the execution's later searches.
+ */
+const searchPage = <E>(
+  searchable: Searchable<E>,
+  rankers: Map<string, Ranker>,
+  limits: McpLimits,
+  input: typeof SearchInput.Type,
+) =>
+  Effect.gen(function* () {
+    const namespace = input.namespace === undefined ? "" : canonical(input.namespace);
+    const offset = input.offset ?? 0;
+    const entries = yield* searchable(namespace === "" ? "all" : [namespace]);
+    const rank =
+      rankers.get(namespace) ??
+      ranker(
+        candidates(
+          namespace === "" ? entries : entries.filter((entry) => within(entry.path, namespace)),
+        ),
+      );
+    rankers.set(namespace, rank);
+    const ranked = yield* rank({
+      query: input.query ?? "",
+      offset,
+      limit: input.limit ?? defaultSearchLimits.defaultItems,
+    });
+    const budget = searchPageBytes(limits);
+    let used = jsonBytes({ items: [], namespaces: [], remaining: 0, next: { ...input, offset } });
+    const items: Array<typeof SearchItem.Type> = [];
+    const namespaces = new Map<string, SearchNamespace>();
+    for (const { entry, others } of ranked.items) {
+      const type = yield* inputType(entry);
+      const item = {
+        path: CodeMode.toolExpression(entry.path),
+        description: summary(entry.tool),
+        input: cut(type, defaultSearchLimits.inputChars),
+        ...(type.length > defaultSearchLimits.inputChars ? { inputTruncated: true as const } : {}),
+        ...(others.length === 0
+          ? {}
+          : { alsoAt: others.map((other) => CodeMode.toolExpression(other.path)) }),
+      };
+      const added = new Map<string, SearchNamespace>();
+      for (const space of [
+        ...namespacesOf(entry),
+        ...others.map((other) => targetNamespace(other.target)),
+      ])
+        if (!namespaces.has(space.path)) added.set(space.path, space);
+      const cost =
+        jsonBytes(item) +
+        1 +
+        [...added.values()].reduce((sum, space) => sum + jsonBytes(space) + 1, 0);
+      if (items.length > 0 && used + cost > budget) break;
+      used += cost;
+      items.push(item);
+      for (const [path, space] of added) namespaces.set(path, space);
+    }
+    const remaining = ranked.remaining + ranked.items.length - items.length;
+    return {
+      items,
+      namespaces: [...namespaces.values()],
+      remaining,
+      next: remaining > 0 ? { ...input, offset: offset + items.length } : null,
+    };
+  });
+
+/**
+ * Full detail for exact tool paths. A path that names no tool is reported with the closest paths
+ * in its app, ranked as search ranks them.
+ */
+const describeTools = <E>(searchable: Searchable<E>, paths: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const named = paths.map(canonical);
+    const entries = yield* searchable(named.filter((path) => path !== ""));
+    const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+    const items: Array<(typeof DescribeResult.Type.items)[number]> = [];
+    const namespaces = new Map<string, SearchNamespace>();
+    const missing: Array<(typeof DescribeResult.Type.missing)[number]> = [];
+    for (const [index, path] of paths.entries()) {
+      const name = named[index] ?? "";
+      const entry = byPath.get(name);
+      if (entry === undefined) {
+        const closest = yield* ranker(
+          entries
+            .filter((candidate) => within(name, candidate.target.slug))
+            .map((candidate) => ({ entry: candidate, others: [] })),
+        )({ query: name, offset: 0, limit: 3 });
+        missing.push({
+          path,
+          matches: closest.items.map((candidate) => CodeMode.toolExpression(candidate.entry.path)),
+        });
+        continue;
+      }
+      items.push({
+        path: CodeMode.toolExpression(entry.path),
+        description: entry.tool.description,
+        signature: yield* signature(entry),
+      });
+      for (const space of namespacesOf(entry)) namespaces.set(space.path, space);
+    }
+    return { items, namespaces: [...namespaces.values()], missing };
   });
 
 /**
@@ -235,7 +817,7 @@ type ListedApp = Pick<App, "id" | "name" | "slug">;
  * and tools can mean evaluating thousands of definitions or reaching an upstream server, so each
  * app is discovered at most once and only when the program or its search needs it. The backend
  * may serve a tool listing it kept from an earlier execution; its rendered schemas and search
- * descriptions are then reused too. Everything else is per execution.
+ * projections are then reused too. Everything else is per execution.
  */
 function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
   return Effect.gen(function* () {
@@ -275,6 +857,10 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
       });
     const timedOut = (app: AppId, at: number) =>
       new AppDiscoveryTimedOut({ app, elapsedMs: at - (started.get(app) ?? at) });
+    // The agent reads a failed listing in the response; it reports as the same REST read would.
+    // Discovery giving up on an app is its own wait bound, not a failure: the listing keeps running.
+    const unloaded = (error: Error) =>
+      Schema.is(AppDiscoveryTimedOut)(error) ? Effect.void : recordFailure(progress, error);
     // A listing holds a permit while it runs and stops with the rest of its app. Once an app is
     // given up on, its queued listings fail without running.
     const discover = <A, E, R>(name: string, app: AppId, work: Effect.Effect<A, E, R>) =>
@@ -314,8 +900,8 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
     // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
     const namespaces: Namespaces = new Map();
     const unavailableApps = () => apps.flatMap((app) => failures.get(app.id) ?? []);
-    /** The loaded targets behind each app's tools, for reusing rendered descriptions. */
-    const describedParts = new Map<string, ReadonlyArray<DescribedPart>>();
+    /** Each loaded app's callable tools, for search. */
+    const listed = new Map<string, ReadonlyArray<Entry>>();
 
     const discoverApp = (app: ListedApp) =>
       Effect.gen(function* () {
@@ -345,6 +931,7 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
                       // timed out. Give up on the app now, as discovery would after waiting,
                       // rather than wait for its other listings again.
                       if (Schema.is(ToolListingTimedOut)(error)) yield* stop(app.id);
+                      yield* unloaded(error);
                       return { target, catalog: undefined, error: diagnostic(error) };
                     }),
                   ),
@@ -353,7 +940,9 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
             ),
           ),
           Effect.map((targets) => ({ targets, error: undefined })),
-          Effect.catch((error) => Effect.succeed({ targets: [], error: diagnostic(error) })),
+          Effect.catch((error) =>
+            unloaded(error).pipe(Effect.as({ targets: [], error: diagnostic(error) })),
+          ),
         );
       });
 
@@ -383,7 +972,7 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
           return;
         }
         const entries: Array<readonly [string, Tool.Tool]> = [];
-        const parts: Array<DescribedPart> = [];
+        const found: Array<Entry> = [];
         for (const { target, catalog, error } of targets) {
           const namespace =
             target.kind === "app" ? app.slug : `${app.slug}.profiles.${toolPath(target.id)}`;
@@ -409,60 +998,75 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
               name: `${app.name} ${router.title ?? router.path}`,
               ...(target.kind === "profile" ? { profile: target.id } : {}),
               router: router.path,
-              reason: diagnostic(router.error),
+              reason: diagnostic(
+                routerFailure({ app: app.id, deployment: catalog.deployment }, router.error),
+              ),
             };
             failed.push(entry);
             namespaces.set(`${namespace}.${toolPath(router.path)}`, entry);
           }
-          const description =
-            target.kind === "app"
-              ? app.name
-              : `${app.name} (${target.label})${target.accounts === undefined ? "" : ` [${target.accounts}]`}`;
-          parts.push({ namespace, description, tools: catalog.tools });
+          const described: Target = {
+            slug: app.slug,
+            path: namespace,
+            app: app.name,
+            ...(target.kind === "app"
+              ? {}
+              : {
+                  profile: target.label,
+                  ...(target.accounts === undefined ? {} : { accounts: target.accounts }),
+                }),
+            routers: groups,
+          };
           const projected = yield* Effect.forEach(catalog.tools, (tool) =>
             renderSchemas(tool).pipe(
-              Effect.map(
-                (schemas) =>
-                  [
-                    target.kind === "app"
-                      ? toolPath(tool.name)
-                      : `profiles.${toolPath(target.id)}.${toolPath(tool.name)}`,
-                    Tool.make({
-                      description: `${description}${groupLabel(tool.router === undefined ? undefined : groups.get(tool.router))}: ${tool.description}`,
-                      input: schemas.input,
-                      output: schemas.output ?? Schema.Json,
-                      execute: (input) =>
-                        Schema.decodeUnknownEffect(Json)(input).pipe(
-                          Effect.mapError(() => toolError("Tool arguments must be JSON")),
-                          Effect.flatMap((input) =>
-                            backend
-                              .callTool({
-                                app: app.id,
-                                deployment: catalog.deployment,
-                                ...catalog.selection,
-                                tool: tool.name,
-                                kind: tool.readOnly === true ? "query" : "mutation",
-                                input,
-                              })
-                              .pipe(
-                                Effect.flatMap((result) =>
-                                  result.status === "completed"
-                                    ? Effect.succeed(result.value)
-                                    : Effect.fail(
-                                        new ToolApprovalRequired({
-                                          app: result.invocation.app,
-                                          deployment: result.invocation.deployment,
-                                          tool: result.invocation.tool,
-                                        }),
-                                      ),
-                                ),
-                                Effect.mapError((error) => toolError(diagnostic(error))),
-                              ),
+              Effect.map((schemas) => {
+                const name =
+                  target.kind === "app"
+                    ? toolPath(tool.name)
+                    : `profiles.${toolPath(target.id)}.${toolPath(tool.name)}`;
+                const program = Tool.make({
+                  description: tool.description,
+                  input: schemas.input,
+                  output: schemas.output ?? Schema.Json,
+                  execute: (input) =>
+                    Schema.decodeUnknownEffect(Json)(input).pipe(
+                      Effect.mapError(() => toolError("Tool arguments must be JSON")),
+                      Effect.flatMap((input) =>
+                        backend
+                          .callTool({
+                            app: app.id,
+                            deployment: catalog.deployment,
+                            ...catalog.selection,
+                            tool: tool.name,
+                            kind: tool.readOnly === true ? "query" : "mutation",
+                            input,
+                          })
+                          .pipe(
+                            Effect.flatMap((result) =>
+                              result.status === "completed"
+                                ? Effect.succeed(result.value)
+                                : Effect.fail(
+                                    new ToolApprovalRequired({
+                                      app: result.invocation.app,
+                                      deployment: result.invocation.deployment,
+                                      tool: result.invocation.tool,
+                                    }),
+                                  ),
+                            ),
+                            Effect.mapError((error) => toolError(diagnostic(error))),
                           ),
-                        ),
-                    }),
-                  ] as const,
-              ),
+                      ),
+                    ),
+                });
+                found.push({
+                  path: `${app.slug}.${name}`,
+                  tool,
+                  schemas,
+                  program,
+                  target: described,
+                });
+                return [name, program] as const;
+              }),
             ),
           );
           entries.push(...projected);
@@ -472,7 +1076,7 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
         if (entries.length === 0 && whole !== undefined && !namespaces.has(app.slug))
           namespaces.set(app.slug, whole);
         tools[app.slug] = Object.fromEntries(entries);
-        describedParts.set(app.slug, parts);
+        listed.set(app.slug, found);
       });
 
     // Each app is discovered at most once, by whichever of the program or a search needs it first.
@@ -519,63 +1123,30 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
         );
       });
 
-    // Search descriptions per app, rendered once per execution.
-    const descriptions = new Map<string, ReadonlyArray<CodeMode.ToolDescription>>();
-    const describe = (slug: string) => {
-      const known = descriptions.get(slug);
-      if (known !== undefined) return known;
-      const appTools = tools[slug];
-      const parts = describedParts.get(slug) ?? [];
-      const anchor = parts.find((part) => part.tools.length > 0)?.tools[0];
-      const kept = anchor === undefined ? undefined : renderedDescriptions.get(anchor);
-      const described =
-        kept !== undefined && kept.slug === slug && sameParts(kept.parts, parts)
-          ? kept.described
-          : appTools === undefined
-            ? []
-            : CodeMode.make({ tools: { [slug]: appTools } }).catalog();
-      if (anchor !== undefined) renderedDescriptions.set(anchor, { slug, parts, described });
-      descriptions.set(slug, described);
-      return described;
-    };
-    /** Keep descriptions CodeMode already rendered for the program's own tools. */
-    const retain = (catalog: ReadonlyArray<CodeMode.ToolDescription>) => {
-      const grouped = new Map<string, Array<CodeMode.ToolDescription>>();
-      for (const slug of Object.keys(tools)) grouped.set(slug, []);
-      // App tools sit below their slug; the program's own `search` tool has no namespace.
-      for (const entry of catalog) {
-        const dot = entry.path.indexOf(".");
-        if (dot > 0) grouped.get(entry.path.slice(0, dot))?.push(entry);
-      }
-      for (const [slug, entries] of grouped) descriptions.set(slug, entries);
-    };
     /**
-     * Search sees every app unless a namespace names one: an app slug, a target namespace below
-     * it, or the same path as a tool expression. `tools` alone still covers every app.
+     * The tools of every app the canonical names lie in, once those apps are loaded. A name is an
+     * app slug, a target or router below it, or a tool path. Entries are in path order.
      */
-    const searchable = (namespace: string | undefined) =>
+    const searchable = (names: ReadonlyArray<string> | "all") =>
       Effect.gen(function* () {
         const selected =
-          namespace === undefined || namespace === "tools"
+          names === "all"
             ? discovered
-            : discovered.filter(({ app }) => {
-                const expression = CodeMode.toolExpression(toolPath(app.slug));
-                return (
-                  namespace === app.slug ||
-                  namespace.startsWith(`${app.slug}.`) ||
-                  namespace === expression ||
-                  namespace.startsWith(`${expression}.`) ||
-                  namespace.startsWith(`${expression}[`)
-                );
-              });
-        yield* load(selected).pipe(Effect.withSpan("mcp.search.discovery"));
-        return selected
-          .flatMap(({ app }) => (unique(app) ? describe(app.slug) : []))
+            : discovered.filter(({ app }) => names.some((name) => within(name, app.slug)));
+        yield* load(selected);
+        const entries = selected
+          .flatMap(({ app }) => (unique(app) ? (listed.get(app.slug) ?? []) : []))
           .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-      });
+        // Like the program's catalog, the size this search's CPU grows with.
+        yield* Effect.annotateCurrentSpan({
+          "executor.discovery.apps": selected.length,
+          "executor.discovery.tools": entries.length,
+        });
+        return entries;
+      }).pipe(Effect.withSpan("mcp.search.discovery"));
     const reachable = (reach: ReadonlySet<string> | "all") =>
       reach === "all" ? discovered : discovered.filter(({ app }) => reach.has(app.slug));
-    return { tools, namespaces, load, reachable, retain, searchable, unavailableApps };
+    return { tools, namespaces, load, reachable, searchable, unavailableApps };
   });
 }
 
@@ -595,13 +1166,23 @@ export type ExecutionProgress = {
   /** `program` once discovery has finished and program code may run. */
   phase: "discovery" | "program";
   unavailableApps: ReadonlyArray<typeof UnavailableApp.Type>;
+  /**
+   * Failures to report. The program outlives the request that started it, so the request driving
+   * it when they happen reports them, with its own reporter and trace.
+   */
+  readonly failures: Array<Error>;
 };
 export const executionProgress = (): ExecutionProgress => ({
   calls: [],
   callFibers: new Map(),
   phase: "discovery",
   unavailableApps: [],
+  failures: [],
 });
+const recordFailure = (progress: ExecutionProgress, error: Error) =>
+  Effect.sync(() => {
+    progress.failures.push(error);
+  });
 
 /**
  * A call into an app that failed to load is not an unknown tool: report why the app is unavailable.
@@ -723,60 +1304,28 @@ export function executeProgram(
       }
       const prepared = loaded.value;
       progress.phase = "program";
+      // Discovery for a search runs on the real clock, like tool calls.
+      const rankers = new Map<string, Ranker>();
       const search = Tool.make({
-        description: "Find available app tools and their callable signatures.",
+        description:
+          "Find app tools by words in their paths, descriptions and labels. Returns exact callable paths, one-line descriptions and input types, with each app and profile listed once. Use tools.search.describe for output types and whole descriptions.",
         input: SearchInput,
         output: SearchResult,
-        execute: ({ query = "", namespace, limit = 10, offset = 0 }) =>
-          Effect.gen(function* () {
-            const entries = yield* prepared.searchable(namespace);
-            const terms = query
-              .replace(/([a-z])([A-Z])/g, "$1 $2")
-              .toLowerCase()
-              .split(/[^a-z0-9]+/)
-              .filter(Boolean);
-            const visible = entries.filter(
-              (entry) =>
-                namespace === undefined ||
-                entry.path === namespace ||
-                entry.path.startsWith(`${namespace}.`) ||
-                CodeMode.toolExpression(entry.path).startsWith(`${namespace}.`),
-            );
-            const exact = visible.find(
-              (entry) => query === entry.path || query === CodeMode.toolExpression(entry.path),
-            );
-            const matches =
-              exact === undefined
-                ? visible
-                    .map((entry) => ({
-                      entry,
-                      score: terms.reduce(
-                        (sum, term) =>
-                          sum +
-                          (entry.path.toLowerCase().includes(term) ? 3 : 0) +
-                          (entry.description.toLowerCase().includes(term) ? 1 : 0),
-                        0,
-                      ),
-                    }))
-                    .filter(({ score }) => terms.length === 0 || score > 0)
-                    .sort((a, b) => b.score - a.score)
-                    .map(({ entry }) => entry)
-                : [exact];
-            const items = matches.slice(offset, offset + limit).map((entry) => ({
-              ...entry,
-              path: CodeMode.toolExpression(entry.path),
-            }));
-            const remaining = Math.max(0, matches.length - offset - items.length);
-            return {
-              items,
-              remaining,
-              next: remaining > 0 ? { offset: offset + items.length } : null,
-            };
-            // Discovery for a search runs on the real clock, like tool calls.
-          }).pipe(Effect.provideService(Clock.Clock, clock)),
+        execute: (input) =>
+          searchPage(prepared.searchable, rankers, limits, input).pipe(
+            Effect.provideService(Clock.Clock, clock),
+          ),
+      });
+      const describe = Tool.make({
+        description:
+          "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from tools.search.",
+        input: DescribeInput,
+        output: DescribeResult,
+        execute: ({ paths }) =>
+          describeTools(prepared.searchable, paths).pipe(Effect.provideService(Clock.Clock, clock)),
       });
       const runtime = CodeMode.make({
-        tools: { ...prepared.tools, search },
+        tools: { ...prepared.tools, search, "search.describe": describe },
         limits,
         // Both hooks run on the fiber that makes the call.
         onToolCallStart: ({ index, name }) =>
@@ -795,7 +1344,6 @@ export function executeProgram(
             call.durationMs = durationMs;
           }),
       });
-      prepared.retain(runtime.catalog());
       const result = yield* runtime
         .execute(code)
         .pipe(
@@ -835,10 +1383,19 @@ export function executeProgram(
         toolCalls: reportedCalls(progress),
       });
       if (timedOut) yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
+      // Signatures cost CPU per reachable tool; a program renders them only by searching.
+      yield* Effect.annotateCurrentSpan(
+        "executor.codemode.signatures_rendered",
+        runtime.signaturesRendered(),
+      );
       yield* Effect.annotateCurrentSpan("executor.outcome", execution.ok ? "completed" : "failed");
       return { execution, unavailableApps: prepared.unavailableApps() };
     }).pipe(
-      Effect.catch((error) => Effect.succeed(failure("ExecutionFailure", diagnostic(error)))),
+      Effect.catch((error) =>
+        recordFailure(progress, error).pipe(
+          Effect.as(failure("ExecutionFailure", diagnostic(error))),
+        ),
+      ),
     );
   });
 }

@@ -4,6 +4,8 @@ import * as Output from "alchemy/Output";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Redacted, Schema, Option } from "effect";
 import type { PostHogOutput } from "./posthog-output.ts";
+import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
+import { pinnedInProduction } from "./site-telemetry.ts";
 
 /** The browser and server use the same project and deployment identity. */
 export const postHogBindings = Effect.gen(function* () {
@@ -31,11 +33,17 @@ export const postHogBindings = Effect.gen(function* () {
         ),
       },
       build: {},
+      analyticsProxy: Output.asOutput<string | null>("/api/0123456789abcdef"),
     };
   }
   const enabled =
     !dev && (yield* Config.Boolean("POSTHOG_ENABLED").pipe(Config.withDefault(false)));
-  if (!enabled) return { env: { EXECUTOR_POSTHOG: Output.asOutput(null) }, build: {} };
+  if (!enabled)
+    return {
+      env: { EXECUTOR_POSTHOG: Output.asOutput(null) },
+      build: {},
+      analyticsProxy: Output.asOutput<string | null>(null),
+    };
   const environment = yield* Stage;
   const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
   const internalUserIds = (yield* Config.String("POSTHOG_INTERNAL_USER_IDS").pipe(
@@ -45,12 +53,22 @@ export const postHogBindings = Effect.gen(function* () {
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   const output = yield* Output.stackRef<PostHogOutput>("executor-next-posthog");
+  const proxyPath = output.pipe(
+    Output.map((value) => value.proxyPath),
+    Output.mapEffect(
+      pinnedInProduction(
+        environment,
+        "The PostHog proxy path (executor-next-posthog proxyPath)",
+        productionSiteTelemetry.analyticsProxy,
+      ),
+    ),
+  );
   return {
     env: {
       EXECUTOR_POSTHOG: Output.all(
         output.pipe(Output.map((value) => value.apiToken)),
         output.pipe(Output.map((value) => value.apiHost)),
-        output.pipe(Output.map((value) => value.proxyPath)),
+        proxyPath,
       ).pipe(
         Output.map(([token, host, path]) =>
           Redacted.make(
@@ -68,15 +86,15 @@ export const postHogBindings = Effect.gen(function* () {
     },
     build: {
       PUBLIC_POSTHOG_KEY: output.pipe(Output.map((value) => value.apiToken)),
-      PUBLIC_POSTHOG_PATH: output.pipe(Output.map((value) => value.proxyPath)),
+      PUBLIC_POSTHOG_PATH: proxyPath,
       PUBLIC_POSTHOG_HOST: output.pipe(Output.map((value) => value.uiHost)),
       PUBLIC_EXECUTOR_ENVIRONMENT: environment,
       PUBLIC_EXECUTOR_RELEASE: release,
       VITE_POSTHOG_KEY: output.pipe(Output.map((value) => value.apiToken)),
-      VITE_POSTHOG_PATH: output.pipe(Output.map((value) => value.proxyPath)),
+      VITE_POSTHOG_PATH: proxyPath,
       VITE_POSTHOG_HOST: output.pipe(Output.map((value) => value.uiHost)),
       VITE_EXECUTOR_ENVIRONMENT: environment,
-      VITE_EXECUTOR_RELEASE: release,
     },
+    analyticsProxy: proxyPath,
   };
 });

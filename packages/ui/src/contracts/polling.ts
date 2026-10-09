@@ -1,6 +1,6 @@
 /** Poll only while a view is mounted; query refresh and mutation acknowledgement remain on the source atom. */
 import { type Duration, Effect } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import type { Profile, ScheduleSettings, WebhookSubscription, WorkflowRun } from "@executor-js/sdk";
 
 /** Idle reconciliation for writes made outside this tab; focus and acknowledged writes cover the rest. */

@@ -10,7 +10,7 @@ import { authRequest, AuthFailed } from "@executor-js/hosted-web/contracts/auth"
 import { BrowserAtoms } from "@executor-js/hosted-web/contracts/telemetry";
 import { signInCallback } from "@executor-js/hosted-web/contracts/navigation";
 import { acknowledgedQuery, acknowledge } from "@executor-js/ui/contracts/mutations";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { Effect, Redacted, Schema } from "effect";
 
 const client = createAuthClient({

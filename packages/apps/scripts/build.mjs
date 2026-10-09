@@ -195,7 +195,6 @@ await writeFile(
       ],
       dependencies: {
         effect: manifest.dependencies.effect,
-        "@effect/sql-sqlite-do": manifest.dependencies["@effect/sql-sqlite-do"],
         "@cloudflare/workers-types": manifest.devDependencies["@cloudflare/workers-types"],
       },
       peerDependencies: manifest.peerDependencies,

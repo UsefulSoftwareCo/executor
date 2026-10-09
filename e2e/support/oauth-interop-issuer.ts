@@ -6,12 +6,8 @@ import { createServer } from "node:http";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { tokenRequestParameters } from "./client-credentials-issuer.ts";
 
 /**
  * - `entra-tenant`: Microsoft identity platform v2.0 for one tenant. It publishes only OpenID
@@ -22,22 +18,33 @@ import {
  * - `apple`: the RFC 8414 location redirects (302); OpenID configuration is at the origin.
  * - `atlassian`: the path-inserted RFC 8414 location refuses with 401; the issuer's appended
  *   OpenID configuration serves its metadata.
+ * - `openid-inserted`: an issuer with a path publishes only OpenID configuration with that path
+ *   inserted after the well-known segment (RFC 8414 §5).
  * - `singular`: advertises only the authorization_code grant and rejects a registration that
  *   asks for refresh_token with `invalid_client_metadata`.
  * - `cloudflare-access`: rejects a registration whose redirect URI is not on its allowlist with
  *   `invalid_client_metadata`.
  * - `facebook`: appends `#_=_` to the callback redirect.
+ * - `ahrefs`: answers the MCP endpoint's GET with 400 and no challenge. Its resource and issuer
+ *   are the origin with a trailing slash, its resource metadata lists `scopes_provided` instead
+ *   of `scopes_supported`, and its server metadata names no client authentication methods and
+ *   no refresh grant. The token endpoint compares the whole Content-Type header and refuses any
+ *   other label, including a `charset` parameter, with a non-OAuth error body.
  *
  * Both Entra services issue refresh tokens, and a refreshed ID token names a tenant again.
+ * Like Microsoft's and Apple's published metadata, the Entra and Apple fixtures list no
+ * `code_challenge_methods_supported`; every service requires an S256 challenge at `/authorize`.
  */
 export type InteropService =
   | "entra-tenant"
   | "entra-common"
   | "apple"
   | "atlassian"
+  | "openid-inserted"
   | "singular"
   | "cloudflare-access"
-  | "facebook";
+  | "facebook"
+  | "ahrefs";
 
 /** The signed-in user's Microsoft tenant, and a different one for mismatched tokens. */
 export const entraTenant = "8a0f2c35-6b1d-4c9e-9f4a-1d2b3c4d5e6f" as const;
@@ -57,14 +64,17 @@ export const oauthInteropIssuer = (service: InteropService) =>
   Effect.gen(function* () {
     const address = yield* Deferred.make<string>();
     const entra = service === "entra-tenant" || service === "entra-common";
+    const ahrefs = service === "ahrefs";
     const issuerPath =
       service === "entra-tenant"
         ? `/${entraTenant}/v2.0`
         : service === "entra-common"
           ? "/common/v2.0"
-          : service === "atlassian"
+          : service === "atlassian" || service === "openid-inserted"
             ? "/oauth"
-            : "";
+            : ahrefs
+              ? "/"
+              : "";
     /** ID tokens name this tenant in `iss` but claim `entraTenant` in `tid`. */
     let mismatchedTenantIssuer = false;
     /** The tenant a refreshed ID token names in both `tid` and `iss`, with the same `sub`. */
@@ -99,17 +109,30 @@ export const oauthInteropIssuer = (service: InteropService) =>
       readonly accepted: boolean;
     }> = [];
     const tokenRequests: Array<{ readonly resource: string | null; readonly issued: boolean }> = [];
+    /** The Content-Type header of each token request, as sent. */
+    const tokenContentTypes: Array<string | undefined> = [];
     const refreshes: Array<{ readonly tenant: string; readonly issued: boolean }> = [];
 
     const metadata = Effect.gen(function* () {
       const origin = yield* Deferred.await(address);
+      if (ahrefs)
+        return yield* HttpServerResponse.json({
+          issuer: `${origin}${issuerPath}`,
+          registration_endpoint: `${origin}/register`,
+          authorization_endpoint: `${origin}/authorize`,
+          token_endpoint: `${origin}/token`,
+          response_types_supported: ["code"],
+          scopes_supported: ["read"],
+          code_challenge_methods_supported: ["S256"],
+          grant_types_supported: ["implicit", "authorization_code", "authorization_code_with_pkce"],
+        });
       return yield* HttpServerResponse.json({
         issuer: service === "entra-common" ? `${origin}/{tenantid}/v2.0` : `${origin}${issuerPath}`,
         authorization_endpoint: `${origin}/authorize`,
         token_endpoint: `${origin}/token`,
         jwks_uri: `${origin}/jwks`,
         response_types_supported: ["code"],
-        code_challenge_methods_supported: ["S256"],
+        ...(entra || service === "apple" ? {} : { code_challenge_methods_supported: ["S256"] }),
         token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
         id_token_signing_alg_values_supported: ["RS256"],
         scopes_supported: entra ? ["openid", "profile", "email", "offline_access"] : ["read"],
@@ -129,8 +152,9 @@ export const oauthInteropIssuer = (service: InteropService) =>
     const locations = {
       rfc8414: "/.well-known/oauth-authorization-server",
       openId: "/.well-known/openid-configuration",
-      atlassianRfc8414: "/.well-known/oauth-authorization-server/oauth",
-      atlassianOpenId: "/oauth/.well-known/openid-configuration",
+      insertedRfc8414: "/.well-known/oauth-authorization-server/oauth",
+      insertedOpenId: "/.well-known/openid-configuration/oauth",
+      appendedOpenId: "/oauth/.well-known/openid-configuration",
       entraCommon: "/common/v2.0/.well-known/openid-configuration",
       entraTenant: `/${entraTenant}/v2.0/.well-known/openid-configuration`,
     } as const;
@@ -138,12 +162,14 @@ export const oauthInteropIssuer = (service: InteropService) =>
       service === "apple"
         ? { rfc8414: "redirect", openId: "metadata" }
         : service === "atlassian"
-          ? { atlassianRfc8414: "refused", atlassianOpenId: "metadata" }
-          : service === "entra-common"
-            ? { entraCommon: "metadata" }
-            : service === "entra-tenant"
-              ? { entraTenant: "metadata" }
-              : { rfc8414: "metadata" };
+          ? { insertedRfc8414: "refused", appendedOpenId: "metadata" }
+          : service === "openid-inserted"
+            ? { insertedOpenId: "metadata" }
+            : service === "entra-common"
+              ? { entraCommon: "metadata" }
+              : service === "entra-tenant"
+                ? { entraTenant: "metadata" }
+                : { rfc8414: "metadata" };
     const wellKnown = (location: keyof typeof locations) =>
       HttpRouter.add(
         "GET",
@@ -182,22 +208,35 @@ export const oauthInteropIssuer = (service: InteropService) =>
     const routes = Layer.mergeAll(
       wellKnown("rfc8414"),
       wellKnown("openId"),
-      wellKnown("atlassianRfc8414"),
-      wellKnown("atlassianOpenId"),
+      wellKnown("insertedRfc8414"),
+      wellKnown("insertedOpenId"),
+      wellKnown("appendedOpenId"),
       wellKnown("entraCommon"),
       wellKnown("entraTenant"),
-      HttpRouter.add("GET", "/mcp", challenge),
+      HttpRouter.add(
+        "GET",
+        "/mcp",
+        ahrefs ? Effect.succeed(HttpServerResponse.empty({ status: 400 })) : challenge,
+      ),
       HttpRouter.add("POST", "/mcp", challenge),
       HttpRouter.add(
         "GET",
         "/.well-known/oauth-protected-resource/mcp",
         Effect.gen(function* () {
           const origin = yield* Deferred.await(address);
-          return yield* HttpServerResponse.json({
-            resource: `${origin}/mcp`,
-            authorization_servers: [`${origin}${issuerPath}`],
-            scopes_supported: entra ? ["openid", entraApiScope] : ["read"],
-          });
+          return yield* HttpServerResponse.json(
+            ahrefs
+              ? {
+                  resource: `${origin}/`,
+                  authorization_servers: [`${origin}${issuerPath}`],
+                  scopes_provided: ["read"],
+                }
+              : {
+                  resource: `${origin}/mcp`,
+                  authorization_servers: [`${origin}${issuerPath}`],
+                  scopes_supported: entra ? ["openid", entraApiScope] : ["read"],
+                },
+          );
         }),
       ),
       HttpRouter.add(
@@ -282,7 +321,24 @@ export const oauthInteropIssuer = (service: InteropService) =>
         "/token",
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          const input = new URLSearchParams(yield* request.text);
+          const contentType = request.headers["content-type"];
+          tokenContentTypes.push(contentType);
+          if (
+            ahrefs &&
+            contentType !== "application/x-www-form-urlencoded" &&
+            contentType !== "application/json"
+          )
+            return yield* HttpServerResponse.json(
+              [
+                "Error",
+                [
+                  "InvalidInput",
+                  "invalid input: expected application/json or application/x-www-form-urlencoded body",
+                ],
+              ],
+              { status: 400 },
+            );
+          const input = tokenRequestParameters(contentType, yield* request.text);
           const authorization = request.headers.authorization;
           const [basicId, basicSecret] = authorization?.startsWith("Basic ")
             ? Buffer.from(authorization.slice(6), "base64")
@@ -440,6 +496,7 @@ export const oauthInteropIssuer = (service: InteropService) =>
         authorizations: [...authorizations],
         registrations: [...registrations],
         tokenRequests: [...tokenRequests],
+        tokenContentTypes: [...tokenContentTypes],
         refreshes: [...refreshes],
       })),
     };

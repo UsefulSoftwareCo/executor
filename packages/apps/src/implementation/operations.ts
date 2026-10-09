@@ -1,11 +1,12 @@
 /** Pure operation declarations. Only the author callback crosses the Promise boundary. */
-import { Effect, Schema as EffectSchema } from "effect";
+import { Schema as EffectSchema } from "effect";
 import type { AppOperation } from "../contracts/operations.ts";
 import type { AppContext, QueryContext, MutationContext } from "../contracts/context.ts";
 import type { Approval } from "../approval.ts";
 import type { ToolAnnotations } from "../contracts/tools.ts";
 import type { JsonObject } from "../contracts/schema.ts";
-import { decoderOf, type Schema } from "./schema.ts";
+import { decoderOf, schemaArgument, type Schema } from "./schema.ts";
+import { fromPromise } from "./authoring.ts";
 
 const NativeOperation = Symbol("apps.Operation");
 declare const QueryHandlerContext: unique symbol;
@@ -39,6 +40,12 @@ export interface RouterChild<Query, Mutation> {
   readonly [QueryHandlerContext]?: (context: Query) => void;
   readonly [MutationHandlerContext]?: (context: Mutation) => void;
 }
+/**
+ * A query or mutation whose handler context is checked by its kind, as a dynamic router resolves
+ * one. `query()` and `mutation()` results fit with their inferred contexts.
+ */
+export type OperationChild<Query, Mutation> = RouterChild<Query, Mutation> &
+  Pick<OperationDeclaration<"query" | "mutation">, "kind" | typeof NativeOperation>;
 /** Private key for a router's native definition. */
 export const NativeRouterKey = Symbol("apps.Router");
 
@@ -92,7 +99,7 @@ export const operationOptions = <Input, Output>(options: OperationOptions<Input,
       ? {}
       : {
           approval: (context: Parameters<typeof approval>[0]) =>
-            Effect.tryPromise({ try: async () => approval(context), catch: (error) => error }),
+            fromPromise(async () => approval(context), "approval")(),
         }),
   };
 };
@@ -109,7 +116,7 @@ export const approvedOperation = <Input, Native extends AppOperation<Input, unkn
   return Object.defineProperty(copy, "approval", {
     enumerable: true,
     value: (context: Parameters<Approval<Input>>[0]) =>
-      Effect.tryPromise({ try: async () => approval(context), catch: (error) => error }),
+      fromPromise(async () => approval(context), "approval")(),
   });
 };
 
@@ -136,17 +143,15 @@ const make = <Input, Output, Kind extends "query" | "mutation", Context extends 
   run: (context: Context, input: Input) => Promise<Output>,
 ): Operation<Input, Output, Kind, Context> =>
   operationDeclaration({
-    ...operationOptions(options),
+    ...operationOptions({ ...options, input: schemaArgument(options.input, `The ${kind} input`) }),
     kind,
     // The host always validates JSON serialization, even without a stronger output declaration.
-    ...(options.output === undefined ? {} : { output: decoderOf(options.output) }),
-    run: (context, input) =>
-      Effect.tryPromise({
-        // SAFETY: defineApp checks the handler context against its requirements.
-        // The host validates account bindings and creates the matching storage facade.
-        try: () => run(context as Context, input),
-        catch: (error) => error,
-      }),
+    ...(options.output === undefined
+      ? {}
+      : { output: decoderOf(schemaArgument(options.output, `The ${kind} output`)) }),
+    // SAFETY: defineApp checks the handler context against its requirements.
+    // The host validates account bindings and creates the matching storage facade.
+    run: (context, input) => fromPromise(run, "handler")(context as Context, input),
   });
 /** Read operation. External reads are allowed; only database writes are mechanically prohibited. */
 export const query = <Input, Output, Context extends AppContext = QueryContext>(

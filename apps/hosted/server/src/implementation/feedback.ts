@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";

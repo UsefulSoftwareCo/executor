@@ -3,7 +3,7 @@ import { createWriteStream } from "node:fs";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Redacted, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   localConfiguration,
   LocalConfigurationError,
@@ -100,7 +100,11 @@ const server = Effect.gen(function* () {
       }
       return yield* page;
     });
-  const local = yield* startLocalServer(settings, bootstrap, { web: development, oauthCallback });
+  const local = yield* startLocalServer(settings, bootstrap, {
+    product: "desktop",
+    web: development,
+    oauthCallback,
+  });
   yield* Console.log(JSON.stringify({ version: 1, url: local.url }));
   return yield* Effect.never;
 });

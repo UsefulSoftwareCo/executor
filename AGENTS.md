@@ -82,13 +82,31 @@ email codes to `@agents.executor.engineering` inboxes. Keep session files
 private and out of tool output.
 
 Run `bun run format` before committing. `bun run check` runs the format check,
-`oxlint`, and the typecheck; CI-style verification should use it. Lint rules
+`oxlint`, and the typecheck; CI-style verification should use it.
+
+`packages/apps/protocols/*.json` are generated records of the app host
+protocols. Never read, grep or edit them; run `bun run apps:protocols` and read
+its output, and `--write` to record a boundary change. See
+[host protocols](notes/apps-publishing.md#host-protocols). Lint rules
 live in `.oxlintrc.jsonc`, formatter settings in `.oxfmtrc.json`.
 
-The typecheck uses TypeScript 7 (`tsc` is the native Go compiler). `bun install`
-patches it with `@effect/tsgo` in `prepare`, so it also reports the Effect
-language service diagnostics configured in `tsconfig.json`. Effect errors fail
-the typecheck; warnings mark rules with too many existing sites to fix at once.
+`bun run check` first runs `patches:check` (`scripts/check-patches.ts`): every
+`patchedDependencies` selector must name an installed version, and every
+installed copy must hold the whole patch: `git apply --reverse --check` at the
+exact lines, and no forward apply. Bun skips a stale selector and still exits 0,
+so move a patch with its dependency's version, or remove both. Git is stricter
+than Bun: after `bun patch --commit`, drop `.bun-tag-*` sections and sections
+whose `b/` path is outside the package, and keep `\ No newline at end of file`
+markers. Its fixtures are in `scripts/check-patches-fixtures.ts`.
+
+The typecheck runs `tsc-rs`, a Rust port of the TypeScript 7 compiler that is
+about twice as fast as Go's `tsc` here and has the Effect language service
+diagnostics built in. It reports the Effect diagnostics configured in
+`tsconfig.json`; it warns that `unstableApiUsage` and `experimentalApiUsage` are
+unknown rules because its Effect rules predate them. Effect errors fail the
+typecheck; warnings mark rules with too many existing sites to fix at once.
+Editors still use TypeScript 7 (`tsc` is the native Go compiler), which
+`bun install` patches with `@effect/tsgo` in `prepare` for the same diagnostics.
 TypeScript 7 has no JavaScript compiler API. The `packages/apps` build scripts
 and `e2e/check-boundary.ts` import TypeScript 5.9 as `typescript-5` for it;
 do not use that package to typecheck.
@@ -97,8 +115,12 @@ do not use that package to typecheck.
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main` and manual
 dispatch. Its local checks use no secrets and include the emulated Cloud target.
-An earlier PR run on the same ref is cancelled; `main` runs finish so every merge
-has a baseline. The jobs live in `.github/workflows/checks.yml`,
+An earlier PR run on the same ref is cancelled. Each push to `main` has its own
+concurrency group, so every push finishes a run and gives each merge a baseline,
+even when merges come in a burst. A stack that lands in one push gets one run, at
+its top commit. Overlapping `main` runs share no deployed stage, database or
+secret. They do read the npm registry and create hosted emulators.dev instances,
+each named with a random UUID, so they do not interfere. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
 
 ### Choosing a PR's E2E scenarios
@@ -115,12 +137,38 @@ invitation-roles.spec.ts
 ```
 ````
 
-Spec files the PR adds or changes are always included. Write `none` for a change
-no scenario exercises, such as documentation. Write `all` for cross-cutting changes:
-the e2e harness (`e2e/sdk`, `e2e/support`, `e2e/setup.ts`), the toolchain, lockfile or
-workflows, shared runtime, storage or auth, or anything whose callers you cannot
-enumerate. A description without the block runs the full suite. An unknown file name
-fails the `select` job. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
+Spec files the PR adds or changes are always included, as are the scenarios that
+guard a dependency patch when the PR's tree pins that dependency or its patch
+differently from main (`patchGuards` in `e2e/ci-selection.ts`): Bun skips a stale
+patch without an error. So are the scenarios that assert a contract one file states in
+full when the tree's copy differs from main's (`fileGuards`): a new host protocol in
+`app-protocols.ts` runs `app-package.spec.ts`, which reads back the supported list.
+A changed spec file's Cloud scenarios that otherwise first run in Cloud tests on main, after
+merge, run in the `cloud-product` job when managed local Cloud can run them. The ones that need a
+deployed stage (`runtime: "attached"`) get a warning with the `e2e:deployed` command that runs
+them; run it before merging. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
+`e2e/tests/`, optionally prefixed with `e2e/tests/`. The `select` job fails when the
+description has no block, a name is not a spec file there, or a named file is one these
+jobs never run: the release, desktop, billing and PGlite suites have their own
+`e2e/*.config.ts`, and the failure names the workflow or command that runs each one.
+A new spec file must have its scenarios in `e2e/test-plan.ts` or be included by such a config.
+Every scenario the plan schedules on a target must run in CI: in one of these jobs, or, for a
+Cloud scenario without `runtime: "managed"` or `"rate-limited"`, in Cloud tests on main. The
+`select` job fails on a scenario nothing runs, because it goes stale unnoticed. Add it to a job
+pattern, mark the target `not-run` with its reason, or add it to `notRunInCi` in
+`e2e/ci-selection.ts` with why CI cannot run it. That check reads only the job table. After a
+full run, on pushes to main and manual runs, `e2e-coverage` in CI and `deployed-coverage` in
+Cloud tests on main check from the jobs' saved reports that each of those scenarios executed,
+passed or failed, so a job or step the workflow skipped fails there. `e2e-coverage` also fails a
+push to main that did not start Cloud tests on main.
+
+Select specific files by default. A selection finishes in about five minutes; the full
+suite takes about fifteen and holds the runners other PRs wait for. Reserve `all` for
+changes that every scenario runs through: the e2e harness (`e2e/sdk`, `e2e/support`,
+`e2e/setup.ts`), the toolchain, the lockfile or the workflows. Write the reason after
+it, such as `all: changes the lockfile`; `all` without a reason fails the `select` job.
+A change to shared code such as the runtime, storage, auth or the MCP server is not
+by itself a reason: list the spec files for the features whose behavior it changes. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
 into each job's scenario list; the run summary shows it.
 
 In a stack, write `skip` in each lower layer's block, such as a code PR under its
@@ -128,15 +176,21 @@ tests PR. Every job in that run skips, the static checks included. The top layer
 checks the combined change: its static checks run against the whole tree,
 `apps-version` compares it with `main`, and its `e2e` block must select the
 scenarios for every layer's changes. `skip` fails the `select` job unless another
-open PR targets the layer's branch, so a lone PR or the top layer cannot skip.
+open PR targets the layer's branch, so a lone PR or the top layer cannot skip. The
+`select` job waits up to 3 minutes for that PR to open, so open the stack's layers together
+(`gh stack submit` does).
 After changing a lower layer, rebase the layers above it so the top runs again.
 Merge the stack only when the top layer passes, bottom first, without pausing between
 layers: each merge deploys production.
 
 Choose from the actual callers of the changed code. Search `e2e/tests/` for the
 routes, tools and UI the change touches, and include every file that exercises them
-on any target. Too narrow a selection only defers the failure to `main`. The `select`
-job reads the live description, so after editing it, rerun the whole workflow
+on any target. A tests PR on top of a stack gets its own new or changed spec files
+for free; add the existing files that cover the code layers below it. `main` runs the
+full suite after merge, so a missed scenario is still caught there. The `select`
+job reads the live description when it runs. If it has no `e2e` block yet, the job
+waits up to 3 minutes for one, so write the block right after opening the PR. After
+changing the block once CI has read it, push or rerun the whole workflow
 (`gh run rerun <run-id>`), not only failed jobs.
 
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing
@@ -157,7 +211,11 @@ A flake is a bug in the product or the scenario, not noise. Never add retries,
 longer deadlines or skips to make a run pass.
 
 `.github/workflows/cloud-tests.yml` runs deployed tests only after pushes to `main`.
-It finishes the active run and coalesces pending pushes. Manual deployed jobs share
+It finishes the active run and coalesces pending pushes, so one run can test several
+merges. Its `coverage` job lists them in the run summary and adds a notice when a
+run tests more than one commit. It counts from the nearest earlier ancestor whose run
+uploaded `deployed-neon-results`, which exists only when the scenarios ran, so a
+setup failure or a rerun of an older commit cannot hide a gap. Manual deployed jobs share
 the same non-cancelling concurrency group. Each job owns a disposable Neon staging environment.
 Scenarios retain 60-second deadlines. The job owns its teardown and evidence artifacts. These post-merge
 checks are not required PR checks. Agents can run targeted deployments through
@@ -166,7 +224,7 @@ the same SDK and CLI on demand.
 Every push to `main` deploys production directly, without a deployed-test gate.
 The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
-Blacksmith Linux runners run five check jobs. Local, self-host and Cloud E2E jobs use
+Blacksmith Linux runners run every check job. Local, self-host and Cloud E2E jobs use
 `blacksmith-16vcpu-ubuntu-2404`. The load job also uses 16 vCPUs: on 4 vCPUs the
 product server, PGlite and the test driver contend. Its inventory case has a 120-second
 test limit because its body takes 40-48s on CI. Static checks use 4 vCPUs.
@@ -178,21 +236,45 @@ scenarios on Linux instead of moving them to a Mac.
 - `check` runs `bun run check`: the format check, `oxlint`, the typecheck, the
   no-tests-outside-`e2e/` check and the e2e boundary check.
   It also builds the public site and runs `bun run site:links`, which fails when
-  any marketing or docs page links to a path that would 404.
+  any marketing or docs page links to a path that would 404. Then
+  `bun run hosted:cloud:worker-sizes` builds each Cloud Worker as the deploy does,
+  for production and for the pull request's preview, and fails when one exceeds
+  its upload budget; the job summary shows each Worker's size, its change from
+  `main` and the packages and files that grew.
 - `select` runs [`e2e/ci-selection.ts`](e2e/ci-selection.ts) and gives each e2e job
   its `--test-name` pattern, or skips the job when none of its scenarios is selected.
   Its job patterns hold the exclusions and splits below.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
   and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
-  Code MCP scenario, which needs a model API key that CI does not hold.
+  Code MCP scenario, which needs a model API key that CI does not hold. A full run
+  splits them by spec file over runners (two for local, three for self-host; `shards` in
+  `e2e/ci-selection.ts`), each with the usual number of workers, so each part finishes in
+  about four minutes instead of six and ten. A selection runs on one runner.
 - `e2e-self-host-scale` runs the 1,000-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,
   the catalog and listing latency bounds and the inventory case's 120-second limit without
   competing with the functional job's product servers.
-- `e2e-cloud` runs Cloud onboarding and delivered observability scenarios. It starts the local Cloud
-  Worker, a throwaway Postgres container and the service emulators, so it needs
-  Docker but no credentials.
+- `e2e-cloud` runs Cloud onboarding, the v1 sign-in check, delivered observability, MCP tool-call privacy, client rejection and app evaluation
+  incident reporting, bearer refusal, billing polling, MCP session object database connection,
+  API-key storage outage, supervisor-kept tool listing, Cloud SSO SAML, Safari error provenance, remote skill
+  cache, team installation and app Worker build load scenarios: every scenario that needs managed local
+  Cloud, except those `notRunInCi` lists as failing there. The refusal scenario writes stored rows into the runner-owned
+  Postgres. It starts the local Cloud Worker, a throwaway Postgres container and the service
+  emulators, so it needs Docker but no credentials. Scenarios that hold row locks to pause the
+  server's own statements get a second local Cloud, so their locks cannot stall other scenarios.
+  The MCP session timing scenario also gets its own: it counts every request in the isolate that
+  runs all session objects, and another scenario's request would change that count.
+  Every scenario's request comes from one address, so these local Clouds turn Better Auth's
+  per-address limit off, as deployed test stages do; the scenario that proves the limit gets
+  its own local Cloud with it on (`e2e:cloud --auth-rate-limit`).
+  Each of these local Clouds is a Cloud job in `e2e/ci-selection.ts`, and its `runner`
+  there puts it on one of three `e2e-cloud` runners that run at once, about four minutes each
+  on a full run. Each runner builds the apps package and Motel once before its runs; runs only
+  serve that Motel bundle, because every target in a run shares it.
+- `e2e` passes when `select` succeeded, every E2E job it chose passed and every other one was
+  skipped; it runs even after a cancellation, which fails it. The matrix runners' check
+  names change with the selection, so this is the one E2E check to require.
 
 Cloud scenarios verify
 API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.

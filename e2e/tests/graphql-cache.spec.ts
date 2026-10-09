@@ -2,12 +2,7 @@
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -348,11 +343,11 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         expect((yield* upstream.stats).discover).toBe(4);
         const reconnect = yield* body(
           Resource,
-          yield* app.api.request(
-            app.actors.owner,
-            "POST",
-            `${app.prefix}/accounts/${bravo}/connections`,
-          ),
+          yield* app.api.request(app.actors.owner, "POST", `${app.path}/connections`, {
+            requirement: "service",
+            profile: app.profile.id,
+            account: bravo,
+          }),
         );
         expect(
           (yield* app.api.request(

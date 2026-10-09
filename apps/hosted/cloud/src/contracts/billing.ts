@@ -4,8 +4,9 @@ import {
   OrganizationReference,
   RequireOrganization,
 } from "@executor-js/hosted-server/organization";
+import { ApiError } from "@executor-js/utils/api-error";
 import { Context, Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { RequireUser } from "@executor-js/hosted-server";
 
 /** The cloud projection of Autumn's catalog. Prices come from the selected provider catalog. */
@@ -20,6 +21,12 @@ export const BillingPlan = Schema.Struct({
       unit: Schema.NullOr(Schema.Literal("member")),
     }),
   ),
+  /** Members the plan allows: a fixed number, or any number (unlimited or billed per member). */
+  members: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  /** Whether the plan includes verified domains, which let people join by email domain. */
+  domainVerification: Schema.Boolean,
+  /** A free trial new subscribers start with, if the plan offers one. */
+  trial: Schema.NullOr(Schema.Struct({ days: Schema.Int, cardRequired: Schema.Boolean })),
 });
 /** Current subscription state, never inferred from a checkout redirect. */
 export const BillingOverview = Schema.Struct({
@@ -35,17 +42,19 @@ export const MemberLimit = Schema.Struct({
   limit: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 /** Autumn could not complete the request. No provider secrets or raw errors are exposed. */
-export class BillingUnavailable extends Schema.TaggedError<BillingUnavailable>()(
-  "BillingUnavailable",
-  {},
-  { httpApiStatus: 503 },
-) {}
+export const BillingUnavailable = ApiError.define({
+  tag: "BillingUnavailable",
+  status: 503,
+  message: "Executor could not reach its billing service. Try again.",
+});
+export type BillingUnavailable = typeof BillingUnavailable.Type;
 /** The requested plan is not in the available catalog. */
-export class BillingPlanUnavailable extends Schema.TaggedError<BillingPlanUnavailable>()(
-  "BillingPlanUnavailable",
-  {},
-  { httpApiStatus: 400 },
-) {}
+export const BillingPlanUnavailable = ApiError.define({
+  tag: "BillingPlanUnavailable",
+  status: 400,
+  message: "The requested plan is not available.",
+});
+export type BillingPlanUnavailable = typeof BillingPlanUnavailable.Type;
 /** Cloud-only billing operations, with the authorized organization as customer identity. */
 export class Billing extends Context.Service<
   Billing,

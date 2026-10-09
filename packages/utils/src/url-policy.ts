@@ -1,6 +1,6 @@
 /** URL transport policy shared by hosts. It does not grant access or replace protocol rules. */
 import { Config, Schema } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 import ipaddr from "ipaddr.js";
 
 /** Classify a WHATWG URL hostname without DNS. Reserved localhost names and loopback IPs only. */

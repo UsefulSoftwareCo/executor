@@ -3,7 +3,7 @@ import { dashboardHttpClient } from "@executor-js/ui/contracts/http";
 import { LocalWebhookSetupApi } from "@executor-js/local-server/webhook-setup";
 import type { AppId, WebhookId } from "@executor-js/sdk";
 import { Data, Effect } from "effect";
-import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
+import { Atom, AtomHttpApi } from "effect/reactivity";
 import { webhookSetupAtoms } from "@executor-js/ui/contracts/webhook-setup";
 import { DashboardRuntime } from "./telemetry.ts";
 /** The browser supplies its existing pairing cookie; no agent token is accepted. */

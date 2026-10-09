@@ -3,7 +3,7 @@
  * App code never reaches this table: it holds what the host evaluated, keyed by the host.
  */
 import { Effect, Schema } from "effect";
-import { EvaluatedCommand, evaluatedLimits, type EvaluatedEntry } from "../contracts/evaluated.ts";
+import { EvaluatedCommand, evaluatedLimits } from "../contracts/evaluated.ts";
 
 class EvaluatedStoreFailed extends Schema.TaggedError<EvaluatedStoreFailed>()(
   "EvaluatedStoreFailed",
@@ -75,7 +75,7 @@ export const evaluatedStore = (storage: EvaluatedSqlStorage) => {
       }),
     command: (input: unknown) =>
       Effect.try({
-        try: (): EvaluatedEntry | boolean => {
+        try: (): { readonly at: number; readonly body: Uint8Array } | null | boolean => {
           const command = Schema.decodeUnknownSync(EvaluatedCommand)(input);
           ready();
           const now = Date.now();

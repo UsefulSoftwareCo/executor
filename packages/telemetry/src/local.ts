@@ -1,11 +1,6 @@
 /** Local composition owns persistent files and its optional bundled collector. */
 import { Config, Effect, Layer, Logger, Path } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryClient } from "./transport.ts";
 import { telemetryConfig } from "./config.ts";
 import { startCollector } from "./collector.ts";
@@ -19,7 +14,7 @@ export const localTelemetry = (directory: string, service: string) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const diagnostics = path.resolve(directory, "diagnostics");
-      const file = yield* rotatingJsonLogger(diagnostics, service);
+      const { logger: file } = yield* rotatingJsonLogger(diagnostics, service);
       const stderr = Logger.withConsoleError(Logger.formatJson);
       const logger = Logger.make((options) => {
         stderr.log(options);

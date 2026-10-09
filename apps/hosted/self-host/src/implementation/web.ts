@@ -1,15 +1,20 @@
 /** Dashboard serving for both self-host runtimes. Only file access differs between them. */
 import { dashboardDocument } from "@executor-js/dashboard-start/document";
 import { hostedDocumentContext } from "@executor-js/hosted-server/document";
-import { Effect, FileSystem, Path, Result } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { singleResourceOrigin } from "@executor-js/mcp-auth/grants";
+import { Config, Effect, FileSystem, Path, Result } from "effect";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** The renderer is loaded on the first page request; API-only processes never load React. */
 const document = dashboardDocument({
   server: Effect.promise(() => import("@executor-js/hosted-self-host-web/server")).pipe(
     Effect.map((module) => module.default),
   ),
-  context: hostedDocumentContext,
+  // Self-host serves its MCP and API resources on its single origin.
+  context: (api) =>
+    Config.String("BETTER_AUTH_URL").pipe(
+      Effect.flatMap((origin) => hostedDocumentContext(singleResourceOrigin(origin))(api)),
+    ),
 });
 
 /** Hashed build output never changes; everything else revalidates. */

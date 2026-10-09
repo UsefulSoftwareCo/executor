@@ -2,6 +2,8 @@ import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
+import { Target } from "../support/platform.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
 
 /** The server-rendered dashboard marks its document; nothing else the Worker serves carries it. */
@@ -13,6 +15,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
+        // Pages are on the browser origin; MCP is on `mcp.` and the documentation is a site page
+        // on the edge, which every other host redirects site pages to.
+        const hosts = targetHosts(yield* Target);
         const read = (path: string, accept = "text/html") =>
           browser.use(`Request ${path}`, (page) =>
             page
@@ -66,15 +71,18 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
         );
         expect(health.status).toBe(200);
         expect(health.body).toMatchObject({ status: "ok" });
-        const mcp = yield* read("/mcp");
+        const mcp = yield* read(`${hosts.mcp}/mcp`);
         expect(mcp.status).toBe(401);
-        const docs = yield* read("/docs");
+        const docsRedirect = yield* read("/docs");
+        expect(docsRedirect.status).toBe(308);
+        expect(docsRedirect.location).toBe(`${hosts.edge}/docs`);
+        const docs = yield* read(`${hosts.edge}/docs`);
         expect(docs.status).toBe(200);
         expect(docs.body).not.toContain(dashboardDocument);
-        const docsPage = yield* read("/docs/author-an-app");
+        const docsPage = yield* read(`${hosts.edge}/docs/author-an-app`);
         expect(docsPage.status).toBe(200);
         // The page's earlier address keeps working for links already published.
-        const movedDocsPage = yield* read("/docs/build/author-an-app");
+        const movedDocsPage = yield* read(`${hosts.edge}/docs/build/author-an-app`);
         expect(movedDocsPage.status).toBe(308);
         expect(movedDocsPage.location).toBe("/docs/author-an-app");
         // A browser that opens a missing page gets the site's 404 document, with a 404
@@ -83,7 +91,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
         expect(missingPage.status).toBe(404);
         expect(missingPage.body).toContain("Page not found");
         expect(missingPage.body).toContain("data-missing-path");
-        const missingDocsPage = yield* read("/docs/no-such-page");
+        const missingDocsPage = yield* read(`${hosts.edge}/docs/no-such-page`);
         expect(missingDocsPage.status).toBe(404);
         expect(missingDocsPage.body).toContain("Page not found");
         expect(missingDocsPage.body).toContain("/docs/llms.txt");

@@ -1,6 +1,7 @@
 /** Host-owned signed browser links over the reusable SDK lifecycle. */
-import { Effect, Encoding, Layer, Redacted } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { Effect, Layer, Redacted } from "effect";
+import { Hex } from "effect/encoding";
+import { HttpApiBuilder } from "effect/http-api";
 import { type Executor, CredentialsError, type AccountId, type AppId } from "@executor-js/sdk/core";
 import {
   AccountConnectApi,
@@ -37,7 +38,7 @@ export const accountConnectHandlers = (
       const authorize = (grant: ConnectionGrant) =>
         Effect.gen(function* () {
           const request = yield* localRequest(config.port, config.browserOrigin);
-          const decoded = Encoding.decodeHex(Redacted.value(grant.token));
+          const decoded = Hex.decode(Redacted.value(grant.token));
           if (decoded._tag === "Failure") return yield* new ConnectionLinkRejected();
           const signature = decoded.success;
           const valid = yield* Effect.tryPromise({
@@ -61,7 +62,7 @@ export const accountConnectHandlers = (
               if (request.headers.origin !== undefined) return yield* new AuthForbidden();
               if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`)
                 return yield* new PairingUnauthorized();
-              if (payload.account === managed.account || payload.target?.app === managed.app)
+              if (payload.account === managed.account || payload.target.app === managed.app)
                 return yield* new ConnectionLinkRejected();
               const connection = yield* executor.accountConnections.create(payload);
               const signed = yield* Effect.tryPromise({
@@ -72,7 +73,7 @@ export const accountConnectHandlers = (
                 `/account-connect/${encodeURIComponent(connection.id)}`,
                 requestOrigin(config, request),
               );
-              url.hash = `token=${Encoding.encodeHex(new Uint8Array(signed))}`;
+              url.hash = `token=${Hex.encode(new Uint8Array(signed))}`;
               return {
                 connection: connection.id,
                 url: Redacted.make(url.href),

@@ -74,6 +74,7 @@ export function DashboardEntryPending({
   pathname,
   banner,
   support,
+  navigation,
 }: {
   readonly children?: ReactNode;
   readonly pathname?: string;
@@ -81,6 +82,8 @@ export function DashboardEntryPending({
   readonly banner?: ReactNode;
   /** The resolved dashboard's support entry, for the same reason. */
   readonly support?: ReactNode;
+  /** The resolved dashboard's host pages, for the same reason; links stay disabled until it loads. */
+  readonly navigation?: ReactNode;
 } = {}) {
   const pendingPage = pathname?.split("/")[3] ?? "apps";
   return (
@@ -88,7 +91,7 @@ export function DashboardEntryPending({
       banner={banner}
       support={support}
       organization={<OrganizationSwitcherSkeleton />}
-      navigation={<DashboardNavigation pendingPage={pendingPage} />}
+      navigation={<DashboardNavigation pendingPage={pendingPage}>{navigation}</DashboardNavigation>}
       pendingPage={pendingPage}
     >
       {children ?? (

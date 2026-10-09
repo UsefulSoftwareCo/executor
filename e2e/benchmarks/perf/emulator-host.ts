@@ -1,8 +1,8 @@
 /** Run the perf emulator on loopback, or bundle and upload it as a workers.dev Worker. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Config, Console, Effect, FileSystem, Layer, Path, Redacted, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http";
 import { createServer } from "node:http";
 import { emulatorRoutes } from "./emulator.ts";
 

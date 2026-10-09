@@ -4,7 +4,7 @@
  * its own values if they differ, which happens only before it has saved its time zone.
  */
 import { Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 export const DisplayFormat = Schema.Struct({ locale: Schema.String, timeZone: Schema.String });
 export type DisplayFormat = typeof DisplayFormat.Type;

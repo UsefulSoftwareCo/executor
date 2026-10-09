@@ -1,7 +1,7 @@
 import type { APIRoute } from "astro";
 
 import { markdownResponse, setupPrompt } from "../content/site-copy";
-import { siteOrigin } from "../content/site-origin.ts";
+import { appOrigin, siteOrigin } from "../content/site-origin.ts";
 
 // ---------------------------------------------------------------------------
 // `/setup-prompt.md` — the exact string the homepage "Set up with your agent"
@@ -9,4 +9,5 @@ import { siteOrigin } from "../content/site-origin.ts";
 // visitor to paste it.
 // ---------------------------------------------------------------------------
 
-export const GET: APIRoute = () => markdownResponse(`${setupPrompt(siteOrigin)}\n`);
+export const GET: APIRoute = () =>
+  markdownResponse(`${setupPrompt({ site: siteOrigin, app: appOrigin })}\n`);

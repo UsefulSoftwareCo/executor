@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerResponse } from "effect/http";
 import type { HostedApiDocument } from "../contracts/api.ts";
 
 /** The product document and its /openapi.json body, each computed on first use. */

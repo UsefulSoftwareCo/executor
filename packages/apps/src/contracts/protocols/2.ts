@@ -4,11 +4,11 @@
  *
  * Every other message is protocol 1's, re-exported unchanged. Once released this protocol is
  * frozen like protocol 1: `bun run check` compares `protocol2` with `packages/apps/protocols/2.json`.
- * Define the next protocol to change it. See notes/apps-publishing.md.
+ * The module imports only `effect` and earlier protocol modules, so no change elsewhere can alter
+ * it. Define the next protocol to change it. See notes/apps-publishing.md.
  */
 import { Schema } from "effect";
-import { AppSkills } from "../skills.ts";
-import { protocol1 } from "./1.ts";
+import { AppSkills, protocol1 } from "./1.ts";
 
 export * from "./1.ts";
 

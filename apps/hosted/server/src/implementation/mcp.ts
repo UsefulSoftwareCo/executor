@@ -4,7 +4,7 @@ import {
   observeProductOperation,
   traceProductRead,
 } from "../contracts/product-analytics.ts";
-import { McpSchema } from "effect/unstable/ai";
+import { McpSchema } from "effect/ai";
 import { authorizeTool, authorizeApp } from "./authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
@@ -12,7 +12,12 @@ import { CurrentUserId } from "../contracts/auth.ts";
 import { visibleApps, visibleAccounts, requireAppAccess } from "./resource-policy.ts";
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
 import { appTargets, type McpBackend } from "@executor-js/mcp";
-import { AppNotFound, ElicitationFailed, type ToolInvocationOptions } from "@executor-js/sdk/core";
+import {
+  AppNotFound,
+  ElicitationFailed,
+  type AppId,
+  type ToolInvocationOptions,
+} from "@executor-js/sdk/core";
 import { Context, Effect, Option } from "effect";
 import {
   currentOwner,
@@ -23,6 +28,7 @@ import {
 } from "./access.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+import { CurrentMcpGrant } from "../contracts/mcp.ts";
 import { listTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
@@ -37,6 +43,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
   const sdk = yield* HostedExecutor;
   const database = yield* GroupDatabase;
   const user = yield* CurrentUserId;
+  const grant = yield* CurrentMcpGrant;
   const context = Context.make(CurrentOrganization, organization).pipe(
     Context.add(HostedExecutor, sdk),
     Context.add(CurrentAuthorization, policy),
@@ -96,7 +103,46 @@ export const hostedMcpBackend = Effect.gen(function* () {
       });
     }).pipe(Effect.provideContext(context)),
   );
+  /** Event subscriptions belong to the request's grant and act for its user. */
+  const subscriber = Effect.gen(function* () {
+    if (grant === undefined || user === undefined) return yield* new OrganizationForbidden();
+    return { principal: grant, subject: user };
+  });
+  /** The app is this organization's, visible to the caller, and theirs to use. */
+  const eventApp = (app: AppId) =>
+    Effect.gen(function* () {
+      yield* authorizeApp(app);
+      if (!(yield* discoveryApps).some((candidate) => candidate.id === app))
+        return yield* new AppNotFound({ app });
+      yield* requireAppAccess(app, "use");
+    });
   const backend = {
+    eventDefinitions: (input) =>
+      Effect.gen(function* () {
+        yield* eventApp(input.app);
+        return yield* (yield* sdk).events.definitions(input);
+      }).pipe((work) => observe("eventDefinitions", work, "read")),
+    findEventSubscription: (key) =>
+      Effect.gen(function* () {
+        const { principal } = yield* subscriber;
+        const found = yield* (yield* sdk).events.find({ ...key, principal });
+        return found !== null && found.owner === organization.owner ? found : null;
+      }).pipe((work) => observe("findEventSubscription", work, "read")),
+    subscribeEvent: ({ key, ...input }) =>
+      Effect.gen(function* () {
+        const { principal, subject } = yield* subscriber;
+        yield* eventApp(input.target.app);
+        return yield* (yield* sdk).events.subscribe({
+          ...input,
+          key: { ...key, principal },
+          subject,
+        });
+      }).pipe((work) => observe("subscribeEvent", work)),
+    unsubscribeEvent: ({ key }) =>
+      Effect.gen(function* () {
+        const { principal } = yield* subscriber;
+        yield* (yield* sdk).events.unsubscribe({ ...key, principal });
+      }).pipe((work) => observe("unsubscribeEvent", work)),
     listSkills: (input) => observe("listSkills", listAppSkills(input), "read"),
     readSkill: (input) => observe("readSkill", readAppSkill(input), "read"),
     authorizeElicitation: (input) =>

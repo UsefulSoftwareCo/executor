@@ -25,8 +25,10 @@ services:
       # Each app with a database also keeps one data Worker, which this does not count.
       EXECUTOR_APP_WORKERS:
       EXECUTOR_OAUTH_CALLBACK_URL:
+      # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
+      # document there, which authorization servers must be able to fetch over public HTTPS.
       EXECUTOR_OAUTH_CLIENT_METADATA_URL:
-      # Public app registry origin. The default is https://v2.executor.sh.
+      # Public app registry origin. The default is https://api.executor.sh.
       EXECUTOR_REGISTRY_URL:
       # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.
       EXECUTOR_APP_UI_BASE_URL:

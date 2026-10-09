@@ -1,13 +1,9 @@
 /** Publish an explicitly supplied set of public skill documents using the standard directory index. */
 import { prepareAppSkills } from "@executor-js/sdk/skill-source";
 import { SourceFiles, type SourceFile } from "@executor-js/sdk/core";
-import { Crypto, Effect, Encoding, Layer } from "effect";
-import {
-  HttpRouter,
-  HttpServerError,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { Crypto, Effect, Layer } from "effect";
+import { Hex } from "effect/encoding";
+import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /**
  * Public assets are selected by the host, never looked up from installed or customer apps.
@@ -30,7 +26,7 @@ export const publishedSkillRoutes = (files: Effect.Effect<readonly SourceFile[]>
           Effect.gen(function* () {
             const version = yield* crypto
               .digest("SHA-256", new TextEncoder().encode(JSON.stringify(skill)))
-              .pipe(Effect.map(Encoding.encodeHex), Effect.orDie);
+              .pipe(Effect.map(Hex.encode), Effect.orDie);
             return {
               name: skill.name,
               description: skill.description,

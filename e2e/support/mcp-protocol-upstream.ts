@@ -2,13 +2,8 @@
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Context, Effect, Layer, Match, Queue, Schema, Stream } from "effect";
-import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/unstable/ai";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 class FixtureRequestFailed extends Schema.TaggedError<FixtureRequestFailed>()(
   "FixtureRequestFailed",

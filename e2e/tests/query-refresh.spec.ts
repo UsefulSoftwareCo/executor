@@ -146,7 +146,7 @@ export default defineApp({ accounts: {} }, async () => ({
           (reference) => `/api/organizations/${reference}/apps/${app.id}`,
         );
         yield* browser.login(actors.owner);
-        const first = yield* holdQuery(paths, "fail");
+        const first = yield* holdQuery(paths, "undeclared");
         yield* openThroughBrowser(
           "Open the app with its first read held",
           `/org/${actors.organization.slug}/apps/${app.id}?view=settings`,
@@ -189,7 +189,7 @@ export default defineApp({ accounts: {} }, async () => ({
                 .waitFor({ state: "hidden" }),
             );
           });
-        const failedRefresh = yield* holdQuery(paths, "fail");
+        const failedRefresh = yield* holdQuery(paths, "undeclared");
         yield* refreshVisiblePage;
         const refreshPath = yield* failedRefresh.requested;
         expect(paths).toContain(refreshPath);

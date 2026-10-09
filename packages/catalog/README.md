@@ -7,7 +7,8 @@ choose an owner or workspace, connect an account, or apply product permission ru
 ```ts
 import { createCatalog } from "@executor-js/catalog";
 
-const catalog = createCatalog(egress);
+// The host's egress, and the Client ID Metadata Document its account setup uses, if any.
+const catalog = createCatalog({ egress, clientMetadataUrl });
 const entries = yield * catalog.list;
 const prepared = yield * catalog.prepare({ entry: selectedEntry.id });
 
@@ -15,10 +16,13 @@ const prepared = yield * catalog.prepare({ entry: selectedEntry.id });
 ```
 
 Only MCP servers are prepared here, and only when the server itself confirms how
-to connect: an anonymous `initialize` succeeds, or the server rejects anonymous
-use and advertises OAuth that the SDK can discover. Every other entry, and any
-MCP server that needs an API key or other setup, fails with
-`agent_setup_required`. Products show a copyable prompt for the user's agent,
+to connect: anonymous `initialize` and `tools/list` succeed, or the server
+rejects anonymous use and advertises OAuth that the SDK can discover.
+`detectMcpAccess` returns that typed decision with the signals behind it. It
+inspects OAuth with account setup's own discovery and checks, and reports how
+that host's setup would obtain a client. Every
+other entry, and any MCP server that needs an API key or other setup, fails with
+`agent_setup_required` and, for an MCP server, its detection. Products show a copyable prompt for the user's agent,
 which writes the app with the app-authoring skill instead of guessing from
 catalog hints.
 
@@ -26,7 +30,9 @@ These operations are Effects. Constructing a catalog does no I/O. Each `list`
 or `prepare` evaluation reads the source; there is no retained catalog cache.
 Pass a `CatalogSource` to `createCatalog` to use another feed or fixture.
 Run the [example](../../playground/catalog/prepare.ts) with
-`bun run --cwd playground/catalog start` from the repository root.
+`bun run --cwd playground/catalog start` from the repository root, and the
+read-only [sweep of public servers](../../playground/catalog/sweep.ts) with
+`bun run --cwd playground/catalog sweep`.
 
 `catalog.custom(input)` prepares an MCP server a user entered by URL, with
 the same check.
@@ -40,7 +46,9 @@ the same check.
 - `src/implementation/prepare.ts`: catalog selection and preparation.
 - `src/implementation/source.ts`: the integrations.sh feed.
 - `src/implementation/overrides.ts`: catalog defaults, including PostHog's tool mode.
-- `src/implementation/mcp.ts`: the MCP connection check and source generation.
+- `src/contracts/detection.ts`: detected outcomes and their signals.
+- `src/implementation/detection.ts`: the MCP connection check.
+- `src/implementation/mcp.ts`: outcome reasons and source generation.
 - `src/implementation/custom.ts`: a user-entered MCP URL.
 
 `@executor-js/catalog/contracts` is the schema-only entry point for forms and

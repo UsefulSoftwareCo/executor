@@ -1,6 +1,6 @@
 /** Effect post-processing adds readable URL chrome without changing the tested page. */
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BrowserDriver } from "./browser.ts";
 import { driver } from "./platform.ts";
 

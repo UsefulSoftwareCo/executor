@@ -4,23 +4,26 @@ description: "Write an app in plain TypeScript: a provider, some queries and mut
 ---
 
 An app is TypeScript source with a default `defineApp` export from the `apps`
-package. One `index.ts` is enough to use the framework supplied by the host.
-To author outside the monorepo and select a framework version, install the
-Executor beta of `apps` and deploy your `package.json` with the source:
+package. A new app is two files: `index.ts` and a `package.json` that pins the
+exact `apps` version the host runs:
 
-```sh
-npm install --save-exact apps@0.0.1-beta.0
+```json
+{ "name": "hello", "private": true, "type": "module", "dependencies": { "apps": "<version>" } }
 ```
 
-The first beta is being prepared. Until it is published, use a locally packed
-tarball. Do not install `apps@latest`: that tag is separate from this beta series.
+Read that version from the host. Agents call the Executor app's
+`framework.release`; the CLI prints it with `executor apps framework`. Create
+the app with both files; a deploy without the version fails and names it.
+To type-check outside Executor, install exactly that version with
+`npm install --save-exact apps@<version>`. Do not install `apps@latest`: that
+tag is separate from the Executor beta series.
 
-When `dependencies.apps` is present, Executor uses that package's server and
-browser framework. It retains the compiled code with the deployment, so host
-updates do not replace it. An exact version also keeps rebuilds on that version;
-a version range or tag can select a newer version on the next build.
-An unavailable or unsupported package fails the build and leaves the active app
-unchanged. The host protocol is small and shared; early beta releases do not
+Executor builds the app with the pinned package's server and browser framework.
+It retains the compiled code with the deployment, so host updates do not replace
+it. The exact version also keeps rebuilds on that version; a version range or
+tag can select a newer version on the next build. Change it only to upgrade the
+app. An unavailable or unsupported package fails the build and leaves the active
+app unchanged. The host protocol is small and shared; early beta releases do not
 promise indefinite support for every past version.
 
 `defineApp` declares behavior and does not take a name. Set the package name
@@ -34,19 +37,19 @@ accounts.
 ## A first app
 
 ```ts
-import { query, defineApp, object, string } from "apps";
+import { defineApp, object, query, router, string } from "apps";
 
 const Greet = object({ name: string().default("world") });
 
 export default defineApp(
   { accounts: {} },
   {
-    queries: {
+    tools: router({
       greet: query(
         { description: "Greet someone by name", input: Greet },
         async (_ctx, { name }) => ({ message: `Hello, ${name}!` }),
       ),
-    },
+    }),
   },
 );
 ```
@@ -54,7 +57,9 @@ export default defineApp(
 `defineApp(requirements, definition)` takes what the app needs and what it
 offers. `query(options, handler)` and `mutation(options, handler)` declare the
 operations. Options are `description`, `input`, and optionally `output` and
-`approval`.
+`approval`. The `tools` router names them: this app has one tool, `greet`.
+Nest routers to group tools; `router({ issues: router({ list, close }) })`
+gives `issues.list` and `issues.close`.
 
 The schema helpers are `object`, `string`, `number`, `boolean`, `array`,
 `record`, `json` and `literal`. Use `.optional()` for a field that may be absent
@@ -67,13 +72,14 @@ Declare a provider, require it, and read it off the context.
 
 ```ts
 import {
-  query,
-  type QueryContext,
   array,
   decodeJson,
   defineApp,
   defineProvider,
   object,
+  query,
+  type QueryContext,
+  router,
   secrets,
   string,
 } from "apps";
@@ -103,12 +109,13 @@ const listProjects = query(
   },
 );
 
-export default defineApp(requirements, { queries: { listProjects } });
+export default defineApp(requirements, { tools: router({ listProjects }) });
 ```
 
 `accounts.vercel.fields` holds exactly the fields the method declared. The token
-arrives per call, from whichever account the app has selected. Nothing in the
-source names an account, so the same code serves a work app and a personal one.
+arrives per call, from the account the calling
+[profile](/concepts/apps-and-deployments#profile) selected. Nothing in the source
+names an account, so the same code serves a work profile and a personal one.
 
 `decodeJson(response, schema)` checks the HTTP status and parses the body. Use
 `oauth2({ discover: "..." })` instead of `secrets` for a browser sign-in; the
@@ -134,17 +141,24 @@ back.
 Approval is declared on the operation.
 
 ```ts
-import { always, never } from "apps/operations/approval";
+import { mutation, object, string } from "apps";
+import { always } from "apps/operations/approval";
 
-// in the operation options:
-approval: always(),   // ask a person first
-approval: never(),    // run without asking
+const closeIssue = mutation(
+  {
+    description: "Close an issue",
+    input: object({ id: string() }),
+    approval: always(), // ask a person first; never() runs without asking
+  },
+  async (_ctx, { id }) => ({ closed: id }),
+);
 ```
 
 A function gets the real decision. It receives the tool name, the decoded input
 and an abort signal, and returns `approved`, `denied` or `user-approval`.
-Annotate a shared one with `Approval<Input>` to reuse it. For an imported
-operation, wrap it: `withApproval(operation, policy)`.
+Annotate a shared one with `Approval<Input>` to reuse it. For an operation
+declared elsewhere, wrap it: `withApproval(operation, policy)`. For an imported
+router, `withApprovals(router, (tool, name) => policy)` picks each tool's policy.
 
 There is no app-level approval setting, and nothing is inferred from an
 operation looking read-only. See
@@ -153,18 +167,28 @@ operation looking read-only. See
 ## Asking for input mid-tool
 
 ```ts
-await ctx.elicit({
-  mode: "form",
-  message: "Name this result",
-  requestedSchema: {
-    type: "object",
-    properties: { name: { type: "string" } },
-    required: ["name"],
+import { object, query } from "apps";
+
+const nameResult = query(
+  { description: "Ask for a name", input: object({}) },
+  async (ctx) => {
+    const answer = await ctx.elicit({
+      mode: "form",
+      message: "Name this result",
+      requestedSchema: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+    });
+    return answer.action === "accept" ? { ...answer.content } : {};
   },
-});
+);
 ```
 
-The question reaches the person the same way an approval does.
+The question reaches the person the same way an approval does. The answer's
+`action` is `accept`, `decline` or `cancel`; only an accepted answer carries
+`content`, the submitted fields.
 
 ## Importing an existing service
 
@@ -172,45 +196,94 @@ You do not have to write handlers to wrap an API.
 
 ```ts
 import { defineApp } from "apps";
-import { mcpOperations } from "apps/mcp";
+import { mcpRouter } from "apps/mcp";
 
 export default defineApp({ accounts: {} }, async ({ signal }) => ({
-  ...(await mcpOperations({
+  tools: await mcpRouter({
     url: "https://mcp.deepwiki.com/mcp",
     ...(signal === undefined ? {} : { signal }),
-  })),
+  }),
 }));
 ```
 
-The helpers are `mcpOperations` from `apps/mcp`, `stdioOperations` from
-`apps/mcp/stdio`, `graphqlOperations` from `apps/graphql` and
-`openapiOperations` from `apps/openapi`. Each returns `{ queries, mutations }`.
-An operation that cannot be classified becomes a mutation.
+The helpers are `mcpRouter` from `apps/mcp`, `stdioRouter` from
+`apps/mcp/stdio`, `graphqlRouter` from `apps/graphql` and `liveOpenapiRouter`
+from `apps/openapi`. Each returns a router. Use it as `tools`, or mount several
+under keys, such as `tools: router({ docs: await mcpRouter(...) })`, which
+names their tools `docs.<tool>`. An operation that cannot be classified
+becomes a mutation. The MCP helpers need `@modelcontextprotocol/sdk` in the
+app's `package.json` dependencies, and `graphqlRouter` needs `graphql`.
 
 The dashboard's **Custom app** form does the same thing from a URL, for MCP,
 GraphQL and OpenAPI, without writing any source.
 
 ## Storing data
 
-Declare a database and the app gets tables.
+Add SQL files to `migrations/` and the app gets its own SQLite database. The
+host applies new ones in number order when you deploy. A failing migration fails
+the deploy with SQLite's error, and applied migrations cannot be edited: add a
+new one instead.
 
-```ts
-import { defineDatabase, object, string, table } from "apps";
-
-const database = defineDatabase({
-  messages: table({ mailbox: string(), subject: string() }).index("by_mailbox", ["mailbox"]),
-});
-
-const requirements = { accounts: {}, database };
+```sql
+-- migrations/0001_messages.sql
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY NOT NULL,
+  mailbox TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX messages_mailbox ON messages (mailbox, created_at);
 ```
 
-Query it through `db` on the context, with `withIndex`, `order`, and a terminal:
-`first`, `take`, `collect`, `count` or `paginate({ cursor, numItems })`. A
-`by_creation` index exists without being declared.
+Handlers read and write through `ctx.sql`, with `?` for values:
 
-Reads are bounded: 5,000 rows scanned, 1,000 returned, 4 MiB per invocation.
-`collect` and `count` fail rather than truncate, so you notice. A mutation
-allows 1,000 writes.
+```ts
+import {
+  defineApp,
+  mutation,
+  type MutationContext,
+  object,
+  query,
+  type QueryContext,
+  router,
+  string,
+} from "apps";
+
+const requirements = { accounts: {} };
+type Message = { id: string; subject: string };
+
+const list = query(
+  { description: "Recent messages", input: object({ mailbox: string() }) },
+  async ({ sql }: QueryContext<typeof requirements>, { mailbox }) =>
+    sql
+      .exec<Message>(
+        "SELECT id, subject FROM messages WHERE mailbox = ? ORDER BY created_at DESC LIMIT 50",
+        mailbox,
+      )
+      .toArray(),
+);
+
+const add = mutation(
+  { description: "Store a message", input: object({ mailbox: string(), subject: string() }) },
+  async ({ sql }: MutationContext<typeof requirements>, message) =>
+    sql
+      .exec<Message>(
+        "INSERT INTO messages (id, mailbox, subject, created_at) VALUES (?, ?, ?, ?) RETURNING id, subject",
+        crypto.randomUUID(),
+        message.mailbox,
+        message.subject,
+        Date.now(),
+      )
+      .one(),
+);
+
+export default defineApp(requirements, { tools: router({ list, add }) });
+```
+
+`exec<Row>` types the rows it returns. Queries get read-only SQL; mutations can
+write. Each statement commits on its own, and `ctx.sql.transaction(...)` groups statements. A transaction is
+synchronous, so calls to other services always happen between transactions,
+never inside one.
 
 ## Shipping instructions
 
@@ -233,7 +306,7 @@ name: triage
 description: Search cached messages before fetching more history.
 ---
 
-Read [examples](references/examples.md), then discover this app's queries.
+Read [examples](references/examples.md), then discover this app's tools.
 ```
 
 An agent reads it with the `skills` tool. Skill text never grants a permission;
@@ -242,39 +315,72 @@ the approval still decides.
 ## Deploying
 
 Deployment is an operation, not a command. Have your agent call it through the
-MCP endpoint.
+MCP endpoint. Read the version with `framework.release`, create the app from
+`index.ts` and the `package.json` that pins it, then deploy the same files:
 
 <CodeGroup>
 
 ```js Hosted
-return await tools.executor.profiles["<management-profile-id>"].mutations.apps_deploy({
-  path: { organization: "<approved-organization-id>" },
-  body: {
-    name: "Hello",
-    files: [{ path: "index.ts", content: "<contents of index.ts>" }],
+const executor = tools.executor.profiles["<management-profile-id>"];
+const path = { organization: "<approved-organization-id>" };
+const { version } = await executor.framework.release({ path });
+const files = [
+  { path: "index.ts", content: "<contents of index.ts>" },
+  {
+    path: "package.json",
+    content: JSON.stringify({
+      name: "hello",
+      private: true,
+      type: "module",
+      dependencies: { apps: version },
+    }),
   },
-});
+];
+const app = await executor.appManagement.create({ path, body: { name: "Hello", files } });
+return await executor.appManagement.deploy({ path: { ...path, app: app.id }, body: { files } });
 ```
 
 ```js Local
-return await tools.executor.profiles["<management-profile-id>"].mutations.apps_deploy({
-  body: {
-    owner: "my-project",
-    name: "Hello",
-    files: [{ path: "index.ts", content: "<contents of index.ts>" }],
+const executor = tools.executor.profiles["<management-profile-id>"];
+const { version } = await executor.framework.release({});
+const files = [
+  { path: "index.ts", content: "<contents of index.ts>" },
+  {
+    path: "package.json",
+    content: JSON.stringify({
+      name: "hello",
+      private: true,
+      type: "module",
+      dependencies: { apps: version },
+    }),
   },
-});
+];
+const app = await executor.appManagement.create({ body: { name: "Hello", files } });
+return await executor.appManagement.deploy({ path: { app: app.id }, body: { files } });
 ```
 
 </CodeGroup>
 
+From a shell, write the same two files into a directory, using the version
+`executor apps framework` prints:
+
+```sh
+executor apps create --name "Hello" --files ./hello    # prints the app, including its id
+executor apps source --app <app-id> | jq -r .revision.commit
+executor apps deploy --app <app-id> --commit <first-commit>
+```
+
 The app activates only after the build succeeds, and earlier deployments are
 retained; see [Apps and deployments](/concepts/apps-and-deployments). Then
-connect an account for each requirement and call it in a new `execute`:
+connect an account for each requirement and, in a new `execute`, call the path
+`tools.search` returns. An app without accounts is called by its slug:
 
 ```js
-return await tools["<app-slug>"].queries.greet({ name: "Ada" });
+return await tools.hello.greet({ name: "Ada" });
 ```
+
+An app with accounts is called through a profile, such as
+`tools.vercel.profiles["<profile-id>"].listProjects({})`.
 
 ### Updating an existing app
 
@@ -284,24 +390,24 @@ signatures first. Hosted paths include `organization`; Local paths contain only
 `app`.
 
 ```js
-const api = tools.executor;
+const executor = tools.executor.profiles["<management-profile-id>"];
 const path = { organization: "<approved-organization-id>", app: "<app-id>" };
-const source = await api.queries.appManagement_source({ path });
-const saved = await api.mutations.appManagement_commit({
+const source = await executor.appManagement.source({ path });
+const files = source.files.map((file) =>
+  file.path === "index.ts" ? { ...file, content: "<complete updated source>" } : file,
+);
+const saved = await executor.appManagement.commit({
   path,
-  body: {
-    expected: source.revision.commit,
-    message: "Update greeting",
-    files: [{ path: "index.ts", content: "<complete updated source>" }],
-  },
+  body: { expected: source.revision.commit, message: "Update greeting", files },
 });
-return await api.mutations.appManagement_deploy({
+return await executor.appManagement.deploy({
   path,
   body: { commit: saved.revision.commit },
 });
 ```
 
-The commit replaces the complete file list. Saving source does not deploy it.
+The commit replaces the complete file list, so keep `package.json` in it.
+Saving source does not deploy it.
 Web pages show source; agents or ordinary Git clients edit it.
 
 Discovery is not cached across a change, so run `tools.search` again after you
@@ -313,10 +419,10 @@ leaves the Git branch unchanged. Ordinary Git pushes save source without deployi
 
 ## Update a hosted app
 
-Use `appManagement_deploy` with `{ files: [...] }` to deploy a complete file set,
+Use `appManagement.deploy` with `{ files: [...] }` to deploy a complete file set,
 or `{ commit: "<sha>" }` to deploy an existing Git commit. File deployments do not
 save changes to Git. The app keeps its ID and stored data. The newest successful
-deployment becomes active. Use `apps_activate` to select a retained deployment;
+deployment becomes active. Use `apps.activate` to select a retained deployment;
 activation does not roll back stored data.
 
 ## Open an app UI
@@ -354,10 +460,10 @@ Use CSS `@theme` for custom tokens. Use `@source inline("...")` to include class
 that only arrive at runtime. Filesystem `@source` paths and JavaScript `@config`
 or `@plugin` files are not supported.
 
-For hosted apps, discover `appUi_location` through `tools.search` and call it:
+For hosted apps, discover `appUi.location` through `tools.search` and call it:
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].queries.appUi_location({
+return await tools.executor.profiles["<management-profile-id>"].appUi.location({
   path: { organization: "<approved-organization-id>", app: "<app-id>" },
 });
 ```
@@ -373,8 +479,6 @@ the UI renders. Check the actual page before reporting it as working.
 
 ## What is coming later
 
-- Scheduled and background work.
 - Calling one app from another.
 - Authoring general HTTP endpoints.
-- Stored-data schema migration between deployments.
 - A local `executor dev` loop.

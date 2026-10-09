@@ -1,11 +1,9 @@
 ---
-// Start with a useful tool, then reveal the software an agent can build around it.
-import { release, platforms, desktopDownload } from "../../../../../scripts/releases/config.ts";
+// Lead with what an app can be, then build one up step by step.
+import { release, platforms, desktopAssetSuffix, desktopDownloads } from "../../../../../scripts/releases/config.ts";
 import Testimonials from "./testimonials.astro";
-import IntroSteps from "./intro-steps.astro";
-import { heroHeadlines, heroVariants, type HeroVariant } from "../../content/hero-experiment";
 import CopyPrompt from "./copy-prompt.astro";
-import { introductionItems, homepageStory, appDefinition } from "../../content/site-copy";
+import { tagline, introductionItems, homepageStory } from "../../content/site-copy";
 import AppStartingPoints from "../app-starting-points.astro";
 import CustomTool from "../custom-tool.astro";
 import { DailyBriefDemo } from "../daily-brief-demo";
@@ -15,20 +13,18 @@ import { AppPieces } from "../app-pieces";
 // Avatar goes through Vite so it ships as a hashed asset; new /public files
 // are not picked up by the deploy pipeline.
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
+import { appHref } from "../../content/site-origin.ts";
 const X_URL = "https://x.com/RhysSullivan";
 
 interface Props {
   gh: string;
-  variant?: HeroVariant;
 }
-const { variant = heroVariants[0] } = Astro.props;
 ---
 
 <article class="doc max-w-180 [margin-inline:auto] [padding:4rem_1.5rem_6rem] overflow-x-clip min-[640px]:[padding:4.5rem_2.5rem_7rem] min-[1024px]:max-w-none min-[1024px]:[margin-inline:0] min-[1024px]:[padding-inline:0] max-[719.98px]:[padding:2.25rem_1.25rem_4rem]">
   {/* ── Intro ── */}
-    <header data-hero-variant={variant.id} class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
-      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">{heroHeadlines[variant.headline]}</h1>
-      {variant.steps === "intent" ? (
+    <header class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
+      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">{tagline}</h1>
       <p class="mb-6 max-w-[48ch] text-[18px] leading-[1.65] tracking-[-0.01em] text-[#777] [text-wrap:balance] max-[719.98px]:text-[17px] max-[1023.98px]:mx-auto">Your {introductionItems.map((item, i) => (
         <>
           {i === introductionItems.length - 1 && "and "}
@@ -41,15 +37,19 @@ const { variant = heroVariants[0] } = Astro.props;
           {", "}
         </>
       ))}all in one place.</p>
-      ) : <IntroSteps variant="build" />}
       <div class="doc__actions flex flex-wrap items-center gap-[0.6rem_0.9rem] mb-[1.1rem] max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[1023.98px]:justify-center">
-        <a data-hero-cta href="/login" class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
+        <a href={appHref("/login?mode=signup")} class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
         <CopyPrompt />
       </div>
       <p class="doc__subhead doc__subhead--fine mb-[1.5rem] max-[719.98px]:text-[16px] text-[15px] [color:var(--color-ink-3)] max-w-[52ch] [&_a]:[color:var(--color-ink-2)] [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:text-ink">
         Rather keep it on your machine? <a href="#install">Desktop, CLI, or self-hosted ↓</a>
       </p>
     </header>
+
+    <section id="apps" aria-labelledby="apps-title" class="doc__hero-app scroll-mt-14 min-[1024px]:scroll-mt-0 mt-[2.5rem] max-[719.98px]:mt-[2rem]">
+      <h2 id="apps-title" class="sr-only">{homepageStory.apps.title}</h2>
+      <AppPieces client:load />
+    </section>
 
   <section id="connect" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
     <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.start.title}</h2>
@@ -69,12 +69,6 @@ const { variant = heroVariants[0] } = Astro.props;
     <div class="doc__fig--wide max-w-225"><DailyBriefDemo client:visible /></div>
   </section>
 
-  <section id="apps" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
-    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.apps.title}</h2>
-    <p>{appDefinition}</p>
-    <AppPieces client:visible />
-  </section>
-
   <section id="agents" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
     <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{appStructure.title}</h2>
     <p>{appStructure.subtitle}</p>
@@ -91,14 +85,14 @@ const { variant = heroVariants[0] } = Astro.props;
       <div class="doc__way doc__way--rec relative flex flex-col gap-[0.4rem] [padding:1.25rem_1.3rem_1.35rem] bg-surface before:[content:''] before:absolute before:inset-[0_0_auto_0] before:h-0.5 before:bg-ink">
         <span class="doc__way-k text-[16px] font-semibold text-ink">Cloud</span>
         <span class="doc__way-d text-[14px] leading-[1.55] [color:var(--color-ink-2)] flex-1">Deploy your apps. We handle the hosting.</span>
-        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><a href="/login" class="btn-primary border border-transparent bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Deploy an app</a></span>
+        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><a href={appHref("/login?mode=signup")} class="btn-primary border border-transparent bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-[#1f1f24] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Deploy an app</a></span>
       </div>
       <div class="doc__way relative flex flex-col gap-[0.4rem] [padding:1.25rem_1.3rem_1.35rem] bg-surface">
         <span class="doc__way-k text-[16px] font-semibold text-ink flex items-center gap-2">Desktop{release.channel === "beta" && <span class="rounded border border-rule px-1.5 py-0.5 text-[11px] font-medium text-muted">Beta</span>}</span>
         <span class="doc__way-d text-[14px] leading-[1.55] [color:var(--color-ink-2)] flex-1">Your apps and accounts, on your computer.</span>
-        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><span class="doc__dl [&>.hidden]:hidden inline-flex flex-wrap items-center gap-[0.5rem_0.75rem] max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:flex max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[719.98px]:[&_>_a]:w-full max-[719.98px]:[&_>_a]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:w-full" data-download>
+        <span class="doc__way-a flex flex-wrap items-center gap-[0.5rem_0.75rem] mt-[0.6rem]"><span class="doc__dl [&>.hidden]:hidden inline-flex flex-wrap items-center gap-[0.5rem_0.75rem] max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:flex max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[719.98px]:[&_>_a]:w-full max-[719.98px]:[&_>_a]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:w-full" data-download data-releases-api={desktopDownloads.releasesApi} data-tag-prefix={desktopDownloads.tagPrefix} data-stable-only={String(desktopDownloads.stableOnly)}>
             {platforms.map((target) => (
-              <a data-os={`${target.desktopOs}-${target.arch}`} href={desktopDownload(target)} class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">
+              <a data-os={`${target.desktopOs}-${target.arch}`} data-asset={desktopAssetSuffix(target)} href={desktopDownloads.releasesPage} class="btn-secondary inline-flex items-center gap-[0.4rem] bg-surface text-ink border border-rule rounded-[8px] py-[0.7rem] px-[1.25rem] [font-family:inherit] font-medium text-[14.5px] tracking-[-0.005em] cursor-pointer [transition:background_0.15s_ease,_border-color_0.15s_ease] hover:[background:var(--color-surface-2)] hover:[border-color:var(--color-ink-3)] [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">
                 {target.platform === "darwin" ? (target.arch === "arm64" ? "Download for Mac" : "Download for Mac (Intel)") : target.platform === "win32" ? "Download for Windows" : `Download for Linux (${target.arch === "arm64" ? "ARM64" : "x64"})`}
               </a>
             ))}
@@ -170,6 +164,26 @@ const { variant = heroVariants[0] } = Astro.props;
 </article>
 
 <script>
+  import { assetUrl, fetchNewestRelease } from "../../lib/desktop-release";
+
+  // Point each download at the newest published release. Buttons cloned into
+  // "Other platforms" keep data-asset, so they are updated too.
+  void (async () => {
+    for (const root of document.querySelectorAll<HTMLElement>("[data-download]")) {
+      const { releasesApi, tagPrefix, stableOnly } = root.dataset;
+      if (!releasesApi || !tagPrefix) continue;
+      const release = await fetchNewestRelease(releasesApi, {
+        tagPrefix,
+        stableOnly: stableOnly === "true",
+      }).catch(() => null);
+      if (!release) continue;
+      for (const link of root.querySelectorAll<HTMLAnchorElement>("a[data-asset]")) {
+        const url = assetUrl(release, link.dataset.asset ?? "");
+        if (url) link.href = url;
+      }
+    }
+  })();
+
   // Show one download button for the visitor's OS and tuck the rest behind
   // "Other platforms". Without JS or on an unknown OS, all platforms stay visible.
   type DownloadOs = "mac-arm64" | "mac-x64" | "win-x64" | "linux-x64" | "linux-arm64";

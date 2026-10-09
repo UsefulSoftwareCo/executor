@@ -204,23 +204,22 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
         expect(response.status).toBe(200);
         const request = (yield* evidence.requests).at(-1);
         if (!request) return yield* Effect.die(new Error("Request evidence missing"));
-        const delivered = telemetry
-          .query(request.traceId)
-          .pipe(
-            Effect.flatMap((value) =>
-              value.data.some(
-                (entry) =>
-                  entry.traceId === request.traceId &&
-                  entry.span.serviceName === "executor-selfhost" &&
-                  entry.span.tags["url.path"] ===
-                    `/api/organizations/${actors.organization.id}/inventory` &&
-                  entry.span.tags["http.request.method"] === "GET" &&
-                  entry.span.tags["http.response.status_code"] === "200",
-              )
-                ? Effect.succeed(value)
-                : Effect.fail(new Error("The actual HTTP server span must reach Motel")),
-            ),
-          );
+        const delivered = telemetry.query(request.traceId).pipe(
+          Effect.flatMap((value) =>
+            value.data.some(
+              (entry) =>
+                entry.traceId === request.traceId &&
+                entry.span.serviceName === "executor-selfhost" &&
+                // The path records the route's template; the organization is recorded by ID.
+                entry.span.tags["url.path"] === "/api/organizations/:organization/inventory" &&
+                entry.span.tags["executor.organization.id"] === actors.organization.id &&
+                entry.span.tags["http.request.method"] === "GET" &&
+                entry.span.tags["http.response.status_code"] === "200",
+            )
+              ? Effect.succeed(value)
+              : Effect.fail(new Error("The actual HTTP server span must reach Motel")),
+          ),
+        );
         const result = yield* delivered.pipe(
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           Effect.timeout("20 seconds"),

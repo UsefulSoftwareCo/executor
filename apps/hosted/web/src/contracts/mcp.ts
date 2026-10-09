@@ -4,8 +4,27 @@ import { HostedClient } from "./api.ts";
 import { hydratedResult, requestKey } from "@executor-js/ui/contracts/http";
 import { BrowserAtoms } from "./telemetry.ts";
 import { Effect, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
+import type { ResourceOrigins } from "@executor-js/mcp-auth/grants";
 import { authCallOptions, mcpAuthorization, type AuthCallOptions } from "./auth.ts";
+
+/**
+ * Where this deployment serves its MCP and API resources, canonical first, sent with each
+ * server-rendered document. They can differ from the page's own origin, which serves the
+ * dashboard and sign-in.
+ */
+export const resourceOriginsAtom = Atom.make<ResourceOrigins | null>(null).pipe(
+  Atom.serializable({
+    key: "hosted:resource-origins",
+    schema: Schema.NullOr(
+      Schema.Struct({
+        mcp: Schema.NonEmptyArray(Schema.String),
+        api: Schema.NonEmptyArray(Schema.String),
+      }),
+    ),
+  }),
+  Atom.keepAlive,
+);
 
 /** Safe OAuth setup errors shown to the person granting access. */
 export class McpConnectionFailed extends Schema.TaggedError<McpConnectionFailed>()(

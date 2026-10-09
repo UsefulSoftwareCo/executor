@@ -1,13 +1,22 @@
 /**
  * Concurrent load windows: discovery-heavy MCP executes and tool calls run alongside dashboard
  * reads, so database pool contention and first-response waits show up in foreground routes.
+ * Schedule loops start runs through the schedule coordinator, whose statements run from wherever
+ * that Durable Object lives rather than from the placed Worker.
  *
  * `runLoad` drives one target for a fixed window. `compareLoad` alternates whole windows between
  * two targets (A B B A ...), because the load itself is the condition being compared and two
  * simultaneous windows would share this machine's network and CPU.
  */
-import { Clock, Console, Effect, Ref } from "effect";
-import { mcpSession, type McpSession, type PerfRequestFailed } from "./client.ts";
+import { Clock, Console, Effect, Ref, Schedule, Schema } from "effect";
+import { appsManifest } from "../../support/apps-release.ts";
+import {
+  mcpSession,
+  PerfRequestFailed,
+  type McpSession,
+  type ProductClient,
+  type Timed,
+} from "./client.ts";
 import { summarize, type Summary } from "./runner.ts";
 import {
   dashboardOrg,
@@ -27,6 +36,11 @@ export interface LoadConfig {
   /** Concurrent REST tool-call loops against the zero-latency MCP upstream. */
   readonly callWorkers: number;
   /**
+   * Loops that each start a run of their own schedule and wait for it to finish. The run is
+   * dispatched by the schedule coordinator, so its time includes that object's database trips.
+   */
+  readonly scheduleWorkers: number;
+  /**
    * Loops requesting `/health`, which does no database or upstream I/O. If its client time rises
    * with load, requests are waiting for the Worker itself rather than for the database.
    */
@@ -35,7 +49,7 @@ export interface LoadConfig {
 
 export interface LoadSample {
   readonly id: string;
-  readonly kind: "read" | "execute" | "toolcall" | "probe";
+  readonly kind: "read" | "execute" | "toolcall" | "schedule" | "probe";
   readonly at: string;
   readonly ok: boolean;
   readonly status: number;
@@ -81,12 +95,75 @@ export const loadReads: readonly (readonly [string, (o: OrgReceipt) => string])[
   ],
 ];
 
+/** The `call` organization's app whose schedules the schedule loops start on demand. */
+const scheduledAppName = "Perf scheduled runs";
+/** Enough schedules for one per loop; their hourly interval keeps them from running on their own. */
+const scheduleNames = Array.from({ length: 16 }, (_, index) => `s${index + 1}`);
+const scheduledSource = `import { defineApp, mutation, interval, object, router } from "apps";
+const tick = mutation({ input: object({}) }, async () => ({ done: true }));
+export default defineApp({ accounts: {} }, async () => ({ tools: router({ tick }), schedules: { ${scheduleNames
+  .map((name) => `${name}: interval({ minutes: 60 }, tick, {})`)
+  .join(", ")} } }));`;
+const ScheduledInventory = Schema.Struct({
+  apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+});
+const Identified = Schema.Struct({ id: Schema.String });
+const ScheduledRuns = Schema.Array(
+  Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    status: Schema.String,
+    startedAt: Schema.optional(Schema.NullOr(Schema.String)),
+    finishedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+);
+const finishedRun = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
+
+class RunPending extends Schema.TaggedError<RunPending>()("RunPending", {}) {}
+
+const decodeBody =
+  <A>(schema: Schema.Codec<A, unknown>, operation: string) =>
+  (response: Timed) =>
+    response.status === 200
+      ? Schema.decodeUnknownEffect(schema)(response.body).pipe(
+          Effect.mapError(
+            () => new PerfRequestFailed({ operation, status: 200, detail: "unexpected body" }),
+          ),
+        )
+      : Effect.fail(
+          new PerfRequestFailed({
+            operation,
+            status: response.status,
+            detail: JSON.stringify(response.body).slice(0, 300),
+          }),
+        );
+
+/** Find or deploy the scheduled app in `call`; returns its API path. */
+const scheduledApp = (target: PerfTarget, client: ProductClient) =>
+  Effect.gen(function* () {
+    const root = org(target.org("call"));
+    const inventory = yield* client
+      .request("GET", `${root}/inventory`)
+      .pipe(Effect.flatMap(decodeBody(ScheduledInventory, "inventory")));
+    const existing = inventory.apps.find((entry) => entry.name === scheduledAppName);
+    const app =
+      existing ??
+      (yield* client
+        .request("POST", `${root}/apps/deploy`, {
+          name: scheduledAppName,
+          files: [{ path: "index.ts", content: scheduledSource }, appsManifest],
+        })
+        .pipe(Effect.flatMap(decodeBody(Identified, "deploy scheduled app"))));
+    return { root, app: app.id, path: `${root}/apps/${app.id}` };
+  });
+
 const summaries = (samples: readonly LoadSample[]) => {
   const ids = [...new Set(samples.map((sample) => sample.id))].sort();
   const groups: Record<string, readonly LoadSample[]> = {
     "all.read": samples.filter((sample) => sample.kind === "read"),
     "all.execute": samples.filter((sample) => sample.kind === "execute"),
     "all.toolcall": samples.filter((sample) => sample.kind === "toolcall"),
+    "all.schedule": samples.filter((sample) => sample.kind === "schedule"),
     "all.probe": samples.filter((sample) => sample.kind === "probe"),
     ...Object.fromEntries(ids.map((id) => [id, samples.filter((sample) => sample.id === id)])),
   };
@@ -237,6 +314,73 @@ export const runLoad = (target: PerfTarget, config: LoadConfig) =>
         }
       });
 
+    // Each loop starts its own schedule and waits until that run finishes. Client time is the wait
+    // from `run now` to the finished run, including the coordinator's one-second alarm delay; server
+    // time is the run's own recorded duration, which carries the coordinator's database trips.
+    const scheduler = (app: Effect.Success<ReturnType<typeof scheduledApp>>, name: string) =>
+      Effect.gen(function* () {
+        const client = yield* target.owner("call");
+        const schedule = `${app.path}/schedules/${name}`;
+        const runs = client.request("GET", `${app.root}/scheduled-runs?app=${app.app}`).pipe(
+          Effect.flatMap(decodeBody(ScheduledRuns, "scheduled runs")),
+          Effect.map((rows) => rows.filter((row) => row.name === name)),
+        );
+        yield* client.request("PATCH", schedule, { enabled: true, approvalMode: "automatic" });
+        while (yield* active) {
+          const at = yield* now;
+          const startedMs = yield* Clock.currentTimeMillis;
+          yield* Effect.gen(function* () {
+            const before = new Set((yield* runs).map((row) => row.id));
+            const started = yield* client.request("POST", `${schedule}/run`);
+            if (started.status !== 200) return yield* decodeBody(Identified, "run now")(started);
+            const run = yield* runs.pipe(
+              Effect.flatMap((rows) => {
+                const found = rows.find(
+                  (row) => !before.has(row.id) && finishedRun.has(row.status),
+                );
+                return found === undefined ? Effect.fail(new RunPending()) : Effect.succeed(found);
+              }),
+              Effect.retry({
+                while: (error) => error._tag === "RunPending",
+                schedule: Schedule.spaced("100 millis"),
+              }),
+              Effect.timeout("30 seconds"),
+              Effect.mapError(
+                (cause) =>
+                  new PerfRequestFailed({ operation: `schedule ${name}`, detail: String(cause) }),
+              ),
+            );
+            const serverMs =
+              run.startedAt && run.finishedAt
+                ? Date.parse(run.finishedAt) - Date.parse(run.startedAt)
+                : undefined;
+            yield* record({
+              id: "schedule.run",
+              kind: "schedule",
+              at,
+              ok: run.status === "succeeded",
+              status: started.status,
+              clientMs: (yield* Clock.currentTimeMillis) - startedMs,
+              serverMs,
+              traceId: started.traceId,
+              ...(run.status === "succeeded" ? {} : { error: run.status }),
+            });
+          }).pipe(Effect.catch((error) => failed("schedule.run", "schedule", at, error)));
+        }
+      }).pipe(
+        Effect.ensuring(
+          target.owner("call").pipe(
+            Effect.flatMap((client) =>
+              client.request("PATCH", `${app.path}/schedules/${name}`, { enabled: false }),
+            ),
+            Effect.ignore,
+          ),
+        ),
+        Effect.catch((error) =>
+          failed("schedule.run", "schedule", new Date().toISOString(), error),
+        ),
+      );
+
     const prober = () =>
       Effect.gen(function* () {
         while (yield* active) {
@@ -263,12 +407,20 @@ export const runLoad = (target: PerfTarget, config: LoadConfig) =>
 
     // Sessions are minted before the window so fixture calls are not measured.
     yield* target.owner(dashboardOrg);
-    yield* target.owner("call");
+    const callOwner = yield* target.owner("call");
+    // Every schedule loop shares one app, found or deployed before the window.
+    const scheduled =
+      config.scheduleWorkers > 0 ? yield* scheduledApp(target, callOwner) : undefined;
     yield* Effect.all(
       [
         ...Array.from({ length: config.readWorkers }, (_, index) => reader(index)),
         ...Array.from({ length: config.executeWorkers }, (_, index) => executor(index)),
         ...Array.from({ length: config.callWorkers }, () => caller()),
+        ...(scheduled === undefined
+          ? []
+          : scheduleNames
+              .slice(0, config.scheduleWorkers)
+              .map((name) => scheduler(scheduled, name))),
         ...Array.from({ length: config.probeWorkers }, () => prober()),
       ],
       { concurrency: "unbounded", discard: true },
@@ -285,8 +437,9 @@ export const runLoad = (target: PerfTarget, config: LoadConfig) =>
     };
     const reads = window.summary["all.read"];
     const executes = window.summary["all.execute"];
+    const schedules = window.summary["all.schedule"];
     yield* Console.log(
-      `${target.label.padEnd(22)} reads n=${reads?.n ?? 0} p50=${reads?.client?.p50 ?? "-"} p95=${reads?.client?.p95 ?? "-"} server p95=${reads?.server?.p95 ?? "-"} errors=${reads?.errors ?? 0} | executes n=${executes?.n ?? 0} p50=${executes?.client?.p50 ?? "-"} errors=${executes?.errors ?? 0}`,
+      `${target.label.padEnd(22)} reads n=${reads?.n ?? 0} p50=${reads?.client?.p50 ?? "-"} p95=${reads?.client?.p95 ?? "-"} server p95=${reads?.server?.p95 ?? "-"} errors=${reads?.errors ?? 0} | executes n=${executes?.n ?? 0} p50=${executes?.client?.p50 ?? "-"} errors=${executes?.errors ?? 0} | schedules n=${schedules?.n ?? 0} p50=${schedules?.client?.p50 ?? "-"} p95=${schedules?.client?.p95 ?? "-"} errors=${schedules?.errors ?? 0}`,
     );
     return window;
   });

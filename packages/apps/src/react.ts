@@ -1,7 +1,7 @@
 /** Optional React bindings backed by Effect Atom. No Effect imports are needed in authored components. */
 import { useEffect, useLayoutEffect, useState } from "react";
 import { Option } from "effect";
-import { AtomRegistry, AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AtomRegistry, AsyncResult, type Atom } from "effect/reactivity";
 import { queryCommitted } from "./implementation/query-commit.ts";
 
 /** Subscribe for the component lifetime. Each mount owns and disposes its registry, including StrictMode remounts. */

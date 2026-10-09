@@ -7,15 +7,16 @@ import {
   RuntimeProtocolUnsupported,
   describeBuildCause,
   RuntimeAppsDependencyMissing,
+  ownsDatabase,
   runtimeAdapter,
 } from "@executor-js/sdk/core";
-import { appRuntime, assembleWorkerBundle, remoteAppRunner } from "@executor-js/sdk/workerd";
 import {
-  DatabaseFieldReserved,
-  HostRequirementsError,
-  DeclaredRequirements,
-  HostResponse,
-} from "apps/contracts";
+  appRuntime,
+  assembleWorkerBundle,
+  declarationFailed,
+  remoteAppRunner,
+} from "@executor-js/sdk/workerd";
+import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Context, Effect, FiberSet, Option, Schema } from "effect";
@@ -35,11 +36,7 @@ import {
 
 /** The deployer sees the underlying failure; builds bind no accounts, so it holds no credentials. */
 const failed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
-  new RuntimeBuildFailed({
-    stage,
-    message: describeBuildCause(cause),
-    ...(Schema.is(DatabaseFieldReserved)(cause) ? { declaration: cause } : {}),
-  });
+  new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
 /**
  * How long a deploy waits for the compiler Worker to answer. A lost compiler isolate otherwise
  * leaves the binding call open until the platform reports a lost connection, 100-230s later.
@@ -99,15 +96,21 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
       invoke: (invocation, capabilities) => appData.invoke(invocation, capabilities),
       declare: (bundle, headers) => appData.declare(bundle, headers),
     });
-    const load = yield* cachedRuntimeBuilds(origin, {
-      record: (build) => loadCloudBuildRecord(build).pipe(Effect.provide(RuntimeContext.phantom)),
-      framework: (identity) =>
-        loadCloudFramework(identity).pipe(Effect.provide(RuntimeContext.phantom)),
-    });
-    // Deploys warm the build caches in the same event scope and bound as the reader's writes.
+    // Cache writes run in this event scope, bounded when it closes.
     const warming = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
       FiberSet.awaitEmpty(warming).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
+    );
+    // Only a runner from before AppData read builds itself calls this loader; it stays until
+    // callers stop sending it, so such a runner keeps working through a rollback.
+    const load = cachedRuntimeBuilds(
+      origin,
+      {
+        record: (build) => loadCloudBuildRecord(build).pipe(Effect.provide(RuntimeContext.phantom)),
+        framework: (identity) =>
+          loadCloudFramework(identity).pipe(Effect.provide(RuntimeContext.phantom)),
+      },
+      (write) => FiberSet.run(warming, write).pipe(Effect.asVoid),
     );
     const runtime = yield* appRuntime({
       name: "runtime.cloud",
@@ -130,12 +133,21 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
                     : failed("compile", cause instanceof Error ? cause : error),
                 );
               }),
+              // Builds share a compiler isolate, so another build can exhaust its memory. The
+              // runtime discards that isolate: one retry compiles alone on a fresh one, and a
+              // build that cannot fit fails again.
+              Effect.tapError((error) =>
+                Schema.is(BuildMemoryExceeded)(error)
+                  ? Effect.annotateCurrentSpan("build.memory_retry", true)
+                  : Effect.void,
+              ),
+              Effect.retry({ times: 1, while: Schema.is(BuildMemoryExceeded) }),
               Effect.flatMap(Schema.decodeUnknownEffect(CloudCompileResult)),
               Effect.catchTag("SchemaError", (cause) => Effect.fail(failed("compile", cause))),
               Effect.withSpan("runtime.cloud.compiler.request"),
             );
             if (!result.ok) return yield* Effect.fail(result.error);
-            const { bundle, framework, ui, protocol } = result.value;
+            const { bundle, framework, ui, protocol, sourceMap } = result.value;
             const build = BuildId.make(`bld_${crypto.randomUUID()}`);
             const requirements = yield* runner
               .declare({ ...assembleWorkerBundle(bundle, framework), protocol }, headers)
@@ -148,18 +160,19 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
                         Effect.flatMap(Effect.fail),
                       ),
                 ),
-                Effect.mapError((cause) => failed("declaration", cause)),
+                Effect.mapError((cause) =>
+                  declarationFailed(cause, { mainModule: bundle.mainModule, sourceMap, files }),
+                ),
                 Effect.withSpan("runtime.cloud.requirements"),
               );
             const stored = yield* retainCloudBuild(
               build,
-              { ...bundle, database: requirements.database !== undefined, protocol },
+              { ...bundle, database: ownsDatabase(requirements), protocol },
               framework,
               ui,
             ).pipe(Effect.provide(RuntimeContext.phantom));
-            // Only after R2 holds the build: the first call can then skip the R2 reads when it
-            // reaches this isolate or another isolate in this data centre. The Cache API is per
-            // data centre, so calls served from other colos still read R2 once.
+            // Only after R2 holds the build: the runner's first read of it can then skip R2 in this
+            // data centre. The Cache API is per data centre, so other colos still read R2 once.
             yield* cacheRuntimeBuild(warming, origin, build, stored);
             const assets = stored.record.ui;
             return { build, requirements, ...(assets === undefined ? {} : { ui: assets }) };
@@ -173,7 +186,9 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
                     : Schema.is(RuntimeAppsDependencyMissing)(error)
                       ? "dependencies"
                       : error.stage,
-                "build.cause": error.message,
+                // The message quotes the deployer's source and its compiler errors, which only the
+                // deployer receives; the span records which failure it was.
+                "build.error": error._tag,
               }),
             ),
           ),

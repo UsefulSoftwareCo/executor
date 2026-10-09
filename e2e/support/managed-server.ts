@@ -19,14 +19,14 @@ import {
   Semaphore,
   Stream,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   HttpClient,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import type { Target } from "./platform.ts";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import {
@@ -40,6 +40,13 @@ import { scenarios } from "../test-plan.ts";
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
+
+/** The furthest a scenario may move a stopped product's clock; `wall-clock.mjs` enforces it too. */
+const maxClockOffset = 40 * 86_400_000;
+/** Operator settings a scenario may turn on between product generations. */
+export const OperatorSettings = Schema.Struct({
+  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.NonEmptyString,
+});
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (
   target: typeof Target.Service,
@@ -64,7 +71,10 @@ export const startManagedServer = (
     const npmRegistry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
     const entry =
       target.metadata.target === "local" && Option.isSome(packagedEntry)
-        ? { command: [packagedEntry.value, "serve"], cwd: target.directory }
+        ? // Run the installed CLI from its package, as the desktop runs its backend from its
+          // install root. Product processes can outlive the server's reported exit on Windows
+          // while they terminate, and a working directory there cannot be removed.
+          { command: [packagedEntry.value, "serve"], cwd: path.dirname(packagedEntry.value) }
         : {
             command: [
               target.metadata.target === "local"
@@ -110,10 +120,38 @@ export const startManagedServer = (
       EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
       ...environment,
     };
+    // On Windows every signal terminates at once, so the scope's tree kill stays the only stop.
+    const stopRequests = process.platform !== "win32";
+    // Ask the product alone to stop, as the self-host image's supervisor does, so its own shutdown
+    // flushes its telemetry before it stops the collector it started. A signal to its whole
+    // process group stopped the collector first, and the product then spent its 3-second export
+    // budget retrying. Releasing the process scope afterwards ends anything it left behind.
+    const shutdown = Effect.suspend(() => {
+      const child = running;
+      if (child === undefined || !stopRequests) return Effect.void;
+      // The request goes through a pipe only the product holds (see stop-request.mjs), not to its
+      // PID: once the product is reaped, its PID can name another process before its handle
+      // reports the exit. A write to a product that already exited never completes, so the
+      // product's exit ends the wait whether or not its request was delivered.
+      const request = Stream.run(Stream.make(new Uint8Array([1])), child.getInputFd(3)).pipe(
+        Effect.ignore,
+        Effect.andThen(Effect.never),
+      );
+      return child.exitCode.pipe(
+        Effect.ignore,
+        Effect.raceFirst(request),
+        Effect.timeoutOption("15 seconds"),
+        Effect.flatMap((exited) =>
+          Option.isSome(exited) ? Effect.void : child.kill({ killSignal: "SIGKILL" }),
+        ),
+        Effect.ignore,
+      );
+    });
     const stop = Effect.suspend(() =>
       current === undefined
         ? Effect.void
-        : Scope.close(current, Exit.succeed(undefined)).pipe(
+        : shutdown.pipe(
+            Effect.andThen(Scope.close(current, Exit.succeed(undefined))),
             Effect.tap(() =>
               Effect.sync(() => {
                 current = undefined;
@@ -134,6 +172,9 @@ export const startManagedServer = (
               // Bun accepts Node's --import preload, so self-host can advance wall time too.
               "--import",
               new URL("./wall-clock.mjs", import.meta.url).href,
+              ...(stopRequests
+                ? ["--import", new URL("./stop-request.mjs", import.meta.url).href]
+                : []),
               ...entry.command,
             ],
             {
@@ -142,6 +183,7 @@ export const startManagedServer = (
               env,
               stdout: "pipe",
               stderr: "pipe",
+              ...(stopRequests ? { additionalFds: { fd3: { type: "input" } } } : {}),
               killSignal: "SIGTERM",
               forceKillAfter: "15 seconds",
             },
@@ -253,7 +295,7 @@ export const startManagedServer = (
               Schema.decodeUnknownEffect(
                 Schema.Struct({
                   milliseconds: Schema.Int.check(
-                    Schema.isBetween({ minimum: 1, maximum: 86_400_000 }),
+                    Schema.isBetween({ minimum: 1, maximum: maxClockOffset }),
                   ),
                 }),
               ),
@@ -263,9 +305,30 @@ export const startManagedServer = (
             Effect.gen(function* () {
               if (current !== undefined) return HttpServerResponse.empty({ status: 409 });
               const offset = Number(env.EXECUTOR_TEST_CLOCK_OFFSET_MS) + body.milliseconds;
-              if (offset > 86_400_000) return HttpServerResponse.empty({ status: 400 });
+              if (offset > maxClockOffset) return HttpServerResponse.empty({ status: 400 });
               env.EXECUTOR_TEST_CLOCK_OFFSET_MS = String(offset);
               return HttpServerResponse.jsonUnsafe({ offset });
+            }),
+          );
+        }),
+      ),
+      // A later start reads an operator setting the install did not have, as when an operator
+      // turns it on. Only settings a scenario turns on mid-life are accepted.
+      HttpRouter.add(
+        "POST",
+        "/environment",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+            return HttpServerResponse.empty({ status: 401 });
+          const body = yield* request.json.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(OperatorSettings)),
+          );
+          return yield* gate.withPermits(1)(
+            Effect.sync(() => {
+              if (current !== undefined) return HttpServerResponse.empty({ status: 409 });
+              Object.assign(env, body);
+              return HttpServerResponse.jsonUnsafe({ ok: true });
             }),
           );
         }),
@@ -304,9 +367,7 @@ export const startManagedServer = (
           // Only scenarios that declare this in the reviewed test plan may write rows directly.
           const declared = Object.values(scenarios).some(
             (scenario) =>
-              scenario.title === target.scenarioLabel &&
-              "legacyStorage" in scenario &&
-              scenario.legacyStorage === true,
+              scenario.title === target.scenarioLabel && scenario.legacyStorage === true,
           );
           if (!declared || target.metadata.target === "cloud")
             return HttpServerResponse.empty({ status: 403 });

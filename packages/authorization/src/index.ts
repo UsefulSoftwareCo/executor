@@ -2,6 +2,7 @@
 export {
   Action,
   ToolScope,
+  EventScope,
   RunTarget,
   AppPermission,
   ToolSelection,
@@ -13,6 +14,8 @@ export {
   selectedAuthority,
   permitsAction,
   permitsApp,
+  eventAccess,
+  permitsEvent,
   permitsTool,
   permitsTarget,
   permitsRouter,

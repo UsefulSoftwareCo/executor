@@ -1,8 +1,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Layer, Path, Redacted, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
-import { Command, Flag } from "effect/unstable/cli";
+import { FetchHttpClient } from "effect/http";
+import { Command, Flag } from "effect/cli";
 import { createEmulatorFixture } from "./support/emulators.ts";
 
 const command = Command.make("e2e-emulators", {
@@ -41,7 +41,7 @@ const command = Command.make("e2e-emulators", {
         );
         complete = true;
         yield* Console.log(
-          `Created isolated identity, mail, company and billing emulators. Private configuration: ${output}`,
+          `Created isolated identity, mail, company, billing and WorkOS emulators. Private configuration: ${output}`,
         );
       }),
     ),

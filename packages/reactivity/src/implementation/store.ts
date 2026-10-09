@@ -1,5 +1,5 @@
 import { Context, Effect, Stream } from "effect";
-import * as Reactivity from "effect/unstable/reactivity/Reactivity";
+import * as Reactivity from "effect/reactivity/Reactivity";
 import type { QuerySnapshot, ReactiveStore, StoreChange } from "../contracts/store.ts";
 
 // Sets are invocation-owned and shared only with structured child fibers.

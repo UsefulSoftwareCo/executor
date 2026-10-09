@@ -3,14 +3,17 @@ import { fumadb } from "fumadb-effect";
 import { Effect } from "effect";
 import { schema, type CustomMigrationFn } from "fumadb-effect/schema";
 import {
+  eventIndexes,
   storageSchema,
   version402Tables,
   version403Tables,
   version404Tables,
+  version405Tables,
+  version406Tables,
   version4Tables,
 } from "./storage-schema.ts";
 
-/** Indexes that are part of the current storage contract, including fresh databases. */
+/** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
 export const storageIndexes = [
   "CREATE UNIQUE INDEX IF NOT EXISTS executor_workflow_runs_context_key ON executor_workflow_runs (app, COALESCE(installation, ''), start_key)",
   "CREATE UNIQUE INDEX IF NOT EXISTS executor_webhooks_context_key ON executor_webhooks (app, COALESCE(installation, ''), subscription_key)",
@@ -19,6 +22,9 @@ export const storageIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_scheduled_runs_pending ON executor_scheduled_runs (status, expires_at)",
   "CREATE INDEX IF NOT EXISTS executor_scheduled_runs_owner ON executor_scheduled_runs (owner, started_at)",
 ] as const;
+
+/** Every index of the current layout, for a new database. Upgrades add each in its own step. */
+export const currentIndexes = [...storageIndexes, ...eventIndexes] as const;
 
 /** A shipped version 4 layout, with the same foreign keys as the current schema. */
 const version4 = <Version extends string>(version: Version, up?: CustomMigrationFn) =>
@@ -83,6 +89,32 @@ export const storageSchemas = [
   }),
   // Additive: a nullable column the running server never names. Existing accounts read as
   // connected without hosts, which is how they behave before this version.
+  schema({
+    version: "4.0.5",
+    tables: version405Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  }),
+  // Additive: a nullable check message the running server never names. Existing checks have none.
+  schema({
+    version: "4.0.6",
+    tables: version406Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  }),
+  // Additive: three event tables and their indexes, which the running server never names.
   storageSchema,
 ] as const;
 

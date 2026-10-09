@@ -1,5 +1,5 @@
 import { RegistryContext } from "@effect/atom-react";
-import { AsyncResult, type Atom, type AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom, type AtomRegistry } from "effect/reactivity";
 import { Profiler, useContext, useEffect, useMemo, type ReactNode } from "react";
 
 const visible = (element: Element) =>

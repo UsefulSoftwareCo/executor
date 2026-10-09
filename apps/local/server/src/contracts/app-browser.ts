@@ -1,5 +1,5 @@
 /** Paired dashboard reads for app skills under the selected profile. */
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   AppId,
   SkillSelection,

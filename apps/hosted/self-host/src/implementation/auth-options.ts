@@ -1,5 +1,5 @@
 /** Self-host credentials and optional operator-owned OpenID Connect configuration. */
-import { authOptions, authSettings } from "@executor-js/hosted-server";
+import { authOptions, authSettings, singleResourceOrigin } from "@executor-js/hosted-server";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { organization } from "better-auth/plugins/organization";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
@@ -24,7 +24,13 @@ const Sso = Schema.Struct({
 
 /** SSO stays disabled unless explicitly configured; partial configuration fails startup. */
 export const selfHostAuthSettings = Effect.gen(function* () {
-  const base = yield* authSettings;
+  const settings = yield* authSettings;
+  // Self-host serves its MCP and API resources and its issuer on its single browser origin.
+  const base = {
+    ...settings,
+    resourceOrigins: singleResourceOrigin(settings.url),
+    issuer: `${settings.url}/api/auth`,
+  };
   const discovery = yield* Config.String("SSO_DISCOVERY_URL").pipe(Config.option);
   if (Option.isNone(discovery) || discovery.value === "") return { ...base, sso: null };
   const configured = yield* Config.all({

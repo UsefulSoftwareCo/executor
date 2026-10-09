@@ -31,7 +31,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Exit, Option, type Schema } from "effect";
 import { QueryResult } from "@executor-js/ui/dashboard/context";
 import type { FailureProps } from "@executor-js/ui/contracts/dashboard";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useState, type ReactNode } from "react";
 import { sessionAtom } from "../../contracts/auth.ts";
 import {

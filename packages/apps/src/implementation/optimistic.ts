@@ -1,6 +1,6 @@
 /** One client's mounted queries and ordered optimistic write/read handoffs. */
 import { Cause, Deferred, Effect, Exit, Option, Schema as EffectSchema, Semaphore } from "effect";
-import { Atom, AtomRegistry, AsyncResult } from "effect/unstable/reactivity";
+import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import type {
   AppMutation,
   OptimisticLocalStore,

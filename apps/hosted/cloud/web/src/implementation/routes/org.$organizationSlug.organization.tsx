@@ -5,7 +5,7 @@ import { OrganizationPage, type MemberLimit } from "@executor-js/hosted-web/page
 import { useOrganizationRoute } from "@executor-js/hosted-web/organization";
 import { Button } from "@executor-js/ui/components/button";
 import { Option } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { DeleteOrganization } from "../components/delete-organization.tsx";
 import { SsoSettings } from "../components/sso-settings.tsx";
 import { BillingSettings } from "../components/billing-settings.tsx";

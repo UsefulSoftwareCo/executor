@@ -12,6 +12,8 @@
     "./groups": "./src/contracts/groups.ts",
     "./resource-access": "./src/contracts/resource-access.ts",
     "./database": "./src/implementation/database.ts",
+    "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
+    "./events": "./src/implementation/events.ts",
     "./app-ui": "./src/app-ui.ts",
     "./app-ui/contracts": "./src/contracts/app-ui.ts",
     "./provisioning": "./src/implementation/provisioning.ts",
@@ -27,7 +29,6 @@
     "@better-auth/core": "1.7.5",
     "@better-auth/oauth-provider": "1.7.5",
     "@executor-js/app-management": "workspace:*",
-    "@executor-js/app-registry": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/authorization": "workspace:*",
     "@executor-js/catalog": "workspace:*",
@@ -39,7 +40,7 @@
     "@executor-js/utils": "workspace:*",
     "apps": "workspace:*",
     "better-auth": "1.7.5",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+    "effect": "4.0.1"
   },
   "devDependencies": {}
 }

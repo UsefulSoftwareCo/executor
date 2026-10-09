@@ -29,13 +29,22 @@ export const CompiledCloudApp = Schema.Struct({
       }),
     ),
   ),
+  /** Locates the build's declaration failures in the authored source; never retained. */
+  sourceMap: Schema.String,
 });
 
 /**
- * Decoded build records and frameworks one isolate keeps in memory, in UTF-16 code units of module
- * source plus WASM bytes. Each framework is held once, however many builds link it.
+ * The heap decoded build records and frameworks may hold in one AppData isolate, accounted from
+ * every retained field (two bytes per string code unit, WASM bytes and a fixed allowance per
+ * module and entry), not measured.
+ * Each framework is held once, however many builds link it. Set from a heap test on a stage with
+ * production's largest builds (notes/app-runtime.md); the isolate's limit is 128 MB.
  */
-export const isolateBuildCacheSize = 24 * 1024 * 1024;
+export const isolateBuildCacheBytes = 32 * 1024 * 1024;
+/** At most this many records and frameworks, however small. */
+export const isolateBuildCacheEntries = 256;
+export const isolateBuildModuleOverhead = 256;
+export const isolateBuildEntryOverhead = 1024;
 
 /** Expected build failures cross the binding as data so the deploy can explain them. */
 export const CloudCompileResult = Schema.Union([

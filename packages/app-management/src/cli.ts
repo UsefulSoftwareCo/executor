@@ -11,15 +11,15 @@ import {
   Stdio,
   Stream,
 } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import {
   FetchHttpClient,
   HttpClient,
   HttpClientError,
   HttpClientRequest,
   type HttpClientResponse,
-} from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+} from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import type { PlatformError } from "effect/PlatformError";
 import {
   AppDeploymentChanged,
@@ -30,6 +30,7 @@ import {
   AppSkillDocument,
   AppSkillName,
   BuildMemoryExceeded,
+  CommittedSource,
   DeploymentBuildFailed,
   ExecutorApi,
   ProfileId,
@@ -37,10 +38,11 @@ import {
   SourceError,
   SourceFilePath,
   SourceFiles,
+  PackageName,
+  RegistryError,
+  hostedExecutorOrigin,
   type App,
 } from "@executor-js/sdk/core";
-import { packageFile } from "@executor-js/app-templates";
-import { PackageName } from "@executor-js/app-registry/contracts";
 import { AppClientError } from "./client-error.ts";
 import {
   AppAccess,
@@ -48,8 +50,13 @@ import {
   AppOperationError,
   appManagementApi,
 } from "./contracts/api.ts";
-import { hostedExecutorOrigin, RegistryError } from "@executor-js/app-registry";
-import { RegistryOrigin, registryLogin, registrySession } from "./implementation/node-auth.ts";
+import { frameworkApi } from "./contracts/framework.ts";
+import {
+  RegistryOrigin,
+  gitSession,
+  registryLogin,
+  registrySession,
+} from "./implementation/node-auth.ts";
 
 /** Skill lookups report the host's failure tag or the missing option; never a response body. */
 class SkillLookupFailed extends Schema.TaggedError<SkillLookupFailed>()("SkillLookupFailed", {
@@ -79,9 +86,10 @@ const commit = (purpose: string) =>
     Flag.withSchema(SourceCommit),
     Flag.withDescription(`Full 40-character Git commit ${purpose}`),
   );
+const ignoredSource = [".git", "node_modules", ".DS_Store"];
 const files = Flag.Path("files", { pathType: "either", mustExist: true }).pipe(
   Flag.withDescription(
-    'Complete app source: a directory read recursively (skipping .git and node_modules), or a JSON file containing [{"path": "index.ts", "content": "..."}]. The source must include a root index.ts',
+    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. The source must include a root index.ts`,
   ),
 );
 const publication = {
@@ -146,8 +154,11 @@ const isTransportFailure = (
   HttpClientError.isHttpClientError(error) || Schema.isSchemaError(error);
 const localManagementApi = appManagementApi("/api", AppAccess);
 const hostedManagementApi = appManagementApi("/api/organizations/:organization", AppAccess);
+const localFrameworkApi = frameworkApi("/api", AppAccess);
+const hostedFrameworkApi = frameworkApi("/api/organizations/:organization", AppAccess);
 /** Both hosts serve one app management contract; hosted routes add the organization. */
 type Management = HttpApiClient.ForApi<typeof localManagementApi>["appManagement"];
+type Framework = HttpApiClient.ForApi<typeof localFrameworkApi>["framework"];
 /**
  * Typed clients for one host. App management uses its shared contract. Skill and profile reads
  * use the SDK routes: local serves them under /v1, and hosted serves the same endpoints and
@@ -160,8 +171,12 @@ const connect = (host: string, organization: Option.Option<string>) =>
     if (target.organization === undefined) {
       const client = yield* HttpApiClient.makeWith(localManagementApi, { httpClient });
       const management: Management = client.appManagement;
+      const framework: Framework = (yield* HttpApiClient.makeWith(localFrameworkApi, {
+        httpClient,
+      })).framework;
       return {
         management,
+        framework,
         tenant: {},
         skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient }),
         profiles: yield* HttpApiClient.group(ExecutorApi, { group: "appProfiles", httpClient }),
@@ -173,8 +188,11 @@ const connect = (host: string, organization: Option.Option<string>) =>
     );
     const client = yield* HttpApiClient.makeWith(hostedManagementApi, { httpClient });
     const management: Management = client.appManagement;
+    const framework: Framework = (yield* HttpApiClient.makeWith(hostedFrameworkApi, { httpClient }))
+      .framework;
     return {
       management,
+      framework,
       tenant: { organization: target.organization },
       skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient: sdkClient }),
       profiles: yield* HttpApiClient.group(ExecutorApi, {
@@ -206,7 +224,6 @@ const print =
     Schema.encodeEffect(Schema.toCodecJson(schema))(value).pipe(
       Effect.flatMap((json) => Console.log(JSON.stringify(json, null, 2))),
     );
-const ignoredSource = new Set([".git", "node_modules", ".DS_Store"]);
 /** Read a JSON source list, or every file under a directory with POSIX paths relative to it. */
 const readFiles = (location: string) =>
   Effect.gen(function* () {
@@ -222,7 +239,7 @@ const readFiles = (location: string) =>
       Effect.gen(function* () {
         const directory = path.join(location, ...relative);
         const entries = (yield* fs.readDirectory(directory))
-          .filter((entry) => !ignoredSource.has(entry))
+          .filter((entry) => !ignoredSource.includes(entry))
           .sort();
         const nested = yield* Effect.forEach(entries, (entry) =>
           Effect.gen(function* () {
@@ -347,17 +364,6 @@ const readSkills = (args: {
     ).pipe(Effect.flatMap(print(AppSkillDocument)));
   });
 
-/** A starter app that declares the exact `apps` release this CLI was built with. */
-const starter = (name: string) =>
-  SourceFiles.make([
-    {
-      path: "index.ts",
-      content:
-        'import {defineApp,object,query,router} from "apps";\nexport default defineApp({accounts:{}},async()=>({tools:router({hello:query({description:"Say hello",input:object({})},async()=>({message:"Hello"}))})}));\n',
-    },
-    packageFile(name),
-  ]);
-
 /** Sanitized command diagnostics. Credential values and arbitrary server bodies are never printed. */
 export const appCommandFailure = (error: unknown): string | undefined => {
   if (Schema.is(AppNameTaken)(error))
@@ -409,19 +415,13 @@ export const appsCommand = (platform: string) =>
           ),
         ),
       ),
-      Command.make("create", {
-        ...connection,
-        name,
-        files: files.pipe(Flag.optional),
-      }).pipe(
+      Command.make("create", { ...connection, name, files }).pipe(
         Command.withDescription(
-          "Create an app from source files, or from a starter app when --files is omitted. Saving source does not run the app",
+          "Create an app from source files: a root index.ts and a package.json whose dependencies.apps is the version executor apps framework prints. Saving source does not run the app",
         ),
         Command.withHandler((args) =>
           Effect.gen(function* () {
-            const files = Option.isSome(args.files)
-              ? yield* readFiles(args.files.value)
-              : starter(args.name);
+            const files = yield* readFiles(args.files);
             yield* manage(args.host, args.organization, (api, tenant) =>
               api
                 .create({
@@ -432,6 +432,20 @@ export const appsCommand = (platform: string) =>
                 .pipe(Effect.flatMap(printResponse)),
             );
           }),
+        ),
+      ),
+      Command.make("framework", connection).pipe(
+        Command.withDescription(
+          "Print the exact apps framework version this host runs. Declare it as dependencies.apps in each app's package.json",
+        ),
+        Command.withHandler((args) =>
+          connect(args.host, args.organization).pipe(
+            Effect.flatMap(({ framework, tenant }) =>
+              framework.release({ params: tenant, responseMode: "decoded-and-response" }),
+            ),
+            Effect.flatMap(printResponse),
+            Effect.catchIf(isTransportFailure, (error) => Effect.fail(clientError(error))),
+          ),
         ),
       ),
       Command.make("source", { ...connection, app }).pipe(
@@ -467,7 +481,7 @@ export const appsCommand = (platform: string) =>
         Command.withHandler((args) =>
           manage(args.host, args.organization, (api, tenant) =>
             api.git({ params: { ...tenant, app: args.app } }),
-          ).pipe(Effect.flatMap((remote) => Console.log(args.host + remote.path))),
+          ).pipe(Effect.flatMap((remote) => Console.log(remote.url))),
         ),
       ),
       Command.make("commit", {
@@ -486,7 +500,7 @@ export const appsCommand = (platform: string) =>
         ),
       }).pipe(
         Command.withDescription(
-          "Save a complete new source snapshot as a commit without deploying it",
+          "Save a complete new source snapshot as a commit without deploying it. Prints the new revision; deploy its commit with executor apps deploy",
         ),
         Command.withHandler((args) =>
           Effect.gen(function* () {
@@ -496,9 +510,8 @@ export const appsCommand = (platform: string) =>
                 .commit({
                   params: { ...tenant, app: args.app },
                   payload: { expected: args.expected, files, message: args.message },
-                  responseMode: "decoded-and-response",
                 })
-                .pipe(Effect.flatMap(printResponse)),
+                .pipe(Effect.flatMap(print(CommittedSource))),
             );
           }),
         ),
@@ -614,7 +627,7 @@ export const appsCommand = (platform: string) =>
         ),
         name: Flag.String("name").pipe(
           Flag.withSchema(AppSkillName),
-          Flag.withDescription("Skill name to read, for example app-authoring. Requires --app"),
+          Flag.withDescription("Skill name to read, for example executor. Requires --app"),
           Flag.optional,
         ),
         file: Flag.String("file").pipe(
@@ -626,12 +639,16 @@ export const appsCommand = (platform: string) =>
         ),
       }).pipe(
         Command.withDescription(
-          "List or read app skills served by the host. Start with --app executor --name app-authoring before writing an app",
+          "List or read app skills served by the host. Start with --app executor --name executor, then read its app-authoring skill before writing an app",
         ),
         Command.withHandler(readSkills),
       ),
       Command.make("credential", {
-        action: Argument.Literals("action", ["get", "store", "erase"]),
+        action: Argument.Literals("action", ["get", "store", "erase"]).pipe(
+          Argument.withDescription(
+            "Operation Git passes to the helper. get supplies the signed-in session for the remote's Git paths, including remotes on another origin than the host you signed in to; store and erase are ignored",
+          ),
+        ),
       }).pipe(
         Command.withDescription("Git credential helper; set credential.useHttpPath=true"),
         Command.withHandler(({ action }) =>
@@ -645,9 +662,9 @@ export const appsCommand = (platform: string) =>
                 return [line.slice(0, split), line.slice(split + 1)];
               }),
             );
-            const host = `${fields.get("protocol")}://${fields.get("host")}`;
-            if (!Schema.is(RegistryOrigin)(host)) return;
-            const session = Redacted.value(yield* registrySession(host));
+            const origin = `${fields.get("protocol")}://${fields.get("host")}`;
+            if (!Schema.is(RegistryOrigin)(origin)) return;
+            const session = Redacted.value(yield* gitSession(origin));
             if (!fields.get("path")?.startsWith(`git/${session.organization}/`)) return;
             yield* Stream.succeed(`username=executor\npassword=${session.accessToken}\n\n`).pipe(
               Stream.run(stdio.stdout()),

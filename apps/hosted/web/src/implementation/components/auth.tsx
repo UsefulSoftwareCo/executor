@@ -1,6 +1,6 @@
 import { usePageUrl } from "@executor-js/dashboard-start/page";
 import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Link, Navigate, useLocation } from "@tanstack/react-router";

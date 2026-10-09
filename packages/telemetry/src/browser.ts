@@ -1,8 +1,8 @@
 /** Browser-owned Effect telemetry, shared by Promise calls and Atom runtimes. */
 import { Cause, Context, Deferred, Effect, FiberSet, Layer, Logger, ManagedRuntime } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
-import { OtlpExporter } from "effect/unstable/observability";
-import { Atom } from "effect/unstable/reactivity";
+import { FetchHttpClient } from "effect/http";
+import { OtlpExporter } from "effect/observability";
+import { Atom } from "effect/reactivity";
 import type { TelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
 import { observeBrowserPerformance } from "./browser-performance.ts";
@@ -11,8 +11,13 @@ import { observeBrowserPerformance } from "./browser-performance.ts";
 export class BrowserTelemetry extends Context.Service<
   BrowserTelemetry,
   {
+    /**
+     * `load` names the document's initial route without a span: hydration resolves no route
+     * change, and first load is measured by the vitals. `start` opens a `ui.navigation` span
+     * that the router's next `end` closes or the next `start` interrupts.
+     */
     readonly navigation: (
-      event: { readonly type: "start"; readonly path: string } | { readonly type: "end" },
+      event: { readonly type: "load" | "start"; readonly path: string } | { readonly type: "end" },
     ) => Effect.Effect<void>;
     readonly flush: Effect.Effect<void>;
   }
@@ -28,7 +33,8 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) 
           Effect.gen(function* () {
             const flusher = yield* OtlpExporter.Flusher;
             const run = yield* FiberSet.makeRuntime();
-            let navigation: Deferred.Deferred<void> | undefined;
+            // `hidden` records whether the page was hidden at any point before the route resolved.
+            let navigation: { readonly done: Deferred.Deferred<void>; hidden: boolean } | undefined;
             const performance = yield* observeBrowserPerformance;
             const flush = performance.flush.pipe(
               Effect.andThen(flusher.flush),
@@ -48,6 +54,8 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) 
             const onRejection = (event: PromiseRejectionEvent) =>
               error("ui.unhandled-rejection", event.reason);
             const onHidden = () => {
+              if (navigation !== undefined && document.visibilityState === "hidden")
+                navigation.hidden = true;
               run(
                 document.visibilityState === "hidden"
                   ? performance.pause.pipe(Effect.andThen(flush))
@@ -78,15 +86,27 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) 
               flush,
               navigation: (event) =>
                 Effect.sync(() => {
+                  if (event.type === "load") return;
                   if (event.type === "end") {
-                    if (navigation !== undefined) Deferred.doneUnsafe(navigation, Effect.void);
+                    if (navigation !== undefined) Deferred.doneUnsafe(navigation.done, Effect.void);
                     navigation = undefined;
                     return;
                   }
-                  if (navigation !== undefined) Deferred.doneUnsafe(navigation, Effect.interrupt);
-                  navigation = Deferred.makeUnsafe<void>();
+                  if (navigation !== undefined)
+                    Deferred.doneUnsafe(navigation.done, Effect.interrupt);
+                  const current = {
+                    done: Deferred.makeUnsafe<void>(),
+                    hidden: document.visibilityState === "hidden",
+                  };
+                  navigation = current;
                   run(
-                    Deferred.await(navigation).pipe(
+                    Deferred.await(current.done).pipe(
+                      // Record visibility however the navigation ends, including when a later one interrupts it.
+                      Effect.ensuring(
+                        Effect.suspend(() =>
+                          Effect.annotateCurrentSpan("executor.navigation.hidden", current.hidden),
+                        ),
+                      ),
                       Effect.withSpan("ui.navigation", {
                         root: true,
                         attributes: { "url.path": event.path },
@@ -96,7 +116,7 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) 
                   );
                 }).pipe(
                   Effect.andThen(
-                    event.type === "start" ? performance.navigation(event.path) : Effect.void,
+                    event.type === "end" ? Effect.void : performance.navigation(event.path),
                   ),
                 ),
             };

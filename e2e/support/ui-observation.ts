@@ -3,6 +3,7 @@ import type { ConsoleMessage, Frame, Page, Route, Request, Response } from "play
 import { UIObservation, type UIFrameCapture, type UIFrameImage } from "../state-model.ts";
 import type { Evidence } from "./evidence.ts";
 import { driver, type Target, type DriverFailed } from "./platform.ts";
+import { targetHosts } from "./role-hosts.ts";
 
 type Work =
   | { kind: "capture"; event: typeof UIObservation.Type; sequence: number }
@@ -29,7 +30,7 @@ export const captureUIObservations = (
       navigationSequence = 0;
     let latest: number | null = null;
     const requestHoldMs = 600;
-    const onApplication = () => URL.parse(page.url())?.origin === target.metadata.origin;
+    const onApplication = () => URL.parse(page.url())?.origin === targetHosts(target).browser;
     let settlePhase = "idle";
     const cancelled = new AbortController();
     const fence = Effect.gen(function* () {
@@ -160,7 +161,7 @@ export const captureUIObservations = (
         latest = null;
       }
     };
-    const pattern = `${target.metadata.origin}/api/**`;
+    const pattern = `${targetHosts(target).browser}/api/**`;
     const hold = (route: Route) =>
       // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright route handlers must return a Promise
       Effect.runPromise(

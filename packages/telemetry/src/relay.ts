@@ -1,10 +1,11 @@
 /** Bounded OTLP return channel for credential-free app isolates. The parent owns export. */
 import { Effect, FiberSet, Option, Redacted, Schema, Semaphore, Tracer } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
-import { telemetryHttpClient } from "./transport.ts";
+import { retryTelemetryExport, telemetryHttpClient } from "./transport.ts";
 import { recordExportFailure } from "./measurements.ts";
+import { appLog, appSpan } from "./app-records.ts";
 
 /**
  * Forward app telemetry in the host scope without delaying an app result.
@@ -16,20 +17,23 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
   const fibers = yield* FiberSet.make();
   const pending = yield* Semaphore.make(16);
   const sender = yield* Semaphore.make(1);
-  const failed = (reason: string) =>
-    recordExportFailure("app").pipe(Effect.annotateLogs({ "executor.telemetry.failure": reason }));
+  const failed = (reason: "capacity" | "timeout" | "relay" | "shutdown") =>
+    recordExportFailure("app", reason);
   yield* Effect.addFinalizer(() =>
     FiberSet.awaitEmpty(fibers).pipe(
       Effect.timeoutOption("3 seconds"),
       Effect.flatMap((drained) => (Option.isNone(drained) ? failed("shutdown") : Effect.void)),
     ),
   );
-  return (batch: TelemetryBatch, traceId: string, build?: string) =>
+  return (batch: TelemetryBatch, traceId: string, source: TelemetrySource) =>
     FiberSet.run(
       fibers,
       sender
         .withPermits(1)(
-          forwardTelemetry(batch, traceId, build).pipe(Effect.catch(() => failed("relay"))),
+          forwardTelemetry(batch, traceId, source).pipe(
+            Effect.catchTag("TimeoutError", () => failed("timeout")),
+            Effect.catch(() => failed("relay")),
+          ),
         )
         .pipe(
           pending.withPermitsIfAvailable(1),
@@ -63,6 +67,7 @@ export const collectTelemetry = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     let dropped = 0;
     const capture: typeof fetch = async (input, init) => {
       const request = new Request(input, init);
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- the exporter's own request
       const body = await request.text();
       if (new URL(request.url).pathname === "/v1/traces") {
         const payload = Schema.decodeUnknownSync(TracePayload)(body);
@@ -142,8 +147,8 @@ const recordPacker = (prefix: string, suffix: string) => {
   };
 };
 
-const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
-const HexSpan = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/));
+const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
+const HexSpan = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u));
 // Parse correlation fields and retain the rest of each native OTLP record verbatim.
 const Span = Schema.StructWithRest(Schema.Struct({ traceId: HexTrace, spanId: HexSpan }), [
   Schema.Record(Schema.String, Schema.Json),
@@ -175,11 +180,20 @@ const LogPayload = Schema.fromJsonString(
   }),
 );
 
+/**
+ * What the host knows about the records' source, from its own invocation rather than the records:
+ * the build that ran and, for an app isolate, the app's opaque ID. Both become resource attributes.
+ */
+export interface TelemetrySource {
+  readonly build?: string | undefined;
+  readonly app?: string | undefined;
+}
+
 /** Validate isolated records and export only this call's trace, using parent-owned credentials/identity. */
 export const forwardTelemetry = (
   batch: TelemetryBatch,
   traceId: string | undefined,
-  build: string | undefined,
+  { build, app }: TelemetrySource,
   service: "executor-app" | "executor-web" = "executor-app",
 ) =>
   Effect.gen(function* () {
@@ -193,9 +207,11 @@ export const forwardTelemetry = (
         ...(build === undefined
           ? []
           : [{ key: "executor.build.id", value: { stringValue: build } }]),
+        ...(app === undefined ? [] : [{ key: "executor.app.id", value: { stringValue: app } }]),
       ],
     };
-    const client = yield* HttpClient.HttpClient;
+    // A collector that refuses an export for now gets it again inside the three-second budget.
+    const client = retryTelemetryExport(yield* HttpClient.HttpClient);
     if (batch.dropped > 0) yield* recordExportFailure("app", "capacity", batch.dropped);
     for (const signal of ["traces", "logs"] as const) {
       const target = config[signal];
@@ -218,7 +234,13 @@ export const forwardTelemetry = (
                         spans: payloads
                           .flatMap((payload) => payload.resourceSpans)
                           .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
-                          .filter((span) => traceId === undefined || span.traceId === traceId),
+                          .filter((span) => traceId === undefined || span.traceId === traceId)
+                          // An app isolate's records are rebuilt from the host's vocabulary.
+                          .flatMap((span) => {
+                            if (service !== "executor-app") return [span];
+                            const kept = appSpan(span);
+                            return kept === undefined ? [] : [kept];
+                          }),
                       },
                     ],
                   },
@@ -238,23 +260,22 @@ export const forwardTelemetry = (
                         logRecords: payloads
                           .flatMap((payload) => payload.resourceLogs)
                           .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
-                          .filter((log) => traceId === undefined || log.traceId === traceId),
+                          .filter((log) => traceId === undefined || log.traceId === traceId)
+                          .map((log) => (service === "executor-app" ? appLog(log) : log)),
                       },
                     ],
                   },
                 ],
               })),
             );
-      yield* client
-        .pipe(HttpClient.filterStatusOk)
-        .execute(
-          HttpClientRequest.post(target.url).pipe(
-            HttpClientRequest.setHeaders(
-              target.headers === undefined ? {} : Redacted.value(target.headers),
-            ),
-            HttpClientRequest.bodyJsonUnsafe(data),
+      yield* client.execute(
+        HttpClientRequest.post(target.url).pipe(
+          HttpClientRequest.setHeaders(
+            target.headers === undefined ? {} : Redacted.value(target.headers),
           ),
-        );
+          HttpClientRequest.bodyJsonUnsafe(data),
+        ),
+      );
     }
   }).pipe(
     Effect.provide(telemetryHttpClient),

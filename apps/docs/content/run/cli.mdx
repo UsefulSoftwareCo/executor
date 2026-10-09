@@ -47,6 +47,12 @@ value that does not match the directory stops startup and changes nothing.
 | `executor` | Start the server and open the dashboard. |
 | `executor serve` | Start without opening a browser. |
 | `executor pair` | Print a new connection link for the running server. |
+| `executor apps` | Create, edit, deploy and install apps. See [Author an app](/author-an-app). |
+| `executor rotate-key` | Replace the saved API key. Restart Executor, then update clients that used the old key. |
+
+There is no `executor mcp` command. That started a stdio MCP server in
+Executor 1. Executor 2 serves MCP over HTTP from the running server, so point
+clients at `http://127.0.0.1:4312/mcp`; see [Connect an agent](#connect-an-agent).
 
 ## Configure it
 

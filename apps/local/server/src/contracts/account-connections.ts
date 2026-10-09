@@ -2,7 +2,7 @@ import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors } from "@executor-js/sdk/core";
 /** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
   AccountConnection,
   AccountConnectionId,
@@ -62,6 +62,21 @@ export const ConnectionSignIn = Schema.Union([
   Schema.Struct({ ...OAuthStartResult.members[1].fields, connection: AccountConnectionId }),
 ]);
 
+/** Secrets entered on the link's form. */
+export const ConnectionSubmission = Schema.Struct({
+  ...ConnectionGrant.fields,
+  method: Schema.NonEmptyString,
+  label: Schema.optional(Schema.NonEmptyString),
+  fields: AccountFieldsInput,
+});
+/** Provider consent started from the link's form, optionally with a user-supplied client. */
+export const ConnectionOAuthStart = Schema.Struct({
+  ...ConnectionGrant.fields,
+  method: Schema.NonEmptyString,
+  label: Schema.optional(Schema.NonEmptyString),
+  client: Schema.optional(OAuthClientInput),
+});
+
 const errors = [
   ...ProfileErrors,
   ConnectionLinkRejected,
@@ -84,7 +99,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
         error: [...errors, PairingUnauthorized, AppNotFound, AccountSelectionInvalid],
       }).annotate(
         OpenApi.Description,
-        "Create a browser connection link. Pass target { app, profile, requirement } to save and select the account automatically, or provider to save a standalone account. Optional account reconnects an existing account without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
+        "Create a browser connection link for an app requirement: target { app, profile, requirement }. Completing it saves the account and selects it for that profile. Optional account reconnects that existing account through the app without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
       ),
     )
     .add(
@@ -103,12 +118,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
     )
     .add(
       HttpApiEndpoint.post("submit", "/account-connect/api/submit", {
-        payload: Schema.Struct({
-          ...ConnectionGrant.fields,
-          method: Schema.NonEmptyString,
-          label: Schema.optional(Schema.NonEmptyString),
-          fields: AccountFieldsInput,
-        }),
+        payload: ConnectionSubmission,
         success: Account,
         error: [...errors, AccountFieldsInvalid, AuthMethodInvalid],
       }),
@@ -122,12 +132,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
     )
     .add(
       HttpApiEndpoint.post("startOAuth", "/account-connect/api/oauth/start", {
-        payload: Schema.Struct({
-          ...ConnectionGrant.fields,
-          method: Schema.NonEmptyString,
-          label: Schema.optional(Schema.NonEmptyString),
-          client: Schema.optional(OAuthClientInput),
-        }),
+        payload: ConnectionOAuthStart,
         success: OAuthStartResult,
         error: [...errors, AuthMethodInvalid, OAuthClientUnavailable, OAuthSetupFailed],
       }),

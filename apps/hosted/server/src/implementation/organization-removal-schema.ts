@@ -1,6 +1,6 @@
 /** Additive removal tombstones. No existing organization, member or auth row is changed. */
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 /**
  * Run under the hosted migration lock. This table deliberately has no foreign

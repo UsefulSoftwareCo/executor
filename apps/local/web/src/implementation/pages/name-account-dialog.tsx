@@ -1,7 +1,7 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useEffect, useState } from "react";
 import { Exit, Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { Account, AppId } from "@executor-js/sdk";
 import { QueryView } from "@executor-js/ui/dashboard/context";
 import {

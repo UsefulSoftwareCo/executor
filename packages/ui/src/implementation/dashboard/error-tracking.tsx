@@ -9,12 +9,14 @@ export function ErrorTrackingProvider({ children }: { readonly children: ReactNo
 }
 
 /** Tell the user that a failure the Executor team must fix was recorded with its evidence. */
-export function ErrorTrackedNote({ error }: { readonly error: UserFacingError }) {
+export function ErrorTrackedNote({
+  error,
+  className = "col-span-2 col-start-1 mt-2 text-[13px] text-foreground/85",
+}: {
+  readonly error: UserFacingError;
+  readonly className?: string;
+}) {
   const tracked = useContext(ErrorTrackingContext);
   if (!tracked || error.report === undefined) return null;
-  return (
-    <p className="col-span-2 col-start-1 mt-2 text-[13px] text-foreground/85">
-      We’ve tracked this automatically and will investigate.
-    </p>
-  );
+  return <p className={className}>We’ve tracked this automatically and will investigate.</p>;
 }

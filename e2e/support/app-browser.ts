@@ -5,15 +5,15 @@ import type { Page } from "playwright";
 import { Browser } from "./browser.ts";
 import { openThroughBrowser } from "./in-app-navigation.ts";
 import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
-import { appsManifest } from "./apps-release.ts";
+import { appsManifest, firstMigration } from "./apps-release.ts";
 
 /** A small deployed app exposes static documents, dynamic workflows, data and a private page. */
 export const appBrowserFiles = [
+  firstMigration,
   {
     path: "index.ts",
-    content: `import { defineApp, defineDatabase, table, string, query, workflow, object, router } from "apps";
-const database = defineDatabase({ notes: table({ text: string() }) });
-export default defineApp({ accounts: {}, database }, {
+    content: `import { defineApp, string, query, workflow, object, router } from "apps";
+export default defineApp({ accounts: {} }, {
   tools: router({ hello: query({ input: object({}) }, async () => "Hello") }),
   workflows: {
     report: workflow({ description: "Prepare a small report", input: object({}), output: object({ message: string() }) }, async (ctx) => ctx.step.do("compose", async () => ({ message: "Report ready" }))),

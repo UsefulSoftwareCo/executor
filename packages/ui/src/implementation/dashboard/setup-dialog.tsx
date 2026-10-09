@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { App, Profile } from "@executor-js/sdk";
 import type { MutationProps, SelectAccounts } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";

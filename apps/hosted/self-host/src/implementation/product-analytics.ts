@@ -9,8 +9,9 @@ import {
   releaseChannelOf,
   RootDomain,
 } from "@executor-js/telemetry/product-analytics";
-import { Config, Console, Effect, Encoding, Option, Redacted, Schema } from "effect";
-import { SqlClient, type SqlError } from "effect/unstable/sql";
+import { Config, Console, Effect, Option, Redacted, Schema } from "effect";
+import { Hex } from "effect/encoding";
+import { SqlClient, type SqlError } from "effect/sql";
 import { parse } from "tldts";
 
 /** Wildcard-DNS, tunnel and dynamic-DNS services whose names identify a person, not a company. */
@@ -105,7 +106,7 @@ export const selfHostAnalytics = Effect.gen(function* () {
     common: { install_id: install, product: "self-host", version, root_domain: rootDomain(origin) },
     distinctId: (user) =>
       Effect.promise(() => crypto.subtle.sign("HMAC", key, new TextEncoder().encode(user))).pipe(
-        Effect.map((signature) => Encoding.encodeHex(new Uint8Array(signature))),
+        Effect.map((signature) => Hex.encode(new Uint8Array(signature))),
       ),
   });
   yield* Console.log(analyticsNotice);

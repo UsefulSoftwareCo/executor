@@ -1,4 +1,5 @@
 import type { ProviderError } from "./provider-error.ts";
+import type { NetworkRefused } from "./network.ts";
 /** GraphQL discovery contracts. Catalogs are evaluated with the selected account. */
 import { Schema, type Effect } from "effect";
 import { AccountId, HttpUrl, JsonObject, type JsonValue } from "./schema.ts";
@@ -43,7 +44,7 @@ export class GraphqlError extends Schema.TaggedError<GraphqlError>()("GraphqlErr
   status: Schema.optional(Schema.Number),
 }) {}
 
-const Name = Schema.String.check(Schema.isPattern(/^[_A-Za-z][_0-9A-Za-z]*$/));
+const Name = Schema.String.check(Schema.isPattern(/^[_A-Za-z][_0-9A-Za-z]*$/u));
 const Kind = Schema.Literals([
   "SCALAR",
   "OBJECT",
@@ -118,7 +119,7 @@ export interface GraphqlTool {
   readonly run: (
     context: unknown,
     input: JsonValue,
-  ) => Effect.Effect<JsonValue, GraphqlError | ProviderError>;
+  ) => Effect.Effect<JsonValue, GraphqlError | ProviderError | NetworkRefused>;
 }
 /** One tool per root field; subscriptions require a separate long-lived host. */
 export type GraphqlTools = Readonly<Record<string, GraphqlTool>>;

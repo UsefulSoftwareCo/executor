@@ -9,10 +9,10 @@ import { Effect, Layer } from "effect";
 import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
 
 /**
- * The organization plugin's columns that app sessions read. The dashboard's plugin
- * owns these tables and their migrations; its endpoints are not loaded here.
+ * The organization plugin's columns that app sessions and MCP grant checks read. The
+ * dashboard's plugin owns these tables and their migrations; its endpoints are not loaded here.
  */
-const organizationTables = {
+export const organizationTables = {
   id: "organization",
   schema: {
     organization: { fields: { slug: { type: "string" } } },

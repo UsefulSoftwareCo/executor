@@ -5,7 +5,7 @@ import { initializeAppRepository, writeInitialSource } from "./initial-source.ts
 import { appSlug } from "../contracts/app-slug.ts";
 import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
 import { AppCodeId, AppId, StorageError } from "../contracts/shared.ts";
-import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
+import { SourceError, type AppSourceStorage, type RepositoryBackend } from "../contracts/source.ts";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedApp, createApp as storeApp } from "./apps.ts";
@@ -14,6 +14,7 @@ import { storedApp, createApp as storeApp } from "./apps.ts";
 export const makeAppAuthoring = (
   db: Query,
   sources: AppSourceStorage,
+  repositories: RepositoryBackend,
   blobs: BlobStorage,
   crypto: Crypto.Crypto,
   lifecycle?: ResourceLifecycle,
@@ -59,6 +60,19 @@ export const makeAppAuthoring = (
     });
   return {
     create,
+    history: (input: Parameters<Executor["apps"]["history"]>[0]) =>
+      Effect.gen(function* () {
+        const app = yield* storedApp(db, input);
+        yield* initializeAppRepository(db, sources, blobs, app);
+        return yield* repositories.history(app.code);
+      }),
+    revision: (input: Parameters<Executor["apps"]["revision"]>[0]) =>
+      Effect.gen(function* () {
+        const app = yield* storedApp(db, input);
+        yield* initializeAppRepository(db, sources, blobs, app);
+        // The commit pins the listed revision; the app's own code lineage pins its repository.
+        return yield* sources.read({ code: app.code, commit: input.commit });
+      }),
     workspace: (input: Parameters<Executor["apps"]["workspace"]>[0]) =>
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
@@ -73,12 +87,13 @@ export const makeAppAuthoring = (
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
         yield* initializeAppRepository(db, sources, blobs, app);
-        return yield* sources.commit({
+        const { revision } = yield* sources.commit({
           code: app.code,
           expected: input.expected,
           files: input.files,
           message: input.message,
         });
+        return { revision };
       }),
   };
 };

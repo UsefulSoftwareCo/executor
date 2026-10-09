@@ -110,21 +110,31 @@ export default defineApp({ accounts: {}, database }, {
 ];
 
 /**
- * The same app rewritten with routers, as protocol 4 requires. `source.lazy` resolves without
+ * The same app rewritten for the host's release: routers, as protocol 4 requires, and SQL. Its
+ * first migration copies the notes the earlier document store kept. `source.lazy` resolves without
  * being listed, so the catalog cannot give its kind.
  */
 const routed = [
   {
     path: "index.ts",
     content: `import * as apps from "apps";
-import { defineApp, defineDatabase, table, query, mutation, object, string, router, dynamicRouter } from "apps";
-const database = defineDatabase({ notes: table({ text: string() }) });
+import { defineApp, query, mutation, object, string, router, dynamicRouter } from "apps";
 const framework = () => ("router" in apps ? "routers" : "protocol 1");
-const notes = query({ input: object({}) }, async ({ db }) => (await db.notes.withIndex("by_creation").collect()).map((row) => row.text));
-const save = mutation({ input: object({ text: string() }) }, async ({ db }, input) => { await db.notes.insert(input); return framework(); });
-const lazy = mutation({ input: object({ text: string() }) }, async ({ db }, input) => { await db.notes.insert(input); return "resolved"; });
+const insert = "INSERT INTO notes (text) VALUES (?)";
+const notes = query({ input: object({}) }, async ({ sql }) => sql.exec("SELECT text FROM notes ORDER BY seq").toArray().map((row) => row.text));
+const save = mutation({ input: object({ text: string() }) }, async ({ sql }, input) => { sql.exec(insert, input.text); return framework(); });
+const lazy = mutation({ input: object({ text: string() }) }, async ({ sql }, input) => { sql.exec(insert, input.text); return "resolved"; });
 const source = dynamicRouter({ list: async () => [], resolve: async (name) => (name === "lazy" ? lazy : undefined) });
-export default defineApp({ accounts: {}, database }, { tools: router({ notes, save, source }) });`,
+export default defineApp({ accounts: {} }, { tools: router({ notes, save, source }) });`,
+  },
+  {
+    path: "migrations/0001_notes.sql",
+    content: `CREATE TABLE notes (seq INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL);
+INSERT INTO notes (text)
+SELECT json_extract(body, '$.text') FROM _executor_legacy_rows
+WHERE table_name = 'notes'
+ORDER BY json_extract(body, '$.createdAt'), id;
+`,
   },
 ];
 
@@ -438,7 +448,10 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
             .toSorted(),
         ).toEqual(["notes", "save"]);
         expect((yield* call("save", { text: "upgraded" })).body).toBe("routers");
-        expect((yield* call("notes", {}, "query")).body).toContain("upgraded");
+        // The upgraded app keeps the notes its document store held; its migration copied them.
+        const kept = yield* body(Schema.Array(Schema.String), yield* call("notes", {}, "query"));
+        expect(kept).toContain("still pinned");
+        expect(kept.at(-1)).toBe("upgraded");
       }).pipe(Effect.provide(Layer.merge(McpOAuth.layer, McpClient.layer))),
     ),
   );

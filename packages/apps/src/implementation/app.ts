@@ -11,12 +11,14 @@ import type {
   MutationContext,
   WebhookContext,
 } from "../contracts/context.ts";
-import { fromPromise, type PromiseMethods } from "./authoring.ts";
+import { fromPromise, method, type PromiseMethods } from "./authoring.ts";
 import { nativeWorkflow, type WorkflowDeclaration } from "./workflows.ts";
 import type { WorkflowContext } from "../contracts/workflows.ts";
 import { nativeOperation } from "./operations.ts";
 import { declaredOperations, nativeRouter, type RouterDeclaration } from "./router.ts";
 import { decoderOf, isSchema, type Schema } from "./schema.ts";
+import { nativeEvent } from "./events.ts";
+import type { AppEvent } from "../contracts/events.ts";
 
 type PromiseCatalog<Catalog> =
   Catalog extends Readonly<Record<string, object>>
@@ -106,6 +108,7 @@ function adaptDefinition<
     definition.webhooks === undefined
       ? {}
       : {
+          // SAFETY: `Required` only where the optional method was just checked to be present.
           webhooks: Object.fromEntries(
             Object.entries(definition.webhooks).map(([name, webhook]) => [
               name,
@@ -113,11 +116,21 @@ function adaptDefinition<
                 ...webhook,
                 ...(webhook.register === undefined
                   ? {}
-                  : { register: fromPromise(webhook.register) }),
-                handle: fromPromise(webhook.handle),
+                  : {
+                      register: fromPromise(
+                        method(webhook as Required<typeof webhook>, "register"),
+                        "webhook",
+                      ),
+                    }),
+                handle: fromPromise(method(webhook, "handle"), "webhook"),
                 ...(webhook.unregister === undefined
                   ? {}
-                  : { unregister: fromPromise(webhook.unregister) }),
+                  : {
+                      unregister: fromPromise(
+                        method(webhook as Required<typeof webhook>, "unregister"),
+                        "webhook",
+                      ),
+                    }),
                 ...("config" in webhook && isSchema(webhook.config)
                   ? { config: decoderOf(webhook.config) }
                   : {}),
@@ -201,10 +214,23 @@ export const defineApp = <
   // A static definition is checked when the module loads, so such source fails its build.
   if (typeof definition !== "function") rejectCatalogs(definition);
   const evaluate = typeof definition === "function" ? definition : async () => definition;
-  const factory = fromPromise(evaluate);
+  const factory = fromPromise(evaluate, "factory");
+  const events =
+    requirements.events === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(requirements.events).map(([name, declared]): [string, AppEvent] => {
+            const native = nativeEvent(declared);
+            if (native === undefined)
+              throw new TypeError(
+                `The event ${JSON.stringify(name)} must be declared with event()`,
+              );
+            return [name, native];
+          }),
+        );
   const native: NativeApp<Requirements["accounts"], EffectDefinition<Def>> = {
     accounts: requirements.accounts,
-    ...(requirements.database === undefined ? {} : { database: requirements.database }),
+    ...(events === undefined ? {} : { events }),
     evaluate: (context) =>
       factory(context).pipe(Effect.map((value) => adaptDefinition<Requirements, Def>(value))),
   };

@@ -1,7 +1,7 @@
 /** Workflow actions share the read-only browser and keep independent mutation state. */
 import { Json, type HostedWorkflow, type WorkflowRun } from "@executor-js/sdk";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { Exit, Schema } from "effect";
 import { useState, type ComponentType } from "react";
 import type { FailureProps } from "../../contracts/dashboard.ts";

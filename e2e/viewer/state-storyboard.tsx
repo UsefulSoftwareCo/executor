@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { UIStateReport, type ViewRect } from "../state-model.ts";
 
 type Report = typeof UIStateReport.Type;

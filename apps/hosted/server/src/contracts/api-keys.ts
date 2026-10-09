@@ -22,7 +22,7 @@ export const ApiKeySummary = Schema.Struct({
 export type ApiKeySummary = typeof ApiKeySummary.Type;
 /** PAT creation uses Better Auth's expiry duration in seconds and an optional organization pin. */
 export const CreateApiKey = Schema.Struct({
-  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80), Schema.isPattern(/\S/)),
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80), Schema.isPattern(/\S/u)),
   expiresIn: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
   metadata: Schema.optional(Schema.Struct({ organization: OrganizationId })),
 });

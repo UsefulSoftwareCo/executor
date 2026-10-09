@@ -14,12 +14,7 @@ import {
   Scope,
   Semaphore,
 } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { startEnvironment } from "./environment.ts";
 import { createScenario, ScenarioFailed } from "./session.ts";
 import { DataShape } from "./data.ts";

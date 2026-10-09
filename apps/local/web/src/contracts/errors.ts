@@ -5,9 +5,9 @@ import type { DashboardApi } from "@executor-js/local-server/contracts";
 import type { AccountConnectApi } from "@executor-js/local-server/account-connections";
 import type { AccountId } from "@executor-js/sdk";
 import { Cause, Match, Option, type Schema } from "effect";
-import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
-import type { Sse } from "effect/unstable/encoding";
+import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
+import type { Sse } from "effect/encoding";
 import type { LiveConnectionLost } from "./api.ts";
 import type { ToolCatalogChanged } from "@executor-js/local-server/contracts";
 
@@ -202,8 +202,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
       ),
     ToolCallFailed: () =>
       message("The tool failed", "It may have already made changes. Check before trying again."),
-    ToolBlocked: () =>
-      message("Tool call blocked", "The tool’s approval policy blocked this call. It did not run."),
+    ToolBlocked: (error) => message(error.title, `${error.description} ${error.recovery.action}`),
     ToolApprovalRequired: () =>
       message(
         "Approval required",
@@ -291,6 +290,19 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Open Executor desktop, or run the CLI’s pair command to sign in.",
       ),
   }),
+);
+const newConnectionLink = () => "Ask your agent for a new connection link.";
+/**
+ * A connection link page cannot start account setup itself, so a request it can no longer finish
+ * needs a new link from the agent instead of the error's dashboard recovery.
+ */
+export const connectionLinkRecovery = Match.type<DashboardError>().pipe(
+  Match.tags({
+    AccountConnectionNotFound: newConnectionLink,
+    AccountConnectionClosed: newConnectionLink,
+    AccountConnectionTargetChanged: newConnectionLink,
+  }),
+  Match.orElse(() => undefined),
 );
 /** Unexpected defects receive safe copy without printing arbitrary cause values. */
 export const failureMessage = (cause: Cause.Cause<DashboardError>): FailureMessage =>

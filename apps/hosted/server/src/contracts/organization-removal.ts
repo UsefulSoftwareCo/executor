@@ -1,6 +1,7 @@
 /** Removing an organization is a separate capability; a host composes it only where it applies. */
 import { Context, Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { ApiError } from "@executor-js/utils/api-error";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { StorageError, AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { AuthenticationUnavailable } from "./auth.ts";
 import {
@@ -19,11 +20,12 @@ export const OrganizationRemoved = Schema.Struct({
 export type OrganizationRemoved = typeof OrganizationRemoved.Type;
 
 /** The tombstone store is unreachable, so removal can neither start nor be hidden safely. */
-export class OrganizationRemovalUnavailable extends Schema.TaggedError<OrganizationRemovalUnavailable>()(
-  "OrganizationRemovalUnavailable",
-  {},
-  { httpApiStatus: 503 },
-) {}
+export const OrganizationRemovalUnavailable = ApiError.define({
+  tag: "OrganizationRemovalUnavailable",
+  status: 503,
+  message: "Executor could not start or read the organization's removal. Try again.",
+});
+export type OrganizationRemovalUnavailable = typeof OrganizationRemovalUnavailable.Type;
 
 /**
  * The ordered durable steps. Each name is the step identity in the engine's
@@ -85,13 +87,13 @@ export const OrganizationRemovalRecord = Schema.Struct({
 export type OrganizationRemovalRecord = typeof OrganizationRemovalRecord.Type;
 
 /**
- * The tombstone read consulted by organization middleware. A host with no
- * removal capability inherits the default, which reports every organization
- * as live; that is a fact about self-host, not a branch on its environment.
+ * The tombstone read consulted by organization middleware. Every host that serves organization
+ * requests provides it; one with no removal capability provides `noOrganizationRemovals`.
  */
-export const OrganizationTombstones = Context.Reference<
+export class OrganizationTombstones extends Context.Service<
+  OrganizationTombstones,
   (organization: OrganizationId) => Effect.Effect<boolean, OrganizationRemovalUnavailable>
->("hosted/OrganizationTombstones", { defaultValue: () => () => Effect.succeed(false) });
+>()("hosted/OrganizationTombstones") {}
 
 /** The write side, provided only by a host that composes organization removal. */
 export class OrganizationRemovals extends Context.Service<

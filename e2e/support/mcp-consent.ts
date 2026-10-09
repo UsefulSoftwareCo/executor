@@ -1,4 +1,7 @@
-/** Authorize the request opened by a real client, using the hosted product's browser flow. */
+/**
+ * Authorize the request opened by a real client, using the product's browser flow. `client` is the
+ * name the consent page shows for it.
+ */
 import { Context, Effect, Layer, Redacted, Schema } from "effect";
 import { Api, body } from "./api.ts";
 import { Actors, password } from "./actors.ts";
@@ -20,7 +23,11 @@ const make = Effect.gen(function* () {
     evidence = yield* Evidence,
     target = yield* Target;
   return {
-    approve: (request: { readonly url: Redacted.Redacted<string>; readonly clientId: string }) =>
+    approve: (request: {
+      readonly url: Redacted.Redacted<string>;
+      readonly clientId: string;
+      readonly client: string;
+    }) =>
       Effect.gen(function* () {
         const url = new URL(Redacted.value(request.url));
         const callback = URL.parse(url.searchParams.get("redirect_uri") ?? "");
@@ -62,7 +69,7 @@ const make = Effect.gen(function* () {
                   operation: "Cannot revoke the test client's grant",
                 });
             }
-            yield* evidence.json("claude-grant-cleanup.json", {
+            yield* evidence.json("client-grant-cleanup.json", {
               clientId: request.clientId,
               revokedGrants: owned.length,
             });
@@ -71,7 +78,7 @@ const make = Effect.gen(function* () {
         yield* browser.omitNetworkTrace;
         // Cloud starts with a signed-in synthetic browser. Self-host exercises its password sign-in.
         if (target.metadata.target === "cloud") yield* browser.login(actors.owner);
-        yield* browser.use("Open the browser requested by Claude", (page) =>
+        yield* browser.use(`Open the browser requested by ${request.client}`, (page) =>
           page.goto(Redacted.value(request.url)),
         );
         if (target.metadata.target === "self-host") {
@@ -85,10 +92,8 @@ const make = Effect.gen(function* () {
             page.getByRole("button", { name: "Sign in", exact: true }).click(),
           );
         }
-        yield* browser.use("Executor names Claude Code on the consent page", (page) =>
-          page
-            .getByText("Claude Code (executor_e2e)", { exact: true })
-            .waitFor({ state: "visible" }),
+        yield* browser.use(`Executor names ${request.client} on the consent page`, (page) =>
+          page.getByText(request.client, { exact: true }).waitFor({ state: "visible" }),
         );
         const response = yield* api.request(actors.owner, "GET", "/api/auth/organization/list");
         const organizations = yield* body(
@@ -106,11 +111,11 @@ const make = Effect.gen(function* () {
         yield* browser.use("Select the synthetic organization", (page) =>
           page.getByRole("option", { name: organization.name, exact: true }).click(),
         );
-        yield* browser.checkpoint("Approve Claude Code's connection");
-        // Claude can close its callback listener after accepting the code, before
+        yield* browser.checkpoint(`Approve ${request.client}'s connection`);
+        // A client can close its callback listener after accepting the code, before
         // the browser finishes loading. Observe the exact request, then let the
-        // caller verify Claude's authenticated connection and real tool result.
-        yield* browser.use("Authorize Claude Code and return to its callback", (page) =>
+        // caller verify the client's authenticated connection.
+        yield* browser.use(`Authorize ${request.client} and return to its callback`, (page) =>
           Promise.all([
             page.waitForRequest((request) => {
               const returned = new URL(request.url());
@@ -162,7 +167,11 @@ const makeLocal = Effect.gen(function* () {
     evidence = yield* Evidence,
     target = yield* Target;
   return {
-    approve: (request: { readonly url: Redacted.Redacted<string>; readonly clientId: string }) =>
+    approve: (request: {
+      readonly url: Redacted.Redacted<string>;
+      readonly clientId: string;
+      readonly client: string;
+    }) =>
       Effect.gen(function* () {
         const url = new URL(Redacted.value(request.url));
         const callback = URL.parse(url.searchParams.get("redirect_uri") ?? "");
@@ -202,7 +211,7 @@ const makeLocal = Effect.gen(function* () {
                   operation: "Cannot revoke the test client's grant",
                 });
             }
-            yield* evidence.json("claude-grant-cleanup.json", {
+            yield* evidence.json("client-grant-cleanup.json", {
               clientId: request.clientId,
               revokedGrants: owned.length,
             });
@@ -210,16 +219,14 @@ const makeLocal = Effect.gen(function* () {
         );
         yield* browser.omitNetworkTrace;
         yield* browser.login(session);
-        yield* browser.use("Open the browser requested by Claude", (page) =>
+        yield* browser.use(`Open the browser requested by ${request.client}`, (page) =>
           page.goto(Redacted.value(request.url)),
         );
-        yield* browser.use("Executor Local names Claude Code on the consent page", (page) =>
-          page
-            .getByText("Claude Code (executor_e2e)", { exact: true })
-            .waitFor({ state: "visible" }),
+        yield* browser.use(`Executor Local names ${request.client} on the consent page`, (page) =>
+          page.getByText(request.client, { exact: true }).waitFor({ state: "visible" }),
         );
-        yield* browser.checkpoint("Approve Claude Code's connection");
-        yield* browser.use("Authorize Claude Code and return to its callback", (page) =>
+        yield* browser.checkpoint(`Approve ${request.client}'s connection`);
+        yield* browser.use(`Authorize ${request.client} and return to its callback`, (page) =>
           Promise.all([
             page.waitForRequest((request) => {
               const returned = new URL(request.url());

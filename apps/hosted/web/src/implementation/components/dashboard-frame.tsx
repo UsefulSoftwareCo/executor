@@ -17,7 +17,7 @@ import type { OrganizationAccess } from "@executor-js/hosted-server/organization
 import { DashboardShell as SharedShell } from "@executor-js/ui/dashboard/shell";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { SessionMenu } from "./auth.tsx";
-import { documentationUrl } from "../../contracts/documentation.ts";
+import { useDocumentationUrl } from "../documentation.ts";
 
 const items = [
   { to: "/org/$organizationSlug/apps", label: "Apps", icon: BoxesIcon },
@@ -76,12 +76,15 @@ function NavigationItem({
 export function DashboardNavigation({
   organization,
   pendingPage = "apps",
+  children,
 }: {
   readonly organization?: {
     readonly slug: string;
     readonly role: OrganizationAccess["role"] | undefined;
   };
   readonly pendingPage?: string;
+  /** The host's own organization pages, after the common ones. */
+  readonly children?: ReactNode;
 }) {
   return (
     <>
@@ -93,6 +96,7 @@ export function DashboardNavigation({
           pendingPage={pendingPage}
         />
       ))}
+      {children}
     </>
   );
 }
@@ -160,6 +164,7 @@ export function DashboardFrame({
   readonly account?: boolean;
   readonly children: ReactNode;
 }) {
+  const docsUrl = useDocumentationUrl();
   const brand = {
     className:
       "wordmark flex items-center gap-2 h-12 min-w-0 font-mono text-[15px] font-medium max-[740px]:h-11 max-[740px]:shrink-0",
@@ -167,7 +172,7 @@ export function DashboardFrame({
   };
   return (
     <SharedShell
-      docsUrl={documentationUrl()}
+      docsUrl={docsUrl}
       brand={
         account ? (
           <Link to="/" {...brand} />

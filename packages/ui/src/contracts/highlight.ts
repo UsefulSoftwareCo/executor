@@ -5,7 +5,7 @@ export class HighlightUnavailable extends Schema.TaggedError<HighlightUnavailabl
   {},
 ) {}
 import { Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import type { HighlighterCore } from "shiki/core";
 
 /** One shared Shiki instance for every code view, loaded on first use. */

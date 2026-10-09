@@ -88,7 +88,7 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent setup", (it) => 
         );
         expect(prompt).toContain("Help me add GitHub to Executor as an app.");
         expect(prompt).toContain("GraphQL endpoint: https://api.github.com/graphql");
-        expect(prompt).toContain("app-authoring skill");
+        expect(prompt).toContain("executor skill, then follow its app-authoring skill");
         expect(prompt).toContain("/mcp first.");
         expect(
           yield* browser.use("No install form is offered", (page) =>

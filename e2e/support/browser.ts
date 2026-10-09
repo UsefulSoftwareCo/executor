@@ -19,6 +19,7 @@ import {
   Schedule,
 } from "effect";
 import { Target, driver, type DriverFailed } from "./platform.ts";
+import { targetHosts } from "./role-hosts.ts";
 import { splitRoutedReads } from "./read-batches.ts";
 import { Evidence } from "./evidence.ts";
 import type { Session } from "./api.ts";
@@ -111,14 +112,14 @@ export class Browser extends Context.Service<
       let tracing = true;
       const context = yield* driver("create browser context", () =>
         browser.newContext({
-          baseURL: target.metadata.origin,
+          baseURL: targetHosts(target).browser,
           viewport: { width: 1440, height: 960 },
           ...visitorUserAgent(browser),
           recordVideo: { dir: `${evidence.directory}/raw`, size: { width: 1440, height: 960 } },
         }),
       );
       yield* driver("route batched reads through test routes", () =>
-        splitRoutedReads(context, target.metadata.origin),
+        splitRoutedReads(context, targetHosts(target).browser),
       );
       // Register cleanup immediately, before trace/page setup can fail.
       yield* Effect.addFinalizer((exit) =>

@@ -1,13 +1,9 @@
 /** Built marketing files for local development. The composition root owns their routes. */
-import { experimentHomepage, type HeroFlagEvaluator } from "./hero-experiment.ts";
 import { Effect, FileSystem, Path } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** Discover public files once; never resolve an arbitrary browser path directly on disk. */
-export const marketingFiles = (
-  directory: string,
-  evaluate: HeroFlagEvaluator = () => Effect.succeed(undefined),
-) =>
+export const marketingFiles = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -54,14 +50,5 @@ export const marketingFiles = (
         headers: { "cache-control": "no-cache", "x-content-type-options": "nosniff" },
       });
     }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 404 }))));
-    const experiment = experimentHomepage(
-      (entry) =>
-        files.has(entry.slice(1))
-          ? HttpServerResponse.file(path.join(directory, entry.slice(1)), {
-              contentType: "text/html",
-            })
-          : Effect.succeed(HttpServerResponse.empty({ status: 404 })),
-      evaluate,
-    );
-    return { paths, document, experiment, asset };
+    return { paths, document, asset };
   });

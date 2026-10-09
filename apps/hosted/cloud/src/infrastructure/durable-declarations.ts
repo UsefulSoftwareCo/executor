@@ -4,9 +4,14 @@
  */
 import { RuntimeContext } from "alchemy";
 import type * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import type { DurableDeclarations } from "@executor-js/sdk/core";
-import { EvaluatedEntry, evaluatedLimits } from "@executor-js/app-data/evaluated";
+import {
+  EvaluatedEntry,
+  EvaluatedWritten,
+  evaluatedLimits,
+  type EvaluatedSupervisor,
+} from "@executor-js/app-data/evaluated";
 import type { AppDataSupervisor } from "./app-data.ts";
 
 class CompressionFailed extends Schema.TaggedError<CompressionFailed>()("CompressionFailed", {}) {}
@@ -23,21 +28,51 @@ const transform = (body: BodyInit, stream: CompressionStream | DecompressionStre
     catch: () => new CompressionFailed(),
   });
 
+/**
+ * Milliseconds `effect` took on this isolate's clock, which only advances on I/O. It measures the
+ * supervisor round trip; CPU-bound work such as gzip would read near 0 on deployed Workers, so
+ * that is reported by its sizes (`bytes`, `chars`) instead of a duration.
+ */
+const timed = <A, E, R>(attribute: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const from = yield* Clock.currentTimeMillis;
+    const value = yield* effect;
+    yield* Effect.annotateCurrentSpan(attribute, (yield* Clock.currentTimeMillis) - from);
+    return value;
+  });
+
+/** Whether the command woke the supervisor and how long it and its isolate had been running. */
+const annotateSupervisor = (supervisor: EvaluatedSupervisor | undefined) =>
+  supervisor === undefined
+    ? Effect.void
+    : Effect.annotateCurrentSpan({
+        "storage.evaluated.supervisor.woke": supervisor.woke,
+        "storage.evaluated.supervisor.instance_ms": supervisor.instanceMs,
+        "storage.evaluated.supervisor.isolate_ms": supervisor.isolateMs,
+      });
+
 export const durableDeclarations = (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
 ): DurableDeclarations => ({
   get: (app, key) =>
     Effect.gen(function* () {
-      const reply = yield* databases
-        .getByName(app)
-        .evaluated({ operation: "read", key })
-        .pipe(Effect.provide(RuntimeContext.phantom));
+      const reply = yield* timed(
+        "storage.evaluated.rpc_ms",
+        databases
+          .getByName(app)
+          .evaluated({ operation: "read", key })
+          .pipe(Effect.provide(RuntimeContext.phantom)),
+      );
       const entry = yield* Schema.decodeUnknownEffect(EvaluatedEntry)(reply);
-      yield* Effect.annotateCurrentSpan("storage.evaluated.found", entry !== null);
-      if (entry === null) return undefined;
+      const found = entry !== null && "body" in entry;
+      yield* Effect.annotateCurrentSpan("storage.evaluated.found", found);
+      if (entry !== null) yield* annotateSupervisor(entry.supervisor);
+      if (!found) return undefined;
+      yield* Effect.annotateCurrentSpan("storage.evaluated.bytes", entry.body.byteLength);
       const text = new TextDecoder().decode(
         yield* transform(Uint8Array.from(entry.body), new DecompressionStream("gzip")),
       );
+      yield* Effect.annotateCurrentSpan("storage.evaluated.chars", text.length);
       return { at: entry.at, json: text };
     }).pipe(
       Effect.timeout(readMillis),
@@ -49,10 +84,19 @@ export const durableDeclarations = (
       const body = new Uint8Array(yield* transform(entry.json, new CompressionStream("gzip")));
       yield* Effect.annotateCurrentSpan("storage.evaluated.bytes", body.byteLength);
       if (body.byteLength > evaluatedLimits.entryBytes) return;
-      yield* databases
-        .getByName(app)
-        .evaluated({ operation: "write", key, at: entry.at, until: entry.until, body })
-        .pipe(Effect.provide(RuntimeContext.phantom));
+      const reply = yield* timed(
+        "storage.evaluated.rpc_ms",
+        databases
+          .getByName(app)
+          .evaluated({ operation: "write", key, at: entry.at, until: entry.until, body })
+          .pipe(Effect.provide(RuntimeContext.phantom)),
+      );
+      // Supervisors from before replies carried their state answer a bare boolean.
+      const written = Schema.decodeUnknownOption(EvaluatedWritten)(reply);
+      if (written._tag === "Some") {
+        yield* Effect.annotateCurrentSpan("storage.evaluated.kept", written.value.kept);
+        yield* annotateSupervisor(written.value.supervisor);
+      }
     }).pipe(
       Effect.catchCause(() => Effect.logWarning("Evaluated result was not kept")),
       Effect.withSpan("storage.evaluated.write"),

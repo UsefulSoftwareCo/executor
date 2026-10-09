@@ -1,6 +1,6 @@
 /** Local schedule controls use paired dashboard access and have no hosted organization fields. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   AppId,
   ProfileId,

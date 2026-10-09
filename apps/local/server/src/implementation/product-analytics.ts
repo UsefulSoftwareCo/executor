@@ -14,7 +14,7 @@ import {
   type AnalyticsSender,
 } from "@executor-js/telemetry/product-analytics";
 import { Clock, Config, Effect, Exit, FileSystem, Option, Path, Schema } from "effect";
-import { SqlClient, type SqlError } from "effect/unstable/sql";
+import { SqlClient, type SqlError } from "effect/sql";
 
 /** The anonymous install ID, minted on the first start with analytics on and kept in the data directory. */
 const installId = (directory: string) =>
@@ -43,7 +43,7 @@ const count = (rows: Effect.Effect<ReadonlyArray<unknown>, SqlError.SqlError>) =
 /** This process's analytics, or none when the operator opted out or the build has no destination. */
 export const localAnalytics = (options: {
   readonly directory: string;
-  readonly product: Extract<AnalyticsProduct, "local" | "desktop">;
+  readonly product: Extract<AnalyticsProduct, "cli" | "desktop">;
   readonly platform: { readonly os: string; readonly arch: string };
   readonly sql: SqlClient.SqlClient;
 }) =>

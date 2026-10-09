@@ -1,5 +1,6 @@
 import type { OAuthClientInput } from "@executor-js/sdk";
 import { Option, Schema, type Redacted } from "effect";
+import type { ReactNode } from "react";
 
 const Field = Schema.Struct({
   type: Schema.Literals(["string", "number", "integer", "boolean"]),
@@ -106,6 +107,8 @@ export interface AccountOAuthProps {
   readonly method: string;
   readonly disabled: boolean;
   readonly onPendingChange: (pending: boolean) => void;
+  /** Where the sign-in goes once it is saved; the OAuth form shows it just above its action. */
+  readonly access: ReactNode;
 }
 
 /** Client selection submitted to the product's OAuth start operation. */

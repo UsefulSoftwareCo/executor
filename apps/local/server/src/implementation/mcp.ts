@@ -1,7 +1,7 @@
 import {
   GrantId,
   GrantForbidden,
-  permitsDelivery,
+  deliveryRefusal,
   restrictMcpBackend,
   requestedMcpAddress,
 } from "@executor-js/mcp-auth";
@@ -9,19 +9,32 @@ import { localRequest } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { LocalMcpUnauthorized, type LocalMcpOAuth } from "./mcp-oauth.ts";
 /** Local access and documentation I/O for the shared MCP implementation. */
-import { makeMcp, appTargets, type McpBackend, type McpLimits } from "@executor-js/mcp";
+import {
+  makeMcp,
+  appTargets,
+  refusedMcpRequest,
+  type McpBackend,
+  type McpLimits,
+} from "@executor-js/mcp";
+import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
 import {
   ElicitationFailed,
   type Executor,
   type ToolInvocationOptions,
 } from "@executor-js/sdk/core";
 import { Context, Effect, Redacted } from "effect";
-import { McpProtocol } from "effect/unstable/ai";
-import { HttpServerResponse } from "effect/unstable/http";
 
-/** The local bearer key authorizes the whole instance. No hosted owner or role model is imposed. */
-export const localMcpBackend = (executor: Executor) =>
+/**
+ * The local bearer key authorizes the whole instance. No hosted owner or role model is imposed.
+ * Event subscriptions belong to `principal`, the grant that made them.
+ */
+export const localMcpBackend = (executor: Executor, principal: string) =>
   ({
+    eventDefinitions: (input) => executor.events.definitions(input),
+    findEventSubscription: (key) => executor.events.find({ ...key, principal }),
+    subscribeEvent: ({ key, ...input }) =>
+      executor.events.subscribe({ ...input, key: { ...key, principal }, subject: principal }),
+    unsubscribeEvent: ({ key }) => executor.events.unsubscribe({ ...key, principal }),
     listSkills: (input) => executor.skills.list(input),
     readSkill: (input) => executor.skills.read(input),
     authorizeElicitation: () => Effect.void,
@@ -59,15 +72,25 @@ export const localMcp = (
         callTool: () => Effect.fail(new LocalMcpUnauthorized()),
         resumeInvocation: () => Effect.fail(new LocalMcpUnauthorized()),
         authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
+        eventDefinitions: () => Effect.fail(new LocalMcpUnauthorized()),
+        findEventSubscription: () => Effect.fail(new LocalMcpUnauthorized()),
+        subscribeEvent: () => Effect.fail(new LocalMcpUnauthorized()),
+        unsubscribeEvent: () => Effect.fail(new LocalMcpUnauthorized()),
       }),
     });
-    const Caller = Context.Reference<string>("local/McpCaller", {
-      defaultValue: () => "unavailable",
+    const Caller = Context.Reference<string | undefined>("local/McpCaller", {
+      defaultValue: () => undefined,
     });
+    // Programs belong to the caller across MCP sessions, so a request without one must not share a partition.
+    const caller = Effect.flatMap(Caller, (grant) =>
+      grant === undefined
+        ? Effect.die("MCP request has no authenticated grant")
+        : Effect.succeed(grant),
+    );
     const host = yield* makeMcp({
       browser: {
         url: (address) =>
-          Effect.map(Caller, (caller) => {
+          Effect.map(caller, (caller) => {
             const url = new URL(`/mcp/approve/${address.requestId}`, oauth.origin);
             url.searchParams.set("sessionId", address.sessionId);
             url.searchParams.set("grantId", caller);
@@ -87,15 +110,24 @@ export const localMcp = (
           Effect.flatMap(RequestBackend, (b) => b.resumeInvocation(request, response, options)),
         authorizeElicitation: (input) =>
           Effect.flatMap(RequestBackend, (b) => b.authorizeElicitation(input)),
+        eventDefinitions: (input) =>
+          Effect.flatMap(RequestBackend, (b) => b.eventDefinitions(input)),
+        findEventSubscription: (key) =>
+          Effect.flatMap(RequestBackend, (b) => b.findEventSubscription(key)),
+        subscribeEvent: (input) => Effect.flatMap(RequestBackend, (b) => b.subscribeEvent(input)),
+        unsubscribeEvent: (input) =>
+          Effect.flatMap(RequestBackend, (b) => b.unsubscribeEvent(input)),
       },
-      caller: Caller,
+      caller,
+      instructions: executorIntro,
       limits,
-      protocols: [McpProtocol.v2026_07_28, McpProtocol.v2025_11_25],
+      annotateSkillRead,
     });
     const http = Effect.gen(function* () {
       const request = yield* localRequest(config.port, config.browserOrigin);
       const address = requestedMcpAddress(new URL(request.url, oauth.origin));
-      if (address === undefined) return yield* new GrantForbidden();
+      // A malformed URL names no MCP address, so no credential is checked against it.
+      if (address === undefined) return oauth.invalidAddress;
       const current = Effect.gen(function* () {
         // The administrative key is full access on the plain URL only; it never enters a connection.
         const grant =
@@ -106,21 +138,26 @@ export const localMcp = (
                 target: { kind: "mcp" as const, mode: address.mode },
               }
             : (yield* oauth.authenticate(new Headers(request.headers))).grant;
-        if (!permitsDelivery(grant, address)) return yield* new GrantForbidden();
+        const refusal = deliveryRefusal(grant, address);
+        if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         return grant;
       });
       const grant = yield* current;
-      const backend = restrictMcpBackend<Error, Error>(localMcpBackend(executor), current);
+      const backend = restrictMcpBackend<Error, Error>(
+        localMcpBackend(executor, grant.id),
+        current,
+      );
       return yield* host.http.pipe(
         Effect.provideService(RequestBackend, backend),
         Effect.provideService(Caller, grant.id),
       );
     }).pipe(
       Effect.catchTags({
-        AuthForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
-        GrantForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+        // Clients print a refusal's body after their own prefix, so typed refusals keep their cause.
+        AuthForbidden: refusedMcpRequest,
+        GrantForbidden: refusedMcpRequest,
         LocalMcpUnauthorized: () => oauth.challenge,
-        LocalMcpAuthUnavailable: () => Effect.succeed(HttpServerResponse.empty({ status: 503 })),
+        LocalMcpAuthUnavailable: refusedMcpRequest,
       }),
     );
     return { http, approvals: host.approvals };

@@ -199,6 +199,7 @@ export const usageReports: readonly UsageReport[] = [
       kind: "InsightVizNode",
       source: {
         kind: "FunnelsQuery",
+        version: 2,
         filterTestAccounts: true,
         dateRange: { date_from: "-30d" },
         funnelsFilter: { funnelWindowInterval: 7, funnelWindowIntervalUnit: "day" },
@@ -214,6 +215,7 @@ export const usageReports: readonly UsageReport[] = [
       kind: "InsightVizNode",
       source: {
         kind: "FunnelsQuery",
+        version: 2,
         filterTestAccounts: true,
         dateRange: { date_from: "-30d" },
         funnelsFilter: { funnelWindowInterval: 7, funnelWindowIntervalUnit: "day" },
@@ -230,6 +232,7 @@ export const usageReports: readonly UsageReport[] = [
       kind: "InsightVizNode",
       source: {
         kind: "RetentionQuery",
+        version: 2,
         filterTestAccounts: true,
         dateRange: { date_from: "-8w" },
         properties: human,
@@ -252,6 +255,7 @@ export const usageReports: readonly UsageReport[] = [
       kind: "InsightVizNode",
       source: {
         kind: "TrendsQuery",
+        version: 4,
         dateRange: { date_from: "-30d" },
         interval: "day",
         filterTestAccounts: true,

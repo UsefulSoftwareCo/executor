@@ -112,13 +112,13 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
               return account;
             });
           /** Replace the stored credential of an existing account; its ID and selection stay. */
-          const reconnect = (actor: Session, account: string, token: string) =>
+          const reconnect = (actor: Session, profile: string, account: string, token: string) =>
             Effect.gen(function* () {
-              const response = yield* api.request(
-                actor,
-                "POST",
-                `${prefix}/accounts/${account}/connections`,
-              );
+              const response = yield* api.request(actor, "POST", `${path}/connections`, {
+                profile,
+                requirement: "service",
+                account,
+              });
               expect(response.status, JSON.stringify(response.body)).toBe(200);
               expect(yield* submit(actor, (yield* body(Resource, response)).id, token)).toBe(
                 account,
@@ -204,7 +204,7 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
           yield* reused(skills(actors.owner, owned), { descriptions: ["first guide for alpha"] });
 
           // A replaced credential is a different evaluation input.
-          yield* reconnect(actors.owner, alpha, "beta");
+          yield* reconnect(actors.owner, owned, alpha, "beta");
           expect(yield* workflows(actors.owner, owned)).toEqual({
             names: ["first_beta"],
             cache: "miss",

@@ -21,7 +21,13 @@ bun run e2e:self-host
 ```
 
 `e2e:prepare` builds the dashboards, app framework, bundled Motel and shared
-workerd runtime artifact. Run it again after changing these inputs. The server runs current TypeScript source. `bun run e2e:check` runs the
+workerd runtime artifact. Run it again after changing these inputs. It caches each
+build step's outputs in `~/.cache/executor-e2e-prepare` (or `$EXECUTOR_E2E_CACHE`)
+under a hash of the step's inputs: the files git sees in its packages and their
+workspace dependencies, the lockfile, patches and root config, and the Node and Bun
+versions. A step whose inputs have not changed, in any rift, is restored instead of
+built. `scripts/e2e-prepare.ts` lists each step's inputs; add a file there when a
+build starts reading one outside them. CI and `--no-cache` build every step. The Node server runs current TypeScript source; the workerd host bundle is prebuilt, so a change to the SDK's app runner needs `bun run e2e:runtime` before a self-host run sees it. `bun run e2e:check` runs the
 boundary check and TypeScript check; the root `check` includes it.
 
 ```sh
@@ -126,9 +132,10 @@ or HTTP failure. All origin probes start together. Fallback
 organization cleanup uses the worker bound and preserves release order within
 each scenario, including when another organization's cleanup fails.
 
-Files run in parallel with one worker per two CPUs by default, up to 16. Each worker
-runs its own product server and browser. Use `--workers 1` through `--workers 32` to
-set the bound. A file's cases retain their declared sequence.
+Files run in parallel with one worker per two CPUs by default, up to 16. Each self-host
+and local worker runs its own product server and browser. Managed Cloud workers share one
+local Cloud Worker and collector, so that target runs at most six. Use `--workers 1`
+through `--workers 32` to set the bound for every target. A file's cases retain their declared sequence.
 Interactive recordings use one worker. Filters load only applicable files.
 Each unattended test has a 60-second timeout, except the 1,000-account self-host
 inventory case, which has 120 seconds. Cleanup hooks retain a separate
@@ -242,7 +249,9 @@ network in `100.64.0.0/10`, gives the container a fixed address there and maps
 `nexus.example.ts.net` to that address inside the container. `BETTER_AUTH_URL`
 uses that name, and `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` is unset. After
 first-admin setup, an API key calls the built-in Executor app through `/mcp`. An
-authored app then checks that it cannot fetch the container's private address.
+authored app then checks that Executor refuses the container's private address
+by name, and that the image's public-only network refuses it behind a public
+name mapped to it, which no name check catches.
 The same case points `EXECUTOR_REGISTRY_URL` at a synthetic registry and checks
 that the public app catalog, running in workerd, refuses redirects and reports
 status, invalid-response, forwarded and network failures distinctly.
@@ -291,6 +300,24 @@ starts with a sealed environment and an empty Alchemy profile directory. No
 Cloudflare, PlanetScale, Google, GitHub, Context.dev, or 1Password credentials
 are needed. Docker must be running; Bun, Playwright Chromium and ffmpeg are
 normal tool prerequisites.
+
+The run waits for the Worker's `/health` to answer 200. It fails at once when
+Alchemy reports that a resource could not start, and otherwise after ten
+minutes. Each probe has its own ten-second limit. The Worker's output is in
+the run directory's `cloud/cloud.log`.
+
+The run removes its Postgres container when it ends, including after a failed or
+interrupted start; under load Docker can finish creating a container long after
+the run has stopped waiting for it. Each container is labelled with
+`executor.e2e.role=cloud-postgres` and the process ID of the run that owns it,
+with the process namespace that ID belongs to (`executor.e2e.pid-namespace`: the
+boot and PID namespace on Linux, the boot session on macOS). A run killed before
+its cleanup leaves the container behind; the next Cloud run in the same namespace
+removes containers whose owning process has exited and that are more than five
+minutes old. Containers of live runs, of other namespaces (such as another
+devcontainer sharing the Docker socket) and unlabelled containers are never
+touched. A run that cannot determine its namespace records none and removes
+nothing.
 
 The disposable Postgres server allows 512 connections. The local Worker connects
 directly, so concurrent requests and background jobs cannot share a pooler's
@@ -394,6 +421,31 @@ accounts, or need credentials. It can run after the test environment is destroye
 bun run e2e:render --directory .local/e2e/<run>
 bun run e2e:report --directory .local/e2e/<run>/report
 ```
+
+Each case's `telemetry.json` holds the delivered spans of its five slowest requests
+and its last five browser traces. A failed case also keeps the trace of every request
+it sent: from the test, its background fibers and its cleanup, answered or not. A case
+fails when its body fails or when its own cleanup does, so a finalizer that fails after
+the body passed fails the evidence too. The flush waits up to five seconds for the server
+to export the spans that answered those requests. Each entry's `kept` lists why it was kept.
+
+The failure traces have a budget of 64 MiB of compact JSON (`FailureTraceBudget`). The
+largest case, the 1,000-account inventory load, sends about 4,000 requests whose traces
+take 47 MB; most cases take under 4 MB. Past the budget, the oldest traces are left out.
+The newest request, every request that never answered and the five slowest are always
+kept, so the budget is soft: those traces are kept even when they alone exceed it.
+
+Exporting and reading traces stops after 25 seconds, so the evidence finishes inside the
+60-second cleanup hook and the product still stops. The evidence writes `result.json` and
+`trace-ids.json` before it reads any trace. `trace-ids.json` lists every request newest
+first with why its trace is kept, every answered request's trace, the `failure` traces
+kept, the `dropped` ones and the `unfetched` ones, and its `state`: `collecting` until the
+end, then `complete` or `partial` when the deadline stopped the reads. `telemetry.json`
+is written a batch at a time, one compact entry per line: first the newest request, then
+the other traces always kept, then the rest newest first. A trace not read before the
+deadline has an entry with only an `error`. `unanswered-requests.json` lists every
+request that never answered. `failure-evidence.spec.ts` checks this with cases that fail
+on purpose.
 
 For CI failures, download and extract the evidence artifact, then pass the
 extracted run directory (the one containing `evidence.json` and target folders)
@@ -538,10 +590,8 @@ The Worker is the real Cloud entry point; only external service configuration an
 resource lifetimes vary. No alternate auth server is constructed.
 
 The runner ignores inherited infrastructure credentials, sets `CI=true`, and
-uses an empty per-run `ALCHEMY_HOME`. Alchemy beta.79's local Worker/R2/Hyperdrive
-providers require the included patch to stop resolving cloud credentials for
-local identities. Live providers and bindings explicitly marked remote retain
-normal credential resolution. Generated test credentials are ephemeral, not
+uses an empty per-run `ALCHEMY_HOME`. Alchemy's local Worker, R2 and Hyperdrive
+providers use a fixed local account in CI and never resolve cloud credentials. Generated test credentials are ephemeral, not
 personal or production secrets. On completion the runner stops the Worker,
 removes its Postgres container, removes the emulator credential file and resets
 its external emulator instances. Recordings remain in the report.
@@ -700,7 +750,21 @@ for the release checks, or `--test-name '<scenario>'` for focused verification.
 Alchemy disables Better Auth rate limits on automated `test-e2e-*` stages so
 parallel scenarios do not share the runner IP's request allowance. Set
 `TEST_STAGE_AUTH_RATE_LIMIT=true` when deploying a stage for focused rate-limit
-checks. Production and ordinary previews always retain rate limits. Local and
+checks. Managed local Cloud does the same: the runner starts it with
+`TEST_STAGE_AUTH_RATE_LIMIT=false`, which Cloud honors only under `alchemy dev`
+on a loopback origin. `bun run e2e:cloud --auth-rate-limit` starts it with the
+limit on and runs only the scenarios whose Cloud plan declares
+`runtime: "rate-limited"`; CI runs them in their own step. Likewise
+`bun run e2e:cloud --rollback` starts it with Cloud's rollback switch on
+(`CLOUD_BROWSER_ORIGIN=deployment`, sign-in on the deployment origin) and runs
+only the scenarios declaring `runtime: "rolled-back"`. Managed local Cloud runs
+with Better Auth's OAuth proxy on, as the proxy's production (its edge), as
+production does. `bun run e2e:cloud --oauth-proxy-preview` also starts a second
+local Cloud as that production and tests a stage that signs in through it,
+running only the scenarios declaring `runtime: "oauth-proxy-preview"`. Production (`v2`),
+ordinary previews and every other deployed stage always retain rate limits,
+whatever their configuration; `bun run auth:rate-limit` (part of `check`)
+proves it. Local and
 Cloud CI jobs use 16-vCPU runners. Self-host functional tests use a 12-vCPU Mac;
 the 1,000-account test runs independently on a 6-vCPU Mac.
 The same tests run on both providers. Add new Cloud scenarios normally in
@@ -714,9 +778,10 @@ limit, and is reported separately from test time. Per-scenario setup, assertions
 and cleanup retain their separate 60-second deadlines. The suite owns all
 prepared organizations, including those whose tests never start after a failure.
 
-Only scenarios declaring `runtime: "managed"` require the local Cloud target
+Only scenarios declaring `runtime: "managed"`, `"rate-limited"` or `"rolled-back"` require the local Cloud target
 (for example, local telemetry collectors). Their deployed report says N/A with
-the reason. They remain in local CI. Claude Code's model-dependent scenario is
+the reason. They run only in the Cloud jobs of local CI, so each must match a job pattern in
+`ci-selection.ts`; the `select` job fails on a scheduled scenario that no CI job runs. Claude Code's model-dependent scenario is
 excluded by the deployed runner's default filter. A filter that executes no
 scenarios is a failure. See [test stages](../notes/test-stages.md) for retained
 previews, shared infrastructure, background pause/resume, and cleanup.
@@ -740,9 +805,9 @@ own environment.
 
 To verify the installed CLI artifact through the same local scenarios, set
 `EXECUTOR_E2E_LOCAL_ENTRY` to the absolute installed `bin.mjs` path and run
-`bun run e2e:local`. The harness starts that entry from its isolated data directory,
-with synthetic secrets. Pairing, dashboard loading and app deployment/call use
-real HTTP requests against the installed package.
+`bun run e2e:local`. The harness starts that entry from its installed package directory,
+with an isolated data directory and synthetic secrets. Pairing, dashboard loading and
+app deployment/call use real HTTP requests against the installed package.
 
 The first-launch key scenarios also run against an installed entry:
 

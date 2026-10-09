@@ -112,7 +112,7 @@ const arrayFixture = Effect.gen(function* () {
         {
           path: "ui/index.html",
           content:
-            "<!doctype html><html><head><title>Account protected UI</title></head><body><h1>Account protected UI</h1></body></html>",
+            '<!doctype html><html><head><title>Account protected UI</title></head><body><h1>Account protected UI</h1><img src="probe.svg" alt="Probe"></body></html>',
         },
         {
           path: "ui/public/probe.svg",
@@ -326,7 +326,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           page.getByRole("heading", { name: "Account protected UI" }).waitFor(),
         );
         const assetUrl = yield* browser.use("Locate the account-protected asset", (page) =>
-          page.evaluate(() => new URL("probe.svg", document.baseURI).href),
+          page.evaluate(() => document.querySelector("img")?.src ?? ""),
         );
         const validator = yield* browser.use("Warm the account-protected asset", (page) =>
           page
@@ -457,7 +457,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         yield* openPrivateApp(renamedUrl.href);
         const remainingAsset = yield* browser.use(
           "Locate the renamed app's retained asset",
-          (page) => page.evaluate(() => new URL("probe.svg", document.baseURI).href),
+          (page) => page.evaluate(() => document.querySelector("img")?.src ?? ""),
         );
         expect(
           (yield* browser.use("The UI allows the remaining shared array account", (page) =>

@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Context, Effect, FileSystem, Layer, Ref, Schedule, Schema } from "effect";
-import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 class WelcomeTestFailed extends Schema.TaggedError<WelcomeTestFailed>()("WelcomeTestFailed", {
   operation: Schema.String,
@@ -53,8 +53,9 @@ const make = Effect.gen(function* () {
         }),
       );
     });
-  const code = (recipient: string, count = 1) =>
-    messages(recipient, "Your Executor sign-in code").pipe(
+  /** The latest code of a flow: a new email's first code is a sign-up code. */
+  const code = (recipient: string, flow: "sign-in" | "sign-up", count = 1) =>
+    messages(recipient, `Your Executor ${flow} code`).pipe(
       Effect.flatMap((mail) => {
         const otp =
           mail.length >= count ? mail.at(-1)?.text.match(/\n\n(\d{6})\n\n/)?.[1] : undefined;

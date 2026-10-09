@@ -2,8 +2,6 @@ import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import type { WorkflowHostControls } from "apps/contracts";
-import type { AppDatabases } from "@executor-js/app-data";
-import { bindAppStorage } from "./app-database.ts";
 import { CompleteWebhookSetup, WebhookSetupView } from "../contracts/webhook-setup.ts";
 /** Persist intent before upstream work. Explicit reconciliation uses a bounded, compare-and-swap lease. */
 import { Clock, type Crypto, Effect, Exit, Redacted, Result, Schema } from "effect";
@@ -35,6 +33,7 @@ import { storedProfile } from "./profiles.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
 import type { Declarations } from "./declarations.ts";
+import { ownsDatabase } from "../contracts/apps.ts";
 
 const StoredWebhook = Schema.Struct({
   ...WebhookSubscription.fields,
@@ -58,7 +57,6 @@ export const makeWebhooks = (
   crypto: Crypto.Crypto,
   origin: string | undefined,
   declarations: Declarations,
-  appStorage?: AppDatabases,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
@@ -99,9 +97,8 @@ export const makeWebhooks = (
         .webhook({
           app: row.app,
           build: state.deployment.build,
-          database: state.deployment.requirements.database !== undefined,
+          database: ownsDatabase(state.deployment.requirements),
           ...context,
-          ...(yield* bindAppStorage(appStorage, row.app)),
           ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
           command,
         })
@@ -131,7 +128,7 @@ export const makeWebhooks = (
             .webhook({
               app: input.app,
               build: state.deployment.build,
-              database: state.deployment.requirements.database !== undefined,
+              database: ownsDatabase(state.deployment.requirements),
               ...context,
               command: { operation: "webhooks" },
             })
@@ -324,7 +321,7 @@ export const makeWebhooks = (
           .webhook({
             app: parsed.app,
             build: state.deployment.build,
-            database: state.deployment.requirements.database !== undefined,
+            database: ownsDatabase(state.deployment.requirements),
             ...context,
             command: { operation: "webhooks" },
           })
@@ -355,7 +352,7 @@ export const makeWebhooks = (
           .webhook({
             app: parsed.app,
             build: state.deployment.build,
-            database: state.deployment.requirements.database !== undefined,
+            database: ownsDatabase(state.deployment.requirements),
             ...context,
             command: {
               operation: "webhook-validate",

@@ -80,7 +80,7 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             page.evaluate(() => navigator.clipboard.readText()),
           ),
         ).toBe(
-          `Help me connect to Executor over MCP at ${origin}/mcp.\n\nRead the docs to understand the product at https://v2.executor.sh/docs/, then help me get my first app set up.`,
+          `Help me connect to Executor over MCP at ${origin}/mcp.\n\nRead the docs to understand the product at https://executor.sh/docs/, then help me get my first app set up.`,
         );
         yield* browser.use("Open the dashboard when ready", (page) =>
           page.getByRole("link", { name: "Open dashboard", exact: false }).click(),

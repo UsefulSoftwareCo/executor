@@ -1,5 +1,5 @@
 import { Clock, Context, Effect, Schema, Semaphore } from "effect";
-import type { SqlClient } from "effect/unstable/sql/SqlClient";
+import type { SqlClient } from "effect/sql/SqlClient";
 import {
   CoordinatorError,
   type DurableCoordinator,

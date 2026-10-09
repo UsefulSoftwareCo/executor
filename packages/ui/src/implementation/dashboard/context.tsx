@@ -2,7 +2,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import { RegistryContext, useAtomValue, useAtomRefresh } from "@effect/atom-react";
 import { Option } from "effect";
 import { Skeleton } from "../components/skeleton.tsx";
-import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import type { DashboardBindings, Query, QueryProps } from "../../contracts/dashboard.ts";
 
 const Context = createContext<DashboardBindings | null>(null);

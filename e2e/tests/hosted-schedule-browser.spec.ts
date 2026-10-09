@@ -162,7 +162,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
               );
               const refresh = yield* holdQuery(
                 paths.map((path) => `${path}/schedules`),
-                "fail",
+                "undeclared",
               );
               yield* refreshVisiblePage;
               yield* refresh.requested;
@@ -229,7 +229,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
             ).toBe(0);
           });
         yield* browser.login(actors.owner);
-        const failed = yield* holdQuery(paths, "fail");
+        const failed = yield* holdQuery(paths, "undeclared");
         yield* openThroughBrowser(
           "Open schedules with definition discovery held",
           `/org/${actors.organization.slug}/apps/${app.id}?view=schedules`,
@@ -251,7 +251,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
         yield* browser.use("The declared schedule appears", (page) =>
           page.getByRole("heading", { name: "digest", exact: true }).waitFor(),
         );
-        const refreshFailure = yield* holdQuery(paths, "fail");
+        const refreshFailure = yield* holdQuery(paths, "undeclared");
         yield* refreshVisiblePage;
         yield* refreshFailure.requested;
         yield* refreshFailure.release;

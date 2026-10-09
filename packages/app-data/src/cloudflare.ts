@@ -8,13 +8,18 @@ import type {
   WebSocket,
 } from "@cloudflare/workers-types";
 import { Clock, Deferred, Effect, Exit, Result, Schema, Semaphore } from "effect";
-import { fingerprint } from "./implementation/cursor.ts";
+import { fingerprint } from "./implementation/fingerprint.ts";
 import { AppDatabaseError } from "./contracts/database.ts";
 import { CacheCommand, CacheError, CacheReply } from "@executor-js/app-cache/contracts";
 import { holdLeases } from "@executor-js/app-cache";
 import { discardsEvaluated } from "@executor-js/app-cache/changes";
 import { sqliteCache } from "@executor-js/app-cache/sqlite";
 import { evaluatedStore } from "./implementation/evaluated.ts";
+import type {
+  EvaluatedEntry,
+  EvaluatedSupervisor,
+  EvaluatedWritten,
+} from "./contracts/evaluated.ts";
 
 /** Executable bytes, supplied by the trusted build store rather than a browser request. */
 export const FacetBundle = WorkerBundle;
@@ -27,16 +32,23 @@ export const FacetInvocation = Schema.Struct({
   body: Schema.String,
   cacheNamespace: Schema.optionalKey(Schema.String),
   write: Schema.Boolean,
+  /**
+   * The bundle's calls may run alongside other calls of the same execution context. Bundles built
+   * before app SQL hold a transaction for a whole call, so their facet runs one call at a time.
+   */
+  concurrent: Schema.Boolean,
   headers: Schema.Record(Schema.String, Schema.String),
 });
 /**
- * The supervisor attaches the revision before releasing its serialized invocation, and whether
- * the invocation invalidated app cache data.
+ * The supervisor attaches the revision the invocation observed, whether the invocation
+ * invalidated app cache data, and its own part of the invocation on its own clock, queueing
+ * included: how long it took and how much of that it waited on the facet.
  */
 export const FacetResult = Schema.Struct({
   value: Schema.Json,
   revision: Schema.Int,
   cacheChanged: Schema.optionalKey(Schema.Boolean),
+  timing: Schema.optionalKey(Schema.Struct({ elapsedMs: Schema.Finite, waitMs: Schema.Finite })),
 });
 const causes = new WeakMap<AppDatabaseError, unknown>();
 /** Internal diagnostics, deliberately absent from the serialized error. */
@@ -162,6 +174,10 @@ const FacetEntrypoint = Schema.declare(
  */
 const loadedFacets = new Map<string, { readonly name: string; readonly loaded: string }>();
 
+/** When this isolate built its first supervisor, on its clock; supervisors report their isolate's age. */
+// oxlint-disable-next-line executor/no-module-level-mutable-state -- one timestamp per isolate; it carries no request data
+let isolateStartedAt: number | undefined;
+
 /** Use supervisor alarms: the pinned workerd cannot schedule alarms from a facet. */
 export const makeFacetSupervisor = (
   state: DurableObjectState,
@@ -178,8 +194,75 @@ export const makeFacetSupervisor = (
   unloadReplacedFacets = false,
 ) =>
   Effect.gen(function* () {
-    const execution = yield* Semaphore.make(1);
     const metadata = yield* Semaphore.make(1);
+    const startedAt = yield* Clock.currentTimeMillis;
+    const isolateStarted = (isolateStartedAt ??= startedAt);
+    /**
+     * Calls and events this instance has received, of every kind that can activate it: host RPCs,
+     * the socket upgrade, alarms and socket events. The first one woke it.
+     */
+    let received = 0;
+    /** Count `effect` as one call or event the instance received. */
+    const enter = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.suspend(() => {
+        received += 1;
+        return effect;
+      });
+    /** How this instance is running, for the caller's span. Counts the call it answers. */
+    const running = Clock.currentTimeMillis.pipe(
+      Effect.map((now): EvaluatedSupervisor => ({
+        woke: received++ === 0,
+        instanceMs: now - startedAt,
+        isolateMs: now - isolateStarted,
+      })),
+    );
+    /**
+     * Which calls may run in the facet now. Calls of the loaded execution context run together when
+     * their bundle allows it, so a call waiting on an outside service never holds up the app's
+     * other calls, including that service's callbacks into the app. A call for another context, or
+     * one that needs the facet alone, waits until the running calls finish. Durable Objects share
+     * one I/O context, so waiters can be woken through a Deferred.
+     */
+    /**
+     * Calls of the running execution context always join it: a running call may be waiting for
+     * one of them, such as a provider's callback during webhook registration, so holding them
+     * back could deadlock. The cost is fairness: steady overlapping traffic for one context keeps
+     * another waiting until it pauses.
+     */
+    const admission = { running: 0, identity: "", alone: false };
+    let wake = yield* Deferred.make<void>();
+    /** Enter now when allowed, or return the signal to wait on. Synchronous, so it cannot interleave. */
+    const tryEnter = (identity: string, concurrent: boolean) => {
+      const joins =
+        concurrent && !admission.alone && admission.running > 0 && admission.identity === identity;
+      if (!joins && admission.running > 0) return wake;
+      admission.running += 1;
+      admission.identity = identity;
+      admission.alone = !concurrent;
+      return undefined;
+    };
+    const leave = Effect.gen(function* () {
+      admission.running -= 1;
+      if (admission.running === 0) admission.alone = false;
+      const woken = wake;
+      wake = yield* Deferred.make<void>();
+      yield* Deferred.succeed(woken, undefined);
+    });
+    /**
+     * Wait until the call may run in the facet. Waiting is interruptible, so cancelling a queued
+     * call ends it at once; an attempt that enters registers `leave` with the call's scope.
+     */
+    const admit = (identity: string, concurrent: boolean) =>
+      Effect.gen(function* () {
+        for (;;) {
+          const signal = yield* Effect.acquireRelease(
+            Effect.sync(() => tryEnter(identity, concurrent)),
+            (pending) => (pending === undefined ? leave : Effect.void),
+          );
+          if (signal === undefined) return;
+          yield* Deferred.await(signal);
+        }
+      });
     const evaluated = evaluatedStore(state.storage);
     const cached = sqliteCache(state.storage);
     // Every cache command, from the host or from an invocation, passes here, so an invalidation
@@ -249,7 +332,7 @@ export const makeFacetSupervisor = (
     const select = (name: string, app: string, load: () => Promise<typeof FacetBundle.Type>) =>
       Effect.try({
         try: () =>
-          // An abort invalidates stubs. Reacquire on every serialized invocation.
+          // An abort invalidates stubs. Reacquire on every invocation.
           Schema.decodeUnknownSync(FacetEntrypoint)(
             state.facets.get("data", () => {
               const { worker } = loadWorker(loader, name, async () => {
@@ -358,12 +441,14 @@ export const makeFacetSupervisor = (
       load: () => Promise<typeof FacetBundle.Type>,
       elicitation: ((input: unknown) => Promise<unknown>) | null,
       workflows: ((input: unknown) => Promise<unknown>) | null,
+      waited: (ms: number) => void,
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
+          yield* admit(invocation.identity, invocation.concurrent);
           const entrypoint = yield* acquire(invocation, load);
-          // Reads share the invocation lock with writes. Capture the revision before
-          // execution so a later write cannot make an old query look current.
+          // Capture the revision before execution so a later write cannot make an old query
+          // look current. A write that commits while the query runs only causes a refetch.
           const observedRevision = yield* revision;
           let cacheChanged = false;
           if (invocation.write)
@@ -415,9 +500,11 @@ export const makeFacetSupervisor = (
               }),
               ({ id, result }, exit) =>
                 Effect.promise(async () => {
-                  if (Exit.isFailure(exit)) {
-                    // A facet transaction closes its input gate, so a cancel RPC cannot
-                    // enter until it commits. Abort the isolated facet to roll it back.
+                  if (Exit.isFailure(exit) && !invocation.concurrent) {
+                    // An older bundle's transaction closes the facet's input gate, so a cancel
+                    // RPC cannot enter until it commits. Abort the facet, which runs only this
+                    // call, to roll it back. Current bundles never hold a transaction across a
+                    // wait, so their cancel below reaches the call without touching others.
                     state.facets.abort("data", "App invocation cancelled");
                   }
                   if (Exit.isSuccess(exit) && entrypoint.finish !== undefined) {
@@ -437,7 +524,10 @@ export const makeFacetSupervisor = (
                   await closeLeases();
                 }),
             );
+            // Waiting on the facet, which runs the app, is not the supervisor's own time.
+            const from = yield* Clock.currentTimeNanos;
             const result = yield* Effect.promise(() => call.result);
+            waited(Number((yield* Clock.currentTimeNanos) - from) / 1_000_000);
             if (Result.isFailure(result)) return yield* failed(result.failure);
             return yield* Schema.decodeUnknownEffect(Schema.Json)(result.success).pipe(
               Effect.mapError(failed),
@@ -450,75 +540,102 @@ export const makeFacetSupervisor = (
             ...(cacheChanged ? { cacheChanged: true } : {}),
           };
         }),
-      ).pipe(
-        // Storage operations already serialize inside the facet. Queue here so aborting
-        // one invocation never kills another caller or leaves a stale facet capability.
-        execution.withPermits(1),
       );
     return {
-      cache,
-      /** Host-evaluated results; failures are reported as `null`, a miss. */
+      enter,
+      cache: (namespace: string, command: unknown) => enter(cache(namespace, command)),
+      /**
+       * Host-evaluated results, with how this supervisor was running when it answered. A command
+       * the store could not run is answered as missing, a miss; its writer ignores the answer.
+       */
       evaluated: (command: unknown) =>
-        evaluated.command(command).pipe(Effect.orElseSucceed(() => null)),
+        running.pipe(
+          Effect.flatMap((supervisor) =>
+            evaluated.command(command).pipe(
+              Effect.map((reply): EvaluatedEntry | EvaluatedWritten =>
+                typeof reply === "boolean"
+                  ? { kept: reply, supervisor }
+                  : reply === null
+                    ? { missing: true, supervisor }
+                    : { ...reply, supervisor },
+              ),
+              Effect.orElseSucceed((): EvaluatedEntry => ({ missing: true, supervisor })),
+            ),
+          ),
+        ),
       invoke: (
         input: typeof FacetInvocation.Type,
         load: () => Promise<typeof FacetBundle.Type>,
         elicitation: ((input: unknown) => Promise<unknown>) | null = null,
         workflows: ((input: unknown) => Promise<unknown>) | null = null,
       ) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const invocation = yield* Schema.decodeUnknownEffect(Schema.toType(FacetInvocation))(
-              input,
-            ).pipe(Effect.mapError(failed));
-            const handle = {
-              cancel: yield* Deferred.make<void>(),
-              done: yield* Deferred.make<void>(),
-            };
-            if (calls.has(invocation.id)) return yield* failed();
-            yield* Effect.acquireRelease(
-              Effect.sync(() => {
-                calls.set(invocation.id, handle);
-              }),
-              () =>
-                Effect.gen(function* () {
-                  calls.delete(invocation.id);
-                  yield* Deferred.succeed(handle.done, undefined);
+        enter(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const invocation = yield* Schema.decodeUnknownEffect(Schema.toType(FacetInvocation))(
+                input,
+              ).pipe(Effect.mapError(failed));
+              const handle = {
+                cancel: yield* Deferred.make<void>(),
+                done: yield* Deferred.make<void>(),
+              };
+              if (calls.has(invocation.id)) return yield* failed();
+              yield* Effect.acquireRelease(
+                Effect.sync(() => {
+                  calls.set(invocation.id, handle);
                 }),
-            );
-            return yield* Effect.raceFirst(
-              invoke(invocation, load, elicitation, workflows),
-              Deferred.await(handle.cancel).pipe(Effect.andThen(Effect.interrupt)),
-            );
-          }),
+                () =>
+                  Effect.gen(function* () {
+                    calls.delete(invocation.id);
+                    yield* Deferred.succeed(handle.done, undefined);
+                  }),
+              );
+              const started = yield* Clock.currentTimeNanos;
+              let waitMs = 0;
+              const result = yield* Effect.raceFirst(
+                invoke(invocation, load, elicitation, workflows, (ms) => {
+                  waitMs += ms;
+                }),
+                Deferred.await(handle.cancel).pipe(Effect.andThen(Effect.interrupt)),
+              );
+              const elapsedMs = Number((yield* Clock.currentTimeNanos) - started) / 1_000_000;
+              return { ...result, timing: { elapsedMs, waitMs } };
+            }),
+          ),
         ),
       cancel: (id: string) =>
-        Effect.gen(function* () {
-          const handle = calls.get(id);
-          if (handle === undefined) return;
-          yield* Deferred.succeed(handle.cancel, undefined);
-          yield* Deferred.await(handle.done);
-        }),
+        enter(
+          Effect.gen(function* () {
+            const handle = calls.get(id);
+            if (handle === undefined) return;
+            yield* Deferred.succeed(handle.cancel, undefined);
+            yield* Deferred.await(handle.done);
+          }),
+        ),
       initial: (socket: WebSocket) =>
-        metadata.withPermits(1)(
-          Effect.flatMap(revision, (current) =>
-            Effect.try({ try: () => send(socket, current), catch: failed }),
+        enter(
+          metadata.withPermits(1)(
+            Effect.flatMap(revision, (current) =>
+              Effect.try({ try: () => send(socket, current), catch: failed }),
+            ),
           ),
         ),
       subscribe: (socket: WebSocket) =>
-        metadata.withPermits(1)(
-          Effect.gen(function* () {
-            const current = yield* revision;
-            yield* Effect.try({
-              try: () => {
-                state.acceptWebSocket(socket);
-                send(socket, current);
-              },
-              catch: failed,
-            });
-          }),
+        enter(
+          metadata.withPermits(1)(
+            Effect.gen(function* () {
+              const current = yield* revision;
+              yield* Effect.try({
+                try: () => {
+                  state.acceptWebSocket(socket);
+                  send(socket, current);
+                },
+                catch: failed,
+              });
+            }),
+          ),
         ),
-      recover,
+      recover: enter(recover),
     };
   });
 

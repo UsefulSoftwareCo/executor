@@ -1,5 +1,5 @@
 /**
- * An `effect/unstable/cli` command tree for migrations, mirroring upstream
+ * An `effect/cli` command tree for migrations, mirroring upstream
  * fumadb's CLI: `migrate:up`, `migrate:down`, `migrate:to [version]`
  * (alias `migrate`), and `generate [version] --output <path>`.
  *
@@ -8,9 +8,9 @@
  */
 import { Clock, Console, Effect, FileSystem, Option, Path, type Terminal } from "effect";
 import type { PlatformError } from "effect/PlatformError";
-import { Argument, Command, Flag, Prompt } from "effect/unstable/cli";
-import type * as CliError from "effect/unstable/cli/CliError";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { Argument, Command, Flag, Prompt } from "effect/cli";
+import type * as CliError from "effect/cli/CliError";
+import type { SqlError } from "effect/sql/SqlError";
 import { MigrationError } from "../contracts/errors.ts";
 import type { FumaDB } from "../index.ts";
 import type { Migrator } from "../contracts/migration.ts";
@@ -39,7 +39,7 @@ export type FumaDBCliServices = FileSystem.FileSystem | Path.Path | Terminal.Ter
 /**
  * The root command of a FumaDB CLI, plus a ready-to-run program.
  *
- * `command` is the `effect/unstable/cli` command tree. Compose it into a larger
+ * `command` is the `effect/cli` command tree. Compose it into a larger
  * CLI with `Command.withSubcommands`, or run it directly with `run`.
  */
 export interface FumaDBCli<R> {

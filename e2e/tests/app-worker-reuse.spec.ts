@@ -5,7 +5,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -28,7 +28,7 @@ import {
   RunObservation,
 } from "../support/worker-observer.ts";
 import { scenarios } from "../test-plan.ts";
-import { appsManifest } from "../support/apps-release.ts";
+import { appsManifest, databaseFiles } from "../support/apps-release.ts";
 
 /** Token renewals and workflow runs, each a single request to the product. */
 const rounds = 50;
@@ -104,6 +104,7 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
     const app = yield* deploy(name, [
       { path: "index.ts", content: observerApp({ name, ...options }) },
       appsManifest,
+      ...databaseFiles(options.database),
     ]);
     const path = `${prefix}/apps/${app.id}`;
     const submit = (connection: string, token: string) =>
@@ -133,13 +134,17 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
         return { profile: profile.id, account };
       });
     /** Replace the saved credential of the same account, as a user's key rotation does. */
-    const rotate = (account: string, token: string) =>
+    const rotate = (
+      selected: { readonly profile: string; readonly account: string },
+      token: string,
+    ) =>
       Effect.gen(function* () {
-        const reconnect = yield* api.request(
-          actors.owner,
-          "POST",
-          `${prefix}/accounts/${account}/connections`,
-        );
+        const { profile, account } = selected;
+        const reconnect = yield* api.request(actors.owner, "POST", `${path}/connections`, {
+          requirement: "service",
+          profile,
+          account,
+        });
         expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(200);
         expect((yield* submit((yield* body(Resource, reconnect)).id, token)).id).toBe(account);
       });
@@ -196,7 +201,7 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
         expect(observed[0]).toMatchObject({ previous: null, token: "synthetic-rotation-0" });
         for (let round = 1; round <= rotations; round++) {
           const token = `synthetic-rotation-${round}`;
-          yield* rotate(first.account, token);
+          yield* rotate(first, token);
           const current = yield* observe(app.id, first.profile);
           // Every call receives the current credential, never one captured by an earlier call.
           expect(current.token).toBe(token);

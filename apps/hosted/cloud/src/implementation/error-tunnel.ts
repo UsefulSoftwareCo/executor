@@ -10,12 +10,12 @@ import {
   HttpIncomingMessage,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 
 const Settings = Schema.Struct({
   localTest: Schema.optional(Schema.Literal(true)),
   browserDsn: Schema.String,
-  tunnel: Schema.String.check(Schema.isPattern(/^\/api\/[a-f0-9]{16}\/submit$/)),
+  tunnel: Schema.String.check(Schema.isPattern(/^\/api\/[a-f0-9]{16}\/submit$/u)),
 });
 const Header = Schema.fromJsonString(Schema.Struct({ dsn: Schema.String }));
 

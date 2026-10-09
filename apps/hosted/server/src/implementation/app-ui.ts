@@ -11,6 +11,7 @@ import {
   AccountNotFound,
   AccountSelectionInvalid,
   OAuthReconnectRequired,
+  AppNotDeployed,
   AppNotFound,
   credentialsRejected,
   profileAccountProblems,
@@ -41,11 +42,12 @@ import {
 } from "apps/ui/contracts";
 import { appAsset, appDocument, appWatchScript } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
-import { currentTraceContext } from "@executor-js/telemetry";
+import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
 import { Clock, Context, Effect, Option, Redacted, Schema, Stream } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  AppUiUnavailable,
   HostedAppRuntime,
   HostedAppSessions,
   HostedAppUiApi,
@@ -74,6 +76,12 @@ class CurrentAppUi extends Context.Service<
 >()("hosted/CurrentAppUi") {}
 
 const unavailable = () => new UiFailed({ reason: "unavailable" });
+/** Anonymous fetches cannot serve app content; browser navigations still start sign-in. */
+const anonymousNonNavigation = (request: HttpServerRequest.HttpServerRequest, cookieName: string) =>
+  (request.method === "GET" || request.method === "HEAD") &&
+  request.headers["sec-fetch-mode"] !== "navigate" &&
+  !request.headers.accept?.includes("text/html") &&
+  !Object.hasOwn(request.cookies, cookieName);
 const accountIds = (accounts: SelectedAccounts) =>
   Object.values(accounts).flatMap((value) => (typeof value === "string" ? [value] : value));
 const privateJson = (value: unknown, status = 200) =>
@@ -279,18 +287,33 @@ export const hostedAppUi = <R = never>(
     handlers.handle("location", ({ params }) =>
       Effect.gen(function* () {
         const access = yield* CurrentOrganization;
-        yield* requireAppAccess(params.app, "use").pipe(Effect.mapError(() => new UiForbidden()));
-        const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
-        const app = yield* executor.apps
-          .get({ owner: access.owner, app: params.app })
-          .pipe(Effect.mapError(unavailable));
-        const version = yield* deployment(app);
-        if (!addresses.enabled || (yield* assets(version, "index.html")) === undefined)
+        // Missing and inaccessible apps fail alike, before the app is read.
+        yield* requireAppAccess(params.app, "use");
+        const executor = yield* Effect.flatten(HostedExecutor);
+        const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
+        if (app.activeDeployment === null) return yield* new AppNotDeployed({ app: app.id });
+        const version = yield* executor.apps.deployment({
+          owner: app.owner,
+          app: app.id,
+          deployment: app.activeDeployment,
+          deploymentOwner: app.owner,
+        });
+        // The build, organization and domain reads below fail only when their records are unavailable.
+        const page = yield* assets(version, "index.html").pipe(
+          Effect.mapError(() => new AppUiUnavailable()),
+        );
+        if (!addresses.enabled || page === undefined)
           return { status: "unavailable" as const, url: null };
         const sessions = yield* HostedAppSessions;
-        const organization = yield* sessions.organization({ id: access.organization });
-        const url = yield* addresses.origin(app, organization.slug);
-        const status = yield* domainStatus(organization);
+        const organization = yield* sessions
+          .organization({ id: access.organization })
+          .pipe(Effect.mapError(() => new AppUiUnavailable()));
+        const url = yield* addresses
+          .origin(app, organization.slug)
+          .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
+        const status = yield* domainStatus(organization).pipe(
+          Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
+        );
         return status === "ready" ? { status, url } : { status, url: null };
       }),
     ),
@@ -478,8 +501,13 @@ export const hostedAppUi = <R = never>(
     });
   }).pipe(htmlFailure);
   const page = Effect.gen(function* () {
-    const resolved = yield* target;
+    // The app chose its pages' paths.
+    yield* recordRoute("/:page");
     const request = yield* HttpServerRequest.HttpServerRequest;
+    const host = addresses.fromHost(request.headers.host);
+    if (Option.isSome(host) && anonymousNonNavigation(request, sessionCookie(host.value.origin)))
+      return yield* new UiForbidden();
+    const resolved = yield* target;
     const navigation =
       request.method === "GET" &&
       (request.headers["sec-fetch-mode"] === "navigate" ||
@@ -666,6 +694,8 @@ export const hostedAppUi = <R = never>(
     htmlFailure,
   );
   const asset = Effect.gen(function* () {
+    // The app's build chose its assets' file names.
+    yield* recordRoute("/_executor/assets/:deployment/:asset");
     const current = yield* authorize;
     const params = yield* HttpRouter.schemaPathParams(
       Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),

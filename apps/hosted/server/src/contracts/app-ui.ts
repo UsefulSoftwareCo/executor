@@ -1,12 +1,22 @@
 /** Hosted app pages use scoped sessions, independent of dashboard and management API credentials. */
 import { defaultUrlPolicy, parseEndpoint } from "@executor-js/utils/url-policy";
-import { AppId, HttpUrl, type Runtime } from "@executor-js/sdk/core";
+import { ApiError } from "@executor-js/utils/api-error";
+import {
+  AppId,
+  AppNotDeployed,
+  AppNotFound,
+  DeploymentNotFound,
+  HttpUrl,
+  StorageError,
+  type Runtime,
+} from "@executor-js/sdk/core";
 import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
 import { Context, type Effect, Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { Principal } from "./auth.ts";
 import {
+  OrganizationForbidden,
   OrganizationId,
   OrganizationReference,
   OrganizationSlug,
@@ -44,14 +54,26 @@ export type AppUiBaseUrl = typeof AppUiBaseUrl.Type;
 /** One DNS label; the app and team are separate labels. */
 export const AppUiHostnameLabel = Schema.String.check(
   Schema.isMaxLength(63),
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u),
 ).pipe(Schema.brand("AppUiHostnameLabel"));
 /** App and organization names cannot be silently shortened or changed to create a browser origin. */
-export class AppUiAddressInvalid extends Schema.TaggedError<AppUiAddressInvalid>()(
-  "AppUiAddressInvalid",
-  { reason: Schema.Literals(["too_long", "invalid_slug"]) },
-  { httpApiStatus: 422 },
-) {}
+export const AppUiAddressInvalid = ApiError.define({
+  tag: "AppUiAddressInvalid",
+  status: 422,
+  fields: { reason: Schema.Literals(["too_long", "invalid_slug"]) },
+  message: ({ reason }) =>
+    reason === "too_long"
+      ? "The app or organization name makes the app's address longer than a DNS name allows. Shorten one of them."
+      : "The app or organization name cannot form a valid app address. Rename one of them.",
+});
+export type AppUiAddressInvalid = typeof AppUiAddressInvalid.Type;
+/** The app's page address could not be resolved because its build or domain records could not be read. */
+export const AppUiUnavailable = ApiError.define({
+  tag: "AppUiUnavailable",
+  status: 503,
+  message: "Executor could not read the app's page build or domain right now. Try again.",
+});
+export type AppUiUnavailable = typeof AppUiUnavailable.Type;
 /** Domain readiness is separate from app deployment and authorization. A pending domain has no usable link. */
 export const AppUiLocation = Schema.Union([
   Schema.Struct({ status: Schema.Literal("ready"), url: HttpUrl }),
@@ -150,11 +172,19 @@ export const HostedAppUi = HttpApiGroup.make("appUi").add(
   HttpApiEndpoint.get("location", "/api/organizations/:organization/apps/:app/ui", {
     params: { organization: OrganizationReference, app: AppId },
     success: AppUiLocation,
-    error: [UiForbidden, UiFailed, AppUiAddressInvalid],
+    error: [
+      OrganizationForbidden,
+      StorageError,
+      AppNotFound,
+      AppNotDeployed,
+      DeploymentNotFound,
+      AppUiAddressInvalid,
+      AppUiUnavailable,
+    ],
   })
     .annotate(
       OpenApi.Description,
-      "Get the canonical private app URL. Returns null when the app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
+      "Get the canonical private app URL. Fails with AppNotDeployed until the app's first deployment. Returns null when the deployed app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
     )
     .middleware(RequireOrganization),
 );

@@ -1,7 +1,7 @@
 /** Local setup has the paired dashboard's authority and one fixed local subject. */
 import type { Executor } from "@executor-js/sdk/core";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { DashboardApi } from "../contracts/dashboard.ts";
 /** All execution mechanisms use these same durable account bindings. */
 export const localProfileHandlers = (executor: Executor) =>

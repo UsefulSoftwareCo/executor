@@ -15,15 +15,17 @@
     "./complete-document": "./src/implementation/complete-document.tsx",
     "./batch": "./src/contracts/batch.ts",
     "./batch-host": "./src/implementation/batch-host.ts",
-    "./batch-browser": "./src/implementation/batch-browser.ts"
+    "./batch-browser": "./src/implementation/batch-browser.ts",
+    "./document-build": "./src/implementation/document-build.ts"
   },
   "dependencies": {
-    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/atom-react": "4.0.1",
+    "@effect/platform-node": "4.0.1",
     "@executor-js/ui": "workspace:*",
+    "@executor-js/utils": "workspace:*",
     "@tanstack/react-router": "1.170.41",
     "@tanstack/react-start": "1.168.60",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "effect": "4.0.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

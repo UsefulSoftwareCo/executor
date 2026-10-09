@@ -1,6 +1,6 @@
 /** Serve TanStack Start documents from a host's Effect HTTP server. */
 import { Effect, Option, Schema } from "effect";
-import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { DocumentApi } from "../contracts/document.ts";
 import { inProcessApi } from "./in-process.ts";
 

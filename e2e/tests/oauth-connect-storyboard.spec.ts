@@ -391,16 +391,34 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
         )).accounts.find((account) => account.label === "Work reports")?.id;
         if (accountId === undefined) return yield* Effect.die("The saved account is missing");
-        const accountsPath = `/org/${actors.organization.slug}/accounts`;
+        const [profile] = yield* body(
+          Schema.Array(Schema.Struct({ id: Schema.String })),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles`),
+        );
+        if (profile === undefined) return yield* Effect.die("The connected profile is missing");
+        // Credentials are replaced only through an app that selects the account.
         const onAccount = (url: URL) =>
-          url.pathname === accountsPath && url.searchParams.get("account") === accountId;
+          url.pathname === `/org/${actors.organization.slug}/apps/${app.id}` &&
+          url.searchParams.get("view") === "accounts" &&
+          url.searchParams.get("profile") === profile.id;
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/accounts/${accountId}`).pipe(Effect.orDie),
         );
-        const reconnect = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/accounts/${accountId}/connections`),
-        );
+        const reconnectAccount = () =>
+          Effect.flatMap(
+            api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
+              requirement: "service",
+              profile: profile.id,
+              account: accountId,
+            }),
+            (response) => body(Resource, response),
+          );
+        const reconnect = yield* reconnectAccount();
+        // There is no reconnect outside an app.
+        expect(
+          (yield* api.request(actors.owner, "POST", `${prefix}/accounts/${accountId}/connections`))
+            .status,
+        ).toBe(404);
         const connectionUrl = `/org/${actors.organization.slug}/connections/${reconnect.id}`;
         const connectionLoading = yield* holdQuery(
           paths(`/connections/${reconnect.id}`),
@@ -416,7 +434,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         yield* capture("Connection-link-loading");
         yield* connectionLoading.release;
         yield* ready("Reconnect Sample service");
-        yield* browser.use("A direct reconnect link opens over its saved account", (page) =>
+        yield* browser.use("A reconnect link opens over its app's accounts", (page) =>
           page.waitForURL(
             (url) => onAccount(url) && url.searchParams.get("connection") === reconnect.id,
           ),
@@ -431,11 +449,11 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         yield* browser.use("Close the direct-link modal", (page) =>
           page.getByRole("dialog").press("Escape"),
         );
-        yield* browser.use("Closing a direct link returns to the saved account", (page) =>
+        yield* browser.use("Closing a reconnect link stays on the app's accounts", (page) =>
           page.waitForURL((url) => onAccount(url) && !url.searchParams.has("connection")),
         );
         expect(
-          yield* browser.use("The account list has no remaining modal", (page) =>
+          yield* browser.use("The app's accounts have no remaining modal", (page) =>
             page.getByRole("dialog").count(),
           ),
         ).toBe(0);
@@ -504,10 +522,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           page.getByRole("dialog").getByText("Account connected.", { exact: true }).waitFor(),
         );
         yield* capture("Completed-connection-link");
-        const cancelled = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/accounts/${accountId}/connections`),
-        );
+        const cancelled = yield* reconnectAccount();
         yield* browser.use("Open a cancellable attempt", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${cancelled.id}`),
         );
@@ -667,12 +682,12 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         expect(yield* label(first)).toBe("Default");
         yield* browser.checkpoint("Named OAuth account in the app");
 
-        const reconnect = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/accounts/${second}/connections`),
+        // Credentials are replaced from the app that selects the account, through its menu.
+        yield* browser.use("Open the selected account's menu", (page) =>
+          page.getByRole("button", { name: "Manage Work reports", exact: true }).click(),
         );
-        yield* browser.use("Open the reconnect link", (page) =>
-          page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
+        yield* browser.use("Choose Reconnect", (page) =>
+          page.getByRole("menuitem", { name: "Reconnect", exact: true }).click(),
         );
         yield* browser.use("Reconnect the named account", (page) =>
           page
@@ -680,15 +695,23 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
             .getByRole("button", { name: "Reconnect Sample service", exact: true })
             .click(),
         );
-        yield* browser.use("Allow access again", (page) =>
-          page.getByRole("button", { name: "Allow access", exact: true }).click(),
+        const reconnected = yield* browser.use("Allow access again", (page) =>
+          Promise.all([
+            page.waitForResponse(
+              (response) =>
+                response.request().method() === "POST" &&
+                /\/connections\/[^/]+\/oauth\/complete$/.test(new URL(response.url()).pathname),
+            ),
+            page.getByRole("button", { name: "Allow access", exact: true }).click(),
+          ]).then(([response]) => response.json() as Promise<unknown>),
         );
-        yield* browser.use("A reconnect returns to its account", (page) =>
+        expect(
+          (yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(reconnected)).id,
+        ).toBe(second);
+        yield* browser.use("A reconnect returns to the app's accounts", (page) =>
           page
             .waitForURL(
-              (url) =>
-                url.pathname === `/org/${actors.organization.slug}/accounts` &&
-                url.searchParams.get("account") === second,
+              (url) => url.pathname === appPath && url.searchParams.get("view") === "accounts",
             )
             .then(() =>
               page.getByRole("button", { name: "Manage Work reports", exact: true }).waitFor(),
@@ -701,6 +724,22 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         ).toBe(0);
         expect(yield* label(second)).toBe("Work reports");
         yield* browser.checkpoint("Reconnected account keeps its name");
+        // The Accounts page manages saved accounts but never takes credentials.
+        yield* browser.use("Open the account's menu on Accounts", (page) =>
+          page
+            .goto(`/org/${actors.organization.slug}/accounts`)
+            .then(() =>
+              page.getByRole("button", { name: "Manage Work reports", exact: true }).click(),
+            )
+            .then(() =>
+              page.getByRole("menuitem", { name: "Edit details", exact: true }).waitFor(),
+            ),
+        );
+        expect(
+          yield* browser.use("Accounts offers no reconnect", (page) =>
+            page.getByRole("menuitem", { name: /^(Reconnect|Update credentials)$/ }).count(),
+          ),
+        ).toBe(0);
       }),
     ),
   );

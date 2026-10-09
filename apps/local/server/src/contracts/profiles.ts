@@ -13,7 +13,7 @@ import {
   AccountSelectionInvalid,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 const app = { app: AppId };
 const target = { ...app, profile: ProfileId };
 const path = "/dashboard/api/apps/:app/profiles";

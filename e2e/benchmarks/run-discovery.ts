@@ -2,8 +2,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Console, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
-import { Command, Flag } from "effect/unstable/cli";
+import { FetchHttpClient } from "effect/http";
+import { Command, Flag } from "effect/cli";
 import { randomBytes } from "node:crypto";
 import { fixtureRequest, FixtureControl, FixtureActors } from "../sdk/fixtures.ts";
 import { Target } from "../support/platform.ts";

@@ -1,11 +1,13 @@
 /** Public host adapter. No product auth, server listener or app-authored routes. */
-import { Effect, Schema, Scheduler } from "effect";
+import { Clock, Effect, Schema, Scheduler } from "effect";
 import { collectTelemetry, withRemoteSpan } from "@executor-js/telemetry";
 import {
   HostAccountsInvalid,
   HostInputInvalid,
   HostResponse,
+  InvocationTimingSink,
   TrustedToolApproval,
+  type InvocationTiming,
   ResolvedAccounts,
   type HostContext,
   type ResolvedAccountsInput,
@@ -54,19 +56,36 @@ export const createAppHandler = (
   };
 };
 
+/**
+ * The clock this framework's spans read, in nanoseconds. The runtime's bridge times the isolate's
+ * whole dispatch with it, so that time and the invocation's own timing share one clock.
+ */
+export const isolatedClock = (): bigint => Effect.runSync(Clock.currentTimeNanos);
+
 /** Isolates return bounded, telemetry beside the protocol result; no exporter secret enters app code. */
 export const createIsolatedAppHandler = (app: unknown) => {
   const handler = createNativeHandler(app);
   return (request: Request, context: HostContext): Promise<Response> =>
     Effect.runPromise(
       Effect.gen(function* () {
+        let timing: InvocationTiming | undefined;
         const { value, telemetry } = yield* collectTelemetry(
-          handler(request, context).pipe(withRemoteSpan(request, "app.dispatch")),
+          handler(request, context).pipe(
+            withRemoteSpan(request, "app.dispatch"),
+            Effect.provideService(InvocationTimingSink, (reported) => {
+              timing = reported;
+            }),
+          ),
         );
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- the app isolate's HTTP response
         const body = yield* Effect.promise(() => value.json()).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(HostResponse)),
         );
-        return Response.json({ ...body, telemetry }, { status: value.status });
+        // Timing is an additive transport field, like telemetry; hosts that predate it ignore it.
+        return Response.json(
+          { ...body, telemetry, ...(timing === undefined ? {} : { timing }) },
+          { status: value.status },
+        );
       }),
       {
         signal: request.signal,
@@ -88,6 +107,7 @@ export const isolatedElicitation =
     lifetime: AbortController,
   ): ElicitationHandler =>
   (request) =>
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's elicitation RPC
     Effect.tryPromise({
       try: () => deliver(request),
       catch: () => {

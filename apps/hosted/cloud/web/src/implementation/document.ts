@@ -2,11 +2,13 @@ import { hostedServerValues } from "@executor-js/hosted-web/document";
 import { entryOrganizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { getGlobalStartContext } from "@tanstack/react-start";
 import { Option, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { OnboardingReady } from "../../../src/contracts/onboarding.ts";
 import type { CloudDocumentContext } from "../contracts/document.ts";
 import { entryTeamAtom } from "../contracts/onboarding.ts";
-import { betaNoticeDismissedAtom } from "../contracts/beta-notice.ts";
+import { formerPasskeyHostAtom } from "../contracts/auth.ts";
+import { documentationBaseAtom } from "@executor-js/hosted-web/contracts/documentation";
+import { documentPasskeyEnrollmentAtom } from "../contracts/passkey-enrollment.ts";
 
 /** Server only: the context the Worker passed with this document request. */
 export const serverDocument = (): CloudDocumentContext => {
@@ -21,11 +23,19 @@ export const cloudServerValues = (document: CloudDocumentContext) => {
   const entry = document.entry;
   const shared = [
     ...hostedServerValues(document),
-    Atom.initialValue(betaNoticeDismissedAtom, document.betaNoticeDismissed),
+    Atom.initialValue(formerPasskeyHostAtom, document.formerPasskeyHost),
+    Atom.initialValue(documentationBaseAtom, document.documentation),
   ];
-  if (entry === null || entry.session === null || entry.onboarding === null) return shared;
+  if (entry === null || entry.session === null) return shared;
+  // The Worker read the browser's enrollment cookie; the page cannot read it on the server.
+  const enrollment = Atom.initialValue(
+    documentPasskeyEnrollmentAtom(entry.session.user.id),
+    Option.some(entry.passkeyEnrollment),
+  );
+  if (entry.onboarding === null) return [...shared, enrollment];
   return [
     ...shared,
+    enrollment,
     Atom.initialValue(
       entryOrganizationsAtom,
       Option.some(

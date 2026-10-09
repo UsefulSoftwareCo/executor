@@ -2,9 +2,11 @@
  * The app runner behind a Workers RPC boundary. A host whose own Worker cannot run app code calls
  * the runner in another Worker: the invocation and results cross as JSON, and the invocation's
  * capabilities cross as RPC callbacks. Effect-based workflow capabilities become callbacks that
- * return encoded `WorkflowRpcResult`s, and are rebuilt on the runner's side.
+ * return encoded `WorkflowRpcResult`s, and are rebuilt on the runner's side. The invocation names
+ * its build, and the runner's Worker reads it from its own store.
  */
 import { Cause, Effect, Redacted, Schema } from "effect";
+import { withRemoteSpan } from "@executor-js/telemetry";
 import {
   ResolvedAccounts,
   WorkflowDuration,
@@ -14,10 +16,17 @@ import {
   WorkflowStepOptions,
   type WorkflowExecution,
 } from "apps/contracts";
-import { RuntimeProtocolFailed } from "../contracts/runtime.ts";
+import {
+  RuntimeFailure,
+  RuntimeProtocolFailed,
+  RuntimeProtocolUnsupported,
+  type RuntimeBuildUnavailable,
+} from "../contracts/runtime.ts";
+import { BuildId } from "../contracts/shared.ts";
 import { LoadedWorkerBuild } from "../contracts/worker-build.ts";
 import { WorkerInvocation } from "../contracts/workerd-host.ts";
 import type { AppCapabilities, AppInvocation, AppRunner } from "./app-runner.ts";
+import { invocationBuildLoader } from "./app-runtime.ts";
 
 type Callback = (input: unknown) => Promise<unknown>;
 
@@ -34,8 +43,12 @@ export interface RemoteWorkflow {
 
 /** An invocation's capabilities as RPC callbacks; see {@link AppCapabilities}. */
 export interface RemoteCapabilities {
-  /** The invocation's encoded build, read only on a cold start. */
-  readonly load: () => Promise<string>;
+  /**
+   * The invocation's encoded build. Runners that read builds by ID never call it; callers still
+   * send it so that an older runner, which reads builds only through it, keeps working during a
+   * rollout or rollback. A later release stops sending it.
+   */
+  readonly load?: () => Promise<string>;
   readonly elicit: Callback | null;
   readonly controls: Callback | null;
   readonly workflow: RemoteWorkflow | null;
@@ -50,7 +63,14 @@ export type RemoteAppRunner<Result> = {
 const RemoteResult = Schema.fromJsonString(
   Schema.Union([
     Schema.Struct({ ok: Schema.Literal(true), value: Schema.Json }),
-    Schema.Struct({ ok: Schema.Literal(false), message: Schema.optionalKey(Schema.String) }),
+    Schema.Struct({
+      ok: Schema.Literal(false),
+      reason: Schema.optionalKey(RuntimeFailure),
+      /** Only a declaration failure's text, for the deployer. */
+      message: Schema.optionalKey(Schema.String),
+      /** The build's protocol is one this runner does not run; only its load finds that out. */
+      unsupported: Schema.optionalKey(RuntimeProtocolUnsupported),
+    }),
   ]),
 );
 const encodedInvocation = Schema.fromJsonString(WorkerInvocation);
@@ -161,8 +181,8 @@ export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortS
     } satisfies RemoteCapabilities;
   });
 
-/** The runner's side: the invocation's capabilities over the caller's callbacks. */
-const localCapabilities = (remote: RemoteCapabilities) =>
+/** The runner's side: the invocation's capabilities over the caller's callbacks and its build. */
+const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<LoadedWorkerBuild>) =>
   Effect.gen(function* () {
     const services = yield* Effect.context<never>();
     const workflow = remote.workflow;
@@ -194,7 +214,7 @@ const localCapabilities = (remote: RemoteCapabilities) =>
             invoke: (input) => settle(() => workflow.invoke(input)),
           };
     return {
-      load: async () => Schema.decodeUnknownSync(encodedBuild)(await remote.load()),
+      load,
       elicit: remote.elicit,
       controls: remote.controls,
       ...(execution === undefined ? {} : { workflow: execution }),
@@ -206,29 +226,51 @@ const answer = (effect: Effect.Effect<unknown, unknown>) =>
     Effect.map((value) => ({ ok: true as const, value })),
     Effect.catchCause((cause) => {
       const error = Cause.squash(cause);
+      if (Schema.is(RuntimeProtocolUnsupported)(error))
+        return Effect.succeed({ ok: false as const, unsupported: error });
+      if (!Schema.is(RuntimeProtocolFailed)(error)) return Effect.succeed({ ok: false as const });
       return Effect.succeed({
         ok: false as const,
-        ...(Schema.is(RuntimeProtocolFailed)(error) && error.message !== undefined
-          ? { message: error.message }
-          : {}),
+        ...(error.reason === undefined ? {} : { reason: error.reason }),
+        ...(error.message ? { message: error.message } : {}),
       });
     }),
     Effect.flatMap(Schema.encodeUnknownEffect(RemoteResult)),
     Effect.orDie,
   );
 
-/** Serve the runner's Worker side of the boundary. */
-export const serveAppRunner = (runner: AppRunner): RemoteAppRunner<Effect.Effect<string>> => ({
+/**
+ * Serve the runner's Worker side of the boundary. `read` loads a build from this Worker's own
+ * store, so a build never crosses the boundary from the caller.
+ */
+export const serveAppRunner = (
+  runner: AppRunner,
+  read: (build: BuildId) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable>,
+): RemoteAppRunner<Effect.Effect<string>> => ({
   invoke: (invocation, capabilities) =>
     answer(
-      Effect.gen(function* () {
-        const {
-          elicitation: _elicitation,
-          workflowControls: _controls,
-          ...decoded
-        } = yield* Schema.decodeUnknownEffect(encodedInvocation)(invocation);
-        return yield* runner.invoke(decoded, yield* localCapabilities(capabilities));
-      }).pipe(Effect.ensuring(Effect.sync(() => releaseCapabilities(capabilities)))),
+      Effect.scoped(
+        Effect.gen(function* () {
+          const {
+            elicitation: _elicitation,
+            workflowControls: _controls,
+            ...decoded
+          } = yield* Schema.decodeUnknownEffect(encodedInvocation)(invocation);
+          const build = yield* Schema.decodeUnknownEffect(BuildId)(decoded.build);
+          // The caller's trace context travels in the invocation's headers; the runner's spans join it.
+          return yield* Effect.gen(function* () {
+            const loader = yield* invocationBuildLoader(decoded, read(build));
+            return yield* loader.refused(
+              runner.invoke(decoded, yield* localCapabilities(capabilities, loader.load)),
+            );
+          }).pipe(
+            withRemoteSpan(
+              new Request("https://app-runner.internal", { headers: decoded.headers }),
+              "runtime.app.serve",
+            ),
+          );
+        }),
+      ).pipe(Effect.ensuring(Effect.sync(() => releaseCapabilities(capabilities)))),
     ),
   declare: (bundle, headers) =>
     answer(
@@ -243,14 +285,18 @@ const result = <E>(effect: Effect.Effect<string, E>) =>
     Effect.mapError(() => new RuntimeProtocolFailed()),
     Effect.flatMap(Schema.decodeUnknownEffect(RemoteResult)),
     Effect.mapError(() => new RuntimeProtocolFailed()),
-    Effect.flatMap((reply) =>
-      reply.ok
-        ? Effect.succeed(reply.value)
-        : Effect.fail(
-            new RuntimeProtocolFailed(
-              reply.message === undefined ? {} : { message: reply.message },
-            ),
-          ),
+    Effect.flatMap(
+      (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
+        reply.ok
+          ? Effect.succeed(reply.value)
+          : reply.unsupported !== undefined
+            ? Effect.fail(reply.unsupported)
+            : Effect.fail(
+                new RuntimeProtocolFailed({
+                  ...(reply.reason === undefined ? {} : { reason: reply.reason }),
+                  ...(reply.message === undefined ? {} : { message: reply.message }),
+                }),
+              ),
     ),
   );
 

@@ -10,8 +10,8 @@ import {
 } from "@executor-js/local-server/contracts";
 import type { AppId, DeploymentId, Json, ProfileId, ToolName } from "@executor-js/sdk";
 import { Cause, Clock, Data, Effect, Option, Schedule, Schema, Stream } from "effect";
-import { HttpClientError } from "effect/unstable/http";
-import { AsyncResult, Atom, AtomHttpApi } from "effect/unstable/reactivity";
+import { HttpClientError } from "effect/http";
+import { AsyncResult, Atom, AtomHttpApi } from "effect/reactivity";
 import { accountNeedsSignIn } from "./dashboard.ts";
 import { acknowledgedQuery, currentQuery } from "@executor-js/ui/contracts/mutations";
 

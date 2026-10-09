@@ -10,7 +10,7 @@ import {
   type BrowserApprovals,
 } from "@executor-js/mcp/browser";
 import { Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 
@@ -58,7 +58,7 @@ export const localMcpApproval = (
         view.request.status === "approval-required" ? view.request.invocation : view.request.tool;
       // The same grant checks as the MCP route, including runs-as targets and read-only tools.
       const allowed = yield* restrictMcpBackend<Error, never>(
-        localMcpBackend(executor),
+        localMcpBackend(executor, grant.id),
         Effect.succeed(grant),
       )
         .authorizeElicitation(tool)

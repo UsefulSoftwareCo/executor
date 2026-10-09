@@ -4,13 +4,13 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Console, Effect, FileSystem, Layer, Path, Schema } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 import {
   HttpRouter,
   HttpServerRespondable,
   HttpServerResponse,
   HttpStaticServer,
-} from "effect/unstable/http";
+} from "effect/http";
 
 const command = Command.make("e2e-report", {
   directory: Flag.String("directory"),

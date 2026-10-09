@@ -1,4 +1,4 @@
-/** Members manage their own connections; apps, profiles and accounts use the same access checks as calls. */
+/** Members manage their own connections and connected agents; apps, profiles and accounts use the same access checks as calls. */
 import {
   bareAccountProfileKey,
   bareAccountSelection,
@@ -13,7 +13,7 @@ import { mcpResource } from "@executor-js/mcp-auth";
 import type { RunTarget } from "@executor-js/authorization";
 import type { App, Executor, OwnerId } from "@executor-js/sdk/core";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
@@ -101,7 +101,12 @@ const resolveApp = (
     const unique = [...new Map(runsAs.map((target) => [targetKey(target), target])).values()];
     const [first, ...rest] = unique;
     if (first === undefined) return yield* invalid("target");
-    return { app: app.id, runsAs: [first, ...rest], tools: input.tools } satisfies ConnectionApp;
+    return {
+      app: app.id,
+      runsAs: [first, ...rest],
+      tools: input.tools,
+      ...(input.events === undefined ? {} : { events: input.events }),
+    } satisfies ConnectionApp;
   });
 
 const resolvePolicy = (connection: ConnectionId, apps: readonly ConnectionAppInput[]) =>
@@ -125,7 +130,7 @@ export const hostedMcpConnectionHandlers = HttpApiBuilder.group(
       const auth = yield* McpAuthentication;
       const view = (connection: Connection) => ({
         ...connection,
-        url: mcpResource(auth.origin, { mode: "model", connection: connection.id }),
+        url: mcpResource(auth.resourceOrigins.mcp[0], { mode: "model", connection: connection.id }),
       });
       return handlers
         .handle("list", () =>
@@ -163,6 +168,12 @@ export const hostedMcpConnectionHandlers = HttpApiBuilder.group(
         )
         .handle("revoke", ({ params }) =>
           Effect.flatMap(owner, (current) => auth.connections.revoke(current, params.connection)),
+        )
+        .handle("agents", () =>
+          Effect.flatMap(owner, (current) => auth.connections.agents(current)),
+        )
+        .handle("revokeAgent", ({ params }) =>
+          Effect.flatMap(owner, (current) => auth.connections.revokeAgent(current, params.agent)),
         );
     }),
 );

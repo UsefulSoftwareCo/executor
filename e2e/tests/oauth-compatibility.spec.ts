@@ -1,7 +1,7 @@
 /** Exercise the real registration, encrypted attempt, callback and account-save boundaries. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -17,6 +17,11 @@ const SetupFailure = Schema.Struct({
   _tag: Schema.Literal("OAuthSetupFailed"),
   reason: Schema.String,
   callbackUrl: Schema.optional(Schema.String),
+  message: Schema.String,
+  recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
+  serviceError: Schema.optional(
+    Schema.Struct({ error: Schema.String, description: Schema.optional(Schema.String) }),
+  ),
 });
 
 layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => {
@@ -165,7 +170,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
               failure.callbackUrl === undefined ? undefined : new URL(failure.callbackUrl).pathname,
               scenario.name,
             ).toBe("/api/oauth/callback");
-            expect(JSON.stringify(started.body)).not.toContain("PRIVATE_PROVIDER_ERROR");
+            // A refusal's own words reach only `serviceError`, never the curated explanation.
+            expect(failure.serviceError?.description, scenario.name).toBe(
+              scenario.registrationStatus === 200 ? undefined : "PRIVATE_PROVIDER_ERROR",
+            );
+            expect(JSON.stringify([failure.message, failure.recovery])).not.toContain(
+              "PRIVATE_PROVIDER_ERROR",
+            );
             expect(JSON.stringify(started.body)).not.toContain("PRIVATE_QUERY");
             continue;
           }

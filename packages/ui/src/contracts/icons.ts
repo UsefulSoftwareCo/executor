@@ -1,4 +1,4 @@
-import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
 import { getDomain } from "tldts";
 import type { CatalogEntry } from "@executor-js/catalog/contracts";

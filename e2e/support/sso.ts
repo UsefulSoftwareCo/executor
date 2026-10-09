@@ -1,6 +1,6 @@
 import { Config, Effect, FileSystem, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient } from "effect/http";
 import { Target } from "./platform.ts";
 import { emulatorRequest } from "./emulators.ts";
 

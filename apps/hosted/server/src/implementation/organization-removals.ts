@@ -1,6 +1,6 @@
 /** Tombstone storage: one row hides an organization from the moment removal is accepted. */
 import { Effect, Schema } from "effect";
-import type { SqlClient } from "effect/unstable/sql";
+import type { SqlClient } from "effect/sql";
 import type { OrganizationId } from "../contracts/organization.ts";
 import {
   OrganizationRemovalRecord,

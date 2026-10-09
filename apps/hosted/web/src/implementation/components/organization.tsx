@@ -1,4 +1,5 @@
 import { usePreload } from "@executor-js/ui/dashboard/context";
+import { useGuardedPreload } from "@executor-js/dashboard-start/registry";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import {
   OrganizationSlug,
@@ -7,11 +8,11 @@ import {
   organizationSlugMaxLength,
 } from "@executor-js/hosted-server/organization";
 import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { type Atom, AsyncResult } from "effect/reactivity";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
-import { Link, Navigate, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, Navigate, useLocation, useMatches, useNavigate } from "@tanstack/react-router";
 import { Cause, Exit, Match, Option, Schema } from "effect";
 import { lastOrganizationAtom, sessionAtom } from "../../contracts/auth.ts";
 import { OrganizationResume } from "../../contracts/navigation.ts";
@@ -68,6 +69,8 @@ const OrganizationRouteContext = createContext<{
   readonly id: OrganizationId | undefined;
   readonly name: string | undefined;
   readonly unavailable: boolean;
+  /** Whether the page may render; see `useGuardedPreload`. */
+  readonly released: boolean;
   readonly metadataFailed: boolean;
   readonly retry: () => void;
 } | null>(null);
@@ -77,8 +80,17 @@ export function useOrganizationRoute() {
   if (value === null) throw new Error("Organization route context is missing");
   return value;
 }
-/** Show only content errors; keep the dashboard and navigation mounted. */
-export function OrganizationContent({ children }: { readonly children: ReactNode }) {
+/**
+ * Show only content errors; keep the dashboard and navigation mounted. A refusal shows itself;
+ * until access succeeds, a server render shows `pending` instead of the page.
+ */
+export function OrganizationContent({
+  children,
+  pending,
+}: {
+  readonly children: ReactNode;
+  readonly pending: ReactNode;
+}) {
   const route = useOrganizationRoute();
   return route.unavailable ? (
     <section className="p-6">
@@ -96,8 +108,10 @@ export function OrganizationContent({ children }: { readonly children: ReactNode
         This organization does not exist or you do not have access.
       </EmptyState>
     </section>
-  ) : (
+  ) : route.released ? (
     children
+  ) : (
+    pending
   );
 }
 /** Native organization settings need verified metadata, but their wait stays inside the page. */
@@ -254,6 +268,37 @@ function useOrganizationQueryReference(routeReference: OrganizationReference) {
   return reference;
 }
 
+/**
+ * The reads an organization page starts with, from its URL alone. A server render waits for the
+ * access check before it renders the page, so without these the page's reads would start only
+ * after access settles. The boundary starts them with the check, and a document whose access
+ * does not succeed carries none of their values. The browser renders the page while access loads
+ * and needs no list.
+ */
+export type OrganizationPageReads = (
+  organization: OrganizationReference,
+  params: Readonly<Record<string, unknown>>,
+) => ReadonlyArray<Atom.Atom<unknown>>;
+
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    /** Started by the organization boundary together with its access check. */
+    readonly organizationReads?: OrganizationPageReads;
+  }
+}
+
+/** The API refused this user the organization, as opposed to failing to answer. */
+const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
+  AsyncResult.isFailure(access) &&
+  Option.match(Cause.findErrorOption(access.cause), {
+    onNone: () => false,
+    onSome: (error) =>
+      Match.value(error).pipe(
+        Match.tag("OrganizationForbidden", "Unauthorized", () => true),
+        Match.orElse(() => false),
+      ),
+  });
+
 /** Start page reads from the URL immediately. Access and organization controls resolve alongside them. */
 export function OrganizationBoundary({
   slug,
@@ -265,7 +310,12 @@ export function OrganizationBoundary({
   const reference = useOrganizationQueryReference(
     Schema.decodeUnknownSync(OrganizationReference)(slug),
   );
+  const matches = useMatches();
   usePreload(accessAtom(reference), organizationsAtom);
+  const released = useGuardedPreload(
+    accessAtom(reference),
+    matches.flatMap((match) => match.staticData.organizationReads?.(reference, match.params) ?? []),
+  );
   const access = useAtomValue(accessAtom(reference));
   const session = useAtomValue(sessionAtom);
   const snapshot = useAtomValue(organizationPresentation(reference));
@@ -280,16 +330,7 @@ export function OrganizationBoundary({
     Schema.decodeUnknownOption(OrganizationResume)(location.state.organizationResume),
   );
   const userId = Option.getOrUndefined(AsyncResult.value(session))?.user.id;
-  const unavailable =
-    AsyncResult.isFailure(access) &&
-    Option.match(Cause.findErrorOption(access.cause), {
-      onNone: () => false,
-      onSome: (error) =>
-        Match.value(error).pipe(
-          Match.tag("OrganizationForbidden", "Unauthorized", () => true),
-          Match.orElse(() => false),
-        ),
-    });
+  const unavailable = refused(access);
   const rejectedResume =
     unavailable &&
     resume !== undefined &&
@@ -391,6 +432,7 @@ export function OrganizationBoundary({
         id: target,
         name: organization?.name,
         unavailable,
+        released,
         metadataFailed: AsyncResult.isFailure(access) || AsyncResult.isFailure(organizations),
         retry: () => {
           refreshAccess();

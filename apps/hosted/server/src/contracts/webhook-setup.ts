@@ -1,5 +1,5 @@
 /** Cookie-only setup is documented in OpenAPI; bearer accounts cannot satisfy its session requirement. */
-import { HttpApiGroup, HttpApiEndpoint } from "effect/unstable/httpapi";
+import { HttpApiGroup, HttpApiEndpoint } from "effect/http-api";
 import {
   CompleteWebhookSetup,
   WebhookErrors,

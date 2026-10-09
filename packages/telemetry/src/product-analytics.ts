@@ -1,16 +1,17 @@
 /**
- * Anonymous product analytics for local, desktop and self-host. Hosts record explicit events; each
+ * Anonymous product analytics for the CLI, desktop and self-host. Hosts record explicit events; each
  * event's schema is its allowlist, so a property it does not declare is never sent. Delivery is a
  * bounded in-memory batch to PostHog's `/batch/` endpoint and never affects product operations.
  */
 import { Cause, Config, Effect, Exit, Option, Queue, Schema, Semaphore } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ApiError } from "@executor-js/utils/api-error";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 /** Feedback text: at least one non-whitespace character and at most 10,000 characters. */
 export const FeedbackMessage = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(10_000),
-  Schema.isPattern(/\S/),
+  Schema.isPattern(/\S/u),
 );
 
 /** Explicit feedback text; arbitrary event properties and caller identities are not accepted. */
@@ -18,11 +19,12 @@ export const Feedback = Schema.Struct({ message: FeedbackMessage });
 export type Feedback = typeof Feedback.Type;
 
 /** Feedback could not be confirmed: ingestion failed, rejected the batch or timed out. */
-export class FeedbackUnavailable extends Schema.TaggedError<FeedbackUnavailable>()(
-  "FeedbackUnavailable",
-  {},
-  { httpApiStatus: 503 },
-) {}
+export const FeedbackUnavailable = ApiError.define({
+  tag: "FeedbackUnavailable",
+  status: 503,
+  message: "Executor could not confirm that the feedback was received. Try again later.",
+});
+export type FeedbackUnavailable = typeof FeedbackUnavailable.Type;
 
 /**
  * The operator turned analytics off, or this build has no analytics destination. A 4xx status
@@ -39,22 +41,22 @@ export const feedbackDisabled = () =>
   new FeedbackDisabled({ message: "Feedback is disabled on this instance." });
 
 /** The product that sent an event. Cloud has its own request-owned exporter. */
-export const AnalyticsProduct = Schema.Literals(["local", "desktop", "self-host"]);
+export const AnalyticsProduct = Schema.Literals(["cli", "desktop", "self-host"]);
 export type AnalyticsProduct = typeof AnalyticsProduct.Type;
 
-const Token = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/));
+const Token = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/u));
 /** An anonymous install ID: a random UUID minted once per data directory. */
 export const InstallId = Schema.String.check(
-  Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+  Schema.isPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u),
 );
 /** A registrable domain, or `private` for local, tunnel and shared-platform hosts. */
 export const RootDomain = Schema.String.check(
-  Schema.isPattern(/^(?:private|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63})$/),
+  Schema.isPattern(/^(?:private|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63})$/u),
 );
 const Count = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000_000 }));
 const Duration = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1e12 }));
 /** Fixed API group, endpoint and MCP operation names; never an author's query or tool name. */
-const RouteName = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/));
+const RouteName = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u));
 
 const usage = {
   source: Schema.optional(
@@ -66,7 +68,7 @@ const completion = {
   outcome: Schema.optional(Schema.Literals(["success", "failure", "cancelled"])),
   ok: Schema.optional(Schema.Boolean),
   duration_ms: Schema.optional(Duration),
-  error_type: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/))),
+  error_type: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/u))),
   status_code: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
 };
 
@@ -138,7 +140,7 @@ const allowlisted = (name: string, properties: unknown) =>
     : Option.none();
 
 const ErrorTag = Schema.Struct({
-  _tag: Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/)),
+  _tag: Schema.String.check(Schema.isPattern(/^[A-Z][A-Za-z0-9]{0,79}$/u)),
 });
 
 /** A failed or cancelled exit as an outcome and a bounded error tag, never a message or cause. */

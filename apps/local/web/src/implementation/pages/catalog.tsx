@@ -4,7 +4,7 @@ import { acknowledgeApp } from "../../contracts/apps.ts";
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CatalogEntry } from "@executor-js/catalog/contracts";
-import type { Publication } from "@executor-js/app-registry/contracts";
+import type { Publication } from "@executor-js/sdk";
 import type { App } from "@executor-js/sdk";
 import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboard/catalog";
 import { InstallPublication } from "@executor-js/ui/dashboard/install-publication";

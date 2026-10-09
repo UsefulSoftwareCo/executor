@@ -288,8 +288,9 @@ layer(TestLive, { excludeTestServices: true })("Local profile picker", (it) => {
         );
         yield* browser.use("Remove the old mailbox from its row", (page) =>
           slotRegion(page, "mailboxes")
-            .getByRole("button", { name: "Remove Old mailbox", exact: true })
-            .click(),
+            .getByRole("button", { name: "Manage Old mailbox", exact: true })
+            .click()
+            .then(() => page.getByRole("menuitem", { name: "Remove", exact: true }).click()),
         );
         yield* browser.use("Delete the old mailbox when offered", (page) =>
           page
@@ -338,39 +339,10 @@ layer(TestLive, { excludeTestServices: true })("Local profile picker", (it) => {
           page.getByText(personal, { exact: true }).waitFor(),
         );
 
-        const returned = (slot: "service" | "mailboxes") =>
-          browser.use(`Return from connecting the spare account to ${slot}`, (page) =>
-            page
-              .goto(
-                `/apps/${app.id}/setup?selected=${spare}&slot=${slot}&profile=${defaultProfile}`,
-              )
-              .then(() =>
-                page.waitForURL(
-                  (url) =>
-                    url.pathname === `/apps/${app.id}` &&
-                    url.searchParams.get("view") === "accounts" &&
-                    url.searchParams.get("profile") === defaultProfile,
-                ),
-              ),
-          );
-        yield* returned("service");
-        yield* browser.use("The returned account replaces the single account", (page) =>
-          page.getByRole("radio", { name: "Spare mail", exact: true, checked: true }).waitFor(),
-        );
-        expect(yield* saved(defaultProfile)).toEqual({ service: spare, mailboxes: [personal] });
-        yield* returned("mailboxes");
-        yield* browser.use("The returned account is added to the mailboxes", (page) =>
-          slotRegion(page, "mailboxes")
-            .getByRole("checkbox", { name: "Spare mail", exact: true, checked: true })
-            .waitFor(),
-        );
-        expect(yield* saved(defaultProfile)).toEqual({
-          service: spare,
-          mailboxes: [personal, spare],
-        });
-        yield* browser.use("A setup link without a returned account opens Accounts", (page) =>
+        // Connections select their account on the server, so setup links only open Accounts.
+        yield* browser.use("A setup link opens the app's Accounts", (page) =>
           page
-            .goto(`/apps/${app.id}/setup`)
+            .goto(`/apps/${app.id}/setup?profile=${defaultProfile}`)
             .then(() =>
               page.waitForURL(
                 (url) =>

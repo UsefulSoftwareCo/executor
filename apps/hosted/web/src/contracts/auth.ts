@@ -10,9 +10,9 @@ import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { createAuthClient } from "better-auth/client";
 import { organizationClient } from "better-auth/client/plugins";
 import { Effect, Option, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 
 /**
@@ -31,12 +31,18 @@ export class AuthFailed extends Schema.TaggedError<AuthFailed>()("AuthFailed", {
   message: Schema.String,
 }) {}
 
+/** Shown for an address the server cannot accept, whether the form or the server notices first. */
+export const invalidEmailMessage = "Enter a valid email address, such as name@example.com.";
+
+/** Whether an address has a mailbox and a dotted domain, as the server requires. */
+export const plausibleEmail = (email: string) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/u.test(email);
+
 const authMessage = (code: string | undefined, status: number): string => {
   if (status === 429 || code === "TOO_MANY_ATTEMPTS")
     return "Too many attempts. Wait a minute and try again.";
-  if (code === "OTP_EXPIRED") return "This sign-in code has expired. Request a new code.";
-  if (code === "INVALID_OTP")
-    return "This sign-in code is incorrect. Check the code and try again.";
+  if (code === "OTP_EXPIRED") return "This code has expired. Request a new code.";
+  if (code === "INVALID_OTP") return "This code is incorrect. Check the code and try again.";
+  if (code === "INVALID_EMAIL") return invalidEmailMessage;
   if (code === "INVALID_EMAIL_OR_PASSWORD") return "Email or password is incorrect. Try again.";
   if (code === "SSO_NOT_CONFIGURED")
     return "SSO is not available for this email domain. Check your work email or contact your administrator.";
@@ -45,7 +51,7 @@ const authMessage = (code: string | undefined, status: number): string => {
   if (status === 401) return "Authentication failed. Start sign-in again.";
   if (status === 403)
     return "Access was denied. Check your invitation or contact an administrator.";
-  return "Unable to complete sign-in. Check your details and try again.";
+  return "Something went wrong. Check your details and try again.";
 };
 
 /**
@@ -136,7 +142,7 @@ export const lastOrganizationAtom = Atom.make<LastOrganization | null>(null).pip
 
 /** Better Auth creates the OAuth state and redirects to the chosen provider. */
 export const signInAtom = BrowserAtoms.fn(
-  (input: { provider: "google" | "github"; redirect: string }) =>
+  (input: { provider: "google" | "github" | "openai"; redirect: string }) =>
     authRequest((options) =>
       authClient.signIn.social(
         {
@@ -144,7 +150,9 @@ export const signInAtom = BrowserAtoms.fn(
           callbackURL: signInCallback(input.redirect),
           errorCallbackURL: `/login?redirect=${encodeURIComponent(input.redirect)}`,
         },
-        options,
+        input.provider === "openai"
+          ? { ...options, headers: { ...options.headers, "x-skip-oauth-proxy": "true" } }
+          : options,
       ),
     ).pipe(Effect.withSpan("ui.auth.signIn"), Effect.asVoid),
 );

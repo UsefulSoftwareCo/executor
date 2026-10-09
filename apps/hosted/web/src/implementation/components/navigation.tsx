@@ -1,8 +1,9 @@
+import type { ReactNode } from "react";
 import { useOrganizationRoute } from "./organization.tsx";
 import { DashboardNavigation } from "./dashboard-frame.tsx";
 
-/** Common links that hosts compose with their own navigation. */
-export function HostedNavigation() {
+/** Common links followed by the host's own organization pages. */
+export function HostedNavigation({ children }: { readonly children?: ReactNode }) {
   const { slug, role } = useOrganizationRoute();
-  return <DashboardNavigation organization={{ slug, role }} />;
+  return <DashboardNavigation organization={{ slug, role }}>{children}</DashboardNavigation>;
 }

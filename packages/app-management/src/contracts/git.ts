@@ -1,8 +1,10 @@
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 // Preserve the existing smart-HTTP path grammar, including the optional .git suffix.
-const segment = Schema.String.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9])?$/i));
+const segment = Schema.String.check(
+  Schema.isPattern(/^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,98}[a-zA-Z0-9])?$/u),
+);
 const params = { owner: segment, repo: segment };
 
 /** Git transport routes; the repository backend owns binary bodies and product authorization. */

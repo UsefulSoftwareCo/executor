@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Schema, type Cause } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
-import type { App } from "@executor-js/sdk";
-import type { AppSourceDisplay } from "@executor-js/app-management/contracts";
+import { AsyncResult } from "effect/reactivity";
 import {
-  type PublicationReadiness,
-  type PublicationIssue,
   registryPublicationPath,
-} from "@executor-js/app-registry/contracts";
+  type App,
+  type PublicationIssue,
+  type PublicationReadiness,
+} from "@executor-js/sdk";
+import type { AppSourceDisplay } from "@executor-js/app-management/contracts";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Alert02Icon,
@@ -23,7 +23,7 @@ import { Skeleton } from "../components/skeleton.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
 import { CopyButton } from "./code.tsx";
 import { ProviderIcon } from "./common.tsx";
-import { QueryView } from "./context.tsx";
+import { QueryView, useQuery } from "./context.tsx";
 import { cn } from "../lib/utils.ts";
 
 type PublishableSource = Omit<typeof AppSourceDisplay.Type, "publication"> & {
@@ -231,7 +231,7 @@ function RenameAndContinue<E>({
   readonly onClose: () => void;
   readonly onRenamed: (commit: string) => void;
 }) {
-  const workspace = useAtomValue(atoms.workspace(app.id));
+  const { result: workspace, refresh } = useQuery(atoms.workspace(app.id));
   const commit = useAtomSet(atoms.commitFile(app.id), { mode: "promiseExit" });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
@@ -257,7 +257,9 @@ function RenameAndContinue<E>({
   };
   return (
     <>
-      {AsyncResult.isFailure(workspace) && <Failure cause={workspace.cause} />}
+      {AsyncResult.isFailure(workspace) && (
+        <Failure cause={workspace.cause} retry={refresh} retrying={workspace.waiting} />
+      )}
       {error !== undefined && <Failure cause={error} />}
       {changed && (
         <p className="border-t px-7 py-4 text-sm leading-6 max-[740px]:px-5" role="alert">

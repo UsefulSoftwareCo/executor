@@ -6,7 +6,7 @@
  * // provide PgClient.layer(...) (or any SqlClient layer) to run its effects
  * ```
  */
-import type { SqlClient } from "effect/unstable/sql/SqlClient";
+import type { SqlClient } from "effect/sql/SqlClient";
 import type { Adapter } from "../../contracts/adapter.ts";
 import { defaultRelationMode } from "../../contracts/provider.ts";
 import { toOrm } from "../query/orm.ts";

@@ -16,7 +16,7 @@ import {
   ConnectionView,
 } from "@executor-js/mcp-auth/connections";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { AuthStorageError } from "./auth.ts";
 
 const path = "/dashboard/api/mcp/connections";

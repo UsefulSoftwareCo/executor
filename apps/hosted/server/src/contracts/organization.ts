@@ -1,14 +1,10 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ApiError } from "@executor-js/utils/api-error";
 import { Profile } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
 import { Context, Effect, Schema } from "effect";
-import {
-  HttpApiEndpoint,
-  HttpApiGroup,
-  HttpApiMiddleware,
-  HttpApiSchema,
-} from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema } from "effect/http-api";
 import { Account, AccountHealth, App, OwnerId, HttpUrl, StorageError } from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,
@@ -26,7 +22,7 @@ export const organizationSlugMaxLength = 45;
 /** Team handles leave room for a production wildcard certificate name. */
 export const OrganizationSlug = Schema.String.check(
   Schema.isMaxLength(organizationSlugMaxLength),
-  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
 ).pipe(Schema.brand("OrganizationSlug"));
 export type OrganizationSlug = typeof OrganizationSlug.Type;
 /** Suggested handle for a display name; empty when the name has no usable characters. */
@@ -59,7 +55,7 @@ export const OrganizationLogo = Schema.NullOr(
 /** Only public display and URL fields can be changed through organization settings. */
 export const OrganizationDetailsUpdate = Schema.Struct({
   name: Schema.optionalKey(
-    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120), Schema.isPattern(/\S/)),
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120), Schema.isPattern(/\S/u)),
   ),
   slug: Schema.optionalKey(OrganizationSlug),
   logo: Schema.optionalKey(OrganizationLogo),
@@ -115,23 +111,26 @@ export const organizationOwner = (organization: OrganizationId) =>
   OwnerId.make(`organization:${organization}`);
 
 /** Invalid or oversized image input. */
-export class OrganizationIconInvalid extends Schema.TaggedError<OrganizationIconInvalid>()(
-  "OrganizationIconInvalid",
-  {},
-  { httpApiStatus: 400 },
-) {}
+export const OrganizationIconInvalid = ApiError.define({
+  tag: "OrganizationIconInvalid",
+  status: 400,
+  message: "The organization icon upload is not a supported image within the size limit.",
+});
+export type OrganizationIconInvalid = typeof OrganizationIconInvalid.Type;
 /** The image store could not complete this request. */
-export class OrganizationIconUnavailable extends Schema.TaggedError<OrganizationIconUnavailable>()(
-  "OrganizationIconUnavailable",
-  {},
-  { httpApiStatus: 503 },
-) {}
+export const OrganizationIconUnavailable = ApiError.define({
+  tag: "OrganizationIconUnavailable",
+  status: 503,
+  message: "Executor's image storage could not complete this request. Try again.",
+});
+export type OrganizationIconUnavailable = typeof OrganizationIconUnavailable.Type;
 /** Missing uploaded image; membership is checked independently before reading. */
-export class OrganizationIconNotFound extends Schema.TaggedError<OrganizationIconNotFound>()(
-  "OrganizationIconNotFound",
-  {},
-  { httpApiStatus: 404 },
-) {}
+export const OrganizationIconNotFound = ApiError.define({
+  tag: "OrganizationIconNotFound",
+  status: 404,
+  message: "This organization has no uploaded icon.",
+});
+export type OrganizationIconNotFound = typeof OrganizationIconNotFound.Type;
 /** Each host supplies its own durable binary store; route middleware owns authorization. */
 export class OrganizationIcons extends Context.Service<
   OrganizationIcons,

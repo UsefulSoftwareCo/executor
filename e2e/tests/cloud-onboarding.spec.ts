@@ -7,6 +7,9 @@ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { scenarios } from "../test-plan.ts";
 
+/** React reports a server/browser markup difference with one of these messages or codes. */
+const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
+
 layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
   it.effect(scenarios.onboardingGoogle.title, (context) =>
     withCase(
@@ -121,6 +124,38 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
             .getByRole("heading", { name: "Create a passkey", exact: true })
             .waitFor({ state: "visible" }),
         );
+        // The Worker reads this browser's enrollment cookie, so the sign-in page it sends already
+        // offers the passkey, rather than a placeholder the browser replaces.
+        const html = yield* browser.use("Request the sign-in page's document", (page) =>
+          page
+            .context()
+            .request.get("/login", { headers: { accept: "text/html" } })
+            .then((document) => document.text()),
+        );
+        expect(html).toMatch(/<h1[^>]*>Create a passkey<\/h1>/);
+        const failures: string[] = [];
+        yield* browser.use("Watch hydration", (page) => {
+          page.on("console", (message) => {
+            if (message.type() === "error" && hydrationFailure.test(message.text()))
+              failures.push(message.text());
+          });
+          page.on("pageerror", (error) => {
+            if (hydrationFailure.test(String(error))) failures.push(String(error));
+          });
+          return Promise.resolve();
+        });
+        yield* browser.use("Reload the sign-in page", (page) => page.reload());
+        yield* browser.use("Passkey enrollment is still offered", (page) =>
+          page
+            .getByRole("heading", { name: "Create a passkey", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        // The page marks itself after React commits the hydrated tree, which is when React has
+        // reported any markup difference.
+        yield* browser.use("The sign-in page has hydrated", (page) =>
+          page.waitForFunction(() => document.documentElement.hasAttribute("data-hydrated")),
+        );
+        expect(failures).toEqual([]);
         yield* browser.checkpoint("Passkey enrollment can be skipped");
         yield* browser.use("Choose Not now", (page) =>
           page.getByRole("button", { name: "Not now", exact: true }).click(),

@@ -1,5 +1,6 @@
-import { Effect, Encoding, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Effect, Schema } from "effect";
+import { Base64 } from "effect/encoding";
+import { Atom } from "effect/reactivity";
 import { BrowserAtoms } from "./telemetry.ts";
 import {
   UploadedOrganizationIcon,
@@ -39,7 +40,7 @@ export const selectOrganizationIconAtom = Atom.family((_userId: string) =>
       return {
         kind: "file" as const,
         logo,
-        preview: `data:${contentType};base64,${Encoding.encodeBase64(bytes)}`,
+        preview: `data:${contentType};base64,${Base64.encode(bytes)}`,
       };
     }).pipe(
       Effect.mapError((error) =>

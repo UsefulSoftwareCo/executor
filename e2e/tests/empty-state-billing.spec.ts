@@ -14,6 +14,12 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) => 
           browser = yield* Browser;
         yield* browser.login(actors.owner);
         yield* browser.use("Use dark theme", (page) => page.emulateMedia({ colorScheme: "dark" }));
+        // A full page load renders billing on the server from the stage's real catalog, and the
+        // settings page reads it too. Load a page that does not read billing and navigate in the
+        // browser, so the browser makes the first read and this route answers it.
+        yield* browser.use("Open apps", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps`),
+        );
         let reads = 0;
         yield* browser.use("Provide an empty billing catalog at the HTTP boundary", (page) =>
           page.route("**/api/organizations/*/billing", (route) => {
@@ -23,14 +29,17 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) => 
             });
           }),
         );
+        yield* browser.use("Open organization settings", (page) =>
+          page.getByRole("link", { name: "Settings", exact: true }).click(),
+        );
+        yield* browser.use("Open billing", (page) =>
+          page.getByRole("link", { name: "Open billing", exact: true }).click(),
+        );
         for (const viewport of [
           { width: 1440, height: 960 },
           { width: 390, height: 844 },
         ]) {
           yield* browser.use("Set billing viewport", (page) => page.setViewportSize(viewport));
-          yield* browser.use("Open billing", (page) =>
-            page.goto(`/org/${actors.organization.slug}/billing`),
-          );
           yield* browser.use("No plans has an explicit state", (page) =>
             page.getByRole("heading", { name: "Plans unavailable", exact: true }).waitFor(),
           );

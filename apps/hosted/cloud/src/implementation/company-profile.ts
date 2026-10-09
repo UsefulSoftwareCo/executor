@@ -1,5 +1,5 @@
 import { Effect, Layer, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { OrganizationLogo } from "@executor-js/hosted-server";
 import { CompanyLookup, CompanyLookupFailed, CompanyProfile } from "../contracts/onboarding.ts";
 

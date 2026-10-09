@@ -1,6 +1,10 @@
-/** Quick add checks the MCP server itself; only public and OAuth servers are added directly. */
+/**
+ * Quick add checks the MCP server itself; only public and OAuth servers are added directly. An OAuth
+ * app checks a connected account by opening a session with it on the server.
+ */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -18,9 +22,18 @@ const Requirements = Schema.Struct({
       Schema.String,
       Schema.Struct({
         definition: Schema.Struct({ hosts: Schema.optionalKey(Schema.Array(Schema.String)) }),
+        health: Schema.optionalKey(Schema.Literal(true)),
       }),
     ),
   }),
+});
+const Health = Schema.Struct({
+  apps: Schema.Array(
+    Schema.Struct({
+      app: Schema.String,
+      check: Schema.NullOr(Schema.Struct({ status: Schema.String })),
+    }),
+  ),
 });
 const Rejected = Schema.Struct({
   _tag: Schema.Literal("CatalogImportFailed"),
@@ -33,7 +46,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
       context,
       Effect.gen(function* () {
         const api = yield* Api,
-          actors = yield* Actors;
+          actors = yield* Actors,
+          http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const add = (name: string, url: string) =>
@@ -58,9 +72,15 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
             expect(inventory.apps.map((app) => app.name)).not.toContain(name);
           });
 
-        // The challenge may arrive on GET or only on the MCP initialization POST.
+        // The challenge may arrive on GET or only on the MCP initialization POST. The server
+        // answers MCP only for tokens its issuer granted.
         for (const postChallenge of [true, false]) {
-          yield* issuer.configure({ postChallenge, challenge: true, discovery: "available" });
+          yield* issuer.configure({
+            postChallenge,
+            challenge: true,
+            discovery: "available",
+            serveMcp: true,
+          });
           const probes = (yield* issuer.metrics).probes;
           const app = yield* added(
             yield* add(`Discovery ${randomUUID().slice(0, 8)}`, `${issuer.origin}/mcp`),
@@ -73,6 +93,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
             app.requirements.accounts.service?.definition.hosts,
             "The generated provider sends its tokens only to the server",
           ).toEqual([new URL(issuer.origin).host]);
+          expect(
+            app.requirements.accounts.service?.health,
+            "The generated provider checks accounts against the server",
+          ).toBe(true);
           const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
@@ -90,13 +114,38 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
           expect(start.status, "The generated provider signs in with discovered OAuth").toBe(200);
           const signIn = yield* body(Schema.Struct({ authorizationUrl: Schema.String }), start);
           expect(new URL(signIn.authorizationUrl).pathname).toBe("/authorize");
-          yield* api.request(
+          const callbackUrl = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const consent = yield* HttpClient.withScope(http).get(signIn.authorizationUrl);
+              expect(consent.status).toBe(302);
+              const location = consent.headers.location;
+              if (location === undefined)
+                return yield* Effect.die("Issuer did not return a callback");
+              return location;
+            }),
+          ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+          const completed = yield* api.request(
             actors.owner,
             "POST",
-            `${prefix}/connections/${connection.id}/cancel`,
-            {},
+            `${prefix}/connections/${connection.id}/oauth/complete`,
+            { callbackUrl },
           );
+          expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+          const account = yield* body(Resource, completed);
+          // The generated check opens a session with the account's token, then is refused without it.
+          const checked = yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/accounts/${account.id}/health`,
+          );
+          expect(checked.status, JSON.stringify(checked.body)).toBe(200);
+          expect(
+            (yield* body(Health, checked)).apps.find((entry) => entry.app === app.id)?.check
+              ?.status,
+            "The generated provider checks the account against the server",
+          ).toBe("healthy");
         }
+        yield* issuer.configure({ serveMcp: false });
 
         // A public server initializes anonymously and needs no account.
         const open = yield* publicTemplateUpstream;

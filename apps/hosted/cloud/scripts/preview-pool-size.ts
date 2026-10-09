@@ -5,7 +5,7 @@
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Config, Effect, Redacted, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 class PoolSizeFailed extends Schema.TaggedError<PoolSizeFailed>()("PoolSizeFailed", {
   message: Schema.String,

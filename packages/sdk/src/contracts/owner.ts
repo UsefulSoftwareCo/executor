@@ -1,6 +1,6 @@
 /** Owner lifecycle. Products call this when an owner itself stops existing. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { OwnerId, StorageError, WebhookId } from "./shared.ts";
 import { AppWorkflowsActive } from "./apps.ts";
 import { AccountWorkflowsActive } from "./account.ts";

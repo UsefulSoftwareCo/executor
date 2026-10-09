@@ -38,7 +38,7 @@ export const graphqlCatalog = (options: GraphqlCatalogOptions, kinds: OperationK
       timeoutMs: options.timeoutMs,
     }).pipe(Effect.mapError(invalid));
     // The account's scope separates credentials, so the endpoint alone identifies its schema.
-    const cache = yield* catalogScope(options, invalid);
+    const cache = yield* catalogScope(options, options.headers, invalid);
     const id = yield* cacheKey({ url: parsed.url });
     const client = yield* graphqlClientEffect(parsed);
     const catalog = yield* catalogCache({

@@ -6,3 +6,5 @@ export {
   defaultScheduleWorkerOptions,
 } from "./contracts/schedule-worker.ts";
 export { ScheduleHostReady } from "./contracts/schedule-worker.ts";
+/** Scoped event delivery for hosts that run their own loop. */
+export { deliverEvents } from "./implementation/event-worker.ts";

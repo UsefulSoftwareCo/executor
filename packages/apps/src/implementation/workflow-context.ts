@@ -16,7 +16,7 @@ import {
 import { JsonValue } from "../contracts/schema.ts";
 import { nativeOperation } from "./operations.ts";
 import { declaredOperations } from "./router.ts";
-import { toPromise } from "./authoring.ts";
+import { fromPromise, toPromise } from "./authoring.ts";
 import { failureDetail } from "./failure-detail.ts";
 
 /**
@@ -83,6 +83,7 @@ export const makeWorkflowContext = (
         const key = JSON.stringify([kind, name]);
         const count = (counts.get(key) ?? 0) + 1;
         counts.set(key, count);
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
         const digest = yield* Effect.tryPromise({
           try: () =>
             crypto.subtle.digest(
@@ -131,10 +132,7 @@ export const makeWorkflowContext = (
                   );
                   const step = yield* fresh(stepId, AbortSignal.any([signal, controller.signal]));
                   const result = yield* workflowSafe(
-                    Effect.tryPromise({
-                      try: () => callback(step.context),
-                      catch: (error) => error,
-                    }),
+                    fromPromise(callback, "step")(step.context),
                     step.secrets,
                   );
                   return yield* Schema.decodeUnknownEffect(WorkflowValue)(result).pipe(

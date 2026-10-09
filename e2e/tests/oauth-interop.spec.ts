@@ -1,7 +1,7 @@
 /** Services whose OAuth deviates from the common shape still connect through the real APIs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -23,7 +23,11 @@ const Failure = Schema.Struct({
   _tag: Schema.String,
   reason: Schema.String,
   message: Schema.String,
+  recovery: Schema.optional(Schema.Struct({ action: Schema.String, instructions: Schema.String })),
   callbackUrl: Schema.optional(Schema.String),
+  serviceError: Schema.optional(
+    Schema.Struct({ error: Schema.String, description: Schema.optional(Schema.String) }),
+  ),
 });
 const Echo = Schema.Struct({
   refreshed: Schema.Boolean,
@@ -259,12 +263,22 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
             "apple",
             ["/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"],
           ],
-          // Atlassian refuses the path-inserted RFC 8414 location with 401.
+          // An issuer with a path: MCP's order is RFC 8414 and then OpenID configuration with
+          // the path inserted, then OpenID configuration appended. Atlassian refuses the first
+          // with 401 and publishes at the last.
           [
             "atlassian",
             [
               "/.well-known/oauth-authorization-server/oauth",
+              "/.well-known/openid-configuration/oauth",
               "/oauth/.well-known/openid-configuration",
+            ],
+          ],
+          [
+            "openid-inserted",
+            [
+              "/.well-known/oauth-authorization-server/oauth",
+              "/.well-known/openid-configuration/oauth",
             ],
           ],
         ] as const) {
@@ -319,10 +333,48 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(new URL(failure.callbackUrl ?? "http://missing").pathname).toBe(
           "/api/oauth/callback",
         );
-        expect(JSON.stringify(started.body)).not.toContain("PRIVATE_PROVIDER_ERROR");
+        // Its own words are shown as its response, apart from the curated explanation.
+        expect(failure.serviceError).toEqual({
+          error: "invalid_client_metadata",
+          description: "PRIVATE_PROVIDER_ERROR",
+        });
+        expect(JSON.stringify([failure.message, failure.recovery])).not.toContain(
+          "PRIVATE_PROVIDER_ERROR",
+        );
         expect((yield* access.metrics).registrations).toEqual([
           { grantTypes: ["authorization_code", "refresh_token"], accepted: false },
         ]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.oauthAhrefs.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const app = yield* oauthApp;
+        const ahrefs = yield* oauthInteropIssuer("ahrefs");
+        const signIn = yield* app.connect(
+          { discover: `${ahrefs.origin}/mcp` },
+          undefined,
+          `${ahrefs.origin}/resource`,
+        );
+        expect(signIn.completed.status, JSON.stringify(signIn.completed.body)).toBe(200);
+        const metrics = yield* ahrefs.metrics;
+        // Ahrefs refuses `application/x-www-form-urlencoded;charset=UTF-8`.
+        expect(metrics.tokenContentTypes).toEqual(["application/x-www-form-urlencoded"]);
+        // The trailing-slash resource is sent as published.
+        expect(signIn.authorizationUrl.searchParams.get("resource")).toBe(`${ahrefs.origin}/`);
+        expect(metrics.tokenRequests).toEqual([{ resource: `${ahrefs.origin}/`, issued: true }]);
+        expect(metrics.registrations).toEqual([
+          { grantTypes: ["authorization_code"], accepted: true },
+        ]);
+        const read = yield* app.read(signIn.app, signIn.profile);
+        expect(read.status, JSON.stringify(read.body)).toBe(200);
+        expect(yield* body(Echo, read)).toEqual({
+          refreshed: false,
+          authorization: "Bearer synthetic-access-token",
+        });
       }),
     ),
   );

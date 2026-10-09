@@ -2,16 +2,11 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect, Option, Schema, type Redacted } from "effect";
-import { Atom } from "effect/unstable/reactivity";
-import {
-  AppId,
-  AccountId,
-  ProfileId,
-  type ProviderId,
-  type OAuthClientInput,
-} from "@executor-js/sdk";
+import { Atom } from "effect/reactivity";
+import { AppId, ProfileId, type ProviderId } from "@executor-js/sdk";
 import { DashboardClient, appAtom, toolsAtom } from "./api.ts";
 import { accountCredentialsChanged } from "./accounts.ts";
+import { profileSelectionChanged } from "./profiles.ts";
 import { invalidate } from "@executor-js/ui/contracts/mutations";
 
 class OAuthSetupKey extends Data.Class<{
@@ -28,38 +23,20 @@ const setupQuery = Atom.family((key: OAuthSetupKey) =>
 export const oauthSetupAtom = (key: { readonly provider: ProviderId; readonly method: string }) =>
   setupQuery(new OAuthSetupKey(key));
 
-/** Resolve automatic or supplied client configuration, then navigate to provider consent. */
-export const startOAuthAtom = DashboardClient.runtime.fn(
-  (
-    input: {
-      payload: {
-        provider: ProviderId;
-        method: string;
-        client?: OAuthClientInput;
-      };
-    },
-    get,
-  ) =>
-    Effect.flatMap(DashboardClient, (client) => client.dashboard.startOAuth(input)).pipe(
-      Effect.tap((result) =>
-        Effect.sync(() => {
-          if (result.status === "completed") accountCredentialsChanged(get, result.account);
-        }),
-      ),
-    ),
-);
 /** Keep the entry callback alive while auth/inventory gates load. Never written to browser storage. */
 export const oauthCallbackAtom = Atom.make<Redacted.Redacted<string> | undefined>(undefined).pipe(
   Atom.keepAlive,
 );
 /** Safe navigation intent; the server finds the connection from the callback's OAuth state. */
-/** An app connection returns to the same account selection after provider consent. */
-export const OAuthAppReturn = Schema.Struct({
+/**
+ * Every sign-in fills an app requirement, which completion selects, so it returns to that app's
+ * accounts. A reconnect keeps the account's name.
+ */
+export const OAuthReturn = Schema.Struct({
   app: AppId,
-  slot: Schema.NonEmptyString,
-  profile: Schema.optional(ProfileId),
+  profile: ProfileId,
+  reconnect: Schema.Boolean,
 });
-export const OAuthReturn = Schema.Union([OAuthAppReturn, Schema.Struct({ account: AccountId })]);
 /** Finish once per document load, even if React remounts the page. */
 export const completeOAuthAtom = DashboardClient.runtime
   .atom((get) =>
@@ -73,9 +50,10 @@ export const completeOAuthAtom = DashboardClient.runtime
       );
       const savedAccount = yield* client.dashboard.completeOAuth({ payload: { callbackUrl } });
       accountCredentialsChanged(get, savedAccount);
-      if (Option.isSome(target) && Schema.is(OAuthAppReturn)(target.value)) {
+      if (Option.isSome(target)) {
         invalidate(get, appAtom(target.value.app));
         get.refresh(toolsAtom({ app: target.value.app }));
+        profileSelectionChanged(get, target.value.app);
       }
       return savedAccount;
     }),

@@ -4,7 +4,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";

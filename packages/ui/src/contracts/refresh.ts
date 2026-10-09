@@ -1,6 +1,6 @@
 /** Retention and revalidation for dashboard reads that also render on the server. */
 import type { Duration } from "effect";
-import { type AsyncResult, Atom } from "effect/unstable/reactivity";
+import { type AsyncResult, Atom } from "effect/reactivity";
 
 /**
  * Counts returns to a visible page. A server render has no window, so its value never changes

@@ -3,7 +3,7 @@ import { EmptyState } from "./empty-state.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Option, Schema } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import {
   AccountRequired,
   ScheduleApprovalMode,

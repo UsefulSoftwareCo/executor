@@ -4,7 +4,7 @@ import { organizationHttpClient } from "./organization-reference.ts";
 /** Browser calls use the same hosted HTTP contract on Cloudflare and Docker. */
 import { DashboardRuntime } from "./telemetry.ts";
 import { HostedApi } from "@executor-js/hosted-server/contracts";
-import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
+import { Atom, AtomHttpApi } from "effect/reactivity";
 import { batchReads } from "@executor-js/dashboard-start/batch-browser";
 
 const batched = batchReads(HostedApi);

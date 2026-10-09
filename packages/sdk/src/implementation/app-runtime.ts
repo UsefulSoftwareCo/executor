@@ -3,8 +3,9 @@
  * invocations for the runner, gives each invocation a build loader over the host's build store,
  * and decodes the reply. Hosts differ only in where the runner lives and how builds are stored.
  */
-import { Effect, Option, Redacted, Result, Schema, type Stream } from "effect";
+import { Clock, Effect, Option, Redacted, Result, Schema, type Scope, type Stream } from "effect";
 import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@executor-js/telemetry";
+import { recordAs } from "@executor-js/utils/recorded-message";
 import {
   AccountCheckResult,
   HostAccountCheckError,
@@ -14,7 +15,9 @@ import {
   HostedCatalogSummary,
   HostInspectError,
   HostResponse,
+  MigrateResult,
   indexCommand,
+  InvocationTiming,
   inspectCommand,
   selectTools,
   skillCatalog,
@@ -26,7 +29,13 @@ import {
 } from "apps/contracts";
 import {
   AppCacheChanges,
+  DispatchTiming,
+  AppEventSink,
+  InvocationRun,
+  IsolateTiming,
+  RuntimeCallTimings,
   RuntimeProtocolFailed,
+  type RuntimeCallTiming,
   type RuntimeProtocolUnsupported,
   type Runtime,
   type RuntimeBuildUnavailable,
@@ -38,9 +47,73 @@ import { appWorker, type AppCapabilities, type AppInvocation } from "./app-runne
 import { appProtocol } from "./app-protocols.ts";
 import { invocationElicitation } from "./worker-elicitation.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
+import { runtimeCallParts } from "./tool-call-overhead.ts";
 
-/** The span recorded each time a host reads a build for a cold start. */
+/** What telemetry records for an error an app's reply carried, beside the error's name. */
+const appErrorRecorded = "The app returned this error; its text is not recorded";
+
+/** The span recorded each time a host reads a build, to learn its protocol or cold-start it. */
 export const buildLoadSpan = "runtime.app.build.load";
+
+/**
+ * One invocation's build loader over a host's build store. The runner calls it to learn a build's
+ * protocol and on a cold start. A build whose protocol this host does not run never starts, so
+ * only its load finds that out: `refused` keeps that as the invocation's failure.
+ */
+export const invocationBuildLoader = <R>(
+  invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts" | "run">,
+  read: Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, R>,
+): Effect.Effect<
+  {
+    readonly load: AppCapabilities["load"];
+    readonly refused: <A, E, R2>(
+      invoked: Effect.Effect<A, E | RuntimeProtocolFailed, R2>,
+    ) => Effect.Effect<A, E | RuntimeProtocolFailed | RuntimeProtocolUnsupported, R2>;
+  },
+  RuntimeProtocolFailed,
+  R | Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const lifetime = yield* Effect.acquireRelease(
+      Effect.sync(() => new AbortController()),
+      (controller) => Effect.sync(() => controller.abort()),
+    );
+    const services = yield* Effect.context<R>();
+    const worker = yield* appWorker(invocation).pipe(
+      Effect.mapError(() => new RuntimeProtocolFailed()),
+    );
+    let unsupported: RuntimeProtocolUnsupported | undefined;
+    return {
+      load: () =>
+        Effect.runPromiseWith(services)(
+          read.pipe(
+            Effect.tap((loaded) =>
+              appProtocol(loaded.protocol).pipe(
+                Effect.tapError((error) =>
+                  Effect.sync(() => {
+                    unsupported = error;
+                  }),
+                ),
+              ),
+            ),
+            Effect.withSpan(buildLoadSpan, {
+              attributes: {
+                "executor.app.id": invocation.app,
+                "executor.build.id": invocation.build,
+                "executor.runtime.mode": worker.mode,
+                "executor.worker.identity": worker.name,
+                ...(invocation.run === undefined ? {} : { "executor.run.id": invocation.run }),
+              },
+            }),
+          ),
+          { signal: lifetime.signal },
+        ),
+      refused: (invoked) =>
+        invoked.pipe(
+          Effect.catchTag("RuntimeProtocolFailed", (error) => Effect.fail(unsupported ?? error)),
+        ),
+    };
+  });
 
 /** What one host provides. Everything else about app execution is shared. */
 export interface AppRuntimeHost {
@@ -54,7 +127,7 @@ export interface AppRuntimeHost {
   readonly invoke: (
     invocation: AppInvocation,
     capabilities: AppCapabilities,
-  ) => Effect.Effect<unknown, RuntimeProtocolFailed>;
+  ) => Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported>;
   readonly build: Runtime<BlobStore>["build"];
   readonly asset: NonNullable<Runtime<BlobStore>["asset"]>;
   readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
@@ -74,16 +147,18 @@ export const appRuntime = (host: AppRuntimeHost) =>
       command: HostRequest,
       output: Schema.Decoder<A>,
       errors: Schema.Decoder<E>,
-    ) =>
-      Effect.scoped(
+    ) => {
+      // This call's share of a tool call, reported when it is over.
+      let invoked: RuntimeCallTiming["invoked"];
+      let parts: RuntimeCallTiming["parts"];
+      return Effect.scoped(
         Effect.gen(function* () {
-          if (input.storage !== undefined) return yield* new RuntimeProtocolFailed();
           const lifetime = yield* Effect.acquireRelease(
             Effect.sync(() => new AbortController()),
             (controller) => Effect.sync(() => controller.abort()),
           );
-          const services = yield* Effect.context<BlobStore>();
           const build = input.build;
+          const run = yield* InvocationRun;
           const invocation: AppInvocation = {
             app: input.app,
             build,
@@ -95,52 +170,34 @@ export const appRuntime = (host: AppRuntimeHost) =>
             ...(input.approval === undefined ? {} : { approval: input.approval }),
             ...(input.replay === undefined ? {} : { replay: input.replay }),
             ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
+            ...(run === undefined ? {} : { run }),
           };
-          const worker = yield* appWorker(invocation).pipe(
-            Effect.mapError(() => new RuntimeProtocolFailed()),
-          );
-          // A build whose protocol this host does not run never starts, so only a load finds it.
-          // The runner may sit behind RPC, so the load keeps the typed failure for this call.
-          let unsupported: RuntimeProtocolUnsupported | undefined;
-          const body = yield* host
-            .invoke(invocation, {
-              // Only a cold start calls this, inside the trusted runner or data supervisor.
-              load: () =>
-                Effect.runPromiseWith(services)(
-                  host.loadBuild(build).pipe(
-                    Effect.tap((loaded) =>
-                      appProtocol(loaded.protocol).pipe(
-                        Effect.tapError((error) =>
-                          Effect.sync(() => {
-                            unsupported = error;
-                          }),
-                        ),
-                      ),
-                    ),
-                    Effect.withSpan(buildLoadSpan, {
-                      attributes: {
-                        "executor.app.id": input.app,
-                        "executor.build.id": build,
-                        "executor.runtime.mode": worker.mode,
-                        "executor.worker.identity": worker.name,
-                      },
-                    }),
-                  ),
-                  { signal: lifetime.signal },
-                ),
-              elicit:
-                input.elicitation === undefined
-                  ? null
-                  : invocationElicitation(input.elicitation, lifetime.signal),
-              controls:
-                input.workflowControls === undefined
-                  ? null
-                  : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal),
-              ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
-            })
+          // Only the trusted runner or data supervisor calls the loader. The runner may sit behind
+          // RPC, so the loader keeps an unsupported protocol as this call's typed failure.
+          const loader = yield* invocationBuildLoader(invocation, host.loadBuild(build));
+          const from = yield* Clock.currentTimeNanos;
+          const body = yield* loader
+            .refused(
+              host.invoke(invocation, {
+                load: loader.load,
+                elicit:
+                  input.elicitation === undefined
+                    ? null
+                    : invocationElicitation(input.elicitation, lifetime.signal),
+                controls:
+                  input.workflowControls === undefined
+                    ? null
+                    : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal),
+                ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
+              }),
+            )
             .pipe(
-              Effect.catchTag("RuntimeProtocolFailed", (error) =>
-                Effect.fail(unsupported ?? error),
+              Effect.ensuring(
+                Effect.flatMap(Clock.currentTimeNanos, (to) =>
+                  Effect.sync(() => {
+                    invoked = [from, to];
+                  }),
+                ),
               ),
             );
           // Telemetry is an additive transport field. Retained builds keep their original protocol.
@@ -149,20 +206,63 @@ export const appRuntime = (host: AppRuntimeHost) =>
               telemetry: Schema.optional(TelemetryBatch),
               executorRevision: Schema.optional(Schema.Int),
               cacheChanged: Schema.optional(Schema.Boolean),
+              timing: Schema.optional(InvocationTiming),
+              dispatch: Schema.optional(DispatchTiming),
+              runner: Schema.optional(IsolateTiming),
+              supervisor: Schema.optional(IsolateTiming),
             }),
           )(body).pipe(Effect.result);
+          // Each isolate reports its own part on its own clock; see tool-call-overhead.ts.
+          if (
+            Result.isSuccess(collected) &&
+            collected.success.timing !== undefined &&
+            collected.success.dispatch !== undefined &&
+            collected.success.runner !== undefined &&
+            invoked !== undefined
+          ) {
+            const { timing, dispatch, runner, supervisor } = collected.success;
+            parts = runtimeCallParts(
+              Number(invoked[1] - invoked[0]) / 1_000_000,
+              runner,
+              supervisor,
+              dispatch,
+              timing,
+            );
+            yield* Effect.annotateCurrentSpan({
+              "executor.runner.own_ms": runner.elapsedMs - runner.waitMs,
+              ...(supervisor === undefined
+                ? {}
+                : { "executor.supervisor.own_ms": supervisor.elapsedMs - supervisor.waitMs }),
+              "executor.app.elapsed_ms": dispatch.elapsedMs,
+              "executor.app.own_ms": parts.appOwnMs,
+              "executor.upstream.wait_ms": parts.upstreamMs,
+              "executor.elicitation.wait_ms": parts.elicitationMs,
+              "executor.authored_ms": parts.authoredMs,
+              ...(parts.staleClocks.length === 0
+                ? {}
+                : {
+                    "executor.clock.stale": true,
+                    "executor.clock.stale_between": parts.staleClocks.join(","),
+                  }),
+            });
+          }
           if (Result.isFailure(collected)) yield* Effect.logWarning("Invalid app telemetry batch");
           if (Result.isSuccess(collected) && collected.success.telemetry !== undefined) {
             const span = yield* Effect.currentSpan.pipe(Effect.option);
             if (Option.isSome(span))
-              yield* forward(collected.success.telemetry, span.value.traceId, build);
+              yield* forward(collected.success.telemetry, span.value.traceId, {
+                build,
+                app: input.app,
+              });
           }
           if (Result.isSuccess(collected) && collected.success.cacheChanged === true)
             yield* (yield* AppCacheChanges).changed(input.app);
           const reply = yield* Schema.decodeUnknownEffect(HostResponse)(body);
+          // The app wrote these errors. Their text reaches the caller each is for; telemetry
+          // records their names only.
           if (!reply.ok)
             return yield* Schema.decodeUnknownEffect(errors)(reply.error).pipe(
-              Effect.flatMap(Effect.fail),
+              Effect.flatMap((error) => Effect.fail(recordAs(error, appErrorRecorded))),
             );
           if (reply.toolError === true) {
             (yield* ToolResultObservation).failed();
@@ -172,6 +272,19 @@ export const appRuntime = (host: AppRuntimeHost) =>
             });
           }
           const value = yield* Schema.decodeUnknownEffect(output)(reply.value);
+          // Only a successful invocation's events are kept; its writes have committed.
+          if (reply.events !== undefined && reply.events.length > 0)
+            yield* (yield* AppEventSink).emitted({
+              app: input.app,
+              accounts: [
+                ...new Set(
+                  Object.values(Redacted.value(input.accounts)).flatMap((selected) =>
+                    (Array.isArray(selected) ? selected : [selected]).map((account) => account.id),
+                  ),
+                ),
+              ],
+              events: reply.events,
+            });
           const revision = Result.isSuccess(collected)
             ? collected.success.executorRevision
             : undefined;
@@ -179,7 +292,21 @@ export const appRuntime = (host: AppRuntimeHost) =>
             input.observeRevision?.(revision);
           return value;
         }),
-      ).pipe(Effect.catchTag("SchemaError", () => Effect.fail(new RuntimeProtocolFailed())));
+      ).pipe(
+        Effect.onExit(() =>
+          Effect.gen(function* () {
+            const report = yield* RuntimeCallTimings;
+            report?.({
+              ...(invoked === undefined ? {} : { invoked }),
+              ...(parts === undefined ? {} : { parts }),
+            });
+          }),
+        ),
+        Effect.catchTag("SchemaError", () =>
+          Effect.fail(new RuntimeProtocolFailed({ reason: "invalid-reply" })),
+        ),
+      );
+    };
     const span = (operation: string) => `${host.name}.${operation}`;
     return {
       build: (input) => host.build(input).pipe(Effect.withSpan(span("build"))),
@@ -241,6 +368,13 @@ export const appRuntime = (host: AppRuntimeHost) =>
           AccountCheckResult,
           HostAccountCheckError,
         ).pipe(Effect.withSpan(span("checkAccount"))),
+      migrate: (input) =>
+        dispatch(
+          { ...input, database: true, accounts: Redacted.make({}) },
+          { operation: "migrate" },
+          MigrateResult,
+          HostCallError,
+        ).pipe(Effect.withSpan(span("migrate"))),
       workflow: (input) =>
         dispatch({ ...input, database: false }, input.command, Json, HostCallError).pipe(
           Effect.withSpan(span("workflow"), {

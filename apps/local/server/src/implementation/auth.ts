@@ -1,7 +1,7 @@
 /** One-use process-owned pairing grants, exchanged for persistent browser sessions. */
 import { Clock, Effect, Redacted, Ref } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import {
   AuthForbidden,
   LocalAuthApi,

@@ -5,7 +5,7 @@
  */
 import { OrganizationId } from "@executor-js/hosted-server";
 import { Effect, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 const Seats = Schema.Array(
   Schema.Struct({ count: Schema.NumberFromString, synced: Schema.NullOr(Schema.Number) }),

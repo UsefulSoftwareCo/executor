@@ -3,7 +3,7 @@ import { PgClient } from "@effect/sql-pg";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Effect, Layer } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { cloudDatabaseConnection } from "./database.ts";
 import { BillingUnavailable } from "../contracts/billing.ts";
 

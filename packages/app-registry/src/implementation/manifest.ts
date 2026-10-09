@@ -1,13 +1,14 @@
 /** One source check for publication previews, writes, and imported package naming. */
 import { Effect, Option, Schema } from "effect";
-import { JsonObject, SourceFiles } from "@executor-js/sdk/core";
 import {
+  JsonObject,
+  SourceFiles,
   PackageManifest,
   PackageName,
   PublicationIssue,
   RegistryError,
   publicPackageName,
-} from "../contracts/registry.ts";
+} from "@executor-js/sdk/core";
 
 const invalid = (reason: typeof PublicationIssue.Type.reason, name: string | null = null) =>
   new PublicationIssue({ reason, name });

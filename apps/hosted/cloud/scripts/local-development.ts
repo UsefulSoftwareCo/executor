@@ -33,7 +33,7 @@ export const localDevelopmentFiles = {
   alchemyHome: join(localDevelopmentDirectory, "alchemy-home"),
 } as const;
 
-const Hex64 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+const Hex64 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 
 /** Generated once per checkout; the database volume and encrypted records depend on them. */
 export const LocalSecrets = Schema.Struct({

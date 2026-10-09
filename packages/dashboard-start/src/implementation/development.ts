@@ -6,7 +6,7 @@ import type { DocumentApi } from "../contracts/document.ts";
 import { dashboardDocument, type DashboardServer } from "./document.ts";
 import { HostPipeline } from "./in-process.ts";
 import { Effect, Path } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer, isRunnableDevEnvironment } from "vite-plus";
 
 export { DevelopmentDashboardFailed };

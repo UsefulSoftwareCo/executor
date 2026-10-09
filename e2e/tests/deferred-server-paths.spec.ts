@@ -5,7 +5,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -13,6 +13,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 
 const Document = Schema.Struct({
   openapi: Schema.String,
@@ -63,7 +64,7 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
               concurrency: "unbounded",
             }),
             api.request(actors.owner, "POST", `${prefix}/apps/install`, {
-              entry: `${origin}/openapi.json`,
+              entry: `${targetHosts(target).api}/openapi.json`,
               name,
             }),
           ],
@@ -94,7 +95,8 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
         const configuration = yield* Schema.decodeUnknownEffect(Configuration)(
           configurationFile.content,
         );
-        expect(configuration.source.url).toBe(`${origin}/openapi.json`);
+        // The Executor app calls the API at its canonical origin.
+        expect(configuration.source.url).toBe(`${targetHosts(target).api}/openapi.json`);
         expect(configuration.securitySchemes).toEqual(document.components.securitySchemes);
 
         // The app reads its skills from the published index; the server answers framework lookups.
@@ -110,8 +112,9 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
             expect.objectContaining({ symbol: expect.stringContaining("defineApp") }),
           ]),
         });
+        // The app reads its skills beside the API it calls, at the canonical API origin.
         expect(files.find((file) => file.path === "index.ts")?.content).toContain(
-          `${origin}/.well-known/agent-skills/index.json`,
+          `${targetHosts(target).api}/.well-known/agent-skills/index.json`,
         );
         const http = yield* HttpClient.HttpClient;
         const published = (path: string) =>
@@ -127,6 +130,16 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
         const index = yield* published("index.json");
         expect(index.status).toBe(200);
         const { skills } = yield* Schema.decodeUnknownEffect(SkillIndex)(index.text);
+        // Every skill directory the host ships is published, with the entry skill beside the guides.
+        expect(skills.map((skill) => skill.name).sort()).toEqual([
+          "app-authoring",
+          "code-mode",
+          "executor",
+        ]);
+        expect(skills.find((skill) => skill.name === "executor")?.files.toSorted()).toEqual([
+          "SKILL.md",
+          "feedback.md",
+        ]);
         expect(skills.find((skill) => skill.name === "app-authoring")?.files).toContain("SKILL.md");
         for (const skill of skills)
           for (const path of skill.files) {
@@ -138,7 +151,10 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
         expect((yield* published("app-authoring/SKILL.md")).text).toMatch(
           /^---\nname: app-authoring\n/,
         );
+        expect((yield* published("executor/SKILL.md")).text).toMatch(/^---\nname: executor\n/);
         expect((yield* published("app-authoring/missing.md")).status).toBe(404);
+        // Feedback guidance belongs to the entry skill, not the authoring guide.
+        expect((yield* published("app-authoring/feedback.md")).status).toBe(404);
       }),
     ),
   );

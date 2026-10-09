@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { clearSessionDisplay, sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { ExecutorDevtools } from "@executor-js/devtools";
 import { ErrorReportingIdentity } from "../error-reporting.tsx";

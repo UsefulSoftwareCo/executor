@@ -4,17 +4,15 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": "./src/index.ts",
     "./node": "./src/node.ts",
     "./cloudflare": "./src/cloudflare.ts",
-    "./contracts": "./src/contracts/repositories.ts",
     "./host": "./src/host.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/platform-node": "4.0.1",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "effect": "4.0.1",
     "isomorphic-git": "1.37.4",
     "memfs": "4.57.7"
   }

@@ -3,12 +3,7 @@ import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** Synthetic clients accepted by the issuer; neither secret is returned in protocol observations. */
 export const recoveryClients = {

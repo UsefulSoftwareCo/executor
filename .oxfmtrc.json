@@ -15,6 +15,9 @@
     "**/.generated",
     "**/routeTree.gen.ts",
     "**/browser-scripts.gen.ts",
-    "apps/docs/content"
+    "**/executor-intro.gen.ts",
+    "**/executor-skill-digests.gen.ts",
+    "apps/docs/content",
+    "packages/apps/protocols/[0-9]*.json"
   ]
 }

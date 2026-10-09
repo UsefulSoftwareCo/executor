@@ -13,7 +13,6 @@ import {
   type Executor,
   type SourceSnapshot,
 } from "@executor-js/sdk/core";
-import type { RepositoryBackend } from "@executor-js/app-source/contracts";
 import {
   frameworkPinBehindMessage,
   frameworkPinCatchUpRelease,
@@ -57,7 +56,6 @@ const pinManifest = (content: string | undefined, apps: string): Manifest => {
 /** The host services the pin reads and writes through. */
 export interface FrameworkPinHost {
   readonly executor: Executor;
-  readonly repositories: Pick<RepositoryBackend, "history" | "read">;
 }
 
 /**
@@ -82,15 +80,15 @@ const workspacePosition = (
       const source = yield* host.executor.apps.source({ ...target, deployment: deployment.id });
       if (sourceFilesEqual(workspace.files, source.files)) return "behind" as const;
     }
-    const history = yield* host.repositories.history(app.code);
+    const history = yield* host.executor.apps.history(target);
     if (running.sourceCommit !== null)
       return history.some((entry) => entry.commit === running.sourceCommit)
         ? ("unpublished" as const)
         : ("diverged" as const);
     // A direct file deploy has no commit; main may still have saved the same files earlier.
     for (const entry of history) {
-      const saved = yield* host.repositories.read(app.code, entry.commit);
-      if (sourceFilesEqual(saved.files, running.files)) return "unpublished" as const;
+      const saved = yield* host.executor.apps.revision({ ...target, commit: entry.commit });
+      if (sourceFilesEqual(saved, running.files)) return "unpublished" as const;
     }
     return "diverged" as const;
   });
@@ -120,6 +118,69 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
       const manifest = pinManifest(manifestOf(running), release);
       return manifest.kind === "pin" && manifest.content === content;
     })
+  );
+};
+
+/** A JSON value with object keys sorted, so equal documents compare equal whatever their key order. */
+const canonical = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(canonical)
+    : typeof value === "object" && value !== null
+      ? Object.fromEntries(
+          Object.entries(value)
+            .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+            .map(([key, entry]) => [key, canonical(entry)]),
+        )
+      : value;
+
+/**
+ * Whether `workspace` is a framework pin commit on `deployed`, a deployment's source, and nothing
+ * else. Member setup upgrades an untouched Executor app by deploying the host's template, which
+ * never writes Git, so `main` keeps the pin these steps committed on the source it replaced: the
+ * running source's own files, or, when `main` was behind, an earlier deployment's. Every file but
+ * `package.json` must match `deployed` byte for byte. The manifests must be equal JSON once
+ * `dependencies.apps` is removed from both, where `main` declares exactly a release these steps
+ * write, and once `name` is removed from `deployed` where `main` has none, as the template only
+ * named its package later. A source with no `package.json` matches only when `main` holds exactly
+ * the manifest these steps write from nothing. Any other difference is someone's work.
+ */
+export const pinnedBeforeDeploy = (workspace: SourceFiles, deployed: SourceFiles): boolean => {
+  const rest = (files: SourceFiles) => files.filter((file) => file.path !== "package.json");
+  const kept = new Map(rest(deployed).map((file) => [file.path, file.content]));
+  if (
+    rest(workspace).length !== kept.size ||
+    !rest(workspace).every((file) => kept.get(file.path) === file.content)
+  )
+    return false;
+  // A source without a manifest gets the one the pin writes from nothing, byte for byte.
+  if (manifestOf(deployed) === undefined)
+    return [frameworkPinRelease, frameworkPinCatchUpRelease].some((release) => {
+      const created = pinManifest(undefined, release);
+      return created.kind === "pin" && manifestOf(workspace) === created.content;
+    });
+  const decode = (files: SourceFiles) =>
+    Schema.decodeUnknownOption(Schema.fromJsonString(JsonObject))(manifestOf(files));
+  const saved = decode(workspace);
+  const current = decode(deployed);
+  if (Option.isNone(saved) || Option.isNone(current)) return false;
+  const savedDependencies = Schema.decodeUnknownOption(Dependencies)(saved.value.dependencies);
+  const currentDependencies = Schema.decodeUnknownOption(Dependencies)(current.value.dependencies);
+  if (Option.isNone(savedDependencies) || Option.isNone(currentDependencies)) return false;
+  const pin = savedDependencies.value.apps;
+  if (pin !== frameworkPinRelease && pin !== frameworkPinCatchUpRelease) return false;
+  const unpinned = (
+    manifest: typeof saved.value,
+    dependencies: Readonly<Record<string, string>>,
+    dropName: boolean,
+  ) => {
+    const { apps: _apps, ...others } = dependencies;
+    const { name: _name, ...fields } = manifest;
+    return canonical({ ...(dropName ? fields : manifest), dependencies: others });
+  };
+  const named = Object.hasOwn(saved.value, "name");
+  return (
+    JSON.stringify(unpinned(saved.value, savedDependencies.value, false)) ===
+    JSON.stringify(unpinned(current.value, currentDependencies.value, !named))
   );
 };
 

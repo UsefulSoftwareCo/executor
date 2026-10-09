@@ -6,7 +6,7 @@ import { betterAuth } from "better-auth";
 import { testUtils } from "better-auth/plugins";
 import { organization as organizationPlugin } from "better-auth/plugins/organization";
 import { Pool } from "pg";
-import { authOptions } from "@executor-js/hosted-server";
+import { authOptions, singleResourceOrigin } from "@executor-js/hosted-server";
 import { OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { cloudSessionCookiePrefix } from "../src/contracts/browser.ts";
 import { testStageLifetimeMilliseconds } from "../src/contracts/test-stage-lifetime.ts";
@@ -68,7 +68,16 @@ const provision = Effect.scoped(
     const accountOperation = <A>(run: () => Promise<A>) =>
       Effect.tryPromise({ try: run, catch: () => new FixtureFailed({ phase: "accounts" }) });
     const sessions = yield* Effect.gen(function* () {
-      const base = authOptions({ url: origin, oauthRedirectUri: Option.none() }, []);
+      // Fixtures create sessions only; they never issue tokens for an OAuth resource.
+      const base = authOptions(
+        {
+          url: origin,
+          resourceOrigins: singleResourceOrigin(origin),
+          issuer: `${origin}/api/auth`,
+          oauthRedirectUri: Option.none(),
+        },
+        [],
+      );
       const helpers = testUtils();
       const auth = betterAuth({
         ...base,

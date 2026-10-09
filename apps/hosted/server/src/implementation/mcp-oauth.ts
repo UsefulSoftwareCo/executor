@@ -1,29 +1,23 @@
 import { ApiKeyId } from "../contracts/api-keys.ts";
-import { grantAuthorization } from "@executor-js/mcp-auth";
-import {
-  browserPersonalTokenAccess,
-  apiKeyAccess,
-  isApiKey,
-  requirePinnedOrganization,
-} from "./api-keys.ts";
-import { resolveOrganizationReference } from "./organization-reference.ts";
-import { ApprovalMode, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
+import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
+import { ApprovalMode, type ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
 
 /** Hosted membership composes with the shared OAuth grant lifecycle. */
 import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
 import { APIError, createAuthEndpoint, isAPIError } from "better-auth/api";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import {
   grantOAuthPlugins,
   authCall,
   runAuth,
   type GrantAccess,
+  type GrantOAuthOptions,
   type OAuthResourceSeedContext,
 } from "@executor-js/mcp-auth/oauth";
-import { AuthenticationUnavailable, Unauthorized } from "../contracts/auth.ts";
+import { AuthenticationUnavailable } from "../contracts/auth.ts";
 import {
   McpAccess,
-  McpForbidden,
+  McpApprovalForbidden,
   McpUnauthorized,
   type McpConnectionStore,
 } from "../contracts/mcp.ts";
@@ -33,23 +27,8 @@ import {
   ConnectionNotFound,
   type ConnectionPolicy,
 } from "@executor-js/mcp-auth/connections";
-import {
-  OrganizationForbidden,
-  OrganizationId,
-  OrganizationRole,
-  OrganizationReference,
-  organizationOwner,
-} from "../contracts/organization.ts";
-const resolveReference = (
-  context: GenericEndpointContext["context"],
-  reference: typeof OrganizationReference.Type,
-) =>
-  resolveOrganizationReference(context.adapter, reference).pipe(
-    Effect.catchTags({
-      OrganizationForbidden: () => Effect.fail(new APIError("FORBIDDEN")),
-      AuthenticationUnavailable: () => Effect.fail(new APIError("SERVICE_UNAVAILABLE")),
-    }),
-  );
+import { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-auth/agents";
+import { OrganizationId, OrganizationRole, organizationOwner } from "../contracts/organization.ts";
 const Member = Schema.Struct({ role: OrganizationRole });
 const membership = (
   context: GenericEndpointContext["context"],
@@ -77,13 +56,34 @@ const membership = (
     ),
   );
 
-const hostedGrantOAuth = (origin: string) =>
+/**
+ * The browser origin serves sign-in and consent; the resource origins name MCP and API audiences;
+ * the issuer identifies the authorization server, possibly on another host.
+ */
+export type HostedOAuthOrigins = Pick<GrantOAuthOptions, "origin" | "resourceOrigins" | "issuer">;
+
+/** The hosted grant's origins plus the observer told when a refresh token's family is revoked. */
+export type HostedOAuthOptions = HostedOAuthOrigins &
+  Pick<GrantOAuthOptions, "onRefreshFamilyRevoked">;
+
+const hostedGrantOAuth = ({
+  origin,
+  resourceOrigins,
+  issuer,
+  onRefreshFamilyRevoked,
+}: HostedOAuthOptions) =>
   grantOAuthPlugins({
     origin,
+    resourceOrigins,
+    issuer,
+    onRefreshFamilyRevoked,
     scopes: ["mcp", "executor", "offline_access"],
     resources: [
-      ...mcpOAuthResources(origin),
-      { identifier: `${origin}/api`, allowedScopes: ["executor", "offline_access"] },
+      ...mcpOAuthResources(resourceOrigins.mcp),
+      ...resourceOrigins.api.map((resourceOrigin) => ({
+        identifier: `${resourceOrigin}/api`,
+        allowedScopes: ["executor", "offline_access"],
+      })),
     ],
     selectResource: (ctx, userId, required) =>
       Effect.gen(function* () {
@@ -110,13 +110,26 @@ const hostedGrantOAuth = (origin: string) =>
       ),
   });
 
-const PatGrant = Schema.Struct({
+export const PatGrant = Schema.Struct({
   token: ApiKeyId,
   organization: OrganizationId,
   mode: ApprovalMode,
 });
 const patGrantPrefix = "pat:";
-const patGrantId = (value: typeof PatGrant.Type) =>
+/** The PAT a synthetic grant ID names, or none for an OAuth grant ID. */
+export const patGrantOf = (id: string) =>
+  id.startsWith(patGrantPrefix)
+    ? Schema.decodeUnknownOption(Schema.fromJsonString(PatGrant))(
+        (() => {
+          try {
+            return decodeURIComponent(id.slice(patGrantPrefix.length));
+          } catch {
+            return "";
+          }
+        })(),
+      )
+    : Option.none();
+export const patGrantId = (value: typeof PatGrant.Type) =>
   GrantId.make(patGrantPrefix + encodeURIComponent(JSON.stringify(value)));
 const parsePatGrant = (id: GrantId) =>
   Effect.try({
@@ -126,63 +139,6 @@ const parsePatGrant = (id: GrantId) =>
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PatGrant))),
     Effect.mapError(() => new APIError("UNAUTHORIZED")),
   );
-/** The organization a request names: the URL or query first, then the header. Both must agree. */
-const requestedOrganization = (
-  ctx: GenericEndpointContext & {
-    readonly query?: { readonly organization?: OrganizationReference | undefined } | undefined;
-  },
-) =>
-  Effect.gen(function* () {
-    const header = ctx.headers?.get("x-executor-organization") ?? undefined;
-    const headerReference =
-      header === undefined
-        ? undefined
-        : yield* Schema.decodeUnknownEffect(OrganizationReference)(header).pipe(
-            Effect.mapError(() => new APIError("FORBIDDEN")),
-          );
-    const url = ctx.query?.organization;
-    const fromUrl = url === undefined ? undefined : yield* resolveReference(ctx.context, url);
-    const fromHeader =
-      headerReference === undefined
-        ? undefined
-        : yield* resolveReference(ctx.context, headerReference);
-    if (fromUrl !== undefined && fromHeader !== undefined && fromUrl !== fromHeader)
-      return yield* Effect.fail(
-        new APIError("FORBIDDEN", {
-          message: "The URL and X-Executor-Organization name different organizations.",
-        }),
-      );
-    return fromUrl ?? fromHeader;
-  });
-
-/** An OAuth grant is bound to one organization; a request may only name that one. */
-const requireRequestedOrganization = (
-  ctx: Parameters<typeof requestedOrganization>[0],
-  organization: OrganizationId,
-) =>
-  requestedOrganization(ctx).pipe(
-    Effect.flatMap((requested) =>
-      requested === undefined || requested === organization
-        ? Effect.void
-        : Effect.fail(new APIError("FORBIDDEN")),
-    ),
-  );
-
-/** A PAT targets the named organization, else the organization it is pinned to. */
-const selectPatOrganization = (
-  ctx: Parameters<typeof requestedOrganization>[0],
-  identity: { readonly organization: OrganizationId | undefined },
-  missing: { readonly message: string },
-) =>
-  requestedOrganization(ctx).pipe(
-    Effect.flatMap((requested) => {
-      const organization = requested ?? identity.organization;
-      return organization === undefined
-        ? Effect.fail(new APIError("FORBIDDEN", missing))
-        : Effect.succeed(organization);
-    }),
-  );
-
 /** Stable metadata identifies the PAT/organization/mode partition; it is never a credential. */
 const projectPatAccess = (
   ctx: GenericEndpointContext,
@@ -206,12 +162,24 @@ const projectPatAccess = (
   });
 
 /** Provision the host's fixed resources before serving OAuth requests. */
-export const provisionHostedOAuthResources = (origin: string, context: OAuthResourceSeedContext) =>
-  hostedGrantOAuth(origin).provisionResources(context);
+export const provisionHostedOAuthResources = (
+  origins: HostedOAuthOrigins,
+  context: OAuthResourceSeedContext,
+) => hostedGrantOAuth(origins).provisionResources(context);
+
+/**
+ * Insert one existing connection's missing resources at every resource origin, as a new
+ * connection gets them. Existing resource rows are never changed.
+ */
+export const provisionHostedConnectionResources = (
+  origins: HostedOAuthOrigins,
+  context: OAuthResourceSeedContext,
+  connection: ConnectionId,
+) => hostedGrantOAuth(origins).provisionConnectionResources(context, connection);
 
 /** A consent binds a new grant to the selected organization; refresh retains its identity. */
-export const mcpOAuthPlugins = (origin: string) => {
-  const oauth = hostedGrantOAuth(origin);
+export const mcpOAuthPlugins = (options: HostedOAuthOptions) => {
+  const oauth = hostedGrantOAuth(options);
   const projectAccess = (ctx: GenericEndpointContext, grant: GrantAccess) =>
     Effect.gen(function* () {
       const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(grant.resource).pipe(
@@ -225,8 +193,6 @@ export const mcpOAuthPlugins = (origin: string) => {
         access: { organization, owner: organizationOwner(organization), role: member.role },
       });
     });
-  const access = (ctx: GenericEndpointContext, kind: "mcp" | "api") =>
-    oauth.authenticate(ctx, kind).pipe(Effect.flatMap((grant) => projectAccess(ctx, grant)));
   const hosted = {
     id: "executor-hosted-grants",
     endpoints: {
@@ -246,101 +212,8 @@ export const mcpOAuthPlugins = (origin: string) => {
                   .lookupBrowser(ctx)
                   .pipe(Effect.flatMap((grant) => projectAccess(ctx, grant)));
               const target = yield* parsePatGrant(ctx.body.id);
-              const identity = yield* browserPersonalTokenAccess(ctx, origin, target.token);
+              const identity = yield* browserPersonalTokenAccess(ctx, options.origin, target.token);
               return yield* projectPatAccess(ctx, identity, target.organization, target.mode);
-            }),
-          ),
-      ),
-      getMcpAccess: createAuthEndpoint(
-        "/mcp/access",
-        {
-          method: "GET",
-          requireHeaders: true,
-          metadata: { SERVER_ONLY: true },
-          query: Schema.toStandardSchemaV1(
-            Schema.optional(
-              Schema.Struct({
-                mode: Schema.optional(ApprovalMode),
-                organization: Schema.optional(OrganizationReference),
-              }),
-            ),
-          ),
-        },
-        (ctx) =>
-          runAuth(
-            Effect.gen(function* () {
-              const token = ctx.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
-              if (token === undefined || !isApiKey(token)) {
-                const grant = yield* access(ctx, "mcp");
-                yield* requireRequestedOrganization(ctx, grant.access.organization);
-                return grant;
-              }
-              const identity = yield* apiKeyAccess(ctx, Redacted.make(token));
-              const organization = yield* selectPatOrganization(ctx, identity, {
-                message:
-                  "Use /org/<organization>/mcp, or set X-Executor-Organization, when using a full-account token with MCP.",
-              });
-              return yield* projectPatAccess(
-                ctx,
-                identity,
-                organization,
-                ctx.query?.mode ?? "model",
-              );
-            }),
-          ),
-      ),
-      getApiAccess: createAuthEndpoint(
-        "/executor-api/access",
-        {
-          method: "GET",
-          requireHeaders: true,
-          metadata: { SERVER_ONLY: true },
-          query: Schema.toStandardSchemaV1(
-            Schema.Struct({ organization: Schema.optional(OrganizationReference) }),
-          ),
-        },
-        (ctx) =>
-          runAuth(
-            Effect.gen(function* () {
-              const token = ctx.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
-              const identity = yield* Effect.gen(function* () {
-                if (token !== undefined && isApiKey(token)) {
-                  const identity = yield* apiKeyAccess(ctx, Redacted.make(token));
-                  const organization = yield* selectPatOrganization(ctx, identity, {
-                    message:
-                      "Set the organization query parameter, or X-Executor-Organization, when using a full-account token.",
-                  });
-                  yield* requirePinnedOrganization(identity, organization);
-                  const member = yield* membership(ctx.context, identity.userId, organization);
-                  return {
-                    userId: identity.userId,
-                    key: identity.key,
-                    policy: identity.policy,
-                    access: {
-                      organization,
-                      owner: organizationOwner(organization),
-                      role: member.role,
-                    },
-                  };
-                }
-                const grant = yield* access(ctx, "api");
-                yield* requireRequestedOrganization(ctx, grant.access.organization);
-                return {
-                  userId: grant.userId,
-                  access: grant.access,
-                  policy: grantAuthorization(grant.grant.policy),
-                };
-              });
-              const value = yield* authCall(() =>
-                ctx.context.adapter.findOne({
-                  model: "organization",
-                  where: [{ field: "id", value: identity.access.organization }],
-                }),
-              );
-              const organization = yield* Schema.decodeUnknownEffect(
-                Schema.Struct({ slug: Schema.NonEmptyString }),
-              )(value).pipe(Effect.mapError(() => new APIError("FORBIDDEN")));
-              return { ...identity, organizationSlug: organization.slug };
             }),
           ),
       ),
@@ -349,20 +222,12 @@ export const mcpOAuthPlugins = (origin: string) => {
   return [...oauth.plugins, hosted] as const;
 };
 
-/** Preserve invalid grants, denied membership, and storage outages as different outcomes. */
-export const mcpAuthenticationError = (cause: unknown) =>
+/** Browser approval pages state no cause, so every refusal there is one outcome. */
+export const mcpBrowserGrantError = (cause: unknown) =>
   isAPIError(cause) && cause.statusCode === 403
-    ? new McpForbidden()
+    ? new McpApprovalForbidden()
     : isAPIError(cause) && (cause.statusCode === 400 || cause.statusCode === 401)
       ? new McpUnauthorized()
-      : new AuthenticationUnavailable();
-
-/** Translate native API grant failures into the existing HTTP permission contracts. */
-export const apiAuthenticationError = (cause: unknown) =>
-  isAPIError(cause) && cause.statusCode === 403
-    ? new OrganizationForbidden()
-    : isAPIError(cause) && (cause.statusCode === 400 || cause.statusCode === 401)
-      ? new Unauthorized()
       : new AuthenticationUnavailable();
 
 type ConnectionBody = {
@@ -380,6 +245,12 @@ export interface McpConnectionApi {
   readonly createMcpConnection: (input: { body: ConnectionBody }) => Promise<unknown>;
   readonly updateMcpConnection: (input: { body: ConnectionBody }) => Promise<unknown>;
   readonly revokeMcpConnection: (input: {
+    body: { userId: string; resource: string; id: string };
+  }) => Promise<unknown>;
+  readonly listMcpAgents: (input: {
+    body: { userId: string; resource: string };
+  }) => Promise<unknown>;
+  readonly revokeMcpAgent: (input: {
     body: { userId: string; resource: string; id: string };
   }) => Promise<unknown>;
 }
@@ -435,6 +306,22 @@ export const mcpConnectionStore = (
         Effect.mapError((status) =>
           status === 404
             ? new ConnectionNotFound({ connection: id })
+            : new AuthenticationUnavailable(),
+        ),
+      ),
+    agents: (owner) =>
+      request((api) => api.listMcpAgents({ body: owner }), Schema.Array(ConnectedAgent)).pipe(
+        Effect.mapError(unavailable),
+      ),
+    revokeAgent: (owner, id) =>
+      request(
+        (api) => api.revokeMcpAgent({ body: { ...owner, id } }),
+        Schema.Struct({ revoked: Schema.Literal(true) }),
+      ).pipe(
+        Effect.asVoid,
+        Effect.mapError((status) =>
+          status === 404
+            ? new ConnectedAgentNotFound({ agent: id })
             : new AuthenticationUnavailable(),
         ),
       ),

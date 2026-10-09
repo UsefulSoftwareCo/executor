@@ -1,8 +1,8 @@
 /** Native Git process and filesystem lifetime for Node and Bun hosts. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { SourceError, type RepositoryBackend } from "./contracts/repositories.ts";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { SourceError, type RepositoryBackend } from "@executor-js/sdk/core";
 import { gitRepositories } from "./implementation/git-repositories.ts";
 export { limitedBody } from "./implementation/git-repositories.ts";
 

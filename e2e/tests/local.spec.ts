@@ -1,7 +1,7 @@
 import { scenarios } from "../test-plan.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Redacted, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Api, body, BrowserCookies } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { Target } from "../support/platform.ts";

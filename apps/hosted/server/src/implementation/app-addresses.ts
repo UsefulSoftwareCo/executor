@@ -28,7 +28,7 @@ export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | un
       url.hostname = hostname;
       if (url.hostname !== hostname)
         return yield* new AppUiAddressInvalid({ reason: "invalid_slug" });
-      if (url.hostname.length > 253) return yield* new UiFailed({ reason: "unavailable" });
+      if (url.hostname.length > 253) return yield* new AppUiAddressInvalid({ reason: "too_long" });
       return HttpUrl.make(url.origin);
     });
   const fromHost = (host: string | undefined) => {

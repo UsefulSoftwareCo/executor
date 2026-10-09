@@ -2,8 +2,8 @@ import { dashboardHttpClient, hydratedResult } from "@executor-js/ui/contracts/h
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { observeBrowserUsage } from "./product-analytics.ts";
 import { Effect, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { AsyncResult, Atom } from "effect/reactivity";
 import {
   ApiKeyPage,
   CreatedApiKey,

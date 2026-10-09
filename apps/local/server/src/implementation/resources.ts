@@ -1,7 +1,7 @@
 /** Dashboard policy is pairing; the SDK owns account binding and durable execution. */
 import type { Executor } from "@executor-js/sdk/core";
 import { Layer } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { DashboardApi } from "../contracts/dashboard.ts";
 /** Expose resource operations only inside the paired dashboard API. */
 export const localResourceHandlers = (executor: Executor) =>

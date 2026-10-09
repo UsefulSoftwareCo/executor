@@ -1,12 +1,12 @@
 /** The only case composition helper: scope injected evidence/API/browser services around a test. */
-import { Effect, Layer, Scope } from "effect";
+import { Context, Effect, Layer, Scope } from "effect";
 import type { TestContext } from "vitest";
 import { Actors } from "./actors.ts";
 import { Api, SessionClients } from "./api.ts";
 import { RuntimeLive, Target } from "./platform.ts";
 import { scenarioLifetime } from "./lifecycle.ts";
 import { BrowserDriver, Browser } from "./browser.ts";
-import { evidenceLayer, Telemetry } from "./evidence.ts";
+import { Evidence, evidenceLayer, Telemetry } from "./evidence.ts";
 import { RecordingFocus } from "./recording-focus.ts";
 import { Terminal } from "./terminal.ts";
 
@@ -31,7 +31,15 @@ export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A
         ),
         scope,
       );
-      return yield* program.pipe(Effect.provideContext(services), Scope.provide(scope));
+      // The test's own finalizers close first. A failure among them fails the case after its
+      // body passed, so evidence records it before it writes the outcome.
+      const tests = yield* Scope.fork(scope);
+      yield* Scope.addFinalizerExit(scope, (exit) =>
+        Scope.close(tests, exit).pipe(
+          Effect.onError((cause) => Context.get(services, Evidence).failed(cause)),
+        ),
+      );
+      return yield* program.pipe(Effect.provideContext(services), Scope.provide(tests));
     }).pipe(Effect.onExit((exit) => Effect.sync(() => lifetime.completed(exit))));
   });
 

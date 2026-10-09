@@ -29,7 +29,7 @@ import {
   Stream,
   type Scope,
 } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { WorkflowFailure, WorkflowRunId } from "apps/contracts";
 import { WorkflowBackendState, type WorkflowRuntime } from "../contracts/workflow-runtime.ts";

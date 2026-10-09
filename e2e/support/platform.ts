@@ -1,7 +1,7 @@
 /** Shared test runtime: native services and a real clock, with no application imports. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Context, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { RunMetadata } from "../report-model.ts";
 import { FixtureControl, PreparedScenarios } from "../sdk/contracts.ts";
 

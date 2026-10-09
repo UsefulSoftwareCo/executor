@@ -33,6 +33,8 @@ export const WorkerInvocation = Schema.Struct({
   approval: Schema.optionalKey(TrustedToolApproval),
   replay: Schema.optionalKey(WorkflowReplay),
   deadline: Schema.optionalKey(InvocationDeadline),
+  /** The scheduled run the invocation serves, for telemetry; see `InvocationRun`. */
+  run: Schema.optionalKey(Schema.String),
   headers: Schema.Record(Schema.String, Schema.String),
   /** Whether the invocation may ask for input or manage workflows through its callbacks. */
   elicitation: Schema.Boolean,

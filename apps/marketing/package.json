@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./experiments": "./src/content/hero-experiment.ts",
     "./site-origin": "./src/content/site-origin.ts",
     "./error-reporting": "./src/error-reporting.ts",
     "./script-assets": "./src/script-assets.ts"
@@ -17,8 +16,8 @@
   },
   "dependencies": {
     "@astrojs/react": "^6.0.5",
-    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@executor-js/app-registry": "workspace:*",
+    "@effect/atom-react": "4.0.1",
+    "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/ui": "workspace:*",
     "@sentry/browser": "10.75.0",
@@ -26,7 +25,7 @@
     "astro": "^7.3.2",
     "clsx": "^2.1.1",
     "cookie": "^2.0.1",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "effect": "4.0.1",
     "motion": "^12.38.0",
     "posthog-js": "^1.372.5",
     "react": "^19.2.5",

@@ -28,11 +28,12 @@ import {
 import { AppSchedules } from "@executor-js/ui/dashboard/schedules";
 import { scheduleBindings } from "../../contracts/schedules.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
-import { Exit, Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { Exit, Option, Schema } from "effect";
+import { AsyncResult } from "effect/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
+import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { useAtomSet } from "@effect/atom-react";
-import type { App, AppId, Profile, ProfileId } from "@executor-js/sdk";
+import { AppId, type App, type Profile, type ProfileId } from "@executor-js/sdk";
 import { Link, useBlocker, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -70,9 +71,21 @@ import {
   removeAppAtom,
   renameAppAtom,
 } from "../../contracts/apps.ts";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppDeployments } from "./app-source.tsx";
+
+/** The organization's inventory and the app, its setups and its access, keyed by the URL. */
+export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
+  Option.match(Schema.decodeUnknownOption(AppId)(params.appId), {
+    onNone: () => [],
+    onSome: (app) => [
+      dashboardAtoms(organization).inventory,
+      liveAppAtom({ organization, app }),
+      profilesAtom({ organization, app }),
+      appAccessAtom({ organization, app }),
+    ],
+  });
 
 /** One selected profile supplies runtime bindings across the app page. */
 export function AppDetailPage({
@@ -96,12 +109,7 @@ export function AppDetailPage({
     enableBeforeUnload: skillDirty,
   });
   const atoms = useDashboardAtoms();
-  usePreload(
-    atoms.inventory,
-    liveAppAtom({ organization, app: appId }),
-    profilesAtom({ organization, app: appId }),
-    appAccessAtom({ organization, app: appId }),
-  );
+  usePreload(...appDetailPageReads(organization, { appId }));
   const inventory = useQuery(atoms.inventory);
   const query = useQuery(liveAppAtom({ organization, app: appId }));
   const app = Option.isSome(query.data)

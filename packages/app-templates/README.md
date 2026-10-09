@@ -6,7 +6,12 @@ The SDK runtime does not dispatch on a protocol or depend on this package.
 - `src/contracts/templates.ts`: generator errors.
 - `src/implementation/mcp.ts`: a remote MCP app whose connection was confirmed:
   public, or OAuth discovered from the server.
-- `executor/`: the built-in Executor app's skills and framework reference.
+- `executor/`: the built-in Executor app's skills. Each directory under
+  `executor/skills/` is published; `executor` is the entry point.
+- `src/implementation/executor-intro.gen.ts`: the `executor` skill's body, which
+  MCP servers send as their instructions, and `executor-skill-digests.gen.ts`:
+  digests of every published skill file, which telemetry uses to name only the
+  Executor app's own skills. Regenerate both with `bun run executor:intro`.
 
 The product decides that a server qualifies before calling the generator; see
 `@executor-js/catalog`. Every other service, including OpenAPI and GraphQL APIs,

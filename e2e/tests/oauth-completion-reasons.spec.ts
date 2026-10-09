@@ -4,7 +4,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -229,7 +229,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect(
           yield* browser.use("Read the recovery actions", (page) =>
             Promise.all([
-              page.getByText("named a different issuer", { exact: false }).count(),
+              page.getByText("didn’t name the issuer", { exact: false }).count(),
               page.getByRole("link", { name: "Try again", exact: true }).count(),
               page.getByRole("link", { name: "Update client details", exact: true }).count(),
               page.getByRole("link", { name: "Back to app", exact: true }).count(),
@@ -312,7 +312,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect(
           yield* recoveryActions(
             "Read the saved-client recovery",
-            "no longer accepts the OAuth client Executor registered",
+            "no longer accepts the client Executor registered earlier",
           ),
         ).toEqual([1, 1, 0, 0]);
         yield* browser.checkpoint("Saved registered client rejected callback");
@@ -338,7 +338,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect(
           yield* recoveryActions(
             "Read the new-client recovery",
-            "rejected the OAuth client Executor had just registered",
+            "refused the client Executor registered moments ago",
           ),
         ).toEqual([1, 0, 0, 1]);
         yield* browser.checkpoint("New registered client rejected callback");

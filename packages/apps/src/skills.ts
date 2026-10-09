@@ -23,14 +23,16 @@ export {
   type FolderSkillsOptions,
   type AppSkillSource as Skill,
   type SkillFile,
+  type GitHubSkillsAccount,
   type GitHubSkillsOptions,
   type SkillCacheOptions,
   type WellKnownSkillsOptions,
 } from "./contracts/skills.ts";
 
 /**
- * Fetch a public GitHub skill collection from one resolved commit. Pass `cache: ctx.cache` to reuse
- * the catalog; without it, mutable refs resolve again on each call.
+ * Fetch a GitHub skill collection from one resolved commit. A private repository takes `account`
+ * and its `token`. Pass `cache: ctx.cache` to reuse the catalog; without it, mutable refs resolve
+ * again on each call.
  */
 export const githubSkills = (options: GitHubSkillsOptions) =>
   Effect.runPromise(
@@ -52,12 +54,19 @@ export const folderSkills = (options: FolderSkillsOptions) =>
 
 /**
  * Read files for a custom remote skill loader, such as one for GitLab. Reads share one byte
- * budget and reject with the same safe SkillLoadFailed errors as githubSkills, naming `service`.
+ * budget and reject with the same safe SkillLoadFailed errors as githubSkills, naming `service`,
+ * or with `NetworkRefused` when Executor's network refuses a request.
  */
 export const skillReader = (options: SkillReaderOptions) => {
   const service = Schema.decodeUnknownSync(SkillServiceName)(options.service);
   const remote = Effect.runSync(reader(options));
-  const run = <A>(effect: Effect.Effect<A, import("./contracts/skills.ts").SkillLoadFailed>) =>
+  const run = <A>(
+    effect: Effect.Effect<
+      A,
+      | import("./contracts/skills.ts").SkillLoadFailed
+      | import("./contracts/network.ts").NetworkRefused
+    >,
+  ) =>
     Effect.runPromise(
       effect.pipe(withService(service)),
       options.signal === undefined ? {} : { signal: options.signal },

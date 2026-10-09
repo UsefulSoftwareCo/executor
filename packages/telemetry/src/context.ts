@@ -8,7 +8,8 @@ import {
   HttpClientRequest,
   HttpServerResponse,
   HttpTraceContext,
-} from "effect/unstable/http";
+} from "effect/http";
+import { ownedBy } from "./ownership.ts";
 
 /** Trusted in-process capability containing no product authority, database or credentials. */
 export interface InvocationTelemetry {
@@ -58,9 +59,10 @@ export const invocationFetch = (signal: AbortSignal) =>
           const request = yield* Effect.try(() => new Request(input, init));
           const client = yield* HttpClient.HttpClient;
           const response = yield* client.execute(HttpClientRequest.fromWeb(request)).pipe(
-            Effect.withSpan("provider.http.request", {
-              attributes: { "http.request.method": request.method },
-            }),
+            Effect.withSpan(
+              "provider.http.request",
+              ownedBy("upstream", { attributes: { "http.request.method": request.method } }),
+            ),
             Effect.provideService(FetchHttpClient.RequestInit, {
               cache: request.cache,
               credentials: request.credentials,
@@ -92,9 +94,12 @@ export const invocationFetch = (signal: AbortSignal) =>
                   streamed,
                   HttpBody.stream(
                     body.stream.pipe(
-                      Stream.withSpan("provider.http.response.read", {
-                        attributes: { "http.response.status_code": response.status },
-                      }),
+                      Stream.withSpan(
+                        "provider.http.response.read",
+                        ownedBy("upstream", {
+                          attributes: { "http.response.status_code": response.status },
+                        }),
+                      ),
                     ),
                     body.contentType,
                     body.contentLength,

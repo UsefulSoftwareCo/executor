@@ -1,4 +1,4 @@
-/** Real product checks with durable markers for timeout writes and observable sleep windows. */
+/** Real product checks with durable markers for timed-out step writes and observable sleep windows. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Config, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -121,19 +121,24 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
         expect(saved.output).toBe(control.row);
         expect(yield* app.rows()).toEqual([{ id: control.row, label: "committed" }]);
 
-        const timed = yield* app.start("write", { key: "rolled-back", wait: 10000 });
+        // The step's transaction commits before its slow outside work; both attempts time out.
+        const timed = yield* app.start("write", { key: "timed-out", wait: 10000 });
         const marker = yield* evidence.step(
           "Confirm inserted row through a separate durable run",
-          app.marker("rolled-back"),
+          app.marker("timed-out"),
         );
         const observed = yield* Clock.currentTimeMillis;
         const failed = yield* app.wait(timed.id, "errored");
         expect(failed.error).toBe("engine");
-        expect(yield* app.rows()).toEqual([{ id: control.row, label: "committed" }]);
-        // Let the authored body reach its natural return time if cancellation fails to stop it.
+        const once = [
+          { id: control.row, label: "committed" },
+          { id: marker.row, label: "timed-out" },
+        ];
+        expect(yield* app.rows()).toEqual(once);
+        // Let the authored bodies reach their natural return time; the retry wrote nothing more.
         const remaining = observed + 11000 - (yield* Clock.currentTimeMillis);
         if (remaining > 0) yield* Effect.sleep(remaining);
-        expect(yield* app.rows()).toEqual([{ id: control.row, label: "committed" }]);
+        expect(yield* app.rows()).toEqual(once);
         yield* evidence.json("confirmed-timeout.json", {
           app: app.app.id,
           control,

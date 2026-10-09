@@ -42,27 +42,32 @@ const Deployed = Schema.Struct({
   }),
 });
 const Completed = Schema.Struct({ status: Schema.Literal("completed"), value: Schema.Json });
+/** A search item's callable path and the paths of the same tool under other profiles. */
+const SearchedPaths = Schema.Struct({
+  path: Schema.String,
+  alsoAt: Schema.optional(Schema.Array(Schema.String)),
+});
+const callablePaths = (item: typeof SearchedPaths.Type) => [item.path, ...(item.alsoAt ?? [])];
 const files = [
   {
     path: "index.ts",
     content: `
-import { defineApp, defineProvider, secrets, object, string, query, mutation, workflow, defineDatabase, table, interval, router } from "apps";
+import { defineApp, defineProvider, secrets, object, string, query, mutation, workflow, interval, router } from "apps";
 const service = defineProvider({ name: "Profile fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
-const database = defineDatabase({ rows: table({ account: string(), body: string() }).index("by_account", ["account"]), registrations: table({ subscription: string(), context: string(), source: string() }).index("by_subscription", ["subscription"]) });
 const shape = ctx => ({ auth: "auth" in ctx, profile: "profile" in ctx });
-const write = mutation({ input: object({ body: string() }) }, async (ctx, input) => { await ctx.db.rows.insert({ account: ctx.accounts.sink.id, body: input.body }); return ctx.accounts.sink.id; });
-const inspect = query({ input: object({}) }, async (ctx) => ({ context: shape(ctx), mail: ctx.accounts.mail.map(a => a.id), sink: ctx.accounts.sink.id, registrations: await ctx.db.registrations.withIndex("by_creation").collect(), totalRows: await ctx.db.rows.withIndex("by_creation").count() }));
+const register = "INSERT INTO registrations (subscription, context, source) VALUES (?, ?, ?) ON CONFLICT (subscription) DO NOTHING";
+const write = mutation({ input: object({ body: string() }) }, async (ctx, input) => { ctx.sql.exec("INSERT INTO rows (account, body) VALUES (?, ?)", ctx.accounts.sink.id, input.body); return ctx.accounts.sink.id; });
+const inspect = query({ input: object({}) }, async (ctx) => ({ context: shape(ctx), mail: ctx.accounts.mail.map(a => a.id), sink: ctx.accounts.sink.id, registrations: ctx.sql.exec("SELECT subscription, context, source FROM registrations ORDER BY seq").toArray(), totalRows: ctx.sql.exec("SELECT count(*) AS n FROM rows").one().n }));
 const capture = workflow({ input: object({ source: string() }) }, async (ctx, input) => {
  await ctx.step.sleep("before snapshot", "1 second");
  return ctx.step.do("read bindings", async step => ({ context: shape(step), mail: step.accounts.mail.map(a => a.id), sink: step.accounts.sink.id, source: input.source }));
 });
-const mark = mutation({ input: object({ key: string() }) }, async (ctx, input) => { return await ctx.db.registrations.insert({ subscription: input.key, context: JSON.stringify(shape(ctx)), source: ctx.accounts.sink.id }); });
+const mark = mutation({ input: object({ key: string() }) }, async (ctx, input) => ctx.sql.transaction(tx => tx.exec(register, input.key, JSON.stringify(shape(ctx)), ctx.accounts.sink.id).rowsWritten));
 const pauseable = workflow({ input: object({}) }, async ctx => { await ctx.step.runMutation("started", mark, { key: ctx.runId }); await ctx.step.sleep("wait", "5 minutes"); return "finished"; });
 const empty = object({});
 const incoming = { account: "mail", config: empty, state: empty,
  register: async (ctx, { account, subscriptionId }) => {
-   const found = await ctx.db.registrations.withIndex("by_subscription", q => q.eq("subscription", subscriptionId)).first();
-   if (!found) await ctx.db.registrations.insert({ subscription: subscriptionId, context: JSON.stringify(shape(ctx)), source: account.id });
+   ctx.sql.exec(register, subscriptionId, JSON.stringify(shape(ctx)), account.id);
    return {};
  },
  handle: async (ctx, { account, request }) => {
@@ -72,14 +77,19 @@ const incoming = { account: "mail", config: empty, state: empty,
    return Response.json({ run: run.id });
  },
  unregister: async (ctx, { subscriptionId }) => {
-   const found = await ctx.db.registrations.withIndex("by_subscription", q => q.eq("subscription", subscriptionId)).first();
-   if (found) await ctx.db.registrations.delete(found.id);
+   ctx.sql.exec("DELETE FROM registrations WHERE subscription = ?", subscriptionId);
  }
 };
-export default defineApp({ accounts: { mail: service.many(), sink: service }, database }, { tools: router({
+export default defineApp({ accounts: { mail: service.many(), sink: service } }, { tools: router({
    inspect,
    write, mark,
  }), workflows: { capture, pauseable }, webhooks: { incoming }, schedules: { summary: interval({ minutes: 1 }, write, { body: "scheduled" }) } });
+`,
+  },
+  {
+    path: "migrations/0001_profiles.sql",
+    content: `CREATE TABLE rows (seq INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, body TEXT NOT NULL);
+CREATE TABLE registrations (seq INTEGER PRIMARY KEY AUTOINCREMENT, subscription TEXT NOT NULL UNIQUE, context TEXT NOT NULL, source TEXT NOT NULL);
 `,
   },
   appsManifest,
@@ -282,16 +292,14 @@ layer(TestLive, { excludeTestServices: true })("Profiles", (it) => {
           Schema.Struct({
             execution: Schema.Struct({
               ok: Schema.Literal(true),
-              value: Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+              value: Schema.Struct({ items: Schema.Array(SearchedPaths) }),
             }),
           }),
         )(discovery.structuredContent);
-        expect(
-          found.execution.value.items.filter((item) => item.path.includes(alice.id)).length,
-        ).toBeGreaterThan(0);
-        expect(
-          found.execution.value.items.filter((item) => item.path.includes(bob.id)).length,
-        ).toBeGreaterThan(0);
+        // The two profiles expose the same tools, so each is one item that also names the other.
+        const discovered = found.execution.value.items.flatMap(callablePaths);
+        expect(discovered.filter((path) => path.includes(alice.id)).length).toBeGreaterThan(0);
+        expect(discovered.filter((path) => path.includes(bob.id)).length).toBeGreaterThan(0);
         const invoked = yield* client.use(
           "Run both scalar account contexts through MCP",
           (client, signal) =>
@@ -523,21 +531,16 @@ layer(TestLive, { excludeTestServices: true })("Profiles", (it) => {
           Schema.Struct({
             execution: Schema.Struct({
               ok: Schema.Literal(true),
-              value: Schema.Struct({
-                items: Schema.Array(Schema.Struct({ path: Schema.String })),
-              }),
+              value: Schema.Struct({ items: Schema.Array(SearchedPaths) }),
             }),
             unavailableApps: Schema.Array(
               Schema.Struct({ profile: Schema.optional(Schema.String) }),
             ),
           }),
         )(disabledDiscovery.structuredContent);
-        expect(
-          enabledCatalog.execution.value.items.some((item) => item.path.includes(alice.id)),
-        ).toBe(true);
-        expect(
-          enabledCatalog.execution.value.items.some((item) => item.path.includes(bob.id)),
-        ).toBe(false);
+        const enabled = enabledCatalog.execution.value.items.flatMap(callablePaths);
+        expect(enabled.some((path) => path.includes(alice.id))).toBe(true);
+        expect(enabled.some((path) => path.includes(bob.id))).toBe(false);
         expect(enabledCatalog.unavailableApps.some((item) => item.profile === bob.id)).toBe(false);
 
         const pauseDeadline = (yield* Clock.currentTimeMillis) + 40000;

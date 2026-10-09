@@ -41,10 +41,23 @@ const balance = Schema.Struct({
 const price = Schema.Struct({ amount: Schema.Number, interval: Schema.String });
 const item = Schema.Struct({
   featureId: Schema.String,
+  included: Schema.Number,
+  unlimited: Schema.Boolean,
   price: Schema.NullOr(
     Schema.Struct({ amount: Schema.optionalKey(Schema.Number), interval: Schema.String }),
   ),
 }).pipe(Schema.encodeKeys({ featureId: "feature_id" }));
+const trial = Schema.Struct({
+  durationLength: Schema.Number,
+  durationType: Schema.String,
+  cardRequired: Schema.Boolean,
+}).pipe(
+  Schema.encodeKeys({
+    durationLength: "duration_length",
+    durationType: "duration_type",
+    cardRequired: "card_required",
+  }),
+);
 
 /** Only the inputs used by the product, encoded with Autumn's wire field names. */
 export const AutumnRequests = {
@@ -92,7 +105,9 @@ export const AutumnResponses = {
         archived: Schema.Boolean,
         price: Schema.NullOr(price),
         items: Schema.Array(item),
-      }),
+        // Autumn omits the key for a plan without a trial.
+        freeTrial: Schema.optionalKey(trial),
+      }).pipe(Schema.encodeKeys({ freeTrial: "free_trial" })),
     ),
   }),
   updateBalance: Schema.Struct({ success: Schema.Literal(true) }),

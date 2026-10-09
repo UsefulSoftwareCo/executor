@@ -1,14 +1,5 @@
-import {
-  Config,
-  ConfigProvider,
-  Effect,
-  Encoding,
-  FileSystem,
-  Option,
-  Path,
-  Redacted,
-  Schema,
-} from "effect";
+import { Config, ConfigProvider, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
+import { Hex } from "effect/encoding";
 import { InstallId } from "@executor-js/telemetry/product-analytics";
 import { lock } from "proper-lockfile";
 import { dataDirectory } from "../contracts/config.ts";
@@ -19,7 +10,7 @@ class BootstrapError extends Schema.TaggedError<BootstrapError>()("SelfHostBoots
 }) {}
 
 const sessionSecret = Schema.String.check(Schema.isMinLength(32));
-const encryptionKey = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/));
+const encryptionKey = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/u));
 
 /** Resolve self-host defaults before opening the database or starting diagnostics. */
 export const selfHostConfiguration = Effect.scoped(
@@ -97,7 +88,7 @@ export const selfHostConfiguration = Effect.scoped(
           return yield* new BootstrapError({
             message: `${variable} is missing for an existing database. Restore its original file from a backup or set the original value in the environment.`,
           });
-        const generated = Encoding.encodeHex(crypto.getRandomValues(new Uint8Array(32)));
+        const generated = Hex.encode(crypto.getRandomValues(new Uint8Array(32)));
         const temporary = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".bootstrap-" });
         const staged = path.join(temporary, filename);
         const file = yield* fs.open(staged, { flag: "wx", mode: 0o600 });
@@ -142,7 +133,7 @@ export const selfHostConfiguration = Effect.scoped(
       "EXECUTOR_ANALYTICS_SECRET",
       "analytics-secret.key",
       encryptionKey,
-      () => Encoding.encodeHex(crypto.getRandomValues(new Uint8Array(32))),
+      () => Hex.encode(crypto.getRandomValues(new Uint8Array(32))),
     );
     return ConfigProvider.fromUnknown({
       BETTER_AUTH_URL: origin,

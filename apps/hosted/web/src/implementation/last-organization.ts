@@ -5,7 +5,7 @@ import {
 } from "@executor-js/hosted-server/browser/contracts";
 import type { OrganizationId } from "@executor-js/hosted-server/organization";
 import { Option, Schema } from "effect";
-import { Cookies } from "effect/unstable/http";
+import { Cookies } from "effect/http";
 import { LastOrganization as LastOrganizationSchema } from "@executor-js/hosted-server/browser/contracts";
 
 const lifetime = 365 * 24 * 60 * 60;

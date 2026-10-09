@@ -2,7 +2,7 @@
 import * as Sentry from "@sentry/react";
 import { useAtomValue } from "@effect/atom-react";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect } from "react";
 
 export { startErrorReporting } from "./error-reporting-client.ts";

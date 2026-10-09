@@ -3,7 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { DashboardOverview } from "@executor-js/local-server/contracts";
 import { Link, Outlet, useMatches, useLocation } from "@tanstack/react-router";
 import { Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { createContext, useContext } from "react";
 import { overviewAtom } from "../contracts/api.ts";
 import { InventoryPageSkeleton } from "@executor-js/ui/dashboard/loading";

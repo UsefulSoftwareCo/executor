@@ -10,6 +10,7 @@ import {
   type CatalogAccount,
   type CatalogCacheOptions,
 } from "./catalog-cache.ts";
+import { fromPromise, method } from "./authoring.ts";
 import { mcpClientEffect } from "./mcp.ts";
 import { adaptMcpTool } from "./mcp-tools.ts";
 import { protocolOperations, type OperationKinds } from "./protocol-operations.ts";
@@ -30,9 +31,6 @@ const McpToolSummary = McpToolMetadata.mapFields(
   ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
 );
 type McpToolSummary = typeof McpToolSummary.Type;
-
-const invoke = <A>(work: () => Promise<A>) =>
-  Effect.tryPromise({ try: work, catch: (error) => error });
 
 /** Router metadata from a server's self-description. Author metadata on the router wins. */
 const serverMeta = (server: McpServerHeader): RouterMeta => {
@@ -57,10 +55,11 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
       timeoutMs: options.timeoutMs,
     }).pipe(Effect.mapError(invalid));
     // The account's scope separates credentials, so the server alone identifies its catalog.
-    const cache = yield* catalogScope(options, invalid);
+    const cache = yield* catalogScope(options, options.headers, invalid);
     const id = yield* cacheKey({ url: parsed.url });
     const key: JsonValue = ["mcp-catalog-v3", id, "current"];
-    const changed = cache === undefined ? undefined : invoke(() => cache.invalidate(key));
+    const changed =
+      cache === undefined ? undefined : fromPromise(method(cache, "invalidate"), "cache")(key);
     const client = yield* mcpClientEffect(parsed, changed);
     const catalog = yield* catalogCache({
       ...options,
@@ -76,7 +75,7 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
           ? client.list
           : mcpClientEffect(
               { ...parsed, signal: context.signal },
-              invoke(() => context.cache.invalidate(key)),
+              fromPromise(method(context.cache, "invalidate"), "cache")(key),
             ).pipe(Effect.flatMap((source) => source.list))
         ).pipe(
           Effect.flatMap(({ tools, server }) =>

@@ -1,6 +1,6 @@
 import { useState, type ComponentType } from "react";
 import { Cause, Exit, Option, Redacted, Schema } from "effect";
-import type { AsyncResult } from "effect/unstable/reactivity";
+import type { AsyncResult } from "effect/reactivity";
 import { QueryResult } from "./context.tsx";
 import type { WebhookSetupView, WebhookSubscription } from "@executor-js/sdk";
 import type { WebhookSetupSubmission } from "../../contracts/webhook-setup.ts";

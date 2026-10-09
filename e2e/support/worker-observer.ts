@@ -36,18 +36,18 @@ const observe = async (token) => {
 
 /**
  * A key-account app whose query and workflow both observe the Worker. Queries of an app with a
- * database run in its data facet; without one, queries and workflows share one Worker.
+ * database (deployed with `databaseFiles`) run in its data facet; without one, queries and workflows share one Worker.
  */
 export const observerApp = (options: {
   readonly name: string;
   readonly database: boolean;
   readonly resource: string | null;
-}) => `import { defineApp, defineDatabase, defineProvider, secrets, table, object, string, query, workflow, router } from "apps";
+}) => `import { defineApp, defineProvider, secrets, object, string, query, workflow, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(options.name)}, auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
 ${observer(options.resource)}
-export default defineApp({ accounts: { service }${options.database ? ", database: defineDatabase({ marks: table({ label: string() }) })" : ""} }, {
+export default defineApp({ accounts: { service } }, {
   tools: router({ probe: query({ input: object({}) }, async (ctx) => observe(ctx.accounts.service.fields.token)) }),
   workflows: { probe: workflow({ input: object({}) }, async (ctx) => ({
     ...(await ctx.step.do("probe", async (step) => observe(step.accounts.service.fields.token))),

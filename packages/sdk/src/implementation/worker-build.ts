@@ -13,6 +13,8 @@ import type { Plugin } from "esbuild";
 import { PublishedAppFramework, WorkerBundle } from "../contracts/worker-build.ts";
 import { appProtocol } from "./app-protocols.ts";
 import { browserBuild } from "./worker-browser-build.ts";
+import { sourceImports } from "./worker-source-imports.ts";
+import { serverSourceMap, sourceLocation } from "./worker-source-map.ts";
 import { wasmBuild } from "./worker-wasm-build.ts";
 import { workerDependencies } from "./worker-dependencies.ts";
 import apps from "apps/package.json" with { type: "json" };
@@ -68,13 +70,16 @@ const EsbuildFailure = Schema.Struct({
     Schema.Struct({
       text: Schema.String,
       location: Schema.NullOr(
-        Schema.Struct({ file: Schema.String, line: Schema.Int, column: Schema.Int }),
+        Schema.Struct({
+          file: Schema.String,
+          line: Schema.Int,
+          column: Schema.Int,
+          lineText: Schema.String,
+        }),
       ),
     }),
   ),
 });
-/** The bundler reads source from its `virtual:` namespace; report the authored path. */
-const sourcePath = (file: string) => file.replace(/^virtual:/, "");
 /** Shown compiler errors; the rest are counted. */
 const shownCompileErrors = 5;
 
@@ -82,14 +87,18 @@ const shownCompileErrors = 5;
 const compileFailure = (cause: unknown) =>
   Option.match(Schema.decodeUnknownOption(EsbuildFailure)(cause), {
     onNone: () => new RuntimeBuildFailed({ stage: "compile", message: describeBuildCause(cause) }),
-    onSome: ({ errors }) => {
-      const first = errors[0]?.location ?? undefined;
+    onSome: (failure) => {
+      const errors = failure.errors.map(({ text, location }) => ({
+        text,
+        location: location === null ? undefined : sourceLocation(location),
+      }));
+      const first = errors[0]?.location;
       const lines = errors
         .slice(0, shownCompileErrors)
         .map(({ text, location }) =>
-          location === null
+          location === undefined
             ? text
-            : `${sourcePath(location.file)}:${location.line}:${location.column}: ${text}`,
+            : `${location.file}:${location.line}:${location.column}: ${text}`,
         );
       const more = errors.length - lines.length;
       return new RuntimeBuildFailed({
@@ -98,11 +107,7 @@ const compileFailure = (cause: unknown) =>
           [...lines, ...(more > 0 ? [`(${more} more errors)`] : [])].join("\n") ||
             describeBuildCause(cause),
         ),
-        ...(first === undefined
-          ? {}
-          : {
-              location: { file: sourcePath(first.file), line: first.line, column: first.column },
-            }),
+        ...(first === undefined ? {} : { location: first }),
       });
     },
   });
@@ -156,19 +161,22 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
       return yield* new RuntimeAppsDependencyMissing({ version: apps.version });
     const selected = yield* selectedFramework(filesystem);
     const protocol = yield* appProtocol(selected.protocol);
-    filesystem.write("__executor_worker.ts", protocol.workerEntry(files));
+    const entry = "__executor_worker.ts";
+    filesystem.write(entry, protocol.workerEntry(files));
     const plan = yield* prepareUiBuild(files);
     const browser =
       plan === undefined
         ? undefined
         : yield* browserBuild(files, filesystem, plan, selected.browser);
-    const wasm = wasmBuild(filesystem, yield* Path.Path);
+    const path = yield* Path.Path;
+    const wasm = wasmBuild(filesystem, path);
+    const sourceMap = serverSourceMap(entry);
     const compiled = yield* Effect.tryPromise({
       try: () =>
         createApp({
           files: filesystem,
           installDependencies: false,
-          server: "__executor_worker.ts",
+          server: entry,
           externals: frameworkExports,
           minify: true,
           jsx: "automatic",
@@ -178,11 +186,21 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
             quietCompiler,
             dependencies.plugin,
             wasm.plugin,
+            sourceMap.plugin,
+            // The browser plugin wraps script-imported assets in a module-relative URL first; its
+            // own lookup of the asset file then reaches the source resolver.
             ...(browser === undefined ? [] : [browser.plugin]),
+            sourceImports(filesystem, path),
           ],
         }),
       catch: compileFailure,
     });
+    const map = sourceMap.map();
+    if (map === undefined)
+      return yield* new RuntimeBuildFailed({
+        stage: "compile",
+        message: "The compiler returned no source map for the server bundle.",
+      });
     const bundle = yield* Schema.decodeUnknownEffect(Schema.toType(WorkerBundle))({
       ...compiled,
       modules: { ...compiled.modules, ...frameworkEntries, ...wasm.modules },
@@ -203,5 +221,7 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
       framework: { version: selected.version, modules: selected.server },
       ui,
       protocol: selected.protocol,
+      // Locates this build's declaration failures; never retained with it.
+      sourceMap: map,
     };
   }).pipe(Effect.provide(Path.layer), Effect.withSpan("runtime.cloud.compile"));

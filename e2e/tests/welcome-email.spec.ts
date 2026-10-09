@@ -18,7 +18,7 @@ layer(WelcomeEmailTarget.layer, { excludeTestServices: true })("Cloud welcome em
         expect(yield* target.tick()).toBe(200);
         expect(yield* target.messages(email, "welcome to executor")).toHaveLength(0);
 
-        const otp = yield* target.code(email);
+        const otp = yield* target.code(email, "sign-up");
         expect(
           yield* target.request("/api/auth/sign-in/email-otp", {
             email,
@@ -78,7 +78,7 @@ if you get stuck or have questions, just reply. this was an automated email but 
             type: "sign-in",
           }),
         ).toBe(200);
-        const nextCode = yield* target.code(email, 2);
+        const nextCode = yield* target.code(email, "sign-in");
         expect(
           yield* target.request("/api/auth/sign-in/email-otp", {
             email,

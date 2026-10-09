@@ -10,10 +10,11 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { FixtureControl } from "./contracts.ts";
+import { roleHost } from "../support/role-hosts.ts";
 export { FixtureControl, FixtureActor, FixtureActors } from "./contracts.ts";
 
 /** Safe errors describe the control operation without the capability or response body. */
@@ -63,8 +64,16 @@ export const fixtureControlFromEnvironment = Config.String("E2E_FIXTURES").pipe(
   Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(FixtureControl))),
 );
 
-/** Start a scoped fixture process before configuring its database through the one-use setup route. */
-export const startFixtureControl = (origin: string, directory: string) =>
+/**
+ * Start a scoped fixture process before configuring its database through the one-use setup route.
+ * `browserOrigin` is where Cloud serves its dashboard: `app.` of `origin` unless the run starts it
+ * elsewhere, as under its rollback switch.
+ */
+export const startFixtureControl = (
+  origin: string,
+  directory: string,
+  browserOrigin: string = roleHost(origin, "app"),
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
       path = yield* Path.Path,
@@ -77,6 +86,8 @@ export const startFixtureControl = (origin: string, directory: string) =>
         env: {
           PATH: process.env.PATH ?? "",
           TEST_FIXTURE_ORIGIN: origin,
+          // Cloud's dashboard API takes cookie writes only from its browser origin.
+          TEST_FIXTURE_BROWSER_ORIGIN: browserOrigin,
           TEST_FIXTURE_OUTPUT: output,
           TEST_FIXTURE_TOKEN: Redacted.value(token),
         },

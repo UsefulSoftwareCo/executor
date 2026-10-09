@@ -1,15 +1,17 @@
 /** A scoped external OAuth issuer for setup checks; Executor still uses its real HTTP and storage paths. */
 import { createServer } from "node:http";
 import { Socket } from "node:net";
-import { createHash, generateKeyPairSync, type KeyObject, randomUUID, sign } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  generateKeyPairSync,
+  type KeyObject,
+  randomUUID,
+  sign,
+} from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { tokenRequestParameters } from "./client-credentials-issuer.ts";
 
 type TokenAuth = "client_secret_basic" | "client_secret_post" | "none";
@@ -24,6 +26,17 @@ export type IssuedTokens = {
   readonly id_token?: string;
 };
 export type TokenShape = (tokens: IssuedTokens, refreshing: boolean) => object;
+/** A token request as the service received it, for an error page that repeats it. */
+export type ReceivedTokenRequest = {
+  readonly body: string;
+  readonly authorization: string | undefined;
+};
+
+/** A JSON-RPC request or notification to the served MCP server. */
+const McpMessage = Schema.Struct({
+  id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+  method: Schema.String,
+});
 
 /** Start a loopback issuer with controllable discovery and registration metadata. */
 export const oauthSetupIssuer = Effect.gen(function* () {
@@ -33,23 +46,59 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let challenge = true;
   let probes = 0;
   let mcpStatus: 520 | undefined;
+  /** Answer MCP on `/mcp` for an access token this issuer issued and still accepts. */
+  let serveMcp = false;
   let expiresAt = 0;
   // 401 models RFC 7591 registration that requires an initial access token Executor lacks.
-  let registrationStatus: 200 | 201 | 400 | 401 = 201;
+  // 429 answers with a rate limiter's HTML page.
+  let registrationStatus: 200 | 201 | 400 | 401 | 429 = 201;
+  /** The Retry-After header of rate-limited discovery and registration answers; unset omits it. */
+  let retryAfter: string | undefined;
+  /** A rate limiter's page, as an edge proxy in front of the service sends it. */
+  const rateLimited = () =>
+    HttpServerResponse.text(
+      "<html><head><title>429 Too Many Requests</title></head><body><center><h1>429 Too Many Requests</h1></center><hr><center>synthetic-edge</center></body></html>",
+      {
+        status: 429,
+        contentType: "text/html; charset=utf-8",
+        headers: retryAfter === undefined ? {} : { "retry-after": retryAfter },
+      },
+    );
   let malformedRegistration = false;
   let registrationError: "invalid_client_metadata" | "invalid_redirect_uri" | "invalid_request" =
     "invalid_client_metadata";
+  /** The `error_description` a refused registration sends; undefined omits it. */
+  let registrationErrorDescription: string | undefined = "PRIVATE_PROVIDER_ERROR";
   let omitSecretExpiry = false;
   /** Vercel registers a public client whatever method the request names, as RFC 7591 allows. */
   let issuePublicClients = false;
   let nonceRequested: boolean | undefined;
   let idTokenAlgorithms: readonly string[] | undefined;
+  /**
+   * OpenID Connect Discovery's ID token algorithms, served beside OAuth metadata that omits them,
+   * as Miro does. Its client authentication methods disagree with the OAuth metadata's.
+   */
+  let openidAlgorithms: readonly string[] | undefined;
+  /**
+   * How the OpenID metadata location answers when it has algorithms to serve. The trailing-slash
+   * and uppercase-scheme issuers name the same URL as the OAuth metadata's but not the same string.
+   */
+  let openidMetadata:
+    | "served"
+    | "redirect"
+    | "unavailable"
+    | "another-issuer"
+    | "issuer-trailing-slash"
+    | "issuer-uppercase-scheme" = "served";
   let includeIdToken = false;
   let invalidNonce = false;
   /** The ID token `iss`; Google names its sign-in host rather than the token endpoint origin. */
   let idTokenIssuer: string | undefined;
-  /** Google signs RS256; a declared server advertises no algorithms, so RS256 is the only default. */
-  let idTokenAlgorithm: "ES256" | "RS256" | "none" = "ES256";
+  /**
+   * Google signs RS256; a declared server advertises no algorithms, so RS256 is the only default.
+   * HS256 signs with the client secret, as Miro does.
+   */
+  let idTokenAlgorithm: "ES256" | "RS256" | "HS256" | "none" = "ES256";
   let refreshTokens = false;
   /** Replace the refresh token on every refresh, as rotating services do. */
   let rotateRefreshTokens = false;
@@ -91,8 +140,20 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let browserReturn: string | undefined;
   // Opt-in error and token variants. Defaults keep the standard behaviour above.
   // "reset" drops the connection without a response, as a failing proxy or network would.
+  // An HTML `page` is built from the request, as error pages that repeat it are. Either answer
+  // can carry a Retry-After header.
   let tokenError:
-    | { readonly status: number; readonly body: object; readonly challenge?: string }
+    | {
+        readonly status: number;
+        readonly body: object;
+        readonly challenge?: string;
+        readonly retryAfter?: string;
+      }
+    | {
+        readonly status: number;
+        readonly page: (request: ReceivedTokenRequest) => string;
+        readonly retryAfter?: string;
+      }
     | "reset"
     | undefined;
   /**
@@ -143,6 +204,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let discovery:
     | "available"
     | "unavailable"
+    | "rate-limited"
     | "missing"
     | "no-oauth"
     | "invalid-json"
@@ -155,6 +217,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let scopes = ["read"];
   /** A narrower scope requirement advertised by the resource's Bearer challenge. */
   let challengeScopes: readonly string[] | undefined;
+  /** Scopes the issuer grants separately but refuses together, as `invalid_scope`. */
+  let exclusiveScopes: readonly string[] | undefined;
   /** An exact metadata override models OIDC published away from its declared issuer. */
   let metadataOverrideIssuer: string | undefined;
   let metadataOverrideStatus = 200;
@@ -163,7 +227,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let registrations = 0;
   let discoveries = 0;
   let authMethods = ["client_secret_basic"];
-  let lastRegistration: { scope: string; method: string } | undefined;
+  /** The latest registration request, with the OpenID Connect `application_type` it named. */
+  let lastRegistration:
+    | { scope: string; method: string; applicationType: string | undefined }
+    | undefined;
   /**
    * How the service reads HTTP Basic client credentials. "form-decoded" follows RFC 6749
    * section 2.3.1. "literal" compares them as sent, as Google and PlanetScale (Doorkeeper) do.
@@ -204,6 +271,52 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       scopes_supported: scopes,
     });
   });
+  /** Whether a request presents an access token this issuer issued and has not ended. */
+  const acceptedToken = (authorization: string | undefined) => {
+    const token = authorization?.replace(/^Bearer /, "");
+    return token !== undefined && issuedAccessTokens.has(token) && !expiredAccessTokens.has(token);
+  };
+  /**
+   * An OAuth-protected MCP server's answer to an accepted token: initialization, notifications and
+   * an empty tool list over plain JSON responses, with no session.
+   */
+  const mcpAnswer = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const message = yield* request.json.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(McpMessage)),
+    );
+    if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
+    return yield* HttpServerResponse.json({
+      jsonrpc: "2.0",
+      id: message.id,
+      ...(message.method === "initialize"
+        ? {
+            result: {
+              protocolVersion: "2025-03-26",
+              capabilities: { tools: {} },
+              serverInfo: { name: "synthetic-oauth-mcp", version: "1" },
+            },
+          }
+        : message.method === "tools/list"
+          ? { result: { tools: [] } }
+          : { error: { code: -32601, message: "Method not found" } }),
+    });
+  }).pipe(Effect.orDie);
+  /** OpenID Connect Discovery for `issuer`, whose client authentication differs from OAuth's. */
+  const openidDocument = (issuer: string, algorithms: readonly string[]) =>
+    Effect.gen(function* () {
+      const origin = yield* Deferred.await(address);
+      return yield* HttpServerResponse.json({
+        issuer,
+        authorization_endpoint: `${origin}/authorize`,
+        token_endpoint: `${origin}/token`,
+        jwks_uri: `${origin}/jwks`,
+        response_types_supported: ["code"],
+        subject_types_supported: ["public"],
+        id_token_signing_alg_values_supported: algorithms,
+        token_endpoint_auth_methods_supported: ["client_secret_post"],
+      });
+    });
   const routes = Layer.mergeAll(
     HttpRouter.add(
       "GET",
@@ -239,11 +352,17 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
         authorizationScope = params.get("scope");
+        const requested = authorizationScope?.split(" ") ?? [];
+        const refusal =
+          authorizeError ??
+          (requested.filter((scope) => exclusiveScopes?.includes(scope)).length > 1
+            ? "invalid_scope"
+            : undefined);
         const callback = new URL(redirect);
-        if (authorizeError === undefined) {
+        if (refusal === undefined) {
           codes.set(code, { clientId, redirect, challenge, nonce: params.get("nonce") });
           callback.searchParams.set("code", code);
-        } else callback.searchParams.set("error", authorizeError);
+        } else callback.searchParams.set("error", refusal);
         callback.searchParams.set("state", params.get("state") ?? "");
         if (callbackIssuer !== undefined) callback.searchParams.set("iss", callbackIssuer);
         // The managed host advertises a separate callback relay; model its browser return.
@@ -260,7 +379,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const contentType = request.headers["content-type"]?.split(";")[0]?.trim();
-        const input = tokenRequestParameters(contentType, yield* request.text);
+        const text = yield* request.text;
+        const input = tokenRequestParameters(contentType, text);
         const refreshing = input.get("grant_type") === "refresh_token";
         if (refreshing && hold === "refresh-unprocessed") {
           // The service never processes this request; its caller is gone once it is released.
@@ -277,13 +397,26 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           source.socket.destroy();
           return HttpServerResponse.empty({ status: 500 });
         }
+        const errorHeaders =
+          tokenError === undefined || tokenError.retryAfter === undefined
+            ? {}
+            : { "retry-after": tokenError.retryAfter };
+        if (tokenError !== undefined && "page" in tokenError)
+          return HttpServerResponse.text(
+            tokenError.page({ body: text, authorization: request.headers.authorization }),
+            {
+              status: tokenError.status,
+              contentType: "text/html; charset=utf-8",
+              headers: errorHeaders,
+            },
+          );
         if (tokenError !== undefined)
           return yield* HttpServerResponse.json(tokenError.body, {
             status: tokenError.status,
             headers:
               tokenError.challenge === undefined
-                ? {}
-                : { "www-authenticate": tokenError.challenge },
+                ? errorHeaders
+                : { ...errorHeaders, "www-authenticate": tokenError.challenge },
           });
         const code = input.get("code"),
           verifier = input.get("code_verifier"),
@@ -330,6 +463,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           };
         if (
           clientId === undefined ||
+          client === undefined ||
           !Object.values(refreshing ? refreshChecks : tokenChecks).every(Boolean)
         )
           return yield* HttpServerResponse.json({ error: "invalid_grant" }, { status: 400 });
@@ -354,16 +488,21 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         const signature =
           idTokenAlgorithm === "none"
             ? ""
-            : idTokenAlgorithm === "ES256"
-              ? sign("sha256", Buffer.from(jwt), {
-                  key: keyPair.privateKey,
-                  dsaEncoding: "ieee-p1363",
-                }).toString("base64url")
-              : sign(
-                  "sha256",
-                  Buffer.from(jwt),
-                  (rsaKey ??= generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey),
-                ).toString("base64url");
+            : idTokenAlgorithm === "HS256"
+              ? // A public client shares no secret to sign with.
+                client.secret === null
+                ? ""
+                : createHmac("sha256", client.secret).update(jwt).digest("base64url")
+              : idTokenAlgorithm === "ES256"
+                ? sign("sha256", Buffer.from(jwt), {
+                    key: keyPair.privateKey,
+                    dsaEncoding: "ieee-p1363",
+                  }).toString("base64url")
+                : sign(
+                    "sha256",
+                    Buffer.from(jwt),
+                    (rsaKey ??= generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey),
+                  ).toString("base64url");
         const accessToken = refreshing
           ? `synthetic-refreshed-token-${refreshes}`
           : "synthetic-access-token";
@@ -429,7 +568,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       Effect.gen(function* () {
         probes++;
         if (mcpStatus !== undefined) return HttpServerResponse.empty({ status: mcpStatus });
-        if (postChallenge) return HttpServerResponse.empty({ status: 405 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        // The served MCP server offers no standalone SSE stream.
+        if (postChallenge || (serveMcp && acceptedToken(request.headers.authorization)))
+          return HttpServerResponse.empty({ status: 405 });
         if (discovery === "no-oauth") return HttpServerResponse.empty({ status: 200 });
         const origin = yield* Deferred.await(address);
         return HttpServerResponse.empty({
@@ -446,6 +588,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       Effect.gen(function* () {
         probes++;
         if (mcpStatus !== undefined) return HttpServerResponse.empty({ status: mcpStatus });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (serveMcp && acceptedToken(request.headers.authorization)) return yield* mcpAnswer;
         const origin = yield* Deferred.await(address);
         return HttpServerResponse.empty({
           status: 401,
@@ -511,11 +655,46 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     ),
     HttpRouter.add(
       "GET",
+      "/.well-known/openid-configuration",
+      Effect.gen(function* () {
+        discoveryRequests.push("/.well-known/openid-configuration");
+        if (openidAlgorithms === undefined) return HttpServerResponse.empty({ status: 404 });
+        const origin = yield* Deferred.await(address);
+        // The target serves the same algorithms, so only a client that follows redirects uses them.
+        if (openidMetadata === "redirect")
+          return HttpServerResponse.empty({
+            status: 302,
+            headers: { location: `${origin}/redirected/openid-configuration` },
+          });
+        if (openidMetadata === "unavailable") return HttpServerResponse.empty({ status: 503 });
+        return yield* openidDocument(
+          openidMetadata === "another-issuer"
+            ? `${origin}/another-issuer`
+            : openidMetadata === "issuer-trailing-slash"
+              ? `${origin}/`
+              : openidMetadata === "issuer-uppercase-scheme"
+                ? origin.replace(/^http:/, "HTTP:")
+                : origin,
+          openidAlgorithms,
+        );
+      }),
+    ),
+    HttpRouter.add(
+      "GET",
+      "/redirected/openid-configuration",
+      Effect.gen(function* () {
+        discoveryRequests.push("/redirected/openid-configuration");
+        return yield* openidDocument(yield* Deferred.await(address), openidAlgorithms ?? []);
+      }),
+    ),
+    HttpRouter.add(
+      "GET",
       "/.well-known/oauth-authorization-server",
       Effect.gen(function* () {
         discoveries++;
         discoveryRequests.push("/.well-known/oauth-authorization-server");
         if (discovery === "unavailable") return HttpServerResponse.empty({ status: 503 });
+        if (discovery === "rate-limited") return rateLimited();
         if (discovery === "missing" || discovery === "no-oauth")
           return HttpServerResponse.empty({ status: 404 });
         if (discovery === "invalid-json")
@@ -605,22 +784,29 @@ export const oauthSetupIssuer = Effect.gen(function* () {
                 redirect_uris: Schema.Array(Schema.String),
                 token_endpoint_auth_method: Schema.String,
                 scope: Schema.optional(Schema.String),
+                application_type: Schema.optional(Schema.String),
               }),
             ),
           ),
         );
-        lastRegistration = { scope: input.scope ?? "", method: input.token_endpoint_auth_method };
+        lastRegistration = {
+          scope: input.scope ?? "",
+          method: input.token_endpoint_auth_method,
+          applicationType: input.application_type,
+        };
+        const description =
+          registrationErrorDescription === undefined
+            ? {}
+            : { error_description: registrationErrorDescription };
+        if (registrationStatus === 429) return rateLimited();
         if (registrationStatus === 401)
           return yield* HttpServerResponse.json(
-            { error: "invalid_client", error_description: "PRIVATE_PROVIDER_ERROR" },
+            { error: "invalid_client", ...description },
             { status: 401 },
           );
         if (registrationStatus === 400)
           return yield* HttpServerResponse.json(
-            {
-              error: registrationError,
-              error_description: "PRIVATE_PROVIDER_ERROR",
-            },
+            { error: registrationError, ...description },
             { status: 400 },
           );
         const issued = registeredClient ?? {
@@ -681,10 +867,18 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly registrationStatus?: typeof registrationStatus;
       readonly malformedRegistration?: boolean;
       readonly registrationError?: typeof registrationError;
+      /** The `error_description` of a refused registration; null omits it. */
+      readonly registrationErrorDescription?: string | null;
+      /** The Retry-After header of rate-limited discovery and registration; null omits it. */
+      readonly retryAfter?: string | null;
       readonly omitSecretExpiry?: boolean;
       /** Register every client as public, replacing the requested token endpoint method. */
       readonly issuePublicClients?: boolean;
-      readonly idTokenAlgorithms?: readonly string[];
+      /** Advertised ID token algorithms; null omits them from OAuth metadata. */
+      readonly idTokenAlgorithms?: readonly string[] | null;
+      /** Serve OpenID Connect Discovery with these ID token algorithms; null serves none. */
+      readonly openidAlgorithms?: readonly string[] | null;
+      readonly openidMetadata?: typeof openidMetadata;
       readonly includeIdToken?: boolean;
       readonly idTokenIssuer?: string | null;
       readonly idTokenAlgorithm?: typeof idTokenAlgorithm;
@@ -701,19 +895,27 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly postChallenge?: boolean;
       readonly challenge?: boolean;
       readonly mcpStatus?: 520 | null;
+      /**
+       * Answer MCP on `/mcp` for an access token this issuer issued and has not ended, as an
+       * OAuth-protected MCP server does. Requests without one keep the challenge.
+       */
+      readonly serveMcp?: boolean;
       readonly expiresAt?: number;
       readonly discovery?: typeof discovery;
       readonly pathDiscovery?: typeof pathDiscovery;
       readonly scopes?: readonly string[];
       readonly challengeScopes?: readonly string[] | null;
+      /** Refuse an authorization request naming more than one of these; null accepts any. */
+      readonly exclusiveScopes?: readonly string[] | null;
       readonly metadataOverrideIssuer?: string | null;
       readonly metadataOverrideStatus?: number;
       readonly authMethods?: readonly string[];
       readonly callbackIssuer?: string | null;
       readonly browserReturn?: string | null;
       /**
-       * Answer every token request with this body, status and optional challenge, or drop the
-       * connection with "reset"; null restores tokens.
+       * Answer every token request with this JSON body, status and optional challenge, or an HTML
+       * page built from the request, either with an optional Retry-After, or drop the connection
+       * with "reset"; null restores tokens.
        */
       readonly tokenError?: typeof tokenError | null;
       /** Reshape token responses like a real service; null restores the standard shape. */
@@ -737,9 +939,15 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.tokenRequestFormat !== undefined) tokenRequestFormat = input.tokenRequestFormat;
         if (input.mcpStatus !== undefined)
           mcpStatus = input.mcpStatus === null ? undefined : input.mcpStatus;
+        if (input.serveMcp !== undefined) serveMcp = input.serveMcp;
         if (input.postChallenge !== undefined) postChallenge = input.postChallenge;
         if (input.challenge !== undefined) challenge = input.challenge;
-        if (input.idTokenAlgorithms !== undefined) idTokenAlgorithms = input.idTokenAlgorithms;
+        if (input.idTokenAlgorithms !== undefined)
+          idTokenAlgorithms =
+            input.idTokenAlgorithms === null ? undefined : input.idTokenAlgorithms;
+        if (input.openidAlgorithms !== undefined)
+          openidAlgorithms = input.openidAlgorithms === null ? undefined : input.openidAlgorithms;
+        if (input.openidMetadata !== undefined) openidMetadata = input.openidMetadata;
         if (input.includeIdToken !== undefined) includeIdToken = input.includeIdToken;
         if (input.idTokenIssuer !== undefined)
           idTokenIssuer = input.idTokenIssuer === null ? undefined : input.idTokenIssuer;
@@ -757,6 +965,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.malformedRegistration !== undefined)
           malformedRegistration = input.malformedRegistration;
         if (input.registrationError !== undefined) registrationError = input.registrationError;
+        if (input.registrationErrorDescription !== undefined)
+          registrationErrorDescription =
+            input.registrationErrorDescription === null
+              ? undefined
+              : input.registrationErrorDescription;
+        if (input.retryAfter !== undefined)
+          retryAfter = input.retryAfter === null ? undefined : input.retryAfter;
         if (input.omitSecretExpiry !== undefined) omitSecretExpiry = input.omitSecretExpiry;
         if (input.issuePublicClients !== undefined) issuePublicClients = input.issuePublicClients;
         if (input.registration !== undefined) registration = input.registration;
@@ -766,6 +981,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.scopes !== undefined) scopes = [...input.scopes];
         if (input.challengeScopes !== undefined)
           challengeScopes = input.challengeScopes === null ? undefined : input.challengeScopes;
+        if (input.exclusiveScopes !== undefined)
+          exclusiveScopes = input.exclusiveScopes === null ? undefined : input.exclusiveScopes;
         if (input.metadataOverrideIssuer !== undefined)
           metadataOverrideIssuer =
             input.metadataOverrideIssuer === null ? undefined : input.metadataOverrideIssuer;

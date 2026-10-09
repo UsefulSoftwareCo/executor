@@ -137,7 +137,7 @@ export default defineApp({ accounts: {} }, { tools: router({ status: query({ inp
                 yield* held.release;
                 if (outcome === "fail") {
                   yield* browser.use("The filter error offers retry", (page) =>
-                    page.getByRole("button", { name: "Retry", exact: true }).waitFor(),
+                    page.getByRole("button", { name: "Try again", exact: true }).waitFor(),
                   );
                   yield* checkRetained("The filter error preserves cards and the open controls");
                   const retry = yield* holdQuery(paths, "continue", managed);
@@ -145,7 +145,7 @@ export default defineApp({ accounts: {} }, { tools: router({ status: query({ inp
                     page.keyboard.press("Escape"),
                   );
                   yield* browser.use("Retry the new filter", (page) =>
-                    page.getByRole("button", { name: "Retry", exact: true }).click(),
+                    page.getByRole("button", { name: "Try again", exact: true }).click(),
                   );
                   expect(paths).toContain(yield* retry.requested);
                   yield* browser.use("Reopen the selected filters during retry", (page) =>

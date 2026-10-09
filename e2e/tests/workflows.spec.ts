@@ -215,14 +215,14 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
       context,
       Effect.gen(function* () {
         const fixture = yield* workflowFixture;
-        const { api, actors, prefix, app, path, submit, connect, account, start, wait, call } =
+        const { api, actors, app, path, profile, submit, connect, account, start, wait, call } =
           fixture;
         const run = yield* startPinnedRun(fixture);
-        const reconnect = yield* api.request(
-          actors.owner,
-          "POST",
-          `${prefix}/accounts/${account}/connections`,
-        );
+        const reconnect = yield* api.request(actors.owner, "POST", `${path}/connections`, {
+          requirement: "service",
+          profile: profile.id,
+          account,
+        });
         expect(
           (yield* submit((yield* body(Resource, reconnect)).id, "synthetic-refreshed")).status,
         ).toBe(200);

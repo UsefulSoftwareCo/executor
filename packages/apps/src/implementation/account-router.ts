@@ -289,19 +289,27 @@ const narrow = <T extends AppNode>(
  * Discover each selected account's router and combine matching names.
  * Calls take { accountId, input }; each branch retains its account's input schema,
  * credentials, approval and output validation. Empty selections expose no operations.
- * Discovery is sequential and cancellation follows the caller's signal.
+ * Discovery is sequential and cancellation follows the caller's signal. `discover` may return the
+ * router or a Promise of it, and the combined router keeps its operations' handler contexts.
  */
-export const accountRouter = <Account extends { readonly id: string }>(
+export const accountRouter = <
+  Account extends { readonly id: string },
+  Query = unknown,
+  Mutation = unknown,
+>(
   accounts: readonly Account[],
-  discover: (account: Account) => Promise<RouterDeclaration>,
+  discover: (
+    account: Account,
+  ) => RouterDeclaration<Query, Mutation> | Promise<RouterDeclaration<Query, Mutation>>,
   options: { readonly signal: AbortSignal },
-): Promise<RouterDeclaration> =>
+): Promise<RouterDeclaration<Query, Mutation>> =>
   Effect.runPromise(
     Effect.gen(function* () {
       const routers = new Map<string, AppNode>();
       for (const account of accounts) {
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- discover is the app's, called from the app's own code
         const declaration = yield* Effect.tryPromise({
-          try: () => discover(account),
+          try: async () => discover(account),
           catch: (error) => accountProviderError(error, account.id),
         });
         if (routers.has(account.id))

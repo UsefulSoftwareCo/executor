@@ -136,7 +136,10 @@ export default defineApp({ accounts: ${accountsDeclaration} }, async ({ accounts
   ];
 };
 
-/** The source quick add generates for an OAuth MCP server, deployed without re-checking the server. */
+/**
+ * The source quick add generates for an OAuth MCP server, deployed without re-checking the server.
+ * It leaves out the generated `mcpHealth` account check: these issuers serve no MCP by default.
+ */
 export const oauthMcpAppFiles = (name: string, url: string) => [
   {
     path: "index.ts",

@@ -1,7 +1,7 @@
 /** Effect owns the bundled Motel workerd process and restarts it after unexpected exits. */
 import { createRequire } from "node:module";
 import { Deferred, Effect, FileSystem, Path, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** workerd's control message once the collector socket accepts connections. */
 const Listening = Schema.Struct({
@@ -38,13 +38,15 @@ const serveMotel = (bundle: string, data: string, port: number) =>
           path.join(bundle, "motel.capnp"),
         ],
         {
-          cwd: data,
+          // A process's working directory cannot be removed or renamed on Windows. workerd can
+          // outlive the parent's reported exit while it terminates, so it never runs inside data.
+          cwd: bundle,
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
           additionalFds: { fd3: { type: "output" } },
-          // workerd does not watch its parent. Sharing the parent's process group lets whoever
-          // supervises the parent, such as the desktop, stop both after the parent is killed.
+          // workerd does not watch its parent. It shares the parent's process group on POSIX and
+          // Node's kill-on-close job on Windows, so stopping the parent also stops workerd.
           detached: false,
           killSignal: "SIGTERM",
           forceKillAfter: 3_000,

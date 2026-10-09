@@ -2,8 +2,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Schema } from "effect";
-import { CliError, Command } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
+import { CliError, Command } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
 import { TestStageFailed } from "../src/contracts/test-stage-lifetime.ts";
 import { prPreviewCommand } from "../src/implementation/pr-preview-commands.ts";
 

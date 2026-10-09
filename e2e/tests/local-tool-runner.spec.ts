@@ -58,6 +58,7 @@ export default defineApp({ accounts: {} }, async () => ({
     pick: query({ input: pick }, async (_, input) => ({ received: input })),
     either: query({ input: either }, async (_, input) => ({ received: input })),
     guarded: mutation({ input: object({}), approval: () => "user-approval" }, async () => "ran"),
+    blocked: mutation({ input: object({}), approval: () => "denied" }, async () => "ran"),
   }),
 }));`;
 const Draft = Schema.fromJsonString(Schema.Json);
@@ -457,6 +458,37 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
             page.getByRole("region", { name: "Tool result", exact: true }).count(),
           ),
         ).toBe(0);
+        yield* browser.use("Open a tool whose approval policy denies it", (page) =>
+          page.getByRole("button", { name: "blocked", exact: true }).click(),
+        );
+        yield* browser.use("Run the denied tool", (page) =>
+          page.getByRole("button", { name: "Run tool", exact: true }).click(),
+        );
+        const denied = yield* browser.use("The block is explained", (page) =>
+          page
+            .getByRole("alert")
+            .filter({ hasText: "Blocked by the app’s approval policy" })
+            .waitFor()
+            .then(() =>
+              Promise.all([
+                page
+                  .getByRole("alert")
+                  .filter({ hasText: "Blocked by the app’s approval policy" })
+                  .locator("p")
+                  .allTextContents(),
+                page.getByRole("region", { name: "Tool result", exact: true }).count(),
+              ]),
+            ),
+        );
+        // The dashboard names the tool and says how the call could be allowed, not only its tag.
+        expect(denied).toEqual([
+          [
+            "The approval policy in the app’s code denied this call to “blocked”.",
+            "Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
+          ],
+          0,
+        ]);
+        yield* browser.checkpoint("Denied tool call");
       }),
     ),
   );

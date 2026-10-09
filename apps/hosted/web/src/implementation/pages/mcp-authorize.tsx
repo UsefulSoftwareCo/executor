@@ -4,7 +4,7 @@ import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Cause, Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { grantTarget } from "@executor-js/mcp-auth/grants";
 import {
   McpConsentLayout,
@@ -22,15 +22,20 @@ import {
 } from "@executor-js/ui/components/select";
 import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contracts/mcp.ts";
 import { organizationsAtom } from "../../contracts/organization.ts";
+import { useResourceOrigins } from "../resource-origin.ts";
 
-/** The user approves the URL's requested connection. App/tool scoping remains a backend capability. */
+/**
+ * The user approves the URL's requested connection. App/tool scoping remains a backend capability.
+ * The request may name a resource at any of the deployment's resource origins.
+ */
 export function McpAuthorizePage() {
   const page = usePageUrl();
+  const resourceOrigins = useResourceOrigins();
   // Keep the signed query intact; repeated OAuth fields must not be reserialized by the router.
   const query = page.search.slice(1),
     params = new URLSearchParams(query);
   const clientId = params.get("client_id") ?? "";
-  const target = grantTarget(page.origin, params.getAll("resource"));
+  const target = grantTarget(resourceOrigins, params.getAll("resource"));
   const destination = consentDestination(params.get("redirect_uri"));
   const client = useAtomValue(mcpClientAtom(clientId));
   const organizations = useAtomValue(organizationsAtom);

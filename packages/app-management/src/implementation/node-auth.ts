@@ -10,11 +10,11 @@ import {
   Effect,
   FileSystem,
   Path,
-  Encoding,
   Layer,
   Redacted,
   Schema,
 } from "effect";
+import { Base64Url, Hex } from "effect/encoding";
 import {
   FetchHttpClient,
   HttpClient,
@@ -24,12 +24,15 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import { NetAddress } from "effect/unstable/net";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+} from "effect/http";
+import { NetAddress } from "effect/net";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { AppClientError } from "../client-error.ts";
 
-/** Credential-bearing traffic is permitted only over TLS or to loopback development hosts. */
+/**
+ * Credential-bearing traffic is permitted only over TLS or to loopback development hosts,
+ * including `*.localhost` (RFC 6761), where a local Cloud serves its role hosts.
+ */
 export const RegistryOrigin = Schema.String.check(
   Schema.makeFilter((input) => {
     try {
@@ -37,7 +40,9 @@ export const RegistryOrigin = Schema.String.check(
       return (
         url.origin === input &&
         (url.protocol === "https:" ||
-          (url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)))
+          (url.protocol === "http:" &&
+            (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+              url.hostname.endsWith(".localhost"))))
       );
     } catch {
       return false;
@@ -56,6 +61,12 @@ const Session = Schema.Struct({
   expiresAt: Schema.Number,
   organization: Schema.String,
   namespace: Schema.String,
+  /**
+   * Other origins where the host that issued this session serves Git, from its context at
+   * sign-in. Absent for sessions saved before the host named them, and for hosts that serve Git
+   * only on their own origin.
+   */
+  gitOrigins: Schema.optional(Schema.Array(Schema.String)),
 });
 const authError = () => new AppClientError({ reason: "authentication" });
 // Loaded lazily so a native binding that cannot load fails here instead of at process start.
@@ -64,6 +75,18 @@ const entry = (host: string) =>
     try: async () => {
       const { AsyncEntry } = await import("@napi-rs/keyring");
       return new AsyncEntry("Executor Registry", host);
+    },
+    catch: authError,
+  });
+/**
+ * Which signed-in host a Git origin's remotes use. It holds an origin, never a credential, and
+ * {@link gitSession} accepts it only when that host's own session names the Git origin.
+ */
+const gitEntry = (origin: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      const { AsyncEntry } = await import("@napi-rs/keyring");
+      return new AsyncEntry("Executor Registry Git", origin);
     },
     catch: authError,
   });
@@ -84,6 +107,45 @@ const request = <A>(url: string, body: URLSearchParams | object, schema: Schema.
         Effect.mapError(authError),
         Effect.flatMap((request) => fetchJson(request, schema)),
       );
+const Endpoint = Schema.String.check(
+  Schema.makeFilter((input) => Schema.is(RegistryOrigin)(URL.parse(input)?.origin ?? "")),
+);
+/**
+ * Find the host's API resource and its authorization server, as RFC 9728 and RFC 8414 clients
+ * do: the resource names its issuer, and the issuer's own origin serves the endpoints, which may
+ * be on another host than the API (hosted Executor's are). The issuer must match exactly.
+ */
+const discover = (host: string) =>
+  Effect.gen(function* () {
+    const protectedResource = yield* fetchJson(
+      HttpClientRequest.get(`${host}/.well-known/oauth-protected-resource/api`),
+      Schema.Struct({
+        resource: Schema.String,
+        authorization_servers: Schema.NonEmptyArray(Endpoint),
+      }),
+    );
+    if (protectedResource.resource !== `${host}/api`) return yield* authError();
+    const issuer = protectedResource.authorization_servers[0];
+    const issuerUrl = new URL(issuer);
+    const metadata = yield* fetchJson(
+      HttpClientRequest.get(
+        `${issuerUrl.origin}/.well-known/oauth-authorization-server${issuerUrl.pathname.replace(/\/$/, "")}`,
+      ),
+      Schema.Struct({
+        issuer: Schema.String,
+        authorization_endpoint: Endpoint,
+        token_endpoint: Endpoint,
+        registration_endpoint: Endpoint,
+      }),
+    );
+    if (metadata.issuer !== issuer) return yield* authError();
+    return {
+      resource: protectedResource.resource,
+      authorization: metadata.authorization_endpoint,
+      token: metadata.token_endpoint,
+      registration: metadata.registration_endpoint,
+    };
+  });
 const save = (host: string, session: typeof Session.Type) =>
   Effect.gen(function* () {
     const store = yield* entry(host);
@@ -103,7 +165,7 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       const key = yield* Effect.tryPromise({
         try: async () =>
-          Encoding.encodeHex(
+          Hex.encode(
             new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(host))),
           ),
         catch: authError,
@@ -140,8 +202,9 @@ export const registrySession = (host: string) =>
         Effect.mapError(authError),
       );
       if (saved.expiresAt > Date.now() + 60000) return Redacted.make(saved);
+      const endpoints = yield* discover(host);
       const fresh = yield* request(
-        `${host}/api/auth/oauth2/token`,
+        endpoints.token,
         new URLSearchParams({
           grant_type: "refresh_token",
           client_id: saved.clientId,
@@ -160,6 +223,26 @@ export const registrySession = (host: string) =>
     }),
   );
 
+/**
+ * The session for Git remotes on `origin`. Hosted Executor serves Git on other origins than its
+ * API (`executor.sh` beside `api.executor.sh`), so sign-in records which host's session each of
+ * them uses, and that session must still name the origin. Otherwise a session signed in at
+ * `origin` itself is used, as on hosts that serve Git beside their API.
+ */
+export const gitSession = (origin: string) =>
+  Effect.gen(function* () {
+    const store = yield* gitEntry(origin);
+    const signedIn = yield* Effect.tryPromise({
+      try: (signal) => store.getPassword(signal),
+      catch: authError,
+    });
+    const host = signedIn ?? origin;
+    const session = yield* registrySession(host);
+    if (host !== origin && !(Redacted.value(session).gitOrigins ?? []).includes(origin))
+      return yield* authError();
+    return session;
+  });
+
 /** Browser authorization-code flow with PKCE, an exact loopback callback, and an unpredictable state. */
 export const registryLogin = (host: string, platform: string) =>
   Effect.scoped(
@@ -171,7 +254,7 @@ export const registryLogin = (host: string, platform: string) =>
         crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
       const challenge = yield* Effect.tryPromise({
         try: async () =>
-          Encoding.encodeBase64Url(
+          Base64Url.encode(
             new Uint8Array(
               await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
             ),
@@ -197,10 +280,11 @@ export const registryLogin = (host: string, platform: string) =>
           });
         }),
       );
+      const listener = createServer();
       const services = yield* Layer.build(
         HttpRouter.serve(callback, { disableLogger: true, disableListenLog: true }).pipe(
           Layer.provideMerge(
-            NodeHttpServer.layer(createServer, {
+            NodeHttpServer.layer(() => listener, {
               host: "127.0.0.1",
               port: 0,
               gracefulShutdownTimeout: 1000,
@@ -208,11 +292,16 @@ export const registryLogin = (host: string, platform: string) =>
           ),
         ),
       );
+      // Closing the server waits for every connection, and a browser may hold one it opened but
+      // never sent a request on (a raced spare), which Node keeps until its headers timeout, 60
+      // seconds or more. Nothing more is served once sign-in ends, so drop them all first.
+      yield* Effect.addFinalizer(() => Effect.sync(() => listener.closeAllConnections()));
       const server = Context.get(services, HttpServer.HttpServer);
       if (!NetAddress.isInetAddress(server.address)) return yield* authError();
       const redirect = `http://127.0.0.1:${server.address.port}/callback`;
+      const endpoints = yield* discover(host);
       const client = yield* request(
-        `${host}/api/auth/oauth2/register`,
+        endpoints.registration,
         {
           client_name: "Executor CLI",
           redirect_uris: [redirect],
@@ -223,13 +312,13 @@ export const registryLogin = (host: string, platform: string) =>
         },
         Schema.Struct({ client_id: Schema.NonEmptyString }),
       );
-      const authorization = new URL(`${host}/api/auth/oauth2/authorize`);
+      const authorization = new URL(endpoints.authorization);
       authorization.search = new URLSearchParams({
         client_id: client.client_id,
         redirect_uri: redirect,
         response_type: "code",
         scope: "executor offline_access",
-        resource: `${host}/api`,
+        resource: endpoints.resource,
         code_challenge: challenge,
         code_challenge_method: "S256",
         state,
@@ -246,14 +335,14 @@ export const registryLogin = (host: string, platform: string) =>
       yield* Console.error("Finish signing in and select an organization in your browser.");
       const code = yield* Deferred.await(completed).pipe(Effect.timeout("10 minutes"));
       const token = yield* request(
-        `${host}/api/auth/oauth2/token`,
+        endpoints.token,
         new URLSearchParams({
           grant_type: "authorization_code",
           client_id: client.client_id,
           redirect_uri: redirect,
           code,
           code_verifier: verifier,
-          resource: `${host}/api`,
+          resource: endpoints.resource,
         }),
         Token,
       );
@@ -261,17 +350,33 @@ export const registryLogin = (host: string, platform: string) =>
         HttpClientRequest.get(`${host}/api/context`).pipe(
           HttpClientRequest.bearerToken(token.access_token),
         ),
-        Schema.Struct({ organization: Schema.String, slug: Schema.String }),
+        Schema.Struct({
+          organization: Schema.String,
+          slug: Schema.String,
+          // Hosts released before this field serve Git only on their own origin.
+          gitOrigins: Schema.optional(Schema.Array(RegistryOrigin)),
+        }),
       );
+      const gitOrigins = (context.gitOrigins ?? []).filter((origin) => origin !== host);
       yield* withSessionLock(
         host,
-        save(host, {
-          clientId: client.client_id,
-          accessToken: token.access_token,
-          refreshToken: token.refresh_token,
-          expiresAt: Date.now() + token.expires_in * 1000,
-          organization: context.organization,
-          namespace: context.slug,
+        Effect.gen(function* () {
+          yield* save(host, {
+            clientId: client.client_id,
+            accessToken: token.access_token,
+            refreshToken: token.refresh_token,
+            expiresAt: Date.now() + token.expires_in * 1000,
+            organization: context.organization,
+            namespace: context.slug,
+            gitOrigins,
+          });
+          for (const origin of gitOrigins) {
+            const store = yield* gitEntry(origin);
+            yield* Effect.tryPromise({
+              try: (signal) => store.setPassword(host, signal),
+              catch: authError,
+            });
+          }
         }),
       );
       yield* Console.log(`Connected to ${host} as @${context.slug}.`);

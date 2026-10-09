@@ -16,7 +16,7 @@ import {
   WebhookId,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 const app = { app: AppId };
 const path = "/dashboard/api/apps/:app";
 /** The paired browser has the same workflow capabilities as the local SDK. */

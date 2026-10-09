@@ -10,9 +10,9 @@ import {
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import type { AppId, AppSlug, DeploymentId } from "@executor-js/sdk";
 import { Cause, Data, Effect, Match, Option, Schedule, Schema, Stream } from "effect";
-import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
-import type { HttpApiEndpoint } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
+import { Atom, AtomHttpApi } from "effect/reactivity";
+import type { HttpApiEndpoint } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
 import { DashboardRuntime } from "./telemetry.ts";
 import { batchReads } from "@executor-js/dashboard-start/batch-browser";
 
@@ -90,12 +90,13 @@ const message = Match.type<AppUiError>().pipe(
         ),
         Match.exhaustive,
       ),
-    OrganizationForbidden: () => "You do not have access to this team.",
-    UiForbidden: () => "You do not have access to this app.",
-    UiFailed: (error) =>
-      error.reason === "account_required"
-        ? "Choose this app’s accounts before opening it."
-        : "The app page is unavailable. Check its deployment and the server’s app URL settings.",
+    OrganizationForbidden: () => "You do not have access to this app.",
+    AppNotFound: () => "This app no longer exists.",
+    AppNotDeployed: () => "Deploy this app before opening its page.",
+    DeploymentNotFound: () => "This app’s deployment is no longer available. Reload the app.",
+    StorageError: () => "Executor could not read this app. Try again.",
+    AppUiUnavailable: () =>
+      "The app page is unavailable. Check its deployment and the server’s app URL settings.",
     Unauthorized: () => "Your session ended. Sign in again.",
     Forbidden: () => "Open Executor from its configured address.",
     AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",

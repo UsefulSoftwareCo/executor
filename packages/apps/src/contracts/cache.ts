@@ -16,6 +16,12 @@ export interface CacheGetOptions<A> {
   readonly schema: Schema<A, boolean>;
   readonly freshFor: Duration.Input;
   readonly staleFor?: Duration.Input;
+  /**
+   * Past `freshFor`, `serve` (the default) returns the kept value while `load` replaces it in the
+   * background. `revalidate` awaits `load` first; the kept value stays readable with `read`, so
+   * the loader can confirm it with the source instead of rebuilding it.
+   */
+  readonly stale?: "serve" | "revalidate";
   readonly load: (context: CacheLoadContext) => Promise<A>;
 }
 /** Cache keys describe every input that affects the value; the host adds app/build isolation. */
@@ -39,6 +45,17 @@ export interface AppCache {
    */
   readonly forAccount: (account: { readonly id: string }) => AppCache;
 }
+
+/**
+ * A credential a remote read sends, and the account it belongs to. A public source takes neither.
+ * A credential comes only with its account, so the read is cached in that account's scope.
+ */
+export type AccountCredential<Credential extends object> =
+  | ({ readonly account?: undefined } & { readonly [Field in keyof Credential]?: undefined })
+  | ({
+      /** The selected account, as `accounts.<slot>` provides it. */
+      readonly account: { readonly id: string };
+    } & Credential);
 
 /** Trusted storage and background ownership; never accepted from request JSON. */
 export interface HostCache {

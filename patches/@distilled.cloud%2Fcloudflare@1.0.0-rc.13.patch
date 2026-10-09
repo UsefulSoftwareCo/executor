@@ -1,0 +1,60 @@
+diff --git a/lib/services/workers.d.ts b/lib/services/workers.d.ts
+index 5326a8910d221f48faa2abea203049a240854a97..ed8ce831638e77d3e17753247eb1b9ed90bb1734 100644
+--- a/lib/services/workers.d.ts
++++ b/lib/services/workers.d.ts
+@@ -4104,6 +4104,7 @@ export interface PutScriptObservabilityTraces {
+ }
+ export declare const PutScriptObservabilityTraces: S.Schema<PutScriptObservabilityTraces>;
+ export interface PutScriptMetadataObservability {
++  redactQueryString?: boolean;
+     enabled: boolean;
+     headSamplingRate?: number | null;
+     logs?: PutScriptObservabilityLogs | null;
+diff --git a/lib/services/workers.js b/lib/services/workers.js
+index e73a49ba1dfdc68ef0bf3e484d5a1d4045f15cde..d2979e883b4698607a33b89e34143a3860b46dcc 100644
+--- a/lib/services/workers.js
++++ b/lib/services/workers.js
+@@ -4325,6 +4325,7 @@ export const PutScriptObservabilityTraces = /*@__PURE__*/ S.suspend(() => S.Stru
+ });
+ export const PutScriptMetadataObservability = /*@__PURE__*/ S.suspend(() => S.Struct({
+     enabled: S.Boolean,
++    redactQueryString: S.optional(S.Boolean.pipe(T.Body("redact_query_string"))),
+     headSamplingRate: S.optional(S.NullOr(S.Number).pipe(T.Body("head_sampling_rate"))),
+     logs: S.optional(S.NullOr(PutScriptObservabilityLogs)),
+     traces: S.optional(S.NullOr(PutScriptObservabilityTraces)),
+@@ -10987,6 +10988,7 @@ export const PutScriptRequest = /*@__PURE__*/ S.suspend(() => S.Struct({
+         previewToken: "preview_token",
+         previewsEnabled: "previews_enabled",
+         propagationPolicy: "propagation_policy",
++        redactQueryString: "redact_query_string",
+         queueName: "queue_name",
+         renamedClasses: "renamed_classes",
+         resultInfo: "result_info",
+diff --git a/src/services/workers.ts b/src/services/workers.ts
+index 476df346840cc07c836fd0ac517264d76d1b654b..b9d3d3ad0d94aca8a50df477da521af1ea9bf491 100644
+--- a/src/services/workers.ts
++++ b/src/services/workers.ts
+@@ -11280,6 +11280,7 @@ export const PutScriptObservabilityTraces = /*@__PURE__*/ S.suspend(() =>
+ }) as any as S.Schema<PutScriptObservabilityTraces>;
+ 
+ export interface PutScriptMetadataObservability {
++  redactQueryString?: boolean;
+   enabled: boolean;
+   headSamplingRate?: number | null;
+   logs?: PutScriptObservabilityLogs | null;
+@@ -11288,6 +11289,7 @@ export interface PutScriptMetadataObservability {
+ export const PutScriptMetadataObservability = /*@__PURE__*/ S.suspend(() =>
+   S.Struct({
+     enabled: S.Boolean,
++    redactQueryString: S.optional(S.Boolean.pipe(T.Body("redact_query_string"))),
+     headSamplingRate: S.optional(
+       S.NullOr(S.Number).pipe(T.Body("head_sampling_rate")),
+     ),
+@@ -30676,6 +30678,7 @@ export const PutScriptRequest = /*@__PURE__*/ S.suspend(() =>
+         previewToken: "preview_token",
+         previewsEnabled: "previews_enabled",
+         propagationPolicy: "propagation_policy",
++        redactQueryString: "redact_query_string",
+         queueName: "queue_name",
+         renamedClasses: "renamed_classes",
+         resultInfo: "result_info",

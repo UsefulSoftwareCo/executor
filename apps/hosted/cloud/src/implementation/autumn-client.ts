@@ -1,6 +1,6 @@
 /** Small Effect HTTP adapter for the cloud product's Autumn operations. */
 import { Effect, Layer, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import {
   AutumnClient,
   AutumnRequestFailed,

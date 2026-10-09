@@ -12,7 +12,7 @@ export const reservedRouterKeys: ReadonlySet<string> = new Set([
 
 /** One static path segment. Dots separate segments, so a key never contains one. */
 export const RouterKey = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_-]{0,99}$/),
+  Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_-]{0,99}$/u),
   Schema.makeFilter((key) => !reservedRouterKeys.has(key)),
 );
 

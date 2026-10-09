@@ -5,8 +5,8 @@
  * CONTRACT (implemented by the introspect worker; see docs/DESIGN.md).
  */
 import { Effect, type Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql/SqlClient";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { SqlClient } from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import { MigrationError, SchemaDefinitionError } from "../../contracts/errors.ts";
 import { generateMigrationFromSchema } from "../migration/diff.ts";
 import type { MigrationOperation } from "../../contracts/migration-operation.ts";

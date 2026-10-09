@@ -1,7 +1,6 @@
 import { WorkflowRunId } from "../contracts/workflows.ts";
 import { AppSlug } from "../contracts/app-slug.ts";
 /** Current application schema. Upgrade history is registered separately. */
-import { Schema } from "effect";
 import { SourceCommit } from "../contracts/source.ts";
 import {
   AccountId,
@@ -17,6 +16,7 @@ import {
 } from "../contracts/shared.ts";
 import { AccountConnectionId, ApprovalRequestId } from "../contracts/shared.ts";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
+import { Effect, Schema } from "effect";
 
 /**
  * Tables of the 4.0.0 and 4.0.1 layouts. Table definitions carry no relations until a schema
@@ -282,10 +282,101 @@ const grantedAccounts = table("executor_accounts", {
   allowedHosts: column("allowed_hosts", Schema.NullOr(Schema.Json)).default(null),
 });
 
+/** Tables of the 4.0.5 layout. */
+export const version405Tables = { ...version404Tables, accounts: grantedAccounts };
+
+/**
+ * Version 4.0.6 keeps why the latest check failed, as the app or host explained it, with account
+ * secrets already replaced. Null for passing checks and for checks recorded before this version.
+ */
+const explainedAccountChecks = table("executor_account_checks", {
+  ...accountChecks.columns,
+  message: column("message", Schema.NullOr(Schema.String)).default(null),
+});
+
+/** Tables of the 4.0.6 layout. */
+export const version406Tables = { ...version405Tables, accountChecks: explainedAccountChecks };
+
+/**
+ * Version 4.0.7 adds app events. A subscription is keyed by a digest of its subscriber, callback,
+ * event name and arguments; its signing secrets are encrypted. Each emitted event is saved once,
+ * encrypted, with one delivery per matching subscription.
+ */
+const eventSubscriptions = table("executor_event_subscriptions", {
+  id: idColumn("id", Schema.String, { type: "varchar(64)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  app: column("app", AppId, { type: "varchar(255)" }),
+  event: column("event", Schema.String, { type: "varchar(64)" }),
+  name: column("name", Schema.String, { type: "varchar(255)" }),
+  arguments: column("arguments", Schema.Json),
+  callbackUrl: column("callback_url", Schema.String),
+  principal: column("principal", Schema.String, { type: "varchar(255)" }),
+  subject: column("subject", Schema.String, { type: "varchar(255)" }),
+  status: column("status", Schema.String, { type: "varchar(32)" }),
+  stopped: column("stopped", Schema.NullOr(Schema.String), { type: "varchar(32)" }),
+  expiresAt: column("expires_at", Schema.Date),
+  verifiedAt: column("verified_at", Schema.Date),
+  /** Changes on every write; a refresh writes only over the row it computed from. */
+  revision: column("revision", Schema.String, { type: "varchar(64)" }),
+  encrypted: column("encrypted", Schema.Uint8Array),
+  createdAt: column("created_at", Schema.Date),
+});
+const events = table("executor_events", {
+  id: idColumn("id", Schema.String, { type: "varchar(64)" }),
+  app: column("app", AppId, { type: "varchar(255)" }),
+  name: column("name", Schema.String, { type: "varchar(64)" }),
+  eventId: column("event_id", Schema.String, { type: "varchar(255)" }),
+  account: column("account", Schema.NullOr(AccountId), { type: "varchar(255)" }),
+  /** Every account bound to the emitting invocation. */
+  accounts: column("accounts", Schema.Json),
+  occurredAt: column("occurred_at", Schema.Date),
+  encrypted: column("encrypted", Schema.Uint8Array),
+  createdAt: column("created_at", Schema.Date),
+}).unique("executor_events_app_name_event", ["app", "name", "eventId"]);
+const eventDeliveries = table("executor_event_deliveries", {
+  id: idColumn("id", Schema.String, { type: "varchar(255)" }),
+  subscription: column("subscription", Schema.String, { type: "varchar(64)" }),
+  event: column("event", Schema.String, { type: "varchar(64)" }),
+  status: column("status", Schema.String, { type: "varchar(32)" }),
+  attempts: column("attempts", Schema.Int),
+  nextAt: column("next_at", Schema.Date),
+  /** The attempt that holds the delivery; completions must name it. */
+  lease: column("lease", Schema.NullOr(Schema.String), { type: "varchar(64)" }),
+  leaseUntil: column("lease_until", Schema.Date),
+  lastError: column("last_error", Schema.NullOr(Schema.String), { type: "varchar(32)" }),
+  createdAt: column("created_at", Schema.Date),
+  finishedAt: column("finished_at", Schema.NullOr(Schema.Date)),
+}).unique("executor_event_deliveries_subscription_event", ["subscription", "event"]);
+
+/** Tables of the 4.0.7 layout. */
+export const version407Tables = {
+  ...version406Tables,
+  eventSubscriptions,
+  events,
+  eventDeliveries,
+};
+
+/** Indexes added with app events in 4.0.7, created in the same step as their tables. */
+export const eventIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_event_deliveries_due ON executor_event_deliveries (status, next_at)",
+  "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_app_event ON executor_event_subscriptions (app, event, status)",
+  "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_principal_url ON executor_event_subscriptions (principal, callback_url)",
+  "CREATE INDEX IF NOT EXISTS executor_event_deliveries_age ON executor_event_deliveries (status, created_at)",
+  "CREATE INDEX IF NOT EXISTS executor_event_deliveries_finished ON executor_event_deliveries (finished_at)",
+  "CREATE INDEX IF NOT EXISTS executor_events_created ON executor_events (created_at)",
+] as const;
+
 /** Current ORM layout. Profiles own account selections; apps declare requirements. */
 export const storageSchema = schema({
-  version: "4.0.5",
-  tables: { ...version404Tables, accounts: grantedAccounts },
+  version: "4.0.7",
+  tables: version407Tables,
+  up: ({ auto }) =>
+    auto.pipe(
+      Effect.map((operations) => [
+        ...operations,
+        ...eventIndexes.map((sql) => ({ type: "custom" as const, sql })),
+      ]),
+    ),
   relations: {
     accounts: ({ one }) => ({
       providerDefinition: one("providers", ["provider", "id"]).foreignKey(),

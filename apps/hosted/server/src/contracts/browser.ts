@@ -1,5 +1,6 @@
 import { Option, Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
+import type { ResourceOrigins } from "@executor-js/mcp-auth";
 
 /** Display identity only; session tokens and organization preferences never cross this boundary. */
 export const BrowserSession = Schema.NullOr(
@@ -55,6 +56,11 @@ export interface HostedDocumentContext {
   readonly session: BrowserSession;
   /** Where this person last worked in this browser, when the saved memory is theirs. */
   readonly lastOrganization: LastOrganization | null;
+  /**
+   * The origins of MCP and API resources. Pages show MCP URLs at the first and accept a consent
+   * for any of them.
+   */
+  readonly resourceOrigins: ResourceOrigins;
 }
 
 /**

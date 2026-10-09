@@ -7,7 +7,7 @@ import * as Output from "alchemy/Output";
 import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Credentials";
 import { PgClient } from "@effect/sql-pg";
 import { Cause, Clock, DateTime, Effect, Layer, Redacted, Schema, Semaphore } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { AppDomainZoneSettings } from "./contracts/app-domains.ts";
 import { appDomainCertificates } from "./implementation/app-domain-inventory.ts";

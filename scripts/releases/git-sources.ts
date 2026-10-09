@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema, Stream } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const dugiteVersion = "3.2.3";
 const nativeVersion = "v2.53.0-4";
@@ -37,7 +37,7 @@ const sources = [
 
 const PackageVersion = Schema.Struct({ name: Schema.String, version: Schema.String });
 const Archive = Schema.Struct({
-  file: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.+~-]*$/)),
+  file: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.+~-]*$/u)),
   url: Schema.String,
   sha256: Schema.String,
 });

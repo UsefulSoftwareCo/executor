@@ -74,6 +74,8 @@ export const backupData = (options: {
   readonly backups: string;
   readonly appVersion: string;
   readonly platform: NodeJS.Platform;
+  /** Runs the rename while the desktop's own log holds its writes, so earlier lines move too. */
+  readonly whileMoving: <A, E, R>(move: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -92,7 +94,7 @@ export const backupData = (options: {
       try: () => lock(directory, { retries: 0, lockfilePath, onCompromised: () => {} }),
       catch: () => new ResetFailed({ stage: "lock" }),
     });
-    yield* fs.rename(directory, backup).pipe(
+    yield* options.whileMoving(fs.rename(directory, backup)).pipe(
       Effect.mapError(() => new ResetFailed({ stage: "move" })),
       Effect.ensuring(Effect.promise(() => release().catch(() => undefined))),
     );
@@ -167,6 +169,7 @@ export const makeResetAction = (options: {
   readonly directory: string;
   readonly backups: string;
   readonly appVersion: string;
+  readonly whileMoving: <A, E, R>(move: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   readonly window: () => BaseWindow | undefined;
 }) =>
   Effect.gen(function* () {
@@ -197,6 +200,7 @@ export const makeResetAction = (options: {
           backups: options.backups,
           appVersion: options.appVersion,
           platform: process.platform,
+          whileMoving: options.whileMoving,
         }).pipe(Effect.provideContext(services), Effect.result),
       );
       if (Result.isFailure(result)) {

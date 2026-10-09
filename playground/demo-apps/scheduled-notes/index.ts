@@ -1,7 +1,5 @@
 import {
   defineApp,
-  defineDatabase,
-  table,
   string,
   object,
   interval,
@@ -14,14 +12,22 @@ import {
 } from "apps";
 import { always } from "apps/operations/approval";
 
-const database = defineDatabase({ notes: table({ message: string() }) });
-const requirements = { accounts: {}, database };
+/** The `notes` table is created by migrations/0001_notes.sql. */
+const requirements = { accounts: {} };
 const record = mutation(
   { input: object({ message: string() }), approval: always() },
-  async (ctx: MutationContext<typeof requirements>, input) => ctx.db.notes.insert(input),
+  async (ctx: MutationContext<typeof requirements>, input) =>
+    ctx.sql
+      .exec(
+        "INSERT INTO notes (id, message, created_at) VALUES (?, ?, ?) RETURNING id, message",
+        crypto.randomUUID(),
+        input.message,
+        Date.now(),
+      )
+      .one(),
 );
 const list = query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) =>
-  ctx.db.notes.withIndex("by_creation").take(100),
+  ctx.sql.exec("SELECT id, message FROM notes ORDER BY created_at LIMIT 100").toArray(),
 );
 
 export default defineApp(requirements, {

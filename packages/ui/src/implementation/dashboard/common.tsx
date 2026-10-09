@@ -1,6 +1,6 @@
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PackageIcon, Search01Icon } from "@hugeicons/core-free-icons";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useOptionalDashboard } from "./context.tsx";
 import { useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";

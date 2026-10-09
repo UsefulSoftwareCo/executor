@@ -7,7 +7,7 @@ import {
 } from "../../contracts/browser-approval.ts";
 import type { PendingInteraction, ElicitationResponse } from "@executor-js/mcp/browser";
 import { Cause, Exit, Match } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../components/button.tsx";
 import { Code } from "./code.tsx";

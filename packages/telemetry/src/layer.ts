@@ -2,12 +2,7 @@
 import { Effect, Layer, Logger, Metric, Redacted } from "effect";
 import { telemetryHttpClient } from "./transport.ts";
 import { spanAttributes } from "./span-attributes.ts";
-import {
-  OtlpLogger,
-  OtlpMetrics,
-  OtlpSerialization,
-  OtlpTracer,
-} from "effect/unstable/observability";
+import { OtlpLogger, OtlpMetrics, OtlpSerialization, OtlpTracer } from "effect/observability";
 import {
   CurrentTelemetryConfig,
   telemetryConfig,

@@ -1,10 +1,12 @@
 import { storedApp, storedDeployment } from "./apps.ts";
-import { evaluationFailure, snapshot as invocation } from "./tools.ts";
-import { AppSkills } from "apps/contracts";
-import { AppEvaluationFailed } from "../contracts/tools.ts";
+import { snapshot as invocation } from "./tools.ts";
+import { appProviderFailure } from "./provider-error.ts";
+import { AppSkills, ProviderError } from "apps/contracts";
+import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
 import { AppNotDeployed } from "../contracts/apps.ts";
 /** Skill reads project one authorized runtime catalog, or a retained pre-capability folder. */
-import { Crypto, Effect, Encoding, Schema } from "effect";
+import { Crypto, Effect, Schema } from "effect";
+import { Hex } from "effect/encoding";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { AppSkillInputs, AppSkillNotFound, SkillRevisionChanged } from "../contracts/skills.ts";
 import { RequestInvalid, StorageError } from "../contracts/shared.ts";
@@ -24,15 +26,17 @@ const Catalog = Schema.Struct({
   dynamic: Schema.optionalKey(Schema.Boolean),
   cached: Schema.optionalKey(Schema.Boolean),
 });
+/** A catalog whose loader read a publisher through the app cache, which can change it. */
+const Published = Schema.Struct({ skills: Schema.Unknown, cached: Schema.Literal(true) });
 const Reusable = Schema.Union([
   Schema.Struct({ skills: Schema.Unknown, dynamic: Schema.Literal(false) }),
-  Schema.Struct({ skills: Schema.Unknown, cached: Schema.Literal(true) }),
+  Published,
 ]);
 
 /** Sorted catalog digest; equal content has equal revisions. */
 const catalogRevision = (crypto: Crypto.Crypto, skills: typeof AppSkills.Type) =>
   crypto.digest("SHA-256", new TextEncoder().encode(JSON.stringify(skills))).pipe(
-    Effect.map(Encoding.encodeHex),
+    Effect.map(Hex.encode),
     Effect.mapError(() => new StorageError()),
   );
 const sorted = (skills: typeof AppSkills.Type) =>
@@ -45,7 +49,10 @@ const sorted = (skills: typeof AppSkills.Type) =>
 
 /**
  * Bind skill reads to the app's code lineage. Builds with the skills capability are evaluated
- * with the selected profile; their catalog is served stale-while-revalidate within its bound.
+ * with the selected profile. A read pinned to a revision is served a kept catalog with that
+ * revision, stale-while-revalidate within its bound. A read without one gets the publisher's
+ * current catalog: a stale kept catalog that reflects a publisher is evaluated again first, so
+ * the revision it returns is not replaced by a background refresh moments later.
  */
 export const makeSkills = (
   db: Query,
@@ -88,16 +95,20 @@ export const makeSkills = (
                   runtime
                     .skills({ app: app.id, build: state.deployment.build, sources, ...context })
                     .pipe(
+                      // A service's rejection names the selected account, as in tool listing.
                       Effect.mapError((error) =>
-                        evaluationFailure(
-                          { app: app.id, deployment },
-                          error,
-                          "Skill evaluation failed",
-                        ),
+                        Schema.is(ProviderError)(error)
+                          ? appProviderFailure(state, error)
+                          : evaluationFailure(
+                              { app: app.id, deployment },
+                              error,
+                              "Skill evaluation failed",
+                            ),
                       ),
                     ),
                 {
                   retain: (value) => Schema.is(Reusable)(value),
+                  revalidate: (value) => known === undefined && Schema.is(Published)(value),
                   // A caller holding another revision rereads rather than receive an older one.
                   current: (value) =>
                     known === undefined

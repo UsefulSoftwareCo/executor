@@ -10,12 +10,14 @@ import {
   type HostDataError,
   type HostedCatalog,
   type HostedCatalogSummary,
+  type MigrateResult,
   type SkillCatalog,
   type HostContext,
   type WebhookCommand,
   type WorkflowCommand,
 } from "apps/contracts";
 import { DatabaseFieldReserved } from "@executor-js/app-data/contracts";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { BuildStage, SourceFiles, SourceLocation, type BuildMemoryExceeded } from "./deployment.ts";
 import { BuildId, Json } from "./shared.ts";
 
@@ -29,6 +31,83 @@ import { BuildId, Json } from "./shared.ts";
 export const AppCacheChanges = Context.Reference<{
   readonly changed: (app: string) => Effect.Effect<void>;
 }>("executor/AppCacheChanges", { defaultValue: () => ({ changed: () => Effect.void }) });
+
+/**
+ * One isolate's own part of an invocation, on its own clock: how long it took and how much of that
+ * it waited on the next isolate. The runner and the data supervisor report it beside their reply.
+ */
+export const IsolateTiming = Schema.Struct({
+  elapsedMs: Schema.Finite,
+  waitMs: Schema.Finite,
+});
+export type IsolateTiming = typeof IsolateTiming.Type;
+
+/**
+ * The app isolate's whole part of an invocation, on its clock, from the runtime's bridge: the app's
+ * spans and the framework's work around them. The bridge adds it beside the app's reply.
+ */
+export const DispatchTiming = Schema.Struct({ elapsedMs: Schema.Finite });
+export type DispatchTiming = typeof DispatchTiming.Type;
+
+/**
+ * One runtime call's share of a tool call, reported when the call is over. Workers clocks are not
+ * comparable across isolates, so the caller measures only its own wait and every other isolate
+ * reports its own part on its own clock.
+ */
+export interface RuntimeCallTiming {
+  /** When the caller waited on the runner, on its own clock. Absent if the call never got there. */
+  readonly invoked?: readonly [start: bigint, end: bigint];
+  /**
+   * The other isolates' parts. Absent when the call was invoked but did not finish, or its build
+   * or runner predates timing; the call's Executor time is then unknown.
+   */
+  readonly parts?: {
+    /** The runner's, data supervisor's and app isolate's own time, each on its own clock. */
+    readonly ownMs: number;
+    /** The app isolate's own time, which `ownMs` includes. */
+    readonly appOwnMs: number;
+    readonly upstreamMs: number;
+    readonly elicitationMs: number;
+    readonly authoredMs: number;
+    /** Adjacent isolates whose clocks disagree, such as `runner/app`: a lower bound. */
+    readonly staleClocks: readonly string[];
+  };
+}
+
+/** Receives each runtime call's timing within one tool call. Telemetry only. */
+export const RuntimeCallTimings = Context.Reference<
+  ((timing: RuntimeCallTiming) => void) | undefined
+>("executor/RuntimeCallTimings", { defaultValue: () => undefined });
+
+/**
+ * Where an invocation's emitted events go once it succeeds. The executor provides it around every
+ * runtime call. When they cannot be saved the call fails, so its caller retries it; the events'
+ * stable IDs keep a retry from delivering them twice. A call with no sink fails the same way.
+ */
+export const AppEventSink = Context.Reference<{
+  readonly emitted: (input: {
+    readonly app: string;
+    /** Every account bound to the invocation: its events may carry data from any of them. */
+    readonly accounts: readonly string[];
+    readonly events: readonly import("apps/contracts").EmittedEvent[];
+  }) => Effect.Effect<void, RuntimeProtocolFailed>;
+}>("executor/AppEventSink", {
+  defaultValue: () => ({
+    emitted: () =>
+      Effect.logError("App events were emitted where no event sink was provided").pipe(
+        Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ reason: "data" }))),
+      ),
+  }),
+});
+
+/**
+ * The scheduled run an app invocation serves, if any. The runner records it on the build loads it
+ * makes for the invocation, so a query can tell a run's own build loads from those of other runs
+ * that share its scheduler trace. Telemetry only: nothing decides on it.
+ */
+export const InvocationRun = Context.Reference<string | undefined>("executor/InvocationRun", {
+  defaultValue: () => undefined,
+});
 
 /** Retained compiled output and declarations obtained without running the app factory. */
 export const UiAsset = Schema.Struct({
@@ -90,20 +169,71 @@ export class RuntimeBuildFailed extends Schema.TaggedError<RuntimeBuildFailed>()
     message: Schema.optional(BuildMessage),
     location: Schema.optional(SourceLocation),
   },
-) {}
+) {
+  /** The message quotes the deployer's source or its errors; telemetry records only the stage. */
+  get [RecordedMessage]() {
+    return `The build failed at its ${this.stage} stage`;
+  }
+}
 /** The retained build was absent, invalid or could not load in this host. */
 export class RuntimeBuildUnavailable extends Schema.TaggedError<RuntimeBuildUnavailable>()(
   "RuntimeBuildUnavailable",
   {},
 ) {}
 /**
- * The framework handler returned an invalid protocol response, or its Worker failed to load.
- * `message` is the underlying runtime failure; tool callers never receive it.
+ * Each way an app's Worker or data facet can fail a call without an answer from the app's code.
+ * The platform kinds match the data facet's own: a call's runtime and its data facet fail alike.
+ */
+export const RuntimeFailure = Schema.Literals([
+  "cold-start",
+  "memory",
+  "cpu",
+  "timeout",
+  "overloaded",
+  "reset",
+  "disconnected",
+  "hung",
+  "internal",
+  "invalid-reply",
+  "data",
+  "build",
+  "unsupported",
+  "unrecognized",
+]);
+export type RuntimeFailure = typeof RuntimeFailure.Type;
+/** The fixed description of each runtime failure, for the host's diagnostics. */
+export const runtimeFailures: Record<RuntimeFailure, string> = {
+  "cold-start": "The app's Worker could not be loaded",
+  memory: "The app's Worker exceeded its memory limit",
+  cpu: "The app's Worker exceeded its CPU time limit",
+  timeout: "The app's Worker exceeded a time limit",
+  overloaded: "The app's Worker was overloaded",
+  reset: "The runtime reset the app's Worker",
+  disconnected: "The connection to the app's Worker was lost",
+  hung: "The app's Worker can never answer",
+  internal: "The runtime failed internally",
+  "invalid-reply": "The app's reply does not match its host protocol",
+  data: "The app's data supervisor failed the call",
+  build: "The app's build could not be read",
+  unsupported: "The app's build speaks a host protocol this host does not run",
+  unrecognized: "The app's Worker failed for a reason the runtime did not recognize",
+};
+/**
+ * The framework handler returned an invalid protocol response, or its Worker failed to load or
+ * run. `reason` is the kind of failure, the only part telemetry records. `message` is the failure
+ * in the app's own terms, which can quote the app's text; only a deploy's declaration step sets
+ * it, for the deployer. Tool callers never receive it.
  */
 export class RuntimeProtocolFailed extends Schema.TaggedError<RuntimeProtocolFailed>()(
   "RuntimeProtocolFailed",
-  { message: Schema.optional(BuildMessage) },
-) {}
+  { reason: Schema.optional(RuntimeFailure), message: Schema.optional(BuildMessage) },
+) {
+  get [RecordedMessage]() {
+    return this.reason === undefined && !this.message
+      ? undefined
+      : runtimeFailures[this.reason ?? "unrecognized"];
+  }
+}
 /**
  * The app's `apps` framework speaks a host protocol this host does not run. Builds fail before
  * compiling, and retained builds fail before loading, rather than at module link or decode time.
@@ -114,6 +244,9 @@ export class RuntimeProtocolUnsupported extends Schema.TaggedError<RuntimeProtoc
 ) {
   override get message() {
     return `This app's apps framework uses host protocol ${this.protocol}. This host supports protocol ${this.supported.join(", ")}.`;
+  }
+  get [RecordedMessage]() {
+    return this.message;
   }
 }
 /**
@@ -126,6 +259,9 @@ export class RuntimeAppsDependencyMissing extends Schema.TaggedError<RuntimeApps
 ) {
   override get message() {
     return `Add "apps": "${this.version}" to package.json dependencies. Every app declares the exact apps version it uses; ${this.version} is this host's.`;
+  }
+  get [RecordedMessage]() {
+    return this.message;
   }
 }
 /** Loading retained code and decoding the framework protocol are host failures. */
@@ -248,4 +384,12 @@ export interface Runtime<Requirements = never> {
     RuntimeLoadError | typeof HostAccountCheckError.Type,
     Requirements
   >;
+  /**
+   * Apply a build's pending SQL migrations to its app's database, before the build is activated.
+   * Send only to builds whose requirements declare `sql`.
+   */
+  readonly migrate: (input: {
+    readonly app: string;
+    readonly build: BuildId;
+  }) => Effect.Effect<MigrateResult, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
 }

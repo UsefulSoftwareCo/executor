@@ -6,7 +6,7 @@
  * each from the streamed reply. The client still decodes each answer with its endpoint's schemas.
  */
 import { Effect, Exit, Option, Request, RequestResolver, Result, Schema, Stream } from "effect";
-import { HttpApi, type HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, type HttpApiGroup } from "effect/http-api";
 import {
   FindMyWay,
   HttpClient,
@@ -15,7 +15,8 @@ import {
   HttpClientResponse,
   HttpTraceContext,
   Url,
-} from "effect/unstable/http";
+} from "effect/http";
+import { isConnectionFailure } from "@executor-js/utils/connection-failure";
 import {
   BatchAnswer,
   batchable,
@@ -30,19 +31,20 @@ import {
  */
 const batchWindow = "4 millis";
 
+/**
+ * A read's answer from its batch, or none when nothing else started with it. The caller then sends
+ * the read as its own request in its own fiber, so a caller that stops waiting, such as a query
+ * refreshed while its read is in flight, cancels that request. Sent by the resolver, the request
+ * would outlive its caller, and its unread response would hold the connection until collected.
+ */
 class Read extends Request.Class<
   {
     readonly read: Omit<BatchRead, "id">;
     readonly request: HttpClientRequest.HttpClientRequest;
-    /** The read as its own request, used when nothing else starts with it. */
-    readonly direct: Effect.Effect<
-      HttpClientResponse.HttpClientResponse,
-      HttpClientError.HttpClientError
-    >;
     /** The client the read was made with, which sends its batch. */
     readonly client: HttpClient.HttpClient;
   },
-  HttpClientResponse.HttpClientResponse,
+  Option.Option<HttpClientResponse.HttpClientResponse>,
   HttpClientError.HttpClientError
 > {}
 
@@ -77,10 +79,19 @@ const send = (entries: ReadonlyArray<Request.Entry<Read>>) =>
     const [first] = entries;
     if (first === undefined) return;
     if (entries.length === 1) {
-      first.completeUnsafe(yield* Effect.exit(first.request.direct));
+      first.completeUnsafe(Exit.succeed(Option.none()));
       return;
     }
     const waiting = new Map(entries.map((entry, id) => [id, entry]));
+    // A batch that got no response fails each read it carried the same way, so each read reports
+    // the lost connection instead of a reply the server cut short.
+    let lost: unknown;
+    const failed = (request: HttpClientRequest.HttpClientRequest) =>
+      lost === undefined
+        ? unanswered(request)
+        : new HttpClientError.HttpClientError({
+            reason: new HttpClientError.TransportError({ request, cause: lost }),
+          });
     yield* first.request.client
       .execute(
         HttpClientRequest.post(dashboardBatchPath).pipe(
@@ -90,6 +101,11 @@ const send = (entries: ReadonlyArray<Request.Entry<Read>>) =>
         ),
       )
       .pipe(
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            if (isConnectionFailure(error)) lost = error.reason.cause;
+          }),
+        ),
         Effect.flatMap(HttpClientResponse.filterStatusOk),
         Effect.flatMap((response) =>
           response.stream.pipe(
@@ -101,7 +117,9 @@ const send = (entries: ReadonlyArray<Request.Entry<Read>>) =>
                 const entry = waiting.get(answer.id);
                 if (entry === undefined) return;
                 waiting.delete(answer.id);
-                entry.completeUnsafe(Exit.succeed(responseOf(entry.request.request, answer)));
+                entry.completeUnsafe(
+                  Exit.succeed(Option.some(responseOf(entry.request.request, answer))),
+                );
               }),
             ),
           ),
@@ -109,7 +127,7 @@ const send = (entries: ReadonlyArray<Request.Entry<Read>>) =>
         Effect.ensuring(
           Effect.sync(() => {
             for (const entry of waiting.values())
-              entry.completeUnsafe(Exit.fail(unanswered(entry.request.request)));
+              entry.completeUnsafe(Exit.fail(failed(entry.request.request)));
           }),
         ),
         Effect.exit,
@@ -167,11 +185,10 @@ export const batchReads = <Id extends string, Groups extends HttpApiGroup.Constr
               ? { ...read, traceparent: HttpTraceContext.toHeaders(span.value)["traceparent"] }
               : read,
             request,
-            direct,
             client,
           }),
           reads,
-        ),
+        ).pipe(Effect.flatMap(Option.match({ onNone: () => direct, onSome: Effect.succeed }))),
       );
     });
 };

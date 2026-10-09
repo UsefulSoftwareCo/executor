@@ -18,7 +18,7 @@ import {
   Redacted,
   Schema,
 } from "effect";
-import { CliError, Command, Flag } from "effect/unstable/cli";
+import { CliError, Command, Flag } from "effect/cli";
 import { AuthDatabase } from "../self-host/src/contracts/database.ts";
 import { selfHostDatabase } from "../self-host/src/database.ts";
 import { cloudSessionCookiePrefix } from "../cloud/src/contracts/browser.ts";

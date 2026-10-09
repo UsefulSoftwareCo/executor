@@ -39,15 +39,14 @@ export const SeedReceipt = Schema.Struct({
 const source = (
   origin: string,
   owner: string,
-) => `import {defineApp,defineProvider,secrets,defineDatabase,table,query,mutation,object,string,array, router} from "apps";
+) => `import {defineApp,defineProvider,secrets,query,mutation,object,string,array, router} from "apps";
 const service=defineProvider({name:"Scenario GitHub",auth:{token:secrets({label:"GitHub token",fields:object({token:string()})})}});
-const database=defineDatabase({records:table({key:string(),title:string(),status:string(),body:string()})});
 const record=object({key:string(),title:string(),status:string(),body:string()});
-export default defineApp({accounts:{service},database},{
+export default defineApp({accounts:{service},sql:true},{
   tools: router({
-    summary:query({input:object({})},async({db})=>{const rows=await db.records.withIndex("by_creation").collect();return {count:rows.length,open:rows.filter(r=>r.status==="open").length,closed:rows.filter(r=>r.status==="closed").length,keys:rows.map(r=>r.key).sort()};}),
+    summary:query({input:object({})},async({sql})=>{const rows=sql.exec("SELECT key, status FROM records").toArray();return {count:rows.length,open:rows.filter(r=>r.status==="open").length,closed:rows.filter(r=>r.status==="closed").length,keys:rows.map(r=>r.key).sort()};}),
     repository:query({input:object({})},async ctx=>{const response=await fetch(${JSON.stringify(`${origin}/repos/${owner}/operations`)},{headers:{authorization:"Bearer "+ctx.accounts.service.fields.token}});if(!response.ok)throw new Error("Provider returned "+response.status);const repo=await response.json();return {name:repo.name,private:repo.private,owner:repo.owner.login};}),
-    seed:mutation({input:object({records:array(record)})},async({db},input)=>{for(const row of input.records)await db.records.insert(row);return {inserted:input.records.length};}),
+    seed:mutation({input:object({records:array(record)})},async({sql},input)=>sql.transaction(tx=>{for(const row of input.records)tx.exec("INSERT INTO records (key, title, status, body) VALUES (?, ?, ?, ?)",row.key,row.title,row.status,row.body);return {inserted:input.records.length};})),
   })
 });`;
 
@@ -111,6 +110,11 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
                 name: `Operations ${String(index + 1).padStart(2, "0")}`,
                 files: [
                   { path: "index.ts", content: source(created.providerBaseUrl, login) },
+                  {
+                    path: "migrations/0001_records.sql",
+                    content:
+                      "CREATE TABLE records (key TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);\n",
+                  },
                   appsManifest,
                 ],
               })

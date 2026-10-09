@@ -2,7 +2,7 @@ import { workflow, object, number, NonRetryableError } from "apps";
 import type { WorkflowCtx } from "./context.ts";
 import { reportInput, saveReport, listReports } from "./operations.ts";
 const repositoryResponse = object({ open_issues_count: number() });
-/** Independent reads run together; every database write uses its registered mutation. */
+/** Independent reads run together; every SQL write uses its registered mutation. */
 export const report = workflow({ input: reportInput }, async (ctx: WorkflowCtx, input) => {
   const reports = await Promise.all(
     input.repositories.map(async ({ owner, name }) => {

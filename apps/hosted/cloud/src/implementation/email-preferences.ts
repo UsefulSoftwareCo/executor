@@ -1,13 +1,14 @@
-import { ByteSize, Effect, Encoding, Option, Redacted, Schema } from "effect";
-import { HttpIncomingMessage, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { SqlClient } from "effect/unstable/sql";
+import { ByteSize, Effect, Option, Redacted, Schema } from "effect";
+import { Base64Url } from "effect/encoding";
+import { HttpIncomingMessage, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { SqlClient } from "effect/sql";
 import {
   InvalidUnsubscribeLink,
   WelcomeEmailUnavailable,
   type UnsubscribeLinks,
 } from "../contracts/email.ts";
 
-const Token = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,512}\.[A-Za-z0-9_-]{43}$/));
+const Token = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,512}\.[A-Za-z0-9_-]{43}$/u));
 const Recipient = Schema.Struct({
   id: Schema.NonEmptyString,
   email: Schema.RedactedFromValue(Schema.NonEmptyString),
@@ -42,7 +43,7 @@ export const unsubscribeLinks = (
       try: () => crypto.subtle.sign("HMAC", key, message(id, email)),
       catch: () => new WelcomeEmailUnavailable(),
     });
-    const token = `${Encoding.encodeBase64Url(id)}.${Encoding.encodeBase64Url(new Uint8Array(signature))}`;
+    const token = `${Base64Url.encode(id)}.${Base64Url.encode(new Uint8Array(signature))}`;
     return {
       browser: Redacted.make(`${origin}/email/unsubscribe#${token}`),
       oneClick: Redacted.make(`${origin}/api/email/unsubscribe?token=${token}`),
@@ -56,10 +57,10 @@ const unsubscribe = (token: string, secret: Redacted.Redacted<string>) =>
     );
     const [encodedId, encodedSignature] = parsed.split(".");
     if (!encodedId || !encodedSignature) return yield* new InvalidUnsubscribeLink();
-    const id = yield* Effect.fromResult(Encoding.decodeBase64UrlString(encodedId)).pipe(
+    const id = yield* Effect.fromResult(Base64Url.decodeString(encodedId)).pipe(
       Effect.mapError(() => new InvalidUnsubscribeLink()),
     );
-    const signature = yield* Effect.fromResult(Encoding.decodeBase64Url(encodedSignature)).pipe(
+    const signature = yield* Effect.fromResult(Base64Url.decode(encodedSignature)).pipe(
       Effect.mapError(() => new InvalidUnsubscribeLink()),
     );
     const sql = yield* SqlClient.SqlClient;

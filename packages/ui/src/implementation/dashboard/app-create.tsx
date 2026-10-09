@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { App } from "@executor-js/sdk";
 import type { MutationProps } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";

@@ -4,7 +4,6 @@ import {
   HostAccountsInvalid,
   ResolvedAccounts,
   type HostContext,
-  type AppStorage,
   type HostedCatalog,
   type HostedCatalogSummary,
   type AppSkillSource,
@@ -57,7 +56,6 @@ export interface ResolvedAppRuntime {
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
-    readonly storage?: AppStorage;
     readonly name: string;
     readonly input: Json;
   }) => Promise<Json>;
@@ -66,7 +64,6 @@ export interface ResolvedAppRuntime {
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
-    readonly storage?: AppStorage;
     readonly name: string;
     readonly input: Json;
   }) => Promise<Json>;
@@ -79,7 +76,6 @@ export interface ResolvedAppRuntime {
   }) => Promise<Json>;
   readonly call: (input: {
     readonly app: string;
-    readonly storage?: AppStorage;
     readonly approval?: NonNullable<HostContext["approval"]>;
     readonly elicitation?: NonNullable<HostContext["elicitation"]>;
     readonly build: BuildId;
@@ -217,5 +213,6 @@ export const toEffectRuntime = (
     webhook: (input) => runtime.webhook(input).pipe(provide),
     call: (input) => runtime.call(input).pipe(provide),
     checkAccount: (input) => runtime.checkAccount(input).pipe(provide),
+    migrate: (input) => runtime.migrate(input).pipe(provide),
   };
 };

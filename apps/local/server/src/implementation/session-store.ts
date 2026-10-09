@@ -1,7 +1,7 @@
 /** Local product sessions survive host restarts without entering the SDK schema. */
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { sqlAdapter } from "fumadb-effect/sql";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";

@@ -1,7 +1,10 @@
 import type { AccountAppHealth, AccountCheckStatus, AccountHealth } from "@executor-js/sdk";
 import { Exit, Match, type Cause } from "effect";
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { UserCircleIcon } from "@hugeicons/core-free-icons";
 import type { AccountDetail, FailureProps } from "../../contracts/dashboard.ts";
+import { Avatar, AvatarFallback, AvatarImage } from "../components/avatar.tsx";
 import { Button } from "../components/button.tsx";
 import { LocalTime, shortMoment } from "../components/local-time.tsx";
 import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
@@ -42,7 +45,7 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth 
   const check = health?.check;
   if (check === null || check === undefined) return null;
   const { label, tone } = describeAccountCheck(check.status);
-  const text = check.current ? label : `${label} (outdated)`;
+  const text = `${check.current ? label : `${label} (outdated)`}${check.message === undefined ? "" : `: ${check.message}`}`;
   return (
     <span
       className={`size-1.5 shrink-0 rounded-full ${check.current ? tones[tone] : tones.muted}`}
@@ -56,16 +59,39 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth 
   );
 }
 
-/** The upstream identity a check reported, for the account heading. */
-export function AccountIdentity({
+/**
+ * The upstream photo a check reported. The image shows only once it loads, so a missing, broken or
+ * slow photo leaves the fallback: a person icon by default, or nothing.
+ */
+export function AccountAvatar({
   info,
-  avatar = false,
+  fallback = true,
+  className,
 }: {
-  readonly info: AccountInfo;
-  /** Only client-rendered views show the avatar, so a failed load can remove it. */
-  readonly avatar?: boolean;
+  readonly info: AccountInfo | null | undefined;
+  readonly fallback?: boolean;
+  readonly className?: string;
 }) {
-  const [avatarFailed, setAvatarFailed] = useState(false);
+  const url = info?.avatarUrl;
+  if (url === undefined && !fallback) return null;
+  return (
+    <Avatar className={className ?? "size-4"} data-slot="account-avatar">
+      {url !== undefined && <AvatarImage src={url} alt="" referrerPolicy="no-referrer" />}
+      {fallback && (
+        <AvatarFallback className="bg-transparent">
+          <HugeiconsIcon
+            icon={UserCircleIcon}
+            className="size-full text-muted-foreground"
+            aria-hidden
+          />
+        </AvatarFallback>
+      )}
+    </Avatar>
+  );
+}
+
+/** The upstream identity a check reported, for the account heading. */
+export function AccountIdentity({ info }: { readonly info: AccountInfo }) {
   const name = info.displayName ?? info.username ?? info.email;
   const secondary = [
     info.username !== undefined && info.username !== name ? `@${info.username}` : undefined,
@@ -74,15 +100,7 @@ export function AccountIdentity({
   if (name === undefined) return null;
   return (
     <span className="account-identity inline-flex items-center gap-1.5 min-w-0">
-      {avatar && info.avatarUrl !== undefined && !avatarFailed && (
-        <img
-          onError={() => setAvatarFailed(true)}
-          src={info.avatarUrl}
-          alt=""
-          className="size-4 shrink-0 rounded-full"
-          referrerPolicy="no-referrer"
-        />
-      )}
+      <AccountAvatar info={info} fallback={false} />
       <span className="wrap-anywhere">
         {info.profileUrl === undefined ? (
           name
@@ -142,7 +160,7 @@ export function AccountHealthPanel<E>({
     <div className="flex flex-col gap-4">
       {health?.info && (
         <p className="text-[13px] text-muted-foreground">
-          <AccountIdentity info={health.info} avatar />
+          <AccountIdentity info={health.info} />
         </p>
       )}
       {apps.length === 0 ? (
@@ -179,7 +197,7 @@ export function AccountHealthPanel<E>({
   );
 }
 
-/** One app's latest check, spelled out with its time. */
+/** One app's latest check, spelled out with its time and, when it failed, the reason given. */
 export function AccountCheckResult({ health }: { readonly health: AccountAppHealth | undefined }) {
   if (health === undefined || (!health.checkable && health.check === null))
     return <span className="text-[12px] text-muted-foreground">No check</span>;
@@ -187,15 +205,22 @@ export function AccountCheckResult({ health }: { readonly health: AccountAppHeal
     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
   const { label, tone } = describeAccountCheck(health.check.status);
   return (
-    <span className="inline-flex items-center gap-2 text-[12px] text-muted-foreground">
-      <span
-        className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
-        data-check-status={health.check.status}
-        data-check-current={health.check.current}
-      >
-        {health.check.current ? label : `${label} · outdated`}
+    <span className="inline-flex min-w-0 flex-col items-end gap-1 text-[12px] text-muted-foreground">
+      <span className="inline-flex items-center gap-2">
+        <span
+          className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
+          data-check-status={health.check.status}
+          data-check-current={health.check.current}
+        >
+          {health.check.current ? label : `${label} · outdated`}
+        </span>
+        <LocalTime value={health.check.checkedAt} options={shortMoment} />
       </span>
-      <LocalTime value={health.check.checkedAt} options={shortMoment} />
+      {health.check.message !== undefined && (
+        <span className="max-w-[28rem] text-right wrap-anywhere" data-check-message>
+          {health.check.message}
+        </span>
+      )}
     </span>
   );
 }

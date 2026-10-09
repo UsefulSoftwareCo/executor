@@ -1,8 +1,8 @@
 /** Trust the existing local HTTPS CA before Alchemy starts workerd and its sidecars. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Config, Effect, FileSystem, Option, Path, Schema } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { cloudDevelopment } from "../src/contracts/development.ts";
 
 class LocalCertificateUnavailable extends Schema.TaggedError<LocalCertificateUnavailable>()(
@@ -22,6 +22,8 @@ NodeRuntime.runMain(
       // OAuth clients use the existing HTTP loopback listener for their callback;
       // that endpoint returns to the HTTPS dashboard with its browser session intact.
       const configuration = yield* cloudDevelopment;
+      // With role hosts the Worker derives the callback from them; it takes no relay.
+      const roleHosts = yield* Config.String("EXECUTOR_ROLE_HOSTS_DOMAIN").pipe(Config.option);
       const callback = yield* Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(
         Config.withDefault(`http://127.0.0.1:${configuration.apiPort}/api/oauth/callback`),
       );
@@ -33,7 +35,7 @@ NodeRuntime.runMain(
         ChildProcess.make("alchemy", ["dev", ...process.argv.slice(2)], {
           env: {
             ...(https ? { NODE_EXTRA_CA_CERTS: certificate } : {}),
-            EXECUTOR_OAUTH_CALLBACK_URL: callback,
+            ...(Option.isSome(roleHosts) ? {} : { EXECUTOR_OAUTH_CALLBACK_URL: callback }),
           },
           extendEnv: true,
           stdin: "inherit",

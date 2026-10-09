@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createHash, randomBytes } from "node:crypto";
 import { Config, Context, Effect, Layer, Redacted, Schema, Ref } from "effect";
-import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 class BillingTestFailed extends Schema.TaggedError<BillingTestFailed>()("BillingTestFailed", {
   operation: Schema.String,

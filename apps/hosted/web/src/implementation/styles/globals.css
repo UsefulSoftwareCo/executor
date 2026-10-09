@@ -3,3 +3,23 @@
 @import "@executor-js/ui/dashboard/styles";
 
 @source "../";
+
+@font-face {
+  font-family: "SIWC Inter";
+  src: url("/auth/Inter-Medium.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+/* Keep the provider font while inheriting the shared outline button colors. */
+.social-login .chatgpt-sign-in {
+  width: 100%;
+  max-width: 100%;
+  gap: 12px;
+  padding: 0 20px;
+  font:
+    500 16px / 24px "SIWC Inter",
+    sans-serif;
+  letter-spacing: 0;
+}

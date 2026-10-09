@@ -1,10 +1,11 @@
-/** The member's own scoped connections in one organization, reconciled after each write. */
+/** The member's own scoped connections and connected agents in one organization, reconciled after each write. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { Effect } from "effect";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import type { ConnectionId } from "@executor-js/mcp-auth/connections";
+import type { GrantId } from "@executor-js/mcp-auth";
 import type { ConnectionSave } from "@executor-js/ui/contracts/scoped-connections";
 import { acknowledge, acknowledgedQuery, upsert } from "@executor-js/ui/contracts/mutations";
 import { HostedClient } from "./api.ts";
@@ -45,6 +46,32 @@ export const revokeMcpConnectionAtom = Atom.family((organization: OrganizationRe
         Effect.sync(() =>
           acknowledge(get, mcpConnectionsAtom(organization), (current) =>
             current.filter((item) => item.id !== connection),
+          ),
+        ),
+      ),
+      // Revoking a connection revokes every agent connected through it.
+      Effect.tap(() => Effect.sync(() => get.refresh(mcpAgentsAtom(organization)))),
+    ),
+  ),
+);
+
+/** Agents the member authorized over OAuth in this organization. */
+export const mcpAgentsAtom = Atom.family((organization: OrganizationReference) =>
+  HostedClient.query("mcpConnections", "agents", hydrated({ params: { organization } })).pipe(
+    revalidated,
+    acknowledgedQuery,
+  ),
+);
+/** Remove the row only after the server revoked the grant and deleted its tokens. */
+export const revokeMcpAgentAtom = Atom.family((organization: OrganizationReference) =>
+  HostedClient.runtime.fn((agent: GrantId, get) =>
+    Effect.flatMap(HostedClient, (client) =>
+      client.mcpConnections.revokeAgent({ params: { organization, agent } }),
+    ).pipe(
+      Effect.tap(() =>
+        Effect.sync(() =>
+          acknowledge(get, mcpAgentsAtom(organization), (current) =>
+            current.filter((item) => item.id !== agent),
           ),
         ),
       ),

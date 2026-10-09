@@ -1,7 +1,7 @@
 /** Browser navigation only. No OAuth code, client secret, or token is persisted here. */
 import { Effect, Option, Redacted, Schema } from "effect";
 import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
-import { OAuthReturn, type OAuthAppReturn } from "../contracts/oauth.ts";
+import { OAuthReturn } from "../contracts/oauth.ts";
 import type { AccountId } from "@executor-js/sdk";
 
 const returnKey = "executor.oauth.return";
@@ -22,33 +22,17 @@ export const readOAuthCallback = Effect.sync(() => {
   window.history.replaceState(null, "", OAuthCallbackPath);
   return oauthCallbackUrl(url);
 });
-/** Remember only the account-selection page to resume after provider consent. */
+/** Remember only the app page to resume after provider consent. */
 export const openOAuth = (
   authorizationUrl: string,
-  account?: AccountId,
-  returnTo?: typeof OAuthAppReturn.Type,
+  returnTo: typeof OAuthReturn.Type | undefined,
 ) =>
   Effect.sync(() => {
-    const current = new URL(window.location.href);
-    const target = Schema.decodeUnknownOption(OAuthReturn)(
-      account === undefined
-        ? {
-            app: current.searchParams.get("app"),
-            slot: current.searchParams.get("slot"),
-            profile: current.searchParams.get("profile") ?? undefined,
-            ...returnTo,
-          }
-        : { account },
-    );
-    if (Option.isSome(target))
-      window.sessionStorage.setItem(returnKey, JSON.stringify(target.value));
-    else window.sessionStorage.removeItem(returnKey);
+    if (returnTo === undefined) window.sessionStorage.removeItem(returnKey);
+    else window.sessionStorage.setItem(returnKey, JSON.stringify(returnTo));
     window.location.assign(authorizationUrl);
   });
-/**
- * Return to setup with a saved account candidate; setup still validates provider compatibility.
- * A reconnect returns to its account and keeps its name.
- */
+/** Return to the app whose account the sign-in filled. A reconnect keeps its name. */
 export const oauthDestination = (account: AccountId) =>
   Effect.sync(() => {
     const saved = window.sessionStorage.getItem(returnKey);
@@ -57,18 +41,15 @@ export const oauthDestination = (account: AccountId) =>
       saved === null
         ? Option.none()
         : Schema.decodeUnknownOption(Schema.fromJsonString(OAuthReturn))(saved);
-    const reconnect = Option.isSome(target) && "account" in target.value;
-    const destination =
-      Option.isSome(target) && "app" in target.value
-        ? ({
-            to: "/apps/$appId/setup",
-            params: { appId: target.value.app },
-            search: {
-              selected: account,
-              slot: target.value.slot,
-              ...(target.value.profile === undefined ? {} : { profile: target.value.profile }),
-            },
-          } as const)
-        : ({ to: "/accounts", search: { account } } as const);
-    return { destination, reconnect };
+    if (Option.isNone(target))
+      return { destination: { to: "/accounts", search: { account } } as const, reconnect: false };
+    const { app, profile, reconnect } = target.value;
+    return {
+      destination: {
+        to: "/apps/$appId",
+        params: { appId: app },
+        search: { view: "accounts", profile },
+      } as const,
+      reconnect,
+    };
   });

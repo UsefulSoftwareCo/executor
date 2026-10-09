@@ -4,7 +4,7 @@ import { Random, RandomProvider } from "alchemy/Random";
 import * as Output from "alchemy/Output";
 import { retain } from "alchemy/RemovalPolicy";
 import { Stage } from "alchemy/Stage";
-import { Config, Effect, Layer, Redacted } from "effect";
+import { Config, Effect, Layer, Option, Redacted } from "effect";
 import {
   PostHogProject,
   postHogProjectProvider,
@@ -15,14 +15,10 @@ import {
   PostHogInsight,
   postHogReportProviders,
 } from "./src/infrastructure/posthog-reports.ts";
-import {
-  heroExperimentDefinition,
-  PostHogHeroExperiment,
-  postHogExperimentProvider,
-} from "./src/infrastructure/posthog-experiment.ts";
+import { retiredExperimentProvider } from "./src/infrastructure/posthog-experiment.ts";
 import { stackState } from "./src/infrastructure/state.ts";
 import { usageReports } from "./src/infrastructure/usage-reports.ts";
-import { cloudOrigin } from "./src/infrastructure/stage.ts";
+import { cloudHosts } from "./src/infrastructure/stage.ts";
 
 export default Alchemy.Stack(
   "executor-next-posthog",
@@ -31,7 +27,7 @@ export default Alchemy.Stack(
       Layer.mergeAll(
         postHogProjectProvider(),
         postHogReportProviders(),
-        postHogExperimentProvider(),
+        retiredExperimentProvider(),
         RandomProvider(),
       ),
     ),
@@ -46,7 +42,17 @@ export default Alchemy.Stack(
     const project = yield* PostHogProject("Project", {
       organizationId,
       name: stage === "v2" ? "Executor V2" : `Executor V2 (${stage})`,
-      appUrls: [yield* cloudOrigin.pipe(Effect.orDie)],
+      // Pages run on the browser origin and, for marketing, on the edge.
+      appUrls: yield* cloudHosts.pipe(
+        Effect.orDie,
+        Effect.map((hosts) => [
+          ...new Set([
+            hosts.browser,
+            hosts.deployment,
+            ...Option.toArray(Option.map(hosts.roles, (roles) => roles.edge)),
+          ]),
+        ]),
+      ),
       timezone: "America/Los_Angeles",
     }).pipe(retain());
     const dashboard = yield* PostHogDashboard("Usage", {
@@ -62,14 +68,9 @@ export default Alchemy.Stack(
         ...report,
       }).pipe(retain());
     }
-    const hero = yield* PostHogHeroExperiment("HeroExperiment", {
-      projectId: project.id,
-      definition: heroExperimentDefinition,
-    }).pipe(retain());
     return {
       proxyPath: proxy.text.pipe(Output.map((value) => `/api/${Redacted.value(value)}`)),
       dashboardId: dashboard.id,
-      heroExperimentId: hero.id,
       projectId: project.id,
       apiToken: project.apiToken,
       uiHost,

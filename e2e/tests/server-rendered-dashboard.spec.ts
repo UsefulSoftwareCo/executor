@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { Effect, Result, Schedule, Schema } from "effect";
 import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
+import { batchedReads, batchPath } from "../support/read-batches.ts";
+import type { SpanQuery } from "../support/contracts.ts";
 import { Telemetry } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
@@ -76,35 +78,54 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         const html = yield* browser.use("Read the document the server sent", () => response.text());
         // Reads made while the page streams are recorded in the document's own trace. The
         // document continues the trace its request carries.
-        const traceId = randomBytes(16).toString("hex");
-        const traced = yield* browser.use("Request the apps page in a known trace", (page) =>
-          page
-            .context()
-            .request.get(destination, {
-              headers: {
-                ...navigation,
-                traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01`,
-              },
-            })
-            .then((document) => document.text()),
-        );
+        const read = (spans: (typeof SpanQuery.Type)["data"], route: RegExp) =>
+          spans.find(
+            (entry) =>
+              entry.span.operationName === "http.server GET" &&
+              route.test(entry.span.tags["url.path"] ?? ""),
+          )?.span;
+        const tracedReads = (path: string, pageRead: RegExp) =>
+          Effect.gen(function* () {
+            const traceId = randomBytes(16).toString("hex");
+            const text = yield* browser.use(`Request ${path} in a known trace`, (page) =>
+              page
+                .context()
+                .request.get(path, {
+                  headers: {
+                    ...navigation,
+                    traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01`,
+                  },
+                })
+                .then((document) => document.text()),
+            );
+            const recorded = yield* telemetry.query(traceId).pipe(
+              Effect.flatMap((value) => {
+                const access = read(value.data, /^\/api\/organizations\/[^/]+\/access$/);
+                const own = read(value.data, pageRead);
+                return access !== undefined && own !== undefined
+                  ? Effect.succeed({ access, own })
+                  : Effect.fail(new Error("The page's API reads are not in the document trace"));
+              }),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+              Effect.timeout("20 seconds"),
+              Effect.result,
+            );
+            expect(
+              Result.isSuccess(recorded),
+              `The reads made while rendering ${path} must be recorded in the document trace`,
+            ).toBe(true);
+            if (Result.isSuccess(recorded)) {
+              // The page reads its data from the URL alongside the organization's access check;
+              // it does not wait for access before it starts.
+              const { access, own } = recorded.success;
+              expect(Date.parse(own.startTime)).toBeLessThan(
+                Date.parse(access.startTime) + access.durationMs,
+              );
+            }
+            return text;
+          });
+        const traced = yield* tracedReads(destination, /^\/api\/organizations\/[^/]+\/resources$/);
         expect(traced).toMatch(/>Executor</);
-        const recorded = yield* telemetry.query(traceId).pipe(
-          Effect.flatMap((value) =>
-            value.data.some((entry) =>
-              /^\/api\/organizations\/[^/]+\/resources$/.test(entry.span.tags["url.path"] ?? ""),
-            )
-              ? Effect.void
-              : Effect.fail(new Error("The page's API read is not in the document trace")),
-          ),
-          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-          Effect.timeout("20 seconds"),
-          Effect.result,
-        );
-        expect(
-          Result.isSuccess(recorded),
-          "The apps read made during rendering must be recorded in the document trace",
-        ).toBe(true);
         // The installed app's card is data the server read before sending the page.
         expect(html).toContain('aria-label="Organization:');
         expect(html).toMatch(/>Executor</);
@@ -118,6 +139,27 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         expect(failures).toEqual([]);
         expect(repeatedReads).toEqual([]);
         yield* browser.checkpoint("Server-rendered apps page after hydration");
+
+        // An app's page reads the app from its URL alongside the access check too.
+        const inventory = yield* browser.use("Find the installed Executor app", (page) =>
+          page
+            .context()
+            .request.get(`/api/organizations/${actors.organization.id}/inventory`)
+            .then((value) => value.json()),
+        );
+        const installed = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+          }),
+        )(inventory);
+        const executor = installed.apps.find((app) => app.name === "Executor");
+        if (executor === undefined) throw new Error("The Executor app is not installed");
+        const appPage = yield* tracedReads(
+          `/org/${actors.organization.slug}/apps/${executor.id}`,
+          // The app's read records its route's template, not the app's ID.
+          /^\/api\/organizations\/:organization\/apps\/:app$/,
+        );
+        expect(appPage).toMatch(/>Executor</);
 
         // `/` resumes the organization this browser last used at its current address, so the page
         // never replaces its own URL while its data is still arriving.
@@ -156,6 +198,55 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         );
         expect(consent.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
         expect(consent.headers()["x-frame-options"]).toBe("DENY");
+
+        // The page starts its reads with the access check, so a refusal arrives after them. A
+        // refused document carries the refusal and none of the page's reads, whatever they
+        // returned; the browser shows the refusal without reading the page's data itself.
+        const refusedSlug = `withheld-${randomBytes(6).toString("hex")}`;
+        const refusedPath = `/org/${refusedSlug}/apps`;
+        const refused = yield* browser.use(
+          "Request an organization this user cannot open",
+          (page) =>
+            page
+              .context()
+              .request.get(refusedPath, { headers: navigation })
+              .then((document) => document.text()),
+        );
+        expect(refused).toContain("Organization unavailable");
+        expect(refused).toContain(`hosted:organization-access:${refusedSlug}`);
+        expect(refused).not.toMatch(/AtomHttpApi:(groups:list|resourceAccess:directory):/);
+        const refusedReads: string[] = [];
+        yield* browser.use("Watch the refused page's reads", (page) => {
+          page.on("request", (request) => {
+            const path = new URL(request.url()).pathname;
+            // Only the refused organization's reads; the browser sends reads that start together
+            // as one batch.
+            const reads =
+              path === batchPath
+                ? batchedReads(request.postData())
+                    .filter((read) => read.params["organization"] === refusedSlug)
+                    .map((read) => `${read.group}:${read.endpoint}`)
+                : path.startsWith(`/api/organizations/${refusedSlug}/`)
+                  ? [path]
+                  : [];
+            refusedReads.push(
+              ...reads.filter((read) =>
+                /^(groups:list|resourceAccess:directory|organization:inventory)$|\/(groups|resources|inventory)$/.test(
+                  read,
+                ),
+              ),
+            );
+          });
+          return Promise.resolve();
+        });
+        yield* browser.use("Open the refused organization", (page) => page.goto(refusedPath));
+        yield* browser.use("The refusal is shown after hydration", (page) =>
+          page.getByText("Organization unavailable").waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Let the refused page hydrate", (page) => page.waitForTimeout(1500));
+        expect(failures).toEqual([]);
+        expect(refusedReads).toEqual([]);
+        yield* browser.checkpoint("Refused organization after hydration");
       }),
     ),
   );

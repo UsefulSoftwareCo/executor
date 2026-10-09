@@ -5,6 +5,7 @@ import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
 import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
 import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
 import { isRequestRejection } from "@executor-js/telemetry/http";
+import { recordedError } from "@executor-js/telemetry/recorded-failure";
 
 /**
  * Client rejections stay in request telemetry and are not incidents: declared
@@ -147,7 +148,8 @@ export const withCloudSentry = <A, E, R>(
           }
         }
       }
-      client.captureException(exception, undefined, scope);
+      // An app's own text reaches its caller, never an incident report.
+      client.captureException(recordedError(exception), undefined, scope);
     };
     const capture = (cause: Cause.Cause<unknown>) =>
       Effect.withFiber((fiber) => Effect.sync(() => captureIn(cause, fiber.context)));

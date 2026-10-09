@@ -177,9 +177,6 @@ layer(HostedLive, { excludeTestServices: true })("Browser error provenance", (it
         // Marketing's code has no failure a scenario can raise, so its own error client
         // reports a sentinel after the foreign failures; the transport keeps their order.
         yield* browser.use("Open the marketing site", (page) => page.goto("/home"));
-        yield* browser.use("Dismiss the early preview notice", (page) =>
-          page.getByRole("button", { name: "Got it" }).click(),
-        );
         const marketing = yield* raiseForeignFailures("marketing", pageErrors);
         const sentinel = `marketing-sentinel-${randomUUID().slice(0, 8)}`;
         yield* captureThroughPage(sentinel);

@@ -1,6 +1,6 @@
 /** Fresh hosted policy tables; every resource receives policy in its creation transaction. */
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 /** Caller holds the hosted migration lock after SDK and group tables exist. */
 export const migrateResourceAccess = Effect.gen(function* () {

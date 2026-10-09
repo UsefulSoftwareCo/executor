@@ -12,7 +12,7 @@ import type { App, AppSkillBundle, AppSkillDocument } from "@executor-js/sdk";
 import type { SkillBindings } from "../../contracts/app-browser.ts";
 import type { FailureProps } from "../../contracts/dashboard.ts";
 import { Option } from "effect";
-import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { useAtomMount } from "@effect/atom-react";
 import type { AppSourceView } from "@executor-js/app-management/contracts";
 import { QueryView, usePreload, useQuery } from "./context.tsx";

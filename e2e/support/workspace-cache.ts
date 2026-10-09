@@ -75,7 +75,13 @@ export const storedWorkspace = <A, E, R>(
       yield* settledTrace(`${label}-save`, ["source.workspace.cache.save"]);
       expect(yield* read).toEqual(expected);
     }
-    const hit = yield* settledTrace(`${label}-hit`, ["source.workspace.cache.read"]);
+    // The hit's head check runs after the response. Until its span arrives, the Git and
+    // credential spans it started have no delivered parent and look like work outside it.
+    const hit = yield* settledTrace(`${label}-hit`, [
+      "source.workspace.cache.read",
+      "source.workspace.cache.revalidate",
+      "source.git.refs",
+    ]);
     expect(cacheOutcome(hit)).toBe("hit");
     expect(outsideRevalidation(hit)).toEqual([]);
   });

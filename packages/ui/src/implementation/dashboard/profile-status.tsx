@@ -1,7 +1,7 @@
 /** Visible lifecycle state for a profile. */
 import type { Profile } from "@executor-js/sdk";
-import type { Atom } from "effect/unstable/reactivity";
-import { AsyncResult } from "effect/unstable/reactivity";
+import type { Atom } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { ComponentType } from "react";
 import type { FailureProps } from "../../contracts/dashboard.ts";

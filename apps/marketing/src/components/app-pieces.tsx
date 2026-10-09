@@ -418,8 +418,8 @@ export function AppPieces() {
     if (visible && reducedMotion === false) clock.set(clock.get() + Math.min(delta, 64) / 1000);
   });
   return (
-    <div ref={ref} className="mt-7.5 max-w-225">
-      <div className="app-pieces grid grid-cols-2 gap-[17.5px] max-[639px]:grid-cols-1 max-[639px]:gap-5">
+    <div ref={ref} className="max-w-225">
+      <div className="app-pieces grid grid-cols-2 gap-[17.5px] max-[639px]:grid-cols-1 max-[639px]:gap-5 min-[1280px]:grid-cols-3 min-[1280px]:gap-3.5">
         <AppPiece part={tools}>
           <ToolPicture clock={clock} />
         </AppPiece>

@@ -8,8 +8,8 @@ import {
   SourceFiles,
   type AppCodeId,
   type BlobStoreError,
+  type RepositoryBackend,
 } from "@executor-js/sdk/core";
-import type { RepositoryBackend } from "@executor-js/app-source/contracts";
 import { Effect, Option, Schedule, Schema } from "effect";
 
 /** A strongly consistent object store with compare-and-swap on the version it returned. */

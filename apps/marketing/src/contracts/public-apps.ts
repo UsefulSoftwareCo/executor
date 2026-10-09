@@ -1,11 +1,11 @@
 /** Public Apps uses the registry reader without importing dashboard authentication or data. */
-import { remoteRegistry } from "@executor-js/app-registry/client";
-import { PackageName } from "@executor-js/app-registry/contracts";
+import { PackageName, remoteRegistry } from "@executor-js/sdk/core";
 import { Data, Effect, Layer, Option, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 const runtime = Atom.runtime(Layer.empty);
-const registry = () => remoteRegistry(window.location.origin);
+// The registry is served by the API host, not the site's origin (`api.executor.sh` in production).
+const registry = () => remoteRegistry(import.meta.env.PUBLIC_EXECUTOR_API_ORIGIN);
 /** Published metadata is refreshed when a visitor returns to the page. */
 export const publicApps = runtime
   .atom(Effect.suspend(() => registry().list()))

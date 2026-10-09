@@ -87,8 +87,9 @@ scope; do not skip cases, loosen assertions, or call a blocked run a pass.
 A pull request runs only the E2E spec files its description selects in a fenced
 `e2e` block; `main` runs everything. Follow [the CI section](../../../AGENTS.md#choosing-a-prs-e2e-scenarios)
 of AGENTS.md. List every spec file that exercises the changed code's callers, not
-only the one you edited. Use `all` for cross-cutting changes and `none` only when
-no scenario can observe the change.
+only the one you edited. Use `none` only when no scenario can observe the change.
+Use `all` only for the harness, toolchain, lockfile or workflows, and write the
+reason after it (`all: changes the lockfile`).
 
 ## Remove tests that do not earn their cost
 

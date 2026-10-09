@@ -6,8 +6,20 @@
     "typescript/no-explicit-any": "error",
     // Effect.gen bodies without a yield are valid Effect code.
     "require-yield": "off",
+    "executor/exportable-schema-pattern": "error",
   },
   "overrides": [
+    {
+      // The live host protocol reaches these patterns, and its record is compared with every
+      // released protocol's, flags included; see notes/apps-publishing.md.
+      "files": [
+        "packages/apps/src/contracts/protocols/**",
+        "packages/apps/src/contracts/provider.ts",
+        "packages/apps/src/contracts/failure.ts",
+        "packages/app-cache/src/contracts/cache.ts",
+      ],
+      "rules": { "executor/exportable-schema-pattern": "off" },
+    },
     {
       // Workers and servers reuse one module instance across requests.
       "files": ["apps/**/src/**", "packages/*/src/**"],
@@ -23,6 +35,52 @@
       // framework. openapi-source keeps an isolate-wide cache of content-addressed parts.
       "files": ["packages/apps/src/implementation/openapi-source.ts"],
       "rules": { "executor/no-module-level-mutable-state": "off" },
+    },
+    {
+      // An app's callbacks, and methods of values it passes such as its cache, are the app's
+      // time in tool-call accounting only when the framework waits on them through fromPromise.
+      // The files are the framework and the workspace packages it bundles into the app isolate.
+      // The SDK's only code in the isolate is generated strings: the bridge in worker-bridge.ts,
+      // whose one entry into the app is apps/host's dispatch, and the network module in
+      // app-network.ts, which waits only on the platform's fetch. The rest of the SDK runs
+      // outside the isolate and reaches an app only by RPC.
+      "files": [
+        "packages/apps/src/**",
+        "packages/app-cache/src/**",
+        "packages/telemetry/src/**",
+        "packages/utils/src/api-error.ts",
+        "packages/utils/src/recorded-message.ts",
+      ],
+      "rules": { "executor/authored-code-through-adapter": "error" },
+    },
+    {
+      // The adapter itself, and modules that run only in the browser, outside any invocation.
+      "files": [
+        "packages/apps/src/implementation/authoring.ts",
+        "packages/apps/src/browser/**",
+        "packages/apps/src/implementation/live.ts",
+        "packages/apps/src/implementation/optimistic.ts",
+        "packages/apps/src/implementation/ui-client.ts",
+        "packages/telemetry/src/browser*.ts",
+      ],
+      "rules": { "executor/authored-code-through-adapter": "off" },
+    },
+    {
+      // Authorization proofs are minted only where their check runs.
+      "files": ["apps/hosted/server/src/**"],
+      "rules": {
+        "executor/no-proof-forgery": "error",
+        "executor/account-middleware-through-helper": "error",
+      },
+    },
+    {
+      // The helper itself attaches the middleware.
+      "files": ["apps/hosted/server/src/contracts/account-grants.ts"],
+      "rules": { "executor/account-middleware-through-helper": "off" },
+    },
+    {
+      "files": ["apps/hosted/server/src/implementation/proofs/**"],
+      "rules": { "executor/no-proof-forgery": "off" },
     },
     {
       "files": ["e2e/**"],
@@ -56,5 +114,6 @@
     "**/.generated/",
     "**/routeTree.gen.ts",
     "**/browser-scripts.gen.ts",
+    "**/executor-intro.gen.ts",
   ],
 }

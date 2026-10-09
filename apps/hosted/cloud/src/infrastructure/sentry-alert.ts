@@ -7,7 +7,7 @@ import { Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import { Effect, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { SentryProvisioningFailed } from "./sentry-provider.ts";
 
 /** Project IDs and public DSNs come from managed resources. Test-stage alerts remain disabled. */

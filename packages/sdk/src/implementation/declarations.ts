@@ -4,13 +4,13 @@ import {
   Clock,
   Deferred,
   Effect,
-  Encoding,
   Exit,
   Fiber,
   Option,
   Schema,
   type Crypto,
 } from "effect";
+import { Hex } from "effect/encoding";
 import {
   declarationFreshness,
   declarationLimits,
@@ -25,7 +25,7 @@ import {
 } from "../contracts/declarations.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { CurrentProfile } from "../contracts/profiles.ts";
-import { StorageError } from "../contracts/shared.ts";
+import { type AccountId, StorageError } from "../contracts/shared.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { makeHandoff } from "./handoff.ts";
 import { resolve, type InvocationSnapshot } from "./tools.ts";
@@ -101,7 +101,7 @@ export const makeDeclarations = (options: {
 }) => {
   const digest = (bytes: Uint8Array) =>
     options.crypto.digest("SHA-256", bytes).pipe(
-      Effect.map(Encoding.encodeHex),
+      Effect.map(Hex.encode),
       Effect.mapError(() => new StorageError()),
     );
   const key = (command: string, state: InvocationSnapshot) =>
@@ -139,25 +139,27 @@ export const makeDeclarations = (options: {
   const authorize = (state: InvocationSnapshot) =>
     Effect.gen(function* () {
       const lifecycle = options.lifecycle;
-      if (state.profile !== undefined && lifecycle?.profileResolving)
-        yield* lifecycle.profileResolving(state.profile);
       const selected = state.selections.flatMap(({ required, accounts }) =>
         accounts.map((account) => ({ account, provider: required.definition })),
       );
       const accounts = selected.map(({ account }) => account);
-      // Product authority for every account is one read, alongside the grant checks.
-      const authorized =
-        lifecycle === undefined || !Arr.isReadonlyArrayNonEmpty(accounts)
+      const permitted = (allowed: ReadonlySet<AccountId>) =>
+        accounts.every((account) => allowed.has(account.id))
           ? Effect.void
-          : lifecycle
-              .accountsResolving(accounts)
-              .pipe(
-                Effect.flatMap((allowed) =>
-                  accounts.every((account) => allowed.has(account.id))
-                    ? Effect.void
-                    : Effect.fail(new StorageError()),
-                ),
-              );
+          : Effect.fail(new StorageError());
+      // The profile's subject and its accounts are rechecked together, before the grant checks.
+      const profileChecked =
+        state.profile !== undefined && lifecycle?.profileResolving !== undefined
+          ? lifecycle.profileResolving(state.profile, accounts).pipe(Effect.flatMap(permitted))
+          : undefined;
+      if (profileChecked !== undefined) yield* profileChecked;
+      // Otherwise product authority for every account is one read, alongside the grant checks.
+      const authorized =
+        profileChecked !== undefined ||
+        lifecycle === undefined ||
+        !Arr.isReadonlyArrayNonEmpty(accounts)
+          ? Effect.void
+          : lifecycle.accountsResolving(accounts).pipe(Effect.flatMap(permitted));
       yield* Effect.all(
         [
           authorized,
@@ -217,7 +219,9 @@ export const makeDeclarations = (options: {
      * Read `command` for this invocation state. `retain` keeps only results determined by these
      * inputs; a result that reflects a live publisher is never reused. `current` rejects a cached
      * value the caller knows is outdated, such as a skill revision it has already seen replaced.
-     * `live` evaluates without reading or writing kept results, for callers that act on the
+     * `revalidate` marks a kept value that is not served once stale, even with background work:
+     * the read evaluates first instead, so its caller never gets a value a refresh replaces moments
+     * later. `live` evaluates without reading or writing kept results, for callers that act on the
      * result, such as reconciling upstream webhook registrations.
      */
     read: <E>(
@@ -227,6 +231,7 @@ export const makeDeclarations = (options: {
       policy: {
         readonly retain?: (value: unknown) => boolean;
         readonly current?: (value: unknown) => Effect.Effect<boolean>;
+        readonly revalidate?: (value: unknown) => boolean;
         readonly live?: boolean;
       } = {},
     ) =>
@@ -296,6 +301,13 @@ export const makeDeclarations = (options: {
             const background = options.background;
             if (stale && background === undefined) {
               yield* Effect.annotateCurrentSpan("executor.declarations.cache", "expired");
+              return yield* load;
+            }
+            if (stale && policy.revalidate?.(value) === true) {
+              yield* Effect.annotateCurrentSpan({
+                "executor.declarations.cache": "revalidated",
+                "executor.declarations.age_ms": age,
+              });
               return yield* load;
             }
             yield* authorize(state);

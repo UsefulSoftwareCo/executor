@@ -7,7 +7,7 @@ import {
   type Tool,
 } from "@executor-js/sdk";
 import { Cause, Exit, Option, Schema } from "effect";
-import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { useCallback, useState, type ComponentType } from "react";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";

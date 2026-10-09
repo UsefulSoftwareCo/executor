@@ -62,6 +62,7 @@ NodeRuntime.runMain(
       desktop_package: release.desktop.executableName,
       desktop_update_feed: desktopUpdateFeed.tag,
       matrix: JSON.stringify({ include: matrix }),
+      cli_matrix: JSON.stringify({ include: matrix.filter((target) => target.cliWorkers > 0) }),
       docker_matrix: JSON.stringify({
         include: platforms
           .filter((target) => target.platform === "linux")

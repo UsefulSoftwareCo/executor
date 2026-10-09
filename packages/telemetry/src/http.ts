@@ -5,7 +5,7 @@ import {
   HttpIncomingMessage,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { forwardTelemetry } from "./relay.ts";
 import { recordResponseReady } from "./measurements.ts";
 export { isRequestRejection, recordRequestRejections } from "./request-rejection.ts";
@@ -74,7 +74,7 @@ export const receiveBrowserTelemetry = (signal: "traces" | "logs", build?: strin
         dropped: 0,
       },
       undefined,
-      build,
+      { build },
       "executor-web",
     );
     return HttpServerResponse.empty({ status: 202, headers: { "cache-control": "no-store" } });

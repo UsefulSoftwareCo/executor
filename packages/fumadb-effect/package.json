@@ -38,18 +38,18 @@
   },
   "dependencies": {
     "@paralleldrive/cuid2": "^3.3.0",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+    "effect": "4.0.1"
   },
   "devDependencies": {
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@effect/sql-mssql": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-mssql@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@effect/sql-mysql2": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-mysql2@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@effect/sql-pg": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pg@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@effect/sql-sqlite-node": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+    "@effect/platform-node": "4.0.1",
+    "@effect/sql-mssql": "4.0.1",
+    "@effect/sql-mysql2": "4.0.1",
+    "@effect/sql-pg": "4.0.1",
+    "@effect/sql-pglite": "4.0.1",
+    "@effect/sql-sqlite-node": "4.0.1"
   },
   "peerDependencies": {
-    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+    "@effect/sql-pglite": "4.0.1"
   },
   "peerDependenciesMeta": {
     "@effect/sql-pglite": {

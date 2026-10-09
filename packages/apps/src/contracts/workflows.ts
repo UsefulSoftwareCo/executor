@@ -1,5 +1,6 @@
 /** Portable workflow declarations, run views and durable execution capabilities. */
 import { Schema, type Effect } from "effect";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { JsonObject, JsonValue } from "./schema.ts";
 import { FailureMessage, FailureName } from "./failure.ts";
 import type { AppContext, AppRequirements, QueryContext, MutationContext } from "./context.ts";
@@ -83,7 +84,17 @@ export class WorkflowFailure extends Schema.TaggedError<WorkflowFailure>()("Work
     "engine",
   ]),
   retryable: Schema.Boolean,
-}) {}
+}) {
+  /**
+   * The step name and error detail are the app's. Its run's owner reads them; telemetry records
+   * only the reason, however the failure was built or decoded.
+   */
+  get [RecordedMessage]() {
+    return this.step === undefined && this.errorName === undefined && !this.message
+      ? undefined
+      : `The workflow failed (${this.reason}); the app's error is not recorded`;
+  }
+}
 /** Explicitly stop retrying an authored step. Its message is reported like any step error. */
 export class NonRetryableError extends Error {
   override readonly name = "NonRetryableError";

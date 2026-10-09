@@ -7,7 +7,7 @@
  * Members per organization are not observable in traces; the fixture's three roles are used.
  */
 import { Config, Effect, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 
 /** Quantile table: probabilities in ascending order with their observed values. */
 export const Quantiles = Schema.Array(Schema.Tuple([Schema.Number, Schema.Number]));

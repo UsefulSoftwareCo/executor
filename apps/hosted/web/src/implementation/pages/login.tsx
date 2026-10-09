@@ -1,7 +1,7 @@
 import { ContinueAfterSignIn } from "../components/sign-in.tsx";
 export { ContinueAfterSignIn } from "../components/sign-in.tsx";
 import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Option } from "effect";
 import { useState, type ReactNode } from "react";
@@ -89,7 +89,9 @@ export function LoginPage({
   title = "Sign in",
   cardFooter,
   footer,
+  chatGpt = false,
 }: LoginProps & {
+  readonly chatGpt?: boolean;
   readonly children?: ReactNode;
   readonly title?: string;
   readonly cardFooter?: ReactNode;
@@ -102,7 +104,7 @@ export function LoginPage({
   const signIn = useAtomSet(signInAtom, { mode: "promiseExit" });
   const state = useAtomValue(signInAtom);
   const [error, setError] = useState<string | null>(null);
-  const [provider, setProvider] = useState<"google" | "github" | null>(null);
+  const [provider, setProvider] = useState<"google" | "github" | "openai" | null>(null);
   const lastSession = AsyncResult.value(session);
   // Keep child form fields mounted during revalidation of a signed-out session.
   const signedOut = Option.isSome(lastSession) && lastSession.value === null;
@@ -123,7 +125,7 @@ export function LoginPage({
         <Spinner />
       </div>
     );
-  const start = async (provider: "google" | "github") => {
+  const start = async (provider: "google" | "github" | "openai") => {
     setError(null);
     setProvider(provider);
     const result = await signIn({ provider, redirect });
@@ -163,6 +165,20 @@ export function LoginPage({
             <GitHubIcon />
             Continue with GitHub
           </Button>
+          {chatGpt && (
+            <Button
+              variant="outline"
+              className="chatgpt-sign-in"
+              aria-label="Continue with ChatGPT"
+              disabled={state.waiting}
+              loading={state.waiting && provider === "openai"}
+              onClick={() => start("openai")}
+            >
+              <img src="/auth/chatgpt-black.svg" alt="" className="size-[21px] dark:hidden" />
+              <img src="/auth/chatgpt-white.svg" alt="" className="hidden size-[21px] dark:block" />
+              Continue with ChatGPT
+            </Button>
+          )}
         </div>
         {AsyncResult.isFailure(session) && (
           <div role="alert" className="space-y-3 text-sm text-destructive">

@@ -223,9 +223,37 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
             yield* browser.use("Open Publish for the saved package", (page) =>
               page.getByRole("button", { name: "Share publicly", exact: true }).click(),
             );
-            yield* browser.use("Rename from the dialog", (page) =>
-              page.getByRole("button", { name: "Rename and continue", exact: true }).click(),
+            const rename = browser.use("Rename from the dialog", (page) =>
+              page
+                .getByRole("button", { name: "Rename and continue", exact: true })
+                .and(page.locator(":enabled"))
+                .click(),
             );
+            yield* browser.use("The dialog has loaded the source", (page) =>
+              page
+                .getByRole("button", { name: "Rename and continue", exact: true })
+                .and(page.locator(":enabled"))
+                .waitFor(),
+            );
+            // The rename reads the source before it commits. When that read fails, the dialog reports
+            // it and keeps the loaded source, so renaming again recovers.
+            const failedRead = yield* holdQuery(
+              [actors.organization.id, actors.organization.slug].map(
+                (organization) => `/api/organizations/${organization}/apps/${app.id}/workspace`,
+              ),
+              "undeclared",
+            );
+            yield* rename;
+            yield* failedRead.requested;
+            yield* failedRead.release;
+            yield* browser.use("The failed read is reported in the dialog", (page) =>
+              page
+                .getByRole("dialog")
+                .getByText("Unable to complete this request", { exact: true })
+                .waitFor(),
+            );
+            yield* browser.checkpoint("Failed rename read can be retried");
+            yield* rename;
             yield* browser.use("The dialog reviews the renamed package", (page) =>
               page.getByRole("button", { name: "List publicly", exact: true }).waitFor(),
             );

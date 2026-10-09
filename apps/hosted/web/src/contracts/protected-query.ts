@@ -1,6 +1,6 @@
 /** Retain drafts through transport failures, but clear protected content after access is denied. */
 import { Cause, Match, Option } from "effect";
-import type { Atom, AsyncResult } from "effect/unstable/reactivity";
+import type { Atom, AsyncResult } from "effect/reactivity";
 import { acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 import type { HostedError } from "./errors.ts";
 const denied = Match.type<HostedError>().pipe(

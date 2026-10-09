@@ -14,6 +14,16 @@ export const RunMetadata = Schema.Struct({
   startedAt: Schema.String,
   interactive: Schema.Boolean,
   diagnostics: Schema.String,
+  /**
+   * Where a managed Cloud serves its dashboard and sign-in when it is not `app.` of `origin`:
+   * `deployment` under its rollback switch.
+   */
+  browserOrigin: Schema.optional(Schema.Literal("deployment")),
+  /**
+   * The deployment origin of the OAuth proxy's production when the run tests a stage that signs in
+   * through it (`e2e:cloud --oauth-proxy-preview`).
+   */
+  oauthProxyProduction: Schema.optional(Schema.String),
 });
 /** Portable evidence links copied into the report folder. */
 export const Attachment = Schema.Struct({

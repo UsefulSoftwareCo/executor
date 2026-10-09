@@ -6,7 +6,7 @@ import {
   HttpApiGroup,
   HttpApiMiddleware,
   OpenApi,
-} from "effect/unstable/httpapi";
+} from "effect/http-api";
 import {
   CompleteWebhookSetup,
   HttpUrl,

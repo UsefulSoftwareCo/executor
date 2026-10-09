@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect";
-import * as Statement from "effect/unstable/sql/Statement";
+import * as Statement from "effect/sql/Statement";
 
 /** Join native SQL wire spans and server observations to the exact SQL statement. */
 export const sqlTracing = Layer.mergeAll(

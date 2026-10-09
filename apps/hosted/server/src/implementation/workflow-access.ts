@@ -1,8 +1,5 @@
 /** Run history is protected by its pinned accounts, not a later replacement app binding. */
 import {
-  ProfileId,
-  SelectedAccounts,
-  StorageError,
   WorkflowFailure,
   WorkflowRunId,
   type Executor,
@@ -10,8 +7,8 @@ import {
   type OwnerId,
   type AppId,
 } from "@executor-js/sdk/core";
-import { Effect, Schema } from "effect";
-import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
+import { Effect } from "effect";
+import { requireAppAccess } from "./resource-policy.ts";
 import { checkAccounts, ownProfile } from "./access.ts";
 /** Check current app use and every account that contributed to the retained run. */
 export const requireWorkflowAccess = (
@@ -22,22 +19,17 @@ export const requireWorkflowAccess = (
 ) =>
   Effect.gen(function* () {
     yield* requireAppAccess(app, "use");
-    const sql = yield* policyDatabase;
-    const rows =
-      yield* sql`select accounts, installation as profile from executor_workflow_runs where id = ${run} and app = ${app} and owner = ${owner}`;
-    const saved = (yield* Schema.decodeUnknownEffect(
-      Schema.Array(
-        Schema.Struct({ accounts: SelectedAccounts, profile: Schema.NullOr(ProfileId) }),
-      ),
-    )(rows))[0];
-    if (saved === undefined)
-      return yield* new WorkflowFailure({ reason: "not_found", retryable: false });
+    const saved = yield* executor.apps.workflowRuns
+      .pinned({ owner, app, run: WorkflowRunId.make(run) })
+      .pipe(
+        Effect.catchTag("AppNotFound", () =>
+          Effect.fail(new WorkflowFailure({ reason: "not_found", retryable: false })),
+        ),
+      );
     if (saved.profile !== null) yield* ownProfile(executor, owner, app, saved.profile);
     yield* checkAccounts(owner, saved.accounts);
     return saved;
-  }).pipe(
-    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
-  );
+  });
 
 /** Authorize a retained idempotency key before start can wake its saved execution. */
 export const requireWorkflowReplayAccess = (
@@ -48,14 +40,12 @@ export const requireWorkflowReplayAccess = (
 ) =>
   Effect.gen(function* () {
     if (input.key === undefined) return;
-    const sql = yield* policyDatabase;
-    const rows = yield* sql`select id from executor_workflow_runs
-      where app = ${app} and owner = ${owner} and start_key = ${input.key}
-        and installation is not distinct from ${input.profile ?? null}`;
-    const retained = (yield* Schema.decodeUnknownEffect(
-      Schema.Array(Schema.Struct({ id: WorkflowRunId })),
-    )(rows))[0];
+    const page = yield* executor.apps.workflowRuns.list({
+      app,
+      key: input.key,
+      ...(input.profile === undefined ? {} : { profile: input.profile }),
+      limit: 1,
+    });
+    const retained = page.items.find((item) => (item.profile ?? undefined) === input.profile);
     if (retained !== undefined) yield* requireWorkflowAccess(executor, owner, app, retained.id);
-  }).pipe(
-    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
-  );
+  });

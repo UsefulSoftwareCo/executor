@@ -78,7 +78,8 @@ layer(HostedLive, { excludeTestServices: true })("Organization API keys", (it) =
             Effect.flatMap((page) =>
               page.apiKeys.some(
                 (key) =>
-                  key.name === "Executor app" && key.metadata?.organization === organization.id,
+                  key.name === "Executor app (created automatically)" &&
+                  key.metadata?.organization === organization.id,
               )
                 ? Effect.void
                 : Effect.fail(new Pending()),

@@ -1,7 +1,7 @@
 /** Reuse local pairing sessions for secret exchange; link generation does not reveal setup fields. */
 import { Effect, Layer, Redacted } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerResponse } from "effect/http";
 import type { Executor } from "@executor-js/sdk/core";
 import type { ServerConfig } from "../contracts/config.ts";
 import { LocalWebhookSetupApi, WebhookSetupAccess } from "../contracts/webhook-setup.ts";

@@ -24,12 +24,12 @@ import { requireOrganizationAdmin } from "./access.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { APIError } from "better-auth/api";
 import { ErrorReporter, Effect, Layer, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   ApiAuthentication,
   Authentication,
@@ -122,6 +122,9 @@ export const withOrganizationRequest = <E, R>(
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
         return yield* new Forbidden();
       const grant = yield* api.authenticate(headers, reference);
+      // The request's span records the organization's opaque ID, never the route's reference,
+      // which can be its slug.
+      yield* Effect.annotateCurrentSpan("executor.organization.id", grant.access.organization);
       yield* refuseRemoved(grant.access.organization);
       if (!permitsAction(grant.policy, action)) return yield* new OrganizationForbidden();
       if (params.app !== undefined) {
@@ -153,6 +156,7 @@ export const withOrganizationRequest = <E, R>(
     const principal = yield* auth.current(headers);
     if (principal === null) return yield* new Unauthorized();
     const organization = yield* auth.organization(reference);
+    yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
     // Removal is reported before membership. The reads run one after the other: on Cloud they
     // share the event's one SQL connection, and overlapping them would open a second one, a TLS
     // login that costs far more than the few milliseconds the second read waits.
@@ -183,6 +187,7 @@ export const requireOrganizationLive = Layer.effect(
   Effect.gen(function* () {
     const auth = yield* Authentication;
     const api = yield* ApiAuthentication;
+    const tombstones = yield* OrganizationTombstones;
     return (response, { endpoint, group }) =>
       withOrganizationRequest(
         () => {
@@ -203,8 +208,14 @@ export const requireOrganizationLive = Layer.effect(
       ).pipe(
         Effect.provideService(Authentication, auth),
         Effect.provideService(ApiAuthentication, api),
+        Effect.provideService(OrganizationTombstones, tombstones),
       );
   }),
+);
+
+/** A host that cannot remove organizations, such as self-host: every organization it serves is live. */
+export const noOrganizationRemovals = Layer.succeed(OrganizationTombstones, () =>
+  Effect.succeed(false),
 );
 
 /** List organization metadata through the SDK without evaluating app code. */

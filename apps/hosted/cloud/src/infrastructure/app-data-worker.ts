@@ -14,3 +14,9 @@ export class AppData extends Cloudflare.Worker<
   RemoteAppRunner<Effect.Effect<string>>,
   AppDataSupervisor
 >()("AppData") {}
+
+/**
+ * Marks AppData versions whose runner reads builds by ID itself, so callers need not send a build
+ * loader. A deploy that stops sending one checks every live AppData version carries it first.
+ */
+export const runnerReadsBuilds = { name: "EXECUTOR_RUNNER_READS_BUILDS", value: "1" } as const;

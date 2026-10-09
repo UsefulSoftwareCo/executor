@@ -1,6 +1,6 @@
 import { ProfileId } from "@executor-js/sdk";
 import { AppView } from "@executor-js/ui/contracts/dashboard";
-import { AccountId, AppId, ProviderId } from "@executor-js/sdk";
+import { AccountId } from "@executor-js/sdk";
 import { Option, Schema } from "effect";
 
 /** Dashboard areas used by route metadata to highlight the sidebar. */
@@ -13,23 +13,13 @@ export interface AppSearch {
   readonly profile?: ProfileId | undefined;
 }
 
-/** Account creation can return to the originating app requirement. */
-export interface AddAccountSearch {
-  readonly provider?: ProviderId | undefined;
-  readonly app?: AppId | undefined;
-  readonly slot?: string | undefined;
-  readonly profile?: ProfileId | undefined;
-}
-
 /** The account list marks a linked account, which has no page of its own. */
 export interface AccountsSearch {
   readonly account?: AccountId | undefined;
 }
 
-/** Setup offers a newly connected account, then validates its compatibility. */
+/** Setup opens the app's accounts, optionally for one profile. */
 export interface SetupSearch {
-  readonly selected?: AccountId | undefined;
-  readonly slot?: string | undefined;
   readonly profile?: ProfileId | undefined;
 }
 
@@ -46,19 +36,6 @@ export function parseAppSearch(search: Record<string, unknown>): AppSearch {
   };
 }
 
-/** Parse optional provider and app identities at the URL boundary. */
-export function parseAddAccountSearch(search: Record<string, unknown>): AddAccountSearch {
-  const provider = Schema.decodeUnknownOption(ProviderId)(search.provider);
-  const app = Schema.decodeUnknownOption(AppId)(search.app);
-  const slot = text(search.slot);
-  return {
-    provider: Option.getOrUndefined(provider),
-    app: Option.getOrUndefined(app),
-    slot: Option.getOrUndefined(slot),
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
-  };
-}
-
 /** Ignore a malformed account identity instead of rejecting the list. */
 export function parseAccountsSearch(search: Record<string, unknown>): AccountsSearch {
   return {
@@ -66,13 +43,9 @@ export function parseAccountsSearch(search: Record<string, unknown>): AccountsSe
   };
 }
 
-/** Parse the account candidate without granting it access to the app. */
+/** Ignore a malformed profile identity. */
 export function parseSetupSearch(search: Record<string, unknown>): SetupSearch {
-  const selected = Schema.decodeUnknownOption(AccountId)(search.selected);
-  const slot = text(search.slot);
   return {
-    selected: Option.getOrUndefined(selected),
-    slot: Option.getOrUndefined(slot),
     profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }
@@ -102,10 +75,6 @@ export function localPageTitle(pathname: string): string {
     if (action === "setup") return "Choose accounts";
     return item ? "App" : "Apps";
   }
-  if (section === "accounts") {
-    if (item === "add") return "Connect account";
-    if (action === "credentials") return "Update credentials";
-    return "Accounts";
-  }
+  if (section === "accounts") return "Accounts";
   return "Dashboard";
 }

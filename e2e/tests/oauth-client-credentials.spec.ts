@@ -306,11 +306,11 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           yield* issuer.configure({ expiresIn: 20 });
           const expiringConnection = yield* body(
             Resource,
-            yield* api.request(
-              actors.owner,
-              "POST",
-              `${prefix}/accounts/${completed.account.id}/connections`,
-            ),
+            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
+              requirement: "service",
+              profile: profile.id,
+              account: completed.account.id,
+            }),
           );
           const expiring = yield* body(
             Completed,
@@ -350,11 +350,11 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           yield* issuer.configure({ rejected: false, expiresIn: 120 });
           const reconnect = yield* body(
             Resource,
-            yield* api.request(
-              actors.owner,
-              "POST",
-              `${prefix}/accounts/${completed.account.id}/connections`,
-            ),
+            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
+              requirement: "service",
+              profile: profile.id,
+              account: completed.account.id,
+            }),
           );
           const reconnected = yield* body(
             Completed,
@@ -439,11 +439,11 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           if (firstDefault === undefined) return yield* Effect.die("Missing default account");
           const unnamedReconnect = yield* body(
             Resource,
-            yield* api.request(
-              actors.owner,
-              "POST",
-              `${prefix}/accounts/${firstDefault.id}/connections`,
-            ),
+            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
+              requirement: "service",
+              profile: profile.id,
+              account: firstDefault.id,
+            }),
           );
           expect(
             (yield* body(

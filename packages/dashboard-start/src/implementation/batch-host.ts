@@ -9,7 +9,7 @@
  * authorization and organization membership are those of the request that sent the batch.
  */
 import { ByteSize, Effect, Layer, Option, Schema, Scope, Stream } from "effect";
-import { HttpApi, HttpApiBuilder, type HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiBuilder, type HttpApiGroup } from "effect/http-api";
 import {
   Headers,
   HttpIncomingMessage,
@@ -19,7 +19,7 @@ import {
   HttpServerResponse,
   HttpTraceContext,
   UrlParams,
-} from "effect/unstable/http";
+} from "effect/http";
 import {
   Batch,
   BatchAnswer,

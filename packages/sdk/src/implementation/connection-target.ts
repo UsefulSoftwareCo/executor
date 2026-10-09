@@ -53,7 +53,7 @@ export const captureConnectionTarget = (db: Query, target: typeof AccountConnect
 
 /**
  * The provider as the target app declares it now, with the hosts connecting will grant. Undefined
- * when the app no longer requires this provider for the slot; completing the connection then fails.
+ * when the app no longer requires this provider for the slot; the request can then never complete.
  */
 export const targetProvider = (db: Query, target: StoredConnectionTarget, provider: ProviderId) =>
   Effect.gen(function* () {
@@ -75,6 +75,25 @@ export const targetProvider = (db: Query, target: StoredConnectionTarget, provid
     return required?.provider === provider
       ? { id: provider, definition: required.definition }
       : undefined;
+  });
+
+/**
+ * A request whose app no longer requires its provider for the slot can never complete. Report that
+ * before showing the old provider's sign-in, validating its fields or contacting its service.
+ */
+export const requireTargetProvider = (
+  db: Query,
+  row: { readonly target: StoredConnectionTarget | null; readonly provider: ProviderId },
+) =>
+  Effect.gen(function* () {
+    if (row.target === null) return undefined;
+    const shown = yield* targetProvider(db, row.target, row.provider);
+    if (shown === undefined)
+      return yield* new AccountConnectionTargetChanged({
+        app: row.target.app,
+        requirement: row.target.requirement,
+      });
+    return shown;
   });
 
 /** Run in the account-save transaction. A changed target rolls back credentials and selection together. */

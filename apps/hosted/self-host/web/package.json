@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/atom-react": "https://pkg.pr.new/Effect-TS/effect/@effect/atom-react@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/atom-react": "4.0.1",
     "@executor-js/dashboard-start": "workspace:*",
     "@executor-js/devtools": "workspace:*",
     "@executor-js/hosted-web": "workspace:*",
@@ -23,7 +23,7 @@
     "@executor-js/ui": "workspace:*",
     "@tanstack/react-router": "1.170.41",
     "@tanstack/react-start": "1.168.60",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "effect": "4.0.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

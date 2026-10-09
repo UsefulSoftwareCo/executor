@@ -4,7 +4,6 @@ import {
   ConfigProvider,
   Console,
   Effect,
-  Encoding,
   FileSystem,
   Option,
   Path,
@@ -13,6 +12,7 @@ import {
   Result,
   Schema,
 } from "effect";
+import { Hex } from "effect/encoding";
 import { lock } from "proper-lockfile";
 import { config, keyStorageConfig, type KeyStorage } from "../contracts/config.ts";
 import {
@@ -33,7 +33,7 @@ export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurati
 const Keys = Schema.Struct({
   apiKey: Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32))),
   encryptionKey: Schema.RedactedFromValue(
-    Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/)),
+    Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/u)),
   ),
 });
 /**
@@ -131,8 +131,7 @@ const keyFileUnusable = (
     message: `Executor's key file ${keyFile} is missing or invalid. Restore it from your backup. Keys have not been replaced.`,
   });
 
-const randomKey = () =>
-  Redacted.make(Encoding.encodeHex(crypto.getRandomValues(new Uint8Array(32))));
+const randomKey = () => Redacted.make(Hex.encode(crypto.getRandomValues(new Uint8Array(32))));
 
 /** Hold the directory's bootstrap lock for the current scope. */
 const lockDirectory = (directory: string, message: string) =>

@@ -1,6 +1,6 @@
 /** Product-owned browser review; scheduler actions otherwise share the normal local SDK. */
 import { Effect, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { StorageError, RequestInvalid, type Executor } from "@executor-js/sdk/core";
 import { ApprovalResponse, approvalElicitation } from "apps/contracts";
 import { BrowserApprovalView } from "@executor-js/mcp/browser";

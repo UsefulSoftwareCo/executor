@@ -18,6 +18,8 @@ export function appProviderFailure(
     deployment: state.deployment.id,
     reason: error.reason,
     status: error.status,
+    ...(error.phase === undefined ? {} : { phase: error.phase }),
+    ...(error.upstream === undefined ? {} : { upstream: error.upstream }),
     ...(credentialsRenewed ? { credentialsRenewed: true as const } : {}),
     ...(match === undefined
       ? {}

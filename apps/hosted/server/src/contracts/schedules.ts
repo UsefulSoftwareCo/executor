@@ -1,6 +1,6 @@
 /** Organization-aware schedule management, with browser-only human review. */
 import { Context, Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   AppId,
   ProfileId,

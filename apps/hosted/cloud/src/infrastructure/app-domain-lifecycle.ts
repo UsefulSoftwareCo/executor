@@ -7,7 +7,7 @@ import { Stage } from "alchemy/Stage";
 import type { Worker } from "alchemy/Cloudflare";
 import * as Provider from "alchemy/Provider";
 import { Effect, Redacted, Schedule, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { appDomainControlSecretId } from "./app-domain-control.ts";
 
 interface DomainLifecycleProps {

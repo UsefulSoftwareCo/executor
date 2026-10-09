@@ -1,11 +1,12 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ApiError } from "@executor-js/utils/api-error";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
 export { AppSlug, appSlug } from "./app-slug.ts";
 /** Apps own deployed code and declared requirements. Profiles hold account selections. */
 import { Schema } from "effect";
 import { StorageError } from "./shared.ts";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountId, AppCodeId, AppId, DeploymentId, OwnerId, ProviderId } from "./shared.ts";
 import {
   AccountFieldsInput,
@@ -14,7 +15,14 @@ import {
   CredentialCheck,
 } from "./account.ts";
 import { AuthMethodInvalid, AuthMethodName, ProviderDefinition } from "./provider.ts";
-import { SourceCommit, sourceErrors, SourceSnapshot } from "./source.ts";
+import {
+  CommittedSource,
+  GitCommit,
+  SourceCommit,
+  sourceErrors,
+  SourceSnapshot,
+} from "./source.ts";
+import { PublicationReference, RegistryError } from "./registry.ts";
 import {
   AppDeploymentChanged,
   Deployment,
@@ -43,11 +51,19 @@ export type AccountRequirement = typeof AccountRequirement.Type;
 /** App-wide requirements, extracted from the deployed app's declaration. */
 export const AppRequirements = Schema.Struct({
   capabilities: DeclaredRequirements.fields.capabilities,
+  /** The document store of apps built before `sql`. Their retained builds still use it. */
   database: DeclaredRequirements.fields.database,
+  sql: DeclaredRequirements.fields.sql,
   accounts: Schema.Record(Schema.NonEmptyString, AccountRequirement),
+  /** The events the app emits, read without evaluating it. */
+  events: DeclaredRequirements.fields.events,
 });
 
 export type AppRequirements = typeof AppRequirements.Type;
+
+/** Whether the app owns a database, so its calls run in its data facet. */
+export const ownsDatabase = (requirements: Pick<AppRequirements, "database" | "sql">) =>
+  requirements.sql === true || requirements.database !== undefined;
 
 /** Saved slot -> account ID or account IDs. Empty arrays explicitly select zero for many(). */
 export const SelectedAccounts = Schema.Record(
@@ -61,7 +77,7 @@ export type SelectedAccounts = typeof SelectedAccounts.Type;
 export const AppName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(120),
-  Schema.isPattern(/\S/),
+  Schema.isPattern(/\S/u),
 );
 
 /** Informational origin captured when a copy is made. It never grants access or drives updates. */
@@ -161,24 +177,32 @@ export const AppNotDeployed = UserFacingError.define({
 export type AppNotDeployed = typeof AppNotDeployed.Type;
 
 /** Adding a configured copy must not overwrite an existing app with that name. */
-export class AppNameTaken extends Schema.TaggedError<AppNameTaken>()(
-  "AppNameTaken",
-  { owner: OwnerId, name: Schema.String },
-  { httpApiStatus: 409, description: "An app already uses this name for this owner." },
-) {}
+export const AppNameTaken = ApiError.define({
+  tag: "AppNameTaken",
+  status: 409,
+  fields: { owner: OwnerId, name: Schema.String },
+  message:
+    "An app with this name already exists. Choose another name, or deploy to the existing app by its ID.",
+});
+export type AppNameTaken = typeof AppNameTaken.Type;
 
 /** Another configured app already owns this readable address for this owner. */
-export class AppSlugTaken extends Schema.TaggedError<AppSlugTaken>()(
-  "AppSlugTaken",
-  {
+export const AppSlugTaken = ApiError.define({
+  tag: "AppSlugTaken",
+  status: 409,
+  fields: {
     owner: OwnerId,
     slug: AppSlug,
+    /** The app holding the address, when the caller may see it. Products decide visibility. */
+    existing: Schema.optionalKey(Schema.Struct({ app: AppId, name: Schema.String })),
   },
-  {
-    httpApiStatus: 409,
-    description: "Another app name produces this address. Choose a different name.",
-  },
-) {}
+  message: ({ slug, existing }) =>
+    existing === undefined
+      ? `Another app already uses the address “${slug}”, which this name also produces. Choose a different name.`
+      : `The app “${existing.name}” (${existing.app}) already uses the address “${slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`,
+  recorded: () => "Another app already uses the address this name produces",
+});
+export type AppSlugTaken = typeof AppSlugTaken.Type;
 
 /** A saved selection does not match the app's declared provider or cardinality. */
 export const AccountSelectionInvalid = UserFacingError.define({
@@ -223,21 +247,22 @@ export const AccountRequired = UserFacingError.define({
 export type AccountRequired = typeof AccountRequired.Type;
 
 /** Stop and clean up webhook subscriptions before deleting their configured app. */
-export class AppWebhooksActive extends Schema.TaggedError<AppWebhooksActive>()(
-  "AppWebhooksActive",
-  { app: AppId },
-  { httpApiStatus: 409, description: "Remove the app's webhook subscriptions before deleting it." },
-) {}
+export const AppWebhooksActive = ApiError.define({
+  tag: "AppWebhooksActive",
+  status: 409,
+  fields: { app: AppId },
+  message: "Remove the app's webhook subscriptions before deleting it.",
+});
+export type AppWebhooksActive = typeof AppWebhooksActive.Type;
 
 /** A configured app owns active runs and cannot disappear while they execute. */
-export class AppWorkflowsActive extends Schema.TaggedError<AppWorkflowsActive>()(
-  "AppWorkflowsActive",
-  { app: AppId },
-  {
-    httpApiStatus: 409,
-    description: "Terminate the app's active workflow runs before deleting it.",
-  },
-) {}
+export const AppWorkflowsActive = ApiError.define({
+  tag: "AppWorkflowsActive",
+  status: 409,
+  fields: { app: AppId },
+  message: "Terminate the app's active workflow runs before deleting it.",
+});
+export type AppWorkflowsActive = typeof AppWorkflowsActive.Type;
 
 /** Canonical operation inputs; Promise and HTTP callers use the same validators. */
 export const AppInputs = {
@@ -259,10 +284,12 @@ export const AppInputs = {
     message: Schema.NonEmptyString,
   }),
   copy: Schema.Struct({
-    from: Schema.Union([AppId, AppCopySnapshot]),
+    from: Schema.Union([AppId, AppCopySnapshot, PublicationReference]),
     owner: OwnerId,
     name: AppName,
   }),
+  history: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
+  revision: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId), commit: SourceCommit }),
   deploy: DeployAppInput,
   get: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
   // Omitted IDs select all apps for the owner; an empty list selects none.
@@ -338,15 +365,31 @@ export const AppsGroup = HttpApiGroup.make("apps")
         message: fields.message,
         owner: fields.owner,
       })),
-      success: SourceSnapshot,
+      success: CommittedSource,
       error: [StorageError, ...sourceErrors, AppNotFound],
-    }),
+    }).annotate(
+      OpenApi.Description,
+      "Save a complete file list as a commit on the working branch without deploying it. Omitted files are deleted. Returns the new revision; the files are not echoed.",
+    ),
+    HttpApiEndpoint.get("history", "/v1/apps/:app/history", {
+      params: appParams,
+      query: ownerQuery,
+      success: Schema.Array(GitCommit),
+      error: [StorageError, ...sourceErrors, AppNotFound],
+    }).annotate(OpenApi.Description, "Recent commits on the app's working branch."),
+    HttpApiEndpoint.get("revision", "/v1/apps/:app/revisions/:commit", {
+      params: { app: AppInputs.revision.fields.app, commit: AppInputs.revision.fields.commit },
+      query: ownerQuery,
+      success: SourceFiles,
+      error: [StorageError, ...sourceErrors, AppNotFound],
+    }).annotate(OpenApi.Description, "The complete files at one commit in the app's code lineage."),
     HttpApiEndpoint.post("copy", "/v1/apps/copies", {
       payload: AppInputs.copy,
       success: App,
       error: [
         StorageError,
         ...sourceErrors,
+        RegistryError,
         AppNotFound,
         AppNameTaken,
         AppSlugTaken,
@@ -360,7 +403,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
     }),
     HttpApiEndpoint.post("deploy", "/v1/apps/deploy", {
       payload: AppInputs.deploy,
-      success: Schema.Struct({ app: DeployedApp, deployment: Deployment }),
+      success: Schema.Struct({ app: DeployedApp, deployment: DeploymentMetadata }),
       error: [
         ...sourceErrors,
         StorageError,
@@ -374,7 +417,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful deployment activates automatically. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful deployment activates automatically. Returns the app and the new deployment's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(

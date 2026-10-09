@@ -94,6 +94,8 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
             (event) => event.contexts?.trace?.trace_id === failure.trace_id,
           );
           expect(reported).toHaveLength(1);
+          // No browser file names the build; the page reads its release from the document.
+          expect(reported[0]?.release).toBe(target.metadata.commit);
           expect(JSON.stringify(reported)).not.toContain("do-not-export");
           yield* evidence.json(`${name}-failure.json`, { failure, trace, reported });
         }

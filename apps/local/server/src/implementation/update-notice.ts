@@ -8,7 +8,7 @@ import {
   ReleaseVersion,
 } from "@executor-js/utils/release-version";
 import { Clock, Config, Console, Duration, Effect, FileSystem, Option, Path, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 
 const registry = "https://registry.npmjs.org/-/package/executor/dist-tags";
 const checkInterval = Duration.days(1);

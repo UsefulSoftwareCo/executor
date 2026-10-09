@@ -1,6 +1,6 @@
 import { usePageUrl } from "@executor-js/dashboard-start/page";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState, type ReactNode } from "react";
 import { InventoryPageSkeleton } from "@executor-js/ui/dashboard/loading";
 import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";

@@ -1,18 +1,32 @@
 /** CLI composition root: Effect owns server processes, Vitest, raw evidence and target isolation. */
 import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
-import { patternForTarget, scenariosForSuite, type TestPlan } from "../test-plan.ts";
+import {
+  patternForTarget,
+  scenariosForSuite,
+  type CloudMode,
+  type TestPlan,
+} from "../test-plan.ts";
 import { readEvidence, combineEvidenceReports } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
 import { localNpmRegistry } from "../support/npm-registry.ts";
 import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { RecordingPaceMs, Target } from "../support/platform.ts";
+import { roleHost } from "../support/role-hosts.ts";
 import { prepareCloudScenarios } from "./prepare-scenarios.ts";
 
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
 import { freePort } from "../support/ports.ts";
+
+/**
+ * Managed Cloud workers share one local Cloud Worker and one telemetry collector, so more cores add
+ * no capacity. On a 16-vCPU runner, eight workers left 12 cores idle and finished no sooner than
+ * six, but doubled the Worker's `/health` p95, tripled the collector's refused exports and took a
+ * 19-second scenario to 49 seconds.
+ */
+const sharedCloudWorkers = 6;
 const CloudOrigin = Schema.String.check(
   Schema.makeFilter(
     (text) => {
@@ -31,12 +45,31 @@ const CloudOrigin = Schema.String.check(
 export const runSuite = ({
   target: selected,
   name = "",
-  workers = 16,
+  workers,
+  defaultWorkers = 16,
+  authRateLimit = false,
+  rollback = false,
+  oauthProxyPreview = false,
   attachment,
 }: {
   readonly target: "self-host" | "local" | "cloud" | "all" | "hosted";
   readonly name?: string;
-  readonly workers?: number;
+  /** Files run at once on every target. Overrides `defaultWorkers` and the managed Cloud cap. */
+  readonly workers?: number | undefined;
+  /** Files run at once when `workers` is unset. Managed local Cloud runs at most six. */
+  readonly defaultWorkers?: number;
+  /** Start managed Cloud with the per-address auth limit on, for the scenarios that prove it. */
+  readonly authRateLimit?: boolean;
+  /**
+   * Start managed Cloud with `CLOUD_BROWSER_ORIGIN=deployment`, the rollback switch, for the
+   * scenarios that prove it.
+   */
+  readonly rollback?: boolean;
+  /**
+   * Start a second managed Cloud as the OAuth proxy's production, and run against a test stage that
+   * signs in through it, for the scenarios that prove the proxy.
+   */
+  readonly oauthProxyPreview?: boolean;
   readonly attachment?: {
     readonly origin: string;
     readonly fixtures: typeof FixtureControl.Type;
@@ -53,7 +86,7 @@ export const runSuite = ({
     Effect.gen(function* () {
       yield* Schema.decodeUnknownEffect(
         Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 32 })),
-      )(workers);
+      )(workers ?? defaultWorkers);
       const fs = yield* FileSystem.FileSystem,
         path = yield* Path.Path,
         processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -82,6 +115,24 @@ export const runSuite = ({
                 ),
               )
             : Option.none<string>();
+      if (authRateLimit && (selected !== "cloud" || Option.isSome(cloud)))
+        return yield* new RunFailed({
+          message:
+            "The auth rate limit can be turned on only for managed Cloud. Use --target cloud without E2E_CLOUD_URL.",
+        });
+      if (rollback && (authRateLimit || selected !== "cloud" || Option.isSome(cloud)))
+        return yield* new RunFailed({
+          message:
+            "The rollback switch can be turned on only for managed Cloud, without --auth-rate-limit. Use --target cloud without E2E_CLOUD_URL.",
+        });
+      if (
+        oauthProxyPreview &&
+        (authRateLimit || rollback || selected !== "cloud" || Option.isSome(cloud))
+      )
+        return yield* new RunFailed({
+          message:
+            "The OAuth proxy preview runs only on managed Cloud, without --auth-rate-limit or --rollback. Use --target cloud without E2E_CLOUD_URL.",
+        });
       const interactive = yield* Config.Boolean("E2E_INTERACTIVE").pipe(Config.withDefault(false));
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       if (observeUI && (selected !== "cloud" || Option.isSome(cloud)))
@@ -114,7 +165,15 @@ export const runSuite = ({
         (yield* processes.string(ChildProcess.make("git", ["status", "--porcelain"]))).trim()
           .length > 0;
       const startedAt = new Date().toISOString();
-      const cloudMode = Option.isSome(cloud) ? "attached" : "managed";
+      const cloudMode: CloudMode = Option.isSome(cloud)
+        ? "attached"
+        : authRateLimit
+          ? "rate-limited"
+          : rollback
+            ? "rolled-back"
+            : oauthProxyPreview
+              ? "oauth-proxy-preview"
+              : "managed";
       const plan = scenariosForSuite(selected === "hosted" ? "hosted" : "all", cloudMode);
       const filter = yield* Effect.try({
         try: () => new RegExp(name),
@@ -140,12 +199,20 @@ export const runSuite = ({
               const directory = path.join(root, target);
               yield* fs.makeDirectory(`${directory}/report`, { recursive: true, mode: 0o700 });
               const managedCloud = target === "cloud" && Option.isNone(cloud);
+              const targetWorkers =
+                workers ??
+                (managedCloud ? Math.min(defaultWorkers, sharedCloudWorkers) : defaultWorkers);
               const origin =
                 target === "cloud"
                   ? Option.isSome(cloud)
                     ? cloud.value
                     : `http://localhost:${yield* freePort}`
                   : `http://127.0.0.1:${yield* freePort}`;
+              // The OAuth proxy's production, beside the test stage this run tests.
+              const proxyProduction =
+                managedCloud && oauthProxyPreview
+                  ? Option.some(`http://localhost:${yield* freePort}`)
+                  : Option.none<string>();
               const metadata: typeof RunMetadata.Type = {
                 target,
                 origin,
@@ -153,7 +220,7 @@ export const runSuite = ({
                 runtime:
                   target === "cloud"
                     ? managedCloud
-                      ? "Local Cloud Worker + Postgres · no saved credentials"
+                      ? `Local Cloud Worker + Postgres · no saved credentials · auth rate limit ${authRateLimit ? "on" : "off"}${rollback ? " · sign-in on the deployment origin" : ""}${oauthProxyPreview ? " · a test stage signing in through a second local Cloud's OAuth proxy" : ""}`
                       : "Cloud endpoint"
                     : target === "local" && Option.isSome(packagedEntry)
                       ? "Installed npm CLI + PGlite per scenario"
@@ -163,17 +230,42 @@ export const runSuite = ({
                 startedAt,
                 interactive,
                 diagnostics: "diagnostics/results.json",
+                ...(target === "cloud" && rollback ? { browserOrigin: "deployment" as const } : {}),
+                ...Option.match(proxyProduction, {
+                  onNone: () => ({}),
+                  onSome: (production) => ({ oauthProxyProduction: production }),
+                }),
               };
               const apiKey = Redacted.make(randomBytes(32).toString("hex"));
               yield* fs.writeFileString(`${directory}/run.json`, JSON.stringify(metadata, null, 2));
               yield* Console.log(
-                `Testing ${target}: ${target === "cloud" ? origin : target === "local" && Option.isSome(packagedEntry) ? `installed CLI at ${packagedEntry.value}` : "isolated server per scenario"}`,
+                `Testing ${target}: ${target === "cloud" ? origin : target === "local" && Option.isSome(packagedEntry) ? `installed CLI at ${packagedEntry.value}` : "isolated server per scenario"} · ${interactive || observeUI ? 1 : targetWorkers} workers`,
               );
               const code = yield* Effect.scoped(
                 Effect.gen(function* () {
                   // Products this run starts build apps against the checkout's own apps release.
                   const registry =
                     target === "cloud" && !managedCloud ? undefined : yield* localNpmRegistry;
+                  // Production trusts the stage's browser origin, which it returns profiles to.
+                  const productionDirectory = path.join(directory, "oauth-proxy-production");
+                  if (Option.isSome(proxyProduction))
+                    yield* fs.makeDirectory(productionDirectory, { recursive: true, mode: 0o700 });
+                  const production = Option.isSome(proxyProduction)
+                    ? Option.some(
+                        yield* startCloudEnvironment({
+                          ...(registry === undefined ? {} : { npmRegistry: registry.url }),
+                          directory: productionDirectory,
+                          origin: proxyProduction.value,
+                          appPort: yield* freePort,
+                          databasePort: yield* freePort,
+                          commit,
+                          observeUI: false,
+                          authRateLimit: false,
+                          browserOrigin: "app",
+                          trustedOrigins: [roleHost(origin, "app")],
+                        }),
+                      )
+                    : Option.none();
                   const environment = managedCloud
                     ? yield* startCloudEnvironment({
                         ...(registry === undefined ? {} : { npmRegistry: registry.url }),
@@ -183,6 +275,15 @@ export const runSuite = ({
                         databasePort: yield* freePort,
                         commit,
                         observeUI,
+                        authRateLimit,
+                        browserOrigin: rollback ? "deployment" : "app",
+                        ...Option.match(production, {
+                          onNone: () => ({}),
+                          onSome: (production) => ({
+                            signInThrough: production.oauthProxy,
+                            prebuilt: true as const,
+                          }),
+                        }),
                       })
                     : undefined;
                   const preparedScenarios =
@@ -199,7 +300,7 @@ export const runSuite = ({
                             fixtures: attachment.fixtures,
                           }),
                           appUiBaseUrl: attachment.appUiBaseUrl,
-                          workers,
+                          workers: targetWorkers,
                           scenarios: plan
                             .filter(
                               (scenario: typeof TestPlan.Type) =>
@@ -267,7 +368,7 @@ export const runSuite = ({
                             : { E2E_WORKFLOW_HOLD_MS: process.env.E2E_WORKFLOW_HOLD_MS }),
                           E2E_PREPARED_SCENARIOS: JSON.stringify(preparedScenarios),
                           E2E_TEST_NAME: name,
-                          E2E_WORKERS: String(interactive || observeUI ? 1 : workers),
+                          E2E_WORKERS: String(interactive || observeUI ? 1 : targetWorkers),
                           E2E_TARGET: target,
                           E2E_CLOUD_MODE: cloudMode,
                           ...(registry === undefined ? {} : { E2E_NPM_REGISTRY: registry.url }),

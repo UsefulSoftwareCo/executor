@@ -1,14 +1,14 @@
-/** Native operation declarations. Database access is an optional invocation capability. */
+/** Native operation declarations. SQL access is an optional invocation capability. */
 import type { Effect, Schema } from "effect";
 import type { Approval } from "./approval.ts";
 import type { BoundContext, AccountSlots } from "./app.ts";
-import type { Database, DatabaseReader, Tables } from "./storage.ts";
+import type { Sql, SqlReader } from "./sql.ts";
 import type { ToolAnnotations } from "./tools.ts";
 import type { JsonObject } from "./schema.ts";
 
 /** Host-bound operation capabilities; the author declaration refines accounts and storage. */
 export type OperationContext = BoundContext<AccountSlots> & {
-  readonly db?: DatabaseReader<Tables> | Database<Tables>;
+  readonly sql?: SqlReader | Sql;
 };
 /** The host validates input, checks approval, then owns the transaction and output validation. */
 export interface AppOperation<Input = unknown, Output = unknown> {

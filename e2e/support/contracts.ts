@@ -26,6 +26,8 @@ export const SpanQuery = Schema.Struct({
         parentSpanId: Schema.NullOr(Schema.String),
         operationName: Schema.String,
         serviceName: Schema.String,
+        /** ISO 8601 start time. */
+        startTime: Schema.String,
         durationMs: Schema.Number,
         status: Schema.String,
         tags: Schema.Record(Schema.String, Schema.String),

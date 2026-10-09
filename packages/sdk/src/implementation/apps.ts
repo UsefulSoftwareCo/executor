@@ -4,7 +4,7 @@ import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 /** Durable configured apps and immutable deployments, sharing one execution path. */
 import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
-import { SqlError } from "effect/unstable/sql";
+import { SqlError } from "effect/sql";
 import {
   App,
   DeployedApp,
@@ -45,7 +45,9 @@ import {
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { identifyProvider } from "./provider.ts";
-import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
+import { SourceError, type AppSourceStorage, type RepositoryBackend } from "../contracts/source.ts";
+import type { Registry } from "../contracts/registry.ts";
+import { resolvePublication } from "./registry.ts";
 
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { readDeploymentSource, writeDeploymentSource } from "./deployment-source.ts";
@@ -138,6 +140,21 @@ export const storedDeployment = (
   });
 
 const StoredDeploymentRequirements = Schema.Struct({ requirements: AppRequirements });
+
+/** Whether any deployment of the app's code applied SQL migrations. */
+const hadMigrations = (db: Query, code: AppCodeId) =>
+  query(() =>
+    db.findMany("deployments", { select: ["requirements"], where: (b) => b("code", "=", code) }),
+  ).pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) =>
+        Schema.decodeUnknownEffect(StoredDeploymentRequirements)(row).pipe(
+          Effect.mapError(() => new StorageError()),
+        ),
+      ),
+    ),
+    Effect.map((deployed) => deployed.some((deployment) => deployment.requirements.sql === true)),
+  );
 const AppProjection = Schema.Struct({
   app: StoredApp,
   deployment: Schema.NullOr(StoredDeploymentRequirements),
@@ -203,10 +220,12 @@ export const makeApps = (
   runtime: Runtime,
   crypto: Crypto.Crypto,
   sources: AppSourceStorage,
+  repositories: RepositoryBackend,
+  registry: Registry,
   blobs: BlobStorage,
   lifecycle?: ResourceLifecycle,
 ) => {
-  const authoring = makeAppAuthoring(db, sources, blobs, crypto, lifecycle);
+  const authoring = makeAppAuthoring(db, sources, repositories, blobs, crypto, lifecycle);
   const deploy = (input: DeployInput, copiedFrom: AppCopyOrigin | null = null) =>
     Effect.gen(function* () {
       // Reserve an order before building. Only successful promotions advance the other counter.
@@ -300,6 +319,8 @@ export const makeApps = (
         ...(built.requirements.database === undefined
           ? {}
           : { database: built.requirements.database }),
+        ...(built.requirements.sql === true ? { sql: true as const } : {}),
+        ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
         accounts: Object.fromEntries(
           entries.map(({ slot, provider, cardinality, health }) => [
             slot,
@@ -312,6 +333,51 @@ export const makeApps = (
           ]),
         ),
       };
+      // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
+      // before its migrations run. A failed migration fails the deploy before anything activates.
+      const appId =
+        before?.id ??
+        AppId.make(
+          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+        );
+      // Migrations are the database. A build without any would drop the ones an earlier deployment
+      // applied, whichever deployment is active now, so the app's whole deployment history decides.
+      // The build is not asked: bundles of earlier protocols cannot answer. Checked again under the
+      // final app lock, since a concurrent deploy may publish migrations meanwhile.
+      const droppedMigrations = (target: Query, app: AppCodeId) =>
+        requirements.sql === true
+          ? Effect.void
+          : hadMigrations(target, app).pipe(
+              Effect.flatMap((had) => {
+                if (!had) return Effect.void;
+                const message =
+                  "App migration failed: this app's database has applied migrations, but the build has no migrations/. Applied migrations cannot be removed: restore them and deploy again. The previous deployment is still active.";
+                return Effect.fail(
+                  new DeploymentBuildFailed({
+                    owner: input.owner,
+                    name: deployName,
+                    stage: "migrate",
+                    reason: message,
+                    message,
+                  }),
+                );
+              }),
+            );
+      if (before !== null) yield* droppedMigrations(db, before.code);
+      if (requirements.sql === true)
+        yield* runtime.migrate({ app: appId, build: built.build }).pipe(
+          Effect.mapError((error) => {
+            const message = `App migration failed${error.message.length === 0 ? "." : `: ${error.message}`}`;
+            return new DeploymentBuildFailed({
+              owner: input.owner,
+              name: deployName,
+              stage: "migrate",
+              reason: message,
+              message,
+            });
+          }),
+          Effect.withSpan("sdk.apps.migrate"),
+        );
 
       const deployment = {
         id: DeploymentId.make(
@@ -346,11 +412,7 @@ export const makeApps = (
             return yield* Effect.fail(new AppNotFound({ app: input.app }));
           if (existing !== undefined && input.app === undefined)
             return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
-          const appId =
-            existing?.id ??
-            AppId.make(
-              `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-            );
+          if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
           const createdAt = new Date(yield* Clock.currentTimeMillis);
           const promote = existing === undefined || sequence > existing.activatedSequence;
           for (const { provider } of entries) {
@@ -420,7 +482,7 @@ export const makeApps = (
           const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
             Effect.mapError(() => new StorageError()),
           );
-          return { app: deployedApp, deployment: { ...deployment, files } };
+          return { app: deployedApp, deployment };
         }),
       );
     }).pipe(Effect.withSpan("sdk.apps.deploy"));
@@ -429,7 +491,9 @@ export const makeApps = (
       const from = input.from;
       const snapshot: AppCopySnapshot =
         typeof from !== "string"
-          ? from
+          ? "package" in from
+            ? yield* resolvePublication(registry, from)
+            : from
           : yield* Effect.gen(function* () {
               const parent = yield* storedApp(db, { app: from });
               if (parent.activeDeployment !== null) {

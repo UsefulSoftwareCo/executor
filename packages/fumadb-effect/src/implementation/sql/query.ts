@@ -12,8 +12,8 @@
  * and `COUNT(*)` coming back as a bigint on PostgreSQL and CockroachDB.
  */
 import { DateTime, Effect, Equal, Option, Result } from "effect";
-import { Statement } from "effect/unstable/sql";
-import { SqlClient } from "effect/unstable/sql/SqlClient";
+import { Statement } from "effect/sql";
+import { SqlClient } from "effect/sql/SqlClient";
 import { QueryError } from "../../contracts/errors.ts";
 import type { Provider } from "../../contracts/provider.ts";
 import { Condition } from "../../contracts/condition.ts";

@@ -27,7 +27,7 @@ questions:
     question: What is the MCP endpoint URL, and what transport does it use?
     expected:
       - the endpoint is the origin plus /mcp
-      - hosted is https://v2.executor.sh/mcp
+      - hosted is https://mcp.executor.sh/mcp
       - a local server is http://127.0.0.1:4312/mcp
       - the transport is streamable HTTP
     routes:
@@ -83,7 +83,7 @@ questions:
     question: How does an agent call one of my app's tools through the MCP endpoint?
     expected:
       - the agent writes a JavaScript program and runs it with the execute tool
-      - tools.search returns the callable path and signature
+      - tools.search returns the callable path and input type, and tools.search.describe returns the full signature
       - a tool is called as tools.<app>.<name>, with router groups as nested paths such as tools.<app>.<group>.<name>
     routes:
       - /mcp
@@ -151,7 +151,7 @@ questions:
   - id: where-to-run
     question: What are the ways to run Executor, and what is different about each?
     expected:
-      - hosted at v2.executor.sh, with nothing to install
+      - hosted at app.executor.sh, with nothing to install
       - local on your own machine through the command line
       - self-host in Docker on your own infrastructure
       - all three run the same apps and expose the same /mcp endpoint

@@ -1,3 +1,7 @@
 # Bun preserves patch line endings when inserting lines into dependency files.
 patches/*.patch text eol=lf
 bun.lock text eol=lf
+# Templates are served and copied byte for byte; Windows checkouts must not turn them into CRLF.
+packages/app-templates/executor/** text eol=lf
+# Host protocol snapshots are recorded by scripts/check-app-protocols.ts; review the diff summary, not the file.
+packages/apps/protocols/[0-9]*.json linguist-generated=true

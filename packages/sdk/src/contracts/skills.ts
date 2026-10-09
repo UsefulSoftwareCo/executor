@@ -1,13 +1,14 @@
 /** Skill access through an authorized app evaluation and retained deployment. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { ApiError } from "@executor-js/utils/api-error";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AppId, DeploymentId, OwnerId, RequestInvalid, StorageError } from "./shared.ts";
 import { AccountNotFound } from "./account.ts";
 import { CredentialsError } from "./shared.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 import { ProfileId } from "./shared.ts";
-import { AppEvaluationFailed } from "./tools.ts";
+import { AppEvaluationFailed, AppProviderFailed } from "./tools.ts";
 import { AccountRequired, AccountSelectionInvalid, AppNotFound, AppNotDeployed } from "./apps.ts";
 import { AppSlug } from "./app-slug.ts";
 import { DeploymentNotFound, SourceFilePath } from "./deployment.ts";
@@ -21,16 +22,15 @@ import {
 /** A configured installation supplies the namespace; skill source never hardcodes it. */
 export const SkillApp = Schema.Struct({ id: AppId, name: Schema.String, slug: AppSlug });
 /** A content digest identifies the complete evaluated catalog, independently of its deployment. */
-export const SkillRevision = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
-export class SkillRevisionChanged extends Schema.TaggedError<SkillRevisionChanged>()(
-  "SkillRevisionChanged",
-  {
-    app: AppId,
-    expected: SkillRevision,
-    current: SkillRevision,
-  },
-  { httpApiStatus: 409 },
-) {}
+export const SkillRevision = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
+export const SkillRevisionChanged = ApiError.define({
+  tag: "SkillRevisionChanged",
+  status: 409,
+  fields: { app: AppId, expected: SkillRevision, current: SkillRevision },
+  message:
+    "The app's skills changed since the requested revision. List the skills again and read the current revision.",
+});
+export type SkillRevisionChanged = typeof SkillRevisionChanged.Type;
 const identity = {
   revision: SkillRevision,
   profile: Schema.optionalKey(ProfileId),
@@ -63,11 +63,15 @@ export const AppSkillDocument = Schema.Struct({
 });
 export type AppSkillDocument = typeof AppSkillDocument.Type;
 /** Missing skills and files share one failure without exposing other source paths. */
-export class AppSkillNotFound extends Schema.TaggedError<AppSkillNotFound>()(
-  "AppSkillNotFound",
-  { app: AppId, name: AppSkillName, file: SourceFilePath },
-  { httpApiStatus: 404 },
-) {}
+export const AppSkillNotFound = ApiError.define({
+  tag: "AppSkillNotFound",
+  status: 404,
+  fields: { app: AppId, name: AppSkillName, file: SourceFilePath },
+  message: ({ name, file }) => `The app has no skill “${name}” with the file “${file}”.`,
+  // The skill name and file are the caller's text.
+  recorded: () => "The app has no skill with the requested name and file",
+});
+export type AppSkillNotFound = typeof AppSkillNotFound.Type;
 
 export const SkillSelection = {
   deployment: Schema.optional(DeploymentId),
@@ -98,6 +102,7 @@ export const AppSkillErrors = [
   AccountRequired,
   AccountSelectionInvalid,
   AppEvaluationFailed,
+  AppProviderFailed,
   AccountNotFound,
   CredentialsError,
   OAuthReconnectRequired,

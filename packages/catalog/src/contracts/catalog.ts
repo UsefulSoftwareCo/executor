@@ -1,8 +1,11 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Schema, SchemaGetter, type Effect } from "effect";
+import { ApiError } from "@executor-js/utils/api-error";
 import { TemplateErrorCode } from "@executor-js/app-templates/contracts";
 import { SourceFiles } from "@executor-js/sdk";
+import type { HostEgress } from "@executor-js/utils/url-policy";
 import type { CustomAppInput } from "./imports.ts";
+import { McpDetection } from "./detection.ts";
 
 /**
  * Public integrations.sh v1 entries, plus a host's own built-in apps. Only MCP servers and
@@ -35,7 +38,10 @@ export const CatalogFeed = Schema.Struct({
   version: Schema.Literal(1),
   data: Schema.Array(CatalogEntry),
 });
-/** Import failures expose a safe, actionable reason, never a fetched document or credential. */
+/**
+ * Import failures expose a safe, actionable reason, never a fetched document or credential. A
+ * failed MCP server check also carries its typed detection and the signals that decided it.
+ */
 export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>()(
   "CatalogImportFailed",
   {
@@ -52,6 +58,7 @@ export class CatalogImportFailed extends Schema.TaggedError<CatalogImportFailed>
       ]),
     ]),
     reason: Schema.String,
+    detection: Schema.optionalKey(McpDetection),
     // Optional on the wire for older clients; restored from safe fields on decode.
     message: Schema.optionalKey(Schema.String).pipe(
       Schema.decodeTo(Schema.optionalKey(Schema.String), {
@@ -69,11 +76,22 @@ Object.defineProperty(CatalogImportFailed.prototype, "message", {
   },
 });
 /** Remote catalog availability is separate from the local app inventory. */
-export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()(
-  "CatalogUnavailable",
-  {},
-  { httpApiStatus: 502 },
-) {}
+export const CatalogUnavailable = ApiError.define({
+  tag: "CatalogUnavailable",
+  status: 502,
+  message: "Executor could not read the app catalog. Try again.",
+});
+export type CatalogUnavailable = typeof CatalogUnavailable.Type;
+
+/**
+ * What the importing host supplies. An import reads URLs a user chose, so it fetches with the
+ * host's egress. `clientMetadataUrl` is the Client ID Metadata Document the host's account setup
+ * uses, so an import reports the client setup that host will use.
+ */
+export interface CatalogHost {
+  readonly egress: HostEgress;
+  readonly clientMetadataUrl?: string | undefined;
+}
 
 /** Published metadata, replaceable without changing the import workflow. */
 export interface CatalogSource {

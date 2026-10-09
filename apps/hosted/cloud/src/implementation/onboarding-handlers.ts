@@ -1,7 +1,7 @@
 import { CurrentPrincipal } from "@executor-js/hosted-server";
 import { Effect, Schema, Stream } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ExecutorCloudApi } from "../contracts/api.ts";
 import { CreateTeam, Onboarding, TeamDetailsInvalid } from "../contracts/onboarding.ts";
 

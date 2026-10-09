@@ -1,13 +1,9 @@
 /** A real loopback token service. It exposes protocol observations, never submitted secrets or access tokens. */
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Clock, Deferred, Effect, Encoding, Layer } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { Clock, Deferred, Effect, Layer } from "effect";
+import { Base64 } from "effect/encoding";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** Synthetic values include punctuation so raw Basic differs from standard OAuth Basic. */
 export const machineClient = {
@@ -91,7 +87,7 @@ export const clientCredentialsIssuer = Effect.gen(function* () {
               parameters.get("client_secret") === machineClient.clientSecret &&
               request.headers.authorization === undefined
             : request.headers.authorization ===
-                `Basic ${Encoding.encodeBase64(new TextEncoder().encode(pair))}` &&
+                `Basic ${Base64.encode(new TextEncoder().encode(pair))}` &&
               !parameters.has("client_secret");
         observed = {
           grant: parameters.get("grant_type"),

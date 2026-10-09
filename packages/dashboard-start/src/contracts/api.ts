@@ -4,8 +4,8 @@
  * document replaces it with an in-process fetch bound to that request; see `in-process.ts`.
  */
 import { Effect, Layer } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
-import { Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { FetchHttpClient } from "effect/http";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { displayFormatAtom } from "@executor-js/ui/contracts/display";
 import type { DocumentApi } from "./document.ts";
 

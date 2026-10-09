@@ -14,7 +14,7 @@ import {
   type SkillsResult,
   type SkillSummary,
 } from "../contracts/skills.ts";
-import { diagnosticSummary } from "./diagnostics.ts";
+import { diagnosticSummary, reportFailure } from "./diagnostics.ts";
 
 const summaries = (catalog: AppSkillCatalog): readonly (typeof SkillSummary.Type)[] =>
   catalog.skills.map((skill) => ({
@@ -26,7 +26,14 @@ const summaries = (catalog: AppSkillCatalog): readonly (typeof SkillSummary.Type
       ? {}
       : { profile: catalog.profile, profileRevision: catalog.profileRevision }),
   }));
-const failure = (error: Error) => new SkillAccessFailed({ reason: diagnosticSummary(error) });
+/** The agent reads why a read failed; the original failure reports as the same REST read would. */
+const failure = (error: Error) =>
+  reportFailure(error).pipe(
+    Effect.andThen(Effect.fail(new SkillAccessFailed({ reason: diagnosticSummary(error) }))),
+  );
+/** An app the listing could not read, listed beside the others' skills. */
+const unavailable = <A extends object>(error: Error, entry: A) =>
+  reportFailure(error).pipe(Effect.as({ ...entry, reason: diagnosticSummary(error) }));
 
 /** Resolve a slug only within authorized apps. Reference reads can pin the document's deployment. */
 export const skills = <E extends Error>(
@@ -34,7 +41,7 @@ export const skills = <E extends Error>(
   backend: McpBackend<E>,
 ): Effect.Effect<typeof SkillsResult.Type, SkillsFailure> =>
   Effect.gen(function* () {
-    const apps = yield* backend.listApps().pipe(Effect.mapError(failure));
+    const apps = yield* backend.listApps().pipe(Effect.catch(failure));
     if (input.app === undefined) {
       // One broken, undeployed or account-less app must not hide every other app's skills.
       const listed = yield* Effect.forEach(
@@ -55,29 +62,20 @@ export const skills = <E extends Error>(
                     .pipe(
                       Effect.map((catalog) => ({ skills: summaries(catalog), unavailable: [] })),
                       Effect.catch((error) =>
-                        Effect.succeed({
-                          skills: [],
-                          unavailable: [
-                            {
-                              app: app.id,
-                              name: app.name,
-                              ...(target.kind === "profile" ? { profile: target.id } : {}),
-                              reason: diagnosticSummary(error),
-                            },
-                          ],
-                        }),
+                        unavailable(error, {
+                          app: app.id,
+                          name: app.name,
+                          ...(target.kind === "profile" ? { profile: target.id } : {}),
+                        }).pipe(Effect.map((entry) => ({ skills: [], unavailable: [entry] }))),
                       ),
                     ),
                 { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
               ),
             ),
             Effect.catch((error) =>
-              Effect.succeed([
-                {
-                  skills: [],
-                  unavailable: [{ app: app.id, name: app.name, reason: diagnosticSummary(error) }],
-                },
-              ]),
+              unavailable(error, { app: app.id, name: app.name }).pipe(
+                Effect.map((entry) => [{ skills: [], unavailable: [entry] }]),
+              ),
             ),
           ),
         { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
@@ -92,7 +90,7 @@ export const skills = <E extends Error>(
     const app = matches[0];
     if (app === undefined) return yield* new SkillAppNotFound({ app: input.app });
     if (matches.length !== 1) return yield* new SkillAppSlugAmbiguous({ app: input.app });
-    const targets = yield* backend.listTargets({ app: app.id }).pipe(Effect.mapError(failure));
+    const targets = yield* backend.listTargets({ app: app.id }).pipe(Effect.catch(failure));
     const target =
       input.profile === undefined
         ? (targets.find((target) => target.kind === "app") ??
@@ -117,11 +115,11 @@ export const skills = <E extends Error>(
     if (input.name === undefined) {
       const catalog = yield* backend
         .listSkills({ app: app.id, ...selection })
-        .pipe(Effect.mapError(failure));
+        .pipe(Effect.catch(failure));
       return { skills: summaries(catalog) };
     }
     const document = yield* backend
       .readSkill({ app: app.id, name: input.name, ...selection, file: input.file })
-      .pipe(Effect.mapError(failure));
+      .pipe(Effect.catch(failure));
     return document;
   });

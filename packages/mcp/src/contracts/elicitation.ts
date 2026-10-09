@@ -1,5 +1,6 @@
 /** Approval delivery is selected by the MCP endpoint, independently of tool policy. */
 import { Match, Schema } from "effect";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 
 /** The model collects decisions by default; native mode uses the client's MCP prompt. */
 export const ElicitationMode = Schema.Literals(["model", "native", "browser"]);
@@ -31,5 +32,8 @@ export class NativeElicitationFailed extends Schema.TaggedError<NativeElicitatio
       ),
       Match.exhaustive,
     );
+  }
+  get [RecordedMessage]() {
+    return this.message;
   }
 }

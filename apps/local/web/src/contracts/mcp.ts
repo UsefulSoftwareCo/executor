@@ -9,8 +9,8 @@ export const mcpInstallationAtom = DashboardClient.query(
 );
 
 import { Effect, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { Atom } from "effect/unstable/reactivity";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { Atom } from "effect/reactivity";
 import { BrowserAtoms } from "./telemetry.ts";
 
 /** Connection errors contain only safe product text, never OAuth callback data. */

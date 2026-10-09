@@ -16,6 +16,15 @@ export const ToolScope = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("selected"), names: Schema.Array(ToolName) }),
 ]);
 export type ToolScope = typeof ToolScope.Type;
+/**
+ * Which of an app's events are permitted, alongside its tools. `all` includes events added later;
+ * selected names are exact and never expand. A permission that omits it permits every event.
+ */
+export const EventScope = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("all") }),
+  Schema.Struct({ kind: Schema.Literal("selected"), names: Schema.Array(Schema.NonEmptyString) }),
+]);
+export type EventScope = typeof EventScope.Type;
 /** How an app may run: the account-free app itself, or one of the caller's saved profiles. */
 export const RunTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("app") }),
@@ -29,6 +38,7 @@ export type RunTarget = typeof RunTarget.Type;
 export const AppPermission = Schema.Struct({
   app: AppId,
   tools: ToolScope,
+  events: Schema.optionalKey(EventScope),
   targets: Schema.optionalKey(Schema.Array(RunTarget)),
 });
 export type AppPermission = typeof AppPermission.Type;
@@ -82,11 +92,19 @@ export const permitsAction = (policy: AuthorizationPolicy, action: Action | unde
 const scopeGrantsAny = (tools: ToolScope) => tools.kind !== "selected" || tools.names.length > 0;
 const permissionTargets = (item: AppPermission) =>
   item.targets === undefined || item.targets.length > 0;
-/** A selection exposes an app only when it grants at least one tool through at least one target. */
+const eventsGrantAny = (events: EventScope | undefined) =>
+  events === undefined || events.kind === "all" || events.names.length > 0;
+/**
+ * A selection exposes an app only when it grants at least one tool or event through at least one
+ * target.
+ */
 export const selectsApp = (selection: ToolSelection, app: AppId) =>
   selection.kind === "all" ||
   selection.apps.some(
-    (item) => item.app === app && scopeGrantsAny(item.tools) && permissionTargets(item),
+    (item) =>
+      item.app === app &&
+      (scopeGrantsAny(item.tools) || eventsGrantAny(item.events)) &&
+      permissionTargets(item),
   );
 const scopeSelects = (tools: ToolScope, tool: ToolIdentity) =>
   Match.value(tools).pipe(
@@ -129,6 +147,37 @@ export const selectsTool = (selection: ToolSelection, request: ToolRequest) =>
 export const requiresToolMetadata = (selection: ToolSelection, app: AppId) =>
   selection.kind === "tools" &&
   selection.apps.some((item) => item.app === app && item.tools.kind === "readOnly");
+/**
+ * Where one of an app's events may reach a grant, or undefined when it may not. `{}` reaches it
+ * from any of the app's occurrences; `profiles` limits it to occurrences whose accounts those
+ * profiles select, as a grant that runs the app only as them. An account-free target adds none.
+ */
+export const eventAccess = (
+  policy: AuthorizationPolicy,
+  app: AppId,
+  event: string,
+): { readonly profiles?: readonly ProfileId[] } | undefined => {
+  if (!permitsAction(policy, "run")) return undefined;
+  if (policy.tools.kind === "all") return {};
+  const entries = policy.tools.apps.filter(
+    (item) =>
+      item.app === app &&
+      permissionTargets(item) &&
+      (item.events === undefined ||
+        item.events.kind === "all" ||
+        item.events.names.includes(event)),
+  );
+  if (entries.length === 0) return undefined;
+  if (entries.some((item) => item.targets === undefined)) return {};
+  return {
+    profiles: entries.flatMap((item) =>
+      (item.targets ?? []).flatMap((target) => (target.kind === "profile" ? [target.id] : [])),
+    ),
+  };
+};
+/** Whether a grant may list and subscribe to one of an app's events. */
+export const permitsEvent = (policy: AuthorizationPolicy, app: AppId, event: string) =>
+  eventAccess(policy, app, event) !== undefined;
 /** App discovery uses the same selection as execution. */
 export const permitsApp = (policy: AuthorizationPolicy, app: AppId) =>
   permitsAction(policy, "discover") && selectsApp(policy.tools, app);
@@ -196,7 +245,17 @@ const scopeSubset = (previous: ToolScope, next: ToolScope) =>
     ),
     Match.exhaustive,
   );
-/** Narrowing cannot add future-tool access, names, or targets absent from one previous entry. */
+/** An omitted event scope is every event, so only an explicit selection is narrower than it. */
+const eventsSubset = (previous: EventScope | undefined, next: EventScope | undefined) =>
+  previous === undefined ||
+  previous.kind === "all" ||
+  (next !== undefined &&
+    next.kind === "selected" &&
+    next.names.every((name) => previous.names.includes(name)));
+/**
+ * Narrowing cannot add future-tool or future-event access, names, or targets absent from one
+ * previous entry.
+ */
 export const isToolSelectionSubset = (previous: ToolSelection, next: ToolSelection): boolean => {
   if (previous.kind === "all") return true;
   if (next.kind === "all") return false;
@@ -205,7 +264,8 @@ export const isToolSelectionSubset = (previous: ToolSelection, next: ToolSelecti
       (before) =>
         before.app === item.app &&
         targetsSubset(before.targets, item.targets) &&
-        scopeSubset(before.tools, item.tools),
+        scopeSubset(before.tools, item.tools) &&
+        eventsSubset(before.events, item.events),
     ),
   );
 };

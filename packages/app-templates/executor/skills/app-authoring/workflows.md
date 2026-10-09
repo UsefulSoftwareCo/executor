@@ -3,7 +3,7 @@
 Register `workflow({ input, output?, description? }, async (ctx, input) => result)`
 in `defineApp(requirements, { ..., workflows: { name: declaration } })`.
 Import `WorkflowContext<typeof requirements>` for handlers in separate files.
-The body has `runId` and `step`; it has no database, accounts or `elicit`.
+The body has `runId` and `step`; it has no `ctx.sql`, accounts or `elicit`.
 
 Use `step.do("name", async (ctx) => value)` for external work. Its context has fresh
 accounts, fetch, signal and a stable `idempotencyKey`. Retry options can precede
@@ -13,9 +13,11 @@ Return bounded JSON, or `null` when no result is needed.
 
 Use `step.runQuery("name", registeredQuery, input)` and
 `step.runMutation("name", registeredMutation, input)` for app storage. Register
-those declarations in the normal query/mutation catalogs too. A mutation's
-receipt commits atomically with its database writes, so lost checkpoints do not
-repeat a committed database mutation. External API writes still need idempotency.
+those declarations in the normal query/mutation catalogs too. A mutation run as a
+step writes only inside one `ctx.sql.transaction(...)`, which also records the
+step's receipt, so a retried step never repeats its writes. A write outside that
+transaction, or a second transaction, fails the step. External API writes still
+need idempotency.
 
 Use `step.sleep("name", "1 minute")` or `step.sleepUntil("name", timestamp)` for
 waiting. Put time reads, randomness and I/O inside steps; use their results for
@@ -25,7 +27,7 @@ code and account IDs, but each executing step resolves current credentials.
 App mutations/webhooks can call `ctx.workflows.start({ workflow, input, key? })`
 and `terminate({ run })`. Queries also have `get({ run })` and `list(options?)`.
 Controls cannot target another app. Use stable start keys when retrying a caller;
-starting a workflow is not part of the calling app database transaction.
+starting a workflow is never part of a SQL transaction.
 The SDK namespace is `executor.apps.workflowRuns`, with discovery through
 `executor.apps.workflows.list`. Do not invent `executor.workflowRuns`.
 
@@ -61,9 +63,9 @@ Calendar schedules accept five-field cron expressions and default to UTC.
 The mutation must appear once in the app's `tools` router, outside dynamic routers. Its input is
 checked during app evaluation. External handlers use
 `MutationContext<typeof requirements>`, exactly as ordinary mutations do. Read
-selected providers through `ctx.accounts` and declared storage through `ctx.db`;
+selected providers through `ctx.accounts` and the app's database through `ctx.sql`;
 `interval` and `cron` retain that handler context type. No account-binding factory
-or database-specific mutation constructor is needed.
+or storage-specific mutation constructor is needed.
 
 Schedules start paused. Use the app's Schedules tab or the Executor management
 app's schedule definitions/configure operations to enable them. The management

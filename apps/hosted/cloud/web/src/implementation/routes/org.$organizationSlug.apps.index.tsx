@@ -1,5 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { AppsPage } from "@executor-js/hosted-web/pages/apps";
+import { AppsPage, appsPageReads } from "@executor-js/hosted-web/pages/apps";
 
 /** Hosted app inventory placeholder. */
-export const Route = createFileRoute("/org/$organizationSlug/apps/")({ component: AppsPage });
+export const Route = createFileRoute("/org/$organizationSlug/apps/")({
+  component: AppsPage,
+  staticData: { organizationReads: appsPageReads },
+});

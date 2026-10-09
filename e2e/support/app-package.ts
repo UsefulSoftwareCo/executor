@@ -2,12 +2,13 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
  * Published apps versions, exactly as npm serves them. beta.0 and beta.1 speak host protocol 1,
- * beta.4 protocol 2 and beta.5 protocol 3.
+ * beta.4 protocol 2, beta.5 protocol 3, beta.14 protocol 5, beta.22 protocol 7 and beta.33
+ * protocol 8.
  */
 const releases = {
   "0.0.1-beta.0":
@@ -18,8 +19,15 @@ const releases = {
     "sha512-EeEOQNvUyUKyuKBXiK4cnZd4U6o4HwduPFsaGBTEqO5VorXyxWBPwmJU0Opt+3eCK4kIfmmmzBKql7SXm8j9ng==",
   "0.0.1-beta.5":
     "sha512-d9tAdBVDtm8j8ubXcqPWLEEOBwz4hDPXxMg93hxqFWjeGAfdu+5T9HHrJ4FlVhenrzeyqB/hvD8p+9D+ZNFEFw==",
+  "0.0.1-beta.14":
+    "sha512-JuNza1zRwpcDAJ8B0jeREmVNWqLsiggQHO6sqhO5WdYjovu+/d4RKBxccJUmvHs/Yy5t46DLAKn9B/Awobn2nw==",
+  "0.0.1-beta.22":
+    "sha512-ptX6B7GOCCWTKzQ6iL0P0OcTo8ejUcOSYtUCKq6ASBSoifLgkuxdHmEatIYrBNj0eJignKKa/cPKsltzAdJ3mQ==",
+  "0.0.1-beta.33":
+    "sha512-XFWhs832DsJ6Y1bdDqgGaFteEejPs9B8RE3OHoVPE4Lt3ODuM6qR9rbiNCqRVvWwZWG2rRlDaq+g/MrN/ReoYw==",
 } as const;
-type Release = keyof typeof releases;
+/** A published `apps` release this suite serves. */
+export type Release = keyof typeof releases;
 const RuntimePackage = Schema.Record(Schema.String, Schema.Unknown);
 const Packed = Schema.NonEmptyArray(Schema.Struct({ filename: Schema.String }));
 class PackageFixtureFailed extends Schema.TaggedError<PackageFixtureFailed>()(
@@ -106,7 +114,7 @@ const packDirectory = (source: string, destination: string) =>
   });
 
 /**
- * The published `apps@0.0.1-beta.0`, and a copy whose `runtime.json` declares protocol 8. The real
+ * The published `apps@0.0.1-beta.0`, and a copy whose `runtime.json` declares protocol 99. The real
  * archive predates exports the host added later, so linking only current exports would fail.
  */
 export const appPackageFixture = Effect.gen(function* () {
@@ -130,7 +138,7 @@ export const appPackageFixture = Effect.gen(function* () {
   const runtime = yield* fs
     .readFileString(runtimeFile)
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimePackage))));
-  yield* fs.writeFileString(runtimeFile, JSON.stringify({ ...runtime, protocol: 9 }));
+  yield* fs.writeFileString(runtimeFile, JSON.stringify({ ...runtime, protocol: 99 }));
   archives.set("/unsupported.tgz", yield* pack(path.join(extracted, "package")));
 
   for (const [name, dependencies, content] of [

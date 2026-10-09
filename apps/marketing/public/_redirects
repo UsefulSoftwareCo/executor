@@ -3,3 +3,4 @@
 /docs/build/author-an-app /docs/author-an-app 308
 /docs/build/author-an-app.md /docs/author-an-app.md 308
 /docs/build/author-an-app.mdx /docs/author-an-app.mdx 308
+/demo/* /experiments/demo/:splat 301

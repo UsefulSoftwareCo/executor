@@ -14,7 +14,7 @@ export const agentMailRetentionSeconds = 24 * 60 * 60;
 
 /** Local parts are lowercase so each address maps to exactly one storage prefix. */
 export const AgentMailLocalPart = Schema.String.check(
-  Schema.isPattern(/^[a-z0-9][a-z0-9.-]{0,62}$/),
+  Schema.isPattern(/^[a-z0-9][a-z0-9.-]{0,62}$/u),
 );
 
 /** Keys sort by arrival within one recipient: `<address>/<received ISO time>/<id>`. */

@@ -152,6 +152,15 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         yield* interact();
         yield* recordedAfter(0);
         expect(capture.requests.filter((path) => path.includes("recorder"))).toEqual([]);
+        // No browser file names the build; the page reads its release from the document.
+        // Replay snapshots carry no event properties; every other browser event does.
+        const browserEvents = capture.events
+          .filter(Schema.is(Event))
+          .filter((event) => event.event !== "$snapshot");
+        expect(browserEvents.map((event) => event.event)).toContain("$identify");
+        expect(browserEvents.map((event) => event.properties.release)).toEqual(
+          browserEvents.map(() => target.metadata.commit),
+        );
         yield* browser.use("Wait for the embedded stylesheet recording", () =>
           expect
             .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })

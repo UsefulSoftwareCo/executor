@@ -10,8 +10,8 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts";
 
@@ -134,6 +134,7 @@ export const startDeployment = ({
       {
         CI: "true",
         EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
         TEST_STAGE_FIXTURE_CONTROL: fixtureControlEnvironment(fixtures),
         EXECUTOR_APP_UI_BASE_URL: appUiBaseUrl,
       },

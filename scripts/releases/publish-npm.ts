@@ -16,8 +16,8 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   npmArchiveBudgetBytes,
   platformArchive,
@@ -121,39 +121,51 @@ NodeRuntime.runMain(
       yield* fs.writeFileString(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n", {
         mode: 0o600,
       });
-      for (const { integrity, ...pkg } of pending) {
-        const code = yield* processes.exitCode(
-          ChildProcess.make(
-            "npm",
-            ["publish", pkg.file, "--tag", pkg.tag, "--access", "public", "--ignore-scripts"],
-            {
-              env: { NPM_CONFIG_USERCONFIG: npmrc, NPM_TOKEN: Redacted.value(token) },
-              extendEnv: true,
-              stdout: "inherit",
-              stderr: "inherit",
-            },
-          ),
-        );
-        if (code !== 0)
-          return yield* Effect.die(
-            new Error(
-              `npm publish ${pkg.version} failed. Inspect the registry and do not blindly retry accepted uploads.`,
+      const upload = (pkg: (typeof pending)[number]) =>
+        Effect.gen(function* () {
+          const code = yield* processes.exitCode(
+            ChildProcess.make(
+              "npm",
+              ["publish", pkg.file, "--tag", pkg.tag, "--access", "public", "--ignore-scripts"],
+              {
+                env: { NPM_CONFIG_USERCONFIG: npmrc, NPM_TOKEN: Redacted.value(token) },
+                extendEnv: true,
+                stdout: "inherit",
+                stderr: "inherit",
+              },
             ),
           );
-        yield* http.get(`${registry}/executor/${pkg.version}`).pipe(
+          if (code !== 0)
+            return yield* Effect.die(
+              new Error(
+                `npm publish ${pkg.version} failed. Inspect the registry and do not blindly retry accepted uploads.`,
+              ),
+            );
+        });
+      const verify = (pkg: (typeof pending)[number]) =>
+        http.get(`${registry}/executor/${pkg.version}`).pipe(
           Effect.flatMap((response) => response.json),
           Effect.flatMap(Schema.decodeUnknownEffect(RegistryVersion)),
           Effect.flatMap((published) =>
-            published.version === pkg.version && published.dist.integrity === integrity
+            published.version === pkg.version && published.dist.integrity === pkg.integrity
               ? Effect.void
               : Effect.fail(new Error(`Registry integrity does not match ${pkg.version}`)),
           ),
           Effect.timeout(15_000),
           // npm can take over 15 minutes to expose a large accepted archive.
           Effect.retry({ schedule: Schedule.spaced(15_000), times: 160 }),
+          Effect.andThen(Console.log(`Verified public npm archive ${pkg.version}`)),
         );
-        yield* Console.log(`Verified public npm archive ${pkg.version}`);
-      }
+      // npm exposes each accepted runtime after minutes, so all runtimes upload before any is
+      // awaited. The launcher names them as optional dependencies, so it uploads only once
+      // every runtime is public.
+      const runtimes = pending.filter((pkg) => pkg.version !== release.version);
+      const launcher = pending.filter((pkg) => pkg.version === release.version);
+      yield* Effect.forEach(runtimes, upload, { discard: true });
+      yield* Effect.forEach(runtimes, verify, { concurrency: "unbounded", discard: true });
+      yield* Effect.forEach(launcher, (pkg) => Effect.andThen(upload(pkg), verify(pkg)), {
+        discard: true,
+      });
       const after = yield* tags;
       if (
         after[release.channel] !== release.version ||

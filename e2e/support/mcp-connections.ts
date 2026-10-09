@@ -1,11 +1,12 @@
 /** Scoped connection fixtures through public product routes and the standard OAuth endpoints. */
 import { expect } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes } from "node:crypto";
 import { Api, body, type Session } from "./api.ts";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
+import { targetHosts } from "./role-hosts.ts";
 import { appsManifest } from "./apps-release.ts";
 
 const RunTarget = Schema.Union([
@@ -51,7 +52,8 @@ export const consentTo = (
     const api = yield* Api,
       target = yield* Target,
       http = yield* HttpClient.HttpClient;
-    const origin = target.metadata.origin;
+    // Authorization and consent run on the browser origin, Cloud's `app.` host.
+    const origin = targetHosts(target).browser;
     const redirect = "http://127.0.0.1:9/callback";
     const registered = yield* api.request(
       yield* api.session(),
@@ -141,6 +143,16 @@ export const consentTo = (
       consentResources: consentPage.searchParams.getAll("resource"),
       tokens,
     };
+  });
+
+/** The ID of the grant this session issued to a client, read from the public grants list. */
+export const clientGrantId = (session: Session, clientId: string) =>
+  Effect.gen(function* () {
+    const api = yield* Api;
+    const grants = yield* body(Grants, yield* api.request(session, "GET", "/api/auth/mcp/grants"));
+    const grant = grants.find((item) => item.clientId === clientId);
+    if (grant === undefined) return yield* Effect.die(`No grant was issued to ${clientId}`);
+    return grant.grant.id;
   });
 
 /** Revoke every grant this session issued to the given clients, even after a failed scenario. */

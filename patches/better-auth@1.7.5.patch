@@ -53,3 +53,21 @@ index 96c8b20b..4591ab82 100644
    /**
     * Require discovery to provide the issuer and JWKS metadata needed to verify
     * ID tokens before this provider is registered.
+diff --git a/dist/db/to-zod.mjs b/dist/db/to-zod.mjs
+index f0e2b9c..5229800 100644
+--- a/dist/db/to-zod.mjs
++++ b/dist/db/to-zod.mjs
+@@ -9,7 +9,12 @@ function toZodSchema({ fields, isClientSide }) {
+ 		if (field.type === "json") schema = z.json ? z.json() : z.any();
+ 		else if (field.type === "string[]" || field.type === "number[]") schema = z.array(field.type === "string[]" ? z.string() : z.number());
+ 		else if (Array.isArray(field.type)) schema = z.any();
+-		else schema = z[field.type]();
++		else schema = {
++			string: z.string,
++			number: z.number,
++			boolean: z.boolean,
++			date: z.date
++		}[field.type]();
+ 		if (field?.required === false) schema = schema.nullish();
+ 		if (!isClientSide && field?.returned === false) return acc;
+ 		return {

@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 
 /** Collision-free scenario identity; safe for paths, slugs and synthetic email addresses. */
-export const ScenarioId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
+export const ScenarioId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
 
 /** Preparation failures belong to their scenario and remain native setup failures. */
 export const PreparedScenarios = Schema.Record(

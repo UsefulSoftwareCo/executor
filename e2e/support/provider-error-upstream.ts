@@ -8,7 +8,7 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { createServer } from "node:http";
 import { publicTemplateUpstream, templateUpstream } from "./template-upstream.ts";
 

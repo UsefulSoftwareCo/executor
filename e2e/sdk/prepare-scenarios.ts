@@ -13,7 +13,7 @@ import {
   Scope,
   Semaphore,
 } from "effect";
-import { HttpClient, HttpClientError } from "effect/unstable/http";
+import { HttpClient, HttpClientError } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { SessionClients } from "../support/api.ts";

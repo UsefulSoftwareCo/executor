@@ -39,8 +39,9 @@ An **account** is one saved instance of one provider method: a label plus the
 field values. It is owned, and it is reusable.
 
 Two accounts of the same provider are normal. "Work Vercel" and "Personal
-Vercel" hold different tokens, and an app selects one of them. Several apps can
-select the same account without copying the credential.
+Vercel" hold different tokens, and each of your
+[profiles](/concepts/apps-and-deployments#profile) for an app selects one of
+them. Several apps can use the same account without copying the credential.
 
 An account can also have a **description**: free text for agents, such as
 "reads only; use the sandbox account for writes". Agents read it with the label
@@ -62,11 +63,11 @@ const requirements = { accounts: { vercel } };
 `vercel` is the slot name. A plain provider needs exactly one account.
 `provider.many()` accepts zero or more, and the app receives a list.
 
-Configuring an app means choosing which account fills each slot. Those account
-IDs are saved on the app, not copied into it. Replace the credentials on the
-account and every app that selected it follows.
+Setting up a profile means choosing which account fills each slot. The profile
+saves the account IDs, not copies of the credentials. Replace the credentials on
+the account and every profile that selected it follows.
 
-An app cannot run a tool that needs a slot you have not filled.
+A profile cannot run a tool that needs a slot you have not filled.
 
 ## Not a login
 
@@ -76,7 +77,6 @@ creates an account, and a tool never receives your login token.
 
 ## What is coming later
 
-- Per-person account selection on a shared app.
 - Providers backed by a signed-in browser session.
 
 See [Connect an account](/connect-an-account) for the steps.

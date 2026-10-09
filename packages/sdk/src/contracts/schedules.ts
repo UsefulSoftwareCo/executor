@@ -1,8 +1,9 @@
 import { ProfileId } from "./shared.ts";
+import { ApiError } from "@executor-js/utils/api-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Installed schedule controls and run review; timing and arguments remain authored app source. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { OperationSchedule, ScheduleTiming } from "apps/contracts";
 import {
   AppId,
@@ -110,23 +111,28 @@ export const StoredScheduledRun = Schema.Struct({
 );
 export type StoredScheduledRun = typeof StoredScheduledRun.Type;
 /** A schedule is absent from the live app definition, or its saved row is inaccessible. */
-export class ScheduleNotFound extends Schema.TaggedError<ScheduleNotFound>()(
-  "ScheduleNotFound",
-  {},
-  { httpApiStatus: 404 },
-) {}
+export const ScheduleNotFound = ApiError.define({
+  tag: "ScheduleNotFound",
+  status: 404,
+  message:
+    "The app's current deployment does not declare this schedule, or the schedule run is not waiting for approval.",
+});
+export type ScheduleNotFound = typeof ScheduleNotFound.Type;
 /** A competing run or reviewer has already advanced this schedule. */
-export class ScheduleConflict extends Schema.TaggedError<ScheduleConflict>()(
-  "ScheduleConflict",
-  {},
-  { httpApiStatus: 409 },
-) {}
+export const ScheduleConflict = ApiError.define({
+  tag: "ScheduleConflict",
+  status: 409,
+  message:
+    "The schedule changed or is already running, or its profile changed. Read the schedule again before retrying.",
+});
+export type ScheduleConflict = typeof ScheduleConflict.Type;
 /** Calendar timing could not produce a valid future occurrence. */
-export class ScheduleInvalid extends Schema.TaggedError<ScheduleInvalid>()(
-  "ScheduleInvalid",
-  {},
-  { httpApiStatus: 400 },
-) {}
+export const ScheduleInvalid = ApiError.define({
+  tag: "ScheduleInvalid",
+  status: 400,
+  message: "The schedule's timing does not produce a valid future occurrence.",
+});
+export type ScheduleInvalid = typeof ScheduleInvalid.Type;
 
 const app = {
   app: AppId,

@@ -5,8 +5,18 @@ import { parse as parseYamlStrictly } from "yaml";
 import { CORE_SCHEMA, load as loadYaml } from "js-yaml";
 import type { AppCache, CacheLoadContext } from "../contracts/cache.ts";
 import { cacheLimits } from "@executor-js/app-cache/contracts";
-import { OpenapiOperation, OpenapiError, type OpenapiToolsOptions } from "../contracts/openapi.ts";
+import {
+  OpenapiOperation,
+  OpenapiError,
+  isOpenapiReadMethod,
+  type OpenapiToolsOptions,
+} from "../contracts/openapi.ts";
 import { JsonObject, JsonValue } from "../contracts/schema.ts";
+import {
+  OpenapiCompileError,
+  OpenapiSkippedOperation,
+  type OpenapiToolNames,
+} from "../contracts/openapi-compile.ts";
 import type { HostedTool, HostedToolSummary } from "../contracts/host.ts";
 import { compileOpenApiDocument } from "./openapi-compile.ts";
 import { yieldToRuntime } from "./runtime-yield.ts";
@@ -22,11 +32,12 @@ import { protocolOperations, type OperationKinds } from "./protocol-operations.t
 import { routerDeclaration, type RouterDeclaration } from "./router.ts";
 import { nativeOperation } from "./operations.ts";
 import { wrap } from "./schema.ts";
-import { fromPromise, toPromise } from "./authoring.ts";
+import { fromPromise, method, toPromise } from "./authoring.ts";
 import { createRequest } from "./openapi-request.ts";
 
 /**
- * A published revision and how many parts of each kind it stored. `meta` describes the document
+ * A published revision and how many parts of each kind it stored. `skipped` holds the declared
+ * operations compilation left out, by the name each would have. `meta` describes the document
  * for its router: its info and tag descriptions.
  */
 const Manifest = Schema.Struct({
@@ -34,6 +45,7 @@ const Manifest = Schema.Struct({
   summaries: Schema.Number,
   operations: Schema.Number,
   definitions: Schema.Number,
+  skipped: Schema.Number,
   meta: Schema.optionalKey(RouterMeta),
 });
 
@@ -170,16 +182,20 @@ const base64 = (bytes: Uint8Array) => {
   return btoa(binary);
 };
 const gzip = (text: string) =>
-  invoke(async () =>
-    base64(
-      new Uint8Array(
-        await new Response(
-          new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
-        ).arrayBuffer(),
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- Compression Streams
+  Effect.tryPromise({
+    try: async () =>
+      base64(
+        new Uint8Array(
+          await new Response(
+            new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+          ).arrayBuffer(),
+        ),
       ),
-    ),
-  );
+    catch: (error) => error,
+  });
 const gunzip = (stored: string) =>
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- Compression Streams
   Effect.tryPromise({
     try: () =>
       new Response(
@@ -196,15 +212,13 @@ const decodeText =
       Effect.flatMap((value) => Schema.decodeUnknownEffect(decoder)(value)),
     );
 const schema = <A>(decoder: Schema.Decoder<A>) => wrap(decoder, false);
-const invoke = <A>(work: () => Promise<A>) =>
-  Effect.tryPromise({ try: work, catch: (error) => error });
 const invalid = () => new OpenapiError({ reason: "invalid_definition" });
 
 /**
  * Stored revision format. Bump it whenever compilation changes stored operations, such as their
  * names, or the layout of their parts, so a revision cached by an earlier framework is never served.
  */
-const format = "openapi-v3";
+const format = "openapi-v4";
 /** One write command carries as many parts as the cache accepts, with room for its envelope. */
 const writeEntries = cacheLimits.batchEntries;
 const writeBytes = cacheLimits.batchBytes - 500_000;
@@ -214,9 +228,11 @@ const readParts = Math.floor(cacheLimits.batchBytes / bucketLimit);
 /** SHA-256 of a value's JSON, as lowercase hex. The JSON text exists only while it is hashed,
  * so a large document is not held twice by the effect that yielded it. */
 const sha256Json = (value: JsonValue) =>
-  invoke(() =>
-    crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value))),
-  ).pipe(
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
+  Effect.tryPromise({
+    try: () => crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value))),
+    catch: (error) => error,
+  }).pipe(
     Effect.map((hash) =>
       Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join(""),
     ),
@@ -289,6 +305,12 @@ export interface OpenapiSourceOptions extends Omit<
   readonly allowedOrigin: string;
   readonly securitySchemes: Readonly<Record<string, JsonObject>>;
   readonly baseUrl?: string;
+  /**
+   * A path inserted between the server and every operation's path, for a definition that omits a
+   * leading segment, such as `/projects/{project}`. Each `{name}` becomes a required string path
+   * parameter of every tool, unless the operation already declares it without placing it.
+   */
+  readonly pathPrefix?: string;
   readonly freshFor?: Duration.Input;
   readonly staleFor?: Duration.Input;
   /**
@@ -387,11 +409,21 @@ const parseYaml = (text: string): unknown => {
 };
 
 /** Fetch a bounded document using the loader's owned lifetime, never the original request signal. */
-const download = (url: string, context: CacheLoadContext) =>
+const download = (
+  url: string,
+  context: Pick<CacheLoadContext, "fetch"> & { readonly signal?: AbortSignal },
+) =>
   Effect.gen(function* () {
-    const response = yield* invoke(() =>
-      context.fetch(url, { signal: context.signal, redirect: "manual" }),
-    );
+    // The loader's fetch is the invocation's, which opens its own upstream boundary.
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- fetch
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        context.fetch(url, {
+          ...(context.signal === undefined ? {} : { signal: context.signal }),
+          redirect: "manual",
+        }),
+      catch: (error) => error,
+    });
     if (!response.ok || response.body === null) return yield* invalid();
     const reader = response.body.getReader();
     const text = yield* Effect.acquireUseRelease(
@@ -402,7 +434,11 @@ const download = (url: string, context: CacheLoadContext) =>
           const chunks: string[] = [];
           let bytes = 0;
           while (true) {
-            const chunk = yield* invoke(() => reader.read());
+            // oxlint-disable-next-line executor/authored-code-through-adapter -- Streams
+            const chunk = yield* Effect.tryPromise({
+              try: () => reader.read(),
+              catch: (error) => error,
+            });
             if (chunk.done) break;
             bytes += chunk.value.byteLength;
             if (bytes > 40_000_000) return yield* invalid();
@@ -411,7 +447,11 @@ const download = (url: string, context: CacheLoadContext) =>
           chunks.push(decoder.decode());
           return chunks.join("");
         }),
-      (reader) => invoke(() => reader.cancel()).pipe(Effect.catch(() => Effect.void)),
+      (reader) =>
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Streams
+        Effect.tryPromise({ try: () => reader.cancel(), catch: (error) => error }).pipe(
+          Effect.catch(() => Effect.void),
+        ),
     );
     return yield* Effect.try({
       try: () =>
@@ -421,6 +461,58 @@ const download = (url: string, context: CacheLoadContext) =>
       catch: invalid,
     });
   });
+
+/** The patched definition, as a tree compilation can own. */
+const sourceDocument = (
+  options: Pick<OpenapiSourceOptions, "source" | "patches">,
+  context: Parameters<typeof download>[1],
+) =>
+  Effect.gen(function* () {
+    return patchOpenapi(
+      "url" in options.source
+        ? yield* download(options.source.url, context)
+        : // A copy the compilation can own, as a tree.
+          Schema.decodeUnknownSync(JsonObject)(JSON.parse(JSON.stringify(options.source.document))),
+      options.patches,
+    );
+  });
+
+/** Compile a definition with the source's static settings. */
+const compileSource = (options: OpenapiCompileSettings, document: JsonObject) =>
+  compileOpenApiDocument(
+    { name: "API", ...("url" in options.source ? { connectUrl: options.source.url } : {}) },
+    document,
+    {
+      allowedOrigin: options.allowedOrigin,
+      securitySchemes: options.securitySchemes,
+      ...(options.fallbackSecurity === undefined
+        ? {}
+        : { fallbackSecurity: options.fallbackSecurity }),
+      ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
+      ...(options.pathPrefix === undefined ? {} : { pathPrefix: options.pathPrefix }),
+    },
+  );
+type OpenapiCompileSettings = Pick<
+  OpenapiSourceOptions,
+  "source" | "allowedOrigin" | "securitySchemes" | "fallbackSecurity" | "baseUrl" | "pathPrefix"
+>;
+
+/** A tool's kind: `kinds` keyed by operationId, or by name without one, else its method's. */
+const operationKind = (
+  kinds: OperationKinds | undefined,
+  op: {
+    readonly name: string;
+    readonly operationId?: string;
+    readonly method: OpenapiOperation["method"];
+  },
+) => {
+  const key = op.operationId ?? op.name;
+  return Object.hasOwn(kinds ?? {}, key)
+    ? (kinds?.[key] ?? "mutation")
+    : isOpenapiReadMethod(op.method)
+      ? "query"
+      : "mutation";
+};
 
 /** No I/O during app construction. All accounts share credential-free compilation. */
 export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclaration => {
@@ -435,6 +527,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
   // The key includes every static input to compilation. It never includes account credentials.
   // Large inline documents are hashed once below rather than copied into storage keys.
   const identity = Effect.cached(
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
     Effect.tryPromise({
       try: async () => {
         const bytes = new TextEncoder().encode(
@@ -442,6 +535,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
             source: options.source,
             allowedOrigin: options.allowedOrigin,
             baseUrl: options.baseUrl,
+            pathPrefix: options.pathPrefix,
             securitySchemes: options.securitySchemes,
             patches: options.patches,
             fallbackSecurity: options.fallbackSecurity,
@@ -468,15 +562,8 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
   // compilation ends, before the compiled parts are serialized and written.
   const compile = (context: CacheLoadContext) =>
     Effect.gen(function* () {
-      let document: JsonObject | undefined = patchOpenapi(
-        "url" in options.source
-          ? yield* download(options.source.url, context)
-          : // A copy the compilation can own, as a tree.
-            Schema.decodeUnknownSync(JsonObject)(
-              JSON.parse(JSON.stringify(options.source.document)),
-            ),
-        options.patches,
-      );
+      let document: JsonObject | undefined = yield* sourceDocument(options, context);
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- scheduler yield
       yield* Effect.promise(yieldToRuntime);
       // Revisions are content-addressed: refreshing an unchanged document rewrites the
       // same parts and renews their retention instead of storing another copy.
@@ -490,18 +577,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
         if (owned === undefined) throw new Error("The document was already handed over.");
         return owned;
       };
-      const compiled = yield* compileOpenApiDocument(
-        { name: "API", ...("url" in options.source ? { connectUrl: options.source.url } : {}) },
-        handOver(),
-        {
-          allowedOrigin: options.allowedOrigin,
-          securitySchemes: options.securitySchemes,
-          ...(options.fallbackSecurity === undefined
-            ? {}
-            : { fallbackSecurity: options.fallbackSecurity }),
-          ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-        },
-      );
+      const compiled = yield* compileSource(options, handOver());
       return { revision, meta, compiled };
     });
   // Compiles the document and serializes its parts. Only strings leave it, so the compiled output
@@ -509,16 +585,22 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
   const serialize = (context: CacheLoadContext) =>
     Effect.gen(function* () {
       const { revision, meta, compiled } = yield* compile(context);
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- scheduler yield
       yield* Effect.promise(yieldToRuntime);
       const summaries = paginate(compiled.operations.map(summaryOf));
       const operations = bucketize(
         compiled.operations.map((operation) => [operation.name, operation] as const),
       );
       const definitions = bucketize(Object.entries(compiled.definitions));
+      const skipped =
+        compiled.skipped.length === 0
+          ? []
+          : bucketize(compiled.skipped.map((operation) => [operation.name, operation] as const));
       const parts: { kind: string; name: number; value: JsonValue }[] = [
         ...summaries.map((value, name) => ({ kind: "summaries", name, value })),
         ...operations.map((value, name) => ({ kind: "operations", name, value })),
         ...definitions.map((value, name) => ({ kind: "definitions", name, value })),
+        ...skipped.map((value, name) => ({ kind: "skipped", name, value })),
       ];
       // Each write carries as many parts as one cache command accepts. Publication is last,
       // under the cache loader lease.
@@ -529,6 +611,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       const retained = new Map<string, string>();
       let retainedBytes = 0;
       for (const [index, part] of parts.entries()) {
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- scheduler yield
         if (index % 32 === 31) yield* Effect.promise(yieldToRuntime);
         const text = JSON.stringify(part.value);
         const entry = { key: partKey(revision, part.kind, part.name), value: yield* gzip(text) };
@@ -551,6 +634,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
           summaries: summaries.length,
           operations: operations.length,
           definitions: definitions.length,
+          skipped: skipped.length,
           ...(meta === undefined ? {} : { meta }),
         },
         batches,
@@ -566,7 +650,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       yield* Effect.forEach(
         batches,
         ({ entries, bytes }, index) =>
-          fromPromise(context.cache.write)(entries, retention).pipe(
+          fromPromise(method(context.cache, "write"), "cache")(entries, retention).pipe(
             Effect.withSpan("app.cache.flush", {
               attributes: {
                 "cache.flush.index": index,
@@ -594,12 +678,15 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
     reading = deferred;
     return pointer.pipe(
       Effect.flatMap((key) =>
-        fromPromise(options.cache.get)({
+        fromPromise(
+          method(options.cache, "get"),
+          "cache",
+        )({
           key,
           schema: schema(Manifest),
           freshFor,
           staleFor,
-          load: toPromise(refresh),
+          load: toPromise(refresh, (context: CacheLoadContext) => context.signal),
         }),
       ),
       Effect.onExit((exit) =>
@@ -629,7 +716,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
     return Effect.forEach(
       groups,
       (group) =>
-        fromPromise(options.cache.readMany)(
+        fromPromise(method(options.cache, "readMany"), "cache")(
           group.map((name) => partKey(revision, kind, name)),
           partText,
         ).pipe(
@@ -677,6 +764,30 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
             ? undefined
             : yield* Schema.decodeUnknownEffect(OpenapiOperation)(value),
       };
+    });
+  /**
+   * `undefined` when a stored part is missing and `{ value: undefined }` when compilation did not
+   * leave out an operation of that name. A left-out operation fails with why, so reading or calling
+   * a tool the definition declares but the importer could not represent explains its absence.
+   */
+  const leftOutFor = (manifest: typeof Manifest.Type, name: string) =>
+    Effect.gen(function* () {
+      if (manifest.skipped === 0) return { value: undefined };
+      const [bucket] = yield* read(
+        manifest.revision,
+        "skipped",
+        [bucketOf(name, manifest.skipped)],
+        Bucket,
+      );
+      if (bucket === undefined) return undefined;
+      const value = Object.hasOwn(bucket, name) ? bucket[name] : undefined;
+      if (value === undefined) return { value: undefined };
+      const operation = yield* Schema.decodeUnknownEffect(OpenapiSkippedOperation)(value);
+      return yield* new OpenapiCompileError({
+        code: operation.code,
+        reason: operation.reason,
+        skipped: [operation],
+      });
     });
   // Every operation, in the document's order, which the summaries keep.
   const operationsFor = (manifest: typeof Manifest.Type) =>
@@ -736,15 +847,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       Object.keys(values ?? {}).sort(),
     ]),
   );
-  const kindOf = (op: OperationSummary) => {
-    const key = op.operationId ?? op.name;
-    const kinds = options.kinds ?? {};
-    return Object.hasOwn(kinds, key)
-      ? (kinds[key] ?? "mutation")
-      : ["GET", "HEAD", "OPTIONS"].includes(op.method)
-        ? "query"
-        : "mutation";
-  };
+  const kindOf = (op: OperationSummary) => operationKind(options.kinds, op);
   const readOnly = (op: OperationSummary) => kindOf(op) === "query";
   const summarize = (operation: OperationSummary): HostedToolSummary => ({
     name: operation.name,
@@ -770,7 +873,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       for (let attempt = 0; attempt < 2; attempt++) {
         const result = yield* work(yield* current);
         if (result !== undefined) return result.value;
-        yield* fromPromise(options.cache.invalidate)(yield* pointer);
+        yield* fromPromise(method(options.cache, "invalidate"), "cache")(yield* pointer);
       }
       return yield* invalid();
     });
@@ -786,7 +889,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
           if (operation === undefined) {
             const found = yield* operationFor(manifest, name);
             if (found === undefined) return undefined;
-            if (found.value === undefined) return { value: undefined };
+            if (found.value === undefined) return yield* leftOutFor(manifest, name);
             operation = found.value;
           }
           const definitions = memo?.definitions ?? (yield* definitionsFor(manifest, operation));
@@ -840,7 +943,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
         Effect.gen(function* () {
           const found = yield* operationFor(manifest, name);
           if (found === undefined) return undefined;
-          if (found.value === undefined) return { value: undefined };
+          if (found.value === undefined) return yield* leftOutFor(manifest, name);
           const operation = found.value;
           if (!createRequest(options).available(operation, options.account))
             return { value: undefined };
@@ -851,3 +954,59 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       ),
   });
 };
+
+/** The settings `openapiToolNames` reads: the router's, without an account or cache. */
+export type OpenapiToolNamesOptions = Omit<
+  OpenapiSourceOptions,
+  "cache" | "account" | "parameterDefaults" | "freshFor" | "staleFor"
+>;
+
+/**
+ * The tools `liveOpenapiRouter` with the same options exposes, from the definition alone: no
+ * account, cache or deployment. Each tool says which `methods` and `oauth` entries expose it, so
+ * an author can check the names a `withApprovals` policy matches before any account connects.
+ * `skipped` lists only the operations the compiler left out and why. An operation no configured
+ * `methods` or `oauth` entry can authorize is missing from `tools` and not listed in `skipped`.
+ * `fetch` defaults to the global fetch.
+ */
+export const openapiToolNames = (options: OpenapiToolNamesOptions): Promise<OpenapiToolNames> =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const document = yield* sourceDocument(options, {
+        fetch: options.fetch ?? globalThis.fetch,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+      const compiled = yield* compileSource(options, document);
+      const request = createRequest(options);
+      // An account of each method with every field it binds, so availability depends only on
+      // the operation's security, never on credential values.
+      const accounts = [
+        ...Object.entries(options.methods).map(([method, bindings]) => ({
+          method,
+          fields: Object.fromEntries(bindings.map(({ field }) => [field, "placeholder"])),
+        })),
+        ...options.oauth.map((method) => ({ method, fields: { access_token: "placeholder" } })),
+      ];
+      const tools = compiled.operations.flatMap((op) => {
+        const methods = accounts
+          .filter((account) => request.available(op, account))
+          .map((account) => account.method);
+        const anonymous = request.available(op, undefined);
+        return methods.length === 0 && !anonymous
+          ? []
+          : [
+              {
+                name: op.name,
+                method: op.method,
+                path: op.path,
+                ...(op.operationId === undefined ? {} : { operationId: op.operationId }),
+                kind: operationKind(options.kinds, op),
+                public: anonymous,
+                methods,
+              },
+            ];
+      });
+      return { tools, skipped: compiled.skipped };
+    }),
+    options.signal === undefined ? {} : { signal: options.signal },
+  );

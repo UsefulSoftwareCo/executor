@@ -1,6 +1,7 @@
 /** The private app protocol is checked through each real hosted product and its browser runtime. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -15,7 +16,8 @@ import {
 } from "../support/app-open-timeline.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { password } from "../support/actors.ts";
-import { App } from "../support/contracts.ts";
+import { App, SpanQuery } from "../support/contracts.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 
 import { McpOAuth } from "../support/mcp-oauth.ts";
@@ -23,28 +25,41 @@ import { McpClient } from "../support/mcp-client.ts";
 import { managementApp } from "../support/management-app.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { targetHosts } from "../support/role-hosts.ts";
+
+type Span = (typeof SpanQuery.Type)["data"][number]["span"];
+type ServerSpan = { readonly traceId: string; readonly spanId: string };
 
 const files = [
   {
     path: "index.ts",
-    content: `import { defineApp, defineDatabase, table, query, mutation, object, string, router } from "apps";
-const database = defineDatabase({ messages: table({ body: string() }) });
-export const list = query({ input: object({}) }, async ({ db }) =>
-  (await db.messages.withIndex("by_creation").collect()).map((row) => row.body));
-export const save = mutation({ input: object({ body: string() }) }, async ({ db }, input) => {
-  await db.messages.insert(input); return input.body;
+    content: `import { defineApp, query, mutation, object, string, router } from "apps";
+export const list = query({ input: object({}) }, async ({ sql }) =>
+  sql.exec("SELECT body FROM messages ORDER BY seq").toArray().map((row) => row.body));
+export const save = mutation({ input: object({ body: string() }) }, async ({ sql }, input) => {
+  sql.exec("INSERT INTO messages (body) VALUES (?)", input.body); return input.body;
 });
-export default defineApp({ accounts: {}, database }, {  tools: router({
+export default defineApp({ accounts: {} }, {  tools: router({
     list,
     save,
   }) });`,
   },
   {
+    path: "migrations/0001_messages.sql",
+    content: "CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL);\n",
+  },
+  {
     path: "ui/index.html",
-    content: `<!doctype html><html><head><title>Private app</title><link rel="stylesheet" href="./style.css"></head><body>
-<main><h1>Private app</h1><img src="./mark.svg" alt="Fixture logo"><form><label>Message<input name="message"></label><button>Save message</button></form><ul aria-label="Messages"></ul><p role="status">Loading</p></main><script type="module" src="./main.ts"></script></body></html>`,
+    content: `<!doctype html><html><head><title>Private app</title><link rel="stylesheet" href="./style.css"><link rel="canonical" href="inbox"><style>.inline-mark { background-image: url("./mark.svg"); } .inline-mark::after { content: "url(mark.svg)"; } .escaped-mark { background-image: url("mark\\2e svg"); } .syntax-mark { background-image: u\\72l(mark.svg); border-image-source: url("mark.svg"/**/); }</style><style>@import"imported.css";</style><style>@import " https://[</style></head><body>
+<main><h1>Private app</h1><img src="./mark.svg" alt="Fixture logo"><img alt="Responsive mark" srcset="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='4'%3E%3C/svg%3E 1x, mark.svg 2x"><div class="inline-mark" style="border-image-source: url(mark.svg)"></div><div class="escaped-mark"></div><div class="syntax-mark"></div><svg width="24" height="24"><use href="mark.svg#mark"></use></svg><input type="image" src="mark.svg" alt="Image button"><nav><a href="#/files">Files changed</a></nav><form><label>Message<input name="message"></label><button>Save message</button></form><ul aria-label="Messages"></ul><p role="status">Loading</p></main><script type="module" src="./main.ts"></script></body></html>`,
   },
   { path: "ui/style.css", content: ":root { --fixture-asset: loaded; }" },
+  { path: "ui/public/imported.css", content: ":root { --inline-import: loaded; }" },
+  {
+    path: "ui/badge.svg",
+    content:
+      '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="navy"/></svg>',
+  },
   {
     path: "ui/public/mark.svg",
     content:
@@ -55,6 +70,12 @@ export default defineApp({ accounts: {}, database }, {  tools: router({
     content: `import { array, string } from "apps";
 import { createAppClient, queryReference, mutationReference } from "apps/client";
 import type { list, save } from "../index.ts";
+import badge from "./badge.svg";
+const imported = document.createElement('img');
+imported.alt = "Imported badge";
+imported.src = badge;
+imported.dataset.required = String(require("./badge.svg") === badge);
+document.querySelector('main').append(imported);
 const client = createAppClient();
 const status = document.querySelector('[role="status"]');
 const load = async () => {
@@ -77,6 +98,24 @@ const PublicOperation = Schema.Struct({ operationId: Schema.String, security: Op
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
+});
+/** A declared Executor API error, as MCP returns it from a failed Executor app call. */
+const ApiFailure = Schema.Struct({
+  status: Schema.Literal("completed"),
+  execution: Schema.Struct({
+    ok: Schema.Literal(false),
+    error: Schema.Struct({
+      message: Schema.String,
+      response: Schema.Struct({
+        code: Schema.String,
+        status: Schema.Number,
+        message: Schema.String,
+        recovery: Schema.optional(
+          Schema.Struct({ action: Schema.String, instructions: Schema.String }),
+        ),
+      }),
+    }),
+  }),
 });
 
 /** Sign-in is redirects only: no host-owned page renders and nothing says "Opening app…". */
@@ -181,9 +220,11 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
             }),
           ),
         )(configurationFile.content);
-        expect(configuration.source.url).toBe(`${target.metadata.origin}/openapi.json`);
-        expect(configuration.baseUrl).toBe(target.metadata.origin);
-        expect(configuration.allowedOrigin).toBe(new URL(target.metadata.origin).origin);
+        // The Executor app calls the API at its canonical origin.
+        const apiOrigin = targetHosts(target).api;
+        expect(configuration.source.url).toBe(`${apiOrigin}/openapi.json`);
+        expect(configuration.baseUrl).toBe(apiOrigin);
+        expect(configuration.allowedOrigin).toBe(new URL(apiOrigin).origin);
         expect(configuration.securitySchemes).toEqual(apiDocument.components.securitySchemes);
       }),
     ),
@@ -200,8 +241,13 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  // Keep the discovery assertion below MCP's output limit as signatures grow.
-                  code: 'const result = await tools.search({ query: "executor", limit: 100 }); return { items: result.items.map(({ path }) => ({ path })) };',
+                  // Every page of matches, so a tool cannot hide on a later page.
+                  code: `const items = [];
+for (let page = await tools.search({ query: "executor", limit: 100 }); ; page = await tools.search(page.next)) {
+  items.push(...page.items.map(({ path }) => ({ path })));
+  if (page.next === null) break;
+}
+return { items };`,
                 },
               },
               undefined,
@@ -219,6 +265,68 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(discovered.items.map((item) => item.path)).not.toContain(
           `${tools}.appData.subscribe`,
         );
+      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+    ),
+  );
+  it.effect(scenarios.appUiMcpFailures.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const { tools, client } = yield* mcpSession;
+        const organization = { organization: actors.organization.id };
+        const run = (label: string, code: string) =>
+          client.use(label, (client, signal) =>
+            client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+          );
+        const name = `Address proof ${randomUUID().slice(0, 8)}`;
+        const created = yield* run(
+          "Create an app without deploying it",
+          `return await ${tools}.appManagement.create(${JSON.stringify({ path: organization, body: { name, files } })});`,
+        );
+        const app = yield* Schema.decodeUnknownEffect(App)(
+          (yield* Schema.decodeUnknownEffect(Completed)(created.structuredContent)).execution.value,
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(
+              actors.owner,
+              "DELETE",
+              `/api/organizations/${actors.organization.id}/apps/${app.id}`,
+            )
+            .pipe(Effect.orDie),
+        );
+        // The app's page has no address until its first deployment, and the error says so.
+        const location = yield* run(
+          "Get the URL of an app that has never been deployed",
+          `return await ${tools}.appUi.location({ path: ${JSON.stringify({ ...organization, app: app.id })} });`,
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(ApiFailure)(location.structuredContent)).execution
+            .error,
+        ).toEqual({
+          message:
+            "AppNotDeployed (HTTP 409): The app has no active deployment to load. Recovery: Open Source and deploy the app before using its tools or accounts.",
+          response: {
+            code: "AppNotDeployed",
+            status: 409,
+            message: "The app has no active deployment to load.",
+            recovery: expect.any(Object),
+          },
+        });
+        // A different name with the same generated address names the app that holds it.
+        const taken = yield* run(
+          "Create an app whose name produces an existing app's address",
+          `return await ${tools}.appManagement.create(${JSON.stringify({ path: organization, body: { name: name.toLowerCase().replaceAll(" ", "-"), files } })});`,
+        );
+        const message = `The app “${name}” (${app.id}) already uses the address “${app.slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`;
+        expect(
+          (yield* Schema.decodeUnknownEffect(ApiFailure)(taken.structuredContent)).execution.error,
+        ).toEqual({
+          message: `AppSlugTaken (HTTP 409): ${message}`,
+          response: { code: "AppSlugTaken", status: 409, message },
+        });
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );
@@ -268,6 +376,195 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         )(denied.structuredContent);
         expect(failed.execution.ok).toBe(false);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+    ),
+  );
+  it.effect(scenarios.appUiFileProbes.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { url, target } = yield* appFixture;
+        const http = yield* HttpClient.HttpClient;
+        const known = new URL(url);
+        const missingApp = new URL(url);
+        missingApp.hostname = `missing-app.${known.hostname.split(".").slice(1).join(".")}`;
+        const missingOrganization = new URL(url);
+        missingOrganization.hostname = `${known.hostname.split(".")[0]}.missing-organization.${known.hostname.split(".").slice(2).join(".")}`;
+        const telemetry = yield* Telemetry;
+        const evidence = yield* Evidence;
+        /** The response names the server span it ran under, so its delivered spans can be read back. */
+        const send = (request: HttpClientRequest.HttpClientRequest, accept: string) =>
+          request.pipe(
+            HttpClientRequest.setHeader("accept", accept),
+            http.execute,
+            Effect.flatMap((response) =>
+              Effect.map(response.text, (body) => {
+                const timing = response.headers["server-timing"] ?? "";
+                const server = {
+                  traceId: timing.match(/executor-trace;desc="([a-f0-9]{32})"/)?.[1] ?? "",
+                  spanId: timing.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1] ?? "",
+                };
+                expect(server.traceId, "The response names its server trace").not.toBe("");
+                expect(server.spanId, "The response names its server span").not.toBe("");
+                return {
+                  server,
+                  outcome: { status: response.status, body },
+                  headers: response.headers,
+                };
+              }),
+            ),
+            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          );
+        const read = (origin: URL, path: string, accept: string) =>
+          send(HttpClientRequest.get(new URL(path, origin).href), accept).pipe(
+            Effect.map(({ outcome }) => outcome),
+          );
+        const probes: Array<{ path: string; server: ServerSpan }> = [];
+        /** A cookie-less request, whose trace must show no database work. */
+        const sendAnonymously = (
+          origin: URL,
+          path: string,
+          method: "GET" | "HEAD" | "POST" | "PUT" | "OPTIONS" = "GET",
+        ) =>
+          send(HttpClientRequest.make(method)(new URL(path, origin).href), "*/*").pipe(
+            Effect.tap(({ server }) =>
+              Effect.sync(() => probes.push({ path: `${method} ${path}`, server })),
+            ),
+          );
+        const fetchAnonymously = (
+          origin: URL,
+          path: string,
+          method?: "GET" | "HEAD" | "POST" | "PUT" | "OPTIONS",
+        ) => sendAnonymously(origin, path, method).pipe(Effect.map(({ outcome }) => outcome));
+        const probe = yield* fetchAnonymously(known, "/.env");
+        expect(probe).toEqual({ status: 403, body: "App unavailable." });
+        expect(yield* fetchAnonymously(known, "/%2eenv")).toEqual(probe);
+        expect(yield* fetchAnonymously(known, "/")).toEqual(probe);
+        expect(yield* fetchAnonymously(missingApp, "/.env")).toEqual(probe);
+        expect(yield* fetchAnonymously(missingApp, "/admin")).toEqual(probe);
+        // Scanners send other methods to paths no app route accepts. They are not found, not a
+        // server failure (previously Cloud answered 503 "App unavailable.").
+        for (const [origin, path, method] of [
+          [known, "/wp-json/batch/v1", "POST"],
+          [known, "/", "POST"],
+          [known, "/index.php", "PUT"],
+          [known, "/", "OPTIONS"],
+          [missingApp, "/", "POST"],
+        ] as const) {
+          const missing = yield* sendAnonymously(origin, path, method);
+          expect(missing.outcome, `${method} ${path}`).toEqual({ status: 404, body: "" });
+          // Cloud's app-origin Worker answers with the app's private headers.
+          if (target.metadata.target === "cloud") {
+            expect(missing.headers["cache-control"], `${method} ${path}`).toBe("no-store");
+          }
+        }
+        expect((yield* fetchAnonymously(known, "/index.html", "HEAD")).status).toBe(403);
+        const document = yield* read(known, "/report.json", "text/html");
+        expect(document.status).toBe(302);
+        const page = yield* fetchAnonymously(known, "/inbox/read");
+        expect(page).toEqual(probe);
+        // The signed-out navigation looks up the organization and app. It is sent after the
+        // probes, so its delivered spans show that the collector received this run's traces.
+        const navigation = yield* send(
+          HttpClientRequest.get(new URL("/", known).href),
+          "text/html",
+        );
+        expect(navigation.outcome.status).toBe(302);
+
+        const databaseWork = new Set([
+          "sdk.apps.list",
+          "auth.sql.timing",
+          "sql.connect",
+          "sql.execute",
+        ]);
+        /** The request's server span and every span delivered beneath it. */
+        const served = (server: ServerSpan, complete: (spans: ReadonlyArray<Span>) => boolean) =>
+          telemetry.query(server.traceId).pipe(
+            Effect.map((result) => {
+              const spans = result.data.map((row) => row.span);
+              const root = spans.find(
+                (span) =>
+                  span.spanId === server.spanId && span.operationName.startsWith("http.server "),
+              );
+              const byId = new Map(spans.map((span) => [span.spanId, span]));
+              const under = (span: Span) => {
+                const visited = new Set<string>();
+                let parent = span.parentSpanId;
+                while (parent !== null && !visited.has(parent)) {
+                  if (parent === server.spanId) return true;
+                  visited.add(parent);
+                  parent = byId.get(parent)?.parentSpanId ?? null;
+                }
+                return false;
+              };
+              return root === undefined ? [] : [root, ...spans.filter(under)];
+            }),
+            Effect.filterOrFail(
+              (spans) => spans.length > 0 && complete(spans),
+              (spans) =>
+                new Error(
+                  `The server spans of trace ${server.traceId} have not reached the collector: ${spans.map((span) => span.operationName).join(", ")}`,
+                ),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+          );
+        const control = yield* served(navigation.server, (spans) =>
+          ["sdk.apps.list", "sql.execute"].every((name) =>
+            spans.some((span) => span.operationName === name),
+          ),
+        );
+        /** Reads back the probes from `first` on and requires no database work in any of them. */
+        const expectNoDatabaseWork = Effect.fn(function* (first: number) {
+          for (const [index, { path, server }] of probes.entries()) {
+            if (index < first) continue;
+            const spans = yield* served(server, () => true);
+            yield* evidence.json(`anonymous-fetch-${index}.json`, {
+              path,
+              spans: spans.map((span) => span.operationName),
+            });
+            expect(
+              spans
+                .filter(
+                  (span) =>
+                    databaseWork.has(span.operationName) ||
+                    span.operationName.startsWith("FumaDB."),
+                )
+                .map((span) => span.operationName),
+              `${path} is refused before any organization, app or SQL work`,
+            ).toEqual([]);
+          }
+        });
+        const checked = probes.length;
+        yield* expectNoDatabaseWork(0);
+        yield* evidence.json("signed-out-navigation.json", {
+          spans: control.map((span) => span.operationName),
+        });
+        // A nonexistent team's hostname is refused too. These run last, after the trace checks
+        // above.
+        if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
+          // Cloudflare holds one wildcard certificate per team, so a host under an unknown
+          // organization fails the TLS handshake at the edge and never reaches the Worker.
+          for (const [path, accept] of [
+            ["/.env", "*/*"],
+            ["/", "text/html"],
+          ] as const) {
+            const refused = yield* HttpClientRequest.get(
+              new URL(path, missingOrganization).href,
+            ).pipe(HttpClientRequest.setHeader("accept", accept), http.execute, Effect.flip);
+            const codes: Array<unknown> = [];
+            for (let cause: unknown = refused; typeof cause === "object" && cause !== null;) {
+              codes.push("code" in cause ? cause.code : undefined);
+              cause = "cause" in cause ? cause.cause : "reason" in cause ? cause.reason : undefined;
+            }
+            expect(codes, "An unknown organization's host has no certificate").toContain(
+              "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
+            );
+          }
+        } else {
+          expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
+          expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
+        }
+        yield* expectNoDatabaseWork(checked);
+      }),
     ),
   );
   it.effect(scenarios.appUiSignedOutOpen.title, (context) =>
@@ -405,7 +702,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           (yield* browser.use("Unsigned protected assets stay private", (page) =>
             page.context().request.get(`${url}/mark.svg`),
           )).status(),
-        ).toBe(401);
+        ).toBe(403);
         expect(
           (yield* browser.use("App origin has no management routes", (page) =>
             page.context().request.get(`${url}/api/auth/get-session`),
@@ -455,7 +752,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(
           yield* browser.use("Retained image is loaded", (page) =>
             page
-              .locator("img")
+              .getByRole("img", { name: "Fixture logo" })
               .evaluate((image) =>
                 image instanceof HTMLImageElement
                   ? image.decode().then(() => image.complete && image.naturalWidth === 24)
@@ -463,6 +760,84 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               ),
           ),
         ).toBe(true);
+        expect(
+          yield* browser.use("A script-imported image loads from a nested page path", (page) =>
+            page
+              .getByRole("img", { name: "Imported badge" })
+              .evaluate((image) =>
+                image instanceof HTMLImageElement
+                  ? image.decode().then(() => image.complete && image.naturalWidth === 16)
+                  : false,
+              ),
+          ),
+        ).toBe(true);
+        expect(
+          yield* browser.use("The page URL is the document base", (page) =>
+            page.evaluate(() => {
+              const inline = document.querySelector(".inline-mark");
+              const style = inline === null ? undefined : getComputedStyle(inline);
+              return {
+                base: document.querySelector("base") === null,
+                baseURI: document.baseURI === location.href,
+                logo: new URL(document.querySelector("img")?.src ?? "", location.href).pathname,
+                canonical: document.querySelector('link[rel="canonical"]')?.getAttribute("href"),
+                srcset: document
+                  .querySelector<HTMLImageElement>('img[alt="Responsive mark"]')
+                  ?.srcset.split(" ")[0],
+                inlineStyle: style?.backgroundImage,
+                styleAttribute: style?.borderImageSource,
+                quoted: inline === null ? "" : getComputedStyle(inline, "::after").content,
+                escaped: getComputedStyle(document.querySelector(".escaped-mark") ?? document.body)
+                  .backgroundImage,
+                use: document.querySelector("use")?.getAttribute("href"),
+                escapedName: getComputedStyle(
+                  document.querySelector(".syntax-mark") ?? document.body,
+                ).backgroundImage,
+                commented: getComputedStyle(document.querySelector(".syntax-mark") ?? document.body)
+                  .borderImageSource,
+                inlineImport: getComputedStyle(document.documentElement)
+                  .getPropertyValue("--inline-import")
+                  .trim(),
+                imageInput: document.querySelector<HTMLInputElement>('input[type="image"]')?.src,
+                required: document.querySelector<HTMLImageElement>('img[alt="Imported badge"]')
+                  ?.dataset.required,
+              };
+            }),
+          ),
+        ).toEqual({
+          base: true,
+          baseURI: true,
+          logo: expect.stringMatching(/^\/_executor\/assets\/[^/]+\/mark\.svg$/),
+          canonical: "inbox",
+          srcset:
+            "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='4'%3E%3C/svg%3E",
+          inlineStyle: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          styleAttribute: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          quoted: '"url(mark.svg)"',
+          escaped: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          escapedName: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          commented: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          inlineImport: "loaded",
+          use: expect.stringMatching(/^\/_executor\/assets\/[^/]+\/mark\.svg#mark$/),
+          imageInput: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg$/),
+          required: "true",
+        });
+        yield* browser.use("A fragment link stays on the page", (page) =>
+          page.getByRole("link", { name: "Files changed" }).click(),
+        );
+        expect(
+          yield* browser.use("Only the fragment changed", (page) =>
+            page
+              .waitForURL((url) => url.hash === "#/files")
+              .then(() => {
+                const current = new URL(page.url());
+                return { path: current.pathname, search: current.search };
+              }),
+          ),
+        ).toEqual({ path: "/inbox/unread", search: "?filter=new" });
+        yield* browser.use("The app document remains after the fragment link", (page) =>
+          page.getByRole("heading", { name: "Private app" }).waitFor(),
+        );
         expect(
           yield* browser.use("Retained CSS is loaded", (page) =>
             page.evaluate(() =>
@@ -480,6 +855,34 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
             }),
         );
         expect(session).toEqual({ httpOnly: true, domain: new URL(url).hostname });
+        const publicFile = yield* browser.use("Signed-in app serves its root public file", (page) =>
+          page.context().request.get(`${url}/mark.svg`),
+        );
+        expect(publicFile.status()).toBe(200);
+        expect(
+          yield* browser.use("Signed-in public file keeps its contents", () => publicFile.text()),
+        ).toContain('<circle cx="12"');
+        expect(
+          (yield* browser.use(
+            "Signed-in index file serves the document without HTML Accept",
+            (page) =>
+              page.context().request.get(`${url}/index.html`, { headers: { accept: "*/*" } }),
+          )).status(),
+        ).toBe(200);
+        const dottedStatus = yield* browser.use(
+          "Signed-in dotted navigation keeps the missing-file response",
+          (page) =>
+            page
+              .context()
+              .newPage()
+              .then((tab) =>
+                tab
+                  .goto(`${url}/report.json`)
+                  .then((response) => response?.status())
+                  .finally(() => tab.close()),
+              ),
+        );
+        expect(dottedStatus).toBe(404);
         expect(
           (yield* browser.use("Missing assets remain 404", (page) =>
             page.context().request.get(`${url}/missing.js`),

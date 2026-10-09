@@ -1,7 +1,7 @@
 ## Local source with the CLI
 
 Use this path when you can run shell commands and `executor apps --help` works.
-If the command is missing, or it has no `skills` subcommand, install the
+If the command is missing, or it has no `framework` subcommand, install the
 current release. It needs Node.js 24.14.0 or newer:
 
 ```sh
@@ -23,23 +23,43 @@ Read these docs with
 Commands target the local server at `http://127.0.0.1:4312` by default. It
 reads the local API key from `EXECUTOR_API_KEY`. If that variable is unset, ask
 the user to set it; do not search files for it. For hosted Executor, run
-`executor apps login --host https://v2.executor.sh` once. It signs in through
+`executor apps login --host https://api.executor.sh` once. It signs in through
 the browser. Then pass the same `--host` to every command.
 
-Start by creating the app without `--files`. The host saves a minimal starter
-whose `package.json` pins the `apps` version it runs. Then fetch the source into
-a directory. The same fetch works for any existing app, and
+A new app is a directory with `index.ts` and a `package.json` that pins the
+exact `apps` version the host runs. `executor apps framework` prints that
+version. Create the app from both files, then deploy its first commit.
+`mkdir` and `index.ts` run first. If `executor apps framework` fails, the `&&`
+chain stops before it writes `package.json` or creates the app; install the
+current release as above and run the chain again:
+
+```sh
+mkdir hello
+cat > hello/index.ts <<'EOF'
+import { defineApp, object, query, router } from "apps";
+
+export default defineApp({ accounts: {} }, async () => ({
+  tools: router({
+    hello: query({ description: "Say hello", input: object({}) }, async () => ({ message: "Hello" })),
+  }),
+}));
+EOF
+version="$(executor apps framework | jq -er .version)" &&
+  printf '{"name":"hello","private":true,"type":"module","dependencies":{"apps":"%s"}}\n' \
+    "$version" > hello/package.json &&
+  executor apps create --name "Hello" --files ./hello    # prints the app, including its id
+executor apps source --app <app-id> | jq -r .revision.commit
+executor apps deploy --app <app-id> --commit <first-commit>
+```
+
+To work on an existing app, fetch its source into a directory.
 `executor apps list` shows app IDs:
 
 ```sh
-executor apps create --name "Hello"        # prints the app, including its id
 executor apps source --app <app-id> > /tmp/source.json
 jq -r .revision.commit /tmp/source.json    # the commit your edits are based on
 node -e 'const fs=require("fs"),p=require("path");for(const f of JSON.parse(fs.readFileSync(0)).files){const t=p.join(process.argv[1],f.path);fs.mkdirSync(p.dirname(t),{recursive:true});fs.writeFileSync(t,f.content)}' ./hello < /tmp/source.json
 ```
-
-If you already have complete source with a pinned `package.json`, use
-`executor apps create --name "Hello" --files ./hello` instead.
 
 Each iteration saves the directory as a commit and deploys it:
 
@@ -49,6 +69,7 @@ executor apps commit --app <app-id> --files ./hello \
 executor apps deploy --app <app-id> --commit <new-commit>
 ```
 
+The commit prints the new revision; its `commit` is the next `--expected`.
 `--expected` is the commit your edits are based on. If someone else saved in
 between, the commit is rejected. Read the source again and reconcile before
 retrying. A commit alone does not change the running app.
@@ -77,6 +98,10 @@ npx -p typescript tsc --noEmit --strict --skipLibCheck \
 ```
 
 Add a `tsconfig.json` with JSX settings when the app has React UI files.
+Write relative imports as NodeNext requires: `import { provider } from "./provider.js"`
+loads `provider.ts`, in server and UI files alike. The build fails at an import
+that matches no deployed file. Failed builds report the source file and line
+when known.
 `node_modules` is never uploaded. Keep lockfiles out of the directory. Verify
 the running behavior as described in [SKILL.md](SKILL.md). After a deploy,
 start a new `execute` to discover the app's tools.
@@ -92,8 +117,22 @@ exact signatures with `execute`:
 return await tools.search({ query: "Executor" });
 ```
 
-Search returns `items` with exact callable `path`, `description` and TypeScript
-`signature`. It also returns `remaining` and `next: { offset } | null` for paging.
+Search returns `items` with the exact callable `path`, the first line of the
+`description` and the `input` type on one line. `namespaces` lists each app and
+profile, with its accounts, once. A page holds at most `limit` items, 10 by
+default, and ends sooner at its size budget. `remaining` counts the matches
+after it; pass `next` to `tools.search` for the following page, until `next` is
+null. An item with `inputTruncated` has a longer input type than search shows.
+A tool that several profiles share is one item; `alsoAt` lists its other paths.
+
+Read the whole signature, with the output type, and the whole description before
+relying on a result's shape:
+
+```js
+return await tools.search.describe({ paths: ["<path from search>"] });
+```
+
+A path that names no tool is returned in `missing` with the closest paths.
 Hosted exposes tools generated from its OpenAPI spec under `tools.executor`.
 Discover and call `context.get({})` to read the organization approved
 for this MCP connection. Its result has `organization`, `slug` and `role`.
@@ -105,7 +144,10 @@ return await tools.executor.profiles["<management-profile-id>"].apps.deploy({
   path: { organization: "<approved-organization-id>" },
   body: {
     name: "Hello",
-    files: [{ path: "index.ts", content: "<contents of index.ts>" }],
+    files: [
+      { path: "index.ts", content: "<contents of index.ts>" },
+      { path: "package.json", content: "<package.json pinning the framework.release version>" },
+    ],
   },
 });
 ```
@@ -117,11 +159,45 @@ apps generate `appManagement.create`, `appManagement.source`,
 their exact signatures first. They use ordinary app IDs, with route parameters
 under `path` and request payloads under `body`.
 
-Create the app, read its working source, and save the complete file list with
-`expected: source.revision.commit` and a commit message. Deploy the returned
-`revision.commit` with `body: { commit }`, or deploy a complete file list with
-`body: { files }`. Supply exactly one. `appManagement.deploy` does not accept
-`expected` or `expectedDeployment`. Commits and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
+Create always takes complete files: `index.ts`, such as the `hello` app above,
+and a `package.json` that pins the exact `apps` version `framework.release`
+returns:
+
+```js
+const executor = tools.executor.profiles["<management-profile-id>"];
+const path = { organization: "<approved-organization-id>" };
+const { version } = await executor.framework.release({ path });
+const files = [
+  { path: "index.ts", content: "<contents of index.ts>" },
+  {
+    path: "package.json",
+    content: JSON.stringify({
+      name: "hello",
+      private: true,
+      type: "module",
+      dependencies: { apps: version },
+    }),
+  },
+];
+const app = await executor.appManagement.create({ path, body: { name: "Hello", files } });
+return await executor.appManagement.deploy({ path: { ...path, app: app.id }, body: { files } });
+```
+
+Local has no organization: omit `path` for `framework.release` and create, and
+pass `path: { app: app.id }` to deploy.
+
+A new app runs only once deployed; its tools and `appUi.location` answer only
+after that first deployment. Deploy the same `{ files }` straight after create,
+as above, or read `appManagement.source` and deploy the commit create saved
+with `body: { commit: source.revision.commit }`.
+
+To change the app, read its working source and save the complete file list with
+`expected: source.revision.commit` and a commit message. Deploy the
+`revision.commit` that `appManagement.commit` returns with `body: { commit }`,
+not the `expected` commit you read before editing, or deploy a complete file
+list with `body: { files }`. Supply exactly one. `appManagement.deploy` takes
+the app ID in `path` and does not accept `name`, `expected` or
+`expectedDeployment`. Commits and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
 Running apps copy their deployed source and deploy the copy. Unfinished apps copy
 their working files and remain undeployed.
 
@@ -164,7 +240,8 @@ return await executor.accounts.connect({
 
 Give the returned `url` to the user. It opens Executor's signed-in browser form;
 credentials and OAuth are completed there. Check progress with
-`accounts.connection`, passing `path.organization` and `path.connection`.
+`accounts.connection`, passing `path.organization` and `path.connection`; a
+failed sign-in leaves its error in `state.failure`.
 Members can read inventory; administrators can deploy, connect, and run app tools.
 The server rechecks the caller's grant and current membership on every API call.
 The management app's caller credential is never saved as a shared account.
@@ -182,7 +259,10 @@ return await executor.apps.deploy({
   body: {
     owner: "my-project",
     name: "Hello",
-    files: [{ path: "index.ts", content: "<contents of index.ts>" }],
+    files: [
+      { path: "index.ts", content: "<contents of index.ts>" },
+      { path: "package.json", content: "<package.json pinning the framework.release version>" },
+    ],
   },
 });
 ```
@@ -213,6 +293,11 @@ its `files` in the same execution and pass them to create or commit. For a small
 edit, replace only the affected file content and retain the other files. Check
 that the expected text exists before applying a text replacement. Do not print
 the entire app and retype it to change one style or operation.
+
+The `code-mode` skill's 65,536-character program limit counts source written
+into the program, not source it reads with `appManagement.source`. When new
+files do not fit in one program, add them over several executions: each reads
+the working source, adds some files and commits the complete list.
 
 If you have a shell and the CLI, use the local CLI path above instead of
 serializing files into tool calls. Otherwise, for locally authored files,
@@ -272,10 +357,11 @@ hosted product’s access rules. Discover tools again in a new execute after cha
 ## Dependencies and current boundaries
 
 Every app declares the exact `apps` version in `package.json` `dependencies`:
-`{ "dependencies": { "apps": "<version>" } }`. A deploy without it fails and names
-the version this host ships. That package supplies the server and browser
-framework, and the exact version keeps rebuilds on it across host upgrades. New
-apps created by Executor already declare the host's version; keep it when
+`{ "dependencies": { "apps": "<version>" } }`. `framework.release` returns the
+version this host runs (`executor apps framework` in the CLI); a deploy without
+it fails and names the same version. That package supplies the server and browser
+framework, and the exact version keeps rebuilds on it across host upgrades. Apps
+Executor generates, such as imported MCP apps, already declare it. Keep it when
 editing, and change it only to upgrade the app. The host retains the compiled version with each deployment. Missing
 or unsupported packages fail the build without replacing the active app.
 Installation disables lifecycle scripts. Do not depend on the Executor SDK in
@@ -291,6 +377,37 @@ App code runs as trusted code in the host Node process. It receives usable
 credentials for selected accounts. Forward `context.signal` to fetch or other
 interruptible operations. Cancellation and execution limits are cooperative;
 completed writes are not rolled back. App-owned storage persists across calls. Durable background jobs remain deferred.
+
+### Fetch from app code
+
+App code runs on workerd, Cloudflare's Workers runtime, on every host. Its fetch
+accepts the standard `RequestInit` with three exceptions, which TypeScript's
+types and a local type check do not catch:
+
+- `redirect` must be `"follow"` or `"manual"`. To reject redirects, send
+  `"manual"` and treat a 3xx response as the error.
+- `cache` must be `"no-store"` or `"no-cache"`, or omitted.
+- `integrity` must be empty or omitted.
+
+`ctx.fetch` rejects an unsupported value with `FetchOptionUnsupported`, which
+names the option and the values it accepts. Workers also send no `User-Agent`;
+some APIs, such as GitHub's, answer 403 without one, so set it yourself.
+
+App code can reach public hosts with no allowlist, so a 403 or 404 from one is
+that service's answer. Executor refuses only requests it must not send:
+
+- To a private, loopback or internal address named in the URL, on Cloud and on
+  self-host. Local allows them; a self-host operator allows them with
+  `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true`.
+- Carrying a credential handle to a host its provider does not allow.
+
+`ctx.fetch` then rejects with `NetworkRefused`, whose `refusal.reason` and
+message name the host and the rule. The global `fetch` instead receives status
+421 with the refusal in an `x-executor-refused` header, as URI-encoded JSON, and
+in the body as JSON. A public name that resolves to a private address passes
+this check, and the network still refuses it: self-host fails the fetch with a
+network error, and Cloud answers with Cloudflare's own 403 whose body reads
+`error code: …`.
 
 Working: custom tools, API-key and OAuth providers, saved account selection,
 retained builds, configured copies, live discovery and tool calls. The local

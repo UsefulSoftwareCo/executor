@@ -22,6 +22,7 @@ import {
 } from "../support/mcp-connections.ts";
 import { Target } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 
 const Search = Schema.Struct({
   items: Schema.Array(Schema.Struct({ path: Schema.String })),
@@ -94,7 +95,7 @@ layer(HostedLive, { excludeTestServices: true })("Scoped MCP connections", (it) 
             { app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "readOnly" } },
           ]),
         );
-        expect(connection.url).toBe(`${target.metadata.origin}/mcp?connection=${connection.id}`);
+        expect(connection.url).toBe(`${targetHosts(target).mcp}/mcp?connection=${connection.id}`);
         expect(connection.policy.apps).toEqual([
           { app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "readOnly" } },
         ]);
@@ -475,7 +476,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         ]);
         yield* browser.use("The connection shows its own MCP URL", (page) =>
           page
-            .getByText(`${target.metadata.origin}/mcp?connection=${saved?.id}`)
+            .getByText(`${targetHosts(target).mcp}/mcp?connection=${saved?.id}`)
             .first()
             .waitFor({ state: "visible" }),
         );

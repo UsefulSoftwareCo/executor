@@ -12,15 +12,15 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { HostedLive, withCase, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
-import { Workspace } from "../support/app-authoring.ts";
+import { Committed, Workspace } from "../support/app-authoring.ts";
 import { serverControl } from "../support/server-control.ts";
 import {
   dataStepPasses,
@@ -130,7 +130,7 @@ const hostedSurface = (actor: Session, organization: string): Surface => {
           expected: source.revision.commit,
           files,
           message,
-        }).pipe(Effect.flatMap(decoded(Workspace)));
+        }).pipe(Effect.flatMap(decoded(Committed)));
       }),
     framework: (target) =>
       request("POST", `/apps/${target.id}/tools/call`, {
@@ -195,7 +195,7 @@ const localSurface = (session: Session, apiKey: string): Surface => {
           expected: source.revision.commit,
           files,
           message,
-        }).pipe(Effect.flatMap(decoded(Workspace)));
+        }).pipe(Effect.flatMap(decoded(Committed)));
       }),
     framework: (target) =>
       request("POST", "/v1/tools/call", {
@@ -456,21 +456,24 @@ const startupPin = (surface: Surface) =>
 /**
  * Cloud runs the step from the Worker's minute cron after deploy, and reports until told to apply.
  * The local Worker's own cron advances it too, and the scenario ticks it through the scheduled-event
- * route. The local Worker cannot reach Cloudflare Artifacts, so apps report `failed` and the
- * report is retried. Each retrying pass records its next start, 30 seconds after the first pass
- * and doubling; no pass starts before the previous one's time, and a tick before it starts none.
- * Nothing is ever applied. Every deploy resumes one report run, `report:cloud`, rather than starting
- * one per build: production deploys more often than a pass over every app takes. If the Worker's
- * first tick ran before any app existed, that pass found nothing to retry and completed the
- * report, so there is no backoff to observe.
+ * route. Every deploy resumes one report run, `report:cloud`, rather than starting one per build:
+ * production deploys more often than a pass over every app takes. A run's first pass visits every
+ * app and later passes revisit only the apps it left to retry, so the managed Cloud's run, started
+ * before this scenario, never visits this scenario's apps. The scenario restarts the run once its
+ * app exists, as a deploy that sets a new report label would. The local Worker cannot reach
+ * Cloudflare Artifacts, so this organization's apps report `failed` and keep the run retrying while
+ * the scenario observes it. Each retrying pass records its next start, 30 seconds after the first
+ * pass and doubling; no pass starts before the previous one's time, and a tick before it starts
+ * none. Nothing is ever applied.
  */
 const cloudReport = (surface: Surface) =>
   Effect.gen(function* () {
     const target = yield* Target;
     const http = yield* HttpClient.HttpClient;
     const telemetry = yield* Telemetry;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const log = `${target.directory}/cloud.log`;
-    // At least this app and the organization's Executor app fail, so the report is retried.
+    const run = "report:cloud";
     const app = yield* surface.deploy(
       `Cloud pin ${randomUUID().slice(0, 8)}`,
       deployedFiles("cloud"),
@@ -489,49 +492,104 @@ const cloudReport = (surface: Surface) =>
         .pipe(Effect.flatMap((response) => response.text)),
     );
     const retryAt = (pass: DataStepPass) => Date.parse(pass.summary.retryAt ?? "");
-
-    if ((yield* passes).length === 0) {
-      yield* tick;
-      yield* nextDataStepSummary(log, step, 0);
-    }
-    const latest = (yield* passes).at(-1);
-    expect(latest?.summary.mode).toBe("report");
-    const run = latest?.summary.run ?? "";
-    expect(run, "The report is not labelled with the build").not.toContain(target.metadata.commit);
-    expect(run).toBe("report:cloud");
-    if (latest?.summary.status === "complete") {
-      expect(latest.summary.outcomes).toEqual({});
-      return;
-    }
-    const ofRun = passes.pipe(Effect.map((all) => all.filter((pass) => pass.summary.run === run)));
-
-    // A tick before the latest pass's retry time finds the step waiting and starts no pass.
-    const logged = (yield* passes).length;
-    if (latest !== undefined && retryAt(latest) - Date.now() > 5_000) {
-      const waited = yield* waiting;
-      yield* tick;
-      yield* waiting.pipe(
-        Effect.flatMap((count) =>
-          count > waited ? Effect.void : Effect.fail(new Error("No waiting tick delivered yet")),
-        ),
-        Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 120 }),
+    /**
+     * Tick until the log holds the pass `find` picks. A tick's invocation ends with its job, and
+     * a pass that outlasts one tick's budget resumes at the next tick, so ticks never overlap and
+     * each advances the pass. A tick that finds the run held by the Worker's own cron starts nothing.
+     */
+    const advanceUntil = <A>(find: (all: ReadonlyArray<DataStepPass>) => A | undefined) =>
+      tick.pipe(
+        Effect.andThen(passes),
+        Effect.flatMap((all) => {
+          const found = find(all);
+          return found === undefined
+            ? Effect.fail(new Error("The pass has not finished"))
+            : Effect.succeed(found);
+        }),
+        Effect.retry({ schedule: Schedule.spaced("1 second"), times: 20 }),
       );
-      expect((yield* passes).length).toBe(logged);
-    }
-    // Once it passes, the next tick starts the next pass.
-    if (latest !== undefined && retryAt(latest) - Date.now() < 70_000) {
-      yield* Effect.sleep(Duration.millis(Math.max(0, retryAt(latest) - Date.now())));
-      const next = yield* Effect.gen(function* () {
-        const seen = (yield* passes).length;
-        yield* tick;
-        return yield* nextDataStepSummary(log, step, seen);
-      });
-      expect(next).toMatchObject({
-        run,
-        pass: latest.summary.pass + 1,
-        status: "retrying",
-      });
-    }
+
+    // Restart the run now that this scenario's app exists, once no pass holds it.
+    const logged = (yield* passes).length;
+    const restart = yield* processes
+      .string(
+        ChildProcess.make(
+          "node",
+          [
+            "apps/hosted/testing/data-step-report-fixture.ts",
+            "--configuration",
+            `${target.directory}/sso-database.json`,
+            "--step",
+            step,
+            "--run",
+            run,
+          ],
+          { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
+        ),
+      )
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({ restarted: Schema.Boolean, held: Schema.Boolean }),
+            ),
+          ),
+        ),
+        Effect.repeat({
+          until: (state) => !state.held,
+          schedule: Schedule.spaced("500 millis"),
+          times: 60,
+        }),
+      );
+    expect(restart.held, "A pass still holds the report run").toBe(false);
+
+    // The restarted run's first pass visits every app, this organization's among them. A pass of
+    // the previous run can log its summary just after releasing the run, so the first pass is found
+    // by its owners.
+    const first = yield* advanceUntil((all) => {
+      const index = all
+        .slice(logged)
+        .findIndex(
+          (pass) => pass.summary.pass === 1 && pass.summary.owners[surface.owner] !== undefined,
+        );
+      return index < 0 ? undefined : logged + index;
+    });
+    const ofRun = passes.pipe(
+      Effect.map((all) => all.slice(first).filter((pass) => pass.summary.run === run)),
+    );
+    const [started] = yield* ofRun;
+    if (started === undefined)
+      return yield* Effect.die("Missing the restarted report's first pass");
+    expect(started.summary).toMatchObject({ mode: "report", run, pass: 1, status: "retrying" });
+    expect(started.summary.run, "The report is not labelled with the build").not.toContain(
+      target.metadata.commit,
+    );
+    // This app and the organization's Executor app.
+    expect(started.summary.owners[surface.owner]).toEqual({ failed: 2 });
+
+    // A tick before the first pass's retry time finds the step waiting and starts no pass.
+    expect(
+      retryAt(started) - Date.now(),
+      "The first pass's backoff has already passed",
+    ).toBeGreaterThan(5_000);
+    const waited = yield* waiting;
+    const before = (yield* ofRun).length;
+    yield* tick;
+    yield* waiting.pipe(
+      Effect.flatMap((count) =>
+        count > waited ? Effect.void : Effect.fail(new Error("No waiting tick delivered yet")),
+      ),
+      Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 120 }),
+    );
+    expect((yield* ofRun).length).toBe(before);
+
+    // Once it passes, the next tick starts the next pass. The Worker's own cron may start it first.
+    yield* Effect.sleep(Duration.millis(Math.max(0, retryAt(started) - Date.now())));
+    const next = yield* advanceUntil((all) =>
+      all.slice(first).find((pass) => pass.summary.run === run && pass.summary.pass === 2),
+    );
+    expect(next.summary).toMatchObject({ run, pass: 2, status: "retrying" });
+    expect(next.summary.owners[surface.owner]).toEqual({ failed: 2 });
 
     // Every retrying pass backs off 30 seconds doubled for each earlier pass, and the next pass
     // never started before that time. Log and database clocks agree to within a second here.

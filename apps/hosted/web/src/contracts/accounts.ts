@@ -7,13 +7,13 @@ import { protectedQuery } from "./protected-query.ts";
 import type { Account, AccountFieldsInput, AccountId, AppId, ProviderId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { Data, Effect, Option } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, upsert, invalidate } from "@executor-js/ui/contracts/mutations";
 import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
 import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";
 import { HostedClient } from "./api.ts";
 import { inventoryAtom } from "./organization.ts";
-import { connectionAtom, toolsAtom } from "./apps.ts";
+import { toolsAtom } from "./apps.ts";
 
 class AccountKey extends Data.Class<{
   readonly organization: OrganizationReference;
@@ -73,17 +73,6 @@ export const updateAccountAtom = (key: {
   organization: OrganizationReference;
   account: AccountId;
 }) => updateAccount(new AccountKey(key));
-/** Resolves once the dialog's connection is loaded, so it opens without a skeleton. */
-export const reconnectAccountAtom = HostedClient.runtime.fn(
-  (key: { readonly organization: OrganizationReference; readonly account: AccountId }, get) =>
-    Effect.gen(function* () {
-      const client = yield* HostedClient;
-      const pending = yield* client.accounts.reconnect({ params: key });
-      return yield* get.result(
-        connectionAtom({ organization: key.organization, connection: pending.id }),
-      );
-    }),
-);
 /** A fresh read of which apps select an account, taken after a selection change commits. */
 export const accountUsageAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.fn((account: AccountId) =>

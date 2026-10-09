@@ -7,8 +7,9 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App } from "../support/contracts.ts";
+import { App, Organization } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
+import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { batchedReads, batchPath, type BatchedRead } from "../support/read-batches.ts";
@@ -40,6 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard request volume", (it
         const api = yield* Api;
         const browser = yield* Browser;
         const evidence = yield* Evidence;
+        const target = yield* Target;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Volume ${randomUUID().slice(0, 8)}`,
@@ -87,11 +89,20 @@ export default defineApp({ accounts: {} }, async () => ({
           return undefined;
         };
         const reads = { app: 0, profiles: 0, inventory: 0 };
+        /** The shell's organization list; it is not polled, so it reads only on return. */
+        let organizationLists = 0;
         let inFlight = 0;
         const observe = (page: Page) => {
           const tracked = new Set<unknown>();
           page.on("request", (request) => {
             const url = new URL(request.url());
+            const organizationList =
+              request.method() === "GET" && url.pathname === "/api/auth/organization/list";
+            if (organizationList) organizationLists += 1;
+            // The session's revalidation can start another organization list read after it ends.
+            const shell =
+              organizationList ||
+              (request.method() === "GET" && url.pathname === "/api/auth/get-session");
             // The dashboard sends reads that start together as one batch; each counts as a read.
             const kinds: ReadonlyArray<Kind> =
               request.method() === "POST" && url.pathname === batchPath
@@ -99,7 +110,7 @@ export default defineApp({ accounts: {} }, async () => ({
                 : request.method() === "GET"
                   ? [classify(url.pathname)].flatMap((kind) => kind ?? [])
                   : [];
-            if (kinds.length === 0) return;
+            if (kinds.length === 0 && !shell) return;
             for (const kind of kinds) reads[kind] += 1;
             inFlight += 1;
             tracked.add(request);
@@ -203,11 +214,33 @@ export default defineApp({ accounts: {} }, async () => ({
         const hidden = yield* measure("hidden-idle", idle("Hidden idle"));
         for (const kind of shared) expect(hidden[kind], `${kind} reads while hidden`).toBe(0);
 
+        // Membership made elsewhere, such as in another tab, appears after the next return.
+        // Self-host has a single organization, so only Cloud can gain one.
+        const elsewhere =
+          target.metadata.target === "cloud" ? `Elsewhere ${randomUUID().slice(0, 8)}` : undefined;
+        if (elsewhere !== undefined) {
+          const created = yield* body(
+            Organization,
+            yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
+              name: elsewhere,
+              slug: elsewhere.toLowerCase().replace(" ", "-"),
+              keepCurrentActiveOrganization: true,
+            }),
+          );
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", `/api/organizations/${created.id}`).pipe(
+              Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
+              Effect.orDie,
+            ),
+          );
+        }
+
         // Returning to the tab reconciles every shared read once.
         const returned = yield* measure(
           "return",
           Effect.gen(function* () {
             const before = { ...reads };
+            const listsBefore = organizationLists;
             yield* browser.use("Return to the page", (page) =>
               page.evaluate(() => {
                 Reflect.deleteProperty(document, "visibilityState");
@@ -216,9 +249,30 @@ export default defineApp({ accounts: {} }, async () => ({
             );
             yield* until(() => shared.every((kind) => reads[kind] > before[kind]));
             yield* settled;
+            yield* browser.use("Allow any follow-up read to start", (page) =>
+              page.waitForTimeout(1_000),
+            );
+            yield* settled;
+            // Revalidating the same session must not read the organizations a second time.
+            yield* evidence.json("organization-lists-return.json", {
+              reads: organizationLists - listsBefore,
+            });
+            expect(organizationLists - listsBefore, "organization lists after return").toBe(1);
           }),
         );
         for (const kind of shared) expect(returned[kind], `${kind} after return`).toBe(1);
+        if (elsewhere !== undefined) {
+          yield* browser.use("Open the organization switcher", (page) =>
+            page.getByRole("button", { name: /^Organization: / }).click(),
+          );
+          yield* browser.use("The organization created elsewhere is listed", (page) =>
+            page.getByRole("menuitemradio", { name: elsewhere, exact: true }).waitFor(),
+          );
+          yield* browser.checkpoint("Organization created elsewhere after one return");
+          yield* browser.use("Close the organization switcher", (page) =>
+            page.keyboard.press("Escape"),
+          );
+        }
         yield* browser.checkpoint("App page after idle windows");
       }),
     ),

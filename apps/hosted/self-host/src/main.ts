@@ -17,7 +17,7 @@ import {
   Path,
   Schema,
 } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
 import { dataDirectory } from "./contracts/config.ts";
 import { selfHostConfiguration } from "./implementation/bootstrap.ts";
 import { dashboardFiles } from "./implementation/web.ts";
@@ -79,7 +79,11 @@ if (import.meta.main)
     Effect.scoped(
       Effect.gen(function* () {
         const { host, port } = yield* settings;
-        const listener = yield* Layer.build(BunHttpServer.layer({ hostname: host, port }));
+        const listener = yield* Layer.build(
+          // Bun closes a request after 10 seconds without a response by default; account checks
+          // and server-rendered documents can wait longer.
+          BunHttpServer.layer({ hostname: host, port, idleTimeout: 30 }),
+        );
         const bound = yield* HttpServer.HttpServer.pipe(Effect.provideContext(listener));
         const address = bound.address;
         if (!("port" in address)) return yield* Effect.die("Self-host requires a TCP listener");

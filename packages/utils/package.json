@@ -7,12 +7,15 @@
     "./url-policy": "./src/url-policy.ts",
     "./safe-fetch": "./src/safe-fetch.ts",
     "./user-facing-error": "./src/user-facing-error.ts",
+    "./api-error": "./src/api-error.ts",
+    "./recorded-message": "./src/recorded-message.ts",
+    "./connection-failure": "./src/connection-failure.ts",
     "./safe-fetch/bun": "./src/safe-fetch-bun.ts",
     "./release-version": "./src/release-version.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/platform-node": "4.0.1",
+    "effect": "4.0.1",
     "ipaddr.js": "^2.5.0"
   }
 }

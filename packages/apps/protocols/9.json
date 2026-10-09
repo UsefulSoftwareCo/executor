@@ -1,0 +1,2770 @@
+{
+  "protocol": 9,
+  "previous": 8,
+  "messages": {
+    "response": {
+      "_tag": "Union",
+      "types": [
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "ok",
+              "type": {
+                "_tag": "Literal",
+                "literal": true
+              },
+              "isOptional": false
+            },
+            {
+              "name": "value",
+              "type": {
+                "_tag": "Declaration",
+                "representation": {
+                  "id": "effect/schema/Json",
+                  "payload": null
+                }
+              },
+              "isOptional": false
+            },
+            {
+              "name": "toolError",
+              "type": {
+                "_tag": "Literal",
+                "literal": true
+              },
+              "isOptional": true
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "ok",
+              "type": {
+                "_tag": "Literal",
+                "literal": false
+              },
+              "isOptional": false
+            },
+            {
+              "name": "error",
+              "type": {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Reference",
+                    "$ref": "OpenapiResponseErrorEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "ProviderErrorEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "McpErrorEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "SkillLoadFailedEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "WorkflowFailureEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostRequestInvalidEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostAccountsInvalidEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostDeclarationInvalidEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostEvaluationFailedEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostOperationNotFoundEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostOperationFailedEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "DatabaseLimitExceededEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "DatabaseFieldReservedEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostToolNotFoundEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostInputInvalidEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostOutputInvalidEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostToolBlockedEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostToolApprovalRequiredEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostToolPolicyFailedEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "ElicitationFailedEncoded"
+                  },
+                  {
+                    "_tag": "Reference",
+                    "$ref": "HostKindMismatchEncoded"
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        }
+      ]
+    },
+    "catalog": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "tools",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "$shared": "a1b1350e78156beb"
+                  },
+                  {
+                    "name": "name",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "router",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "tags",
+                    "type": {
+                      "_tag": "Arrays",
+                      "rest": [
+                        {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "description",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "inputSchema",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [],
+                      "indexSignatures": [
+                        {
+                          "parameter": {
+                            "_tag": "String"
+                          },
+                          "type": {
+                            "_tag": "Declaration",
+                            "representation": {
+                              "id": "effect/schema/Json",
+                              "payload": null
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "readOnly",
+                    "type": {
+                      "_tag": "Boolean"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "title",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "outputSchema",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [],
+                      "indexSignatures": [
+                        {
+                          "parameter": {
+                            "_tag": "String"
+                          },
+                          "type": {
+                            "_tag": "Declaration",
+                            "representation": {
+                              "id": "effect/schema/Json",
+                              "payload": null
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "annotations",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [
+                        {
+                          "name": "title",
+                          "type": {
+                            "_tag": "String"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "readOnlyHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "destructiveHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "idempotentHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "openWorldHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "_meta",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [],
+                      "indexSignatures": [
+                        {
+                          "parameter": {
+                            "_tag": "String"
+                          },
+                          "type": {
+                            "_tag": "Declaration",
+                            "representation": {
+                              "id": "effect/schema/Json",
+                              "payload": null
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "$shared": "270b61f7e0a0d074"
+        }
+      ]
+    },
+    "catalogSummary": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "tools",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "$shared": "a1b1350e78156beb"
+                  },
+                  {
+                    "name": "name",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "router",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "tags",
+                    "type": {
+                      "_tag": "Arrays",
+                      "rest": [
+                        {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "description",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "readOnly",
+                    "type": {
+                      "_tag": "Boolean"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "title",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "annotations",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [
+                        {
+                          "name": "title",
+                          "type": {
+                            "_tag": "String"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "readOnlyHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "destructiveHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "idempotentHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "openWorldHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "$shared": "270b61f7e0a0d074"
+        }
+      ]
+    }
+  },
+  "unchanged": [
+    "invocation",
+    "request",
+    "requirements",
+    "skills",
+    "elicitationRequest",
+    "elicitationReply",
+    "workflowStep",
+    "workflowStepReply",
+    "workflowControl",
+    "cacheCommand",
+    "cacheReply",
+    "accountCheck",
+    "accounts"
+  ],
+  "references": {
+    "OpenapiResponseErrorEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "OpenapiResponseError"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "code",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "status",
+          "type": {
+            "_tag": "Number",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isInt",
+                  "payload": null
+                }
+              },
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isBetween",
+                  "payload": {
+                    "minimum": 400,
+                    "maximum": 599
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "message",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 4096
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "recovery",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [
+              {
+                "name": "action",
+                "type": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMaxLength",
+                        "payload": {
+                          "maxLength": 1024
+                        }
+                      }
+                    }
+                  ]
+                },
+                "isOptional": false
+              },
+              {
+                "name": "instructions",
+                "type": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    },
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMaxLength",
+                        "payload": {
+                          "maxLength": 4096
+                        }
+                      }
+                    }
+                  ]
+                },
+                "isOptional": false
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "OpenapiResponseError"
+      }
+    },
+    "ProviderErrorEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "ProviderError"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "reason",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "unauthorized"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "forbidden"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "rate_limited"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "unavailable"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "rejected"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "status",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Number",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isInt",
+                      "payload": null
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isBetween",
+                      "payload": {
+                        "minimum": 100,
+                        "maximum": 599
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "accountId",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isStartingWith",
+                      "payload": {
+                        "startsWith": "acc_"
+                      }
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 5
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "phase",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Literal",
+                    "literal": "connect"
+                  },
+                  {
+                    "_tag": "Literal",
+                    "literal": "discover"
+                  },
+                  {
+                    "_tag": "Literal",
+                    "literal": "call"
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "upstream",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "code",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Number",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isInt",
+                                "payload": null
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMaxLength",
+                                "payload": {
+                                  "maxLength": 128
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "message",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMaxLength",
+                            "payload": {
+                              "maxLength": 1024
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "ProviderError"
+      }
+    },
+    "McpErrorEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "McpError"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "phase",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "connect"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "discover"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "call"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "schema"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "transport"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "reason",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "request"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "unauthorized"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "invalid_response"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "timeout"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "invalid_input"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "status",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Number",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isFinite",
+                          "payload": null
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "_tag": "Union",
+                    "types": [
+                      {
+                        "_tag": "Literal",
+                        "literal": "Infinity"
+                      },
+                      {
+                        "_tag": "Literal",
+                        "literal": "-Infinity"
+                      },
+                      {
+                        "_tag": "Literal",
+                        "literal": "NaN"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "upstream",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "code",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Number",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isInt",
+                                "payload": null
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMaxLength",
+                                "payload": {
+                                  "maxLength": 128
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "message",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMaxLength",
+                            "payload": {
+                              "maxLength": 1024
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "session",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": true
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "McpError"
+      }
+    },
+    "SkillLoadFailedEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "SkillLoadFailed"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "reason",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "source"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "request"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "rate_limited"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "document"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "limit"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "changed"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "encoding"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "message",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMaxLength",
+                      "payload": {
+                        "maxLength": 500
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "status",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Number",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isInt",
+                      "payload": null
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isBetween",
+                      "payload": {
+                        "minimum": 100,
+                        "maximum": 599
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "missing",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Literal",
+                    "literal": "repository"
+                  },
+                  {
+                    "_tag": "Literal",
+                    "literal": "ref"
+                  }
+                ]
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "SkillLoadFailed"
+      }
+    },
+    "WorkflowFailureEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "WorkflowFailure"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "step",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 200
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "errorName",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "message",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 2048
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "reason",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "unavailable"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "not_found"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "input"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "output"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "operation"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "approval"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "credentials"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "terminated"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "execution"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "conflict"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "engine"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "retryable",
+          "type": {
+            "_tag": "Boolean"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "WorkflowFailure"
+      }
+    },
+    "HostRequestInvalidEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostRequestInvalid"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostRequestInvalid"
+      }
+    },
+    "HostAccountsInvalidEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostAccountsInvalid"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostAccountsInvalid"
+      }
+    },
+    "HostDeclarationInvalidEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostDeclarationInvalid"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "source",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "app"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "storage"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "service"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "errorName",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "code",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "message",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 2048
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "fields",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isPattern",
+                        "payload": {
+                          "source": "^[A-Za-z_$][A-Za-z0-9_$]{0,63}$",
+                          "flags": ""
+                        }
+                      }
+                    }
+                  ]
+                },
+                "type": {
+                  "_tag": "Union",
+                  "types": [
+                    {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMaxLength",
+                            "payload": {
+                              "maxLength": 256
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "_tag": "Number",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isFinite",
+                            "payload": null
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "_tag": "Boolean"
+                    }
+                  ]
+                }
+              }
+            ],
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxProperties",
+                  "payload": {
+                    "maxProperties": 8
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostDeclarationInvalid"
+      }
+    },
+    "HostEvaluationFailedEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostEvaluationFailed"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "source",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "app"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "storage"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "service"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "errorName",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "code",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "message",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 2048
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "fields",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isPattern",
+                        "payload": {
+                          "source": "^[A-Za-z_$][A-Za-z0-9_$]{0,63}$",
+                          "flags": ""
+                        }
+                      }
+                    }
+                  ]
+                },
+                "type": {
+                  "_tag": "Union",
+                  "types": [
+                    {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMaxLength",
+                            "payload": {
+                              "maxLength": 256
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "_tag": "Number",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isFinite",
+                            "payload": null
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "_tag": "Boolean"
+                    }
+                  ]
+                }
+              }
+            ],
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxProperties",
+                  "payload": {
+                    "maxProperties": 8
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostEvaluationFailed"
+      }
+    },
+    "HostOperationNotFoundEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostOperationNotFound"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostOperationNotFound"
+      }
+    },
+    "HostOperationFailedEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostOperationFailed"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "source",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "app"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "storage"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "service"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "errorName",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "code",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 128
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "message",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 2048
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "fields",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isPattern",
+                        "payload": {
+                          "source": "^[A-Za-z_$][A-Za-z0-9_$]{0,63}$",
+                          "flags": ""
+                        }
+                      }
+                    }
+                  ]
+                },
+                "type": {
+                  "_tag": "Union",
+                  "types": [
+                    {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMaxLength",
+                            "payload": {
+                              "maxLength": 256
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "_tag": "Number",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isFinite",
+                            "payload": null
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "_tag": "Boolean"
+                    }
+                  ]
+                }
+              }
+            ],
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxProperties",
+                  "payload": {
+                    "maxProperties": 8
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostOperationFailed"
+      }
+    },
+    "DatabaseLimitExceededEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "DatabaseLimitExceeded"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "limit",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "scanCalls"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "directGets"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "rowsRead"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "rowsReturned"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "pageSize"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "bytesRead"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "writes"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "valueBytes"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "maximum",
+          "type": {
+            "_tag": "Number",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isInt",
+                  "payload": null
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "requested",
+          "type": {
+            "_tag": "Number",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isInt",
+                  "payload": null
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "DatabaseLimitExceeded"
+      }
+    },
+    "DatabaseFieldReservedEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "DatabaseFieldReserved"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "table",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "field",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "id"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "createdAt"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "updatedAt"
+              }
+            ]
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "DatabaseFieldReserved"
+      }
+    },
+    "HostToolNotFoundEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostToolNotFound"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostToolNotFound"
+      }
+    },
+    "HostInputInvalidEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostInputInvalid"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "problems",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMaxLength",
+                      "payload": {
+                        "maxLength": 512
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 10
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostInputInvalid"
+      }
+    },
+    "HostOutputInvalidEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostOutputInvalid"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostOutputInvalid"
+      }
+    },
+    "HostToolBlockedEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostToolBlocked"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostToolBlocked"
+      }
+    },
+    "HostToolApprovalRequiredEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostToolApprovalRequired"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "input",
+          "type": {
+            "_tag": "Declaration",
+            "representation": {
+              "id": "effect/schema/Json",
+              "payload": null
+            }
+          },
+          "isOptional": false
+        },
+        {
+          "name": "elicitation",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [
+              {
+                "name": "_meta",
+                "type": {
+                  "_tag": "Union",
+                  "types": [
+                    {
+                      "_tag": "Objects",
+                      "propertySignatures": [],
+                      "indexSignatures": [
+                        {
+                          "parameter": {
+                            "_tag": "String"
+                          },
+                          "type": {
+                            "_tag": "Declaration",
+                            "representation": {
+                              "id": "effect/schema/Json",
+                              "payload": null
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "_tag": "Null"
+                    }
+                  ]
+                },
+                "isOptional": true
+              },
+              {
+                "name": "mode",
+                "type": {
+                  "_tag": "Literal",
+                  "literal": "form"
+                },
+                "isOptional": false
+              },
+              {
+                "name": "message",
+                "type": {
+                  "_tag": "String"
+                },
+                "isOptional": false
+              },
+              {
+                "name": "requestedSchema",
+                "type": {
+                  "_tag": "Objects",
+                  "propertySignatures": [
+                    {
+                      "name": "type",
+                      "type": {
+                        "_tag": "Literal",
+                        "literal": "object"
+                      },
+                      "isOptional": false
+                    },
+                    {
+                      "name": "properties",
+                      "type": {
+                        "_tag": "Objects",
+                        "propertySignatures": [],
+                        "indexSignatures": [
+                          {
+                            "parameter": {
+                              "_tag": "String"
+                            },
+                            "type": {
+                              "_tag": "Never"
+                            }
+                          }
+                        ]
+                      },
+                      "isOptional": false
+                    }
+                  ]
+                },
+                "isOptional": false
+              }
+            ]
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostToolApprovalRequired"
+      }
+    },
+    "HostToolPolicyFailedEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostToolPolicyFailed"
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostToolPolicyFailed"
+      }
+    },
+    "ElicitationFailedEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "ElicitationFailed"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "reason",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "unavailable"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "transaction"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "invalid-request"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "invalid-response"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "transport"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "expired"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "forbidden"
+              }
+            ]
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "ElicitationFailed"
+      }
+    },
+    "HostKindMismatchEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "HostKindMismatch"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "tool",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "requested",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "query"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "mutation"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "actual",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "query"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "mutation"
+              }
+            ]
+          },
+          "isOptional": false
+        }
+      ],
+      "annotations": {
+        "~identifier": "HostKindMismatch"
+      }
+    }
+  },
+  "shared": {
+    "0c12a542f8bcbcb2": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "path",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "title",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "description",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "icons",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "src",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "mimeType",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "sizes",
+                    "type": {
+                      "_tag": "Arrays",
+                      "rest": [
+                        {
+                          "_tag": "String"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "theme",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Literal",
+                          "literal": "light"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "dark"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tags",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "type": {
+                  "_tag": "String"
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "skill",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "_tag": "Filter"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "error",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Reference",
+                "$ref": "ProviderErrorEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "McpErrorEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "SkillLoadFailedEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "HostDeclarationInvalidEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "HostEvaluationFailedEncoded"
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ]
+    },
+    "16304fd2e30a0779": {
+      "_tag": "Arrays",
+      "rest": [
+        {
+          "$shared": "0c12a542f8bcbcb2"
+        }
+      ]
+    },
+    "270b61f7e0a0d074": {
+      "name": "routers",
+      "type": {
+        "$shared": "16304fd2e30a0779"
+      },
+      "isOptional": false
+    },
+    "885e3b9b225a40d5": {
+      "_tag": "Arrays",
+      "rest": [
+        {
+          "$shared": "8d146f8a77931c63"
+        }
+      ]
+    },
+    "8d146f8a77931c63": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "name",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "timing",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "kind",
+                    "type": {
+                      "_tag": "Literal",
+                      "literal": "interval"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "milliseconds",
+                    "type": {
+                      "_tag": "Number",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isInt",
+                            "payload": null
+                          }
+                        },
+                        {
+                          "_tag": "Filter",
+                          "annotations": {
+                            "message": "Schedule intervals must be at least 60 seconds"
+                          }
+                        },
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isLessThanOrEqualTo",
+                            "payload": {
+                              "maximum": 9007199254740991
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  }
+                ]
+              },
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "kind",
+                    "type": {
+                      "_tag": "Literal",
+                      "literal": "cron"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "calendar",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [
+                        {
+                          "name": "expression",
+                          "type": {
+                            "_tag": "String",
+                            "checks": [
+                              {
+                                "_tag": "Filter",
+                                "representation": {
+                                  "id": "effect/schema/isMinLength",
+                                  "payload": {
+                                    "minLength": 1
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          "isOptional": false
+                        },
+                        {
+                          "name": "timezone",
+                          "type": {
+                            "_tag": "String",
+                            "checks": [
+                              {
+                                "_tag": "Filter",
+                                "representation": {
+                                  "id": "effect/schema/isMinLength",
+                                  "payload": {
+                                    "minLength": 1
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          "isOptional": false
+                        }
+                      ],
+                      "checks": [
+                        {
+                          "_tag": "Filter"
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "input",
+          "type": {
+            "_tag": "Declaration",
+            "representation": {
+              "id": "effect/schema/Json",
+              "payload": null
+            }
+          },
+          "isOptional": false
+        }
+      ]
+    },
+    "a1b1350e78156beb": {
+      "name": "schedules",
+      "type": {
+        "$shared": "885e3b9b225a40d5"
+      },
+      "isOptional": true
+    }
+  }
+}

@@ -4,7 +4,7 @@ import {
   FeedbackUnavailable,
 } from "@executor-js/telemetry/product-analytics";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { OrganizationReference, RequireOrganization } from "./organization.ts";
 
 /** Organization members can submit feedback through a browser session or API authorization. */

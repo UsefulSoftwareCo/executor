@@ -37,7 +37,11 @@
           // Warning until Effect code reads time through Clock/DateTime: 92 sites.
           "globalDateInEffect": "warning",
           // Warning until imports move behind platform services or edges: 247 sites, 214 in e2e.
-          "nodeBuiltinImport": "warning"
+          "nodeBuiltinImport": "warning",
+          // The framework is built on Effect's unstable HTTP, SQL, CLI, AI and reactivity
+          // modules by design. Upgrades are reviewed against the release notes instead.
+          "unstableApiUsage": "off",
+          "experimentalApiUsage": "off"
         }
       }
     ]

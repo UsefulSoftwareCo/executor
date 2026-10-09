@@ -5,7 +5,7 @@
  * but differs in DDL details (index drops, foreign keys on create), so it stays
  * a distinct provider like upstream fumadb.
  */
-import type { Statement } from "effect/unstable/sql";
+import type { Statement } from "effect/sql";
 
 /** Every provider the SQL adapter supports, in a stable order. */
 export const providers = ["postgresql", "cockroachdb", "mysql", "sqlite", "mssql"] as const;

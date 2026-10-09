@@ -1,14 +1,15 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
+import { Clock, Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 import { Collector, SpanQuery } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { Onboarding } from "../support/onboarding.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 
 const Logs = Schema.Struct({
   data: Schema.Array(
@@ -34,9 +35,22 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
         const fs = yield* FileSystem.FileSystem;
         const http = yield* HttpClient.HttpClient;
         const target = yield* Target;
+        const hosts = targetHosts(target);
         const collector = yield* fs
           .readFileString(`${target.directory}/data/diagnostics/collector.json`)
           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Collector))));
+        // The workload: one client signing in at the allowance Cloud gives an address (`/sign-in*`,
+        // 3 per 10 s), so each sign-in starts at least 10 s after the one three before it. The
+        // managed Cloud runs with that limit off, so the scenario keeps to it itself. Its subject
+        // is what each outcome reports, not how many sign-ins one address can make;
+        // `cloud-auth-rate-limit` proves the limit.
+        const signIns: Array<number> = [];
+        const signIn = Effect.gen(function* () {
+          const third = signIns.at(-3);
+          if (third !== undefined)
+            yield* Effect.sleep(Math.max(0, third + 10_000 - (yield* Clock.currentTimeMillis)));
+          signIns.push(yield* Clock.currentTimeMillis);
+        });
         yield* browser.omitNetworkTrace;
         for (const fixture of [
           { kind: "redirect", code: "none", stage: "callback_validation" },
@@ -49,6 +63,7 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
         ] as const) {
           const provider = fixture.kind === "invalid_code" ? "google" : "github";
           const traceId = randomUUID().replaceAll("-", "");
+          if (fixture.kind !== "redirect") yield* signIn;
           if (fixture.kind === "success") {
             yield* browser.use("Correlate the browser OAuth return", (page) =>
               page
@@ -64,11 +79,11 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
               "A POST callback only redirects to the GET callback",
               (page) =>
                 page.request
-                  .post(`${target.metadata.origin}/api/auth/callback/github`, {
+                  .post(`${hosts.browser}/api/auth/callback/github`, {
                     maxRedirects: 0,
                     form: { state: "private-oauth-state", code: "private-invalid-code" },
                     headers: {
-                      origin: target.metadata.origin,
+                      origin: hosts.browser,
                       traceparent: `00-${traceId}-1234567890abcdef-01`,
                     },
                   })
@@ -76,29 +91,16 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
             );
             expect(status).toBe(302);
           } else {
-            const started = yield* browser
-              .use("Start OAuth through the public endpoint", (page) =>
-                page.request
-                  .post(`${target.metadata.origin}/api/auth/sign-in/social`, {
-                    headers: { origin: target.metadata.origin },
-                    data: { provider, callbackURL: "/login", errorCallbackURL: "/login" },
-                  })
-                  .then((response) =>
-                    response.json().then((body: unknown) => ({ status: response.status(), body })),
-                  ),
-              )
-              .pipe(
-                Effect.flatMap((response) =>
-                  response.status === 429
-                    ? Effect.fail(new Error("Sign-in rate limit"))
-                    : Effect.succeed(response),
+            const started = yield* browser.use("Start OAuth through the public endpoint", (page) =>
+              page.request
+                .post(`${hosts.browser}/api/auth/sign-in/social`, {
+                  headers: { origin: hosts.browser },
+                  data: { provider, callbackURL: "/login", errorCallbackURL: "/login" },
+                })
+                .then((response) =>
+                  response.json().then((body: unknown) => ({ status: response.status(), body })),
                 ),
-                Effect.retry({
-                  while: (error) => error.message === "Sign-in rate limit",
-                  schedule: Schedule.spaced("10 seconds"),
-                  times: 2,
-                }),
-              );
+            );
             expect(started.status).toBe(200);
             const authorization = yield* Schema.decodeUnknownEffect(
               Schema.Struct({ url: Schema.RedactedFromValue(Schema.String) }),
@@ -116,10 +118,19 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
               if (fixture.kind === "cancel") callback.searchParams.set("error", "access_denied");
               if (fixture.kind === "unknown")
                 callback.searchParams.set("error", "private-provider-error");
+              const headers = { traceparent: `00-${traceId}-1234567890abcdef-01` };
+              // The provider returns to the edge, which sends the browser, query intact, to the
+              // browser origin, where the sign-in's state cookie is checked.
               return page.request
-                .get(callback.href, {
-                  maxRedirects: 0,
-                  headers: { traceparent: `00-${traceId}-1234567890abcdef-01` },
+                .get(callback.href, { maxRedirects: 0, headers })
+                .then((bounce) => {
+                  const location = bounce.headers()["location"];
+                  if (
+                    bounce.status() !== 302 ||
+                    location !== `${hosts.browser}${callback.pathname}${callback.search}`
+                  )
+                    throw new Error("The provider callback did not return to the browser origin");
+                  return page.request.get(location, { maxRedirects: 0, headers });
                 })
                 .then((response) => response.status());
             });

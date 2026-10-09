@@ -45,6 +45,17 @@ layer(HostedLive, { excludeTestServices: true })("Skill folders", (it) => {
             helper,
           )).skills,
         ).toEqual([]);
+        // The browser app ships as UI assets; its files are not retained in ctx.files.
+        expect(
+          (yield* bundle(
+            '{ skills: await folderSkills({ files: ctx.files, path: "ui/skills" }) }',
+            [
+              ...packaged,
+              { path: "ui/skills/browser-guide/SKILL.md", content: skillDocument("browser-guide") },
+            ],
+            helper,
+          )).skills,
+        ).toEqual([]);
       }),
     ),
   );

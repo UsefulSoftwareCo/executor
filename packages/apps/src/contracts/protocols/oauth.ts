@@ -1,6 +1,21 @@
-/** OAuth declarations frozen for host protocols 1 through 5. */
+/**
+ * OAuth declarations frozen for host protocols 1 through 5. The module imports only `effect`, so
+ * no change elsewhere in the repository can alter it. `./oauth-6.ts` holds the declaration later
+ * protocols use.
+ */
 import { Schema } from "effect";
-import { HttpUrl } from "../schema.ts";
+
+/** Absolute HTTP(S) URL; local HTTP hosts are supported. */
+export const HttpUrl = Schema.String.check(
+  Schema.makeFilter((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" || url.protocol === "http:";
+    } catch {
+      return false;
+    }
+  }),
+);
 
 /** How an OAuth client authenticates at the token endpoint; raw Basic is an explicit provider compatibility option. */
 export const OAuthClientAuth = Schema.Literals([
@@ -49,7 +64,7 @@ export const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.Stri
  * A declared `authorizationUrl` may carry its own query (RFC 6749 §3.1 keeps it). Each parameter
  * is declared once, in the URL or in `authorizationParams`, and never names a host-owned one.
  */
-const declaredAuthorizationQuery = Schema.makeFilter(
+export const declaredAuthorizationQuery = Schema.makeFilter(
   (config: {
     readonly authorizationUrl: string;
     readonly authorizationParams?: Readonly<Record<string, string>>;
@@ -85,14 +100,14 @@ export const OAuthTokenResponse = Schema.Struct({
 export type OAuthTokenResponse = typeof OAuthTokenResponse.Type;
 
 /** Options for services that differ from RFC 6749 in how they read requests. */
-const tokenRequestOptions = {
+export const tokenRequestOptions = {
   /** Joins requested scopes; Linear wants `","`. Defaults to RFC 6749's space. */
   scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
   /** Encoding of token requests. Defaults to `"form"`; Atlassian, ClickUp and Notion need `"json"`. */
   tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
 };
 
-const oauthOptions = {
+export const oauthOptions = {
   ...tokenRequestOptions,
   /**
    * Read the grant from this nested member of the token response when the top-level response has

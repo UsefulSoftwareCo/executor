@@ -1,7 +1,7 @@
 /** Synthetic authored app used by the runtime walkthrough. No real credentials. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   query,
   array,

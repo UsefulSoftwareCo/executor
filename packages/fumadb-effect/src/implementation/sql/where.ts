@@ -7,8 +7,8 @@
  * `ESCAPE` clause), never user input.
  */
 import { Option, Result } from "effect";
-import { Statement } from "effect/unstable/sql";
-import type { SqlClient } from "effect/unstable/sql/SqlClient";
+import { Statement } from "effect/sql";
+import type { SqlClient } from "effect/sql/SqlClient";
 import type { Condition, Operator } from "../../contracts/condition.ts";
 import type { Provider } from "../../contracts/provider.ts";
 import { type AnyColumn, isColumn } from "../../contracts/schema/column.ts";

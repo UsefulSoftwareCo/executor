@@ -1,7 +1,7 @@
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
 import { Effect, Option, Schema } from "effect";
-import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import {
   OnboardingReady,
   OnboardingEntry,

@@ -130,16 +130,14 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         expect(yield* savedLabel(created.id)).toBe("Work key");
         yield* browser.checkpoint("Named account selected for the app");
 
-        yield* browser.use("Open the named account", (page) =>
-          page.goto(`/org/${actors.organization.slug}/accounts?account=${created.id}`),
-        );
-        yield* browser.use("Open the account's actions", (page) =>
+        // Credentials are replaced from the app that selects the account, not from Accounts.
+        yield* browser.use("Open the account's actions on the app", (page) =>
           page
             .getByRole("button", { name: "Manage Work key", exact: true })
             .click()
             .then(() => page.getByRole("menu").waitFor({ state: "visible" })),
         );
-        yield* browser.checkpoint("Account actions on the linked row");
+        yield* browser.checkpoint("Account actions on the app's selected account");
         yield* browser.use("Replace its credentials", (page) =>
           page.getByRole("menuitem", { name: "Update credentials", exact: true }).click(),
         );

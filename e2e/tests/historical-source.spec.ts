@@ -5,7 +5,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { Workspace } from "../support/app-authoring.ts";
+import { Committed, Workspace } from "../support/app-authoring.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
@@ -52,17 +52,18 @@ layer(HostedLive, { excludeTestServices: true })("Historical source", (it) => {
         let current = initial;
         // Two modest incompressible files make an unbounded history fetch observable without a load test.
         for (let revision = 0; revision < 2; revision += 1) {
+          // Workspace reads list files by path, so the saved list keeps that order.
+          const later = [
+            ...files,
+            { path: "later.txt", content: randomBytes(256 * 1024).toString("base64") },
+          ].toSorted((a, b) => a.path.localeCompare(b.path));
           const response = yield* api.request(actors.owner, "POST", `${path}/commits`, {
             expected: current.revision.commit,
-            // Workspace reads list files by path, so the saved list keeps that order.
-            files: [
-              ...files,
-              { path: "later.txt", content: randomBytes(256 * 1024).toString("base64") },
-            ].toSorted((a, b) => a.path.localeCompare(b.path)),
+            files: later,
             message: `Later revision ${revision}`,
           });
           expect(response.status).toBe(200);
-          current = yield* body(Workspace, response);
+          current = { revision: (yield* body(Committed, response)).revision, files: later };
         }
         expect(current.revision.commit).not.toBe(initial.revision.commit);
         const deployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {

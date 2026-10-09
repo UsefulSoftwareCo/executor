@@ -1,6 +1,6 @@
 /** Hosted access settings use the same persisted policy enforced by execution. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
 import type { AppId, AccountId } from "@executor-js/sdk";
 import { QueryView } from "@executor-js/ui/dashboard/context";

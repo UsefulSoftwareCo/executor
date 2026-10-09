@@ -3,9 +3,9 @@ import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
 /** Scheduled work has a saved actor, not a retained browser session or an invented service account. */
 import { Effect, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerRequest } from "effect/unstable/http";
+import { SqlClient } from "effect/sql";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerRequest } from "effect/http";
 import {
   RequestInvalid,
   StorageError,

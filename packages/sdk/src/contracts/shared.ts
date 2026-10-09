@@ -1,3 +1,4 @@
+import { ApiError } from "@executor-js/utils/api-error";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Shared contract primitives: IDs, ownership, JSON, pagination and write-only secrets. */
 import { Schema } from "effect";
@@ -21,10 +22,10 @@ export type JsonObject = typeof JsonObject.Type;
  * Brands are only obtainable by parsing through these schemas (or from
  * returned rows), never by casting.
  */
-const Id = <const P extends string>(prefix: P) =>
+const Id = <const P extends string>(prefix: Parameters<typeof Schema.brand<P>>[0]) =>
   Schema.String.pipe(
-    Schema.check(Schema.isStartsWith(`${prefix}_`), Schema.isMinLength(prefix.length + 2)),
-    Schema.brand(prefix),
+    Schema.check(Schema.isPattern(new RegExp(`^${prefix}_[\\s\\S]+$`, "u"))),
+    Schema.brand<P>(prefix),
   );
 
 /** Content-derived reference to a normalized provider definition, prefix `prv_`. */
@@ -137,13 +138,13 @@ export const CredentialsError = UserFacingError.define({
 export type CredentialsError = typeof CredentialsError.Type;
 
 /** Invalid SDK input; submitted fields are never included in the error. */
-export class RequestInvalid extends Schema.TaggedError<RequestInvalid>()(
-  "RequestInvalid",
-  {},
-  {
-    httpApiStatus: 400,
-  },
-) {}
+export const RequestInvalid = ApiError.define({
+  tag: "RequestInvalid",
+  status: 400,
+  message:
+    "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+});
+export type RequestInvalid = typeof RequestInvalid.Type;
 
 /** Opaque pending account setup identity; hosts enforce access separately. */
 export const AccountConnectionId = Id("con");

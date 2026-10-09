@@ -1,7 +1,7 @@
 /** Database factory, client, and schema inference contracts. */
 import type { Effect } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
-import type { SqlClient } from "effect/unstable/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
+import type { SqlClient } from "effect/sql/SqlClient";
 import type { Adapter } from "./adapter.ts";
 import type { MigrationError, NotInitialized } from "./errors.ts";
 import type { Migrator } from "./migration.ts";

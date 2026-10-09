@@ -7,13 +7,11 @@ export const appFiles = [
     language: "ts",
     source: `import { defineApp, router } from "apps";
 import { github } from "./providers";
-import { database } from "./database";
 import { listBriefs, saveBrief, refreshBrief } from "./tools";
 import { refresh } from "./workflows";
 
 export const requirements = {
   accounts: { github },
-  database,
 };
 
 export default defineApp(requirements, {
@@ -27,28 +25,38 @@ export default defineApp(requirements, {
     description:
       "Ordinary functions to read, save, and refresh a brief. Your agent can call them as tools.",
     language: "ts",
-    source: `import { query, mutation, object, string, array } from "apps";
+    source: `import { query, mutation, object, string, number, array } from "apps";
 import type { QueryContext, MutationContext } from "apps";
 import type { requirements } from "./index";
-import { Brief, BriefInput } from "./database";
 
 type Read = QueryContext<typeof requirements>;
 type Write = MutationContext<typeof requirements>;
 
-export const Repository = object({
-  owner: string(),
-  name: string(),
-});
+export const Repository = object({ owner: string(), name: string() });
+export const BriefInput = object({ repository: string(), openIssues: number() });
+export const Brief = object({ id: string(), repository: string(), openIssues: number() });
+
+const columns = "id, repository, open_issues AS openIssues";
 
 export const listBriefs = query(
   { input: object({}), output: array(Brief) },
-  async ({ db }: Read) =>
-    db.briefs.withIndex("by_creation").order("desc").take(10),
+  async ({ sql }: Read) =>
+    sql.exec(\`SELECT \${columns} FROM briefs ORDER BY created_at DESC LIMIT 10\`).toArray(),
 );
 
 export const saveBrief = mutation(
   { input: BriefInput, output: Brief },
-  async ({ db }: Write, input) => db.briefs.insert(input),
+  async ({ sql }: Write, input) =>
+    sql.transaction((tx) =>
+      tx.exec(
+        \`INSERT INTO briefs (id, repository, open_issues, created_at)
+         VALUES (?, ?, ?, ?) RETURNING \${columns}\`,
+        crypto.randomUUID(),
+        input.repository,
+        input.openIssues,
+        Date.now(),
+      ).one(),
+    ),
 );
 
 export const refreshBrief = mutation(
@@ -77,24 +85,17 @@ export const github = defineProvider({
 });`,
   },
   {
-    path: "database.ts",
+    path: "migrations/0001_briefs.sql",
     label: "Data that stays",
     description:
-      "Defines the records your app saves. Briefs stay available between runs and appear in the UI.",
-    language: "ts",
-    source: `import { defineDatabase, table, object, string, number } from "apps";
-
-const fields = {
-  repository: string(),
-  openIssues: number(),
-};
-
-export const BriefInput = object(fields);
-export const Brief = object({ id: string(), ...fields });
-
-export const database = defineDatabase({
-  briefs: table(fields),
-});`,
+      "Creates the table your app saves briefs in. Executor applies new migrations when you deploy.",
+    language: "sql",
+    source: `CREATE TABLE briefs (
+  id TEXT PRIMARY KEY NOT NULL,
+  repository TEXT NOT NULL,
+  open_issues INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);`,
   },
   {
     path: "workflows.ts",
@@ -166,8 +167,7 @@ Follow the user's instructions and Executor's approval requests.`,
 import { array } from "apps";
 import { createAppClient, queryReference } from "apps/client";
 import { useAppQuery } from "apps/react";
-import type { listBriefs } from "../tools";
-import { Brief } from "../database";
+import { Brief, type listBriefs } from "../tools";
 
 const client = createAppClient();
 const briefs = client.queryAtom(

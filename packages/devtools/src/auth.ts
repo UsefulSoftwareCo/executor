@@ -2,7 +2,7 @@ import { adminClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/client";
 import { dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
 import { Effect, Layer, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 const runtime = Atom.runtime(Layer.empty);
 class OperatorRequestFailed extends Schema.TaggedError<OperatorRequestFailed>()(

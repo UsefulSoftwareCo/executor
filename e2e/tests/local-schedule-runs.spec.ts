@@ -20,11 +20,15 @@ const Run = Schema.Struct({
 });
 const Runs = Schema.Array(Run);
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
-const source = `import { defineApp, defineDatabase, table, string, object, query, mutation, interval, type MutationContext, type QueryContext, router } from "apps";
+const migration = {
+  path: "migrations/0001_events.sql",
+  content: "CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL);\n",
+};
+const source = `import { defineApp, string, object, query, mutation, interval, type MutationContext, type QueryContext, router } from "apps";
 import { always } from "apps/operations/approval";
-const database = defineDatabase({ events: table({ message: string() }) });
-const requirements = { accounts: {}, database };
-const record = mutation({ input: object({ message: string() }), approval: always() }, async (ctx: MutationContext<typeof requirements>, input) => ctx.db.events.insert(input));
+const requirements = { accounts: {} };
+const record = mutation({ input: object({ message: string() }), approval: always() }, async (ctx: MutationContext<typeof requirements>, input) =>
+  ctx.sql.exec("INSERT INTO events (message) VALUES (?) RETURNING seq, message", input.message).one());
 const blocked = mutation({ input: object({}), approval: () => "denied" }, async () => { throw new Error("Denied body ran"); });
 const input = mutation({ input: object({}) }, async ({ elicit }) => await elicit({ mode: "form", message: "Input unavailable", requestedSchema: { type: "object", properties: {} } }));
 const slow = mutation({ input: object({}) }, async ({ signal }) => {
@@ -33,7 +37,7 @@ const slow = mutation({ input: object({}) }, async ({ signal }) => {
 });
 export default defineApp(requirements, async () => ({
    tools: router({
-     events: query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => ctx.db.events.withIndex("by_creation").take(100)),
+     events: query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => ctx.sql.exec("SELECT seq, message FROM events ORDER BY seq LIMIT 100").toArray()),
      record, blocked, input, slow,
    }), schedules: {
     automatic: interval({ minutes: 1 }, record, { message: "automatic" }),
@@ -59,7 +63,7 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
           {
             owner: "local",
             name: `Scheduled ${randomUUID().slice(0, 8)}`,
-            files: [{ path: "index.ts", content: source }, appsManifest],
+            files: [{ path: "index.ts", content: source }, migration, appsManifest],
           },
           headers,
         );
@@ -240,6 +244,7 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
             app: app.id,
             files: [
               { path: "index.ts", content: without(["automatic", "review", "slow"]) },
+              migration,
               appsManifest,
             ],
           },

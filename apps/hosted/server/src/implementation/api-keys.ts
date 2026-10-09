@@ -1,6 +1,6 @@
 import { apiKey, defaultKeyHasher } from "@better-auth/api-key";
 import { generateRandomString } from "better-auth/crypto";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { StorageError } from "@executor-js/sdk/core";
 import type { GenericEndpointContext } from "@better-auth/core";
 import { fullAuthority } from "@executor-js/authorization";
@@ -105,7 +105,11 @@ export const requirePinnedOrganization = (
         }),
       );
 
-/** Verify expiry, revocation and usage through Better Auth before applying product authorization. */
+/**
+ * Verify expiry, revocation and usage through Better Auth before applying product authorization.
+ * `valid: false` means Better Auth refused the key. A storage failure rejects instead (see the
+ * pinned api-key patch), and `authCall` reports it as SERVICE_UNAVAILABLE, never as a bad key.
+ */
 export const apiKeyAccess = (ctx: GenericEndpointContext, token: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const result = yield* authCall(() =>
@@ -148,6 +152,8 @@ export const browserPersonalTokenAccess = (
  * copy is returned redacted for encrypted SDK storage; rollback removes both records.
  * Fields follow the pinned api-key plugin's public schema and native create endpoint.
  */
+/** Names the key on the Tokens page so its owner knows where it came from. */
+export const managedKeyName = "Executor app (created automatically)";
 export const managedAccountKey = (organization: OrganizationId, user: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -158,7 +164,7 @@ export const managedAccountKey = (organization: OrganizationId, user: string) =>
     });
     yield* sql`insert into apikey (id, "configId", name, prefix, start, key, "referenceId", enabled,
       "rateLimitEnabled", "rateLimitTimeWindow", "rateLimitMax", "requestCount", "createdAt", "updatedAt", metadata)
-      values (${crypto.randomUUID()}, 'default', 'Executor app', 'exp_', ${Redacted.value(token).slice(0, 6)}, ${hash}, ${user}, true,
+      values (${crypto.randomUUID()}, 'default', ${managedKeyName}, 'exp_', ${Redacted.value(token).slice(0, 6)}, ${hash}, ${user}, true,
         false, 86400000, 10, 0, now(), now(), ${JSON.stringify(pinnedKeyMetadata(organization))})`;
     return token;
   }).pipe(Effect.mapError(() => new StorageError()));

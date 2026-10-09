@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { DashboardUnauthorized } from "@executor-js/local-server/contracts";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { Cause, Option, Schema } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   UserCircleIcon,

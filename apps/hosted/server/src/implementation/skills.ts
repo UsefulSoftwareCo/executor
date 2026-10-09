@@ -1,8 +1,9 @@
 import { authorizeTarget } from "./authorization.ts";
 /** Product authority is checked for every read; profile and account checks precede factory evaluation. */
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { AppSkillInputs } from "@executor-js/sdk/core";
+import { annotateSkillRead } from "@executor-js/app-templates/executor";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { currentOwner, selectedApp } from "./access.ts";
@@ -38,7 +39,11 @@ export const hostedSkillHandlers = HttpApiBuilder.group(HostedApi, "skills", (ha
       }),
     )
     .handle("list", ({ params, query }) => listAppSkills({ app: params.app, ...query }))
+    // The Executor app's skills.read tool reads here, not through the MCP skills tool. The
+    // dashboard only lists skills and loads bundles, so those routes record no skill.
     .handle("read", ({ params, query }) =>
-      readAppSkill({ app: params.app, name: params.name, ...query }),
+      readAppSkill({ app: params.app, name: params.name, ...query }).pipe(
+        Effect.tap(annotateSkillRead),
+      ),
     ),
 );

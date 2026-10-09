@@ -4,7 +4,7 @@ import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../co
 import type { SourceFiles } from "../contracts/deployment.ts";
 import { isBrowserAppImport, isServerUiImport, uiContentType } from "./ui-build.ts";
 import type { UiBuildEntry, UiBuildFile, UiBuildPlan } from "../contracts/ui-build.ts";
-import { Effect, Path, Schema } from "effect";
+import { Effect, Option, Path, Schema } from "effect";
 import type { Plugin } from "esbuild";
 import { compileUiTailwind } from "./ui-tailwind.ts";
 
@@ -13,6 +13,16 @@ const Package = Schema.Struct({
 });
 
 const namespace = "executor-browser";
+const assetUrl = "executor-asset-url";
+const scriptImports = new Set(["import-statement", "dynamic-import", "require-call"]);
+const browserAsset = /\.(?:svg|woff2)$/;
+/** Metafile inputs carry their plugin namespace, as in `virtual:node_modules/react/index.js`. */
+const packageInput = (input: string) =>
+  input.slice(input.indexOf(":") + 1).startsWith("node_modules/");
+const sourceMapComment = /\n\/\/# sourceMappingURL=[^\n]*\n?$/;
+const decodeAssetWrapper = Schema.decodeUnknownOption(
+  Schema.Struct({ namespace: Schema.String, commonjs: Schema.Boolean }),
+);
 
 /** Collect every output because createApp 0.2.4 retains only outputFiles[0]; gate the complete browser import graph. */
 export const browserBuild = (
@@ -54,6 +64,67 @@ export const browserBuild = (
           // authored source text or tree-shaken values to every app viewer.
           sourcesContent: false,
         });
+        // A file-loader URL is relative to the asset root, which is not the page's URL. Script
+        // imports receive it resolved against their own module instead; CSS urls already are.
+        // Package specifiers are classified by the file they resolve to. `require` receives the
+        // URL string itself, as it did from the file loader.
+        build.onResolve({ filter: /.*/, namespace: assetUrl }, (args) => {
+          const wrapped = decodeAssetWrapper(args.pluginData);
+          if (Option.isNone(wrapped)) return { errors: [{ text: "Browser asset missing." }] };
+          return wrapped.value.commonjs
+            ? {
+                path: args.path,
+                namespace: assetUrl,
+                pluginData: { namespace: wrapped.value.namespace, commonjs: false },
+              }
+            : { path: args.path, namespace: wrapped.value.namespace };
+        });
+        build.onResolve({ filter: /^[^./]|\.(?:svg|woff2)$/ }, async (args) => {
+          if (
+            args.pluginData === assetUrl ||
+            args.namespace === namespace ||
+            !scriptImports.has(args.kind)
+          )
+            return undefined;
+          const file = await build.resolve(args.path, {
+            kind: args.kind,
+            importer: args.importer,
+            namespace: args.namespace,
+            resolveDir: args.resolveDir,
+            pluginData: assetUrl,
+          });
+          if (file.errors.length > 0) return { errors: file.errors };
+          if (file.external || !browserAsset.test(file.path))
+            return {
+              path: file.path,
+              namespace: file.namespace,
+              external: file.external,
+              sideEffects: file.sideEffects,
+              suffix: file.suffix,
+              pluginData: file.pluginData,
+              warnings: file.warnings,
+            };
+          const commonjs = args.kind === "require-call";
+          return {
+            path: file.path,
+            namespace: assetUrl,
+            ...(commonjs ? { suffix: "?commonjs" } : {}),
+            pluginData: { namespace: file.namespace, commonjs },
+            warnings: file.warnings,
+          };
+        });
+        build.onLoad({ filter: /.*/, namespace: assetUrl }, (args) => {
+          const wrapped = decodeAssetWrapper(args.pluginData);
+          if (Option.isNone(wrapped)) return { errors: [{ text: "Browser asset missing." }] };
+          const file = JSON.stringify(args.path);
+          return {
+            contents: wrapped.value.commonjs
+              ? `module.exports = require(${file}).default;\n`
+              : `import file from ${file};\nexport default new URL(file, import.meta.url).href;\n`,
+            loader: "js",
+            pluginData: wrapped.value,
+          };
+        });
         build.onResolve({ filter: /.*/ }, (args) => {
           if (args.path.startsWith("node:") || args.path.startsWith("cloudflare:"))
             return { errors: [{ text: "Runtime bindings cannot be imported by the UI." }] };
@@ -86,7 +157,7 @@ export const browserBuild = (
         build.onLoad({ filter: /.*/, namespace: "virtual" }, (args) => {
           if (isServerUiImport(args.path))
             return { errors: [{ text: "Server app modules cannot be imported by the UI." }] };
-          if (args.path.endsWith(".svg") || args.path.endsWith(".woff2")) {
+          if (browserAsset.test(args.path)) {
             const contents = filesystem.read(args.path);
             return contents === null
               ? { errors: [{ text: "Browser asset missing." }] }
@@ -113,13 +184,29 @@ export const browserBuild = (
               return fail();
             outputs.push({ source: entry, path: output, ...(css === undefined ? {} : { css }) });
           }
+          // A chunk built only from installed packages keeps no source map: mapping vendor
+          // code locates nothing in the app, and the maps were most of a large build's assets.
+          const packageChunks = new Set(
+            Object.entries(result.metafile.outputs)
+              .filter(
+                ([file, metadata]) =>
+                  file.endsWith(".js") &&
+                  Object.keys(metadata.inputs).length > 0 &&
+                  Object.keys(metadata.inputs).every(packageInput),
+              )
+              .map(([file]) => path.resolve("/", file)),
+          );
           for (const file of result.outputFiles) {
+            const absolute = path.resolve("/", file.path);
+            if (absolute.endsWith(".map") && packageChunks.has(absolute.slice(0, -4))) continue;
             const relative = relativeOutput(file.path);
             if (relative === undefined) return fail();
             assets.push({
               path: relative,
               contentType: uiContentType(relative),
-              body: file.contents,
+              body: packageChunks.has(absolute)
+                ? new TextEncoder().encode(file.text.replace(sourceMapComment, "\n"))
+                : file.contents,
             });
           }
         });

@@ -1,6 +1,6 @@
 /** Group destinations require current membership; organization admins may target any group. */
 import { Effect, Schema } from "effect";
-import type { SqlClient } from "effect/unstable/sql";
+import type { SqlClient } from "effect/sql";
 import { GroupId, GroupMemberId } from "../contracts/groups.ts";
 import {
   OrganizationForbidden,

@@ -6,7 +6,7 @@ import { dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
 import { emailOTPClient } from "better-auth/client/plugins";
 import { authRequest } from "@executor-js/hosted-web/contracts/auth";
 import { Effect, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { AccountFailed } from "@executor-js/hosted-web/contracts/account";
@@ -50,6 +50,14 @@ export const verifyCodeAtom = BrowserAtoms.fn(
       Effect.tap(() => Effect.sync(() => finishCloudSignIn(input.redirect))),
       Effect.asVoid,
     ),
+);
+/**
+ * The host whose passkeys stopped working when the dashboard moved off it, sent with each
+ * server-rendered document. Null where the dashboard has not moved.
+ */
+export const formerPasskeyHostAtom = Atom.make<string | null>(null).pipe(
+  Atom.serializable({ key: "cloud:former-passkey-host", schema: Schema.NullOr(Schema.String) }),
+  Atom.keepAlive,
 );
 /** Start the browser's WebAuthn ceremony only after an explicit click. */
 export const passkeySignInAtom = BrowserAtoms.fn((redirect: string) =>

@@ -1,8 +1,7 @@
 import { WorkerEnvironment } from "alchemy/Cloudflare";
 import { Effect, Predicate, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
-import { experimentHomepage, type HeroFlagEvaluator } from "./hero-experiment.ts";
 import { homepageResponse } from "./homepage-response.ts";
 
 const StaticAssets = Schema.declare(
@@ -44,6 +43,5 @@ export const staticDocument = (entry?: string) =>
 /** Same fast split as the old site: cookie presence chooses the product, never access authority. */
 export const homepage = <E, R>(
   cookiePrefix: string,
-  evaluate: HeroFlagEvaluator,
   dashboard: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
-) => homepageResponse(cookiePrefix, experimentHomepage(staticDocument, evaluate), dashboard);
+) => homepageResponse(cookiePrefix, staticDocument("/index.html"), dashboard);

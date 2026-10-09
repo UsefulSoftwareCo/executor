@@ -8,7 +8,7 @@ import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts
 import { Context, Schema } from "effect";
 import { HostedGroups } from "./groups.ts";
 import { HostedMcpConnections } from "./mcp-connections.ts";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AuthenticationUnavailable, Principal, RequireUser, Unauthorized } from "./auth.ts";
 import {
   HostedOrganization,
@@ -179,6 +179,11 @@ export const HostedApi = HttpApi.make("executor-hosted")
           organization: OrganizationId,
           slug: Schema.NonEmptyString,
           role: OrganizationRole,
+          /**
+           * Where this host serves app Git remotes, canonical first. They may be on other origins
+           * than this API; a client signed in here uses its session for remotes on each of them.
+           */
+          gitOrigins: Schema.NonEmptyArray(Schema.String),
         }),
         error: [Unauthorized, OrganizationForbidden, AuthenticationUnavailable],
       }).annotate(OpenApi.Override, { security: [{ oauth: ["executor"] }] }),

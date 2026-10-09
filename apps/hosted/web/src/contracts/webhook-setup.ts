@@ -1,6 +1,6 @@
 /** Organization-keyed setup bindings use the private cookie routes on the shared hosted client. */
 import { Data, Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import type { AppId, WebhookId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { webhookSetupAtoms } from "@executor-js/ui/contracts/webhook-setup";

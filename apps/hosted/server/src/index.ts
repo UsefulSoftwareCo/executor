@@ -19,22 +19,19 @@ export {
   RequireUser,
   CurrentPrincipal,
 } from "./contracts/auth.ts";
-export {
-  authOptions,
-  authSettings,
-  requireUserLive,
-  sessionPrincipal,
-} from "./implementation/auth.ts";
+export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
 export * from "./contracts/organization.ts";
 export { HostedExecutor } from "./contracts/executor.ts";
 export { OrganizationDefaults } from "./contracts/organization-defaults.ts";
 export { organizationDefaults } from "./implementation/organization-defaults.ts";
+export { executorDefaultRedeployed } from "./implementation/executor-app-upgrades.ts";
 export {
   lookupMembership,
   lookupOrganizationSlug,
-  requireOrganizationLive,
+  noOrganizationRemovals,
 } from "./implementation/organization.ts";
 export { requireOrganizationAdmin, requireOrganizationOwner } from "./implementation/access.ts";
+export { hostedMiddlewareLive } from "./implementation/middleware.ts";
 export * from "./contracts/organization-removal.ts";
 export {
   deleteOrganizationRecords,
@@ -46,6 +43,12 @@ export { makeOrganizationRemovals } from "./implementation/organization-removals
 export { migrateOrganizationRemovals } from "./implementation/organization-removal-schema.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
+export * from "./contracts/oauth-client-metadata.ts";
+export {
+  clientMetadataDocument,
+  clientMetadataSetting,
+  type ClientMetadataSetting,
+} from "./implementation/oauth-client-metadata.ts";
 export type {
   HostedAccountConnection,
   HostedOAuthSignIn,
@@ -56,11 +59,16 @@ export { hostedMcpBackend } from "./implementation/mcp.ts";
 
 export * from "./contracts/mcp.ts";
 export {
-  mcpAuthenticationError,
-  apiAuthenticationError,
+  mcpBrowserGrantError,
   mcpConnectionStore,
+  provisionHostedConnectionResources,
   provisionHostedOAuthResources,
+  type HostedOAuthOrigins,
 } from "./implementation/mcp-oauth.ts";
+export { authEndpointTemplates, grantExpiry, type GrantExpiry } from "@executor-js/mcp-auth/oauth";
+export type { OriginList, ResourceOrigins } from "@executor-js/mcp-auth";
+export { ConnectionId, mcpOAuthResources, singleResourceOrigin } from "@executor-js/mcp-auth";
+export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
 export {
   makeHostedMcp,
   mcpSessionKey,

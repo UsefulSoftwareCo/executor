@@ -8,19 +8,27 @@ type StartOptions = NonNullable<Parameters<typeof tanstackStart>[0]>;
 type RouterOptions = NonNullable<StartOptions["router"]>;
 
 /**
- * Build metadata is public page configuration. It is compiled into both bundles so the server
- * document and the browser agree without reading a template at request time.
+ * Build metadata is public page configuration. The environment name is compiled into both bundles.
+ * The build id is compiled into the server bundle only: a browser file naming it would change with
+ * every deploy, and so would every file importing it, so deploys would remove files that pages
+ * still running the previous build need. The browser reads it from the document instead.
  */
 const buildMetadata = (): PluginOption => ({
   name: "executor-build-metadata",
   config: () => ({
     define: {
-      "import.meta.env.VITE_EXECUTOR_BUILD": JSON.stringify(
-        process.env.EXECUTOR_BUILD_VERSION ?? "development",
-      ),
       "import.meta.env.VITE_EXECUTOR_ENVIRONMENT_NAME": JSON.stringify(
         process.env.EXECUTOR_ENVIRONMENT ?? "development",
       ),
+    },
+    environments: {
+      ssr: {
+        define: {
+          "import.meta.env.VITE_EXECUTOR_BUILD": JSON.stringify(
+            process.env.EXECUTOR_BUILD_VERSION ?? "development",
+          ),
+        },
+      },
     },
   }),
 });
@@ -41,6 +49,24 @@ const serverBundle = (runtime: "workerd" | "node"): PluginOption => ({
     },
   }),
 });
+
+/**
+ * Start's server manifest records each route's absolute source path, which the server never
+ * reads. Recording it relative to the app keeps the server build identical wherever the
+ * repository is checked out, so a size measured in one checkout holds in every other.
+ */
+const relativeRouteFiles = (): PluginOption => {
+  let root = "";
+  return {
+    name: "executor-relative-route-files",
+    enforce: "post",
+    configResolved: (config) => {
+      root = `${config.root}/`;
+    },
+    transform: (code, id) =>
+      id.includes("tanstack-start-manifest:v") ? code.replaceAll(root, "") : undefined,
+  };
+};
 
 /** Start owns routing, code splitting, the browser entry and the server document handler. */
 export const dashboardStartPlugins = ({
@@ -65,6 +91,7 @@ export const dashboardStartPlugins = ({
     client: { entry: "client.tsx" },
     server: { entry: "server.ts" },
   }),
+  relativeRouteFiles(),
   react(),
   tailwind,
 ];

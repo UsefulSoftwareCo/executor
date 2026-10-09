@@ -1,9 +1,9 @@
 {
   "name": "executor",
-  "version": "2.0.0-beta.8",
+  "version": "2.0.0-beta.11",
   "private": true,
   "description": "Run Executor locally and connect your agents to your apps.",
-  "homepage": "https://v2.executor.sh",
+  "homepage": "https://executor.sh",
   "license": "MIT",
   "repository": {
     "type": "git",

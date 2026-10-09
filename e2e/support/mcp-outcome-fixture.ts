@@ -2,17 +2,15 @@
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const Rpc = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
   method: Schema.String,
 });
+
+/** How long `/slow` waits before it answers. */
+export const slowUpstreamMs = 400;
 
 /** Return a real listener owned by the current test scope; no application services are replaced. */
 export const mcpOutcomeFixture = Effect.gen(function* () {
@@ -48,6 +46,12 @@ export const mcpOutcomeFixture = Effect.gen(function* () {
       Layer.mergeAll(
         HttpRouter.add("POST", "/mcp", handler),
         HttpRouter.add("GET", "/ping", Effect.succeed(HttpServerResponse.text("ok"))),
+        // A provider that answers after a known wait, so a caller can tell that wait from its own.
+        HttpRouter.add(
+          "GET",
+          "/slow",
+          Effect.sleep(`${slowUpstreamMs} millis`).pipe(Effect.as(HttpServerResponse.text("ok"))),
+        ),
       ),
       { disableLogger: true, disableListenLog: true },
     ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),

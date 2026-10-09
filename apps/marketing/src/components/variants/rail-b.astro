@@ -9,6 +9,7 @@ import gmailLogo from "../../assets/logos/gmail.svg?url";
 import slackLogo from "../../assets/logos/slack.svg?url";
 import xLogo from "../../assets/logos/x.svg?url";
 import rhysAvatar from "../../assets/rhys-sullivan.jpg";
+import { appHref } from "../../content/site-origin.ts";
 
 // The brand mark resolves against the build's base, so the docs build (mounted
 // at /docs) serves its own copy instead of reaching for the marketing root.
@@ -27,13 +28,13 @@ const { stars, current = "home" } = Astro.props;
 const cur = (k: string) => (k === current ? "page" : undefined);
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
-const SIGN_IN = "/login";
+const SIGN_IN = appHref("/login");
 
 const sections = [
+  { id: "apps", label: "What’s an app" },
   { id: "connect", label: "Start small" },
   { id: "mission", label: "Build what you need" },
   { id: "automate", label: "Keep it working" },
-  { id: "apps", label: "That’s an app" },
   { id: "agents", label: "It's just code" },
   { id: "install", label: "Run it" },
   { id: "people", label: "What people say" },

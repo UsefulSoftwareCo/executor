@@ -1,14 +1,92 @@
 import { AccountWorkflowsActive } from "../contracts/account.ts";
 import { AccountWebhooksActive } from "../contracts/account.ts";
 /** Reusable account operations. Owners remain lookup predicates, not authorization. */
-import { Clock, type Crypto, Effect, Schema } from "effect";
-import { Account, AccountNotFound } from "../contracts/account.ts";
+import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+import { Account, AccountNotFound, type AccountSignIn } from "../contracts/account.ts";
+import { OAuthGrant } from "../contracts/oauth.ts";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { Provider, ProviderNotFound } from "../contracts/provider.ts";
-import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
+import {
+  AccountId,
+  StorageError,
+  type Json,
+  type OwnerId,
+  type ProviderId,
+} from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { validateFields } from "./provider.ts";
+import { lockApp } from "./apps.ts";
+
+/** A stable digest of stored ciphertext; any credential write changes it. */
+const fingerprint = (bytes: Uint8Array) =>
+  Effect.promise(async () =>
+    Array.from(
+      new Uint8Array(
+        await globalThis.crypto.subtle.digest(
+          "SHA-256",
+          new Uint8Array(bytes) as Uint8Array<ArrayBuffer>,
+        ),
+      ),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join(""),
+  );
+
+/** Drop one account from every profile selection of its owner; affected profiles become pending. */
+const clearBindings = (tx: Query, owner: OwnerId, account: AccountId) =>
+  Effect.gen(function* () {
+    const rows = yield* query(() =>
+      tx.findMany("profiles", {
+        where: (b) => b.and(b("owner", "=", owner), b("status", "!=", "removed")),
+        orderBy: ["app", "asc"],
+      }),
+    );
+    const references = (value: unknown) =>
+      value === account || (Array.isArray(value) && value.includes(account));
+    const affected = rows.filter(
+      (row) =>
+        row.accounts !== null &&
+        typeof row.accounts === "object" &&
+        Object.values(row.accounts as Record<string, unknown>).some(references),
+    );
+    // Match the SDK app lock order before editing any profile of that app. Removing an app
+    // deletes its profiles with it, so an app removed meanwhile leaves nothing here to clear.
+    const locked = new Set<string>();
+    for (const app of [...new Set(affected.map((row) => row.app))].sort())
+      if (
+        yield* lockApp(tx, { app, owner }).pipe(
+          Effect.as(true),
+          Effect.catchTag("AppNotFound", () => Effect.succeed(false)),
+        )
+      )
+        locked.add(app);
+    for (const row of affected) {
+      if (!locked.has(row.app)) continue;
+      const accounts: Record<string, Json> = {};
+      for (const [slot, value] of Object.entries(row.accounts as Record<string, unknown>)) {
+        if (value === account) continue;
+        if (Array.isArray(value)) {
+          const kept = value.filter((selected) => selected !== account);
+          // A collection that held only this account is unselected, not left empty.
+          if (kept.length === 0 && value.length > 0) continue;
+          accounts[slot] = kept as Json;
+          continue;
+        }
+        accounts[slot] = value as Json;
+      }
+      yield* query(() =>
+        tx.updateMany("profiles", {
+          where: (b) => b("id", "=", row.id),
+          set: {
+            accounts,
+            revision: row.revision + 1,
+            status: row.status === "removing" ? row.status : "pending",
+            failure: null,
+          },
+        }),
+      );
+    }
+  });
 
 /** Load private account data without exposing it through public account responses. */
 export const storedAccount = (db: Query, account: AccountId, owner?: OwnerId) =>
@@ -199,6 +277,7 @@ export const makeAccounts = (
               );
               yield* lifecycle.accountRemoving(account);
             }
+            if (input.bindings === "clear") yield* clearBindings(tx, row.owner, row.id);
             const grant = yield* query(() =>
               tx.findFirst("oauthGrants", { where: (b) => b("id", "=", input.account) }),
             );
@@ -240,4 +319,74 @@ export const makeAccounts = (
         Effect.mapError(() => new StorageError()),
       );
     }).pipe(Effect.withSpan("sdk.accounts.list")),
+  providers: (input: NonNullable<Parameters<Executor["accounts"]["providers"]>[0]> = {}) =>
+    Effect.gen(function* () {
+      const owner = input.owner;
+      const used =
+        owner === undefined
+          ? undefined
+          : new Set(
+              (yield* query(() =>
+                db.findMany("accounts", {
+                  select: ["provider"],
+                  where: (b) => b("owner", "=", owner),
+                }),
+              )).map((row) => row.provider),
+            );
+      const rows = yield* query(() =>
+        db.findMany("providers", {
+          where: (b) => (used === undefined ? true : b("id", "in", [...used])),
+          orderBy: ["id", "asc"],
+        }),
+      );
+      return yield* Schema.decodeUnknownEffect(Schema.Array(Provider))(rows).pipe(
+        Effect.mapError(() => new StorageError()),
+      );
+    }).pipe(Effect.withSpan("sdk.accounts.providers")),
+  signIn: (input: Parameters<Executor["accounts"]["signIn"]>[0]) =>
+    Effect.gen(function* () {
+      const account = yield* ownedAccount(db, input);
+      const credentialsFingerprint = yield* fingerprint(
+        Redacted.value(account.encryptedCredentials),
+      );
+      const unavailable: AccountSignIn = { state: "unavailable", credentialsFingerprint };
+      const row = yield* query(() =>
+        db.findFirst("providers", { where: (b) => b("id", "=", account.provider) }),
+      );
+      if (row === null) return unavailable;
+      const provider = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
+        Effect.mapError(() => new StorageError()),
+      );
+      const method = provider.definition.auth[account.method];
+      if (method === undefined) return unavailable;
+      if (method.type === "secrets")
+        return {
+          state: "saved",
+          reconnectAt: null,
+          credentialsFingerprint,
+        } satisfies AccountSignIn;
+      const grant = yield* query(() =>
+        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+      );
+      if (grant === null || grant.status === "reconnect")
+        return { state: "reconnect", credentialsFingerprint } satisfies AccountSignIn;
+      // A grant claimed by a renewal, including one a stopped process abandoned, still carries
+      // the grant it started from; the next live resolve settles it.
+      const decoded = yield* credentials.decrypt(account.id, Redacted.make(grant.encrypted)).pipe(
+        Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
+        Effect.option,
+      );
+      if (decoded._tag === "None") return unavailable;
+      const saved = decoded.value;
+      const reconnectAt =
+        saved.grant !== "client_credentials" &&
+        saved.refreshToken === undefined &&
+        saved.expiresAt !== undefined
+          ? new Date(saved.expiresAt)
+          : null;
+      const now = yield* Clock.currentTimeMillis;
+      return reconnectAt !== null && reconnectAt.getTime() <= now
+        ? ({ state: "reconnect", credentialsFingerprint } satisfies AccountSignIn)
+        : ({ state: "saved", reconnectAt, credentialsFingerprint } satisfies AccountSignIn);
+    }).pipe(Effect.withSpan("sdk.accounts.signIn")),
 });

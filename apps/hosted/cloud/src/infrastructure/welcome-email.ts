@@ -1,10 +1,10 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Layer } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 import { cloudDatabaseConnection } from "./database.ts";
 import { deliverWelcomeEmails } from "../implementation/welcome-emails.ts";
 import type { SendWelcomeEmail } from "../contracts/email.ts";
-import { cloudOrigin } from "./stage.ts";
+import { cloudHosts } from "./stage.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
 
@@ -12,7 +12,10 @@ import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-pr
 export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
   Effect.gen(function* () {
     const connection = yield* cloudDatabaseConnection;
-    const origin = yield* cloudOrigin.pipe(Effect.orDie);
+    // Email links open the browser origin; the MCP endpoint is the canonical MCP resource.
+    const hosts = yield* cloudHosts.pipe(Effect.orDie);
+    const origin = hosts.browser;
+    const resourceOrigin = hosts.resourceOrigins.mcp[0];
     const secrets = yield* cloudSecrets.pipe(Effect.orDie);
     const database = Layer.unwrap(
       connection.connectionString.pipe(
@@ -27,7 +30,7 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
             secrets.authSecret.pipe(
               Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
             ),
-          origin,
+          { site: hosts.site, resourceOrigin },
           user,
         ).pipe(Effect.provide(database)),
       );

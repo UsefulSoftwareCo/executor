@@ -22,14 +22,13 @@ const files = [
   },
   {
     path: "index.ts",
-    content: `import { defineApp, defineDatabase, table, query, mutation, object, string, array, router } from "apps";
-const database = defineDatabase({ items: table({ text: string() }) });
-export const list = query({ input: object({}), output: array(string()) }, async ({ db }) => {
+    content: `import { defineApp, query, mutation, object, string, array, router } from "apps";
+export const list = query({ input: object({}), output: array(string()) }, async ({ sql }) => {
   await new Promise(resolve => setTimeout(resolve, 75));
-  return (await db.items.withIndex("by_creation").collect()).map(row => row.text);
+  return sql.exec("SELECT text FROM items ORDER BY seq").toArray().map(row => row.text);
 });
-export const add = mutation({ input: object({ text: string() }), output: string() }, async ({ db }, input) => {
-  await db.items.insert(input); return input.text;
+export const add = mutation({ input: object({ text: string() }), output: string() }, async ({ sql }, input) => {
+  sql.exec("INSERT INTO items (text) VALUES (?)", input.text); return input.text;
 });
 export const hostCache = query({ input: object({ key: string() }), output: string() }, async (_, { key }) => {
   try {
@@ -37,10 +36,14 @@ export const hostCache = query({ input: object({ key: string() }), output: strin
     return (await cache.match(key)) === undefined ? "isolated" : "visible";
   } catch { return "unavailable"; }
 });
-export default defineApp({ accounts: {}, database }, { tools: router({
+export default defineApp({ accounts: {} }, { tools: router({
    list, hostCache,
    add,
  }) });`,
+  },
+  {
+    path: "migrations/0001_items.sql",
+    content: "CREATE TABLE items (seq INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL);\n",
   },
   {
     path: "ui/index.html",

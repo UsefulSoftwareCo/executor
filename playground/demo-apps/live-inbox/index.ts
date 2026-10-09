@@ -5,29 +5,33 @@ import {
   type MutationContext,
   array,
   defineApp,
-  defineDatabase,
   object,
   string,
-  table,
   router,
 } from "apps";
 import { Message } from "./schema.ts";
 
-const database = defineDatabase({
-  messages: table({ subject: string() }).index("by_subject", ["subject"]),
-});
+/** The `messages` table is created by migrations/0001_messages.sql. */
+const requirements = { accounts: {} };
 
-const requirements = { accounts: {}, database };
+type Row = { id: string; subject: string };
 
 export const listMessages = query(
   { input: object({}), output: array(Message) },
-  async ({ db }: QueryContext<typeof requirements>) =>
-    await db.messages.withIndex("by_creation").order("desc").take(100),
+  async ({ sql }: QueryContext<typeof requirements>) =>
+    sql.exec<Row>("SELECT id, subject FROM messages ORDER BY created_at DESC LIMIT 100").toArray(),
 );
 export const receiveMessage = mutation(
   { input: object({ subject: string(), clientId: string().optional() }), output: Message },
-  async ({ db }: MutationContext<typeof requirements>, message) =>
-    await db.messages.insert({ subject: message.subject }),
+  async ({ sql }: MutationContext<typeof requirements>, message) =>
+    sql
+      .exec<Row>(
+        "INSERT INTO messages (id, subject, created_at) VALUES (?, ?, ?) RETURNING id, subject",
+        crypto.randomUUID(),
+        message.subject,
+        Date.now(),
+      )
+      .one(),
 );
 export default defineApp(requirements, {
   tools: router({

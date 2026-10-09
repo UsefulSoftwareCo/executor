@@ -274,9 +274,12 @@ Run the [local server](apps/local/server/README.md), then connect a Streamable
 HTTP MCP client to `http://127.0.0.1:4312/mcp` using the configured bearer key.
 Append `?elicitation_mode=native` to use native client approval prompts. The default
 `model` mode returns pending approvals for the agent to answer through `resume`.
-It exposes `skills` for app-authoring docs and `execute({ code })` for programs.
-Call `skills({})` to list documents or `skills({ name: "app-authoring" })` to read
-the guide. Discover callable paths inside execute:
+It exposes `skills` for app documents and `execute({ code })` for programs. The
+server's MCP instructions introduce Executor; they are the Executor app's
+`executor` skill. Call `skills({})` to list documents and
+`skills({ app: "executor", name: "executor" })` to read that entry point, which
+links to the `code-mode` and `app-authoring` skills. Discover callable paths
+inside execute:
 
 ```js
 return await tools.search({ query: "Executor" });

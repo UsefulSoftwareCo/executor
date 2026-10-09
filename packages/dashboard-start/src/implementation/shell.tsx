@@ -4,6 +4,7 @@ import { HeadContent, Scripts } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { DisplayFormatSync } from "@executor-js/ui/hooks/display-format";
 import type {} from "../contracts/build.ts";
+import { documentBuild } from "./document-build.ts";
 
 /**
  * A form rendered on the server has no submit handler until React hydrates it, and the browser
@@ -47,7 +48,7 @@ export function DashboardDocument({ children }: { readonly children: ReactNode }
         <meta charSet="UTF-8" />
         <meta name="color-scheme" content="light dark" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-        <meta name="executor-build" content={import.meta.env.VITE_EXECUTOR_BUILD} />
+        <meta name="executor-build" content={documentBuild()} />
         <meta
           name="executor-environment"
           content={import.meta.env.VITE_EXECUTOR_ENVIRONMENT_NAME}

@@ -1,7 +1,7 @@
 /** Same-origin browser telemetry includes failures before pairing. Destinations remain server-owned. */
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest } from "./auth.ts";
 

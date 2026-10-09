@@ -1,7 +1,7 @@
 /** Write-only browser event ingestion, including sign-in failures. */
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { Effect, Layer } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { Authentication } from "../contracts/auth.ts";
 
 /** Accept only the configured product origin; exporter credentials stay in the host. */

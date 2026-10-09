@@ -6,9 +6,10 @@ import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { wholeStringInputPattern } from "../support/mcp-input-patterns.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App } from "../support/contracts.ts";
+import { App, Organization } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 const Token = Schema.Struct({
@@ -128,17 +129,54 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
         yield* evidence.step(
           "PAT authentication requires a permitted organization and never falls back to cookies",
           Effect.gen(function* () {
-            expect(
-              (yield* api.request(anonymous, "GET", "/mcp", undefined, {
-                authorization: headers.authorization,
-              })).status,
-            ).toBe(403);
-            expect(
-              (yield* api.request(anonymous, "GET", "/mcp", undefined, {
-                ...headers,
-                "x-executor-organization": "missing-organization",
-              })).status,
-            ).toBe(403);
+            // MCP clients print a refused request's body after their own prefix, so it names
+            // the refusal's own cause, never a generic membership denial.
+            const refusal = (code: string, message: string) => ({
+              jsonrpc: "2.0",
+              id: null,
+              // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
+              error: {
+                code: -32600,
+                message: `${code} (HTTP 403): ${message}`,
+                data: { code, status: 403 },
+              },
+            });
+            const unpinned = yield* api.request(anonymous, "GET", "/mcp", undefined, {
+              authorization: headers.authorization,
+            });
+            expect(unpinned.status).toBe(403);
+            expect(unpinned.body).toMatchObject(
+              refusal(
+                "McpForbidden",
+                "This full-account token does not name an organization, so Executor cannot choose one for this MCP request. Recovery: Connect at /org/<organization>/mcp, or send the X-Executor-Organization header, then retry.",
+              ),
+            );
+            const missing = yield* api.request(anonymous, "GET", "/mcp", undefined, {
+              ...headers,
+              "x-executor-organization": "missing-organization",
+            });
+            expect(missing.status).toBe(403);
+            expect(missing.body).toMatchObject(
+              refusal(
+                "McpForbidden",
+                "This account is not a member of the organization this MCP request uses, or that organization does not exist. Recovery: Check the organization name, and that this account still belongs to it. Copy the fix prompt into your agent to investigate the missing access.",
+              ),
+            );
+            // A PAT grant has no connection, so a connection's URL refuses it and names the URL it serves.
+            const scoped = yield* api.request(
+              anonymous,
+              "GET",
+              "/mcp?connection=another-connection",
+              undefined,
+              headers,
+            );
+            expect(scoped.status).toBe(403);
+            expect(scoped.body).toMatchObject(
+              refusal(
+                "GrantForbidden",
+                "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
+              ),
+            );
             expect(
               (yield* api.request(actors.owner, "GET", "/mcp", undefined, {
                 ...headers,
@@ -303,6 +341,12 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
             }),
         );
         const pending = yield* Schema.decodeUnknownEffect(Pending)(paused.structuredContent);
+        const listed = yield* ownerClient.use("Discover the resume input schema", (client) =>
+          client.listTools(),
+        );
+        expect(pending.requestId).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "resume", "requestId"),
+        );
         const otherClient = yield* mcp.connect(other.key, "pat-other", { organization });
         const wrong = yield* otherClient.use(
           "A different PAT cannot resume this continuation",
@@ -414,6 +458,186 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
           (client) => client.listTools(),
         );
         expect(remaining.tools.map((tool) => tool.name)).toContain("execute");
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.patMcpResumeAcrossSessions.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { mcp, organization, owner, other, member, receipt, code, ownerClient } =
+          yield* patFixture;
+        const paused = yield* ownerClient.use(
+          "Pause an approval-gated tool in the first MCP session",
+          (client, signal) =>
+            client.callTool({ name: "execute", arguments: { code: code("approved") } }, undefined, {
+              signal,
+            }),
+        );
+        const pending = yield* Schema.decodeUnknownEffect(Pending)(paused.structuredContent);
+        // Some clients open a new MCP session for every tool call, so each resume below uses one.
+        const resume = (
+          label: string,
+          key: typeof owner.key,
+          name: string,
+          mode?: "model" | "browser",
+        ) =>
+          Effect.gen(function* () {
+            const session = yield* mcp.connect(key, name, {
+              organization,
+              ...(mode === undefined ? {} : { mode }),
+            });
+            const result = yield* session.use(label, (client, signal) =>
+              client.callTool(
+                {
+                  name: "resume",
+                  arguments:
+                    mode === "browser"
+                      ? { requestId: pending.requestId }
+                      : { requestId: pending.requestId, response: { action: "accept" } },
+                },
+                undefined,
+                { signal },
+              ),
+            );
+            return yield* Schema.decodeUnknownEffect(Schema.Struct({ status: Schema.String }))(
+              result.structuredContent,
+            ).pipe(Effect.map(({ status }) => ({ status, result })));
+          });
+        expect(
+          (yield* resume("Another user's PAT cannot resume", member.key, "pat-resume-member"))
+            .status,
+        ).toBe("unavailable");
+        expect(
+          (yield* resume(
+            "Another PAT of the same user cannot resume",
+            other.key,
+            "pat-resume-other",
+          )).status,
+        ).toBe("unavailable");
+        expect(
+          (yield* resume(
+            "The same PAT in browser mode cannot answer a model-mode approval",
+            owner.key,
+            "pat-resume-browser",
+            "browser",
+          )).status,
+        ).toBe("unavailable");
+        const resumed = yield* resume(
+          "The same PAT resumes from a new MCP session",
+          owner.key,
+          "pat-resume-next",
+        );
+        expect(resumed.status).toBe("completed");
+        expect(
+          (yield* Schema.decodeUnknownEffect(Completed)(resumed.result.structuredContent))
+            .execution,
+        ).toEqual({ ok: true, value: { receipt } });
+        expect(
+          (yield* resume(
+            "A replayed resume from yet another session is unavailable",
+            owner.key,
+            "pat-resume-replay",
+          )).status,
+        ).toBe("unavailable");
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.patMcpRenamedOrganization.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient;
+        // A temporary organization, so renaming it moves no other scenario's slug.
+        const slug = `pat-rename-${randomUUID().slice(0, 8)}`,
+          renamed = `${slug}-renamed`;
+        const created = yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
+          name: "Renamed PAT organization",
+          slug,
+          keepCurrentActiveOrganization: true,
+        });
+        expect(created.status).toBe(200);
+        const organization = yield* body(Organization, created);
+        const prefix = `/api/organizations/${organization.id}`;
+        const keys: string[] = [];
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            for (const keyId of keys)
+              yield* api.request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId });
+            yield* api.request(actors.owner, "DELETE", prefix);
+          }).pipe(Effect.orDie),
+        );
+        const createdKey = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+          name: "Renamed organization MCP",
+        });
+        expect(createdKey.status).toBe(200);
+        const key = yield* body(Token, createdKey);
+        keys.push(key.id);
+        const receipt = randomUUID();
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: `Renamed PAT ${randomUUID().slice(0, 8)}`,
+          files: [
+            {
+              path: "index.ts",
+              content: `
+import { defineApp, mutation, object, router } from "apps";
+import { always } from "apps/operations/approval";
+export default defineApp({ accounts: {} }, async () => ({  tools: router({
+  approved: mutation({ description: "Requires approval", input: object({}), approval: always() }, async () => ({ receipt: ${JSON.stringify(receipt)} })),
+  }) }));`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(deployed.status).toBe(200);
+        const app = yield* body(App, deployed);
+        // The full-account token names the organization by its slug. The slug changes while the
+        // client holds the approval, and the client answers with the new one. The approved call
+        // then runs later in the original tools/call request, which named the old slug.
+        let named = slug;
+        const native = yield* mcp.connect(key.key, "pat-renamed-organization", {
+          organization: () => named,
+          mode: "native",
+          whileApproving: api
+            .request(actors.owner, "POST", "/api/auth/organization/update", {
+              organizationId: organization.id,
+              data: { slug: renamed },
+            })
+            .pipe(
+              Effect.flatMap((response) =>
+                response.status === 200
+                  ? Effect.sync(() => {
+                      named = renamed;
+                    })
+                  : Effect.die(`The organization rename answered HTTP ${response.status}`),
+              ),
+            ),
+        });
+        const approved = yield* native.use(
+          "An organization renamed during a native approval still runs the approved call",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: { code: `return await tools[${JSON.stringify(app.slug)}].approved({})` },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        expect(yield* native.elicitationCount).toBe(1);
+        expect(
+          (yield* Schema.decodeUnknownEffect(Completed)(approved.structuredContent)).execution,
+        ).toEqual({ ok: true, value: { receipt } });
+        // The rename happened: the new slug names the organization and the old one names none.
+        expect(
+          (yield* api.request(actors.owner, "GET", `/api/organizations/${renamed}/access`)).status,
+        ).toBe(200);
+        expect(
+          (yield* api.request(actors.owner, "GET", `/api/organizations/${slug}/access`)).status,
+        ).toBe(403);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

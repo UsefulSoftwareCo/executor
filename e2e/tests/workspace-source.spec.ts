@@ -1,12 +1,12 @@
 /** Source snapshots and optimistic writes are verified through the real hosted API and delivered traces. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { Workspace } from "../support/app-authoring.ts";
+import { Committed, Workspace } from "../support/app-authoring.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
@@ -168,11 +168,12 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
           expect(outsideRevalidation(existing)).toEqual([]);
         } else expect(operations(existing)).not.toContain("source.git.refs");
 
+        const writers = ["first writer", "second writer", "third writer", "fourth writer"];
         let winner = initial;
         for (let round = 0; round < 3; round += 1) {
           const previous = winner;
           const writes = yield* Effect.forEach(
-            ["first writer", "second writer", "third writer", "fourth writer"],
+            writers,
             (value) =>
               api.request(actors.owner, "POST", `${path}/commits`, {
                 expected: previous.revision.commit,
@@ -184,11 +185,13 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
           expect(writes.map((response) => response.status).sort()).toEqual([200, 409, 409, 409]);
           const saved = operations(yield* trace(`saved-${round}`, true));
           expect(saved).not.toContain("source.repository.create");
-          const accepted = writes.find((response) => response.status === 200);
-          if (accepted === undefined)
+          const accepted = writes.findIndex((response) => response.status === 200);
+          const response = writes[accepted];
+          if (response === undefined)
             return yield* Effect.fail(new Error("No source write succeeded"));
-          winner = yield* body(Workspace, accepted);
-          expect(winner.revision.commit).not.toBe(previous.revision.commit);
+          const { revision } = yield* body(Committed, response);
+          expect(revision.commit).not.toBe(previous.revision.commit);
+          winner = { revision, files: files(`${writers[accepted]} ${round}`) };
           expect(yield* read(path)).toEqual(winner);
         }
         const history = yield* api.request(actors.owner, "GET", `${path}/history`);

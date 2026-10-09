@@ -1,10 +1,10 @@
 import { CurrentOrganization } from "../contracts/organization.ts";
 /** Shared product policy; local does not acquire organizations to reuse webhook execution. */
 import { Authentication, ApiAuthentication } from "../contracts/auth.ts";
-import { HttpServerRequest } from "effect/unstable/http";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest } from "effect/http";
+import { HttpServerResponse } from "effect/http";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { webhookCallback } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";

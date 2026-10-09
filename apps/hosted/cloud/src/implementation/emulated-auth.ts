@@ -1,17 +1,23 @@
 import { Effect, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { genericOAuth } from "better-auth/plugins";
 import { EmulatedServices } from "../contracts/emulators.ts";
 
 /** Same Better Auth social endpoints, with verified OAuth/OIDC exchanges at external emulators. */
 export const emulatedSocialProviders = (
   configuration: Redacted.Redacted<typeof EmulatedServices.Type>,
+  /**
+   * Each provider's return, as for the real providers: the social callback origin's, or none on
+   * a stage whose OAuth proxy names production's.
+   */
+  redirectURI: (provider: "google" | "github") => { readonly redirectURI?: string },
 ) => {
   const { google, github } = Redacted.value(configuration);
   return genericOAuth({
     config: [
       {
         providerId: "google",
+        ...redirectURI("google"),
         name: "Google",
         clientId: google.clientId,
         clientSecret: google.clientSecret,
@@ -25,6 +31,7 @@ export const emulatedSocialProviders = (
       },
       {
         providerId: "github",
+        ...redirectURI("github"),
         name: "GitHub",
         clientId: github.clientId,
         clientSecret: github.clientSecret,

@@ -6,7 +6,7 @@
  * the transport differs, so both paths publish the identical `BillingCatalog` identities.
  */
 import { Effect, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import type {
   BillingCatalogDeclaration,
   BillingPlanDeclaration,

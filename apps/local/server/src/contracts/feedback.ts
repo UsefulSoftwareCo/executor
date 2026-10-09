@@ -5,7 +5,7 @@ import {
   FeedbackUnavailable,
 } from "@executor-js/telemetry/product-analytics";
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 
 /** The same `feedback.submit` operation as hosted Executor, without an organization parameter. */
 export const LocalFeedbackApi = HttpApi.make("local-feedback").add(

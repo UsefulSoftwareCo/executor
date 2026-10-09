@@ -1,5 +1,5 @@
 /** These reads reuse SDK behavior under the ordinary paired dashboard boundary. */
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { Executor } from "@executor-js/sdk/core";
 import { DashboardApi } from "../contracts/dashboard.ts";
 

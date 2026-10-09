@@ -1,5 +1,5 @@
-import { Option, type Cause } from "effect";
-import { AsyncResult, Atom, type AtomRegistry } from "effect/unstable/reactivity";
+import { Effect, Option, type Cause } from "effect";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
 /**
  * Publish server-confirmed changes before a mutation completes. Refresh failures
@@ -49,6 +49,60 @@ export const acknowledge = <A, E>(
   get.registry.set(query, update);
   get.registry.refresh(query);
 };
+
+/** Wait until the query has no read in flight. */
+const settled = <A, E>(
+  registry: AtomRegistry.AtomRegistry,
+  query: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+): Effect.Effect<void> =>
+  Effect.callback<void>((resume) => {
+    if (!registry.get(query).waiting) {
+      resume(Effect.void);
+      return;
+    }
+    const cancel = registry.subscribe(query, (result) => {
+      if (result.waiting) return;
+      cancel();
+      resume(Effect.void);
+    });
+    return Effect.sync(cancel);
+  });
+
+/**
+ * Read a query's data for a mutation and publish it when no other read could be newer: the query had
+ * no read in flight and did not change while this one ran. Otherwise wait for the query to settle and
+ * read again. A failed read leaves the query as it was, so only the mutation reports it.
+ */
+export const readInto = <A, E, ReadError, R>(
+  get: { readonly registry: AtomRegistry.AtomRegistry },
+  query: Atom.Writable<AsyncResult.AsyncResult<A, E>, (current: A) => A>,
+  read: Effect.Effect<A, ReadError, R>,
+): Effect.Effect<A, ReadError, R> =>
+  Effect.acquireUseRelease(
+    // A mounted query cannot be disposed and start a read of its own between attempts.
+    Effect.sync(() => get.registry.mount(query)),
+    () =>
+      Effect.gen(function* () {
+        while (true) {
+          let quiet = !get.registry.get(query).waiting;
+          const value = yield* Effect.acquireUseRelease(
+            Effect.sync(() =>
+              get.registry.subscribe(query, () => {
+                quiet = false;
+              }),
+            ),
+            () => read,
+            (cancel) => Effect.sync(cancel),
+          );
+          if (quiet) {
+            get.registry.set(query, () => value);
+            return value;
+          }
+          yield* settled(get.registry, query);
+        }
+      }),
+    (unmount) => Effect.sync(unmount),
+  );
 
 /** A successful write changed data absent from its response; clear stale display data. */
 export const invalidate = <A, E>(

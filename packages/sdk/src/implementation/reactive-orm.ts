@@ -1,7 +1,7 @@
 /** Bind one SQL client and track coarse dependencies at the ORM boundary. */
 import { Context, Effect, Option } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import { SqlError, UnknownError } from "effect/unstable/sql/SqlError";
+import { SqlClient } from "effect/sql";
+import { SqlError, UnknownError } from "effect/sql/SqlError";
 import type { ReactiveStore } from "@executor-js/reactivity";
 import type { Orm, OrmError } from "fumadb-effect";
 import type { AnySchema, AnyTable } from "fumadb-effect/schema";

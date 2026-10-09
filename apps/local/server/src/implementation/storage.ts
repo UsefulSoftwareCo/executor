@@ -4,8 +4,8 @@ import { createDataStepJournal } from "@executor-js/app-management/data-steps";
 import { startupPhase } from "./startup-diagnostics.ts";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { Context, Effect, FileSystem, Layer, Path } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import * as Migrator from "effect/unstable/sql/Migrator";
+import { SqlClient } from "effect/sql";
+import * as Migrator from "effect/sql/Migrator";
 
 /**
  * Local product tables beside the SDK schema, each applied once and recorded in the same SQL

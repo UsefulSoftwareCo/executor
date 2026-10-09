@@ -6,7 +6,7 @@ import type {
   ConnectionTargetInput,
   ConnectionView,
 } from "@executor-js/mcp-auth/connections";
-import type { Atom } from "effect/unstable/reactivity";
+import type { Atom } from "effect/reactivity";
 import type { Query } from "./dashboard.ts";
 
 /**
@@ -14,6 +14,12 @@ import type { Query } from "./dashboard.ts";
  * never expand automatically.
  */
 export type ConnectionTools = StoredConnectionApp["tools"];
+
+/**
+ * A connection's event scope. Omitted or `all` includes events the app adds later; selected names
+ * never expand, and none selected means no events.
+ */
+export type ConnectionEvents = NonNullable<StoredConnectionApp["events"]>;
 
 /** Accounts and saved profiles remain distinct selections, even when they use the same account. */
 export type ConnectionTarget =
@@ -35,6 +41,8 @@ export interface ConnectionApp {
   readonly name: string;
   readonly targets: readonly ConnectionTarget[];
   readonly tools: ConnectionTools;
+  /** Omitted: every event the app declares, now or later. */
+  readonly events?: ConnectionEvents;
 }
 
 /** Short summary used in rows, details, and the connection list. */
@@ -44,6 +52,14 @@ export const connectionToolsLabel = (tools: ConnectionTools): string =>
     : tools.kind === "readOnly"
       ? "Read-only tools"
       : `${tools.names.length.toLocaleString("en-US")} ${tools.names.length === 1 ? "tool" : "tools"}`;
+
+/** Short summary of an event scope, for an app that declares events. */
+export const connectionEventsLabel = (events: ConnectionEvents | undefined): string =>
+  events === undefined || events.kind === "all"
+    ? "All events"
+    : events.names.length === 0
+      ? "No events"
+      : `${events.names.length.toLocaleString("en-US")} ${events.names.length === 1 ? "event" : "events"}`;
 
 /** An editor draft. Its ID is chosen once so a retried create returns the same connection. */
 export interface ConnectionDraft {
@@ -65,7 +81,12 @@ export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undef
   for (const app of draft.apps) {
     const [first, ...rest] = app.targets.map(targetInput);
     if (first === undefined) return undefined;
-    apps.push({ app: app.id, runsAs: [first, ...rest], tools: app.tools });
+    apps.push({
+      app: app.id,
+      runsAs: [first, ...rest],
+      tools: app.tools,
+      ...(app.events === undefined ? {} : { events: app.events }),
+    });
   }
   return { id: draft.id, name: draft.name.trim(), apps };
 };

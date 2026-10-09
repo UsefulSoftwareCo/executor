@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, Exit, FileSystem, Path, Schedule, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { driver } from "../support/platform.ts";
 
 // The self-host image lets workflow engines leave memory (no preventEviction). workerd then

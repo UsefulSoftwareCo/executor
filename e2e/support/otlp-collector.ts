@@ -1,6 +1,6 @@
 /** Run the shipped collector as a separate process; query only its public HTTP API. */
 import { Deferred, Effect, FileSystem, Path, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** workerd's control message once the collector socket accepts connections. */
 const Listening = Schema.Struct({
@@ -9,8 +9,11 @@ const Listening = Schema.Struct({
   port: Schema.Number,
 });
 
-/** Each managed Cloud target owns an isolated on-disk collector and its lifetime. */
-export const startOtlpCollector = (directory: string) =>
+/**
+ * Serve the bundle `e2e:prepare` built. Every target in a run serves the same directory, and a
+ * build replaces it, so nothing in a run builds it.
+ */
+export const serveOtlpCollector = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -18,14 +21,9 @@ export const startOtlpCollector = (directory: string) =>
     const diagnostics = path.join(directory, "data/diagnostics");
     const data = path.join(diagnostics, "motel");
     yield* fs.makeDirectory(data, { recursive: true });
-    const built = yield* processes.exitCode(
-      ChildProcess.make("bun", ["run", "telemetry:build"], {
-        stdout: "inherit",
-        stderr: "inherit",
-      }),
-    );
-    if (built !== 0) return yield* Effect.die("Could not build the shipped telemetry collector");
     const bundle = path.resolve("packages/telemetry/dist/motel");
+    if (!(yield* fs.exists(path.join(bundle, "motel.capnp"))))
+      return yield* Effect.die("Run bun run e2e:prepare to build the telemetry collector first.");
     // The bundle's config names its directories and socket; this supplies their paths and a free port.
     const child = yield* processes.spawn(
       ChildProcess.make(

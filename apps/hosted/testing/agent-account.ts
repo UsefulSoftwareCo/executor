@@ -6,13 +6,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Exit, FileSystem, Layer, Option, Path, References, Schema } from "effect";
-import { CliError, Command, Flag } from "effect/unstable/cli";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { CliError, Command, Flag } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import {
   AgentMailUnavailable,
   agentAddress,
@@ -88,7 +83,7 @@ const signIn = Command.make("sign-in", {
         const sent = yield* post("/email-otp/send-verification-otp", { email, type: "sign-in" });
         if (sent.status !== 200)
           return yield* new AgentSignInFailed({ reason: `Code request returned ${sent.status}` });
-        const message = yield* mailbox.waitFor(email, requestedAt, /sign-in code/i);
+        const message = yield* mailbox.waitFor(email, requestedAt, /sign-(in|up) code/i);
         const otp = /\b(\d{6})\b/.exec(message.text)?.[1];
         if (otp === undefined)
           return yield* new AgentSignInFailed({ reason: "The sign-in email had no code" });

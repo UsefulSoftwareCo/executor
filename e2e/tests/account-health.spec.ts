@@ -10,6 +10,11 @@ import { acceptedToken, accountCheckUpstream } from "../support/account-check-up
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
+/** The synthetic photo the identity check reports; the browser request is answered locally. */
+const avatar = "https://avatars.example.test/u/4242.png";
+const pixel =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
 const Health = Schema.Struct({
   account: Schema.String,
   info: Schema.NullOr(
@@ -28,7 +33,12 @@ const Health = Schema.Struct({
       app: Schema.String,
       checkable: Schema.Boolean,
       check: Schema.NullOr(
-        Schema.Struct({ status: Schema.String, checkedAt: Schema.String, current: Schema.Boolean }),
+        Schema.Struct({
+          status: Schema.String,
+          checkedAt: Schema.String,
+          current: Schema.Boolean,
+          message: Schema.optionalKey(Schema.String),
+        }),
       ),
     }),
   ),
@@ -191,15 +201,17 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           externalId: "user-4242",
           displayName: "Synthetic Person",
           username: "synthetic-person",
-          avatarUrl: "https://avatars.example.test/u/4242.png",
+          avatarUrl: avatar,
         });
         const reportedAt = healthy.infoCheckedAt;
         expect(reportedAt).not.toBeNull();
 
         // Failures are classified per app. The plain app's check does not call the service, so it
-        // still passes, and the identity reported earlier is kept with its original time.
-        for (const [answer, status] of [
-          [{ kind: "status", status: 401 }, "credentials_rejected"],
+        // still passes, and the identity reported earlier is kept with its original time. A check
+        // that fails without a status naming the cause keeps the reason, including running out of
+        // time.
+        for (const [answer, status, message] of [
+          [{ kind: "status", status: 401 }, "credentials_rejected", undefined],
           [
             {
               kind: "status",
@@ -207,17 +219,22 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
               headers: { "www-authenticate": 'Bearer error="insufficient_scope"' },
             },
             "forbidden",
+            undefined,
           ],
-          [{ kind: "status", status: 403 }, "check_failed"],
-          [{ kind: "status", status: 503 }, "upstream_unavailable"],
-          [{ kind: "hang" }, "check_failed"],
+          [{ kind: "status", status: 403 }, "check_failed", "The service answered HTTP 403."],
+          [{ kind: "status", status: 503 }, "upstream_unavailable", undefined],
+          [{ kind: "hang" }, "check_failed", "The check did not finish within 15 seconds."],
         ] as const) {
           yield* upstream.answer(answer);
           const failed = yield* check();
-          expect(entry(failed, identity)?.check, JSON.stringify(answer)).toMatchObject({
+          expect(entry(failed, identity)?.check, JSON.stringify(answer)).toEqual({
             status,
+            checkedAt: expect.any(String),
             current: true,
+            ...(message === undefined ? {} : { message }),
           });
+          // The reason is kept with the result, not only returned by the check.
+          expect(entry(yield* read(), identity)?.check?.message).toBe(message);
           expect(entry(failed, plain)?.check?.status).toBe("healthy");
           expect(failed.info?.displayName).toBe("Synthetic Person");
           expect(failed.infoCheckedAt).toBe(reportedAt);
@@ -226,11 +243,45 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         expect(JSON.stringify(rejected)).not.toContain("synthetic failure");
         expect(JSON.stringify(rejected)).not.toContain(acceptedToken);
 
+        // The account's health shows why the last check failed.
+        yield* browser.login(actors.owner);
+        yield* browser.use("Serve the reported photo from its external origin", (page) =>
+          page
+            .context()
+            .route(avatar, (route) =>
+              route.fulfill({ contentType: "image/png", body: Buffer.from(pixel, "base64") }),
+            ),
+        );
+        yield* browser.use("Open the accounts with a failed check", (page) =>
+          page
+            .goto(`/org/${actors.organization.slug}/accounts`)
+            .then(() => page.getByText("Synthetic Person").first().waitFor()),
+        );
+        yield* browser.use("Open the failed account's health", (page) =>
+          page
+            .getByRole("button", { name: "Manage Default" })
+            .click()
+            .then(() => page.getByRole("menuitem", { name: "Check health" }).click()),
+        );
+        expect(
+          yield* browser.use("The reason is shown with the failed check", (page) =>
+            page.getByRole("dialog").locator("[data-check-message]").first().innerText(),
+          ),
+        ).toBe("The check did not finish within 15 seconds.");
+        yield* browser.checkpoint("Failed check with its reason");
+        yield* browser.use("Close the failed account's health", (page) =>
+          page.getByRole("button", { name: "Close", exact: true }).first().click(),
+        );
+
         // New credentials make every earlier result outdated rather than current.
         yield* upstream.answer({ kind: "user" });
         const reconnect = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${accountPath}/connections`),
+          yield* api.request(actors.owner, "POST", `${identityPath}/connections`, {
+            requirement: "service",
+            profile: identityProfile.id,
+            account: accountId,
+          }),
         );
         const replaced = yield* api.request(
           actors.owner,
@@ -253,7 +304,11 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         // Recovery replaces the failure, and a redeploy makes the result outdated again.
         const restore = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${accountPath}/connections`),
+          yield* api.request(actors.owner, "POST", `${identityPath}/connections`, {
+            requirement: "service",
+            profile: identityProfile.id,
+            account: accountId,
+          }),
         );
         expect(
           (yield* api.request(actors.owner, "POST", `${prefix}/connections/${restore.id}/submit`, {
@@ -261,10 +316,10 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
             fields: { token: acceptedToken },
           })).status,
         ).toBe(200);
-        expect(entry(yield* check(), identity)?.check).toMatchObject({
-          status: "healthy",
-          current: true,
-        });
+        const recovered = entry(yield* check(), identity)?.check;
+        expect(recovered).toMatchObject({ status: "healthy", current: true });
+        // A passing check clears the earlier failure's reason.
+        expect(recovered?.message).toBeUndefined();
         const redeployed = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
           files: [
             {
@@ -281,7 +336,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         });
 
         // The account list marks the outdated result and shows the reported identity.
-        yield* browser.login(actors.owner);
         yield* browser.use("Open the accounts", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/accounts`)
@@ -318,7 +372,56 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         yield* browser.use("The list shows the new result", (page) =>
           page.locator('[data-check-status="healthy"][data-check-current="true"]').nth(1).waitFor(),
         );
+        // The reported photo stands beside the identity in the list.
+        expect(
+          yield* browser.use("The list shows the reported photo", (page) => {
+            const photo = page.locator(".account-identity [data-slot='avatar-image']").first();
+            return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+          }),
+        ).toBe(avatar);
         yield* browser.checkpoint("Account list with check results");
+
+        // Another redeploy makes the result outdated; viewing the app's accounts shows it at once
+        // and checks it again in the background, without any action.
+        const again = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
+          files: [
+            {
+              path: "index.ts",
+              content: `${source(identityCheck(upstream.origin))}\n// redeployed again`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(again.status, JSON.stringify(again.body)).toBe(200);
+        expect(entry(yield* read(), identity)?.check).toMatchObject({ current: false });
+
+        // The app's accounts show each account with its reported photo.
+        yield* browser.use("Open the app's accounts", (page) =>
+          page.goto(
+            `/org/${actors.organization.slug}/apps/${identity.id}?view=accounts&profile=${identityProfile.id}`,
+          ),
+        );
+        expect(
+          yield* browser.use("The account row shows the reported photo", (page) => {
+            const photo = page
+              .locator(".accounts-section li")
+              .filter({ hasText: "Default" })
+              .locator("[data-slot='account-avatar'] [data-slot='avatar-image']");
+            return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+          }),
+        ).toBe(avatar);
+        yield* browser.use("The outdated result is checked again on view", (page) =>
+          page
+            .locator(".accounts-section li")
+            .filter({ hasText: "Default" })
+            .locator('[data-check-status="healthy"][data-check-current="true"]')
+            .waitFor(),
+        );
+        expect(entry(yield* read(), identity)?.check).toMatchObject({
+          status: "healthy",
+          current: true,
+        });
+        yield* browser.checkpoint("App accounts with the reported photo");
         expect(entry(yield* read(), identity)?.check).toMatchObject({
           status: "healthy",
           current: true,

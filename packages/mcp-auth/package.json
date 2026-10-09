@@ -7,18 +7,20 @@
     ".": "./src/index.ts",
     "./grants": "./src/contracts/grant.ts",
     "./connections": "./src/contracts/connection.ts",
+    "./agents": "./src/contracts/agents.ts",
     "./oauth": "./src/implementation/oauth.ts",
     "./node-database": "./src/implementation/node-database.ts"
   },
   "dependencies": {
     "@better-auth/core": "1.7.5",
     "@better-auth/oauth-provider": "1.7.5",
-    "@effect/sql-pglite": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-pglite@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-pglite": "4.0.1",
     "@executor-js/authorization": "workspace:*",
     "@executor-js/mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
+    "@executor-js/utils": "workspace:*",
     "better-auth": "1.7.5",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "effect": "4.0.1",
     "kysely": "0.29.6"
   }
 }

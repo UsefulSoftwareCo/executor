@@ -4,6 +4,7 @@ import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
@@ -13,17 +14,19 @@ layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
       Effect.gen(function* () {
         const browser = yield* Browser;
         const actors = yield* Actors;
-        const { metadata } = yield* Target;
-        const origin = metadata.origin;
+        // The site lives on the edge (Cloud's `executor.sh`); sign-in on the browser origin.
+        const hosts = targetHosts(yield* Target);
+        const site = hosts.edge,
+          app = hosts.browser;
         yield* browser.use("Open the public homepage", (page) => page.goto("/home"));
-        yield* browser.use("Dismiss the first-visit preview notice", (page) =>
-          page.getByRole("dialog").getByRole("button", { name: "Got it", exact: true }).click(),
+        yield* browser.use("The homepage opens on the site's origin", (page) =>
+          page.waitForURL(`${site}/home`),
         );
         const prompt = yield* browser.use("Read the copied setup prompt", (page) =>
           page.locator("button[data-copy]").first().getAttribute("data-copy"),
         );
-        expect(prompt).toContain(`${origin}/login`);
-        expect(prompt).toContain(`${origin}/docs`);
+        expect(prompt).toContain(`${app}/login`);
+        expect(prompt).toContain(`${site}/docs`);
         expect(
           yield* browser.use("Read the self-hosting guide link", (page) =>
             page.getByRole("link", { name: "Self-hosting docs", exact: true }).getAttribute("href"),
@@ -40,10 +43,10 @@ layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
           const response = yield* browser.use(`Fetch ${path}`, (page) => page.request.get(path));
           const text = yield* browser.use(`Read ${path}`, () => response.text());
           expect(response.status()).toBe(200);
-          expect(text).toContain(`${origin}/docs`);
+          expect(text).toContain(`${site}/docs`);
           expect(text).not.toMatch(/https:\/\/executor\.sh(?:\/|\b)/);
           if (path === "/setup-prompt.md" || path === "/pricing.md")
-            expect(text).toContain(`${origin}/login`);
+            expect(text).toContain(`${app}/login`);
         }
         yield* browser.use("Follow the current self-hosting guide", (page) =>
           page.getByRole("link", { name: "Self-hosting docs", exact: true }).click(),
@@ -62,7 +65,7 @@ layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
           yield* browser.use("Read desktop dashboard Docs destination", (page) =>
             page.getByRole("link", { name: "Docs", exact: true }).getAttribute("href"),
           ),
-        ).toBe("/docs/");
+        ).toBe(`${site}/docs/`);
         yield* browser.use("Open token creation help", (page) =>
           page.getByRole("button", { name: "Create token", exact: true }).click(),
         );
@@ -70,7 +73,7 @@ layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
           yield* browser.use("Read token documentation destination", (page) =>
             page.locator('a[href*="api-keys/#personal-access-tokens"]').getAttribute("href"),
           ),
-        ).toBe("/docs/api-keys/#personal-access-tokens");
+        ).toBe(`${site}/docs/api-keys/#personal-access-tokens`);
         yield* browser.use("Close token creation", (page) => page.keyboard.press("Escape"));
         yield* browser.use("Use a mobile viewport", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
@@ -85,7 +88,7 @@ layer(HostedLive, { excludeTestServices: true })("Deployment links", (it) => {
               .getByRole("link", { name: "Docs", exact: true })
               .getAttribute("href"),
           ),
-        ).toBe("/docs/");
+        ).toBe(`${site}/docs/`);
       }),
     ),
   );

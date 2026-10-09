@@ -1,7 +1,7 @@
 /** Renewal failures are classified from the token endpoint's real wire responses. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { Clock, Effect, Schedule, Schema } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -47,7 +47,7 @@ const privateError = { error_description: "PRIVATE_PROVIDER_ERROR" };
  */
 const refreshFailures = {
   unavailable: { status: 503, body: {} },
-  rate_limited: { status: 429, body: {} },
+  rate_limited: { status: 429, body: {}, retryAfter: "30" },
   server_error: { status: 400, body: { error: "server_error", ...privateError } },
   temporarily_unavailable: {
     status: 400,
@@ -89,6 +89,7 @@ const Failure = Schema.Struct({
       providerError: Schema.optional(Schema.String),
     }),
   ),
+  retryAfter: Schema.optional(Schema.String),
 });
 
 /** One synthetic issuer, a deployed app that reads its token, and helpers to connect accounts. */
@@ -327,6 +328,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           readonly failure: RefreshFailure;
           readonly reason:
             | "service_unavailable"
+            | "rate_limited"
             | "incompatible_response"
             | "client_rejected"
             | "renewal_rejected";
@@ -334,7 +336,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           readonly providerError?: string;
         }> = [
           { failure: "unavailable", reason: "service_unavailable", status: 503 },
-          { failure: "rate_limited", reason: "service_unavailable", status: 429 },
+          { failure: "rate_limited", reason: "rate_limited", status: 429 },
           {
             failure: "server_error",
             reason: "service_unavailable",
@@ -403,6 +405,16 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           // A dropped connection has no response status to record.
           if (scenario.status === undefined)
             expect((yield* body(Failure, failed)).cause?.status, scenario.failure).toBeUndefined();
+          // Only a rate limit carries the time its Retry-After names, here 30 seconds ahead.
+          const retryAfter = (yield* body(Failure, failed)).retryAfter;
+          if (scenario.reason !== "rate_limited")
+            expect(retryAfter, scenario.failure).toBeUndefined();
+          else if (retryAfter === undefined)
+            return yield* Effect.die("A rate-limited renewal should carry its Retry-After time");
+          else
+            expect(Date.parse(retryAfter), scenario.failure).toBeGreaterThan(
+              yield* Clock.currentTimeMillis,
+            );
           assertPrivate(failed.body);
           // One attempt per call; the claim is released rather than retried or abandoned.
           expect(yield* refreshes, scenario.failure).toBe(before + 1);

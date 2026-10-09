@@ -10,7 +10,7 @@
  * the database or in FumaDB.
  */
 import { DateTime, Effect, Equal, Option } from "effect";
-import { ConstraintError, SqlError } from "effect/unstable/sql/SqlError";
+import { ConstraintError, SqlError } from "effect/sql/SqlError";
 import type { AnyColumn } from "../../contracts/schema/column.ts";
 import type { ForeignKey } from "../../contracts/schema/relation.ts";
 import type { AnySchema } from "../../contracts/schema/schema.ts";

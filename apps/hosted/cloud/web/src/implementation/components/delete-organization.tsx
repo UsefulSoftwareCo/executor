@@ -1,7 +1,7 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 /** The last card on cloud organization settings: irreversible, owner-only removal. */
 import { Exit, Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";

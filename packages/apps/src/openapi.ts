@@ -29,4 +29,9 @@ export const openapiRouter = (options: OpenapiToolsOptions, kinds: OperationKind
 export type { OperationKinds } from "./implementation/protocol-operations.ts";
 
 export * from "./contracts/openapi-compile.ts";
-export { liveOpenapiRouter, type OpenapiSourceOptions } from "./implementation/openapi-source.ts";
+export {
+  liveOpenapiRouter,
+  openapiToolNames,
+  type OpenapiSourceOptions,
+  type OpenapiToolNamesOptions,
+} from "./implementation/openapi-source.ts";

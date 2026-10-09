@@ -7,7 +7,7 @@ const Window = Schema.Struct({
   id: Schema.String,
   kind: Schema.Literals(["browser", "terminal"]),
   title: Schema.String,
-  file: Schema.String.check(Schema.isPattern(/^[a-z0-9-]+\.mp4$/)),
+  file: Schema.String.check(Schema.isPattern(/^[a-z0-9-]+\.mp4$/u)),
   startedAtMs: Milliseconds,
 });
 const Activity = Schema.Struct({

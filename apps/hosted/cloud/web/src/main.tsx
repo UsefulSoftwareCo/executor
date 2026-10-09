@@ -15,7 +15,7 @@ if (!publicEmailPage) {
   // Start page-owned listeners independently of component query lifetimes.
   void PageTelemetry.runPromise(
     Effect.flatMap(BrowserTelemetry, (telemetry) =>
-      telemetry.navigation({ type: "start", path: window.location.pathname }),
+      telemetry.navigation({ type: "load", path: window.location.pathname }),
     ),
   ).catch((error) => console.error(error));
 }

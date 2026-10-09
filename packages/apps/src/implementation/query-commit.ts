@@ -1,6 +1,6 @@
 /** Correlate a committed React snapshot without modifying authored query values. */
 import { Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 
 /** Per-result metadata follows the exact Atom registry snapshot, including concurrent mounts. */
 export interface ObservedQueryValue<A> {

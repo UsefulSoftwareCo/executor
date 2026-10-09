@@ -1,16 +1,16 @@
 /** Shared native Git operations; the host owns process and temporary-index capabilities. */
-import { SourceFiles } from "@executor-js/sdk/core";
-import { Effect, Schema, Semaphore, type Scope } from "effect";
-import { protectGit } from "./protected-git.ts";
 import {
   SourceError,
+  SourceFiles,
   Branch,
   GitCommit,
-  Commit,
+  SourceCommit,
   sourceFiles,
   sourceFits,
   type RepositoryBackend,
-} from "../contracts/repositories.ts";
+} from "@executor-js/sdk/core";
+import { Effect, Schema, Semaphore, type Scope } from "effect";
+import { protectGit } from "./protected-git.ts";
 
 /** Trusted native capabilities. Application code never receives this port. */
 export interface GitHost {
@@ -120,7 +120,7 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
         ]);
         const line = refs.split("\n").find((entry) => entry.slice(41) === ref);
         if (line === undefined) return null;
-        return yield* Schema.decodeUnknownEffect(Commit)(line.slice(0, 40));
+        return yield* Schema.decodeUnknownEffect(SourceCommit)(line.slice(0, 40));
       }).pipe(
         Effect.mapError((error) =>
           Schema.is(SourceError)(error) ? error : new SourceError({ reason: "invalid-source" }),
@@ -131,7 +131,7 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
         const repo = yield* location(id);
         // Restrict revisions before passing them to Git; no option or revision-expression injection.
         // A commit is read as given. A branch is resolved once so the tree and the commit agree.
-        const commit = Schema.is(Commit)(ref)
+        const commit = Schema.is(SourceCommit)(ref)
           ? ref
           : yield* Effect.gen(function* () {
               const name = yield* Schema.decodeUnknownEffect(Branch)(ref);
@@ -146,7 +146,9 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
               if (revision.code === 1) return yield* new SourceError({ reason: "not-found" });
               if (revision.code !== 0) return yield* new SourceError({ reason: "git" });
               return yield* decode(revision.output).pipe(
-                Effect.flatMap((value) => Schema.decodeUnknownEffect(Commit)(value.trimEnd())),
+                Effect.flatMap((value) =>
+                  Schema.decodeUnknownEffect(SourceCommit)(value.trimEnd()),
+                ),
               );
             });
         // One process lists every file with its size, so the budget holds before any content is read.
@@ -244,7 +246,7 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             ],
             bytes(input.message),
             environment,
-          ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Commit)));
+          ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(SourceCommit)));
           const updated = yield* git([
             "--git-dir",
             repo,

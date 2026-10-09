@@ -68,9 +68,12 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         const url = new URL((yield* body(SignIn, response)).authorizationUrl);
         expect(url.searchParams.get("scope")).toBe("read");
         expect(url.searchParams.has("resource")).toBe(false);
+        // MCP requires `application_type` at registration. This host's callback is on a named
+        // `*.localhost` host, not a loopback redirect OpenID providers accept from native apps.
         expect((yield* issuer.metrics).lastRegistration).toEqual({
           scope: "read",
           method: "client_secret_post",
+          applicationType: "web",
         });
 
         const emptyPath = yield* connect({

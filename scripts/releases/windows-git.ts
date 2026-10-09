@@ -1,8 +1,8 @@
 /** MinGit omits the CGI helper Executor uses for Git clone/push over HTTP. */
 import { createHash } from "node:crypto";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const gitHash = "987381598c5cc4e7b6d7fb2c6b82e5d072dc47cce3d9d64ffb097352fee708c8";
 const helperHash = "0a9ee3fe066386ecafed969c3cf3b55239283302ada9962eeceb83e77fa8cbfa";

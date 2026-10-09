@@ -1,8 +1,8 @@
 /** Bundle the official Node distribution matching the release build's pinned toolchain. */
 import { createHash } from "node:crypto";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { nativePlatform } from "./config.ts";
 
 class NodeRuntimeFailed extends Schema.TaggedError<NodeRuntimeFailed>()("NodeRuntimeFailed", {

@@ -1,6 +1,6 @@
 import type { App, AppId } from "@executor-js/sdk";
 import { Effect, Option } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 import { selectedIds } from "@executor-js/ui/contracts/dashboard";
 import { DashboardClient, appAtom, overviewAtom } from "./api.ts";

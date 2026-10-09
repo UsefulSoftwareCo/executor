@@ -41,10 +41,12 @@ reads can pin the returned deployment ID. MCP owns no documents, file loaders or
 built-in skill registry. See [app skills](../../notes/app-skills.md).
 
 The default Executor management app is a normal saved app with a connected
-Executor OAuth account. It uses `apps/openapi` and the ordinary API handlers. Its source includes
-`skills/app-authoring/SKILL.md`; read it with `{app: "executor", name: "app-authoring"}`
-using the installed slug. Access to the guide follows access to that app, including
-when the grant excludes the Executor app or the user deletes it.
+Executor OAuth account. It uses `apps/openapi` and the ordinary API handlers. It loads the
+host's `executor`, `code-mode` and `app-authoring` skills; start with
+`{app: "executor", name: "executor"}` using the installed slug. Access to them follows access
+to that app, including when the grant excludes the Executor app or the user deletes it.
+Hosts pass the same `executor` skill's body as `instructions`, which the server sends when a
+client connects.
 Agent namespaces use name-derived app slugs, such as `tools.executor.profiles["<management-profile-id>"].queries` and
 `tools.executor.profiles["<management-profile-id>"].mutations`; identity and permissions still use immutable IDs.
 

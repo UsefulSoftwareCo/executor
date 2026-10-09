@@ -122,12 +122,53 @@ Names match their directories. Names are at most 64 characters, descriptions
 
 `githubSkills` resolves `ref` (default `HEAD`) once per call and reads all files
 from that commit. With `cache: ctx.cache`, it keeps each commit's file list, so
-later reads of an unchanged commit skip the file listing. `wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
+later reads of an unchanged commit skip the file listing.
+
+A private repository needs a GitHub account. Pass the account and its token;
+the token needs read access to the repository's contents. Declare GitHub's
+hosts so the app holds only a handle and Executor sends the token on each
+request of the read:
+
+```ts
+import { defineApp, defineProvider, dynamicSkills, object, secrets, string } from "apps";
+import { githubSkills } from "apps/skills";
+
+const github = defineProvider({
+  name: "GitHub",
+  hosts: ["github.com", "raw.githubusercontent.com"],
+  auth: { token: secrets({ label: "Token", fields: object({ token: string() }) }) },
+});
+
+export default defineApp({ accounts: { github } }, async (ctx) => ({
+  dynamicSkills: dynamicSkills({
+    list: () =>
+      githubSkills({
+        repo: "example-org/private-skills",
+        path: "skills",
+        account: ctx.accounts.github,
+        token: ctx.accounts.github.fields.token,
+        fetch: ctx.fetch,
+        signal: ctx.signal,
+        cache: ctx.cache,
+      }),
+  }),
+}));
+```
+
+The catalog is cached in that account's scope, so other accounts never read
+it. A token GitHub rejects fails the read naming the account. Without a token,
+a private repository reads as missing.
+
+`wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
 loads a site's `/.well-known/agent-skills/index.json`. Its directory index is
 `{skills: [{name, version?, files: ["SKILL.md", "references/example.md"]}]}`.
 Files live beneath the named directory beside that index. Helpers return complete
 UTF-8 text bundles and refuse redirects. Limits are
-1,000 files, 2 MB per response, and 20 MB total.
+1,000 files, 2 MB per response, and 20 MB total. With `cache: ctx.cache`, a
+catalog older than `freshFor` (default 5 minutes) is never served unchecked: one
+request (the index, or the ref's commit) confirms it or loads the new publication
+first. Give every index entry a `version` that changes with its files, or each
+check reloads them. A check that fails or takes over 5 s fails the read.
 
 Omit `skills` to load packaged `skills/<name>/SKILL.md` and its text resources.
 An explicit `skills` value replaces that default; `skills: []` disables it.
@@ -137,8 +178,8 @@ skills combine without extra code. A name in both fails the read.
 `folderSkills({ files: ctx.files, path: "guides" })` selects another packaged
 folder. Its immediate subdirectories must be skill directories. Loose files
 beside them, such as `README.md`, are ignored. A missing folder returns `[]`.
-`ctx.files` contains this deployment's text files on every runtime; it never
-reads host files. All sources use one parser. Only selected folders are
+`ctx.files` contains this deployment's text files outside `ui/` on every
+runtime; it never reads host files. All sources use one parser. Only selected folders are
 parsed, when the skills load. Invalid selected folders fail the read.
 
 The MCP `skills` tool lists summaries with `{}` or `{app: "installed-slug"}`.
@@ -228,7 +269,9 @@ Use `ctx.cache.get({ key, schema, freshFor, staleFor, load })` for shared JSON.
 Put every result dependency in the key. Use `ctx.cache.forAccount(account)` for
 private results; the host also scopes entries to current credentials. Use the
 loader's `fetch`, `signal`, and `cache` so stale refreshes can finish after the
-request. Errors are not cached. `invalidate(key)` also fences pending loaders.
+request. Pass `stale: "revalidate"` to await the load past `freshFor` instead of
+serving the old value; the loader can `read(key, schema)` the old value to confirm
+it cheaply. Errors are not cached. `invalidate(key)` also fences pending loaders.
 
 Use `dynamicRouter({ list, resolve })` for large or remote catalogs. List tool
 metadata separately from resolving one query or mutation. `accountRouter`

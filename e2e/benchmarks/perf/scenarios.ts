@@ -1,6 +1,6 @@
 /** Named performance scenarios over one seeded perf target (a stage plus its receipt). */
 import { Clock, Effect, Option, Schema } from "effect";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 import { randomBytes } from "node:crypto";
 import type { BrowserCookies } from "../../sdk/contracts.ts";
 import {

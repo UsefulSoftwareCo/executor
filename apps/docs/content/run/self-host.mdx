@@ -28,7 +28,8 @@ These settings override the defaults:
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
 | `EXECUTOR_APP_WORKERS` | no | Most app Workers kept loaded at once, besides one data Worker per app with a database. The default is `32`. See below. |
-| `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://v2.executor.sh`. |
+| `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
+| `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | no     | Reuse an app's evaluated tool list this long before refreshing it in the background. The default is `30`. |
 | `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | no  | Never serve an evaluated tool list older than this; `0` evaluates every list. The default is `86400`. |
 | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS` | no     | Stop evaluating an app's tool list after this long when no request is waiting for it; capped at the maximum age. The default is `45`. |
@@ -67,6 +68,15 @@ from a request header. Set `BETTER_AUTH_URL` when you use a custom domain.
 Keep `<BETTER_AUTH_URL>/api/oauth/callback` reachable; connecting a provider
 account by OAuth uses it. The SSO callback is
 `<BETTER_AUTH_URL>/api/auth/callback/sso`.
+
+Executor registers its own OAuth client with each service that offers dynamic
+registration. Services that accept an OAuth client ID metadata document, such as
+many MCP servers, can identify Executor by a public document instead. Set
+`EXECUTOR_OAUTH_CLIENT_METADATA_URL` to `<BETTER_AUTH_URL>/oauth/client-metadata.json`
+and Executor serves that document, listing its callback. The service fetches it
+from the internet, so turn this on only when that URL is reachable publicly over
+HTTPS. Startup fails for any other address on your own origin. Clients your users
+already registered or entered stay in use when you turn this on.
 
 The bundled Motel collector records traces by default. You can export to your own collector instead. See
 [Tracing](/run/tracing).

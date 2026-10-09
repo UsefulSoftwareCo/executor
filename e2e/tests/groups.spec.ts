@@ -265,7 +265,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization groups", (it) => 
           [actors.organization.id, actors.organization.slug].map(
             (id) => `/api/organizations/${id}/groups`,
           ),
-          "fail",
+          "undeclared",
         );
         yield* refreshVisiblePage;
         yield* held.requested;

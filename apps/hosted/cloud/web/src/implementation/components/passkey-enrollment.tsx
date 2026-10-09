@@ -1,12 +1,13 @@
 import { LoginFrame } from "@executor-js/hosted-web/pages/login-frame";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Button } from "@executor-js/ui/components/button";
-import { Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { Exit, Option } from "effect";
+import { AsyncResult } from "effect/reactivity";
 import { useState, type ReactNode } from "react";
 import { addPasskeyAtom } from "../../contracts/auth.ts";
 import {
   dismissPasskeyEnrollmentAtom,
+  documentPasskeyEnrollmentAtom,
   hasPasskeyEnrollment,
   passkeyEnrollmentAtom,
 } from "../../contracts/passkey-enrollment.ts";
@@ -21,7 +22,8 @@ export function PasskeyEnrollment({
   readonly children: ReactNode;
   readonly canSubmit?: boolean;
 }) {
-  if (!hasPasskeyEnrollment(userId)) return children;
+  const fromDocument = useAtomValue(documentPasskeyEnrollmentAtom(userId));
+  if (!Option.getOrElse(fromDocument, () => hasPasskeyEnrollment(userId))) return children;
   return (
     <Enrollment key={userId} userId={userId} canSubmit={canSubmit}>
       {children}

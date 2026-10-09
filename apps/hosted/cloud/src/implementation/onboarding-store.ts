@@ -1,5 +1,5 @@
 import { Clock, Effect, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { sqlAdapter } from "fumadb-effect/sql";
@@ -34,6 +34,7 @@ const onboardingSchema = schema({
       email: column("email", Schema.String),
       emailVerified: column("emailVerified", Schema.Boolean),
       image: column("image", Schema.NullOr(Schema.String)),
+      createdAt: column("createdAt", Schema.Date),
     }),
     companies: table("cloud_company_profile", {
       domain: idColumn("domain", Schema.String, { type: "varchar(255)" }),
@@ -146,8 +147,19 @@ export const makeOnboardingStore = Effect.gen(function* () {
         rows[0] ? Effect.succeed(rows[0].allowed) : Effect.fail(new OnboardingUnavailable()),
       ),
     );
+  /** Whether the user set up a team through onboarding, which runs the v1 check first. */
+  const setUpTeam = (userId: string) =>
+    sql`select exists(select 1 from cloud_organization_setup where user_id = ${userId}) as set_up`.pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ set_up: Schema.Boolean }))),
+      ),
+      Effect.flatMap((rows) =>
+        rows[0] ? Effect.succeed(rows[0].set_up) : Effect.fail(new OnboardingUnavailable()),
+      ),
+    );
   return {
     canReadIcon,
+    setUpTeam,
     user,
     lockUser,
     state,

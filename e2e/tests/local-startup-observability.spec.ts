@@ -1,7 +1,7 @@
 /** Start the actual local entry with failing resources and inspect its retained diagnostic. */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Option, Stream, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";

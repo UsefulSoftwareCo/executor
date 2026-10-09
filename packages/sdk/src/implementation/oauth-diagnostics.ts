@@ -3,7 +3,8 @@
  * vocabulary: library messages become labels, and provider codes, challenge schemes, claim and
  * attribute names and media types are recorded only when they are known. Anything else becomes
  * `unrecognized`. Provider free text such as `error_description` is recorded only as a length.
- * The shape of a value is never taken as proof that it is safe to record.
+ * The shape of a value is never taken as proof that it is safe to record. The service's own words,
+ * returned to the person connecting as `OAuthServiceError`, never enter these diagnostics.
  */
 import { Schema } from "effect";
 import * as oauth from "oauth4webapi";

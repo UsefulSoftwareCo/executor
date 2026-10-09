@@ -1,0 +1,34 @@
+{
+  "adapted": [
+    {
+      "message": "tools",
+      "protocols": [1, 2, 3],
+      "adapter": "The protocol 1 to 3 adapter turns an inspection's list of tools into a catalog without routers."
+    },
+    {
+      "message": "toolSummaries",
+      "protocols": [1, 2, 3],
+      "adapter": "The protocol 1 to 3 adapter turns an inspection's list of tool summaries into a catalog summary without routers."
+    }
+  ],
+  "additions": [
+    {
+      "message": "request",
+      "path": "operation=call/kind",
+      "since": 4,
+      "gate": "The protocol 1 to 3 adapter drops kind before sending a call and refuses a call whose kind disagrees with the tool's queries. or mutations. prefix."
+    },
+    {
+      "message": "request",
+      "path": "operation=account-check",
+      "since": 5,
+      "gate": "Sent only for a slot whose requirements declare health, which a protocol 1 to 4 build never does."
+    },
+    {
+      "message": "request",
+      "path": "operation=migrate",
+      "since": 10,
+      "gate": "Sent only to a build whose requirements declare sql, which a protocol 1 to 9 build never does; their adapter refuses it."
+    }
+  ]
+}

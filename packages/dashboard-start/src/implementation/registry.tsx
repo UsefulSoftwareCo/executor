@@ -3,13 +3,14 @@
  * One atom registry per router. On the server, a render that reads unresolved data suspends to
  * the nearest Suspense boundary, whose skeleton streams first; the content streams when the data
  * arrives. Every settled serializable atom streams to the browser ahead of the HTML that used it,
- * so hydration renders the same values without requesting them again.
+ * so hydration renders the same values without requesting them again. Reads started with a check
+ * stream only once the check succeeds (`useGuardedPreload`).
  */
-import { RegistryContext, scheduleTask } from "@effect/atom-react";
+import { RegistryContext, scheduleTask, useAtomValue } from "@effect/atom-react";
 import type { AnyRouter } from "@tanstack/react-router";
 import { Cause } from "effect";
-import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/unstable/reactivity";
-import type { ReactNode } from "react";
+import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
+import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 
 interface DehydratedAtoms {
   readonly initial: ReadonlyArray<Hydration.DehydratedAtom>;
@@ -27,6 +28,113 @@ const pendingResult = (value: unknown) =>
  */
 const renderDeadline = 10_000;
 
+const nodeKey = (atom: Atom.Atom<unknown>) =>
+  Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom;
+
+/**
+ * Reads whose values the document carries only once a check succeeds. A server render that
+ * waits for a check before it renders a page can start the page's reads with the check; this
+ * keeps the page's data out of the document unless the check succeeded, even when those reads
+ * succeeded first.
+ */
+const documentGuards = (registry: AtomRegistry.AtomRegistry) => {
+  const guards = new Map<
+    Atom.Atom<unknown>,
+    {
+      /** The check's verdict, or `undefined` while it has no outcome. */
+      readonly decide: () => boolean | undefined;
+      readonly keys: Set<string>;
+      allowed: boolean | undefined;
+    }
+  >();
+  return {
+    /**
+     * Start `check`, then the reads it guards. The guard covers each read and every atom that
+     * starting it created, such as the query a derived read wraps; a read can reach its source
+     * without depending on it, so the registry's dependency graph does not name them all. Atoms
+     * that already existed, such as the session or the check itself, belong to other parts of
+     * the page and are not covered.
+     */
+    start: <A, E>(
+      check: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+      reads: ReadonlyArray<Atom.Atom<unknown>>,
+    ) => {
+      const existing = guards.get(check);
+      const guard = existing ?? {
+        decide: () => {
+          const outcome = registry.get(check);
+          return AsyncResult.isInitial(outcome) ? undefined : AsyncResult.isSuccess(outcome);
+        },
+        keys: new Set<string>(),
+        allowed: undefined,
+      };
+      if (existing === undefined) guards.set(check, guard);
+      registry.mount(check);
+      const cover = (atom: Atom.Atom<unknown>) => {
+        const key = nodeKey(atom);
+        if (typeof key === "string") guard.keys.add(key);
+      };
+      const notify = registry.onNodeAdded;
+      registry.onNodeAdded = (node) => {
+        cover(node.atom);
+        notify?.(node);
+      };
+      try {
+        for (const read of reads) {
+          cover(read);
+          registry.mount(read);
+        }
+      } finally {
+        registry.onNodeAdded = notify;
+      }
+    },
+    /**
+     * Keys of values the document must not carry: every key a guard covers until its check
+     * succeeds. A failed check withholds them for good; so does one that never answers, including
+     * past the render deadline.
+     */
+    withheld: () => {
+      const keys = new Set<string>();
+      for (const guard of guards.values()) {
+        guard.allowed ??= guard.decide();
+        if (guard.allowed !== true) for (const key of guard.keys) keys.add(key);
+      }
+      return keys;
+    },
+  };
+};
+type DocumentGuards = ReturnType<typeof documentGuards>;
+
+const DocumentGuardsContext = createContext<DocumentGuards | undefined>(undefined);
+
+const subscribeNever = () => () => {};
+
+/**
+ * Start reads with `check` instead of after it. A page whose server render waits for an access
+ * check uses this so its reads do not wait for the check. Only a successful `check` releases
+ * them: until then the document carries none of their data, including reads that succeeded
+ * first, and a refusal, a failure or no answer releases nothing.
+ *
+ * Returns whether the caller may render what the reads feed. On the server and while the browser
+ * hydrates that document, only a successful `check` allows it, so both render the same markup.
+ * Once hydrated the browser renders as it does on its own, starting its reads as it renders.
+ */
+export const useGuardedPreload = <A, E>(
+  check: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  reads: ReadonlyArray<Atom.Atom<unknown>>,
+): boolean => {
+  const guards = useContext(DocumentGuardsContext);
+  if (guards !== undefined) guards.start(check, reads);
+  const succeeded = AsyncResult.isSuccess(useAtomValue(check));
+  // The verdict itself is the snapshot, so a document whose check succeeded does not re-render
+  // here after hydration; that update would reach regions still waiting to hydrate.
+  return useSyncExternalStore(
+    subscribeNever,
+    () => true,
+    () => succeeded,
+  );
+};
+
 /**
  * React reads through this view of the request's registry. Atoms stay mounted until the request
  * ends so a resolved value cannot be discarded between React's suspension and its retry.
@@ -42,8 +150,7 @@ const suspendingRegistry = (registry: AtomRegistry.AtomRegistry): AtomRegistry.A
   });
   const mounted = new Set<Atom.Atom<unknown>>();
   const waiting = new Map<Atom.Atom<unknown>, Promise<void>>();
-  const nodeOf = (atom: Atom.Atom<unknown>) =>
-    registry.getNodes().get(Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom);
+  const nodeOf = (atom: Atom.Atom<unknown>) => registry.getNodes().get(nodeKey(atom));
   /**
    * Reads in flight beneath an atom. A component may combine several queries in a derived atom
    * whose own value is not a result, so the render waits for what that atom depends on.
@@ -118,6 +225,7 @@ const streamAtoms = (
   router: AnyRouter,
   registry: AtomRegistry.AtomRegistry,
   dispose: () => void,
+  guards: DocumentGuards,
 ) => {
   const original = router.options.dehydrate;
   router.serverSsrLifecycle = {
@@ -135,8 +243,10 @@ const streamAtoms = (
     const sent = new Map<string, string>();
     const settled = () => {
       const values: Array<Hydration.DehydratedAtomValue> = [];
+      const withheld = guards.withheld();
       for (const [key, node] of registry.getNodes()) {
-        if (typeof key !== "string" || !Atom.isSerializable(node.atom)) continue;
+        if (typeof key !== "string" || !Atom.isSerializable(node.atom) || withheld.has(key))
+          continue;
         const value = node.value();
         // Only outcomes are sent. An interrupted read ended with this request, not its data.
         if (
@@ -262,15 +372,18 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
     ? AtomRegistry.make({ initialValues })
     : AtomRegistry.make({ initialValues, scheduleTask, defaultIdleTTL: 400 });
   const view = import.meta.env.SSR ? suspendingRegistry(registry) : registry;
+  const guards = import.meta.env.SSR ? documentGuards(registry) : undefined;
   return {
     registry,
     connect: <R extends AnyRouter>(router: R): R => {
-      if (import.meta.env.SSR) streamAtoms(router, registry, () => view.dispose());
-      else hydrateAtoms(router, registry);
+      if (guards === undefined) hydrateAtoms(router, registry);
+      else streamAtoms(router, registry, () => view.dispose(), guards);
       return router;
     },
     Wrap: ({ children }: { readonly children: ReactNode }) => (
-      <RegistryContext.Provider value={view}>{children}</RegistryContext.Provider>
+      <RegistryContext.Provider value={view}>
+        <DocumentGuardsContext value={guards}>{children}</DocumentGuardsContext>
+      </RegistryContext.Provider>
     ),
   };
 };

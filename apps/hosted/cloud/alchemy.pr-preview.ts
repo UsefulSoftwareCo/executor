@@ -32,7 +32,7 @@ export default Alchemy.Stack(
       Effect.flatMap(Schema.decodeUnknownEffect(PreviewCommit)),
     );
     const status = yield* Config.Literals(
-      ["deploying", "ready", "failed", "closed", "cleanup-failed"],
+      ["deploying", "ready", "failed", "closed", "stacked", "cleanup-failed"],
       "PREVIEW_STATUS",
     );
     const descriptions = {
@@ -41,11 +41,15 @@ export default Alchemy.Stack(
       ready: "Ready. Health, login assets and sign-in redirects verified.",
       failed: "Deployment or verification failed. The URL may still serve an earlier commit.",
       closed: "Removed because this PR is closed. Reopening the PR creates a fresh environment.",
+      stacked:
+        "Removed because another open PR builds on this branch. The top of the stack has the preview.",
       "cleanup-failed":
         "Cleanup failed. Scheduled reconciliation will retry; resources may still exist.",
     };
     const run = yield* Config.String("GITHUB_RUN_ID").pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[0-9]+$/)))),
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[0-9]+$/u))),
+      ),
     );
     const comment = yield* GitHub.Comment("Preview", {
       owner,
@@ -55,7 +59,9 @@ export default Alchemy.Stack(
         "<!-- executor-pr-preview -->",
         "### Executor preview",
         descriptions[status],
-        ...(status === "closed" ? [] : [`[Open preview](${previewOrigin(number)})`]),
+        ...(status === "closed" || status === "stacked"
+          ? []
+          : [`[Open preview](${previewOrigin(number)})`]),
         `Commit: [${sha.slice(0, 7)}](https://github.com/${repository}/commit/${sha}) · [Workflow run](https://github.com/${repository}/actions/runs/${run})`,
         "Sent from my Codex",
       ].join("\n\n"),

@@ -1,6 +1,6 @@
 import { BlobKey, type BlobStorage } from "@executor-js/sdk/core";
 import { Effect, Option, Schema, Stream } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
+import { HttpServerRequest } from "effect/http";
 import type { OrganizationId } from "../contracts/organization.ts";
 import {
   OrganizationIcons,

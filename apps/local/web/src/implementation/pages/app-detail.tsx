@@ -24,7 +24,7 @@ import { QueryResult, QueryView, useQuery } from "@executor-js/ui/dashboard/cont
 import { useAtomSet } from "@effect/atom-react";
 import type { App, AppId, ProfileId } from "@executor-js/sdk";
 import type { DashboardOverview } from "@executor-js/local-server/contracts";
-import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { Data, Option } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";

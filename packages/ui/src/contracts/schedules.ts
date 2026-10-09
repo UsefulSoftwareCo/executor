@@ -1,6 +1,6 @@
 /** Shared schedule views consume typed atoms; products retain transport and permission choices. */
 import type { AppSchedule, ScheduleSettings, ScheduledRun, AppId } from "@executor-js/sdk";
-import type { Atom } from "effect/unstable/reactivity";
+import type { Atom } from "effect/reactivity";
 import type { Query } from "./dashboard.ts";
 
 /** Each installed schedule gets its own mutation atoms, so sibling edits cannot cancel one another. */

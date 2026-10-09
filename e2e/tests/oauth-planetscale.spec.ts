@@ -1,14 +1,14 @@
 /** Sign in to the PlanetScale emulator, whose Doorkeeper token endpoint compares Basic credentials literally. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { BaseUrl, emulatorRequest } from "../support/emulators.ts";
+import { BaseUrl, emulatorRequest, withoutEmulatorTracing } from "../support/emulators.ts";
 import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -84,7 +84,11 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
               return yield* Effect.die("PlanetScale emulator did not return a callback");
             return location;
           }),
-        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+        ).pipe(
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          // The consent request goes to the private instance's URL, which a client span would export.
+          withoutEmulatorTracing,
+        );
 
         const completed = yield* api.request(
           actors.owner,

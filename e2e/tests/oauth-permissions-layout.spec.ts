@@ -1,14 +1,24 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+
+const App = Schema.Struct({
+  id: Schema.String,
+  requirements: Schema.Struct({
+    accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
+  }),
+});
+const Setup = Schema.Struct({
+  scopes: Schema.Array(Schema.String),
+  userScopes: Schema.Array(Schema.String),
+});
 
 layer(HostedLive, { excludeTestServices: true })("OAuth permissions", (it) => {
   it.effect(scenarios.oauthPermissionsLayout.title, (context) =>
@@ -23,6 +33,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth permissions", (it) => {
           ...Array.from({ length: 100 }, (_, index) => `report_${index}:read`),
           `https://permissions.example.test/${"long_permission_".repeat(12)}:read`,
         ];
+        // Slack's user_scope asks for the signed-in user's own token beside the scopes.
+        const userScopes = ["users:read", "chat:write"];
         yield* issuer.configure({ scopes });
         const prefix = `/api/organizations/${actors.organization.id}`;
         const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -31,17 +43,25 @@ layer(HostedLive, { excludeTestServices: true })("OAuth permissions", (it) => {
             {
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
-const service = defineProvider({name: "Permissions fixture", hosts: ${JSON.stringify([new URL(issuer.origin).host])}, auth: {oauth: oauth2({discover: ${JSON.stringify(issuer.origin + "/mcp")}, scopes: ${JSON.stringify(scopes)}})}});
+const service = defineProvider({name: "Permissions fixture", hosts: ${JSON.stringify([new URL(issuer.origin).host])}, auth: {oauth: oauth2({discover: ${JSON.stringify(issuer.origin + "/mcp")}, scopes: ${JSON.stringify(scopes)}, authorizationParams: {user_scope: ${JSON.stringify(userScopes.join(","))}}})}});
 export default defineApp({accounts: {service}}, async () => ({tools: router({})}));`,
             },
             appsManifest,
           ],
         });
         expect(response.status).toBe(200);
-        const app = yield* body(Resource, response);
+        const app = yield* body(App, response);
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
+        // Agents read the same permissions from the setup check before handing over a link.
+        const setup = yield* api.request(
+          actors.owner,
+          "GET",
+          `${prefix}/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
+        );
+        expect(setup.status, JSON.stringify(setup.body)).toBe(200);
+        expect(yield* body(Setup, setup)).toEqual({ scopes, userScopes });
         yield* browser.login(actors.owner);
         yield* browser.use("Open the app with many OAuth permissions", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
@@ -86,11 +106,11 @@ export default defineApp({accounts: {service}}, async () => ({tools: router({})}
               .then((visible) => {
                 expect(visible).toBe(false);
               })
-              .then(() =>
-                dialog.locator("h3").filter({ hasText: "Required permissions" }).textContent(),
-              )
+              .then(() => dialog.locator("summary").filter({ hasText: "Advanced" }).textContent())
               .then((text) => {
-                expect(text).toContain(String(scopes.length));
+                expect(text).toContain(
+                  `${scopes.length + userScopes.length} permissions requested`,
+                );
               })
               .then(() => button.scrollIntoViewIfNeeded())
               .then(() => button.boundingBox())
@@ -104,7 +124,7 @@ export default defineApp({accounts: {service}}, async () => ({tools: router({})}
           yield* browser.use("Expand permissions with the keyboard", (page) => {
             const dialog = page.getByRole("dialog");
             const advanced = dialog.locator("summary").filter({ hasText: "Advanced" });
-            const list = page.getByRole("region", { name: "Required permissions", exact: true });
+            const list = page.getByRole("region", { name: "Requested permissions", exact: true });
             return advanced
               .focus()
               .then(() => advanced.press("Enter"))
@@ -112,6 +132,15 @@ export default defineApp({accounts: {service}}, async () => ({tools: router({})}
               .then(() => list.locator("code").allTextContents())
               .then((values) => {
                 expect(values).toEqual(scopes);
+              })
+              .then(() =>
+                page
+                  .getByRole("region", { name: "User token permissions", exact: true })
+                  .locator("code")
+                  .allTextContents(),
+              )
+              .then((values) => {
+                expect(values).toEqual(userScopes);
               })
               .then(() =>
                 list.evaluate((element) => ({
@@ -148,7 +177,7 @@ export default defineApp({accounts: {service}}, async () => ({tools: router({})}
               .then(() => advanced.press("Space"))
               .then(() =>
                 page
-                  .getByRole("region", { name: "Required permissions", exact: true })
+                  .getByRole("region", { name: "Requested permissions", exact: true })
                   .waitFor({ state: "hidden" }),
               )
               .then(() =>

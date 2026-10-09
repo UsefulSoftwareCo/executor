@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import { localTelemetry } from "@executor-js/telemetry/local";
 import { Deferred, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
 import { DesktopBootstrap } from "./contracts/auth.ts";
 import type { LocalServerOptions } from "./contracts/server.ts";
 export type {
@@ -38,8 +38,8 @@ export const readDesktopBootstrap = NodeStream.toString(
 /** Start one scoped loopback server. Its actual port and auth store belong to this lifetime. */
 export const startLocalServer = (
   settings: ServerConfig,
-  bootstrap?: DesktopBootstrap,
-  options: LocalServerOptions = {},
+  bootstrap: DesktopBootstrap | undefined,
+  options: LocalServerOptions,
 ) =>
   Effect.gen(function* () {
     const telemetry = yield* Layer.build(
@@ -63,7 +63,6 @@ export const startLocalServer = (
           port = server.address.port;
           return localApi({ ...settings, port }, globalThis.crypto, auth, {
             ...options,
-            product: options.product ?? (bootstrap === undefined ? "local" : "desktop"),
             platform: { os: process.platform, arch: process.arch },
           });
         }),

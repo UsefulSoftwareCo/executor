@@ -6,8 +6,8 @@
  * executed unprepared, because raw DDL cannot be prepared on every driver.
  */
 import { Effect, Option, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { SqlClient } from "effect/sql";
+import type { SqlError } from "effect/sql/SqlError";
 import type { AdapterContext } from "../../contracts/adapter.ts";
 import { MigrationError } from "../../contracts/errors.ts";
 import { createMigrator } from "../migration/migrator.ts";

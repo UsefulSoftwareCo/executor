@@ -53,11 +53,11 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         expect(yield* call("private", { id: two })).not.toBe(privateValue);
         const reconnect = yield* body(
           Resource,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            `/api/organizations/${actors.organization.id}/accounts/${one}/connections`,
-          ),
+          yield* api.request(actors.owner, "POST", `${path}/connections`, {
+            requirement: "service",
+            profile: first.id,
+            account: one,
+          }),
         );
         expect((yield* submit(reconnect.id, "synthetic-rotated")).status).toBe(200);
         expect(yield* call("private", { id: one })).not.toBe(privateValue);

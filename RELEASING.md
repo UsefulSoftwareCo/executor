@@ -1,8 +1,8 @@
 # Releasing Executor
 
 `apps/cli/package.json` owns the product version. `scripts/releases/config.ts`
-derives the npm channel, native targets, Docker tags, desktop identity and exact
-public download URLs. Build scripts and the website consume that configuration.
+derives the npm channel, native targets, Docker tags, desktop identity and
+installer names. Build scripts and the website consume that configuration.
 Source workspaces remain private; only staged runtime packages are published.
 
 ## Build and verify
@@ -125,8 +125,12 @@ existing release or npm version stops publication for inspection. Never
 republish an accepted immutable npm version merely because its registry entry is
 still propagating.
 
-Merge site install-link changes only after the referenced public assets exist.
-Verify the public npm install, GitHub assets, Docker manifest and rendered site.
+The homepage resolves desktop downloads in the browser from GitHub's public
+release list, choosing the newest published release with this major version's
+tag prefix. A merged version bump keeps linking to the previous release until
+this one is public; without JavaScript, or when the lookup fails, the buttons
+open the releases page. Verify the public npm install, GitHub assets, Docker
+manifest and rendered site.
 A successful upload alone does not establish public availability.
 
 ## Stable cutover

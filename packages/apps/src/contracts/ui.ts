@@ -1,6 +1,6 @@
 /** Browser-to-host operations bind identity and authentication outside authored app code. */
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { JsonValue } from "./schema.ts";
 
 /** Non-secret page context injected by the serving host. */

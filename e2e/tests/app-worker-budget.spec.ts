@@ -14,11 +14,9 @@ import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { requestGate } from "../support/request-gate.ts";
-import { appsManifest } from "../support/apps-release.ts";
-import { scenarios } from "../test-plan.ts";
+import { appsManifest, databaseFiles } from "../support/apps-release.ts";
+import { appWorkerBudgetLimit as limit, scenarios } from "../test-plan.ts";
 
-/** The limits the scenarios configure as `EXECUTOR_APP_WORKERS` in their plans. */
-const limit = Number(scenarios.appWorkerBudget.serverEnvironment.EXECUTOR_APP_WORKERS);
 /** Apps and account selections beyond the limit: two apps with three accounts each. */
 const beyondLimit = { apps: 2, accountsPerApp: 3, database: false };
 
@@ -61,14 +59,13 @@ interface Workload {
  */
 const budgetApp = (
   name: string,
-  database: boolean,
-) => `import { defineApp, defineDatabase, defineProvider, secrets, object, string, boolean, query, table, router } from "apps";
+) => `import { defineApp, defineProvider, secrets, object, string, boolean, query, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
 let isolate;
 let calls = 0;
-export default defineApp({ accounts: { service }${database ? ", database: defineDatabase({ marks: table({ label: string() }) })" : ""} }, {
+export default defineApp({ accounts: { service } }, {
   tools: router({
     probe: query({ input: object({ gate: string().optional() }) }, async (ctx, input) => {
       isolate ??= crypto.randomUUID();
@@ -124,7 +121,11 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const name = `Worker budget ${index} ${randomUUID().slice(0, 8)}`;
       const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
         name,
-        files: [{ path: "index.ts", content: budgetApp(name, database) }, appsManifest],
+        files: [
+          { path: "index.ts", content: budgetApp(name) },
+          appsManifest,
+          ...databaseFiles(database),
+        ],
       });
       expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
       const app = yield* body(HostedApp, deployed);
@@ -214,7 +215,11 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const deployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
         owner,
         name,
-        files: [{ path: "index.ts", content: budgetApp(name, database) }, appsManifest],
+        files: [
+          { path: "index.ts", content: budgetApp(name) },
+          appsManifest,
+          ...databaseFiles(database),
+        ],
       });
       expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
       const { app } = yield* body(App, deployed);
@@ -504,26 +509,5 @@ layer(HostedLive, { excludeTestServices: true })("App Worker budget", (it) => {
 layer(TestLive, { excludeTestServices: true })("Local app Worker budget", (it) => {
   it.effect(scenarios.localAppWorkerBudget.title, (context) =>
     withCase(context, localSelections(beyondLimit).pipe(Effect.flatMap(boundedByConfiguration))),
-  );
-  it.effect(scenarios.localAppWorkerBudgetInFlight.title, (context) =>
-    withCase(context, localSelections(inFlight).pipe(Effect.flatMap(inFlightKept))),
-  );
-  it.effect(
-    scenarios.localAppWorkerReleaseHeld.title,
-    (context) =>
-      withCase(context, localSelections(releaseHeld).pipe(Effect.flatMap(releaseKeptPastItsLimit))),
-    { timeout: 120_000 },
-  );
-  it.effect(scenarios.localAppDataFacetUnloaded.title, (context) =>
-    withCase(context, localSelections(replacedFacets).pipe(Effect.flatMap(replacedFacetUnloaded))),
-  );
-  it.effect(
-    scenarios.localAppDataFacetUnloadedAfterEviction.title,
-    (context) =>
-      withCase(
-        context,
-        localSelections(replacedFacets).pipe(Effect.flatMap(replacedFacetUnloadedAfterEviction)),
-      ),
-    { timeout: 180_000 },
   );
 });

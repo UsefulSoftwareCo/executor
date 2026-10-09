@@ -11,19 +11,22 @@
  * Copied by the hero CTA and served verbatim at `/setup-prompt.md`.
  * Helps an agent turn the user's need into a small, useful Executor app.
  */
-export const setupPrompt = (siteOrigin: string) => `Help me build something useful with Executor.
+export const setupPrompt = (origins: {
+  readonly site: string;
+  readonly app: string;
+}) => `Help me build something useful with Executor.
 
 Executor is a place to deploy software that my agents and I can use: custom tools, skills, automations, and apps with saved data and a UI. An existing MCP or API can be a starting point, or you can write the code for something new.
 
 Ask what I want to do. Start with the smallest useful version. Explain what it will do before building it.
 
-Help me sign in at ${siteOrigin}/login and connect Executor to you over MCP. If your client needs a restart to load its tools, tell me and wait until they are available.
+Help me sign in at ${origins.app}/login and connect Executor to you over MCP. If your client needs a restart to load its tools, tell me and wait until they are available.
 
-Read Executor's app-authoring guide through its skills tool. Check what this Executor host supports. Use its management tools to build and deploy the app. Connect any required accounts through the secure connection flow and select them for the app. Never ask me to paste credentials into this chat or put them in source code.
+Read the Executor app's executor skill through Executor's skills tool, then its app-authoring skill. Check what this Executor host supports. Use its management tools to build and deploy the app. Connect any required accounts through the secure connection flow and select them for the app. Never ask me to paste credentials into this chat or put them in source code.
 
 Explain what the app can read or change, and ask before actions that send, delete, or publish anything. Verify the result with a safe call. Keep its source so I can ask you or another agent to change it later. Add features only when they serve the task I asked for.
 
-Docs: ${siteOrigin}/docs`;
+Docs: ${origins.site}/docs`;
 
 /** Canonical GitHub repository. */
 export const GITHUB_URL = "https://github.com/UsefulSoftwareCo/executor";
@@ -49,11 +52,28 @@ export const introduction = `Your ${listItems(
   introductionItems.filter((item) => !("comingSoon" in item)).map((item) => item.label),
 )}, all in one place.`;
 
-/** Introduce personal software through a familiar starting point and a growing app. */
+/** Capabilities an app can include, with tools first. */
+export const appParts = [
+  { title: "Tools", body: "Call anything, it's just JavaScript." },
+  { title: "Skills", body: "Give your agent instructions it can use again." },
+  { title: "Apps", body: "A page for people, beside the tools for agents." },
+  { title: "Storage", body: "Keep data and state between runs." },
+  { title: "Triggers", body: "Run on a schedule or respond to webhooks." },
+  { title: "Workflows", body: "Durable work across multiple steps." },
+] as const;
+
+/**
+ * The homepage leads with what an app can be, then shows one growing step by
+ * step.
+ */
 export const homepageStory = {
+  apps: {
+    title: "What's an Executor app?",
+    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
+  },
   start: {
     title: "Start with something useful.",
-    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Start small. You can change it as you go.",
+    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Most apps start as one small piece.",
   },
   build: {
     title: "Ask for what you actually need.",
@@ -66,24 +86,10 @@ export const homepageStory = {
     body: "Give that tool a schedule. Keep a history of what it finds. Add a page you can open. Executor runs the app, even after the conversation ends.",
     prompt: "Run this every weekday at 9. Save the results and build me a page to read them.",
   },
-  apps: {
-    title: "That's an Executor app.",
-    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
-  },
 } as const;
 
 /** Plain definition shared by the illustrated section and Markdown overview. */
 export const appDefinition = homepageStory.apps.body;
-
-/** Capabilities an app can include, with tools first. */
-export const appParts = [
-  { title: "Tools", body: "Call anything, it's just JavaScript." },
-  { title: "Skills", body: "Give your agent instructions it can use again." },
-  { title: "UI", body: "A page for your app, at its own URL." },
-  { title: "Storage", body: "Keep data and state between runs." },
-  { title: "Triggers", body: "Run on a schedule or respond to webhooks." },
-  { title: "Workflows", body: "Durable work across multiple steps." },
-] as const;
 
 /** Cache-Control for the Markdown endpoints. Short, so copy edits land fast. */
 export const MARKDOWN_CACHE_CONTROL = "public, max-age=300";
@@ -104,13 +110,13 @@ export type PricingTier = {
  * Pricing tiers. The `/pricing` page and `/pricing.md` both read this list,
  * so it is the single source of truth.
  */
-export const pricingTiers = (siteOrigin: string): ReadonlyArray<PricingTier> => [
+export const pricingTiers = (appOrigin: string): ReadonlyArray<PricingTier> => [
   {
     name: "Free",
     price: "$0 / month",
     audience: "For small teams getting started",
     features: ["Up to 3 members", "Unlimited integrations"],
-    cta: `Start free: ${siteOrigin}/login`,
+    cta: `Start free: ${appOrigin}/login?mode=signup`,
   },
   {
     name: "Team",
@@ -120,7 +126,7 @@ export const pricingTiers = (siteOrigin: string): ReadonlyArray<PricingTier> => 
       "14-day free trial, then $15 / member / month",
       "Verified domains & join by team domain",
     ],
-    cta: `Start free trial: ${siteOrigin}/login`,
+    cta: `Start free trial: ${appOrigin}/login?mode=signup`,
   },
   {
     name: "Enterprise",

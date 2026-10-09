@@ -1,19 +1,18 @@
 /** Catalog rows point to retained Git source. Installed copies do not depend on these rows. */
 import { Effect, Option, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { sqlAdapter } from "fumadb-effect/sql";
-import { AppId, OwnerId, SourceRevision } from "@executor-js/sdk/core";
-import { PackageName, Publication, RegistryError } from "../contracts/registry.ts";
+import {
+  AppId,
+  OwnerId,
+  PackageName,
+  RegistryError,
+  StoredPublication,
+  type RegistryStorage as RegistryStorageContract,
+} from "@executor-js/sdk/core";
 
-const StoredPublication = Schema.Struct({
-  name: PackageName,
-  owner: OwnerId,
-  app: AppId,
-  publication: Publication,
-  source: SourceRevision,
-});
 const layout = schema({
   version: "1.0.0",
   tables: {
@@ -142,4 +141,5 @@ export const makeRegistryStorage = Effect.gen(function* () {
   };
 });
 /** Internal persistence capability; public callers only see catalog metadata and selected source. */
-export type RegistryStorage = Effect.Success<typeof makeRegistryStorage>;
+/** The SDK contract plus this host's migration step. */
+export type RegistryStorage = Effect.Success<typeof makeRegistryStorage> & RegistryStorageContract;

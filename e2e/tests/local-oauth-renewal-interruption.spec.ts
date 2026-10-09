@@ -4,7 +4,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Fiber, Redacted, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";
@@ -110,6 +110,8 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           label: "Synthetic rotating account",
         });
         expect(started.status, JSON.stringify(started.body)).toBe(200);
+        // The local callback is a loopback redirect, which registers as a native client.
+        expect((yield* issuer.metrics).lastRegistration?.applicationType).toBe("native");
         const { authorizationUrl } = yield* body(Redirect, started);
         const callbackUrl = yield* Effect.scoped(
           Effect.gen(function* () {

@@ -7,10 +7,10 @@
     "./cloudflare": "./src/cloudflare.ts"
   },
   "dependencies": {
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+    "effect": "4.0.1"
   },
   "devDependencies": {
-    "@effect/sql-sqlite-do": "https://pkg.pr.new/Effect-TS/effect/@effect/sql-sqlite-do@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/sql-sqlite-do": "4.0.1",
     "esbuild": "0.28.2",
     "miniflare": "4.20260730.0"
   }

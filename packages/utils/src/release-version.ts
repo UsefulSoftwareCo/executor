@@ -2,7 +2,9 @@
 import { Schema } from "effect";
 
 /** Reject arbitrary tags and unexpected prerelease channels. */
-export const ReleaseVersion = Schema.String.check(Schema.isPattern(/^2\.\d+\.\d+(?:-beta\.\d+)?$/));
+export const ReleaseVersion = Schema.String.check(
+  Schema.isPattern(/^2\.\d+\.\d+(?:-beta\.\d+)?$/u),
+);
 
 /** Release channels; beta installs also receive newer stable releases. */
 export type ReleaseChannel = "beta" | "latest";

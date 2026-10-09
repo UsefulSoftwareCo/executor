@@ -4,12 +4,12 @@
  * through a service binding to itself, to run its job. The placed handler does the database work,
  * and any Durable Object or Workflow the job first contacts is created beside it.
  */
-import { traceHeaders } from "@executor-js/telemetry";
+import { recordRoute, traceHeaders } from "@executor-js/telemetry";
 import { Random, RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Fetcher } from "@cloudflare/workers-types";
-import { Effect, Redacted, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { Effect, Exit, Redacted, Schema } from "effect";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { timingSafeEqual } from "node:crypto";
 import { previewLifetime } from "./test-stage-expiry.ts";
 
@@ -20,12 +20,19 @@ export const BackgroundJob = Schema.Literals([
   "data-steps",
   "repository-recovery",
   "schedule-wake",
+  "site-assets",
   "app-domain-heartbeat",
   "welcome-emails",
   "workflow-reconcile",
   "billing-reconcile",
+  "agent-grant-expiry",
 ]);
 export type BackgroundJob = typeof BackgroundJob.Type;
+
+export class BackgroundJobFailed extends Schema.TaggedError<BackgroundJobFailed>()(
+  "BackgroundJobFailed",
+  { job: BackgroundJob },
+) {}
 
 /** The API Worker's service binding to itself, declared in its `env`. */
 export const selfBinding = "ApiSelf";
@@ -46,7 +53,7 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
   const lifetime = yield* previewLifetime;
   const authorization = Effect.map(secret, (value) => `Bearer ${Redacted.value(value)}`);
 
-  const dispatch = (job: BackgroundJob) =>
+  const request = (job: BackgroundJob) =>
     Effect.gen(function* () {
       const self = yield* Schema.decodeUnknownEffect(NativeFetcher)(environment[selfBinding]);
       const headers = { ...(yield* traceHeaders), authorization: yield* authorization };
@@ -59,13 +66,16 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
         return response;
       });
       yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
-      if (response.status !== 204)
-        yield* Effect.logError("Background job failed", { job, status: response.status });
+      if (response.status !== 204) return yield* new BackgroundJobFailed({ job });
     }).pipe(
+      Effect.mapError(() => new BackgroundJobFailed({ job })),
       Effect.withSpan("job.dispatch", { attributes: { "executor.job": job } }),
-      Effect.catchCause(() => Effect.logError("Background job dispatch failed", { job })),
       Effect.provide(RuntimeContext.phantom),
       lifetime.background,
+    );
+  const dispatch = (job: BackgroundJob) =>
+    request(job).pipe(
+      Effect.catchCause(() => Effect.logError("Background job dispatch failed", { job })),
     );
 
   return {
@@ -74,8 +84,13 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
       Cloudflare.Workers.cron(cron, () =>
         Effect.forEach(jobs, dispatch, { concurrency: "unbounded", discard: true }),
       ),
-    /** The placed route that runs one job and answers when it has finished. */
-    route: <R>(run: (job: BackgroundJob) => Effect.Effect<void, never, R>) =>
+    /**
+     * Run a job in the placed handler from code that is not placed, such as a workflow step or a
+     * Durable Object, and wait for it. Fails unless the job finished.
+     */
+    request,
+    /** The placed route that runs one job and answers when it has finished: 204, or 500 if it failed. */
+    route: <E, R>(run: (job: BackgroundJob) => Effect.Effect<void, E, R>) =>
       HttpRouter.add(
         "POST",
         "/api/internal/jobs/:job",
@@ -86,8 +101,10 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
           if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
             return HttpServerResponse.empty({ status: 404 });
           const { job } = yield* HttpRouter.schemaPathParams(Schema.Struct({ job: BackgroundJob }));
-          yield* run(job).pipe(lifetime.background);
-          return HttpServerResponse.empty({ status: 204 });
+          // Job names are Executor's own, so the path keeps the job the route ran.
+          yield* recordRoute(`/api/internal/jobs/${job}`);
+          const ran = yield* run(job).pipe(lifetime.background, Effect.exit);
+          return HttpServerResponse.empty({ status: Exit.isSuccess(ran) ? 204 : 500 });
         }).pipe(
           Effect.catchTag("SchemaError", () =>
             Effect.succeed(HttpServerResponse.empty({ status: 404 })),

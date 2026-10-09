@@ -4,7 +4,9 @@ import { providerDisplayUrl, selectedIds, type AccountSummary } from "../../cont
 import {
   connectionTargetKey,
   connectionTargetLabel,
+  connectionEventsLabel,
   type ConnectionApp,
+  type ConnectionEvents,
   type ConnectionTarget,
   type ConnectionTools,
 } from "../../contracts/scoped-connections.ts";
@@ -89,6 +91,13 @@ export function appChoices(
   };
 }
 
+/** The events an app's active deployment declares, by name. */
+export const declaredEventNames = (app: App | undefined): readonly string[] =>
+  Object.keys(app?.requirements.events ?? {}).toSorted();
+
+/** Whether an app declares any event a connection could include. */
+export const declaresEvents = (app: App | undefined) => declaredEventNames(app).length > 0;
+
 /** A newly included app is ready immediately when there is exactly one way to run it. */
 export function initialSelection(choices: AppChoices): ConnectionApp {
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
@@ -155,6 +164,9 @@ export function ConnectionAppRow({
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
   const setTools = (tools: ConnectionTools) => {
     if (selection !== undefined) onChange({ ...selection, tools });
+  };
+  const setEvents = (events: ConnectionEvents) => {
+    if (selection !== undefined) onChange({ ...selection, events });
   };
   return (
     <div className={selection === undefined ? "" : "bg-muted/20"}>
@@ -225,6 +237,14 @@ export function ConnectionAppRow({
                 <SelectItem value="selected">Specific tools</SelectItem>
               </SelectContent>
             </Select>
+            {declaresEvents(app) && (
+              <EventsPicker
+                appName={app.name}
+                names={declaredEventNames(app)}
+                events={selection.events}
+                onChange={setEvents}
+              />
+            )}
             <Button
               type="button"
               variant="ghost"
@@ -271,6 +291,76 @@ export function ConnectionAppRow({
         </div>
       )}
     </div>
+  );
+}
+
+/** All of an app's events, including later ones, or exact names; none selected means none. */
+function EventsPicker({
+  appName,
+  names,
+  events,
+  onChange,
+}: {
+  readonly appName: string;
+  readonly names: readonly string[];
+  readonly events: ConnectionEvents | undefined;
+  readonly onChange: (events: ConnectionEvents) => void;
+}) {
+  const all = events === undefined || events.kind === "all";
+  const selected = new Set(all ? names : events.names);
+  const toggle = (name: string, checked: boolean) =>
+    onChange({
+      kind: "selected",
+      names: checked
+        ? [...selected, name].toSorted()
+        : [...selected].filter((item) => item !== name),
+    });
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={`Events for ${appName}`}
+          className="min-w-0 flex-1 justify-between text-xs font-normal sm:w-32 sm:flex-none"
+        >
+          <span className="truncate">{connectionEventsLabel(events)}</span>
+          <HugeiconsIcon icon={ArrowDown01Icon} size={14} className="shrink-0 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-1.5" align="end">
+        <h3 className="px-2 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">Events</h3>
+        <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-muted/60">
+          <Checkbox
+            checked={all}
+            onCheckedChange={(checked) =>
+              onChange(checked === true ? { kind: "all" } : { kind: "selected", names: [...names] })
+            }
+          />
+          <span className="min-w-0">
+            <span className="block truncate text-[13px]">All events</span>
+            <span className="block truncate text-[11px] text-muted-foreground">
+              Including events the app adds later
+            </span>
+          </span>
+        </label>
+        <div className="my-1 border-t" />
+        {names.map((name) => (
+          <label
+            key={name}
+            className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-muted/60"
+          >
+            <Checkbox
+              checked={selected.has(name)}
+              disabled={all}
+              onCheckedChange={(checked) => toggle(name, checked === true)}
+            />
+            <span className="truncate font-mono text-[12px]">{name}</span>
+          </label>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }
 

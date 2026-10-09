@@ -21,12 +21,13 @@ import {
 import { Button } from "@executor-js/ui/components/button";
 import { Link, Navigate, useLocation } from "@tanstack/react-router";
 import { Cause, Exit, Option, Schema } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState, type ReactNode } from "react";
 import { reportBrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import {
   OnboardingDraft,
   OnboardingInvitation,
+  OnboardingV1Workspace,
   type TeamDetails,
 } from "../../../../src/contracts/onboarding.ts";
 import { prepareTeamAtom, createTeamAtom } from "../../contracts/onboarding.ts";
@@ -118,7 +119,9 @@ function TeamEntry({
         ? "invitation"
         : Schema.is(OnboardingDraft)(prepared.value)
           ? "team_details"
-          : "ready";
+          : Schema.is(OnboardingV1Workspace)(prepared.value)
+            ? "v1_workspace"
+            : "ready";
   useEffect(() => {
     reportBrowserUsage({ area: "onboarding", action: step, outcome: "viewed" });
   }, [step]);
@@ -145,6 +148,7 @@ function TeamEntry({
       </SetupPageFrame>
     );
   const entry = AsyncResult.isSuccess(created) ? created.value : prepared.value;
+  if (Schema.is(OnboardingV1Workspace)(entry)) return <V1Workspace />;
   if (Schema.is(OnboardingInvitation)(entry)) {
     if (mcp)
       return (
@@ -170,6 +174,20 @@ function TeamEntry({
   if (!mcp && (created.waiting || AsyncResult.isSuccess(created)))
     return <Navigate to="/create/agent" replace />;
   return children;
+}
+
+/** People in an Executor v1 organization keep using v1; v2 creates no team for them. */
+function V1Workspace() {
+  return (
+    <HostedEntry
+      title="Your workspace is on Executor v1"
+      description="We're getting Executor v2 ready for you. Only new users can use it for now. Use the button below to sign in to Executor v1 and keep using it."
+    >
+      <Button asChild>
+        <a href="https://executor.sh/login">Sign in to Executor v1</a>
+      </Button>
+    </HostedEntry>
+  );
 }
 
 function TeamForm({

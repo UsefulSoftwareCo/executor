@@ -493,7 +493,7 @@ func serve(mode string) error {
 	if err != nil {
 		return err
 	}
-	// The generated file contains paths, the dashboard origin and a network-policy boolean, never keys.
+	// The generated file contains paths, the dashboard origin, the npm registry and a network-policy boolean, never keys.
 	// App requests for the dashboard origin reach the product through a service binding, so the
 	// bundled Executor app never needs private fetch. Other private destinations are an explicit opt-in.
 	privateFetch := values["EXECUTOR_APPS_ALLOW_PRIVATE_FETCH"]
@@ -515,6 +515,15 @@ func serve(mode string) error {
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APP_WORKERS@@"), []byte(appWorkers))
 	config = bytes.ReplaceAll(config, []byte("@@SELF_ORIGIN@@"), []byte(strconv.Quote(values["BETTER_AUTH_URL"])))
+	// App builds install packages from this registry; empty selects the public registry.
+	registry := values["EXECUTOR_NPM_REGISTRY"]
+	if registry != "" {
+		parsed, err := url.Parse(registry)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil {
+			return errors.New("EXECUTOR_NPM_REGISTRY must be an HTTP(S) URL")
+		}
+	}
+	config = bytes.ReplaceAll(config, []byte("@@NPM_REGISTRY@@"), []byte(strconv.Quote(registry)))
 	config = bytes.ReplaceAll(config, []byte("@@RUNTIME@@"), []byte(strings.Trim(strconv.Quote(runtime), "\"")))
 	service := `"product"`
 	if mode == "export" {

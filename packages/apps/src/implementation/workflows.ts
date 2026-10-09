@@ -1,7 +1,8 @@
 /** Ordinary async workflow declarations, adapted once into native Effect handlers. */
-import { Effect, type Schema as EffectSchema } from "effect";
+import type { Schema as EffectSchema } from "effect";
 import type { AppWorkflow, WorkflowContext } from "../contracts/workflows.ts";
-import { decoderOf, type Schema } from "./schema.ts";
+import { fromPromise } from "./authoring.ts";
+import { decoderOf, schemaArgument, type Schema } from "./schema.ts";
 
 const NativeWorkflow = Symbol("apps.Workflow");
 declare const HandlerContext: unique symbol;
@@ -27,15 +28,13 @@ export const workflow = <Input, Output, Context extends WorkflowContext = Workfl
   run: (context: Context, input: Input) => Promise<Output>,
 ): Workflow<Input, Output, Context> => ({
   [NativeWorkflow]: {
-    input: decoderOf(options.input),
-    ...(options.output === undefined ? {} : { output: decoderOf(options.output) }),
+    input: decoderOf(schemaArgument(options.input, "The workflow input")),
+    ...(options.output === undefined
+      ? {}
+      : { output: decoderOf(schemaArgument(options.output, "The workflow output")) }),
     ...(options.description === undefined ? {} : { description: options.description }),
-    run: (context, input) =>
-      Effect.tryPromise({
-        // SAFETY: defineApp checks required context; the host supplies the pinned run's capabilities.
-        try: () => run(context as Context, input),
-        catch: (error) => error,
-      }),
+    // SAFETY: defineApp checks required context; the host supplies the pinned run's capabilities.
+    run: (context, input) => fromPromise(run, "workflow")(context as Context, input),
   },
 });
 /** Only this module creates the private declaration symbol; input is decoded before invocation. */

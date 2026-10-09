@@ -1,16 +1,37 @@
 /** Persisted connection transitions shared by secrets and OAuth completion. */
-import { Clock, type Crypto, Effect, Schema } from "effect";
+import { Clock, type Crypto, Effect, Option, Schema } from "effect";
 import {
   AccountConnectionClosed,
+  AccountConnectionFailure,
   AccountConnectionNotFound,
-  AccountConnectionState,
+  type AccountConnectionState,
   type GetAccountConnection,
 } from "../contracts/account-connection.ts";
 import type { Account } from "../contracts/account.ts";
 import { StorageError } from "../contracts/shared.ts";
-import { StoredConnectionTarget } from "../contracts/storage.ts";
+import { StoredConnectionState, StoredConnectionTarget } from "../contracts/storage.ts";
 import { applyConnectionTarget } from "./connection-target.ts";
-import { query, type Query } from "./database.ts";
+import { query, transaction, type Query } from "./database.ts";
+
+const StoredState = Schema.toCodecJson(StoredConnectionState);
+const encodeState = Schema.encodeSync(StoredState);
+const RecordedFailure = Schema.toCodecJson(AccountConnectionFailure);
+const encodeFailure = Schema.encodeSync(RecordedFailure);
+const decodeFailure = Schema.decodeUnknownOption(RecordedFailure);
+
+/**
+ * The recorded failure, read in this release's vocabulary. One it cannot read, such as a failure
+ * whose reason a later release removed, describes an earlier sign-in. It is left out, so the
+ * request stays readable and can start a new sign-in, and the span records that it was.
+ */
+const recordedFailure = (stored: Schema.Json | undefined) =>
+  Effect.gen(function* () {
+    if (stored === undefined) return {};
+    const failure = decodeFailure(stored);
+    if (Option.isSome(failure)) return { failure: failure.value };
+    yield* Effect.annotateCurrentSpan("connection.failure.unreadable", true);
+    return {};
+  });
 
 /** Parse a stored request and apply its optional owner constraint. */
 export const readConnection = (db: Query, input: typeof GetAccountConnection.Type) =>
@@ -20,21 +41,22 @@ export const readConnection = (db: Query, input: typeof GetAccountConnection.Typ
     );
     if (row === null || (input.owner !== undefined && row.owner !== input.owner))
       return yield* new AccountConnectionNotFound(input);
-    const state = yield* Schema.decodeUnknownEffect(Schema.toCodecJson(AccountConnectionState))(
-      row.state,
-    ).pipe(Effect.mapError(() => new StorageError()));
+    const stored = yield* Schema.decodeUnknownEffect(StoredState)(row.state).pipe(
+      Effect.mapError(() => new StorageError()),
+    );
     const target = yield* Schema.decodeUnknownEffect(Schema.NullOr(StoredConnectionTarget))(
       row.target,
     ).pipe(Effect.mapError(() => new StorageError()));
     const now = yield* Clock.currentTimeMillis;
-    return {
-      ...row,
-      target,
-      state:
-        state.status === "pending" && row.expiresAt.getTime() <= now
-          ? { status: "expired" as const }
-          : state,
-    };
+    // An expired request keeps the failure that ended its latest sign-in.
+    const state: AccountConnectionState =
+      stored.status === "pending"
+        ? {
+            status: row.expiresAt.getTime() <= now ? "expired" : "pending",
+            ...(yield* recordedFailure(stored.failure)),
+          }
+        : stored;
+    return { ...row, target, state };
   });
 /** Claim by revision inside a transaction, including on databases without explicit row-lock APIs. */
 export const lockConnection = (
@@ -80,12 +102,52 @@ export const finishConnection = (db: Query, claimed: ConnectionRow, account: Acc
       db.updateMany("accountConnections", {
         where: (b) => b("id", "=", claimed.id),
         set: {
-          state: Schema.encodeSync(Schema.toCodecJson(AccountConnectionState))({
-            status: "completed",
-            account,
-          }),
+          state: encodeState({ status: "completed", account }),
           oauthAttempt: null,
         },
       }),
     );
   });
+
+/**
+ * Point a pending request at the sign-in that just started. That sign-in has no outcome yet, so
+ * the failure recorded for an earlier one is cleared. Runs in the transaction that claimed `row`.
+ */
+export const startSignIn = (db: Query, row: ConnectionRow, attempt: string) =>
+  query(() =>
+    db.updateMany("accountConnections", {
+      where: (b) => b("id", "=", row.id),
+      set: { state: encodeState({ status: "pending" }), oauthAttempt: attempt },
+    }),
+  );
+
+/**
+ * Record why the request's latest sign-in failed, so agents reading the request learn what the
+ * person connecting saw. `attempt` is the sign-in the failure ended, or for a failed start the
+ * sign-in that was current when it began. When another sign-in has started since, or the request
+ * is no longer pending, the newer state stands and nothing is recorded.
+ */
+export const recordSignInFailure = (
+  db: Query,
+  crypto: Crypto.Crypto,
+  input: typeof GetAccountConnection.Type,
+  attempt: string | null,
+  error: AccountConnectionFailure["error"],
+) =>
+  Effect.gen(function* () {
+    const at = new Date(yield* Clock.currentTimeMillis);
+    yield* transaction(db, (tx) =>
+      Effect.gen(function* () {
+        const row = yield* lockConnection(tx, input, crypto);
+        if (row.state.status !== "pending" || row.oauthAttempt !== attempt) return;
+        yield* query(() =>
+          tx.updateMany("accountConnections", {
+            where: (b) => b("id", "=", row.id),
+            set: {
+              state: encodeState({ status: "pending", failure: encodeFailure({ at, error }) }),
+            },
+          }),
+        );
+      }),
+    );
+  }).pipe(Effect.withSpan("sdk.connections.recordSignInFailure"));

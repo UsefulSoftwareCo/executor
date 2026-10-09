@@ -1,6 +1,6 @@
 /** Profiles belong to the caller; sharing an app never shares somebody else's setup. */
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";

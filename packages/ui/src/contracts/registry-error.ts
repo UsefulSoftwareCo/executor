@@ -1,4 +1,4 @@
-import type { RegistryError } from "@executor-js/app-registry/contracts";
+import type { RegistryError } from "@executor-js/sdk";
 /** Safe messages for expected public registry failures. */
 export const registryErrorMessage = (error: RegistryError) =>
   ({
@@ -17,4 +17,5 @@ export const registryErrorMessage = (error: RegistryError) =>
     status: "The app registry returned an unexpected response. Try again later.",
     "invalid-response": "The app registry returned an invalid response. Try again later.",
     limit: "The published app exceeds the supported source size.",
+    unsupported: "This Executor reads a remote registry and cannot publish.",
   })[error.reason];

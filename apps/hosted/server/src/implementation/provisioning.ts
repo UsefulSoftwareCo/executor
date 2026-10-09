@@ -1,8 +1,8 @@
 /** Host-owned lifecycle jobs. No browser session, secrets, or live request enters the queue. */
 import { StorageError } from "@executor-js/sdk/core";
 import { Effect, Exit, Schedule, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import { OrganizationId, organizationOwner } from "../contracts/organization.ts";
+import { SqlClient } from "effect/sql";
+import { OrganizationId } from "../contracts/organization.ts";
 import {
   OrganizationDefaults,
   OrganizationDefaultsPending,
@@ -150,8 +150,13 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
     // own jobs still own member setup and find it done.
     for (const member of yield* managers(organization, requireVerifiedEmail))
       yield* initialize(organization, member).pipe(
-        Effect.catch(() =>
-          Effect.logWarning("Member setup after team installation failed", { job: id }),
+        Effect.catch((error) =>
+          Effect.logWarning("Member setup after team installation failed", {
+            job: id,
+            reason: Schema.is(Schema.Struct({ _tag: Schema.String }))(error)
+              ? error._tag
+              : "unknown",
+          }),
         ),
       );
   });
@@ -219,17 +224,19 @@ export const drainProvisioning = (services: ProvisioningServices) =>
       );
   }).pipe(Effect.mapError(() => new ProvisioningFailed()));
 
-/** Read whether initial team installation is active and its app is still absent. Never restarts setup. */
-export const teamAppPending = (organization: OrganizationId) =>
+/**
+ * Read whether initial team installation is active and its app is still absent. Never restarts
+ * setup. The caller reads the app's presence through the SDK and passes it in.
+ */
+export const teamAppPending = (organization: OrganizationId, appInstalled: boolean) =>
   Effect.gen(function* () {
+    if (appInstalled) return false;
     const sql = yield* SqlClient.SqlClient;
     const [state] = yield* sql`select exists (
       select 1 from hosted_provisioning job join organization team on team.id = job.organization_id
       where job.kind = 'team' and job.organization_id = ${organization}
         and job.status in ('queued', 'running')
         and not coalesce((team.metadata::jsonb -> 'executorDefaults' ->> 'installed')::boolean, false)
-        and not exists (select 1 from executor_apps app
-          where app.owner = ${organizationOwner(organization)} and app.name = 'Executor')
     ) as pending`.pipe(
       Effect.flatMap(
         Schema.decodeUnknownEffect(Schema.Tuple([Schema.Struct({ pending: Schema.Boolean })])),

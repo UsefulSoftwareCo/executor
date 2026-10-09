@@ -6,8 +6,8 @@ import {
   type ElicitationResponse,
 } from "@executor-js/mcp/browser";
 import { Effect, Schema } from "effect";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
-import { Atom } from "effect/unstable/reactivity";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { Atom } from "effect/reactivity";
 
 /** Safe HTTP outcomes shared by the local and hosted browser approval endpoints. */
 export class BrowserApprovalFailed extends Schema.TaggedError<BrowserApprovalFailed>()(

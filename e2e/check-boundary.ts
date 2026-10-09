@@ -16,10 +16,11 @@ const allowed = new Set([
   "@modelcontextprotocol/sdk/client/streamableHttp.js",
   "vitest",
   "vitest/config",
-  "effect/unstable/http",
-  "effect/unstable/cli",
+  "effect/http",
+  "effect/cli",
   "effect",
-  "effect/unstable/process",
+  "effect/encoding",
+  "effect/process",
   "typescript-5",
   "@effect/platform-node/NodeRuntime",
   "@effect/platform-node/NodeServices",
@@ -78,14 +79,11 @@ const check = Effect.gen(function* () {
           // This external upstream fixture generates its contract with Effect, not product code.
           if (
             label === `support${path.sep}openapi-error-upstream.ts` &&
-            specifier === "effect/unstable/httpapi"
+            specifier === "effect/http-api"
           )
             return;
           // This upstream fixture serves real MCP protocols without product implementations.
-          if (
-            label === `support${path.sep}mcp-protocol-upstream.ts` &&
-            specifier === "effect/unstable/ai"
-          )
+          if (label === `support${path.sep}mcp-protocol-upstream.ts` && specifier === "effect/ai")
             return;
           if (label.startsWith(`viewer${path.sep}`) && specifier === "media-chrome/react") return;
           // The only database driver: runner-applied legacy rows for declared scenarios.

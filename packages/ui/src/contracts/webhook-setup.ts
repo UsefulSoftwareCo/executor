@@ -1,6 +1,6 @@
 /** Shared atom lifecycle; products inject their typed, authorized API effects. */
 import { Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import type { CompleteWebhookSetup, WebhookSetupView, WebhookSubscription } from "@executor-js/sdk";
 import { acknowledge, acknowledgedQuery, invalidate } from "./mutations.ts";
 import { browserOnly } from "./http.ts";

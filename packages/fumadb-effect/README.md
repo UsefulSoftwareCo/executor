@@ -141,7 +141,7 @@ The migrator diffs schema versions (`mode: "from-schema"`, default) or introspec
 
 ## CLI
 
-`fumadb-effect/cli` builds an `effect/unstable/cli` command tree with `migrate:up`, `migrate:down`, `migrate:to [version]` (alias `migrate`), and `generate [version] --output <path>`.
+`fumadb-effect/cli` builds an `effect/cli` command tree with `migrate:up`, `migrate:down`, `migrate:to [version]` (alias `migrate`), and `generate [version] --output <path>`.
 
 ```ts
 // scripts/chat.ts (consumer side)

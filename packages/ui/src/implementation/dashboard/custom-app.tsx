@@ -1,4 +1,4 @@
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { CustomAppInput, ImportUrl } from "@executor-js/catalog/contracts";
 import type { DeployedApp } from "@executor-js/sdk";

@@ -1,4 +1,6 @@
+import { owned } from "@executor-js/telemetry";
 import type { ProviderError } from "../contracts/provider-error.ts";
+import type { NetworkRefused } from "../contracts/network.ts";
 /** One upstream call, with form requests forwarded to the invocation's existing elicitation capability. */
 import type { Client } from "@modelcontextprotocol/client";
 import { ProtocolErrorCode, ProtocolError } from "@modelcontextprotocol/client";
@@ -64,10 +66,11 @@ export const mcpCall = (
   input: JsonObject,
   context: McpToolContext,
   timeoutMs: number,
-  failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError,
+  failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError | NetworkRefused,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK schema validation
       const checked = yield* Effect.promise(() =>
         Promise.resolve(ToolSchema["~standard"].validate(tool)),
       );
@@ -81,6 +84,7 @@ export const mcpCall = (
       const lifetime = yield* Effect.acquireRelease(
         Effect.sync(() => new AbortController()),
         (controller) =>
+          // oxlint-disable-next-line executor/authored-code-through-adapter -- the MCP SDK's elicitation callbacks
           Effect.promise(async () => {
             controller.abort();
             client.removeRequestHandler("elicitation/create");
@@ -98,7 +102,10 @@ export const mcpCall = (
           if (deliver === undefined) return yield* new ElicitationFailed({ reason: "unavailable" });
           const answer = yield* budget
             .waitForInput(
-              fromPromise(deliver)(form.request).pipe(
+              fromPromise(
+                deliver,
+                "elicitation",
+              )(form.request).pipe(
                 Effect.mapError((error) =>
                   Option.getOrElse(
                     Schema.decodeUnknownOption(ElicitationFailed)(error),
@@ -111,8 +118,9 @@ export const mcpCall = (
                 }),
               ),
             )
-            .pipe(Effect.withSpan("provider.mcp.elicitation"));
+            .pipe(owned("upstream", "provider.mcp.elicitation"));
           const response = yield* form.respond(answer);
+          // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK schema validation
           const validated = yield* Effect.promise(() =>
             Promise.resolve(ElicitResultSchema["~standard"].validate(response)),
           );
@@ -120,6 +128,7 @@ export const mcpCall = (
             return yield* new ElicitationFailed({ reason: "invalid-response" });
           return validated.value;
         }).pipe(Effect.tapError((error) => Deferred.fail(failed, error)));
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's elicitation, whose app callback enters through fromPromise
         const callback = Effect.runPromiseWith(runtime)(interaction, { signal }).catch(() => {
           if (!lifetime.signal.aborted)
             Effect.runSync(Deferred.fail(failed, new ElicitationFailed({ reason: "transport" })));
@@ -130,8 +139,10 @@ export const mcpCall = (
           );
         });
         callbacks.add(callback);
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's elicitation
         return callback.finally(() => callbacks.delete(callback));
       });
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
       return yield* Effect.tryPromise({
         try: (signal) =>
           client.callTool(
@@ -157,7 +168,7 @@ export const mcpCall = (
       );
     }),
   ).pipe(
-    Effect.withSpan("provider.mcp.request", {
+    owned("upstream", "provider.mcp.request", {
       kind: "client",
       attributes: {
         "rpc.system.name": "jsonrpc",

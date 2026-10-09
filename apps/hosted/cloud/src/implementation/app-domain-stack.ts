@@ -15,7 +15,7 @@ import { Stage } from "alchemy/Stage";
 import { InstanceId } from "alchemy/InstanceId";
 import { State, type StateService } from "alchemy/State/State";
 import { Effect, Exit, Layer, Option, Request, RequestResolver, Schema } from "effect";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 
 /** DNS follows current team names; immutable team IDs remain authorization identities and ownership metadata. */
 export interface TeamDomain {

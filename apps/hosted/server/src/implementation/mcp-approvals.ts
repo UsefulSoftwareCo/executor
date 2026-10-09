@@ -9,7 +9,7 @@ import {
   type BrowserApprovals,
 } from "@executor-js/mcp/browser";
 import { Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { McpAuthentication } from "../contracts/mcp.ts";
 import { restrictMcpBackend, permitsBrowserApproval } from "@executor-js/mcp-auth";
 import { CurrentOrganization } from "../contracts/organization.ts";
@@ -48,7 +48,7 @@ const browserAccess = Effect.gen(function* () {
   Effect.catchTags({
     AuthenticationUnavailable: () => Effect.succeed(HttpServerResponse.empty({ status: 503 })),
     McpUnauthorized: () => Effect.succeed(HttpServerResponse.empty({ status: 401 })),
-    McpForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+    McpApprovalForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
     SchemaError: () => Effect.succeed(HttpServerResponse.empty({ status: 400 })),
   }),
 );

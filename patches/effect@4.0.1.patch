@@ -1,0 +1,2108 @@
+diff --git a/dist/JsonSchema.d.ts b/dist/JsonSchema.d.ts
+index 2c0ee00..43599b1 100644
+--- a/dist/JsonSchema.d.ts
++++ b/dist/JsonSchema.d.ts
+@@ -16,6 +16,21 @@
+ export interface JsonSchema {
+     [x: string]: unknown;
+ }
++
++/**
++ * Options for converting OpenAPI schemas to Draft 2020-12.
++ *
++ * @category decoding
++ * @since 4.0.0
++ */
++export interface FromOpenApiOptions {
++  /**
++   * Observe each reference in schema positions before its URI is rewritten.
++   * Reference targets are not followed. Examples, defaults and ignored OpenAPI
++   * 3.0 reference siblings are not visited. Callback exceptions propagate.
++   */
++  readonly onReference?: ((reference: string) => void) | undefined
++}
+ /**
+  * The set of JSON Schema dialects supported by this module.
+  *
+@@ -320,7 +335,7 @@ export declare function fromSchemaDraft2020_12(js: JsonSchema): Document<"draft-
+  * @category decoding
+  * @since 4.0.0
+  */
+-export declare function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12">;
++export declare function fromSchemaOpenApi3_1(js: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12">;
+ /**
+  * Parses a raw OpenAPI 3.0 JSON Schema into a `Document<"draft-2020-12">`.
+  *
+@@ -364,7 +379,7 @@ export declare function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-20
+  * @category decoding
+  * @since 4.0.0
+  */
+-export declare function fromSchemaOpenApi3_0(schema: JsonSchema): Document<"draft-2020-12">;
++export declare function fromSchemaOpenApi3_0(schema: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12">;
+ /**
+  * Converts a `Document<"draft-2020-12">` to a `Document<"draft-07">`.
+  *
+diff --git a/dist/JsonSchema.js b/dist/JsonSchema.js
+index 4bb8146..dfb763b 100644
+--- a/dist/JsonSchema.js
++++ b/dist/JsonSchema.js
+@@ -215,9 +215,11 @@ export function fromSchemaDraft2020_12(js) {
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_1(js) {
++export function fromSchemaOpenApi3_1(js, options) {
+   const isRootResource = createsResource(js.$id);
+   const schema = transformSchema(js, (schema, inEmbeddedResource) => {
++    if (typeof schema.$ref === "string") options?.onReference?.(schema.$ref);
++    if (typeof schema.$dynamicRef === "string") options?.onReference?.(schema.$dynamicRef);
+     if (!isRootResource && !inEmbeddedResource) rewriteSchemaRef(schema, rewriteOpenApiComponentsReference);
+     if (isMetaSchemaUri(schema.$schema, META_SCHEMA_URI_OPEN_API_3_1)) {
+       InternalRecord.assignProperty(schema, "$schema", META_SCHEMA_URI_DRAFT_2020_12);
+@@ -275,8 +277,8 @@ export function fromSchemaOpenApi3_1(js) {
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_0(schema) {
+-  return fromSchemaDraft2020_12(convertOpenApi30(schema));
++export function fromSchemaOpenApi3_0(schema, options) {
++  return fromSchemaDraft2020_12(convertOpenApi30(schema, options));
+ }
+ /**
+  * Converts a `Document<"draft-2020-12">` to a `Document<"draft-07">`.
+@@ -925,10 +927,11 @@ function convertDependencies(source, out, context, targetDialect) {
+   }
+   if (Object.keys(dependencies).length > 0) InternalRecord.assignProperty(out, "dependencies", dependencies);
+ }
+-function convertOpenApi30(root) {
++function convertOpenApi30(root, options) {
+   return convertSchema(root, (source, context) => {
+     const out = {};
+     if (typeof source.$ref === "string") {
++      options?.onReference?.(source.$ref);
+       context.reference(out, rewriteOpenApiComponentsReference(source.$ref));
+       return out;
+     }
+diff --git a/dist/ai/McpSchema.d.ts b/dist/ai/McpSchema.d.ts
+index 40565fd..62f7a1f 100644
+--- a/dist/ai/McpSchema.d.ts
++++ b/dist/ai/McpSchema.d.ts
+@@ -4433,5 +4433,204 @@ declare const EnabledWhen_base: Context.ServiceClass<EnabledWhen, "effect/ai/Mcp
+  */
+ export declare class EnabledWhen extends EnabledWhen_base {
+ }
++/**
++ * JSON-RPC error code for a referenced entity that does not exist, such as an unknown
++ * event name. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const NOT_FOUND_ERROR_CODE: -32011;
++/**
++ * JSON-RPC error code for a principal that may not use this event or arguments. Defined
++ * by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const FORBIDDEN_ERROR_CODE: -32012;
++/**
++ * JSON-RPC error code for a server-imposed limit, such as the number of subscriptions.
++ * Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const RESOURCE_EXHAUSTED_ERROR_CODE: -32013;
++/**
++ * JSON-RPC error code for a well-formed request that asks for an unsupported option, such
++ * as a delivery mode the event does not offer. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const UNSUPPORTED_ERROR_CODE: -32014;
++/**
++ * JSON-RPC error code for a webhook callback that failed verification or could not be
++ * reached. `data.reason` names the category. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const CALLBACK_ENDPOINT_ERROR_CODE: -32015;
++/**
++ * How a client receives an event's occurrences.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const EventDeliveryMode: Schema.Literals<readonly ["poll", "push", "webhook"]>;
++/**
++ * An event type a server offers: its subscription arguments, payload shape, and the delivery
++ * modes it supports.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const EventDefinition: Schema.Struct<{
++    readonly name: Schema.String;
++    readonly title: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++    readonly description: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++    readonly delivery: Schema.$Array<Schema.Literals<readonly ["poll", "push", "webhook"]>>;
++    readonly inputSchema: Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>;
++    readonly payloadSchema: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type EventDefinition = typeof EventDefinition.Type;
++/**
++ * One page of `events/list`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const ListEventsResult: Schema.Struct<{
++    readonly events: Schema.$Array<Schema.Struct<{
++        readonly name: Schema.String;
++        readonly title: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++        readonly description: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++        readonly delivery: Schema.$Array<Schema.Literals<readonly ["poll", "push", "webhook"]>>;
++        readonly inputSchema: Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>;
++        readonly payloadSchema: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++        readonly _meta: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    }>>;
++    readonly nextCursor: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsResult = typeof ListEventsResult.Type;
++/**
++ * An `events/list` request.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const ListEventsParams: Schema.Struct<{
++    readonly cursor: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsParams = typeof ListEventsParams.Type;
++/**
++ * Where a webhook subscription delivers. The secret is a Standard Webhooks `whsec_` value
++ * supplied by the client.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const WebhookEventDelivery: Schema.Struct<{
++    readonly mode: Schema.Literal<"webhook">;
++    readonly url: Schema.String;
++    readonly secret: Schema.String;
++}>;
++/**
++ * An `events/subscribe` request. The same principal, URL, name and arguments address the same
++ * subscription; repeating the request refreshes it.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const SubscribeEventParams: Schema.Struct<{
++    readonly name: Schema.String;
++    readonly arguments: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    readonly delivery: Schema.Struct<{
++        readonly mode: Schema.Literal<"webhook">;
++        readonly url: Schema.String;
++        readonly secret: Schema.String;
++    }>;
++    readonly cursor: Schema.decodeTo<Schema.toType<Schema.optional<Schema.NullOr<Schema.String>>>, Schema.optionalKey<Schema.NullOr<Schema.String>>, never, never>;
++    readonly maxAgeMs: Schema.decodeTo<Schema.toType<Schema.optional<Schema.Int>>, Schema.optionalKey<Schema.Int>, never, never>;
++    readonly ttlMs: Schema.decodeTo<Schema.toType<Schema.optional<Schema.NullOr<Schema.Int>>>, Schema.optionalKey<Schema.NullOr<Schema.Int>>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventParams = typeof SubscribeEventParams.Type;
++/**
++ * The server's grant for an `events/subscribe` request. `refreshBefore` is an ISO 8601 time, or
++ * `null` when the subscription does not expire.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const SubscribeEventResult: Schema.Struct<{
++    readonly id: Schema.String;
++    readonly refreshBefore: Schema.NullOr<Schema.String>;
++    readonly cursor: Schema.NullOr<Schema.String>;
++    readonly truncated: Schema.decodeTo<Schema.toType<Schema.optional<Schema.Boolean>>, Schema.optionalKey<Schema.Boolean>, never, never>;
++    readonly deliveryStatus: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventResult = typeof SubscribeEventResult.Type;
++/**
++ * An `events/unsubscribe` request. It names the subscription by the same key as
++ * `events/subscribe`, without the secret.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const UnsubscribeEventParams: Schema.Struct<{
++    readonly name: Schema.String;
++    readonly arguments: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    readonly delivery: Schema.Struct<{
++        readonly mode: Schema.Literal<"webhook">;
++        readonly url: Schema.String;
++    }>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type;
+ export {};
+ //# sourceMappingURL=McpSchema.d.ts.map
+\ No newline at end of file
+diff --git a/dist/ai/McpSchema.js b/dist/ai/McpSchema.js
+index 615a9f9..7874d1c 100644
+--- a/dist/ai/McpSchema.js
++++ b/dist/ai/McpSchema.js
+@@ -2563,4 +2563,133 @@ export function param(name, schema) {
+  * @since 4.0.0
+  */
+ export class EnabledWhen extends /*#__PURE__*/Context.Service()("effect/ai/McpSchema/EnabledWhen") {}
++// =============================================================================
++// Events
++// =============================================================================
++/**
++ * JSON-RPC error code for a referenced entity that does not exist, such as an unknown
++ * event name. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const NOT_FOUND_ERROR_CODE = -32011;
++/**
++ * JSON-RPC error code for a principal that may not use this event or arguments.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const FORBIDDEN_ERROR_CODE = -32012;
++/**
++ * JSON-RPC error code for a server-imposed limit.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const RESOURCE_EXHAUSTED_ERROR_CODE = -32013;
++/**
++ * JSON-RPC error code for a well-formed request that asks for an unsupported option.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const UNSUPPORTED_ERROR_CODE = -32014;
++/**
++ * JSON-RPC error code for a webhook callback that failed verification or could not be reached.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const CALLBACK_ENDPOINT_ERROR_CODE = -32015;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDeliveryMode = /*#__PURE__*/Schema.Literals(["poll", "push", "webhook"]);
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDefinition = /*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  title: /*#__PURE__*/optional(Schema.String),
++  description: /*#__PURE__*/optional(Schema.String),
++  delivery: /*#__PURE__*/Schema.Array(EventDeliveryMode),
++  inputSchema: Schema.JsonObject,
++  payloadSchema: /*#__PURE__*/optional(Schema.JsonObject),
++  _meta: /*#__PURE__*/optional(Schema.JsonObject)
++});
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsResult = /*#__PURE__*/Schema.Struct({
++  events: /*#__PURE__*/Schema.Array(EventDefinition),
++  nextCursor: /*#__PURE__*/optional(Schema.String)
++});
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsParams = /*#__PURE__*/Schema.Struct({
++  cursor: /*#__PURE__*/optional(Schema.String)
++});
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const WebhookEventDelivery = /*#__PURE__*/Schema.Struct({
++  mode: /*#__PURE__*/Schema.Literal("webhook"),
++  url: Schema.String,
++  secret: Schema.String
++});
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventParams = /*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  arguments: /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.Json)),
++  delivery: WebhookEventDelivery,
++  cursor: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.String)),
++  maxAgeMs: /*#__PURE__*/optional(Schema.Int),
++  ttlMs: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.Int))
++});
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventResult = /*#__PURE__*/Schema.Struct({
++  id: Schema.String,
++  refreshBefore: /*#__PURE__*/Schema.NullOr(Schema.String),
++  cursor: /*#__PURE__*/Schema.NullOr(Schema.String),
++  truncated: /*#__PURE__*/optional(Schema.Boolean),
++  deliveryStatus: /*#__PURE__*/optional(Schema.JsonObject)
++});
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const UnsubscribeEventParams = /*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  arguments: /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.Json)),
++  delivery: /*#__PURE__*/Schema.Struct({
++    mode: /*#__PURE__*/Schema.Literal("webhook"),
++    url: Schema.String
++  })
++});
+ //# sourceMappingURL=McpSchema.js.map
+\ No newline at end of file
+diff --git a/dist/ai/McpServer.d.ts b/dist/ai/McpServer.d.ts
+index 63727e7..79bf387 100644
+--- a/dist/ai/McpServer.d.ts
++++ b/dist/ai/McpServer.d.ts
+@@ -315,6 +315,40 @@ export declare const registerToolkit: <Tools extends Record<string, Tool.Any>>(t
+  * @since 4.0.0
+  */
+ export declare const toolkit: <Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>) => Layer.Layer<never, never, Tool.HandlersFor<Tools> | Exclude<Tool.HandlerServices<Tools>, McpRequestContext>>;
++/**
++ * Handlers for the draft MCP events extension: listing event types and managing webhook
++ * subscriptions. Each handler runs with the request's `McpRequestContext`, so it can
++ * authorize the principal that sent it. Failures are MCP errors and reach the client
++ * unchanged, such as `CALLBACK_ENDPOINT_ERROR_CODE` with `data.reason`.
++ *
++ * Only protocols that define events serve these methods; currently `2026-07-28`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export interface EventsHandler<R = never> {
++    readonly list: (request: McpSchema.ListEventsParams) => Effect.Effect<McpSchema.ListEventsResult, McpSchema.McpError, R>;
++    readonly subscribe: (request: McpSchema.SubscribeEventParams) => Effect.Effect<McpSchema.SubscribeEventResult, McpSchema.McpError, R>;
++    readonly unsubscribe: (request: McpSchema.UnsubscribeEventParams) => Effect.Effect<void, McpSchema.McpError, R>;
++}
++/**
++ * Registers the server's events handlers. The server then advertises the `events`
++ * capability and serves `events/list`, `events/subscribe` and `events/unsubscribe`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const registerEvents: <R>(handler: EventsHandler<R>) => Effect.Effect<void, never, McpServer | Exclude<R, McpRequestContext>>;
++/**
++ * Registers events handlers as a layer, like `toolkit` does for tools.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const events: <R>(handler: EventsHandler<R>) => Layer.Layer<never, never, Exclude<R, McpRequestContext>>;
+ /**
+  * Utility type that validates a completion-handler record against the allowed
+  * parameter keys.
+diff --git a/dist/ai/McpServer.js b/dist/ai/McpServer.js
+index 2da5941..eab5665 100644
+--- a/dist/ai/McpServer.js
++++ b/dist/ai/McpServer.js
+@@ -423,8 +423,15 @@ export class McpServer extends /*#__PURE__*/Context.Service()("effect/ai/McpServ
+ const MCP_SESSION_ID_HEADER = "mcp-session-id";
+ const MCP_PROTOCOL_VERSION_HEADER = "mcp-protocol-version";
+ const MCP_INVALID_BATCH_METHOD = "invalid/json-rpc-batch";
+-const cancelledResponses = /*#__PURE__*/new WeakMap();
+ const requestKey = requestId => `${typeof requestId}:${requestId}`;
++const httpPostRequests = /*#__PURE__*/new WeakMap();
++// A cancelled request's exit, and where the encoder records that it withheld the response.
++const cancelledResponses = /*#__PURE__*/new WeakMap();
++/**
++ * A POST carrying a JSON-RPC request ended without a response for it that the server withheld
++ * on purpose, for example because writing the response failed.
++ */
++class McpResponseNotWritten extends /*#__PURE__*/Data.TaggedError("McpResponseNotWritten") {}
+ class McpClientKey extends Data.Class {}
+ /**
+  * Runs an MCP server over the current `RpcServer.Protocol`.
+@@ -509,6 +516,8 @@ const runWithRuntime = /*#__PURE__*/Effect.fnUntraced(function* (options, runtim
+     if (!cancelRequest(clientId, requestId)) {
+       return Effect.void;
+     }
++    // Ending the HTTP stream withholds the subscription's response.
++    activeRequests.get(clientId)?.get(requestKey(requestId))?.post?.withheld.add(requestKey(requestId));
+     return isHttp ? protocol.end(clientId) : sendNotification(protocolVersion, clientId, {
+       tag: "notifications/cancelled",
+       payload: {
+@@ -636,13 +645,16 @@ const runWithRuntime = /*#__PURE__*/Effect.fnUntraced(function* (options, runtim
+       if (response._tag === "Exit") {
+         const requests = activeRequests.get(clientId);
+         const key = requestKey(response.requestId);
+-        const cancelled = requests?.get(key)?.cancelled;
++        const active = requests?.get(key);
+         if (requests !== undefined && requests.delete(key) && requests.size === 0) {
+           activeRequests.delete(clientId);
+         }
+-        if (cancelled === true) {
++        if (active?.cancelled === true) {
+           if (transport === "custom") return Effect.void;
+-          cancelledResponses.set(response, response.requestId);
++          cancelledResponses.set(response, {
++            requestId: response.requestId,
++            post: active.post
++          });
+           return protocol.send(clientId, response);
+         }
+         if (response.exit._tag === "Failure" && !response.exit.cause.some(failure => failure._tag === "Fail")) {
+@@ -769,9 +781,19 @@ const runWithRuntime = /*#__PURE__*/Effect.fnUntraced(function* (options, runtim
+               }
+               if (request.isNotification !== true) {
+                 const requests = activeRequests.get(clientId) ?? new Map();
++                let post;
++                if (httpRequest !== undefined) {
++                  post = httpPostRequests.get(httpRequest) ?? {
++                    requests: new Set(),
++                    withheld: new Set()
++                  };
++                  post.requests.add(requestKey(request.id));
++                  httpPostRequests.set(httpRequest, post);
++                }
+                 requests.set(requestKey(request.id), {
+                   prepared,
+-                  cancelled: false
++                  cancelled: false,
++                  post
+                 });
+                 activeRequests.set(clientId, requests);
+               }
+@@ -1090,9 +1112,7 @@ export const layerHttp = options => {
+       allow: "POST"
+     }
+   });
+-  const methodNotAllowed = request => isAllowedMcpOrigin(request, options.allowedOrigins) ? Effect.succeed(methodNotAllowedResponse) : Effect.succeed(HttpServerResponse.empty({
+-    status: 403
+-  }));
++  const methodNotAllowed = request => isAllowedMcpOrigin(request, options.allowedOrigins) ? Effect.succeed(methodNotAllowedResponse) : Effect.succeed(forbiddenOrigin(request));
+   const routes = Layer.mergeAll(HttpRouter.add("GET", options.path, methodNotAllowed), HttpRouter.add("PUT", options.path, methodNotAllowed), HttpRouter.add("PATCH", options.path, methodNotAllowed), HttpRouter.add("DELETE", options.path, methodNotAllowed), HttpRouter.add("OPTIONS", options.path, methodNotAllowed));
+   return Layer.merge(layerWithRuntime(options, "http"), routes).pipe(Layer.provide(layerMcpProtocolHttp(options)), Layer.provide(runtime), Layer.provide(RpcSerialization.layerJsonRpc()));
+ };
+@@ -1105,20 +1125,14 @@ const layerMcpProtocolHttp = options => Layer.effect(RpcServer.Protocol)(Effect.
+   const router = yield* HttpRouter.HttpRouter;
+   yield* router.add("POST", options.path, request => {
+     if (!isAllowedMcpOrigin(request, options.allowedOrigins)) {
+-      return Effect.succeed(HttpServerResponse.empty({
+-        status: 403
+-      }));
++      return Effect.succeed(forbiddenOrigin(request));
+     }
+     if (mcpMediaTypes(request.headers["content-type"])[0] !== "application/json") {
+-      return Effect.succeed(HttpServerResponse.empty({
+-        status: 415
+-      }));
++      return Effect.succeed(transportRejection(415, "Unsupported Media Type: send JSON-RPC messages with Content-Type: application/json"));
+     }
+     const accepted = mcpMediaTypes(request.headers["accept"]);
+     if (!accepted.includes("application/json") || !accepted.includes("text/event-stream")) {
+-      return Effect.succeed(HttpServerResponse.empty({
+-        status: 406
+-      }));
++      return Effect.succeed(transportRejection(406, "Not Acceptable: the Accept header must list both application/json and text/event-stream"));
+     }
+     return Effect.gen(function* () {
+       const parsed = yield* Effect.result(Effect.flatMap(request.text, Schema.decodeEffect(Schema.UnknownFromJsonString)));
+@@ -1126,10 +1140,26 @@ const layerMcpProtocolHttp = options => Layer.effect(RpcServer.Protocol)(Effect.
+       if (admission._tag === "Rejected") {
+         return admission.response;
+       }
+-      const response = Effect.map(httpEffect, response => {
++      // The protocol registers this POST's requests under the request in the current context.
++      const httpRequest = yield* HttpServerRequest.HttpServerRequest;
++      const response = Effect.flatMap(httpEffect, response => {
++        if (!admission.acknowledge && response.body._tag === "Uint8Array" && response.body.body.length === 0) {
++          // A POST with a request must answer with JSON or SSE. Without a response, that is only
++          // correct when the server withheld every request's response after its cancellation.
++          // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
++          const post = httpPostRequests.get(httpRequest);
++          return post !== undefined && post.requests.size > 0 && Array.from(post.requests).every(key => post.withheld.has(key)) ? Effect.succeed(HttpServerResponse.stream(Stream.empty, {
++            status: response.status,
++            headers: Headers.remove(response.headers, "content-type"),
++            cookies: response.cookies,
++            contentType: "text/event-stream"
++          })) : Effect.die(new McpResponseNotWritten({
++            message: "The MCP request ended without writing its response"
++          }));
++        }
+         // Completed responses may already contain notifications followed by the result.
+         const hasMultipleMessages = response.body._tag === "Uint8Array" && response.body.body.subarray(0, -1).includes(10);
+-        return admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages ? toServerSentEvents(response, admission.isSubscription) : response;
++        return Effect.succeed(admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages ? toServerSentEvents(response, admission.isSubscription) : response);
+       });
+       return yield* admission.acknowledge ? Effect.catchCause(response, () => Effect.succeed(HttpServerResponse.empty({
+         status: 202
+@@ -1180,15 +1210,16 @@ function mcpJsonRpcSerialization(options) {
+     ...serialization,
+     makeUnsafe: () => {
+       const parser = serialization.makeUnsafe();
+-      const cancelledIds = new Set();
++      // Cancelled request IDs, and the POST to record each withheld response in.
++      const cancelledIds = new Map();
+       return {
+         decode: parser.decode,
+         encode: response => {
+           if (Predicate.isReadonlyObject(response)) {
+-            const cancelledId = cancelledResponses.get(response);
+-            if (cancelledId !== undefined) {
++            const cancelled = cancelledResponses.get(response);
++            if (cancelled !== undefined) {
+               cancelledResponses.delete(response);
+-              cancelledIds.add(cancelledId);
++              cancelledIds.set(cancelled.requestId, cancelled.post);
+             }
+           }
+           const encoded = parser.encode(response);
+@@ -1198,7 +1229,12 @@ function mcpJsonRpcSerialization(options) {
+           if (cancelledIds.size > 0) {
+             // Count cancelled completions toward the batch, but never write their responses.
+             // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/cancellation
+-            const keep = message => !(Predicate.isReadonlyObject(message) && !Predicate.hasProperty(message, "method") && (typeof message.id === "string" || typeof message.id === "number") && cancelledIds.delete(message.id));
++            const keep = message => {
++              if (!Predicate.isReadonlyObject(message) || Predicate.hasProperty(message, "method") || typeof message.id !== "string" && typeof message.id !== "number" || !cancelledIds.has(message.id)) return true;
++              cancelledIds.get(message.id)?.withheld.add(requestKey(message.id));
++              cancelledIds.delete(message.id);
++              return false;
++            };
+             if (Array.isArray(message)) {
+               const remaining = message.filter(keep);
+               if (remaining.length === 0) return undefined;
+@@ -1244,6 +1280,19 @@ const isAllowedMcpOrigin = (request, allowedOrigins) => {
+   const origin = request.headers["origin"];
+   return origin === undefined || (allowedOrigins ?? []).includes(origin);
+ };
++// Rejections before the JSON-RPC message is read. Clients print the body after their own prefix,
++// so it is a JSON-RPC error without a request ID that names the fix.
++const transportRejection = (status, message) => HttpServerResponse.jsonUnsafe({
++  jsonrpc: "2.0",
++  id: null,
++  error: {
++    code: McpSchema.INVALID_REQUEST_ERROR_CODE,
++    message
++  }
++}, {
++  status
++});
++const forbiddenOrigin = request => transportRejection(403, `Forbidden: Origin '${request.headers["origin"]}' may not call this MCP endpoint`);
+ const mcpMediaTypes = header => header === undefined ? [] : header.split(",").flatMap(part => {
+   const [mediaType, ...parameters] = part.split(";");
+   const quality = parameters.map(parameter => parameter.trim().toLowerCase()).find(parameter => parameter.startsWith("q="));
+@@ -1400,6 +1449,32 @@ const toolJsonSchema = (schema, strict) => {
+  * @since 4.0.0
+  */
+ export const toolkit = toolkit => Layer.effectDiscard(registerToolkit(toolkit)).pipe(Layer.provide(McpServer.layer));
++/**
++ * Registers the server's events handlers. The server then advertises the `events`
++ * capability and serves `events/list`, `events/subscribe` and `events/unsubscribe`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const registerEvents = handler => Effect.gen(function* () {
++  const server = yield* McpServer;
++  const services = omitRequestServices(yield* Effect.context());
++  const run = (effect, invocation) => provideInvocationContext(effect, invocation).pipe(Effect.provideContext(services));
++  yield* internalState.get(server).core.events.register({
++    list: (request, invocation) => run(handler.list(request), invocation),
++    subscribe: (request, invocation) => run(handler.subscribe(request), invocation),
++    unsubscribe: (request, invocation) => run(handler.unsubscribe(request), invocation)
++  });
++});
++/**
++ * Registers events handlers as a layer, like `toolkit` does for tools.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const events = handler => Layer.effectDiscard(registerEvents(handler)).pipe(Layer.provide(McpServer.layer));
+ /**
+  * Registers an MCP resource or resource template from an Effect program.
+  *
+diff --git a/dist/ai/Toolkit.js b/dist/ai/Toolkit.js
+index 31c84bb..6ef5ff2 100644
+--- a/dist/ai/Toolkit.js
++++ b/dist/ai/Toolkit.js
+@@ -101,9 +101,9 @@ const Proto = {
+       };
+       const handle = Effect.fnUntraced(function* (name, params, toolCallId, options) {
+         const tool = Object.hasOwn(tools, name) ? tools[name] : undefined;
++        // Tool arguments are caller content; spans record only the tool name.
+         yield* Effect.annotateCurrentSpan({
+-          tool: name,
+-          parameters: params
++          tool: name
+         });
+         if (Predicate.isUndefined(tool)) {
+           return yield* AiError.make({
+diff --git a/dist/ai/internal/mcpCore.js b/dist/ai/internal/mcpCore.js
+index 063320c..8f089b7 100644
+--- a/dist/ai/internal/mcpCore.js
++++ b/dist/ai/internal/mcpCore.js
+@@ -168,16 +168,25 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+       };
+     })
+   };
++  let eventsHandler;
++  const events = {
++    register: handler => Effect.sync(() => {
++      eventsHandler = handler;
++    }),
++    current: /*#__PURE__*/Effect.sync(() => eventsHandler)
++  };
+   const registrationPresence = Effect.sync(() => ({
+     tools: registrations.size > 0,
+     resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
+-    prompts: promptRegistrations.size > 0
++    prompts: promptRegistrations.size > 0,
++    events: eventsHandler !== undefined
+   }));
+   return {
+     tools,
+     resources,
+     prompts,
+     completions,
++    events,
+     registrationPresence
+   };
+ });
+diff --git a/dist/ai/internal/mcpProtocol/v2026_07_28.js b/dist/ai/internal/mcpProtocol/v2026_07_28.js
+index 0161147..e83835d 100644
+--- a/dist/ai/internal/mcpProtocol/v2026_07_28.js
++++ b/dist/ai/internal/mcpProtocol/v2026_07_28.js
+@@ -219,6 +219,14 @@ export const makeHandlers = (core, _lifecycle, context) => {
+   const decodePromptOutcome = Schema.decodeUnknownEffect(Schema.Union([McpSchema.GetPromptResult, McpSchema.InputRequiredResult]));
+   const decodeCompleteResult = Schema.decodeUnknownEffect(McpSchema.CompleteResult);
+   const decodeListToolsResult = Schema.decodeUnknownEffect(McpSchema.ListToolsResult);
++  const decodeListEventsResult = Schema.decodeUnknownEffect(McpSchema.ListEventsResult);
++  const decodeSubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.SubscribeEventResult);
++  const decodeUnsubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.UnsubscribeEventResult);
++  // Events are reachable only once a handler is registered, like a capability the server lacks.
++  const eventsHandler = Effect.flatMap(core.events.current, handler => handler === undefined ? failWithHttpStatus(404, new McpProtocol.ProtocolError({
++    code: PublicMcpSchema.METHOD_NOT_FOUND_ERROR_CODE,
++    message: "Method not found"
++  })) : Effect.succeed(handler));
+   const sendNotification = context.sendNotification;
+   const supportsSubscriptions = sendNotification !== undefined;
+   // Older adapters accept arbitrary JSON; this binding requires extension settings objects.
+@@ -241,6 +249,7 @@ export const makeHandlers = (core, _lifecycle, context) => {
+     if (presence.prompts) capabilities.prompts = {
+       listChanged: supportsSubscriptions
+     };
++    if (presence.events) capabilities.events = {};
+     return {
+       supportedVersions: context.supportedVersions,
+       capabilities,
+@@ -535,6 +544,40 @@ export const makeHandlers = (core, _lifecycle, context) => {
+         _meta: toolResult._meta
+       }), context.serverInfo);
+     }, Effect.mapError(projectError)),
++    "events/list": Effect.fnUntraced(function* (request) {
++      const handler = yield* eventsHandler;
++      const invocation = yield* getInvocation;
++      const page = yield* handler.list(omitUndefined({
++        cursor: request.cursor
++      }), invocation);
++      const result = yield* projectCompleteResult({
++        events: page.events.map(event => omitUndefined(event)),
++        nextCursor: page.nextCursor
++      }, context.serverInfo);
++      return yield* decodeListEventsResult(result);
++    }, Effect.mapError(projectError)),
++    "events/subscribe": Effect.fnUntraced(function* (request) {
++      const handler = yield* eventsHandler;
++      const invocation = yield* getInvocation;
++      const {
++        _meta: _,
++        ...params
++      } = request;
++      const granted = yield* handler.subscribe(PublicMcpSchema.SubscribeEventParams.make(omitUndefined(params)), invocation);
++      const result = yield* projectCompleteResult(granted, context.serverInfo);
++      return yield* decodeSubscribeEventResult(result);
++    }, Effect.mapError(projectError)),
++    "events/unsubscribe": Effect.fnUntraced(function* (request) {
++      const handler = yield* eventsHandler;
++      const invocation = yield* getInvocation;
++      const {
++        _meta: _,
++        ...params
++      } = request;
++      yield* handler.unsubscribe(PublicMcpSchema.UnsubscribeEventParams.make(omitUndefined(params)), invocation);
++      const result = yield* projectCompleteResult({}, context.serverInfo);
++      return yield* decodeUnsubscribeEventResult(result);
++    }, Effect.mapError(projectError)),
+     "notifications/cancelled": Effect.fnUntraced(function* (_request) {
+       return yield* Effect.void;
+     })
+diff --git a/dist/ai/internal/mcpRuntime.js b/dist/ai/internal/mcpRuntime.js
+index 06370fd..c04af48 100644
+--- a/dist/ai/internal/mcpRuntime.js
++++ b/dist/ai/internal/mcpRuntime.js
+@@ -89,6 +89,14 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+     statelessProtocol = protocol;
+   }
+   const registry = yield* McpProtocolRegistry.make(protocols);
++  const unsupportedProtocolVersion = requested => ({
++    code: UNSUPPORTED_PROTOCOL_VERSION_ERROR_CODE,
++    message: `Unsupported protocol version '${requested}'. Supported versions: ${protocolVersions.join(", ")}`,
++    data: {
++      supported: protocolVersions,
++      requested
++    }
++  });
+   const selectHttpProtocol = (headers, input) => {
+     const protocolVersion = headers[MCP_PROTOCOL_VERSION_HEADER];
+     const sessionId = headers[MCP_SESSION_ID_HEADER];
+@@ -130,14 +138,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+         return {
+           _tag: "Rejected",
+           status: 400,
+-          error: {
+-            code: UNSUPPORTED_PROTOCOL_VERSION_ERROR_CODE,
+-            message: `Unsupported protocol version '${protocolVersion}'`,
+-            data: {
+-              supported: protocolVersions,
+-              requested: protocolVersion
+-            }
+-          }
++          error: unsupportedProtocolVersion(protocolVersion)
+         };
+       }
+       const method = inputRecord?.method;
+@@ -159,23 +160,28 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+       };
+     }
+     const binding = sessionId === undefined ? undefined : stateful?.resolveSessionId(sessionId);
++    // A forgotten session is 404, and the client must initialize again (MCP 2025-11-25, Session Management).
+     if (sessionId !== undefined && binding === undefined) {
+       return {
+         _tag: "Rejected",
+-        status: 404
++        status: 404,
++        error: {
++          code: PublicMcpSchema.INVALID_REQUEST_ERROR_CODE,
++          message: "Session not found: this Mcp-Session-Id is unknown or has expired, for example after a server restart. Start a new session by sending initialize without an Mcp-Session-Id header"
++        }
+       };
+     }
+     if (!isInitialize && protocolVersion !== undefined && !registry.protocols.some(protocol => protocol.protocolVersion === protocolVersion)) {
+       return {
+         _tag: "Rejected",
+-        status: 400
++        status: 400,
++        error: unsupportedProtocolVersion(protocolVersion)
+       };
+     }
+-    if (!isInitialize && binding?.protocol.runtime.transport.http.requiresVersionHeader === true && protocolVersion !== binding.protocol.protocolVersion) {
+-      return {
+-        _tag: "Rejected",
+-        status: 400
+-      };
++    // Without the header, a session keeps the version negotiated at initialization
++    // (MCP 2025-11-25, Protocol Version Header). A header naming another version is rejected.
++    if (!isInitialize && protocolVersion !== undefined && binding?.protocol.runtime.transport.http.requiresVersionHeader === true && protocolVersion !== binding.protocol.protocolVersion) {
++      return headerMismatch(`MCP-Protocol-Version header '${protocolVersion}' does not match protocol version '${binding.protocol.protocolVersion}' negotiated for this session`);
+     }
+     return {
+       _tag: "Accepted",
+@@ -276,10 +282,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+       if (Result.isFailure(parsed)) {
+         const version = headers[MCP_PROTOCOL_VERSION_HEADER];
+         if (version !== undefined && !registry.protocols.some(protocol => protocol.protocolVersion === version)) {
+-          return reject(400);
++          return reject(400, unsupportedProtocolVersion(version));
+         }
+         const admission = selectHttpProtocol(headers, undefined);
+-        return admission._tag === "Rejected" && admission.error === undefined ? reject(admission.status) : reject(200, new PublicMcpSchema.ParseError({
++        // Session and session-version failures do not depend on the body; they precede the parse error.
++        return admission._tag === "Rejected" && (admission.status === 404 || admission.error.code === PublicMcpSchema.HEADER_MISMATCH_ERROR_CODE) ? reject(admission.status, admission.error) : reject(200, new PublicMcpSchema.ParseError({
+           message: "Parse error"
+         }));
+       }
+@@ -291,8 +298,13 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+           }));
+         }
+         const admission = selectHttpProtocol(headers, input);
+-        if (admission._tag === "Rejected" || input.some(hasRequestProtocolVersion) || input.some(message => Predicate.hasProperty(message, "method") && message.method === "initialize") || admission.binding?.protocol.runtime.transport.jsonRpc.acceptsBatches !== true) {
+-          return reject(400);
++        if (admission._tag === "Rejected") {
++          return reject(admission.status, admission.error);
++        }
++        if (input.some(hasRequestProtocolVersion) || input.some(message => Predicate.hasProperty(message, "method") && message.method === "initialize") || admission.binding?.protocol.runtime.transport.jsonRpc.acceptsBatches !== true) {
++          return reject(400, new PublicMcpSchema.InvalidRequest({
++            message: "JSON-RPC batches are not accepted here; send each message in its own POST request"
++          }));
+         }
+         return {
+           _tag: "Accepted",
+@@ -320,8 +332,15 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+       }
+       const isInitialize = Predicate.hasProperty(input, "method") && input.method === "initialize";
+       const hasSession = headers[MCP_SESSION_ID_HEADER] !== undefined;
+-      if (isInitialize ? hasSession : !hasSession && admission.protocol?.runtime._tag !== "Stateless") {
+-        return reject(400);
++      if (isInitialize && hasSession) {
++        return reject(400, new PublicMcpSchema.InvalidRequest({
++          message: "initialize starts a new session; send it without an Mcp-Session-Id header"
++        }), id);
++      }
++      if (!isInitialize && !hasSession && admission.protocol?.runtime._tag !== "Stateless") {
++        return reject(400, stateful === undefined ? undefined : new PublicMcpSchema.InvalidRequest({
++          message: "Mcp-Session-Id header is required; send initialize first and include the Mcp-Session-Id it returns on later requests"
++        }), id);
+       }
+       if (isRequest && admission.protocol?.runtime._tag === "Stateless" && !(admission.protocol.handlerRpcs?.requests.has(input.method) ?? admission.protocol.clientRpcs.requests.has(input.method))) {
+         return reject(404, new PublicMcpSchema.MethodNotFound({
+diff --git a/dist/ai/internal/mcpSchema/v2026_07_28.js b/dist/ai/internal/mcpSchema/v2026_07_28.js
+index 5f32a89..c35f862 100644
+--- a/dist/ai/internal/mcpSchema/v2026_07_28.js
++++ b/dist/ai/internal/mcpSchema/v2026_07_28.js
+@@ -67,6 +67,9 @@ export const ServerCapabilities = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__
+   tools: /*#__PURE__*/optional(/*#__PURE__*/Schema.Struct({
+     listChanged: /*#__PURE__*/optional(Schema.Boolean)
+   })),
++  events: /*#__PURE__*/optional(/*#__PURE__*/Schema.Struct({
++    listChanged: /*#__PURE__*/optional(Schema.Boolean)
++  })),
+   extensions: /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.JsonObject))
+ }), [Schema.JsonObject]);
+ /**
+@@ -724,7 +727,88 @@ export class SubscriptionsAcknowledgedNotification extends /*#__PURE__*/Rpc.make
+ /**
+  * @internal
+  */
+-export class ClientRequestRpcs extends /*#__PURE__*/RpcGroup.make(Discover, Complete, GetPrompt, ListPrompts, ListResources, ListResourceTemplates, ReadResource, SubscriptionsListen, CallTool, ListTools) {}
++export const EventDefinition = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  title: /*#__PURE__*/optional(Schema.String),
++  description: /*#__PURE__*/optional(Schema.String),
++  delivery: /*#__PURE__*/Schema.Array(/*#__PURE__*/Schema.Literals(["poll", "push", "webhook"])),
++  inputSchema: Schema.JsonObject,
++  payloadSchema: /*#__PURE__*/optional(Schema.JsonObject),
++  _meta: Meta
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export const ListEventsResult = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  ...PaginatedResult,
++  events: /*#__PURE__*/Schema.Array(EventDefinition)
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export class ListEvents extends /*#__PURE__*/Rpc.make("events/list", {
++  success: ListEventsResult,
++  error: McpError,
++  payload: PaginatedRequestParams
++}) {}
++const EventArguments = /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.Json));
++/**
++ * @internal
++ */
++export const SubscribeEventResult = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  ...ResultMeta,
++  id: Schema.String,
++  refreshBefore: /*#__PURE__*/Schema.NullOr(Schema.String),
++  cursor: /*#__PURE__*/Schema.NullOr(Schema.String),
++  truncated: /*#__PURE__*/optional(Schema.Boolean),
++  deliveryStatus: /*#__PURE__*/optional(Schema.JsonObject)
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export class SubscribeEvent extends /*#__PURE__*/Rpc.make("events/subscribe", {
++  success: SubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: /*#__PURE__*/Schema.Struct({
++      mode: /*#__PURE__*/Schema.Literal("webhook"),
++      url: Schema.String,
++      secret: Schema.String
++    }),
++    cursor: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.String)),
++    maxAgeMs: /*#__PURE__*/optional(Schema.Int),
++    ttlMs: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.Int))
++  }
++}) {}
++/**
++ * @internal
++ */
++export const UnsubscribeEventResult = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  ...ResultMeta
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export class UnsubscribeEvent extends /*#__PURE__*/Rpc.make("events/unsubscribe", {
++  success: UnsubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: /*#__PURE__*/Schema.Struct({
++      mode: /*#__PURE__*/Schema.Literal("webhook"),
++      url: Schema.String
++    })
++  }
++}) {}
++/**
++ * @internal
++ */
++export class ClientRequestRpcs extends /*#__PURE__*/RpcGroup.make(Discover, Complete, GetPrompt, ListPrompts, ListResources, ListResourceTemplates, ReadResource, SubscriptionsListen, CallTool, ListTools, ListEvents, SubscribeEvent, UnsubscribeEvent) {}
+ /**
+  * @internal
+  */
+diff --git a/dist/rpc/RpcServer.js b/dist/rpc/RpcServer.js
+index 709efbf..b94b832 100644
+--- a/dist/rpc/RpcServer.js
++++ b/dist/rpc/RpcServer.js
+@@ -759,7 +759,9 @@ export const makeProtocolWithHttpEffect = /*#__PURE__*/Effect.fnUntraced(functio
+         contentType: serialization.contentType
+       });
+     }
+-    const initialChunk = yield* Queue.takeAll(queue);
++    // A queue that ends without messages gives an empty body, as a buffered response without
++    // messages does, rather than a `Done` failure. The caller decides whether that is correct.
++    const initialChunk = yield* Effect.orElseSucceed(Queue.takeAll(queue), () => []);
+     if (queue.state._tag === "Done") {
+       return HttpServerResponse.uint8Array(mergeUint8Arrays(initialChunk), {
+         contentType: serialization.contentType
+diff --git a/src/JsonSchema.ts b/src/JsonSchema.ts
+index 133d409..44e28bd 100644
+--- a/src/JsonSchema.ts
++++ b/src/JsonSchema.ts
+@@ -31,6 +31,21 @@ export interface JsonSchema {
+   [x: string]: unknown
+ }
+ 
++/**
++ * Options for converting OpenAPI schemas to Draft 2020-12.
++ *
++ * @category decoding
++ * @since 4.0.0
++ */
++export interface FromOpenApiOptions {
++  /**
++   * Observe each reference in schema positions before its URI is rewritten.
++   * Reference targets are not followed. Examples, defaults and ignored OpenAPI
++   * 3.0 reference siblings are not visited. Callback exceptions propagate.
++   */
++  readonly onReference?: ((reference: string) => void) | undefined
++}
++
+ /**
+  * The set of JSON Schema dialects supported by this module.
+  *
+@@ -368,9 +383,11 @@ export function fromSchemaDraft2020_12(js: JsonSchema): Document<"draft-2020-12"
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12"> {
++export function fromSchemaOpenApi3_1(js: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12"> {
+   const isRootResource = createsResource(js.$id)
+   const schema = transformSchema(js, (schema, inEmbeddedResource) => {
++    if (typeof schema.$ref === "string") options?.onReference?.(schema.$ref)
++    if (typeof schema.$dynamicRef === "string") options?.onReference?.(schema.$dynamicRef)
+     if (!isRootResource && !inEmbeddedResource) rewriteSchemaRef(schema, rewriteOpenApiComponentsReference)
+     if (isMetaSchemaUri(schema.$schema, META_SCHEMA_URI_OPEN_API_3_1)) {
+       InternalRecord.assignProperty(schema, "$schema", META_SCHEMA_URI_DRAFT_2020_12)
+@@ -429,8 +446,8 @@ export function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12">
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_0(schema: JsonSchema): Document<"draft-2020-12"> {
+-  return fromSchemaDraft2020_12(convertOpenApi30(schema))
++export function fromSchemaOpenApi3_0(schema: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12"> {
++  return fromSchemaDraft2020_12(convertOpenApi30(schema, options))
+ }
+ 
+ /**
+@@ -1304,11 +1321,12 @@ function convertDependencies(
+   if (Object.keys(dependencies).length > 0) InternalRecord.assignProperty(out, "dependencies", dependencies)
+ }
+ 
+-function convertOpenApi30(root: JsonSchema): JsonSchema {
++function convertOpenApi30(root: JsonSchema, options?: FromOpenApiOptions): JsonSchema {
+   return convertSchema(root, (source, context) => {
+     const out: JsonSchema = {}
+ 
+     if (typeof source.$ref === "string") {
++      options?.onReference?.(source.$ref)
+       context.reference(out, rewriteOpenApiComponentsReference(source.$ref))
+       return out
+     }
+diff --git a/src/ai/McpSchema.ts b/src/ai/McpSchema.ts
+index 02fa724..c316c3a 100644
+--- a/src/ai/McpSchema.ts
++++ b/src/ai/McpSchema.ts
+@@ -3387,3 +3387,213 @@ export class EnabledWhen extends Context.Service<
+ >()(
+   "effect/ai/McpSchema/EnabledWhen"
+ ) {}
++
++// =============================================================================
++// Events
++// =============================================================================
++
++/**
++ * JSON-RPC error code for a referenced entity that does not exist, such as an unknown
++ * event name. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const NOT_FOUND_ERROR_CODE = -32011 as const
++
++/**
++ * JSON-RPC error code for a principal that may not use this event or arguments. Defined
++ * by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const FORBIDDEN_ERROR_CODE = -32012 as const
++
++/**
++ * JSON-RPC error code for a server-imposed limit, such as the number of subscriptions.
++ * Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const RESOURCE_EXHAUSTED_ERROR_CODE = -32013 as const
++
++/**
++ * JSON-RPC error code for a well-formed request that asks for an unsupported option, such
++ * as a delivery mode the event does not offer. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const UNSUPPORTED_ERROR_CODE = -32014 as const
++
++/**
++ * JSON-RPC error code for a webhook callback that failed verification or could not be
++ * reached. `data.reason` names the category. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const CALLBACK_ENDPOINT_ERROR_CODE = -32015 as const
++
++/**
++ * How a client receives an event's occurrences.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDeliveryMode = Schema.Literals(["poll", "push", "webhook"])
++
++/**
++ * An event type a server offers: its subscription arguments, payload shape, and the delivery
++ * modes it supports.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDefinition = Schema.Struct({
++  name: Schema.String,
++  title: optional(Schema.String),
++  description: optional(Schema.String),
++  delivery: Schema.Array(EventDeliveryMode),
++  inputSchema: Schema.JsonObject,
++  payloadSchema: optional(Schema.JsonObject),
++  _meta: optional(Schema.JsonObject)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type EventDefinition = typeof EventDefinition.Type
++
++/**
++ * One page of `events/list`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsResult = Schema.Struct({
++  events: Schema.Array(EventDefinition),
++  nextCursor: optional(Schema.String)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsResult = typeof ListEventsResult.Type
++
++/**
++ * An `events/list` request.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsParams = Schema.Struct({
++  cursor: optional(Schema.String)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsParams = typeof ListEventsParams.Type
++
++/**
++ * Where a webhook subscription delivers. The secret is a Standard Webhooks `whsec_` value
++ * supplied by the client.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const WebhookEventDelivery = Schema.Struct({
++  mode: Schema.Literal("webhook"),
++  url: Schema.String,
++  secret: Schema.String
++})
++
++/**
++ * An `events/subscribe` request. The same principal, URL, name and arguments address the same
++ * subscription; repeating the request refreshes it.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventParams = Schema.Struct({
++  name: Schema.String,
++  arguments: optional(Schema.Record(Schema.String, Schema.Json)),
++  delivery: WebhookEventDelivery,
++  cursor: optional(Schema.NullOr(Schema.String)),
++  maxAgeMs: optional(Schema.Int),
++  ttlMs: optional(Schema.NullOr(Schema.Int))
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventParams = typeof SubscribeEventParams.Type
++
++/**
++ * The server's grant for an `events/subscribe` request. `refreshBefore` is an ISO 8601 time, or
++ * `null` when the subscription does not expire.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventResult = Schema.Struct({
++  id: Schema.String,
++  refreshBefore: Schema.NullOr(Schema.String),
++  cursor: Schema.NullOr(Schema.String),
++  truncated: optional(Schema.Boolean),
++  deliveryStatus: optional(Schema.JsonObject)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventResult = typeof SubscribeEventResult.Type
++
++/**
++ * An `events/unsubscribe` request. It names the subscription by the same key as
++ * `events/subscribe`, without the secret.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const UnsubscribeEventParams = Schema.Struct({
++  name: Schema.String,
++  arguments: optional(Schema.Record(Schema.String, Schema.Json)),
++  delivery: Schema.Struct({
++    mode: Schema.Literal("webhook"),
++    url: Schema.String
++  })
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type
+diff --git a/src/ai/McpServer.ts b/src/ai/McpServer.ts
+index 8c601ab..2060c9f 100644
+--- a/src/ai/McpServer.ts
++++ b/src/ai/McpServer.ts
+@@ -650,14 +650,37 @@ export class McpServer extends Context.Service<McpServer, {
+ const MCP_SESSION_ID_HEADER = "mcp-session-id"
+ const MCP_PROTOCOL_VERSION_HEADER = "mcp-protocol-version"
+ const MCP_INVALID_BATCH_METHOD = "invalid/json-rpc-batch"
+-const cancelledResponses = new WeakMap<object, string | number>()
+ const requestKey = (requestId: string | number): string => `${typeof requestId}:${requestId}`
+ 
++/**
++ * The JSON-RPC requests of one HTTP POST, and those whose response the server withheld because
++ * the client cancelled them. Only a POST whose every request was withheld may end without one.
++ */
++interface HttpPostRequests {
++  readonly requests: Set<string>
++  readonly withheld: Set<string>
++}
++const httpPostRequests = new WeakMap<HttpServerRequest.HttpServerRequest, HttpPostRequests>()
++// A cancelled request's exit, and where the encoder records that it withheld the response.
++const cancelledResponses = new WeakMap<object, {
++  readonly requestId: string | number
++  readonly post: HttpPostRequests | undefined
++}>()
++
+ interface ActiveRequest {
+   readonly prepared: McpRuntime.PreparedRequest
+   readonly cancelled: boolean
++  readonly post: HttpPostRequests | undefined
+ }
+ 
++/**
++ * A POST carrying a JSON-RPC request ended without a response for it that the server withheld
++ * on purpose, for example because writing the response failed.
++ */
++class McpResponseNotWritten extends Data.TaggedError("McpResponseNotWritten")<{
++  readonly message: string
++}> {}
++
+ class McpClientKey extends Data.Class<{
+   readonly clientId: number
+   readonly profile: McpCore.NegotiatedProtocolProfile<string>
+@@ -798,6 +821,8 @@ const runWithRuntime = Effect.fnUntraced(function*(
+       if (!cancelRequest(clientId, requestId)) {
+         return Effect.void
+       }
++      // Ending the HTTP stream withholds the subscription's response.
++      activeRequests.get(clientId)?.get(requestKey(requestId))?.post?.withheld.add(requestKey(requestId))
+       return isHttp
+         ? protocol.end(clientId)
+         : sendNotification(protocolVersion, clientId, {
+@@ -948,13 +973,13 @@ const runWithRuntime = Effect.fnUntraced(function*(
+       if (response._tag === "Exit") {
+         const requests = activeRequests.get(clientId)
+         const key = requestKey(response.requestId)
+-        const cancelled = requests?.get(key)?.cancelled
++        const active = requests?.get(key)
+         if (requests !== undefined && requests.delete(key) && requests.size === 0) {
+           activeRequests.delete(clientId)
+         }
+-        if (cancelled === true) {
++        if (active?.cancelled === true) {
+           if (transport === "custom") return Effect.void
+-          cancelledResponses.set(response, response.requestId)
++          cancelledResponses.set(response, { requestId: response.requestId, post: active.post })
+           return protocol.send(clientId, response)
+         }
+         if (
+@@ -1130,7 +1155,13 @@ const runWithRuntime = Effect.fnUntraced(function*(
+               }
+               if (request.isNotification !== true) {
+                 const requests = activeRequests.get(clientId) ?? new Map<string, ActiveRequest>()
+-                requests.set(requestKey(request.id), { prepared, cancelled: false })
++                let post: HttpPostRequests | undefined
++                if (httpRequest !== undefined) {
++                  post = httpPostRequests.get(httpRequest) ?? { requests: new Set(), withheld: new Set() }
++                  post.requests.add(requestKey(request.id))
++                  httpPostRequests.set(httpRequest, post)
++                }
++                requests.set(requestKey(request.id), { prepared, cancelled: false, post })
+                 activeRequests.set(clientId, requests)
+               }
+               const handled = f(clientId, routedRequest)
+@@ -1567,7 +1598,7 @@ export const layerHttp = (options: {
+   const methodNotAllowed = (request: HttpServerRequest.HttpServerRequest) =>
+     isAllowedMcpOrigin(request, options.allowedOrigins)
+       ? Effect.succeed(methodNotAllowedResponse)
+-      : Effect.succeed(HttpServerResponse.empty({ status: 403 }))
++      : Effect.succeed(forbiddenOrigin(request))
+   const routes = Layer.mergeAll(
+     HttpRouter.add("GET", options.path, methodNotAllowed),
+     HttpRouter.add("PUT", options.path, methodNotAllowed),
+@@ -1598,14 +1629,21 @@ const layerMcpProtocolHttp = (options: {
+     const router = yield* HttpRouter.HttpRouter
+     yield* router.add("POST", options.path, (request) => {
+       if (!isAllowedMcpOrigin(request, options.allowedOrigins)) {
+-        return Effect.succeed(HttpServerResponse.empty({ status: 403 }))
++        return Effect.succeed(forbiddenOrigin(request))
+       }
+       if (mcpMediaTypes(request.headers["content-type"])[0] !== "application/json") {
+-        return Effect.succeed(HttpServerResponse.empty({ status: 415 }))
++        return Effect.succeed(
++          transportRejection(415, "Unsupported Media Type: send JSON-RPC messages with Content-Type: application/json")
++        )
+       }
+       const accepted = mcpMediaTypes(request.headers["accept"])
+       if (!accepted.includes("application/json") || !accepted.includes("text/event-stream")) {
+-        return Effect.succeed(HttpServerResponse.empty({ status: 406 }))
++        return Effect.succeed(
++          transportRejection(
++            406,
++            "Not Acceptable: the Accept header must list both application/json and text/event-stream"
++          )
++        )
+       }
+       return Effect.gen(function*() {
+         const parsed = yield* Effect.result(
+@@ -1615,13 +1653,34 @@ const layerMcpProtocolHttp = (options: {
+         if (admission._tag === "Rejected") {
+           return admission.response
+         }
+-        const response = Effect.map(httpEffect, (response) => {
++        // The protocol registers this POST's requests under the request in the current context.
++        const httpRequest = yield* HttpServerRequest.HttpServerRequest
++        const response = Effect.flatMap(httpEffect, (response) => {
++          if (!admission.acknowledge && response.body._tag === "Uint8Array" && response.body.body.length === 0) {
++            // A POST with a request must answer with JSON or SSE. Without a response, that is only
++            // correct when the server withheld every request's response after its cancellation.
++            // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
++            const post = httpPostRequests.get(httpRequest)
++            return post !== undefined && post.requests.size > 0 &&
++                Array.from(post.requests).every((key) => post.withheld.has(key))
++              ? Effect.succeed(HttpServerResponse.stream(Stream.empty, {
++                status: response.status,
++                headers: Headers.remove(response.headers, "content-type"),
++                cookies: response.cookies,
++                contentType: "text/event-stream"
++              }))
++              : Effect.die(
++                new McpResponseNotWritten({ message: "The MCP request ended without writing its response" })
++              )
++          }
+           // Completed responses may already contain notifications followed by the result.
+           const hasMultipleMessages = response.body._tag === "Uint8Array" &&
+             response.body.body.subarray(0, -1).includes(10)
+-          return admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages
+-            ? toServerSentEvents(response, admission.isSubscription)
+-            : response
++          return Effect.succeed(
++            admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages
++              ? toServerSentEvents(response, admission.isSubscription)
++              : response
++          )
+         })
+         return yield* admission.acknowledge
+           ? Effect.catchCause(response, () => Effect.succeed(HttpServerResponse.empty({ status: 202 })))
+@@ -1677,15 +1736,16 @@ function mcpJsonRpcSerialization(options?: {
+     ...serialization,
+     makeUnsafe: () => {
+       const parser = serialization.makeUnsafe()
+-      const cancelledIds = new Set<string | number>()
++      // Cancelled request IDs, and the POST to record each withheld response in.
++      const cancelledIds = new Map<string | number, HttpPostRequests | undefined>()
+       return {
+         decode: parser.decode,
+         encode: (response) => {
+           if (Predicate.isReadonlyObject(response)) {
+-            const cancelledId = cancelledResponses.get(response)
+-            if (cancelledId !== undefined) {
++            const cancelled = cancelledResponses.get(response)
++            if (cancelled !== undefined) {
+               cancelledResponses.delete(response)
+-              cancelledIds.add(cancelledId)
++              cancelledIds.set(cancelled.requestId, cancelled.post)
+             }
+           }
+           const encoded = parser.encode(response)
+@@ -1695,9 +1755,15 @@ function mcpJsonRpcSerialization(options?: {
+           if (cancelledIds.size > 0) {
+             // Count cancelled completions toward the batch, but never write their responses.
+             // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/cancellation
+-            const keep = (message: unknown) =>
+-              !(Predicate.isReadonlyObject(message) && !Predicate.hasProperty(message, "method") &&
+-                (typeof message.id === "string" || typeof message.id === "number") && cancelledIds.delete(message.id))
++            const keep = (message: unknown) => {
++              if (
++                !Predicate.isReadonlyObject(message) || Predicate.hasProperty(message, "method") ||
++                (typeof message.id !== "string" && typeof message.id !== "number") || !cancelledIds.has(message.id)
++              ) return true
++              cancelledIds.get(message.id)?.withheld.add(requestKey(message.id))
++              cancelledIds.delete(message.id)
++              return false
++            }
+             if (Array.isArray(message)) {
+               const remaining = message.filter(keep)
+               if (remaining.length === 0) return undefined
+@@ -1751,6 +1817,18 @@ const isAllowedMcpOrigin = (
+   return origin === undefined || (allowedOrigins ?? []).includes(origin)
+ }
+ 
++// Rejections before the JSON-RPC message is read. Clients print the body after their own prefix,
++// so it is a JSON-RPC error without a request ID that names the fix.
++const transportRejection = (status: 403 | 406 | 415, message: string): HttpServerResponse.HttpServerResponse =>
++  HttpServerResponse.jsonUnsafe({
++    jsonrpc: "2.0",
++    id: null,
++    error: { code: McpSchema.INVALID_REQUEST_ERROR_CODE, message }
++  }, { status })
++
++const forbiddenOrigin = (request: HttpServerRequest.HttpServerRequest): HttpServerResponse.HttpServerResponse =>
++  transportRejection(403, `Forbidden: Origin '${request.headers["origin"]}' may not call this MCP endpoint`)
++
+ const mcpMediaTypes = (header: string | undefined): ReadonlyArray<string> =>
+   header === undefined
+     ? []
+@@ -1979,6 +2057,72 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
+     Layer.provide(McpServer.layer)
+   )
+ 
++/**
++ * Handlers for the draft MCP events extension: listing event types and managing webhook
++ * subscriptions. Each handler runs with the request's `McpRequestContext`, so it can
++ * authorize the principal that sent it. Failures are MCP errors and reach the client
++ * unchanged, such as `CALLBACK_ENDPOINT_ERROR_CODE` with `data.reason`.
++ *
++ * Only protocols that define events serve these methods; currently `2026-07-28`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export interface EventsHandler<R = never> {
++  readonly list: (
++    request: McpSchema.ListEventsParams
++  ) => Effect.Effect<McpSchema.ListEventsResult, McpSchema.McpError, R>
++  readonly subscribe: (
++    request: McpSchema.SubscribeEventParams
++  ) => Effect.Effect<McpSchema.SubscribeEventResult, McpSchema.McpError, R>
++  readonly unsubscribe: (
++    request: McpSchema.UnsubscribeEventParams
++  ) => Effect.Effect<void, McpSchema.McpError, R>
++}
++
++/**
++ * Registers the server's events handlers. The server then advertises the `events`
++ * capability and serves `events/list`, `events/subscribe` and `events/unsubscribe`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const registerEvents = <R>(
++  handler: EventsHandler<R>
++): Effect.Effect<void, never, McpServer | Exclude<R, McpRequestContext>> =>
++  Effect.gen(function*() {
++    const server = yield* McpServer
++    const services = omitRequestServices(yield* Effect.context<Exclude<R, McpRequestContext>>())
++    const run = <A>(
++      effect: Effect.Effect<A, McpSchema.McpError, R>,
++      invocation: McpCore.McpInvocation
++    ): Effect.Effect<A, McpSchema.McpError> =>
++      provideInvocationContext(effect, invocation).pipe(
++        Effect.provideContext(services as Context.Context<Exclude<R, McpRequestContext>>)
++      )
++    yield* internalState.get(server)!.core.events.register({
++      list: (request, invocation) => run(handler.list(request), invocation),
++      subscribe: (request, invocation) => run(handler.subscribe(request), invocation),
++      unsubscribe: (request, invocation) => run(handler.unsubscribe(request), invocation)
++    })
++  })
++
++/**
++ * Registers events handlers as a layer, like `toolkit` does for tools.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const events = <R>(
++  handler: EventsHandler<R>
++): Layer.Layer<never, never, Exclude<R, McpRequestContext>> =>
++  Layer.effectDiscard(registerEvents(handler)).pipe(
++    Layer.provide(McpServer.layer)
++  )
++
+ /**
+  * Utility type that validates a completion-handler record against the allowed
+  * parameter keys.
+diff --git a/src/ai/Toolkit.ts b/src/ai/Toolkit.ts
+index c017c35..072f6ea 100644
+--- a/src/ai/Toolkit.ts
++++ b/src/ai/Toolkit.ts
+@@ -344,9 +344,9 @@ const Proto = {
+       ) {
+         const tool = Object.hasOwn(tools, name) ? tools[name] : undefined
+ 
++        // Tool arguments are caller content; spans record only the tool name.
+         yield* Effect.annotateCurrentSpan({
+-          tool: name,
+-          parameters: params
++          tool: name
+         })
+ 
+         if (Predicate.isUndefined(tool)) {
+diff --git a/src/ai/internal/mcpCore.ts b/src/ai/internal/mcpCore.ts
+index a7d200d..c6ef344 100644
+--- a/src/ai/internal/mcpCore.ts
++++ b/src/ai/internal/mcpCore.ts
+@@ -386,6 +386,35 @@ export type ServerNotification = Data.TaggedEnum<{
+  */
+ export const ServerNotification = Data.taggedEnum<ServerNotification>()
+ 
++/**
++ * One server's events: listing, and webhook subscriptions. Handlers fail with an MCP error,
++ * whose code and data reach the client unchanged.
++ *
++ * @internal
++ */
++export interface EventsHandler {
++  readonly list: (
++    request: McpSchema.ListEventsParams,
++    invocation: McpInvocation
++  ) => Effect.Effect<McpSchema.ListEventsResult, McpSchema.McpError>
++  readonly subscribe: (
++    request: McpSchema.SubscribeEventParams,
++    invocation: McpInvocation
++  ) => Effect.Effect<McpSchema.SubscribeEventResult, McpSchema.McpError>
++  readonly unsubscribe: (
++    request: McpSchema.UnsubscribeEventParams,
++    invocation: McpInvocation
++  ) => Effect.Effect<void, McpSchema.McpError>
++}
++
++/**
++ * @internal
++ */
++export interface Events {
++  readonly register: (handler: EventsHandler) => Effect.Effect<void>
++  readonly current: Effect.Effect<EventsHandler | undefined>
++}
++
+ /**
+  * @internal
+  */
+@@ -394,10 +423,12 @@ export interface McpCore {
+   readonly resources: Resources
+   readonly prompts: Prompts
+   readonly completions: Completions
++  readonly events: Events
+   readonly registrationPresence: Effect.Effect<{
+     readonly tools: boolean
+     readonly resources: boolean
+     readonly prompts: boolean
++    readonly events: boolean
+   }>
+ }
+ 
+@@ -536,11 +567,21 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+     })
+   }
+ 
++  let eventsHandler: EventsHandler | undefined
++  const events: Events = {
++    register: (handler) =>
++      Effect.sync(() => {
++        eventsHandler = handler
++      }),
++    current: Effect.sync(() => eventsHandler)
++  }
++
+   const registrationPresence = Effect.sync(() => ({
+     tools: registrations.size > 0,
+     resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
+-    prompts: promptRegistrations.size > 0
++    prompts: promptRegistrations.size > 0,
++    events: eventsHandler !== undefined
+   }))
+ 
+-  return { tools, resources, prompts, completions, registrationPresence }
++  return { tools, resources, prompts, completions, events, registrationPresence }
+ })
+diff --git a/src/ai/internal/mcpProtocol.ts b/src/ai/internal/mcpProtocol.ts
+index 1426562..a28f3f7 100644
+--- a/src/ai/internal/mcpProtocol.ts
++++ b/src/ai/internal/mcpProtocol.ts
+@@ -411,6 +411,7 @@ export interface HandlerInstallationContext {
+     readonly tools: boolean
+     readonly resources: boolean
+     readonly prompts: boolean
++    readonly events: boolean
+   }>
+ }
+ 
+diff --git a/src/ai/internal/mcpProtocol/v2026_07_28.ts b/src/ai/internal/mcpProtocol/v2026_07_28.ts
+index c1cce20..37dfe24 100644
+--- a/src/ai/internal/mcpProtocol/v2026_07_28.ts
++++ b/src/ai/internal/mcpProtocol/v2026_07_28.ts
+@@ -322,6 +322,20 @@ export const makeHandlers = (
+   ]))
+   const decodeCompleteResult = Schema.decodeUnknownEffect(McpSchema.CompleteResult)
+   const decodeListToolsResult = Schema.decodeUnknownEffect(McpSchema.ListToolsResult)
++  const decodeListEventsResult = Schema.decodeUnknownEffect(McpSchema.ListEventsResult)
++  const decodeSubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.SubscribeEventResult)
++  const decodeUnsubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.UnsubscribeEventResult)
++  // Events are reachable only once a handler is registered, like a capability the server lacks.
++  const eventsHandler = Effect.flatMap(core.events.current, (handler) =>
++    handler === undefined
++      ? failWithHttpStatus(
++        404,
++        new McpProtocol.ProtocolError({
++          code: PublicMcpSchema.METHOD_NOT_FOUND_ERROR_CODE,
++          message: "Method not found"
++        })
++      )
++      : Effect.succeed(handler))
+   const sendNotification = context.sendNotification
+   const supportsSubscriptions = sendNotification !== undefined
+   // Older adapters accept arbitrary JSON; this binding requires extension settings objects.
+@@ -337,6 +351,7 @@ export const makeHandlers = (
+       capabilities.resources = { listChanged: supportsSubscriptions, subscribe: supportsSubscriptions }
+     }
+     if (presence.prompts) capabilities.prompts = { listChanged: supportsSubscriptions }
++    if (presence.events) capabilities.events = {}
+     return { supportedVersions: context.supportedVersions, capabilities, serverInfo: context.serverInfo }
+   })
+   const getInvocation = PublicMcpSchema.McpRequestContext.useSync(
+@@ -665,6 +680,42 @@ export const makeHandlers = (
+         context.serverInfo
+       )
+     }, Effect.mapError(projectError)),
++    "events/list": Effect.fnUntraced(function*(request: typeof McpSchema.ListEvents.payloadSchema.Type) {
++      const handler = yield* eventsHandler
++      const invocation = yield* getInvocation
++      const page = yield* handler.list(omitUndefined({ cursor: request.cursor }), invocation)
++      const result = yield* projectCompleteResult({
++        events: page.events.map((event) => omitUndefined(event)),
++        nextCursor: page.nextCursor
++      }, context.serverInfo)
++      return yield* decodeListEventsResult(result)
++    }, Effect.mapError(projectError)),
++    "events/subscribe": Effect.fnUntraced(function*(
++      request: typeof McpSchema.SubscribeEvent.payloadSchema.Type
++    ) {
++      const handler = yield* eventsHandler
++      const invocation = yield* getInvocation
++      const { _meta: _, ...params } = request
++      const granted = yield* handler.subscribe(
++        PublicMcpSchema.SubscribeEventParams.make(omitUndefined(params) as typeof params),
++        invocation
++      )
++      const result = yield* projectCompleteResult(granted, context.serverInfo)
++      return yield* decodeSubscribeEventResult(result)
++    }, Effect.mapError(projectError)),
++    "events/unsubscribe": Effect.fnUntraced(function*(
++      request: typeof McpSchema.UnsubscribeEvent.payloadSchema.Type
++    ) {
++      const handler = yield* eventsHandler
++      const invocation = yield* getInvocation
++      const { _meta: _, ...params } = request
++      yield* handler.unsubscribe(
++        PublicMcpSchema.UnsubscribeEventParams.make(omitUndefined(params) as typeof params),
++        invocation
++      )
++      const result = yield* projectCompleteResult({}, context.serverInfo)
++      return yield* decodeUnsubscribeEventResult(result)
++    }, Effect.mapError(projectError)),
+     "notifications/cancelled": Effect.fnUntraced(function*(
+       _request: typeof McpSchema.CancelledNotification.payloadSchema.Type
+     ) {
+diff --git a/src/ai/internal/mcpRuntime.ts b/src/ai/internal/mcpRuntime.ts
+index b388d17..ff4d359 100644
+--- a/src/ai/internal/mcpRuntime.ts
++++ b/src/ai/internal/mcpRuntime.ts
+@@ -96,11 +96,11 @@ type HttpProtocolSelection =
+   | {
+     readonly _tag: "Rejected"
+     readonly status: 400 | 404
+-    readonly error?: {
++    readonly error: {
+       readonly code: number
+       readonly message: string
+       readonly data?: unknown
+-    } | undefined
++    }
+   }
+ 
+ /**
+@@ -228,6 +228,11 @@ export const make = Effect.fnUntraced(function*(
+     statelessProtocol = protocol
+   }
+   const registry = yield* McpProtocolRegistry.make(protocols)
++  const unsupportedProtocolVersion = (requested: string) => ({
++    code: UNSUPPORTED_PROTOCOL_VERSION_ERROR_CODE,
++    message: `Unsupported protocol version '${requested}'. Supported versions: ${protocolVersions.join(", ")}`,
++    data: { supported: protocolVersions, requested }
++  })
+   const selectHttpProtocol = (headers: Headers.Headers, input: unknown): HttpProtocolSelection => {
+     const protocolVersion = headers[MCP_PROTOCOL_VERSION_HEADER]
+     const sessionId = headers[MCP_SESSION_ID_HEADER]
+@@ -272,18 +277,7 @@ export const make = Effect.fnUntraced(function*(
+         }
+       }
+       if (statelessProtocol === undefined || protocolVersion !== statelessProtocol.protocolVersion) {
+-        return {
+-          _tag: "Rejected",
+-          status: 400,
+-          error: {
+-            code: UNSUPPORTED_PROTOCOL_VERSION_ERROR_CODE,
+-            message: `Unsupported protocol version '${protocolVersion}'`,
+-            data: {
+-              supported: protocolVersions,
+-              requested: protocolVersion
+-            }
+-          }
+-        }
++        return { _tag: "Rejected", status: 400, error: unsupportedProtocolVersion(protocolVersion) }
+       }
+       const method = inputRecord?.method
+       if (typeof method !== "string" || headers[MCP_METHOD_HEADER] !== method) {
+@@ -300,22 +294,36 @@ export const make = Effect.fnUntraced(function*(
+       return { _tag: "Accepted", binding: undefined, protocol: statelessProtocol }
+     }
+     const binding = sessionId === undefined ? undefined : stateful?.resolveSessionId(sessionId)
++    // A forgotten session is 404, and the client must initialize again (MCP 2025-11-25, Session Management).
+     if (sessionId !== undefined && binding === undefined) {
+-      return { _tag: "Rejected", status: 404 }
++      return {
++        _tag: "Rejected",
++        status: 404,
++        error: {
++          code: PublicMcpSchema.INVALID_REQUEST_ERROR_CODE,
++          message:
++            "Session not found: this Mcp-Session-Id is unknown or has expired, for example after a server restart. Start a new session by sending initialize without an Mcp-Session-Id header"
++        }
++      }
+     }
+     if (
+       !isInitialize &&
+       protocolVersion !== undefined &&
+       !registry.protocols.some((protocol) => protocol.protocolVersion === protocolVersion)
+     ) {
+-      return { _tag: "Rejected", status: 400 }
++      return { _tag: "Rejected", status: 400, error: unsupportedProtocolVersion(protocolVersion) }
+     }
++    // Without the header, a session keeps the version negotiated at initialization
++    // (MCP 2025-11-25, Protocol Version Header). A header naming another version is rejected.
+     if (
+       !isInitialize &&
++      protocolVersion !== undefined &&
+       binding?.protocol.runtime.transport.http.requiresVersionHeader === true &&
+       protocolVersion !== binding.protocol.protocolVersion
+     ) {
+-      return { _tag: "Rejected", status: 400 }
++      return headerMismatch(
++        `MCP-Protocol-Version header '${protocolVersion}' does not match protocol version '${binding.protocol.protocolVersion}' negotiated for this session`
++      )
+     }
+     return { _tag: "Accepted", binding, protocol: binding?.protocol }
+   }
+@@ -395,11 +403,13 @@ export const make = Effect.fnUntraced(function*(
+       if (Result.isFailure(parsed)) {
+         const version = headers[MCP_PROTOCOL_VERSION_HEADER]
+         if (version !== undefined && !registry.protocols.some((protocol) => protocol.protocolVersion === version)) {
+-          return reject(400)
++          return reject(400, unsupportedProtocolVersion(version))
+         }
+         const admission = selectHttpProtocol(headers, undefined)
+-        return admission._tag === "Rejected" && admission.error === undefined
+-          ? reject(admission.status)
++        // Session and session-version failures do not depend on the body; they precede the parse error.
++        return admission._tag === "Rejected" &&
++            (admission.status === 404 || admission.error.code === PublicMcpSchema.HEADER_MISMATCH_ERROR_CODE)
++          ? reject(admission.status, admission.error)
+           : reject(200, new PublicMcpSchema.ParseError({ message: "Parse error" }))
+       }
+       const input = parsed.success
+@@ -408,13 +418,20 @@ export const make = Effect.fnUntraced(function*(
+           return reject(400, new PublicMcpSchema.InvalidRequest({ message: "Invalid Request" }))
+         }
+         const admission = selectHttpProtocol(headers, input)
++        if (admission._tag === "Rejected") {
++          return reject(admission.status, admission.error)
++        }
+         if (
+-          admission._tag === "Rejected" ||
+           input.some(hasRequestProtocolVersion) ||
+           input.some((message) => Predicate.hasProperty(message, "method") && message.method === "initialize") ||
+           admission.binding?.protocol.runtime.transport.jsonRpc.acceptsBatches !== true
+         ) {
+-          return reject(400)
++          return reject(
++            400,
++            new PublicMcpSchema.InvalidRequest({
++              message: "JSON-RPC batches are not accepted here; send each message in its own POST request"
++            })
++          )
+         }
+         return {
+           _tag: "Accepted",
+@@ -444,8 +461,24 @@ export const make = Effect.fnUntraced(function*(
+       }
+       const isInitialize = Predicate.hasProperty(input, "method") && input.method === "initialize"
+       const hasSession = headers[MCP_SESSION_ID_HEADER] !== undefined
+-      if (isInitialize ? hasSession : !hasSession && admission.protocol?.runtime._tag !== "Stateless") {
+-        return reject(400)
++      if (isInitialize && hasSession) {
++        return reject(
++          400,
++          new PublicMcpSchema.InvalidRequest({
++            message: "initialize starts a new session; send it without an Mcp-Session-Id header"
++          }),
++          id
++        )
++      }
++      if (!isInitialize && !hasSession && admission.protocol?.runtime._tag !== "Stateless") {
++        return reject(
++          400,
++          stateful === undefined ? undefined : new PublicMcpSchema.InvalidRequest({
++            message:
++              "Mcp-Session-Id header is required; send initialize first and include the Mcp-Session-Id it returns on later requests"
++          }),
++          id
++        )
+       }
+       if (
+         isRequest && admission.protocol?.runtime._tag === "Stateless" &&
+diff --git a/src/ai/internal/mcpSchema/v2026_07_28.ts b/src/ai/internal/mcpSchema/v2026_07_28.ts
+index b38c929..d395e31 100644
+--- a/src/ai/internal/mcpSchema/v2026_07_28.ts
++++ b/src/ai/internal/mcpSchema/v2026_07_28.ts
+@@ -73,6 +73,7 @@ export const ServerCapabilities = Schema.StructWithRest(
+       listChanged: optional(Schema.Boolean)
+     })),
+     tools: optional(Schema.Struct({ listChanged: optional(Schema.Boolean) })),
++    events: optional(Schema.Struct({ listChanged: optional(Schema.Boolean) })),
+     extensions: optional(Schema.Record(Schema.String, Schema.JsonObject))
+   }),
+   [Schema.JsonObject]
+@@ -810,6 +811,101 @@ export class SubscriptionsAcknowledgedNotification extends Rpc.make(
+   { payload: { ...NotificationParams.fields, notifications: SubscriptionFilter } }
+ ) {}
+ 
++/**
++ * @internal
++ */
++export const EventDefinition = Schema.StructWithRest(
++  Schema.Struct({
++    name: Schema.String,
++    title: optional(Schema.String),
++    description: optional(Schema.String),
++    delivery: Schema.Array(Schema.Literals(["poll", "push", "webhook"])),
++    inputSchema: Schema.JsonObject,
++    payloadSchema: optional(Schema.JsonObject),
++    _meta: Meta
++  }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export const ListEventsResult = Schema.StructWithRest(
++  Schema.Struct({
++    ...PaginatedResult,
++    events: Schema.Array(EventDefinition)
++  }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export class ListEvents extends Rpc.make("events/list", {
++  success: ListEventsResult,
++  error: McpError,
++  payload: PaginatedRequestParams
++}) {}
++
++const EventArguments = optional(Schema.Record(Schema.String, Schema.Json))
++
++/**
++ * @internal
++ */
++export const SubscribeEventResult = Schema.StructWithRest(
++  Schema.Struct({
++    ...ResultMeta,
++    id: Schema.String,
++    refreshBefore: Schema.NullOr(Schema.String),
++    cursor: Schema.NullOr(Schema.String),
++    truncated: optional(Schema.Boolean),
++    deliveryStatus: optional(Schema.JsonObject)
++  }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export class SubscribeEvent extends Rpc.make("events/subscribe", {
++  success: SubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: Schema.Struct({
++      mode: Schema.Literal("webhook"),
++      url: Schema.String,
++      secret: Schema.String
++    }),
++    cursor: optional(Schema.NullOr(Schema.String)),
++    maxAgeMs: optional(Schema.Int),
++    ttlMs: optional(Schema.NullOr(Schema.Int))
++  }
++}) {}
++
++/**
++ * @internal
++ */
++export const UnsubscribeEventResult = Schema.StructWithRest(
++  Schema.Struct({ ...ResultMeta }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export class UnsubscribeEvent extends Rpc.make("events/unsubscribe", {
++  success: UnsubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: Schema.Struct({
++      mode: Schema.Literal("webhook"),
++      url: Schema.String
++    })
++  }
++}) {}
++
+ /**
+  * @internal
+  */
+@@ -823,7 +919,10 @@ export class ClientRequestRpcs extends RpcGroup.make(
+   ReadResource,
+   SubscriptionsListen,
+   CallTool,
+-  ListTools
++  ListTools,
++  ListEvents,
++  SubscribeEvent,
++  UnsubscribeEvent
+ ) {}
+ 
+ /**
+diff --git a/src/rpc/RpcServer.ts b/src/rpc/RpcServer.ts
+index a6d06f7..af783b8 100644
+--- a/src/rpc/RpcServer.ts
++++ b/src/rpc/RpcServer.ts
+@@ -1181,7 +1181,12 @@ export const makeProtocolWithHttpEffect: (
+       })
+     }
+ 
+-    const initialChunk = yield* Queue.takeAll(queue) as any as Effect.Effect<NonEmptyReadonlyArray<Uint8Array>>
++    // A queue that ends without messages gives an empty body, as a buffered response without
++    // messages does, rather than a `Done` failure. The caller decides whether that is correct.
++    const initialChunk: ReadonlyArray<Uint8Array> = yield* Effect.orElseSucceed(
++      Queue.takeAll(queue as Queue.Dequeue<Uint8Array, Cause.Done>),
++      () => []
++    )
+     if (queue.state._tag === "Done") {
+       return HttpServerResponse.uint8Array(mergeUint8Arrays(initialChunk), {
+         contentType: serialization.contentType

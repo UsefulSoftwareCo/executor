@@ -6,7 +6,7 @@
  * metadata database stays open while the process runs.
  */
 import { Effect, FileSystem, Option, Path, Redacted, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { startManagedServer } from "./managed-server.ts";
 import { driver, Target } from "./platform.ts";
 import { freePort } from "./ports.ts";

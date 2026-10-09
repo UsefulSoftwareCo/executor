@@ -9,14 +9,7 @@ const HostBundle = Schema.mutable(
     Schema.Union([
       Schema.Struct({
         name: Schema.String,
-        type: Schema.Literals([
-          "ESModule",
-          "CommonJsModule",
-          "Text",
-          "Json",
-          "PythonModule",
-          "PythonRequirement",
-        ]),
+        type: Schema.Literals(["ESModule", "CommonJsModule", "Text", "Json", "PythonModule"]),
         content: Schema.String,
       }),
       Schema.Struct({

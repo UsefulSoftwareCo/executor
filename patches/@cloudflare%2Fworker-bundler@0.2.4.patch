@@ -1,7 +1,8 @@
 diff --git a/dist/file-system-ZXKe_fv7.d.ts b/dist/file-system-ZXKe_fv7.d.ts
+index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f582ca1bf 100644
 --- a/dist/file-system-ZXKe_fv7.d.ts
 +++ b/dist/file-system-ZXKe_fv7.d.ts
-@@ -37,6 +37,8 @@
+@@ -37,6 +37,8 @@ interface FileSystem {
   */
  declare class InMemoryFileSystem implements FileSystem {
    private files;
@@ -10,7 +11,7 @@ diff --git a/dist/file-system-ZXKe_fv7.d.ts b/dist/file-system-ZXKe_fv7.d.ts
    /**
     * @param files Optional initial file contents. Accepts either a plain object
     * (keys are paths, values are file contents) or a `Map`. Defaults to an
-@@ -44,7 +46,7 @@
+@@ -44,7 +46,7 @@ declare class InMemoryFileSystem implements FileSystem {
     */
    constructor(files?: Record<string, string> | Map<string, string>);
    read(path: string): string | null;
@@ -20,9 +21,10 @@ diff --git a/dist/file-system-ZXKe_fv7.d.ts b/dist/file-system-ZXKe_fv7.d.ts
    list(prefix?: string): string[];
    flush(): Promise<void>;
 diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb43b68fd8 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -331,6 +331,8 @@
+@@ -331,6 +331,8 @@ declare function handleAssetRequest(
   * Options for createApp
   */
  interface CreateAppOptions {
@@ -31,7 +33,7 @@ diff --git a/dist/index.d.ts b/dist/index.d.ts
    /**
     * Input files — keys are paths relative to project root, values are file contents.
     * Accepts a plain object (which is wrapped in an InMemoryFileSystem automatically)
-@@ -499,6 +501,8 @@
+@@ -499,6 +501,8 @@ interface InstallResult {
  //#endregion
  //#region src/installer.d.ts
  interface InstallOptions {
@@ -41,15 +43,57 @@ diff --git a/dist/index.d.ts b/dist/index.d.ts
     * Include devDependencies (default: false)
     */
 diff --git a/dist/index.js b/dist/index.js
+index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d32413719983c2e98d 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -81 +81 @@ function resolvePackage(specifier, files, conditions, extensions) {
+@@ -78,7 +78,7 @@ function resolvePackage(specifier, files, conditions, extensions) {
+ 			}
+ 		}
+ 	} catch {}
 -	const legacyEntry = resolveExports.legacy(pkg, { fields: ["module", "main"] });
-+	const legacyEntry = resolveExports.legacy(pkg, { fields: conditions.includes("style") ? ["style", "module", "main"] : ["module", "main"] });
-@@ -258 +258 @@ async function bundleWithEsbuild(options) {
++	const legacyEntry = subpath ? void 0 : resolveExports.legacy(pkg, { fields: conditions.includes("style") ? ["style", "module", "main"] : ["module", "main"] });
+ 	if (legacyEntry && typeof legacyEntry === "string") {
+ 		const fullPath = `node_modules/${packageName}/${normalizeRelativePath(legacyEntry)}`;
+ 		if (files.read(fullPath) !== null) return {
+@@ -231,7 +231,28 @@ function bundlerOnlyOptionsWarning(opts) {
+ /**
+ * Bundle files using esbuild-wasm
+ */
++let activeEsbuildBuilds = 0;
++/**
++* Run one bundle on a running esbuild service, stopping the service once no
++* bundle uses it. esbuild's Go heap grows to its largest build and never
++* shrinks; a fresh instance per build keeps one large build from raising the
++* memory every later build in the isolate starts with. The compiled WASM
++* module is kept, so restarting costs only instantiation.
++*/
+ async function bundleWithEsbuild(options) {
++	activeEsbuildBuilds++;
++	try {
++		return await bundleWithRunningEsbuild(options);
++	} finally {
++		activeEsbuildBuilds--;
++		if (activeEsbuildBuilds === 0 && esbuildInitialized) {
++			esbuildInitialized = false;
++			esbuildInitializePromise = null;
++			await esbuild.stop();
++		}
++	}
++}
++async function bundleWithRunningEsbuild(options) {
+ 	const { files, entryPoint, externals, target, minify, sourcemap, nodejsCompat, jsx, jsxImportSource, define, loader: loaderOverrides, conditions, virtualModules, plugins: extraPlugins = [] } = options;
+ 	await initializeEsbuild();
+ 	const virtualFsPlugin = {
+@@ -255,7 +276,7 @@ async function bundleWithEsbuild(options) {
+ 						external: true
+ 					};
+ 					try {
 -						const result = resolveModule(args.path, { files });
 +						const result = resolveModule(args.path, { files, conditions: args.kind === "import-rule" ? ["style", "browser"] : ["import", "browser"] });
-@@ -857,7 +857,12 @@
+ 						if (!result.external) return {
+ 							path: result.path,
+ 							namespace: "virtual"
+@@ -857,7 +878,12 @@ var InMemoryFileSystem = class {
  		this.files = files instanceof Map ? files : new Map(Object.entries(files));
  	}
  	read(path) {
@@ -63,7 +107,7 @@ diff --git a/dist/index.js b/dist/index.js
  	}
  	write(path, content) {
  		this.files.set(path, content);
-@@ -1516,7 +1521,7 @@
+@@ -1516,7 +1542,7 @@ async function createApp(options) {
  	const wranglerConfig = parseWranglerConfig(fileSystem);
  	const nodejsCompat = hasNodejsCompat(wranglerConfig);
  	const installWarnings = [];
@@ -73,9 +117,10 @@ diff --git a/dist/index.js b/dist/index.js
  		installWarnings.push(...installResult.warnings);
  	}
 diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
+index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267ac36b4045 100644
 --- a/dist/installer-DDvaMqav.js
 +++ b/dist/installer-DDvaMqav.js
-@@ -381,7 +381,7 @@
+@@ -381,7 +381,7 @@ const NPM_REGISTRY = "https://registry.npmjs.org";
  * @returns Metadata about the installation
  */
  async function installDependencies(fileSystem, options = {}) {
@@ -84,12 +129,14 @@ diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
  	const result = {
  		installed: [],
  		warnings: []
-@@ -407,14 +407,14 @@
+@@ -407,14 +407,16 @@ async function installDependencies(fileSystem, options = {}) {
  		if (Object.keys(depsToInstall).length === 0) return result;
  		const installedPackages = /* @__PURE__ */ new Set();
  		const inProgress = /* @__PURE__ */ new Map();
 -		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry)));
-+		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive)));
++		// Unpacked archives are the install's memory peak: unpack a few at a time.
++		const extract = limitConcurrency(TARBALL_EXTRACT_CONCURRENCY, (name, metadata) => fetchPackageFiles(name, metadata, { buildInputsOnly: true }));
++		await Promise.all(Object.entries(depsToInstall).map(([name, versionRange]) => installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
  	} else if (pyprojectTomlContent) return await installDependenciesPython(fileSystem, pyprojectTomlContent);
  	return result;
  }
@@ -97,46 +144,256 @@ diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
  * Install a single package and its dependencies recursively.
  */
 -async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry) {
-+async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive) {
++async function installPackage(name, versionRange, result, fileSystem, installedPackages, inProgress, registry, transitive, extract) {
  	if (installedPackages.has(name)) return;
  	if (fileSystem.read(`node_modules/${name}/package.json`) !== null) {
  		installedPackages.add(name);
-@@ -424,6 +424,19 @@
+@@ -424,6 +426,19 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
  	if (existing) return existing;
  	const installPromise = (async () => {
  		try {
 +			// npm permits HTTP tarballs, including pinned framework dependencies.
 +			// Read their manifest from the archive; do not execute package scripts.
 +			if (/^https?:\/\//.test(versionRange)) {
-+				const packageFiles = await fetchPackageFiles(name, { dist: { tarball: versionRange } });
++				const packageFiles = await extract(name, { dist: { tarball: versionRange } });
 +				const manifest = JSON.parse(packageFiles["package.json"]);
 +				if (manifest.name !== name || typeof manifest.version !== "string")
 +					throw new Error("Tarball package identity does not match its dependency");
 +				installedPackages.add(name);
 +				for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
 +				result.installed.push(`${name}@${manifest.version}`);
-+				if (transitive) await Promise.all(Object.entries(manifest.dependencies ?? {}).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive)));
++				if (transitive) await Promise.all(Object.entries(manifest.dependencies ?? {}).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
 +				return;
 +			}
  			const metadata = await fetchPackageMetadata(name, registry);
  			const version = resolveVersion(versionRange, metadata);
  			if (!version) {
-@@ -440,7 +453,7 @@
- 			const packageFiles = await fetchPackageFiles(name, versionMetadata);
+@@ -437,10 +452,10 @@ async function installPackage(name, versionRange, result, fileSystem, installedP
+ 			}
+ 			installedPackages.add(name);
+ 			result.installed.push(`${name}@${version}`);
+-			const packageFiles = await fetchPackageFiles(name, versionMetadata);
++			const packageFiles = await extract(name, versionMetadata);
  			for (const [filePath, content] of Object.entries(packageFiles)) fileSystem.write(`node_modules/${name}/${filePath}`, content);
  			const deps = versionMetadata.dependencies ?? {};
 -			await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry)));
-+			if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive)));
++			if (transitive) await Promise.all(Object.entries(deps).map(([depName, depVersion]) => installPackage(depName, depVersion, result, fileSystem, installedPackages, inProgress, registry, transitive, extract)));
  		} catch (error) {
  			const message = error instanceof Error ? error.message : String(error);
  			result.warnings.push(`Failed to install ${name}: ${message}`);
-@@ -544,6 +557,9 @@
- 		offset += 512;
- 		const isRegularFile = typeFlag === 48 || typeFlag === 0;
- 		if (isRegularFile && filePath !== "") regularFilePaths.push(filePath);
-+		if (isRegularFile && size > 0 && filePath.endsWith(".wasm")) {
-+			textFiles.set(filePath, { data: data.slice(offset, offset + size) });
+@@ -475,82 +490,85 @@ function resolveVersion(range, metadata) {
+ 	const versions = Object.keys(metadata.versions);
+ 	return semver.maxSatisfying(versions, range) ?? void 0;
+ }
++/** Tarballs one install unpacks at once. */
++const TARBALL_EXTRACT_CONCURRENCY = 3;
++/** Run at most `limit` calls of `task` at once; later calls wait in order. */
++function limitConcurrency(limit, task) {
++	let active = 0;
++	const waiting = [];
++	return async (...args) => {
++		if (active >= limit) await new Promise((resolve) => waiting.push(resolve));
++		active++;
++		try {
++			return await task(...args);
++		} finally {
++			active--;
++			waiting.shift()?.();
 +		}
- 		if (isRegularFile && size > 0 && isTextFile(filePath)) {
- 			const content = data.slice(offset, offset + size);
- 			try {
++	};
++}
+ /**
+ * Fetch and extract package files from npm tarball.
++*
++* `buildInputsOnly` keeps only files a bundle can read: no source maps, type
++* declarations or package documentation.
+ */
+-async function fetchPackageFiles(name, metadata) {
++async function fetchPackageFiles(name, metadata, options = {}) {
+ 	const tarballUrl = metadata.dist?.tarball;
+ 	if (!tarballUrl) throw new Error(`Registry metadata for ${name}@${metadata.version} is missing \`dist.tarball\` — the registry response is likely malformed or the version was unpublished.`);
+ 	const response = await fetchWithTimeout(tarballUrl, {}, DEFAULT_TIMEOUT_MS * 2);
+ 	if (!response.ok) throw new Error(`Failed to fetch tarball for ${name}@${metadata.version}: ${response.status} ${response.statusText} (${tarballUrl})`);
+-	const buffer = await response.arrayBuffer();
+-	return extractTarball(new Uint8Array(buffer));
++	if (response.body === null) throw new Error(`Tarball for ${name}@${metadata.version} has no body (${tarballUrl})`);
++	return extractTarball(response.body, options.buildInputsOnly === true ? isBuildInput : isTextFile);
++}
++/** Files a bundler never reads: source maps, type declarations and package documentation. */
++function isBuildInput(path) {
++	const lower = path.toLowerCase();
++	if (lower.endsWith(".map") || /\.d\.[cm]?ts$/.test(lower) || lower.endsWith(".md")) return false;
++	const fileName = lower.split("/").pop() ?? "";
++	if (["readme", "changelog", "license", "licence"].some((doc) => fileName.startsWith(doc))) return false;
++	return isTextFile(path);
+ }
+ /**
+-* Extract files from a gzipped tarball.
++* Extract files from a gzipped tarball stream.
+ *
+ * npm packages are distributed as .tgz files (gzipped tar).
+ * Package contents are usually enclosed by one archive directory, which is
+-* removed by `parseTar` so returned paths are relative to the package root.
+-*/
+-async function extractTarball(data) {
+-	return parseTar(await decompress(data));
+-}
+-/**
+-* Decompress gzip data using DecompressionStream.
+-*/
+-async function decompress(data) {
+-	const ds = new DecompressionStream("gzip");
+-	const writer = ds.writable.getWriter();
+-	const reader = ds.readable.getReader();
+-	writer.write(data).catch(() => {});
+-	writer.close().catch(() => {});
+-	const chunks = [];
+-	let totalLength = 0;
+-	while (true) {
+-		const { done, value } = await reader.read();
+-		if (done) break;
+-		chunks.push(value);
+-		totalLength += value.length;
+-	}
+-	const result = new Uint8Array(totalLength);
+-	let offset = 0;
+-	for (const chunk of chunks) {
+-		result.set(chunk, offset);
+-		offset += chunk.length;
+-	}
+-	return result;
+-}
+-/**
+-* Parse a tar archive and extract text files.
+-*
+-* TAR format:
+-* - 512-byte header blocks
+-* - File content (padded to 512 bytes)
+-* - Two empty blocks at the end
++* removed so returned paths are relative to the package root. The archive is
++* read one entry at a time: neither the compressed nor the unpacked archive is
++* held whole, and skipped entries are discarded as they arrive.
+ */
+-function parseTar(data) {
++async function extractTarball(body, keep) {
++	const reader = body.pipeThrough(new DecompressionStream("gzip")).getReader();
++	const queue = new TarByteQueue(reader);
+ 	const textDecoder = new TextDecoder();
+ 	const regularFilePaths = [];
+ 	const textFiles = /* @__PURE__ */ new Map();
+-	let offset = 0;
+-	while (offset < data.length - 512) {
+-		const header = data.slice(offset, offset + 512);
+-		if (header.every((b) => b === 0)) break;
+-		const filePath = normalizeTarEntryPath(readTarEntryPath(header));
+-		const sizeStr = readString(header, 124, 12);
+-		const typeFlag = header[156];
+-		const size = parseInt(sizeStr.trim(), 8) || 0;
+-		offset += 512;
+-		const isRegularFile = typeFlag === 48 || typeFlag === 0;
+-		if (isRegularFile && filePath !== "") regularFilePaths.push(filePath);
+-		if (isRegularFile && size > 0 && isTextFile(filePath)) {
+-			const content = data.slice(offset, offset + size);
+-			try {
+-				textFiles.set(filePath, textDecoder.decode(content));
+-			} catch {}
++	try {
++		while (await queue.fill(512)) {
++			const header = queue.take(512);
++			if (header.every((b) => b === 0)) break;
++			const filePath = normalizeTarEntryPath(readTarEntryPath(header));
++			const sizeStr = readString(header, 124, 12);
++			const typeFlag = header[156];
++			const size = parseInt(sizeStr.trim(), 8) || 0;
++			const padded = Math.ceil(size / 512) * 512;
++			const isRegularFile = typeFlag === 48 || typeFlag === 0;
++			if (isRegularFile && filePath !== "") regularFilePaths.push(filePath);
++			const wasm = isRegularFile && size > 0 && filePath.endsWith(".wasm");
++			const text = isRegularFile && size > 0 && !wasm && keep(filePath);
++			if (wasm || text) {
++				if (!await queue.fill(size)) throw new Error(`Tarball ends inside ${filePath}`);
++				const content = queue.take(size);
++				if (wasm) textFiles.set(filePath, { data: content });
++				else try {
++					textFiles.set(filePath, textDecoder.decode(content));
++				} catch {}
++				await queue.skip(padded - size);
++			} else await queue.skip(padded);
+ 		}
+-		offset += Math.ceil(size / 512) * 512;
++	} finally {
++		reader.cancel().catch(() => {});
+ 	}
+ 	const archiveRoot = findSharedTarRootDirectory(regularFilePaths);
+ 	const files = {};
+@@ -560,6 +578,70 @@ function parseTar(data) {
+ 	}
+ 	return files;
+ }
++/** Buffers only the bytes of the tar block or entry being read. */
++var TarByteQueue = class {
++	chunks = [];
++	length = 0;
++	done = false;
++	constructor(reader) {
++		this.reader = reader;
++	}
++	/** Read until `count` bytes are buffered; false when the stream ends first. */
++	async fill(count) {
++		while (this.length < count && !this.done) {
++			const { done, value } = await this.reader.read();
++			if (done) this.done = true;
++			else if (value.length > 0) {
++				this.chunks.push(value);
++				this.length += value.length;
++			}
++		}
++		return this.length >= count;
++	}
++	/** Remove `count` buffered bytes; `fill(count)` must have returned true. */
++	take(count) {
++		const first = this.chunks[0];
++		if (first !== void 0 && first.length >= count) {
++			const bytes = first.subarray(0, count);
++			if (first.length === count) this.chunks.shift();
++			else this.chunks[0] = first.subarray(count);
++			this.length -= count;
++			return bytes.slice();
++		}
++		const bytes = new Uint8Array(count);
++		let offset = 0;
++		while (offset < count) {
++			const chunk = this.chunks[0];
++			const used = Math.min(chunk.length, count - offset);
++			bytes.set(chunk.subarray(0, used), offset);
++			offset += used;
++			if (used === chunk.length) this.chunks.shift();
++			else this.chunks[0] = chunk.subarray(used);
++		}
++		this.length -= count;
++		return bytes;
++	}
++	/** Discard `count` bytes as they arrive, without buffering them all. */
++	async skip(count) {
++		let remaining = count;
++		while (remaining > 0) {
++			if (this.length === 0 && !await this.fill(1)) return;
++			let used = Math.min(this.length, remaining);
++			remaining -= used;
++			this.length -= used;
++			while (used > 0) {
++				const chunk = this.chunks[0];
++				if (chunk.length <= used) {
++					used -= chunk.length;
++					this.chunks.shift();
++				} else {
++					this.chunks[0] = chunk.subarray(used);
++					used = 0;
++				}
++			}
++		}
++	}
++};
+ /**
+ * Read a TAR entry path, including the directory prefix from POSIX USTAR.
+ */

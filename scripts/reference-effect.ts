@@ -1,6 +1,6 @@
 /**
- * Creates or updates `.reference/effect-v4/` at the Effect commit pinned in the
- * root package.json. See notes/coding-style.md.
+ * Creates or updates `.reference/effect-v4/` at the Effect release tag for the npm version pinned
+ * in the root package.json. See notes/coding-style.md.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { join } from "node:path";
 const root = join(import.meta.dirname, "..");
 const dir = join(root, ".reference", "effect-v4");
 const remote = "https://github.com/Effect-TS/effect.git";
-const pin = /^https:\/\/pkg\.pr\.new\/Effect-TS\/effect\/(?:@effect\/)?[\w-]+@([0-9a-f]{40})$/;
+const exact = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 const fail = (message: string): never => {
   console.error(message);
@@ -23,24 +23,43 @@ const git = (...args: string[]) =>
   }).trim();
 
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-const commits = new Map<string, string[]>();
+const versions = new Map<string, string[]>();
 for (const field of ["dependencies", "devDependencies", "overrides"]) {
   for (const [name, spec] of Object.entries<string>(manifest[field] ?? {})) {
     if (name !== "effect" && !name.startsWith("@effect/")) continue;
-    const commit =
-      pin.exec(spec)?.[1] ??
-      fail(`${field}.${name} is not a commit-pinned pkg.pr.new URL: ${spec}`);
-    commits.set(commit, [...(commits.get(commit) ?? []), `${field}.${name}`]);
+    // @effect/tsgo is the language-service compiler, versioned separately from Effect.
+    if (name === "@effect/tsgo") continue;
+    if (!exact.test(spec)) fail(`${field}.${name} is not an exact npm version: ${spec}`);
+    versions.set(spec, [...(versions.get(spec) ?? []), `${field}.${name}`]);
   }
 }
-if (commits.size !== 1) {
+if (versions.size !== 1) {
   fail(
-    commits.size === 0
-      ? "No effect or @effect/* pins found in package.json."
-      : `Effect pins disagree:\n${[...commits].map(([commit, names]) => `  ${commit}: ${names.join(", ")}`).join("\n")}`,
+    versions.size === 0
+      ? "No effect or @effect/* versions found in package.json."
+      : `Effect versions disagree:\n${[...versions].map(([version, names]) => `  ${version}: ${names.join(", ")}`).join("\n")}`,
   );
 }
-const [commit] = commits.keys();
+const [version] = versions.keys();
+const tag = `effect@${version}`;
+const refs = new Map(
+  execFileSync("git", ["ls-remote", remote, `refs/tags/${tag}`, `refs/tags/${tag}^{}`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  })
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [sha, ref] = line.split("\t");
+      return [ref, sha] as const;
+    }),
+);
+// An annotated tag names a tag object; its `^{}` entry is the tagged commit.
+const commit =
+  refs.get(`refs/tags/${tag}^{}`) ??
+  refs.get(`refs/tags/${tag}`) ??
+  fail(`${remote} has no tag ${tag}.`);
 
 if (!existsSync(join(dir, ".git"))) {
   if (existsSync(dir) && readdirSync(dir).length) fail(`${dir} exists but is not a git checkout.`);
@@ -54,11 +73,11 @@ if (!existsSync(join(dir, ".git"))) {
     encoding: "utf8",
   }).stdout.trim();
   if (head === commit) {
-    console.log(`.reference/effect-v4 is already at ${commit}.`);
+    console.log(`.reference/effect-v4 is already at ${tag} (${commit}).`);
     process.exit(0);
   }
 }
 
 git("fetch", "--quiet", "--depth", "1", remote, commit);
 git("checkout", "--quiet", "--detach", "FETCH_HEAD");
-console.log(`.reference/effect-v4 is at ${git("rev-parse", "HEAD")}.`);
+console.log(`.reference/effect-v4 is at ${tag} (${git("rev-parse", "HEAD")}).`);

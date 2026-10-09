@@ -1,4 +1,5 @@
 import type { ProviderError } from "../contracts/provider-error.ts";
+import type { NetworkRefused } from "../contracts/network.ts";
 import { ToolResultObservation } from "../contracts/host.ts";
 /** Adapt any MCP transport into ordinary tools with shared validation behavior. */
 import { Effect, Schema } from "effect";
@@ -134,7 +135,7 @@ export const adaptMcpTool = (client: McpClient, tool: McpToolMetadata) =>
 /** Discover a complete catalog for probes and uncached low-level callers. */
 export const adaptMcpTools = (
   client: McpClient,
-): Effect.Effect<McpTools, McpError | ProviderError> =>
+): Effect.Effect<McpTools, McpError | ProviderError | NetworkRefused> =>
   Effect.gen(function* () {
     const { tools: metadata } = yield* client.list;
     const entries = yield* Effect.forEach(metadata, (tool) =>

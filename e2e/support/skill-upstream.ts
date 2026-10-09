@@ -1,13 +1,8 @@
 /** Mutable publication fixture outside the real Executor server and isolated app runtime. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, FileSystem, Layer, Ref, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 
 type FileFailure = "oversized" | "encoding" | "redirect";
@@ -57,7 +52,7 @@ export const skillUpstream = Effect.gen(function* () {
       yield* git(["add", "skills"]);
       yield* git(["commit", "--quiet", "--allow-empty", "-m", `Publish ${version}`]);
       const commit = yield* Schema.decodeUnknownEffect(
-        Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+        Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
       )((yield* git(["rev-parse", "HEAD"])).toString("utf8").trim());
       yield* Ref.update(versions, (current) => new Map([...current, [commit, version]]));
       return commit;
@@ -79,6 +74,9 @@ export const skillUpstream = Effect.gen(function* () {
     fileFailure: undefined,
   });
   const requests = yield* Ref.make<string[]>([]);
+  /** The token a private repository requires, and the credentials its requests carried. */
+  const access = yield* Ref.make<string | undefined>(undefined);
+  const credentials = yield* Ref.make<{ path: string; authorization: string | undefined }[]>([]);
   const route = HttpRouter.add(
     "*",
     "/*",
@@ -87,6 +85,21 @@ export const skillUpstream = Effect.gen(function* () {
       const url = new URL(request.url, "http://fixture.invalid");
       yield* Ref.update(requests, (items) => [...items, url.pathname]);
       const current = yield* Ref.get(state);
+      const token = yield* Ref.get(access);
+      if (url.pathname.startsWith("/github/")) {
+        const authorization = request.headers["authorization"];
+        yield* Ref.update(credentials, (items) => [
+          ...items,
+          { path: url.pathname, authorization },
+        ]);
+        // GitHub asks git clients for credentials and hides private files from everyone else.
+        const git = url.pathname.endsWith(".git/git-upload-pack");
+        const expected = git
+          ? `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`
+          : `token ${token}`;
+        if (token !== undefined && authorization !== expected)
+          return HttpServerResponse.empty({ status: git ? 401 : 404 });
+      }
       if (
         request.method === "POST" &&
         url.pathname === "/github/synthetic/skills.git/git-upload-pack"
@@ -164,5 +177,9 @@ export const skillUpstream = Effect.gen(function* () {
       }),
     commit: Ref.get(state).pipe(Effect.map((current) => current.commit)),
     requests: Ref.get(requests),
+    /** Make the GitHub repository private, readable only with this token. */
+    requireToken: (token: string) => Ref.set(access, token),
+    /** The Authorization header of every GitHub request, in order. */
+    credentials: Ref.get(credentials),
   };
 });

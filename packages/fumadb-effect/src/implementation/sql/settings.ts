@@ -14,8 +14,8 @@
  * `SqlError` (docs/DESIGN.md deviation 4).
  */
 import { Effect, Option } from "effect";
-import { SqlClient } from "effect/unstable/sql";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import { SqlClient } from "effect/sql";
+import type { SqlError } from "effect/sql/SqlError";
 import type { Provider } from "../../contracts/provider.ts";
 import { schemaToDbType } from "../schema-codec.ts";
 import { quoteIdentifier, quoteStringLiteral } from "./ddl.ts";

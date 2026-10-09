@@ -1,7 +1,7 @@
 /** Metadata overrides retain issuer checks; MCP challenge scopes avoid unnecessary OpenID. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -209,7 +209,49 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
         );
         yield* issuer.configure({ postChallenge: true });
         expect((yield* body(Setup, yield* setup(automatic))).scopes).toEqual(["read"]);
-        yield* issuer.configure({ postChallenge: false, challengeScopes: null });
+
+        // The advertised list never widens a challenge, even one inside it: the issuer grants
+        // `read` or `admin:read`, but refuses the two together.
+        yield* issuer.configure({
+          postChallenge: false,
+          scopes: ["read", "admin:read"],
+          exclusiveScopes: ["read", "admin:read"],
+        });
+        expect((yield* body(Setup, yield* setup(automatic))).scopes).toEqual(["read"]);
+        const challenged = yield* connect(automatic);
+        expect(challenged.url.searchParams.get("scope")).toBe("read");
+        expect(challenged.completed.status, JSON.stringify(challenged.completed.body)).toBe(200);
+        const challengedAccount = yield* body(Resource, challenged.completed);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${challengedAccount.id}`)
+            .pipe(Effect.orDie),
+        );
+        // Wider access is the author's choice: declared scopes replace the challenge, and the
+        // issuer's refusal of an incompatible set reaches the user as it is, never narrowed.
+        const declared = yield* deploy("Declared wider scopes", {
+          discover: `${issuer.origin}/mcp`,
+          scopes: ["read", "admin:read"],
+        });
+        expect((yield* body(Setup, yield* setup(declared))).scopes).toEqual(["read", "admin:read"]);
+        const refused = yield* connect(declared);
+        expect(refused.url.searchParams.get("scope")).toBe("read admin:read");
+        expect(refused.completed.status).toBe(400);
+        expect((yield* body(Failure, refused.completed)).reason).toBe("invalid_scope");
+        yield* issuer.configure({ exclusiveScopes: null });
+        const widened = yield* connect(declared);
+        expect(widened.url.searchParams.get("scope")).toBe("read admin:read");
+        expect(widened.completed.status, JSON.stringify(widened.completed.body)).toBe(200);
+        const widenedAccount = yield* body(Resource, widened.completed);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${widenedAccount.id}`)
+            .pipe(Effect.orDie),
+        );
+        yield* issuer.configure({
+          challengeScopes: null,
+          scopes: ["openid", "profile", "email", "read"],
+        });
         expect((yield* body(Setup, yield* setup(automatic))).scopes).toEqual([
           "openid",
           "profile",

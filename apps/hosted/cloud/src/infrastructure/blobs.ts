@@ -67,6 +67,39 @@ export const cloudBlobs = Effect.gen(function* () {
   });
 }).pipe(Effect.provide(Cloudflare.R2.ReadWriteBucketBinding));
 
+/**
+ * Retained builds for the AppData Worker, which only reads them. Its binding client has no write
+ * methods, so a write is refused here instead of reaching storage.
+ */
+export const cloudBuildReader = Effect.gen(function* () {
+  const bucket = yield* Cloudflare.R2.ReadBucket(AppBuilds);
+  const observe =
+    (operation: "get" | "exists") =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.provide(RuntimeContext.phantom),
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
+        ),
+        Effect.mapError(() => new BlobStoreError({ operation })),
+      );
+  return BlobStore.of({
+    get: (key) =>
+      Effect.gen(function* () {
+        const object = yield* bucket.get(key);
+        if (object === null) return Option.none();
+        return Option.some(new Uint8Array(yield* object.arrayBuffer()));
+      }).pipe(observe("get")),
+    exists: (key) =>
+      bucket.head(key).pipe(
+        Effect.map((object) => object !== null),
+        observe("exists"),
+      ),
+    put: () => Effect.fail(new BlobStoreError({ operation: "put" })),
+    remove: () => Effect.fail(new BlobStoreError({ operation: "remove" })),
+  });
+}).pipe(Effect.provide(Cloudflare.R2.ReadBucketBinding));
+
 /** One mutable object per app code, beside its immutable initial files. R2 versions fence writers. */
 export const cloudWorkspaceObjects = Effect.gen(function* () {
   const bucket = yield* Cloudflare.R2.ReadWriteBucket(AppBuilds);

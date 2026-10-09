@@ -5,7 +5,8 @@ import { profileMutations } from "../../contracts/profiles.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import type { App, Profile } from "@executor-js/sdk";
 import { Cause, Option, Schema } from "effect";
-import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
+import type { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { undeclaredError } from "@executor-js/utils/connection-failure";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
 import { ToolRunner, toolRunContext } from "@executor-js/ui/dashboard/tool-runner";
@@ -128,7 +129,7 @@ export function AppTools({
 /** Tool discovery keeps each expected error's explanation and safe recovery prompt. */
 function ToolsFailure<E extends UserFacingError>({ cause, retry, retrying }: FailureProps<E>) {
   const href = useRouterState({ select: (state) => state.location.href });
-  const error = Option.getOrElse(Cause.findErrorOption(cause), () => new UnexpectedError());
+  const error = Option.getOrElse(Cause.findErrorOption(cause), () => undeclaredError(cause));
   const props = {
     context: `While loading tools for this app and selected profile.\nPage: ${href}`,
     retry,

@@ -15,7 +15,7 @@ import { UploadedOrganizationIcon } from "@executor-js/hosted-server/organizatio
 import { OrganizationAccess, OrganizationForbidden } from "@executor-js/hosted-server/organization";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 import { Effect, Option, Schema } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import {
   authCallOptions,
   organizationOperations,
@@ -95,10 +95,19 @@ export const OrganizationSummary = Schema.Struct({
 });
 export type OrganizationSummary = typeof OrganizationSummary.Type;
 
-/** Refresh when the session changes, including switching users in this browser. */
+/**
+ * The signed-in user. A session revalidation that confirms the same person leaves it unchanged, so
+ * it does not read the organizations again.
+ */
+const signedInUser = Atom.map(sessionAtom, (session) =>
+  AsyncResult.isSuccess(session) && session.value !== null ? session.value.user.id : null,
+);
+/**
+ * Refresh when the signed-in user changes, including switching users in this browser. Membership
+ * changed elsewhere is read again once on every return to the tab, by `revalidated` below.
+ */
 const organizationsQuery = BrowserAtoms.atom((get) => {
-  const session = get(sessionAtom);
-  if (!AsyncResult.isSuccess(session) || session.value === null) return Effect.succeed([]);
+  if (get(signedInUser) === null) return Effect.succeed([]);
   return request("list", (options) => organizationOperations(options).list()).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(OrganizationSummary))),
   );

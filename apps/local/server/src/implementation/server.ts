@@ -1,35 +1,43 @@
 import { localSourceFormatter } from "@executor-js/app-management/source-format";
-import { publishedSkillRoutes, readExecutorSkills } from "@executor-js/app-templates/executor";
+import {
+  publishedSkillRoutes,
+  readExecutorSkills,
+  annotateSkillRead,
+} from "@executor-js/app-templates/executor";
 import { localAppBrowserHandlers } from "./app-browser.ts";
 import { startupPhase } from "./startup-diagnostics.ts";
 import {
   startScheduleWorker,
   defaultScheduleWorkerOptions,
   ScheduleObservation,
+  deliverEvents,
 } from "@executor-js/sdk/scheduling";
 import { localScheduleHandlers } from "./schedules.ts";
 import { localMcpApproval } from "./mcp-approvals.ts";
-import { makeLocalMcpOAuth } from "./mcp-oauth.ts";
+import { makeLocalMcpOAuth, type LocalMcpOAuth } from "./mcp-oauth.ts";
+import { localEventAuthority } from "./events.ts";
 import { localMcpConnectionHandlers } from "./mcp-connections.ts";
-import { hostedExecutorOrigin, remoteRegistry } from "@executor-js/app-registry";
 import { localAppManagement } from "./app-management.ts";
-import { runStartupDataSteps } from "@executor-js/app-management/data-steps";
-import { SqlClient } from "effect/unstable/sql";
+import { expireIdleAgentGrants, runStartupDataSteps } from "@executor-js/app-management/data-steps";
+import { SqlClient } from "effect/sql";
 
 /** Local host composition. The SDK owns operations; this package owns local resources and access. */
 import {
   ExecutorApi,
   WorkflowHost,
-  recoverAppRepositories,
+  RepositoryHost,
   type Executor,
   AccountNotFound,
   AppNotFound,
   createExecutor,
+  httpEventSender,
   makeDeclarationCache,
   declarationConfig,
   toEffectRuntime,
   executorHandlers,
   webhookCallback,
+  hostedExecutorOrigin,
+  remoteRegistry,
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
 import {
@@ -44,14 +52,13 @@ import {
   Schedule,
   Scope,
 } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { safeHttpClient } from "@executor-js/utils/safe-fetch";
 import type { HostEgress } from "@executor-js/utils/url-policy";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { LocalServerOptions } from "../contracts/server.ts";
 import type { ServerConfig } from "../contracts/config.ts";
-import { aesGcmCredentials as credentials } from "@executor-js/sdk/core";
 import { openStorage } from "./storage.ts";
 import { installExecutorApp } from "./executor-app.ts";
 import { localMcp } from "./mcp.ts";
@@ -72,7 +79,6 @@ import { browserTelemetry } from "./telemetry.ts";
 import { webFiles } from "./web.ts";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { localManagementDocument } from "../contracts/management.ts";
-import { gitSourceStorage } from "@executor-js/app-source";
 import { nativeRepositories } from "@executor-js/app-source/node";
 import { feedbackDisabled } from "@executor-js/telemetry/product-analytics";
 import { LocalFeedbackApi } from "../contracts/feedback.ts";
@@ -82,8 +88,8 @@ import { localAnalytics, observeLocalExecutor, scheduleAnalytics } from "./produ
 export const localApi = (
   config: ServerConfig,
   crypto: Crypto,
-  existingAuth?: LocalAuth,
-  options: LocalServerOptions = {},
+  existingAuth: LocalAuth | undefined,
+  options: LocalServerOptions,
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -91,7 +97,6 @@ export const localApi = (
       const path = yield* Path.Path;
       const directory = path.resolve(config.directory);
       const { storage, sql } = yield* openStorage(directory);
-      const credentialStore = yield* credentials(config.encryptionKey, crypto);
       // Node can hook connect, so every host-side fetch re-checks the addresses a name resolves
       // to. The agent lives for this layer's scope, which is the process.
       const httpClient = yield* safeHttpClient(config.urlPolicy);
@@ -120,22 +125,30 @@ export const localApi = (
         ),
       );
       const repositories = nativeRepositories(path.join(directory, "repositories"));
-      const sources = gitSourceStorage(repositories);
       const server = yield* Scope.Scope;
       const evaluation = yield* declarationConfig;
+      // MCP grants are checked again before each event delivery; OAuth starts after the executor.
+      const grants = yield* Deferred.make<LocalMcpOAuth>();
       const executor = yield* createExecutor({
-        // Stale declarations refresh on the server's own lifetime.
-        declarations: makeDeclarationCache(evaluation.limits),
-        toolListings: evaluation.toolListings,
-        background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
-        workflows,
-        webhookOrigin:
-          config.webhookOrigin ?? config.browserOrigin ?? `http://localhost:${config.port}`,
-        storage,
+        database: storage,
+        secret: config.encryptionKey,
+        origin: config.webhookOrigin ?? config.browserOrigin ?? `http://localhost:${config.port}`,
+        git: repositories,
         blobs,
-        sources,
-        credentials: credentialStore,
         runtime,
+        workflows,
+        registry,
+        cache: {
+          memory: makeDeclarationCache(evaluation.limits),
+          toolListings: evaluation.toolListings,
+        },
+        // Stale declarations refresh on the server's own lifetime.
+        background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
+        events: {
+          sender: httpEventSender(egress),
+          authorize: localEventAuthority(Deferred.await(grants)),
+          allowInsecureCallbacks: config.urlPolicy.allowLoopbackHttp,
+        },
         oauth: {
           httpClient,
           clientName: "Executor Local",
@@ -148,20 +161,30 @@ export const localApi = (
       yield* Deferred.succeed(ready, executor);
       const analytics = yield* localAnalytics({
         directory,
-        product: options.product ?? "local",
+        product: options.product,
         platform: options.platform ?? { os: "unknown", arch: "unknown" },
         sql,
       });
       /** Each product surface records its own use; host-owned work uses the plain executor. */
       const observed = (source: "mcp" | "api" | "dashboard" | "app_ui") =>
         observeLocalExecutor(executor, analytics, source);
+      // Data steps revoke idle OAuth grants, so the provider exists before they run.
+      const oauth = yield* makeLocalMcpOAuth(config, auth, crypto);
       // Before background work, the Executor app's regeneration and serving; the data lock is held.
-      yield* runStartupDataSteps({ executor, repositories, blobs }, "private_local").pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        startupPhase("data-steps"),
+      yield* runStartupDataSteps(
+        { executor, blobs, agentGrants: oauth.agentGrants },
+        "private_local",
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql), startupPhase("data-steps"));
+      // Once the idle grant step has applied, revoke grants that became idle since, daily.
+      yield* Effect.forkScoped(
+        expireIdleAgentGrants(oauth.agentGrants, "private_local").pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+          Effect.repeat(Schedule.spaced("1 day")),
+        ),
       );
       yield* Effect.forkScoped(
-        recoverAppRepositories({ database: storage, sources, blobs }).pipe(
+        executor[RepositoryHost].recover.pipe(
           Effect.catch(() => Effect.logWarning("App repository recovery failed")),
           Effect.repeat(Schedule.spaced("10 seconds")),
         ),
@@ -184,7 +207,7 @@ export const localApi = (
       yield* analytics === undefined
         ? scheduler
         : scheduler.pipe(Effect.provideService(ScheduleObservation, scheduleAnalytics(analytics)));
-      const managed = yield* installExecutorApp(executor, storage, credentialStore, config);
+      const managed = yield* installExecutorApp(executor, config);
       const access = HttpRouter.middleware((httpEffect) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
@@ -218,7 +241,8 @@ export const localApi = (
           return yield* httpEffect;
         }),
       );
-      const oauth = yield* makeLocalMcpOAuth(config, auth, crypto);
+      yield* Deferred.succeed(grants, oauth);
+      yield* Effect.forkScoped(deliverEvents(executor));
       const mcp = yield* localMcp(observed("mcp"), config.mcp, config, oauth);
       const api = observed("api");
       const programmatic = Layer.mergeAll(
@@ -231,12 +255,17 @@ export const localApi = (
           Layer.provide(
             executorHandlers({
               ...api,
+              // The Executor app's skills.read tool reads here, not through the MCP skills tool.
+              skills: {
+                ...api.skills,
+                read: (input) => api.skills.read(input).pipe(Effect.tap(annotateSkillRead)),
+              },
               accountConnections: {
                 ...api.accountConnections,
                 create: (input) => {
                   if (input.account === managed.account)
                     return Effect.fail(new AccountNotFound({ account: input.account }));
-                  if (input.target?.app === managed.app)
+                  if (input.target.app === managed.app)
                     return Effect.fail(new AppNotFound({ app: input.target.app }));
                   return executor.accountConnections.create(input);
                 },
@@ -263,7 +292,7 @@ export const localApi = (
       const signIn = yield* appAuthentication(executor, auth, config, crypto);
       const ui = appUi(
         observed("app_ui"),
-        storage,
+        storage.reactivity,
         toEffectRuntime(runtime, blobs),
         config,
         auth,
@@ -312,8 +341,7 @@ export const localApi = (
       ).pipe(Layer.provide(appOriginAccess.layer), Layer.provide(privateResponses.layer));
       const dashboardApi = dashboard(
         observed("dashboard"),
-        storage,
-        credentialStore,
+        storage.reactivity,
         config,
         auth,
         egress,
@@ -329,13 +357,7 @@ export const localApi = (
         config,
         auth,
         managed.app,
-        {
-          executor: api,
-          sources,
-          repositories,
-          registry,
-          blobs,
-        },
+        { executor: api },
         publicSkills,
       );
       const productRoutes = Layer.mergeAll(
@@ -395,14 +417,12 @@ export const localApi = (
         HttpRouter.add("GET", "/apps/:app/setup", web.document),
         HttpRouter.add("GET", "/apps/:app/open", web.document),
         HttpRouter.add("GET", "/apps/:app/delete", web.document),
-        HttpRouter.add("GET", "/accounts/add", web.document),
         HttpRouter.add("GET", "/connect", web.document),
         HttpRouter.add("GET", "/approvals", web.document),
         HttpRouter.add("GET", "/approvals/:run", web.document),
         HttpRouter.add("GET", "/account-connect/:connection", web.document),
         HttpRouter.add("GET", "/accounts", web.document),
         HttpRouter.add("GET", "/accounts/:account", web.document),
-        HttpRouter.add("GET", "/accounts/:account/credentials", web.document),
         HttpRouter.add("GET", "/accounts/:account/disconnect", web.document),
         // Manual webhook setup links issued to agents open this dashboard page.
         HttpRouter.add("GET", "/webhooks/:app/:subscription", web.document),

@@ -5,7 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 export const staged = "packages/apps/dist";
 

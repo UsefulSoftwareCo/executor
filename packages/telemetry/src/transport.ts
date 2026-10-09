@@ -1,12 +1,7 @@
 /** Telemetry uses a host-selected HTTP client without changing product HTTP requests. */
 import { BinaryReader, WireType } from "@bufbuild/protobuf/wire";
-import { Context, Effect, Layer, Schema } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientError,
-  type HttpClientResponse,
-} from "effect/unstable/http";
+import { Clock, Context, Duration, Effect, Layer, Schedule, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientError, type HttpClientResponse } from "effect/http";
 import { recordExportFailure } from "./measurements.ts";
 import { telemetryRequestTimeout } from "./config.ts";
 
@@ -165,3 +160,43 @@ export const telemetryHttpClient = Layer.effect(
     ),
   ),
 ).pipe(Layer.provide(selectedClient));
+
+/**
+ * Effect's exporter policy, extended to 503 as OTLP requires: a 429 or 503 waits for the delay
+ * in seconds or the HTTP date its Retry-After names, five seconds when that is unreadable or a
+ * 429 names none. Other failures wait a second.
+ */
+const retryDelay = (error: unknown) =>
+  Effect.gen(function* () {
+    if (
+      !HttpClientError.isHttpClientError(error) ||
+      error.reason._tag !== "StatusCodeError" ||
+      (error.reason.response.status !== 429 && error.reason.response.status !== 503)
+    )
+      return Duration.seconds(1);
+    const header = error.reason.response.headers["retry-after"]?.trim();
+    if (header === undefined || header === "")
+      return Duration.seconds(error.reason.response.status === 429 ? 5 : 1);
+    const seconds = Number(header);
+    if (Number.isFinite(seconds)) return Duration.seconds(seconds >= 0 ? seconds : 5);
+    const date = Date.parse(header);
+    if (Number.isNaN(date)) return Duration.seconds(5);
+    return Duration.millis(Math.max(date - (yield* Clock.currentTimeMillis), 1));
+  });
+
+/**
+ * Resend an export the collector refused for now, as OTLP requires and Effect's own
+ * exporters do: lost connections, 429 and 5xx overload, at most three more times. A
+ * collector shedding load answers 429 or 503 with Retry-After, which sets the wait. A
+ * wait longer than the caller's budget ends with the budget, without sending again.
+ */
+export const retryTelemetryExport = (client: HttpClient.HttpClient) =>
+  client.pipe(
+    HttpClient.retryTransient({
+      times: 3,
+      schedule: Schedule.forever.pipe(
+        Schedule.passthrough,
+        Schedule.addDelay(({ output }) => retryDelay(output)),
+      ),
+    }),
+  );

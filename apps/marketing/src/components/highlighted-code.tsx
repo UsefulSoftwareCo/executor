@@ -1,6 +1,6 @@
 import { Fragment, useMemo } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { highlightedAtom } from "@executor-js/ui/contracts/highlight";
 import { codeLanguage } from "@executor-js/ui/contracts/code-language";
 

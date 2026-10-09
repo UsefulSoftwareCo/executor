@@ -1,6 +1,8 @@
 /** Durable app source lives in a host-owned revision store, independently of SQL and builds. */
-import { Schema, type Effect } from "effect";
-import { AppCodeId } from "./shared.ts";
+import { Effect, Schema } from "effect";
+import { ApiError } from "@executor-js/utils/api-error";
+import { AppCodeId, type AppId, type OwnerId, type StorageError } from "./shared.ts";
+import type { AppNotFound } from "./apps.ts";
 
 /**
  * Canonical relative POSIX path inside a deployment: no absolute paths,
@@ -56,7 +58,7 @@ export const sourceFilesEqual = (left: SourceFiles, right: SourceFiles): boolean
 };
 
 /** A full immutable Git commit, never a mutable branch name. */
-export const SourceCommit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
+export const SourceCommit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 /** Source references keep the code lineage explicit so revisions cannot cross repositories. */
 export const SourceRevision = Schema.Struct({ code: AppCodeId, commit: SourceCommit });
 export type SourceRevision = typeof SourceRevision.Type;
@@ -65,18 +67,41 @@ export type SourceRevision = typeof SourceRevision.Type;
 export const SourceSnapshot = Schema.Struct({ revision: SourceRevision, files: SourceFiles });
 export type SourceSnapshot = typeof SourceSnapshot.Type;
 
+/** A saved commit. The caller already holds the files it sent, so they are not echoed back. */
+export const CommittedSource = Schema.Struct({ revision: SourceRevision });
+export type CommittedSource = typeof CommittedSource.Type;
+
+const sourceFailures = {
+  "not-found": "The requested app source revision does not exist.",
+  conflict:
+    "The app's source changed since it was read. Read the latest source, reapply the change, then commit against the new revision.",
+  "invalid-source":
+    "The app source is not valid: files must be UTF-8 text with supported paths and file modes.",
+  git: "Executor's Git storage could not complete this source operation. Try again.",
+  storage: "Executor could not read or write this app's source. Try again.",
+  limit: "The app source exceeds Executor's file count or total size limit.",
+  protected:
+    "The app's Git history is protected from this change, such as deleting or recreating its main branch, or an unsupported push format.",
+} as const;
 /** Safe source failures; command output and remote credentials remain inside adapters. */
-export class SourceError extends Schema.TaggedError<SourceError>()("SourceError", {
-  reason: Schema.Literals([
-    "not-found",
-    "conflict",
-    "invalid-source",
-    "git",
-    "storage",
-    "limit",
-    "protected",
-  ]),
-}) {}
+export const SourceError = ApiError.define({
+  tag: "SourceError",
+  status: 500,
+  fields: {
+    reason: Schema.Literals([
+      "not-found",
+      "conflict",
+      "invalid-source",
+      "git",
+      "storage",
+      "limit",
+      "protected",
+    ]),
+  },
+  message: ({ reason }) => sourceFailures[reason],
+  recorded: ({ reason }) => sourceFailures[reason],
+});
+export type SourceError = typeof SourceError.Type;
 
 /** Transport status follows the failure reason while preserving the SourceError domain value. */
 export const sourceErrors = [
@@ -119,4 +144,73 @@ export interface AppSourceStorage {
     readonly files: SourceFiles;
     readonly message: string;
   }) => Effect.Effect<SourceSnapshot, SourceError>;
+}
+
+/** Portable branch names, including the private retention prefix used by the source service. */
+export const Branch = Schema.String.check(
+  Schema.isPattern(/^[a-zA-Z0-9_][a-zA-Z0-9/_-]{0,127}$/u),
+  Schema.makeFilter((value) => !value.endsWith("/") && !value.includes("//")),
+);
+/** The source budget is identical for complete writes and incremental reads on every host. */
+export const sourceLimits = { files: 4096, bytes: 16 * 1024 * 1024 } as const;
+/** Reject invalid counters and stop readers before they accumulate an oversized source tree. */
+export const sourceFits = (files: number, bytes: number): boolean =>
+  Number.isSafeInteger(files) &&
+  files >= 0 &&
+  files <= sourceLimits.files &&
+  Number.isSafeInteger(bytes) &&
+  bytes >= 0 &&
+  bytes <= sourceLimits.bytes;
+/** Recent source history is metadata, separate from the files at each immutable revision. */
+export const GitCommit = Schema.Struct({
+  commit: SourceCommit,
+  author: Schema.String,
+  message: Schema.String,
+  timestamp: Schema.Int,
+});
+export type GitCommit = typeof GitCommit.Type;
+/** Bounded UTF-8 source; generated dependency paths are legal in retained deployment snapshots. */
+export const sourceFiles = (files: SourceFiles) =>
+  sourceFits(
+    files.length,
+    files.reduce((size, file) => size + new TextEncoder().encode(file.content).length, 0),
+  )
+    ? Effect.succeed(files)
+    : Effect.fail(new SourceError({ reason: "limit" }));
+
+/**
+ * The Git backend a host supplies to `createExecutor`. Platform mechanics only: app ownership
+ * and public package names never reach it. The executor derives its source storage from it.
+ */
+export interface RepositoryBackend {
+  readonly history: (id: AppCodeId) => Effect.Effect<ReadonlyArray<GitCommit>, SourceError>;
+  readonly create: (id: AppCodeId) => Effect.Effect<void, SourceError>;
+  readonly head: (id: AppCodeId, branch: string) => Effect.Effect<string | null, SourceError>;
+  /** Read one coherent snapshot; an absent branch fails with not-found, never another branch's files. */
+  readonly read: (
+    id: AppCodeId,
+    ref: string,
+  ) => Effect.Effect<{ readonly commit: string; readonly files: SourceFiles }, SourceError>;
+  /** Create the repository for an initial write; existing writes must match the supplied revision. */
+  readonly commit: (input: {
+    readonly id: AppCodeId;
+    readonly branch: string;
+    readonly expected: string | null;
+    readonly files: SourceFiles;
+    readonly message: string;
+  }) => Effect.Effect<typeof SourceCommit.Type, SourceError>;
+  /** Serve one Git smart-HTTP request against the repository. */
+  readonly request: (id: AppCodeId, request: Request) => Effect.Effect<Response, SourceError>;
+}
+
+/** Git protocol access is host-only, outside the public HTTP/Promise facade. */
+export const RepositoryHost = Symbol("executor.RepositoryHost");
+/** Hosts authorize the caller and then hand the raw Git request to the app's repository. */
+export interface RepositoryHost {
+  readonly request: (
+    input: { readonly app: AppId; readonly owner?: OwnerId | undefined },
+    request: Request,
+  ) => Effect.Effect<Response, SourceError | AppNotFound | StorageError>;
+  /** Retry pending repository creation with bounded parallel work. */
+  readonly recover: Effect.Effect<void, StorageError>;
 }

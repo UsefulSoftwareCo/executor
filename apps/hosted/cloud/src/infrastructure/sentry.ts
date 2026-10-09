@@ -5,6 +5,8 @@ import * as Command from "alchemy/Command";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Schema } from "effect";
 import type { SentryOutput } from "./sentry-output.ts";
+import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
+import { pinnedInProduction } from "./site-telemetry.ts";
 
 /** Disabled stages do not read Sentry state or require management credentials. */
 export const sentryBindings = Effect.gen(function* () {
@@ -33,48 +35,70 @@ export const sentryBindings = Effect.gen(function* () {
         PUBLIC_EXECUTOR_ENVIRONMENT: "test-local",
         PUBLIC_EXECUTOR_RELEASE: yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION"),
       },
+      errorTunnel: Output.asOutput<string | null>("/api/fedcba9876543210/submit"),
     };
   }
   const enabled = !dev && (yield* Config.Boolean("SENTRY_ENABLED").pipe(Config.withDefault(false)));
-  if (!enabled) return { env: { EXECUTOR_SENTRY: Output.asOutput(null) }, build: {} };
+  if (!enabled)
+    return {
+      env: { EXECUTOR_SENTRY: Output.asOutput(null) },
+      build: {},
+      errorTunnel: Output.asOutput<string | null>(null),
+    };
   const environment = yield* Stage;
   const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
   const output = yield* Output.stackRef<SentryOutput>("executor-next-sentry");
   // Command children inherit the op-run environment; never persist the management token in resource props.
   yield* Config.Redacted("SENTRY_AUTH_TOKEN");
   const url = yield* Config.NonEmptyString("SENTRY_URL");
+  const tunnel = output.pipe(
+    Output.map((value) => value.browserTunnel),
+    Output.mapEffect(
+      pinnedInProduction(
+        environment,
+        "The Sentry browser tunnel (executor-next-sentry browserTunnel)",
+        productionSiteTelemetry.errorTunnel,
+      ),
+    ),
+  );
   return {
     env: {
-      EXECUTOR_SENTRY: output.pipe(
-        Output.map((value) => ({
+      EXECUTOR_SENTRY: Output.all(output, tunnel).pipe(
+        Output.map(([value, path]) => ({
           dsn: value.cloudDsn,
           browserDsn: value.browserDsn,
-          tunnel: value.browserTunnel,
+          tunnel: path,
           environment,
           release,
         })),
       ),
     },
     build: {
-      PUBLIC_SENTRY_TUNNEL: output.pipe(Output.map((value) => value.browserTunnel)),
+      PUBLIC_SENTRY_TUNNEL: tunnel,
       PUBLIC_SENTRY_DSN: output.pipe(Output.map((value) => value.browserDsn)),
       PUBLIC_EXECUTOR_ENVIRONMENT: environment,
       PUBLIC_EXECUTOR_RELEASE: release,
-      VITE_SENTRY_TUNNEL: output.pipe(Output.map((value) => value.browserTunnel)),
+      VITE_SENTRY_TUNNEL: tunnel,
       VITE_SENTRY_DSN: output.pipe(Output.map((value) => value.browserDsn)),
       VITE_EXECUTOR_ENVIRONMENT: environment,
-      VITE_EXECUTOR_RELEASE: release,
       SENTRY_ORG: output.pipe(Output.map((value) => value.organization)),
       SENTRY_PROJECT: output.pipe(Output.map((value) => value.browserProject)),
       SENTRY_URL: url,
       SENTRY_RELEASE: release,
     },
+    errorTunnel: tunnel,
   };
 });
 
+const sourceMapUploads = {
+  api: "SentryCloudSourceMaps",
+  "app-pages": "SentryAppPagesSourceMaps",
+  "mcp-server": "SentryMcpServerSourceMaps",
+} as const;
+
 /** Upload the exact Rolldown artifacts deployed by Alchemy, matched by release and module path. */
 export const uploadCloudSourceMaps = (
-  worker: "api" | "app-pages",
+  worker: keyof typeof sourceMapUploads,
   bundle: Output.Output<unknown>,
 ) =>
   Effect.gen(function* () {
@@ -85,7 +109,7 @@ export const uploadCloudSourceMaps = (
       return;
     const output = yield* Output.stackRef<SentryOutput>("executor-next-sentry");
     yield* Config.Redacted("SENTRY_AUTH_TOKEN");
-    yield* Command.Exec(worker === "api" ? "SentryCloudSourceMaps" : "SentryAppPagesSourceMaps", {
+    yield* Command.Exec(sourceMapUploads[worker], {
       command: `bunx --no-install sentry-cli sourcemaps upload --url-prefix / .generated/sentry-worker/${worker}`,
       env: {
         SENTRY_URL: yield* Config.NonEmptyString("SENTRY_URL"),

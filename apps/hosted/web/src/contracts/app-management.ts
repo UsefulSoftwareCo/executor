@@ -4,7 +4,7 @@ import type { HostedError } from "./errors.ts";
 import { makeAppManagementAtoms } from "@executor-js/ui/contracts/app-management";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { HostedClient } from "./api.ts";
 export const appManagement = Atom.family((organization: OrganizationReference) =>
   makeAppManagementAtoms<HostedClient, HostedError>(

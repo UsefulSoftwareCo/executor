@@ -21,9 +21,20 @@ export {
 } from "./relay.ts";
 export { TraceContext, currentTraceContext, externalTrace, traceLinks } from "./trace-context.ts";
 export { pendingSpan } from "./pending-span.ts";
+export {
+  makeOwnershipAccounting,
+  measuredSpan,
+  owned,
+  ownedBy,
+  ownerAttribute,
+  type Owner,
+  type SpanMeasure,
+} from "./ownership.ts";
 export { recordWorkerMeasurements } from "./measurements.ts";
 export {
   allowlistedSpans,
   httpSpanAttributeAllowlist,
+  recordRoute,
+  routeTemplates,
   spanAttributeAllowed,
 } from "./span-attributes.ts";

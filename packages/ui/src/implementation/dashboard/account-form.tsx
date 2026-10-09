@@ -153,8 +153,14 @@ export function AccountForm<A, E>({
       )}
       {auth?.type === "oauth2" ? (
         <div key={method} className="oauth-fields flex flex-col gap-4">
-          <SignInAccess provider={provider.definition.name} hosts={provider.definition.hosts} />
-          {oauth({ method, disabled, onPendingChange: updatePending })}
+          {oauth({
+            method,
+            disabled,
+            onPendingChange: updatePending,
+            access: (
+              <SignInAccess provider={provider.definition.name} hosts={provider.definition.hosts} />
+            ),
+          })}
         </div>
       ) : fields ? (
         <>

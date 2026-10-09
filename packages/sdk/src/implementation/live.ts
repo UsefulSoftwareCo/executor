@@ -23,7 +23,7 @@ export const subscribeAppQuery = <E, R>(
     return yield* executor.appData.query(parsed);
   });
   const runtime = toEffectRuntime(options.runtime, options.blobs);
-  if (runtime.changes === undefined) return options.storage.reactivity.subscribe(read);
+  if (runtime.changes === undefined) return options.database.reactivity.subscribe(read);
   return Stream.merge(runtime.changes(input.app), Stream.tick("15 seconds")).pipe(
     Stream.mapEffect(() => read),
     Stream.changesWith(Schema.toEquivalence(Json)),

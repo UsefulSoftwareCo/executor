@@ -1,11 +1,22 @@
 export * from "./skills.ts";
-import { SkillLoadFailed, type SkillFile } from "./skills.ts";
+import { type SkillFile } from "./skills.ts";
 import { ProviderError } from "./provider-error.ts";
-import { McpError } from "./mcp.ts";
 import { OpenapiResponseError } from "./api-response-error.ts";
-export { ApiErrorResponse, OpenapiResponseError } from "./api-response-error.ts";
+export {
+  ApiErrorResponse,
+  maxApiErrorInstructionsLength,
+  maxApiErrorMessageLength,
+  OpenapiResponseError,
+} from "./api-response-error.ts";
 export { ProviderError } from "./provider-error.ts";
-export { McpError } from "./mcp.ts";
+export {
+  FetchOptionUnsupported,
+  NetworkRefusal,
+  NetworkRefused,
+  networkRefusalHeader,
+  networkRefusalResponse,
+  networkRefusalStatus,
+} from "./network.ts";
 import {
   WorkflowFailure,
   type WorkflowExecution,
@@ -18,9 +29,16 @@ import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-d
 export { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
 /** Portable framework dispatch contracts. Requests never carry account bindings. */
 import { Context, Schema, type Effect, type Redacted } from "effect";
-import type { AppStorage } from "./storage.ts";
+import type { AppSqlStorage } from "./sql.ts";
 import type { InvocationTelemetry } from "@executor-js/telemetry";
-export { AppStorageError, AppStorageUnavailable, StorageName, type AppStorage } from "./storage.ts";
+export {
+  type AppSqlStorage,
+  type Sql,
+  type SqlCursor,
+  type SqlReader,
+  type SqlRow,
+  type SqlValue,
+} from "./sql.ts";
 import { ElicitationFailed, type ElicitationHandler } from "./elicitation.ts";
 export {
   ElicitationLimits,
@@ -36,6 +54,7 @@ export {
 } from "./elicitation.ts";
 export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
+export * from "./events.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";
 export {
@@ -46,8 +65,8 @@ export {
 } from "./provider.ts";
 
 /**
- * The host protocol this framework speaks and its wire schemas. A later protocol replaces this
- * re-export; released protocol modules stay unchanged for host adapters.
+ * The host protocol this framework speaks and its wire schemas, from `protocols/current.ts`. The
+ * released protocol modules are frozen records that host adapters read.
  */
 export { frameworkProtocol } from "./protocol-version.ts";
 export { protocol1 } from "./protocols/1.ts";
@@ -57,7 +76,16 @@ export { protocol4 } from "./protocols/4.ts";
 export { protocol5 } from "./protocols/5.ts";
 export { protocol6 } from "./protocols/6.ts";
 export { protocol7 } from "./protocols/7.ts";
-export { protocol8, AccountCheckCommand, CredentialHost } from "./protocols/8.ts";
+export { protocol8 } from "./protocols/8.ts";
+export { protocol9 } from "./protocols/9.ts";
+export { protocol10 } from "./protocols/10.ts";
+export {
+  current as protocol11,
+  AccountCheckCommand,
+  CredentialHost,
+  MigrateCommand,
+  MigrateResult,
+} from "./protocols/current.ts";
 export { AccountCheckResult, AccountInfo } from "./provider.ts";
 import {
   HostAccountsInvalid,
@@ -73,13 +101,20 @@ import {
   HostToolBlocked,
   HostToolNotFound,
   HostToolPolicyFailed,
+  McpError,
+  SkillLoadFailed,
   SkillSources,
   type InvocationDeadline,
   ResolvedAccounts,
   type SkillCatalogResponse,
   type TrustedToolApproval,
-} from "./protocols/8.ts";
-export { DeclaredRequirements, HostRequest } from "./protocols/8.ts";
+} from "./protocols/current.ts";
+export { DeclaredRequirements, HostRequest } from "./protocols/current.ts";
+/**
+ * The MCP and skill loader failures as they cross the host boundary. Apps throw the author-facing
+ * classes from `apps/mcp` and `apps/skills`.
+ */
+export { McpError, SkillLoadFailed } from "./protocols/current.ts";
 export {
   DeclaredAuthMethod,
   DeclaredProvider,
@@ -113,7 +148,7 @@ export {
   HostError,
   HostResponse,
   HostInvocation,
-} from "./protocols/8.ts";
+} from "./protocols/current.ts";
 /** Raw host inputs; the host boundary parses and redacts these immediately. */
 export type ResolvedAccountsInput = typeof ResolvedAccounts.Encoded;
 
@@ -133,7 +168,8 @@ export interface HostContext {
   /** Trusted in-process tracing capability; never decoded from a public request. */
   readonly telemetry?: InvocationTelemetry;
   readonly approval?: TrustedToolApproval;
-  readonly storage?: AppStorage;
+  /** The data facet's SQLite storage, for apps that declare `sql`. Never exposed to app code. */
+  readonly storage?: AppSqlStorage;
   readonly accounts: Redacted.Redacted<ResolvedAccounts>;
 }
 
@@ -167,7 +203,7 @@ export const selectTools =
       : { ...catalog, tools: catalog.tools.filter((tool) => tools.includes(tool.name)) };
 
 /** Declaration reads do not bind accounts or evaluate the app factory. A named declaration
- * problem, such as a reserved database field, is reported so the deploy can explain it. */
+ * problem is reported so the deploy can explain it. */
 export const HostRequirementsError = Schema.Union([
   HostRequestInvalid,
   HostDeclarationInvalid,
@@ -222,6 +258,25 @@ export const HostDataError = HostCallError;
 export const ToolResultObservation = Context.Reference<{ readonly failed: () => void }>(
   "apps/ToolResultObservation",
   { defaultValue: () => ({ failed: () => {} }) },
+);
+
+/**
+ * One tool invocation's own timing, on the isolate's clock: how long it ran, and how much of that
+ * it waited on upstream providers, waited on elicitation answers and ran the app's authored code.
+ * Each instant counts once, so the rest is Executor's own time. The isolated handler returns it
+ * beside the result so the host can add the other isolates' parts.
+ */
+export const InvocationTiming = Schema.Struct({
+  elapsedMs: Schema.Finite,
+  upstreamMs: Schema.Finite,
+  elicitationMs: Schema.Finite,
+  authoredMs: Schema.Finite,
+});
+export type InvocationTiming = typeof InvocationTiming.Type;
+/** Receives the invocation's timing once it is over; hosts that do not return it ignore it. */
+export const InvocationTimingSink = Context.Reference<(timing: InvocationTiming) => void>(
+  "apps/InvocationTimingSink",
+  { defaultValue: () => () => {} },
 );
 
 /** Native handler; context comes from host authority, never from request content. */

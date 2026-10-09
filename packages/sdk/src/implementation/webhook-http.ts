@@ -1,11 +1,12 @@
 /** Callback transport shared by hosts. App responses cannot write cookies or execute HTML on the dashboard origin. */
-import { ByteSize, Effect, Encoding, Schema } from "effect";
+import { ByteSize, Effect, Schema } from "effect";
+import { Base64 } from "effect/encoding";
 import {
   HttpIncomingMessage,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { WebhookRequestData, defaultWebhookTransportLimits } from "apps/contracts";
 import type { Executor } from "../contracts/executor.ts";
 import { WebhookCallbackParams } from "../contracts/webhooks.ts";
@@ -31,14 +32,14 @@ export const webhookCallback = (executor: Executor) =>
       url: new URL(incoming.url, "http://webhooks.internal").href,
       method: incoming.method,
       headers,
-      body: Encoding.encodeBase64(new Uint8Array(body)),
+      body: Base64.encode(new Uint8Array(body)),
     });
     const response = yield* executor.webhooks.deliver({
       app: appId,
       subscription: subscriptionId,
       request: input,
     });
-    const bytes = yield* Effect.fromResult(Encoding.decodeBase64(response.body));
+    const bytes = yield* Effect.fromResult(Base64.decode(response.body));
     // Preserve provider challenge/backoff headers without granting app code control of the host origin.
     const providerHeaders: Record<string, string> = {};
     for (const name of ["webhook-allowed-origin", "webhook-allowed-rate", "retry-after", "allow"]) {

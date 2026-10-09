@@ -16,12 +16,19 @@ export {
 /** Conservative compressed archive budget, checked before npm receives any upload. */
 export const npmArchiveBudgetBytes = 180 * 1024 * 1024;
 
-/** Native platforms supported by the packaged runtime. */
+/**
+ * Native platforms supported by the packaged runtime. The full CLI suite runs against the packaged
+ * archive on linux x64 and on Windows, which no other workflow tests; CI runs it from source on
+ * every push to main. The other targets run only the checks specific to them: the OS credential
+ * store and the desktop app. Intel macOS builds under Rosetta on an Apple Silicon runner and gets
+ * a start-up smoke test, since GitHub's Intel runners take most of an hour for the suite.
+ */
 export const platforms = [
   {
     platform: "darwin",
     arch: "arm64",
-    cliWorkers: 4,
+    cliWorkers: 0,
+    packagedTests: true,
     runner: "blacksmith-6vcpu-macos-15",
     desktopOs: "mac",
     extension: "dmg",
@@ -29,9 +36,9 @@ export const platforms = [
   {
     platform: "darwin",
     arch: "x64",
-    runner: "macos-15-intel",
-    // Two cold PGlite processes starve each other on the native Intel runner.
-    cliWorkers: 1,
+    cliWorkers: 0,
+    packagedTests: false,
+    runner: "blacksmith-6vcpu-macos-15",
     desktopOs: "mac",
     extension: "dmg",
   },
@@ -39,6 +46,7 @@ export const platforms = [
     platform: "linux",
     arch: "x64",
     cliWorkers: 4,
+    packagedTests: true,
     runner: "blacksmith-16vcpu-ubuntu-2404",
     desktopOs: "linux",
     extension: "AppImage",
@@ -46,7 +54,8 @@ export const platforms = [
   {
     platform: "linux",
     arch: "arm64",
-    cliWorkers: 4,
+    cliWorkers: 0,
+    packagedTests: true,
     runner: "blacksmith-16vcpu-ubuntu-2404-arm",
     desktopOs: "linux",
     extension: "AppImage",
@@ -55,6 +64,7 @@ export const platforms = [
     platform: "win32",
     arch: "x64",
     cliWorkers: 4,
+    packagedTests: true,
     runner: "blacksmith-16vcpu-windows-2025",
     desktopOs: "win",
     extension: "exe",
@@ -69,7 +79,7 @@ const channel = releaseChannel(version);
 const repository = "UsefulSoftwareCo/executor";
 const tag = `executor@${version}`;
 const nodeEngine = Schema.decodeUnknownSync(
-  Schema.String.check(Schema.isPattern(/^>=\d+\.\d+\.\d+$/)),
+  Schema.String.check(Schema.isPattern(/^>=\d+\.\d+\.\d+$/u)),
 )(manifest.engines.node);
 
 /** Durable v2 identities stay fixed when the version moves from beta to stable. */
@@ -124,15 +134,28 @@ export const platformPackage = (target: Platform): string =>
 export const platformArchive = (target: Platform): string =>
   `executor-${platformVersion(target)}.tgz`;
 
-/** Primary downloads follow electron-builder's target-specific architecture names. */
-export const desktopAsset = (target: Platform): string => {
+/** The version-free end of a primary download, following electron-builder's architecture names. */
+export const desktopAssetSuffix = (target: Platform): string => {
   const arch = target.extension === "AppImage" && target.arch === "x64" ? "x86_64" : target.arch;
-  return `${release.desktop.artifactPrefix}-${release.version}-${target.desktopOs}-${arch}.${target.extension}`;
+  return `-${target.desktopOs}-${arch}.${target.extension}`;
 };
 
-/** Public download for this exact release, never the legacy latest release. */
-export const desktopDownload = (target: Platform): string =>
-  `https://github.com/${release.repository}/releases/download/${encodeURIComponent(release.tag)}/${desktopAsset(target)}`;
+export const desktopAsset = (target: Platform): string =>
+  `${release.desktop.artifactPrefix}-${release.version}${desktopAssetSuffix(target)}`;
+
+/**
+ * The website resolves desktop downloads in the browser from the public
+ * release list, as GitHub only lists a release once it is published. A merged
+ * version bump therefore never links to installers that are not public yet.
+ * GitHub's `latest` release belongs to Executor 1 and skips prereleases, so the
+ * list is filtered by this major version's tag prefix instead.
+ */
+export const desktopDownloads = {
+  releasesApi: `https://api.github.com/repos/${repository}/releases?per_page=100`,
+  releasesPage: `https://github.com/${repository}/releases`,
+  tagPrefix: `executor@${version.split(".")[0]}.`,
+  stableOnly: channel === "latest",
+} as const;
 
 /** Fail at the build boundary if the host cannot produce a supported native artifact. */
 export const nativePlatform = (platform: string, arch: string): Platform => {

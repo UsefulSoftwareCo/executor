@@ -1,0 +1,2791 @@
+{
+  "protocol": 10,
+  "previous": 9,
+  "messages": {
+    "invocation": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "command",
+          "type": {
+            "$message": "request"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "accounts",
+          "type": {
+            "$message": "accounts"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "approval",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [
+              {
+                "name": "tool",
+                "type": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "isOptional": false
+              },
+              {
+                "name": "input",
+                "type": {
+                  "_tag": "Declaration",
+                  "representation": {
+                    "id": "effect/schema/Json",
+                    "payload": null
+                  }
+                },
+                "isOptional": false
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "replay",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [
+              {
+                "name": "key",
+                "type": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "isOptional": false
+              },
+              {
+                "name": "fingerprint",
+                "type": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "isOptional": false
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "deadline",
+          "type": {
+            "_tag": "Number",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isFinite",
+                  "payload": null
+                }
+              },
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isGreaterThanOrEqualTo",
+                  "payload": {
+                    "minimum": 0
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "workflowRun",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ]
+    },
+    "request": {
+      "_tag": "Union",
+      "types": [
+        {
+          "_tag": "Union",
+          "types": [
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "workflows"
+                  },
+                  "isOptional": false
+                }
+              ]
+            },
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "workflow-validate"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMaxLength",
+                          "payload": {
+                            "maxLength": 200
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "input",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                }
+              ]
+            },
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "workflow-run"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMaxLength",
+                          "payload": {
+                            "maxLength": 200
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "input",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "_tag": "Union",
+          "types": [
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "webhooks"
+                  },
+                  "isOptional": false
+                }
+              ]
+            },
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "webhook-validate"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "subscriptionId",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "sourceAccount",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isStartingWith",
+                          "payload": {
+                            "startsWith": "acc_"
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "callbackUrl",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "secret",
+                  "type": {
+                    "_tag": "String"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "config",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                }
+              ]
+            },
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "webhook-complete"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "subscriptionId",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "sourceAccount",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isStartingWith",
+                          "payload": {
+                            "startsWith": "acc_"
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "callbackUrl",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "secret",
+                  "type": {
+                    "_tag": "String"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "config",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "state",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                }
+              ]
+            },
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "webhook-register"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "subscriptionId",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "sourceAccount",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isStartingWith",
+                          "payload": {
+                            "startsWith": "acc_"
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "callbackUrl",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "secret",
+                  "type": {
+                    "_tag": "String"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "config",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                }
+              ]
+            },
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "webhook-unregister"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "subscriptionId",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "sourceAccount",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isStartingWith",
+                          "payload": {
+                            "startsWith": "acc_"
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "callbackUrl",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "secret",
+                  "type": {
+                    "_tag": "String"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "config",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "state",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                }
+              ]
+            },
+            {
+              "_tag": "Objects",
+              "propertySignatures": [
+                {
+                  "name": "operation",
+                  "type": {
+                    "_tag": "Literal",
+                    "literal": "webhook-handle"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "name",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "subscriptionId",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "sourceAccount",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isStartingWith",
+                          "payload": {
+                            "startsWith": "acc_"
+                          }
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "callbackUrl",
+                  "type": {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter"
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "secret",
+                  "type": {
+                    "_tag": "String"
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "config",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "state",
+                  "type": {
+                    "_tag": "Declaration",
+                    "representation": {
+                      "id": "effect/schema/Json",
+                      "payload": null
+                    }
+                  },
+                  "isOptional": false
+                },
+                {
+                  "name": "request",
+                  "type": {
+                    "_tag": "Objects",
+                    "propertySignatures": [
+                      {
+                        "name": "url",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter"
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "method",
+                        "type": {
+                          "_tag": "Union",
+                          "types": [
+                            {
+                              "_tag": "Literal",
+                              "literal": "GET"
+                            },
+                            {
+                              "_tag": "Literal",
+                              "literal": "POST"
+                            },
+                            {
+                              "_tag": "Literal",
+                              "literal": "PUT"
+                            },
+                            {
+                              "_tag": "Literal",
+                              "literal": "PATCH"
+                            },
+                            {
+                              "_tag": "Literal",
+                              "literal": "DELETE"
+                            },
+                            {
+                              "_tag": "Literal",
+                              "literal": "HEAD"
+                            },
+                            {
+                              "_tag": "Literal",
+                              "literal": "OPTIONS"
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "headers",
+                        "type": {
+                          "_tag": "Objects",
+                          "propertySignatures": [],
+                          "indexSignatures": [
+                            {
+                              "parameter": {
+                                "_tag": "String"
+                              },
+                              "type": {
+                                "_tag": "String"
+                              }
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "body",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMaxLength",
+                                "payload": {
+                                  "maxLength": 1398104
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      }
+                    ]
+                  },
+                  "isOptional": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "requirements"
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "inspect"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "detail",
+              "type": {
+                "_tag": "Literal",
+                "literal": "summary"
+              },
+              "isOptional": true
+            },
+            {
+              "name": "tools",
+              "type": {
+                "_tag": "Arrays",
+                "rest": [
+                  {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "isOptional": true
+            },
+            {
+              "name": "scheduled",
+              "type": {
+                "_tag": "Literal",
+                "literal": true
+              },
+              "isOptional": true
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "skills"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "sources",
+              "type": {
+                "_tag": "Literal",
+                "literal": true
+              },
+              "isOptional": true
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "query"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "input",
+              "type": {
+                "_tag": "Declaration",
+                "representation": {
+                  "id": "effect/schema/Json",
+                  "payload": null
+                }
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "mutate"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "input",
+              "type": {
+                "_tag": "Declaration",
+                "representation": {
+                  "id": "effect/schema/Json",
+                  "payload": null
+                }
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "call"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "tool",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "kind",
+              "type": {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Literal",
+                    "literal": "query"
+                  },
+                  {
+                    "_tag": "Literal",
+                    "literal": "mutation"
+                  }
+                ]
+              },
+              "isOptional": true
+            },
+            {
+              "name": "input",
+              "type": {
+                "_tag": "Declaration",
+                "representation": {
+                  "id": "effect/schema/Json",
+                  "payload": null
+                }
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "account-check"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "requirement",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "migrate"
+              },
+              "isOptional": false
+            }
+          ]
+        }
+      ]
+    },
+    "requirements": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "capabilities",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [
+              {
+                "name": "skills",
+                "type": {
+                  "_tag": "Literal",
+                  "literal": true
+                },
+                "isOptional": false
+              },
+              {
+                "name": "toolIndex",
+                "type": {
+                  "_tag": "Literal",
+                  "literal": true
+                },
+                "isOptional": true
+              },
+              {
+                "name": "skillSources",
+                "type": {
+                  "_tag": "Literal",
+                  "literal": true
+                },
+                "isOptional": true
+              },
+              {
+                "name": "scheduledTools",
+                "type": {
+                  "_tag": "Literal",
+                  "literal": true
+                },
+                "isOptional": true
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "database",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter"
+                    }
+                  ]
+                },
+                "type": {
+                  "_tag": "Objects",
+                  "propertySignatures": [
+                    {
+                      "name": "fields",
+                      "type": {
+                        "_tag": "Objects",
+                        "propertySignatures": [],
+                        "indexSignatures": [
+                          {
+                            "parameter": {
+                              "_tag": "String",
+                              "checks": [
+                                {
+                                  "_tag": "Filter"
+                                }
+                              ]
+                            },
+                            "type": {
+                              "_tag": "Objects",
+                              "propertySignatures": [
+                                {
+                                  "name": "kind",
+                                  "type": {
+                                    "_tag": "Union",
+                                    "types": [
+                                      {
+                                        "_tag": "Literal",
+                                        "literal": "string"
+                                      },
+                                      {
+                                        "_tag": "Literal",
+                                        "literal": "number"
+                                      },
+                                      {
+                                        "_tag": "Literal",
+                                        "literal": "boolean"
+                                      },
+                                      {
+                                        "_tag": "Literal",
+                                        "literal": "id"
+                                      },
+                                      {
+                                        "_tag": "Literal",
+                                        "literal": "userId"
+                                      }
+                                    ]
+                                  },
+                                  "isOptional": false
+                                },
+                                {
+                                  "name": "optional",
+                                  "type": {
+                                    "_tag": "Union",
+                                    "types": [
+                                      {
+                                        "_tag": "Boolean"
+                                      },
+                                      {
+                                        "_tag": "Null"
+                                      }
+                                    ]
+                                  },
+                                  "isOptional": true
+                                },
+                                {
+                                  "name": "default",
+                                  "type": {
+                                    "_tag": "Union",
+                                    "types": [
+                                      {
+                                        "_tag": "Union",
+                                        "types": [
+                                          {
+                                            "_tag": "String"
+                                          },
+                                          {
+                                            "_tag": "Number",
+                                            "checks": [
+                                              {
+                                                "_tag": "Filter",
+                                                "representation": {
+                                                  "id": "effect/schema/isFinite",
+                                                  "payload": null
+                                                }
+                                              }
+                                            ]
+                                          },
+                                          {
+                                            "_tag": "Boolean"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "_tag": "Null"
+                                      }
+                                    ]
+                                  },
+                                  "isOptional": true
+                                },
+                                {
+                                  "name": "references",
+                                  "type": {
+                                    "_tag": "Union",
+                                    "types": [
+                                      {
+                                        "_tag": "String",
+                                        "checks": [
+                                          {
+                                            "_tag": "Filter"
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "_tag": "Null"
+                                      }
+                                    ]
+                                  },
+                                  "isOptional": true
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      },
+                      "isOptional": false
+                    },
+                    {
+                      "name": "indexes",
+                      "type": {
+                        "_tag": "Arrays",
+                        "rest": [
+                          {
+                            "_tag": "Objects",
+                            "propertySignatures": [
+                              {
+                                "name": "name",
+                                "type": {
+                                  "_tag": "String",
+                                  "checks": [
+                                    {
+                                      "_tag": "Filter"
+                                    }
+                                  ]
+                                },
+                                "isOptional": false
+                              },
+                              {
+                                "name": "fields",
+                                "type": {
+                                  "_tag": "Arrays",
+                                  "elements": [
+                                    {
+                                      "isOptional": false,
+                                      "type": {
+                                        "_tag": "String",
+                                        "checks": [
+                                          {
+                                            "_tag": "Filter"
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ],
+                                  "rest": [
+                                    {
+                                      "_tag": "String",
+                                      "checks": [
+                                        {
+                                          "_tag": "Filter"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                "isOptional": false
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      "isOptional": false
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "accounts",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "type": {
+                  "_tag": "Objects",
+                  "propertySignatures": [
+                    {
+                      "name": "definition",
+                      "type": {
+                        "_tag": "Objects",
+                        "propertySignatures": [
+                          {
+                            "name": "name",
+                            "type": {
+                              "_tag": "String",
+                              "checks": [
+                                {
+                                  "_tag": "Filter",
+                                  "representation": {
+                                    "id": "effect/schema/isMinLength",
+                                    "payload": {
+                                      "minLength": 1
+                                    }
+                                  }
+                                }
+                              ]
+                            },
+                            "isOptional": false
+                          },
+                          {
+                            "name": "auth",
+                            "type": {
+                              "_tag": "Objects",
+                              "propertySignatures": [],
+                              "indexSignatures": [
+                                {
+                                  "parameter": {
+                                    "_tag": "String",
+                                    "checks": [
+                                      {
+                                        "_tag": "Filter",
+                                        "representation": {
+                                          "id": "effect/schema/isMinLength",
+                                          "payload": {
+                                            "minLength": 1
+                                          }
+                                        }
+                                      }
+                                    ]
+                                  },
+                                  "type": {
+                                    "_tag": "Union",
+                                    "types": [
+                                      {
+                                        "_tag": "Objects",
+                                        "propertySignatures": [
+                                          {
+                                            "name": "type",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "secrets"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "label",
+                                            "type": {
+                                              "_tag": "String"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "fields",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [],
+                                              "indexSignatures": [
+                                                {
+                                                  "parameter": {
+                                                    "_tag": "String"
+                                                  },
+                                                  "type": {
+                                                    "_tag": "Declaration",
+                                                    "representation": {
+                                                      "id": "effect/schema/Json",
+                                                      "payload": null
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "plain",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "raw",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "_tag": "Objects",
+                                        "propertySignatures": [
+                                          {
+                                            "name": "type",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "oauth2"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "scopeSeparator",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter",
+                                                  "representation": {
+                                                    "id": "effect/schema/isMinLength",
+                                                    "payload": {
+                                                      "minLength": 1
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenRequestFormat",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "form"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "json"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenResponse",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [
+                                                {
+                                                  "name": "path",
+                                                  "type": {
+                                                    "_tag": "String",
+                                                    "checks": [
+                                                      {
+                                                        "_tag": "Filter",
+                                                        "representation": {
+                                                          "id": "effect/schema/isPattern",
+                                                          "payload": {
+                                                            "source": "^[^.]+(\\.[^.]+)*$",
+                                                            "flags": ""
+                                                          }
+                                                        }
+                                                      }
+                                                    ]
+                                                  },
+                                                  "isOptional": false
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "grant",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "authorization_code"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationParams",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [],
+                                              "indexSignatures": [
+                                                {
+                                                  "parameter": {
+                                                    "_tag": "String"
+                                                  },
+                                                  "type": {
+                                                    "_tag": "String"
+                                                  }
+                                                }
+                                              ],
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter",
+                                                  "annotations": {
+                                                    "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenEndpointAuthMethod",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "none"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_post"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic_raw"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "resource",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "_tag": "Null"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "discover",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "authorizationServerMetadataUrl",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "revocationUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "scopes",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "response",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [],
+                                              "indexSignatures": [
+                                                {
+                                                  "parameter": {
+                                                    "_tag": "String"
+                                                  },
+                                                  "type": {
+                                                    "_tag": "Declaration",
+                                                    "representation": {
+                                                      "id": "effect/schema/Json",
+                                                      "payload": null
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "plain",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "raw",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "_tag": "Objects",
+                                        "propertySignatures": [
+                                          {
+                                            "name": "type",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "oauth2"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "scopeSeparator",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter",
+                                                  "representation": {
+                                                    "id": "effect/schema/isMinLength",
+                                                    "payload": {
+                                                      "minLength": 1
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenRequestFormat",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "form"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "json"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenResponse",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [
+                                                {
+                                                  "name": "path",
+                                                  "type": {
+                                                    "_tag": "String",
+                                                    "checks": [
+                                                      {
+                                                        "_tag": "Filter",
+                                                        "representation": {
+                                                          "id": "effect/schema/isPattern",
+                                                          "payload": {
+                                                            "source": "^[^.]+(\\.[^.]+)*$",
+                                                            "flags": ""
+                                                          }
+                                                        }
+                                                      }
+                                                    ]
+                                                  },
+                                                  "isOptional": false
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "grant",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "authorization_code"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationParams",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [],
+                                              "indexSignatures": [
+                                                {
+                                                  "parameter": {
+                                                    "_tag": "String"
+                                                  },
+                                                  "type": {
+                                                    "_tag": "String"
+                                                  }
+                                                }
+                                              ],
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter",
+                                                  "annotations": {
+                                                    "message": "Authorization parameters cannot replace protocol parameters such as state or scope."
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenEndpointAuthMethod",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "none"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_post"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic_raw"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "resource",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "_tag": "Null"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationUrl",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "tokenUrl",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "revocationUrl",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "scopes",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "issuer",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "discover",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationServerMetadataUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "response",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [],
+                                              "indexSignatures": [
+                                                {
+                                                  "parameter": {
+                                                    "_tag": "String"
+                                                  },
+                                                  "type": {
+                                                    "_tag": "Declaration",
+                                                    "representation": {
+                                                      "id": "effect/schema/Json",
+                                                      "payload": null
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "plain",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "raw",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "_tag": "Objects",
+                                        "propertySignatures": [
+                                          {
+                                            "name": "type",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "oauth2"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "grant",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "client_credentials"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "discover",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "authorizationServerMetadataUrl",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "revocationUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "scopes",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "scopeSeparator",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter",
+                                                  "representation": {
+                                                    "id": "effect/schema/isMinLength",
+                                                    "payload": {
+                                                      "minLength": 1
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenRequestFormat",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "form"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "json"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenEndpointAuthMethod",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_post"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic_raw"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "resource",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "_tag": "Null"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "response",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [],
+                                              "indexSignatures": [
+                                                {
+                                                  "parameter": {
+                                                    "_tag": "String"
+                                                  },
+                                                  "type": {
+                                                    "_tag": "Declaration",
+                                                    "representation": {
+                                                      "id": "effect/schema/Json",
+                                                      "payload": null
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "plain",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "raw",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          }
+                                        ]
+                                      },
+                                      {
+                                        "_tag": "Objects",
+                                        "propertySignatures": [
+                                          {
+                                            "name": "type",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "oauth2"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "grant",
+                                            "type": {
+                                              "_tag": "Literal",
+                                              "literal": "client_credentials"
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "tokenUrl",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "revocationUrl",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "scopes",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "scopeSeparator",
+                                            "type": {
+                                              "_tag": "String",
+                                              "checks": [
+                                                {
+                                                  "_tag": "Filter",
+                                                  "representation": {
+                                                    "id": "effect/schema/isMinLength",
+                                                    "payload": {
+                                                      "minLength": 1
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenRequestFormat",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "form"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "json"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "tokenEndpointAuthMethod",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_post"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic"
+                                                },
+                                                {
+                                                  "_tag": "Literal",
+                                                  "literal": "client_secret_basic_raw"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "resource",
+                                            "type": {
+                                              "_tag": "Union",
+                                              "types": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "_tag": "Null"
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "discover",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "authorizationServerMetadataUrl",
+                                            "type": {
+                                              "_tag": "Never"
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "response",
+                                            "type": {
+                                              "_tag": "Objects",
+                                              "propertySignatures": [],
+                                              "indexSignatures": [
+                                                {
+                                                  "parameter": {
+                                                    "_tag": "String"
+                                                  },
+                                                  "type": {
+                                                    "_tag": "Declaration",
+                                                    "representation": {
+                                                      "id": "effect/schema/Json",
+                                                      "payload": null
+                                                    }
+                                                  }
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": false
+                                          },
+                                          {
+                                            "name": "plain",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          },
+                                          {
+                                            "name": "raw",
+                                            "type": {
+                                              "_tag": "Arrays",
+                                              "rest": [
+                                                {
+                                                  "_tag": "String",
+                                                  "checks": [
+                                                    {
+                                                      "_tag": "Filter",
+                                                      "representation": {
+                                                        "id": "effect/schema/isMinLength",
+                                                        "payload": {
+                                                          "minLength": 1
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            "isOptional": true
+                                          }
+                                        ]
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            },
+                            "isOptional": false
+                          },
+                          {
+                            "name": "hosts",
+                            "type": {
+                              "_tag": "Arrays",
+                              "rest": [
+                                {
+                                  "_tag": "String",
+                                  "checks": [
+                                    {
+                                      "_tag": "Filter",
+                                      "representation": {
+                                        "id": "effect/schema/isPattern",
+                                        "payload": {
+                                          "source": "^(\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$",
+                                          "flags": ""
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            "isOptional": true
+                          }
+                        ]
+                      },
+                      "isOptional": false
+                    },
+                    {
+                      "name": "cardinality",
+                      "type": {
+                        "_tag": "Union",
+                        "types": [
+                          {
+                            "_tag": "Literal",
+                            "literal": "one"
+                          },
+                          {
+                            "_tag": "Literal",
+                            "literal": "many"
+                          }
+                        ]
+                      },
+                      "isOptional": false
+                    },
+                    {
+                      "name": "health",
+                      "type": {
+                        "_tag": "Literal",
+                        "literal": true
+                      },
+                      "isOptional": true
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "sql",
+          "type": {
+            "_tag": "Literal",
+            "literal": true
+          },
+          "isOptional": true
+        }
+      ]
+    },
+    "migrate": {
+      "_tag": "Arrays",
+      "rest": [
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "id",
+              "type": {
+                "_tag": "Number",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isInt",
+                      "payload": null
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "unchanged": [
+    "response",
+    "catalog",
+    "catalogSummary",
+    "skills",
+    "elicitationRequest",
+    "elicitationReply",
+    "workflowStep",
+    "workflowStepReply",
+    "workflowControl",
+    "cacheCommand",
+    "cacheReply",
+    "accountCheck",
+    "accounts"
+  ],
+  "references": {},
+  "shared": {}
+}

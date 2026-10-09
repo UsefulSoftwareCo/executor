@@ -17,7 +17,7 @@ function OrganizationLayout() {
   return (
     <OrganizationBoundary slug={organizationSlug}>
       <DashboardShell allowCreateOrganization={false} navigation={<Navigation />}>
-        <OrganizationContent>
+        <OrganizationContent pending={<PagePending />}>
           <Outlet />
           <NameAccountDialog />
         </OrganizationContent>

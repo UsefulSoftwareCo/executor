@@ -4,7 +4,7 @@
 import type { Effect } from "effect";
 import type { MigrationError } from "../errors.ts";
 import type { MigrationOperation } from "../migration-operation.ts";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { SqlError } from "effect/sql/SqlError";
 import type { AnyColumn } from "./column.ts";
 import {
   type AnyRelation,

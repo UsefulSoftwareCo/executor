@@ -280,20 +280,20 @@ function BrowserResult() {
         </div>
         <div className="handoff-address flex-1 flex items-center gap-2.5 min-w-0 py-[8px] px-[14px] bg-[#fff] [border:1px_solid_#ddd] rounded-[7px] text-[#888] [font:11px_var(--font-mono)] [&_a]:overflow-hidden [&_a]:text-ellipsis [&_a]:whitespace-nowrap [&_a]:text-[#666] [&_a]:no-underline max-[639px]:p-[8px]">
           <span aria-hidden="true">⌕</span>
-          <a href="/demo/posthog" target="_blank" rel="noopener">
+          <a href="/experiments/demo/posthog" target="_blank" rel="noopener">
             {demoAppUrl}
           </a>
         </div>
         <a
           className="handoff-open shrink-0 text-[11px] text-[#888] no-underline"
-          href="/demo/posthog"
+          href="/experiments/demo/posthog"
           target="_blank"
           rel="noopener"
         >
           Open ↗
         </a>
       </div>
-      <iframe src="/demo/posthog" title="PostHog dashboard built across four agents" />
+      <iframe src="/experiments/demo/posthog" title="PostHog dashboard built across four agents" />
     </div>
   );
 }
@@ -341,7 +341,7 @@ function AssistantReply({
       {playback.phase === "done" && turn.id === "ui" && (
         <a
           className="handoff-result-link [.handoff-client_&]:block [.handoff-client_&]:py-[14px] [.handoff-client_&]:px-[16px] [.handoff-client_&]:[border:1px_solid_var(--client-rule)] [.handoff-client_&]:rounded-[7px] [.handoff-client_&]:[color:var(--client-ink)] [.handoff-client_&]:[font:12px_var(--font-mono)] [.handoff-client_&]:no-underline [.handoff-client_&]:[background:var(--client-panel)]"
-          href="/demo/posthog"
+          href="/experiments/demo/posthog"
           target="_blank"
           rel="noopener"
         >

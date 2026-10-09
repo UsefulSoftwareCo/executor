@@ -1,6 +1,6 @@
 /** Hosted authoring uses the product's current organization authentication contract. */
 import { AppIdentity, appManagementApi, frameworkApi } from "@executor-js/app-management/contracts";
-import { HttpApiMiddleware } from "effect/unstable/httpapi";
+import { HttpApiMiddleware } from "effect/http-api";
 import { AuthenticationUnavailable, Forbidden, Unauthorized } from "./auth.ts";
 import { OrganizationForbidden } from "./organization.ts";
 

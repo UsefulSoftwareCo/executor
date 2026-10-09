@@ -4,9 +4,9 @@ import { organizationsAtom } from "@executor-js/hosted-web/contracts/organizatio
 /** Removal is a cloud capability; self-host keeps its single instance organization. */
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
 import { Cause, Effect, Match, Option, type Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
-import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
+import { Atom } from "effect/reactivity";
+import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
 import type { OrganizationId } from "@executor-js/hosted-server/organization";
 import { ExecutorCloudApi } from "../../../src/contracts/api.ts";
 import { CloudClient } from "./billing.ts";

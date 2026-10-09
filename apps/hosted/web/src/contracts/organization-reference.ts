@@ -5,8 +5,8 @@ import {
   OrganizationReference,
 } from "@executor-js/hosted-server/organization";
 import { Effect, Equal, Layer, Option, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { Atom } from "effect/unstable/reactivity";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { Atom } from "effect/reactivity";
 
 /** Keep this tab attached to the first verified ID even if its slug is renamed or reused. */
 export const organizationTargetAtom = Atom.family((reference: OrganizationReference) =>

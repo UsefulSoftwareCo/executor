@@ -78,7 +78,19 @@ export const issueOpened = {
     const event = await decodeJson(new Response(bytes), Issue);
     if (event.action === "opened") {
       const messages = await searchMail(context, { query: event.issue.html_url });
-      console.info({ issue: event.issue.number, matchingMessages: messages.length });
+      // GitHub's delivery ID stays the same when it redelivers, so subscribers see the issue once.
+      context.events.emit(
+        "issue.opened",
+        {
+          number: event.issue.number,
+          url: event.issue.html_url,
+          matchingMessages: messages.length,
+        },
+        {
+          filters: { repository: `${state.owner}/${state.repo}` },
+          id: request.headers.get("x-github-delivery") ?? undefined,
+        },
+      );
     }
     return new Response(null, { status: 204 });
   },

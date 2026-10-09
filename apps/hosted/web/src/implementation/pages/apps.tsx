@@ -18,16 +18,23 @@ import {
 } from "@executor-js/ui/components/select";
 import { useQuery } from "@executor-js/ui/dashboard/context";
 import { Link } from "@tanstack/react-router";
-import { useOrganizationRoute } from "../components/organization.tsx";
-import { createAppListAtoms } from "../../contracts/resource-access.ts";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+import { createAppListAtoms, resourceInventoryAtom } from "../../contracts/resource-access.ts";
 import { groupsAtom } from "../../contracts/groups.ts";
 import { usePreload } from "@executor-js/ui/dashboard/context";
+
+/** The groups and the unfiltered list the page opens with. */
+export const appsPageReads: OrganizationPageReads = (organization) => [
+  groupsAtom(organization),
+  resourceInventoryAtom(organization),
+];
+
 /** One authorized list, with independent group and explicit management filters. */
 export function AppsPage() {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   const atoms = useMemo(() => createAppListAtoms(organization), [organization]);
   const [{ view, group }, setFilters] = useAtom(atoms.filters);
-  usePreload(groupsAtom(organization), atoms.query);
+  usePreload(...appsPageReads(organization, {}), atoms.query);
   const groups = useQuery(groupsAtom(organization));
   const { data } = useQuery(atoms.query);
   const activeFilters = Number(group !== "all") + Number(view !== "available");

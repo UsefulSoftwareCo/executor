@@ -4,7 +4,6 @@ import { localProfileHandlers } from "./profiles.ts";
 import { appOrigin } from "../contracts/app-ui.ts";
 /** Product projections over the existing SDK and retained deployment storage. */
 import {
-  Provider,
   StorageError,
   OwnerId,
   AppNameTaken,
@@ -18,18 +17,16 @@ import {
   type DeploymentId,
   type Tool,
   type ToolRouter,
-  type Credentials,
   type Executor,
 } from "@executor-js/sdk/core";
-import { Effect, Layer, Redacted, Result, Schema, Stream } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { Effect, Layer, Redacted, Result, Stream } from "effect";
+import { HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import { createCatalog, type CatalogSource } from "@executor-js/catalog";
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import type { AuthStorageError } from "../contracts/auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
-import { accountSignIn } from "./account-status.ts";
 import {
   DashboardAccess,
   DashboardApi,
@@ -42,6 +39,7 @@ import {
   AppRenameBlocked,
   AccountManagementBlocked,
   ToolCatalogChanged,
+  type AppAccountTarget,
 } from "../contracts/dashboard.ts";
 
 /** Authenticate local browser and bearer requests using the same session boundary. */
@@ -61,8 +59,7 @@ export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
 /** Serve authenticated read endpoints without granting browser access to SDK mutations. */
 export const dashboard = (
   executor: Executor,
-  storage: ExecutorDatabase,
-  credentials: Credentials,
+  reactivity: ExecutorDatabase["reactivity"],
   config: ServerConfig,
   auth: LocalAuth,
   egress: HostEgress,
@@ -77,13 +74,40 @@ export const dashboard = (
   } = {},
 ) => {
   const owner = OwnerId.make("local");
-  const appCatalog = createCatalog(egress, catalog);
-  const db = storage.orm("4.0.5");
-  const signIn = accountSignIn(storage, credentials);
-  const query = <A, E>(work: () => Effect.Effect<A, E>) =>
-    Effect.suspend(work).pipe(Effect.mapError(() => new StorageError()));
+  const appCatalog = createCatalog(
+    { egress, clientMetadataUrl: config.oauthClientMetadataUrl },
+    catalog,
+  );
+  /** Only status and a non-refreshable expiry leave the trusted host. */
+  const signIn = (account: AccountId) =>
+    executor.accounts.signIn({ account }).pipe(
+      Effect.map((state) =>
+        state.state === "saved"
+          ? ({ state: "saved", reconnectAt: state.reconnectAt } as const)
+          : ({ state: state.state } as const),
+      ),
+      Effect.catch(() => Effect.succeed({ state: "unavailable" } as const)),
+    );
   const manage = <A, E, R>(account: AccountId, operation: Effect.Effect<A, E, R>) =>
     account === managedAccount ? Effect.fail(new AccountManagementBlocked({ account })) : operation;
+  /**
+   * Every dashboard sign-in fills an app requirement; completing it selects the account there. A
+   * reconnect names the account, which the local server's own account cannot be.
+   */
+  const appConnection = (app: AppId, target: typeof AppAccountTarget.Type) =>
+    target.account === undefined
+      ? executor.accountConnections.create({
+          owner,
+          target: { app, profile: target.profile, requirement: target.requirement },
+        })
+      : manage(
+          target.account,
+          executor.accountConnections.create({
+            owner,
+            account: target.account,
+            target: { app, profile: target.profile, requirement: target.requirement },
+          }),
+        );
   const access = dashboardAccess(config, auth);
   // Database reads infer dependencies in the shared storage service, including reads in SDK calls.
   const overview = Effect.gen(function* () {
@@ -92,10 +116,7 @@ export const dashboard = (
         apps: executor.apps.list(),
         accounts: executor.accounts.list(),
         health: executor.accounts.listHealth(),
-        providers: query(() => db.findMany("providers", {})).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Provider))),
-          Effect.mapError(() => new StorageError()),
-        ),
+        providers: executor.accounts.providers(),
       },
       { concurrency: 4 },
     );
@@ -110,7 +131,7 @@ export const dashboard = (
         ...account,
         providerName: definition.name,
         providerUrl: providerDisplayUrl(definition),
-        signIn: yield* signIn(account, definition),
+        signIn: yield* signIn(account.id),
         ...(health === undefined ? {} : { health }),
       });
     }
@@ -147,12 +168,9 @@ export const dashboard = (
   const accountDetail = (accountId: AccountId) =>
     Effect.gen(function* () {
       const account = yield* executor.accounts.get({ account: accountId });
-      const row = yield* query(() =>
-        db.findFirst("providers", { where: (b) => b("id", "=", account.provider) }),
-      );
-      const provider = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
-        Effect.mapError(() => new StorageError()),
-      );
+      const provider = yield* executor.accounts
+        .provider({ account: accountId })
+        .pipe(Effect.catchTag("ProviderNotFound", () => new StorageError()));
       const apps = yield* executor.apps.list({ account: account.id });
       const health = yield* executor.accounts.health({ account: account.id });
       return {
@@ -160,7 +178,7 @@ export const dashboard = (
           ...account,
           providerName: provider.definition.name,
           providerUrl: providerDisplayUrl(provider.definition),
-          signIn: yield* signIn(account, provider.definition),
+          signIn: yield* signIn(account.id),
         },
         provider,
         apps,
@@ -214,7 +232,7 @@ export const dashboard = (
     });
   const subscribe = <A, E>(read: Effect.Effect<A, E>) =>
     secureLive((authorize) =>
-      storage.reactivity.subscribe(authorize.pipe(Effect.andThen(Effect.result(read)))),
+      reactivity.subscribe(authorize.pipe(Effect.andThen(Effect.result(read)))),
     );
 
   // Only this app's execution inputs can trigger expensive upstream discovery. The cheap
@@ -234,23 +252,22 @@ export const dashboard = (
           ),
         ),
       ];
+      // The fingerprint stands in for the credential bytes: any credential write changes it, so the
+      // catalog is listed again exactly when its inputs changed.
       const accounts = yield* Effect.forEach(ids, (id) =>
         Effect.gen(function* () {
-          const account = yield* query(() =>
-            db.findFirst("accounts", { where: (b) => b("id", "=", id) }),
-          );
-          const grant = yield* query(() =>
-            db.findFirst("oauthGrants", { where: (b) => b("id", "=", id) }),
-          );
-          return account === null
-            ? null
-            : {
-                id: account.id,
-                provider: account.provider,
-                method: account.method,
-                encryptedCredentials: Array.from(account.encryptedCredentials),
-                reconnect: grant?.status === "reconnect",
-              };
+          const account = yield* executor.accounts
+            .get({ account: id })
+            .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(null)));
+          if (account === null) return null;
+          const state = yield* executor.accounts.signIn({ account: id });
+          return {
+            id: account.id,
+            provider: account.provider,
+            method: account.method,
+            credentials: state.credentialsFingerprint,
+            reconnect: state.state === "reconnect",
+          };
         }),
       );
       return {
@@ -313,7 +330,7 @@ export const dashboard = (
       .handle("liveAccount", ({ params }) => subscribe(accountDetail(params.account)))
       .handle("liveTools", ({ params, query }) =>
         secureLive((authorize) =>
-          storage.reactivity
+          reactivity
             .subscribe(
               authorize.pipe(Effect.andThen(Effect.result(toolInputs(params.app, query.profile)))),
             )
@@ -371,7 +388,6 @@ export const dashboard = (
           return app;
         }),
       )
-      .handle("addAccount", ({ payload }) => executor.accounts.add({ owner, ...payload }))
       .handle("account", ({ params }) => accountDetail(params.account))
       .handle("checkAccount", ({ params }) => executor.accounts.check(params))
       .handle("checkCredentials", ({ params, payload }) =>
@@ -380,35 +396,8 @@ export const dashboard = (
       .handle("updateAccount", ({ params, payload }) =>
         manage(params.account, executor.accounts.update({ ...params, ...payload })),
       )
-      .handle("replaceAccountCredentials", ({ params, payload }) =>
-        manage(params.account, executor.accounts.replaceCredentials({ ...params, ...payload })),
-      )
       .handle("disconnectAccount", ({ params }) =>
         manage(params.account, executor.accounts.remove(params)),
-      )
-      .handle("reconnectAccount", ({ params, payload }) =>
-        manage(
-          params.account,
-          Effect.gen(function* () {
-            const request = yield* localRequest(config.port, config.browserOrigin).pipe(
-              Effect.mapError(() => new DashboardForbidden()),
-            );
-            const account = yield* executor.accounts.get(params);
-            const connection = yield* executor.accountConnections.create({
-              account: account.id,
-              owner: account.owner,
-              provider: account.provider,
-            });
-            const signIn = yield* executor.accountConnections.startOAuth({
-              connection: connection.id,
-              method: account.method,
-              label: account.label,
-              ...payload,
-              redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
-            });
-            return { ...signIn, connection: connection.id };
-          }),
-        ),
       )
       .handle("importCustomApp", ({ payload }) =>
         Effect.gen(function* () {
@@ -436,18 +425,28 @@ export const dashboard = (
           });
         }),
       )
-      .handle("startOAuth", ({ payload }) =>
+      .handle("connectAccount", ({ params, payload: { method, label, fields, ...target } }) =>
+        Effect.gen(function* () {
+          const connection = yield* appConnection(params.app, target);
+          return yield* executor.accountConnections.submit({
+            connection: connection.id,
+            method,
+            ...(label === undefined ? {} : { label }),
+            fields,
+          });
+        }),
+      )
+      .handle("startOAuth", ({ params, payload: { method, label, client, ...target } }) =>
         Effect.gen(function* () {
           const request = yield* localRequest(config.port, config.browserOrigin).pipe(
             Effect.mapError(() => new DashboardForbidden()),
           );
-          const connection = yield* executor.accountConnections.create({
-            provider: payload.provider,
-            owner,
-          });
+          const connection = yield* appConnection(params.app, target);
           const signIn = yield* executor.accountConnections.startOAuth({
-            ...payload,
             connection: connection.id,
+            method,
+            ...(label === undefined ? {} : { label }),
+            ...(client === undefined ? {} : { client }),
             redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
           });
           return { ...signIn, connection: connection.id };

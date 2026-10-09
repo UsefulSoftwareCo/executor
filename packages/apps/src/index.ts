@@ -1,4 +1,5 @@
 export { ProviderError } from "./contracts/provider-error.ts";
+export { FetchOptionUnsupported, NetworkRefused } from "./contracts/network.ts";
 export type { AppCache, CacheLoadContext, CacheGetOptions } from "./contracts/cache.ts";
 export { CacheError } from "@executor-js/app-cache/contracts";
 /**
@@ -74,6 +75,8 @@ export {
   router,
   dynamicRouter,
   withApprovals,
+  type OperationChild,
+  type OperationDeclaration,
   type RouterDeclaration,
   type RouterChild,
   type RouterOptions,
@@ -166,6 +169,8 @@ export type {
   WebhookContext,
 } from "./contracts/context.ts";
 export { type App, type AppDefinition, defineApp } from "./implementation/app.ts";
+export { event, type EventDeclaration, type EventEmitter } from "./implementation/events.ts";
+export type { EmitOptions } from "./contracts/events.ts";
 export type { Approval, ApprovalContext, ApprovalDecision } from "./approval.ts";
 
 type AuthorWebhook<Member, Config, State> = Member extends object
@@ -194,6 +199,7 @@ export const decodeJson = <T>(response: JsonResponse, schema: Schema<T, boolean>
   const native: NativeResponse = {
     status: response.status,
     json: () =>
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- a Response the app passes from its own code
       Effect.tryPromise({
         try: () => response.json(),
         catch: (error) => error,
@@ -214,16 +220,14 @@ export {
   type Elicit,
 } from "./contracts/elicitation.ts";
 
-export {
-  table,
-  defineDatabase,
-  type Table,
-  type DatabaseReader,
-  type Database,
-  type DatabaseDefinition,
-} from "./implementation/storage.ts";
-
-export { id, userId } from "./implementation/schema.ts";
+export type {
+  Sql,
+  SqlCursor,
+  SqlReader,
+  SqlRow,
+  SqlTransaction,
+  SqlValue,
+} from "./contracts/sql.ts";
 
 export {
   query,

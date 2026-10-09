@@ -2,14 +2,14 @@
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { testUtils } from "better-auth/plugins";
 import { organization } from "better-auth/plugins/organization";
-import { authOptions } from "@executor-js/hosted-server";
+import { authOptions, singleResourceOrigin } from "@executor-js/hosted-server";
 import { Effect, Option, Redacted, Schema } from "effect";
 
 /** Local provisioning must never target a public origin. */
 export { LoopbackOrigin as TestOrigin } from "@executor-js/utils/url-policy";
 
 /** Stable fixture names are also valid organization slugs and synthetic email components. */
-export const FixtureName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/));
+export const FixtureName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/u));
 
 /** Sanitized failures keep database credentials and session cookies out of diagnostics. */
 export class TestAccountFailed extends Schema.TaggedError<TestAccountFailed>()(
@@ -34,7 +34,16 @@ export const testAccountAuth = (settings: {
   readonly cookiePrefix: string;
   readonly database: BetterAuthOptions["database"];
 }) => {
-  const base = authOptions({ url: settings.origin, oauthRedirectUri: Option.none() }, []);
+  // Fixtures create sessions only; they never issue tokens for an OAuth resource.
+  const base = authOptions(
+    {
+      url: settings.origin,
+      resourceOrigins: singleResourceOrigin(settings.origin),
+      issuer: `${settings.origin}/api/auth`,
+      oauthRedirectUri: Option.none(),
+    },
+    [],
+  );
   const helpers = testUtils();
   return betterAuth({
     ...base,

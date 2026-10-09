@@ -3,10 +3,15 @@ import type { Route } from "playwright";
 import { Browser } from "./browser.ts";
 import { driver } from "./platform.ts";
 
-/** Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests. */
+/**
+ * Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests.
+ * `fail` drops the connection, which the dashboard explains as a lost connection when the read went
+ * on its own, but as an unanswered read when it shared a batch. `undeclared` answers with a status
+ * no endpoint declares, an unexpected failure either way.
+ */
 export const holdQuery = (
   paths: readonly string[] | RegExp,
-  outcome: "continue" | "fail",
+  outcome: "continue" | "fail" | "undeclared",
   options: {
     readonly method?: "GET" | "POST" | "PATCH";
     readonly allRequests?: boolean;
@@ -39,7 +44,11 @@ export const holdQuery = (
           yield* Deferred.succeed(requested, new URL(route.request().url()).pathname);
           yield* Deferred.await(release);
           yield* driver("Release the held query", () =>
-            outcome === "fail" ? route.abort("failed") : route.fallback(),
+            outcome === "fail"
+              ? route.abort("failed")
+              : outcome === "undeclared"
+                ? route.fulfill({ status: 599, contentType: "text/plain", body: "undeclared" })
+                : route.fallback(),
           );
         }),
       );

@@ -6,7 +6,7 @@
  * durations and numeric wire attributes are read.
  */
 import { Config, Effect, Option, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { dataset } from "./flamechart.ts";
 
 export class SqlStatsFailed extends Schema.TaggedError<SqlStatsFailed>()("SqlStatsFailed", {

@@ -1,6 +1,6 @@
 /** Resolved query inputs implemented by storage adapters. */
 import type { Effect } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { SqlError } from "effect/sql/SqlError";
 import type { AnyColumn } from "./schema/column.ts";
 import type { AnyRelation } from "./schema/relation.ts";
 import type { AnyTable } from "./schema/table.ts";

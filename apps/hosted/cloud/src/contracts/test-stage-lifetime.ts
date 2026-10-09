@@ -46,6 +46,15 @@ export const canDeployTestStage = (lease: TestStageLease, now: number) => {
   const deadline = testStageCleanupAt(lease);
   return deadline === null || now + testStageDeployMilliseconds <= deadline;
 };
+/** All test stages share account quotas, so their number is fixed. */
+export const testStageLimit = 80;
+/** The oldest stages to remove so a new one stays within the limit. */
+export const stagesToEvict = (leases: readonly TestStageLease[], slug: string) => {
+  const others = leases
+    .filter((lease) => lease.slug !== slug)
+    .toSorted((a, b) => a.createdAt - b.createdAt);
+  return others.slice(0, Math.max(0, others.length - testStageLimit + 1));
+};
 /** Administration failures expose a safe explanation, never credentials. */
 export class TestStageFailed extends Schema.TaggedError<TestStageFailed>()("TestStageFailed", {
   message: Schema.String,

@@ -1,9 +1,10 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ApiKeyId } from "./api-keys.ts";
+import type { ResourceOrigins } from "@executor-js/mcp-auth";
 import type { AuthorizationPolicy } from "@executor-js/authorization";
 import type { OrganizationAccess, OrganizationReference } from "./organization.ts";
 import { Context, Effect, Schema } from "effect";
-import { HttpApiMiddleware } from "effect/unstable/httpapi";
+import { HttpApiMiddleware } from "effect/http-api";
 import type { OrganizationId, OrganizationRole, OrganizationForbidden } from "./organization.ts";
 
 /** A hosted login identity, separate from SDK provider accounts and owners. */
@@ -75,7 +76,12 @@ export interface ApiAccess {
 export class ApiAuthentication extends Context.Service<
   ApiAuthentication,
   {
+    /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
+    /** The origins of MCP and API OAuth resources; the first is canonical. They may differ from the browser origin. */
+    readonly resourceOrigins: ResourceOrigins;
+    /** The authorization server's exact issuer identifier, which discovery names. */
+    readonly issuer: string;
     readonly authenticate: (
       headers: Headers,
       organization?: OrganizationReference,
@@ -87,7 +93,10 @@ export class ApiAuthentication extends Context.Service<
 export class Authentication extends Context.Service<
   Authentication,
   {
+    /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
+    /** The origins of MCP and API OAuth resources; the first is canonical. They may differ from the browser origin. */
+    readonly resourceOrigins: ResourceOrigins;
     /** Optional provider callback relay; the browser still returns to the canonical dashboard origin. */
     readonly oauthRedirectUri?: string | undefined;
     readonly current: (

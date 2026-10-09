@@ -4,7 +4,7 @@ import { HostedApi, hostedApiDocument } from "@executor-js/hosted-server/contrac
 import { HostedOrganizationRemoval } from "@executor-js/hosted-server";
 import { billingGroup } from "./billing.ts";
 import { onboardingGroup } from "./onboarding.ts";
-import { OpenApi } from "effect/unstable/httpapi";
+import { OpenApi } from "effect/http-api";
 
 /** Complete Executor Cloud API. Compose every Cloud product endpoint here. */
 export const ExecutorCloudApi = HostedApi.add(HostedAppUi, billingGroup)

@@ -73,7 +73,7 @@ const allowed: Record<string, ReadonlySet<string>> = {
 /** Every event is personless, carries the install ID and stays within its allowlist. */
 const expectAnonymous = (
   events: readonly DeliveredEvent[],
-  product: "local" | "self-host",
+  product: "cli" | "self-host",
   install: string,
 ) => {
   for (const event of events) {
@@ -285,7 +285,7 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         expect(install).toMatch(uuid);
         expect(startup?.properties).toMatchObject({
           install_id: install,
-          product: "local",
+          product: "cli",
           ...(yield* reportedBuild),
           apps: expect.any(Number),
           accounts: expect.any(Number),
@@ -335,7 +335,7 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
             events.some((event) => event.properties.message === message) &&
             events.filter((event) => event.event === "tool_execution_completed").length >= 2,
         );
-        expectAnonymous(events, "local", install);
+        expectAnonymous(events, "cli", install);
         for (const event of events) expect(event.distinct_id).toBe(install);
         const outcomes = events
           .filter((event) => event.event === "tool_execution_completed")

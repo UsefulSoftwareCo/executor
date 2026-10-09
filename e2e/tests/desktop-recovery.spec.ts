@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Effect, FileSystem, Layer, Path, Schedule, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Config, Effect, Fiber, FileSystem, Layer, Path, Schedule, Schema } from "effect";
+import { FetchHttpClient } from "effect/http";
 import type { ElectronApplication, Page } from "playwright";
 import { randomBytes, randomUUID } from "node:crypto";
 import { driver } from "../support/platform.ts";
@@ -15,9 +15,11 @@ import {
   eventsNamed,
   clickMenuItem,
   killBackend,
+  lateLoadFailures,
   launchDesktop,
   menuLabels,
   nextBackendPid,
+  reportReplacedLoadFailuresLate,
 } from "../support/desktop.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -206,6 +208,60 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
   ).pipe(Effect.provide(services)),
 );
 
+it.live(scenarios.desktopLateLoadFailure.title, () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { home, data, env } = yield* desktopHome();
+      const electron = yield* launchDesktop({ cwd: home, env });
+      const page = yield* driver("desktop window", () => electron.firstWindow());
+      yield* dashboard(page);
+      yield* reportReplacedLoadFailuresLate(electron);
+
+      // The server exits, so the window shows the startup page, and then hears that the dashboard
+      // it replaced failed to load. The startup page shows only until the restarted server is
+      // ready, so the wait for it starts on the dashboard. It reads from the window: a desktop
+      // stopped behind its error box answers no main-process call.
+      const startupPage = yield* driver("the window shows the startup page", () =>
+        page.waitForURL((url) => url.protocol === "data:", { timeout: 30_000 }),
+      ).pipe(Effect.forkScoped({ startImmediately: true }));
+      const [first] = yield* backendPids(data);
+      yield* killBackend(first!);
+      yield* nextBackendPid(data, [first!]);
+      yield* Fiber.join(startupPage);
+
+      // That failure was the dashboard's, not the startup page's: the desktop keeps its window
+      // and opens the restarted server's dashboard.
+      yield* dashboard(page);
+      expect(yield* lateLoadFailures(electron)).toBe(1);
+      expect(yield* eventsNamed(data, "Desktop backend ready", 2)).toHaveLength(2);
+      expect((yield* desktopEvents(data)).map((event) => event.message)).not.toContain(
+        "Desktop stopped",
+      );
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
+it.live(scenarios.desktopClipboard.title, () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { home, env, origin } = yield* desktopHome();
+      const electron = yield* launchDesktop({ cwd: home, env });
+      const page = yield* driver("desktop window", () => electron.firstWindow());
+      yield* dashboard(page);
+      yield* driver("open the custom app page", () => page.goto(`${origin}/apps/add/custom`));
+      const copy = page.getByRole("button", { name: "Copy setup prompt" });
+      yield* driver("copy the setup prompt", () => copy.click());
+      yield* driver("the copy succeeds", () =>
+        copy.getByText("Copied", { exact: true }).waitFor({ state: "visible" }),
+      );
+      const copied = yield* driver("read the system clipboard", () =>
+        electron.evaluate(({ clipboard }) => clipboard.readText()),
+      );
+      expect(copied).toContain("Help me add a service to Executor as an app.");
+    }),
+  ).pipe(Effect.provide(services)),
+);
+
 it.live(scenarios.desktopReset.title, () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -359,6 +415,12 @@ it.live(scenarios.desktopReset.title, () =>
             event.message === "Showing desktop recovery",
         ),
       ).toEqual([]);
+      // Lines logged before a move go with it: the first backup holds both reset attempts.
+      expect(
+        (yield* desktopEvents(backup)).filter(
+          (event) => event.message === "Resetting Executor data",
+        ),
+      ).toHaveLength(2);
     }),
   ).pipe(Effect.provide(services)),
 );

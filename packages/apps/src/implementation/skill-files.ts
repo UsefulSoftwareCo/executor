@@ -32,6 +32,7 @@ export const skillFromFiles = (
     // YAML is only needed when skills are parsed, not while a host starts. yaml is CommonJS on
     // Node, where a dynamic import's only guaranteed export is `default`; every build of it
     // (Node, bundled Node, and the browser build Workers use) has the full API there.
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- dynamic import
     const { parseDocument } = (yield* Effect.promise(() => import("yaml"))).default;
     const value: unknown = yield* Effect.try({
       try: () => {

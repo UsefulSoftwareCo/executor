@@ -93,6 +93,8 @@ export const makeProfiles = (db: Query, crypto: Crypto.Crypto) => {
             app: app.id,
             owner: app.owner,
             subject: input.subject,
+            idempotencyKey: input.idempotencyKey,
+            request,
             ...request,
             name: input.name ?? null,
             revision: 1,
@@ -165,6 +167,9 @@ export const makeProfiles = (db: Query, crypto: Crypto.Crypto) => {
                 b("status", "!=", "removed"),
                 input.owner === undefined ? true : b("owner", "=", input.owner),
                 input.subject === undefined ? true : b("subject", "=", input.subject),
+                input.idempotencyKey === undefined
+                  ? true
+                  : b("idempotencyKey", "=", input.idempotencyKey),
               ),
             orderBy: ["createdAt", "asc"],
           }),

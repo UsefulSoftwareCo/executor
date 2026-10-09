@@ -1,6 +1,6 @@
 /** Importable environment lifecycle used by interactive tooling and scenario adapters. */
 import { Clock, Effect, FileSystem, Path, Redacted } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import { Target } from "../support/platform.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
@@ -35,6 +35,8 @@ export const startEnvironment = (input: {
               origin,
               commit,
               observeUI: false,
+              authRateLimit: false,
+              browserOrigin: "app",
               appPort: yield* freePort,
               databasePort: yield* freePort,
             })

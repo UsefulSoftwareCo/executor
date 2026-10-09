@@ -1,8 +1,9 @@
 /** Restart the runner-owned product through its loopback-only test control plane. */
 import { Config, Effect, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { Target } from "./platform.ts";
 import { Evidence } from "./evidence.ts";
+import type { OperatorSettings } from "./managed-server.ts";
 
 /** Control calls never touch a shared developer preview or production service. */
 export const controlRequest = (path: string, expectedStatus: number, body?: unknown) =>
@@ -49,11 +50,17 @@ export const controlRequest = (path: string, expectedStatus: number, body?: unkn
     );
   });
 
-/** Stop, start, restart or kill the product, advance its stopped clock or set its data-step mode. */
+/**
+ * Stop, start, restart or kill the product, advance its stopped clock, set its data-step mode or
+ * turn on an operator setting for its next start.
+ */
 export const serverControl = (
-  action: "start" | "stop" | "restart" | "kill" | "clock/advance" | "data-steps",
+  action: "start" | "stop" | "restart" | "kill" | "clock/advance" | "data-steps" | "environment",
   expectedStatus: 200 | 500 = 200,
-  body?: { readonly milliseconds: number } | { readonly mode: "report" | "apply" },
+  body?:
+    | { readonly milliseconds: number }
+    | { readonly mode: "report" | "apply" }
+    | typeof OperatorSettings.Type,
 ) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;

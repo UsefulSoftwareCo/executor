@@ -17,7 +17,7 @@ export class StorageMigrationFailed extends Schema.TaggedError<StorageMigrationF
 const Directory = Schema.Array(
   Schema.Struct({
     name: Schema.String.check(
-      Schema.isPattern(/^[^/\\\0]+$/),
+      Schema.isPattern(/^[^/\\\0]+$/u),
       Schema.makeFilter((name) => name !== "." && name !== ".."),
     ),
     type: Schema.Literals(["file", "directory"]),

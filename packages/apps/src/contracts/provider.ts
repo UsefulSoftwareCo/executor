@@ -231,6 +231,12 @@ export interface AccountCheckContext<Auth extends AuthMethods> {
   readonly account: AccountOfMethods<Auth>;
   readonly fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   readonly signal: AbortSignal;
+  /**
+   * When the host stops waiting for the check, in milliseconds since the epoch. A check still
+   * running then fails without its own message, so a check that gives up must do so before it.
+   * Executor always sets it; a host that does not limit the check leaves it out.
+   */
+  readonly deadline?: number;
 }
 
 /**

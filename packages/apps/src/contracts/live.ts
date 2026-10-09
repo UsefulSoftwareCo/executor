@@ -2,6 +2,9 @@
 import { Schema } from "effect";
 import type { JsonValue } from "./schema.ts";
 
+/** Names of authored operations. */
+export const OperationName = Schema.NonEmptyString.check(Schema.isMaxLength(200));
+
 /** Serializable named reference; the phantom field is never populated at runtime. */
 export interface OperationReference<Input, Output, Kind extends "query" | "mutation"> {
   readonly name: string;

@@ -1,8 +1,8 @@
 ---
 import RailLayout from "../layouts/RailLayout.astro";
 import { pricingTiers as createPricingTiers } from "../content/site-copy";
-import { siteOrigin } from "../content/site-origin.ts";
-const pricingTiers = createPricingTiers(siteOrigin);
+import { appHref, appOrigin } from "../content/site-origin.ts";
+const pricingTiers = createPricingTiers(appOrigin);
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
 
@@ -13,7 +13,7 @@ const cards = [
     tier: pricingTiers[0]!,
     amount: "$0",
     unit: "/ month",
-    href: "/login",
+    href: appHref("/login?mode=signup"),
     label: "Start free",
     recommended: false,
   },
@@ -21,7 +21,7 @@ const cards = [
     tier: pricingTiers[1]!,
     amount: "$15",
     unit: "/ member / month",
-    href: "/login",
+    href: appHref("/login?mode=signup"),
     label: "Start free trial",
     recommended: true,
   },

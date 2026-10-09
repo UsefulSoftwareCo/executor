@@ -1,6 +1,5 @@
 /** One execution manager with model, native and browser delivery adapters. */
 import {
-  Array as Arr,
   Cause,
   Clock,
   Context,
@@ -13,8 +12,8 @@ import {
   Tracer,
   type Scope,
 } from "effect";
-import { McpServer } from "effect/unstable/ai";
-import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { McpProtocol, McpServer } from "effect/ai";
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ElicitationMode } from "../contracts/elicitation.ts";
 import {
   McpToolkit,
@@ -28,6 +27,7 @@ import type { McpExecutionResult } from "../contracts/execute.ts";
 import { makeExecutions } from "./executions.ts";
 import { executeNative } from "./native-elicitation.ts";
 import { skills } from "./skills.ts";
+import { eventsHandler } from "./events.ts";
 
 // Observe the final protocol value after timeout, admission and resume handling.
 const observeExecution =
@@ -90,9 +90,27 @@ const observeExecution =
       );
     }).pipe(Effect.withSpan(name));
 
+/**
+ * MCP revisions every product serves, newest first. An initialize offering an unlisted revision
+ * negotiates the newest initialize-based one; a session without an MCP-Protocol-Version header
+ * keeps the revision it negotiated.
+ */
+const protocols = [
+  McpProtocol.v2026_07_28,
+  McpProtocol.v2025_11_25,
+  McpProtocol.v2025_06_18,
+  McpProtocol.v2025_03_26,
+] as const;
+/** Native approval needs form elicitation, which 2025-06-18 introduced. */
+const nativeProtocols = [McpProtocol.v2025_11_25, McpProtocol.v2025_06_18] as const;
+
 const query = Schema.Struct({ elicitation_mode: Schema.optionalKey(ElicitationMode) });
-const identity = (product: string, mode: ElicitationMode, session: string) =>
-  JSON.stringify([product, mode, session]);
+// Model and native programs belong to the authenticated caller, so a client may resume from
+// any of its MCP sessions. Browser approval links address one protocol session.
+const callerIdentity = (product: string, mode: "model" | "native") =>
+  JSON.stringify([product, mode]);
+const browserIdentity = (product: string, session: string) =>
+  JSON.stringify([product, "browser", session]);
 
 const withSseHeartbeat = (response: HttpServerResponse.HttpServerResponse) => {
   const body = response.body;
@@ -141,29 +159,31 @@ export const makeMcp = (options: McpOptions) =>
               { status: 400 },
             ),
           );
-        const protocols =
-          mode === "native"
-            ? options.protocols.filter(
-                (protocol) =>
-                  protocol.protocolVersion === "2025-06-18" ||
-                  protocol.protocolVersion === "2025-11-25",
-              )
-            : options.protocols;
-        if (!Arr.isReadonlyArrayNonEmpty(protocols))
-          return Effect.succeed(
-            HttpServerResponse.jsonUnsafe(
-              { error: "Native approval requires a host protocol with form elicitation support." },
-              { status: 400 },
-            ),
-          );
+        const served = mode === "native" ? nativeProtocols : protocols;
         const caller = Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          const product = options.caller === undefined ? "" : yield* options.caller;
+          const product = yield* options.caller;
           const sessionId = request.headers["mcp-session-id"] ?? "stateless";
-          return { id: identity(product, mode, sessionId), sessionId };
+          return {
+            id:
+              mode === "browser"
+                ? browserIdentity(product, sessionId)
+                : callerIdentity(product, mode),
+            sessionId,
+          };
         });
+        // Which skills agents read, and in what order, shows whether they follow the entry skill.
         const skill = (input: Parameters<typeof skills>[0]) =>
-          skills(input, options.backend).pipe(Effect.withSpan("mcp.skills"));
+          skills(input, options.backend).pipe(
+            Effect.tap((result) =>
+              "content" in result ? options.annotateSkillRead(result) : Effect.void,
+            ),
+            Effect.withSpan("mcp.skills", {
+              attributes: {
+                "executor.skill.operation": input.name === undefined ? "list" : "read",
+              },
+            }),
+          );
         const toolkit =
           mode === "native"
             ? McpServer.toolkit(NativeMcpToolkit).pipe(
@@ -241,9 +261,18 @@ export const makeMcp = (options: McpOptions) =>
                     }),
                   ),
                 );
-        return yield* toolkit.pipe(
+        return yield* Layer.mergeAll(
+          toolkit,
+          McpServer.events(eventsHandler(options.backend)),
+        ).pipe(
           Layer.provide(
-            McpServer.layerHttp({ name: "Executor", version: "0.1.0", path: "/mcp", protocols }),
+            McpServer.layerHttp({
+              name: "Executor",
+              version: "0.1.0",
+              instructions: options.instructions,
+              path: "/mcp",
+              protocols: served,
+            }),
           ),
           HttpRouter.toHttpEffect,
           Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
@@ -301,10 +330,10 @@ export const makeMcp = (options: McpOptions) =>
     }).pipe(Effect.map(withSseHeartbeat));
     const approvals: BrowserApprovals = {
       get: (product, address) =>
-        executions.browserView(identity(product, "browser", address.sessionId), address.requestId),
+        executions.browserView(browserIdentity(product, address.sessionId), address.requestId),
       answer: (product, address, response) =>
         executions.answerInBrowser(
-          identity(product, "browser", address.sessionId),
+          browserIdentity(product, address.sessionId),
           address.requestId,
           response,
         ),

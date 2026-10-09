@@ -1,6 +1,6 @@
 /** Assertions read spans delivered to the collector, not internal instrumentation hooks. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -128,7 +128,16 @@ layer(HostedLive, { excludeTestServices: true })("Setup diagnostics", (it) => {
             ),
           ).toBe(true);
           assertPrivate(failed);
-          assertPrivate(response.body);
+          // The refusal's own words are returned as the service's response, and only there.
+          const { serviceError, ...curated } = yield* Schema.decodeUnknownEffect(
+            Schema.Record(Schema.String, Schema.Unknown),
+          )(response.body);
+          assertPrivate(curated);
+          expect(serviceError).toEqual(
+            status === 400
+              ? { error: "invalid_client_metadata", description: "PRIVATE_PROVIDER_ERROR" }
+              : undefined,
+          );
           yield* evidence.json(`oauth-${status}-diagnostics.json`, failed);
         }
       }),

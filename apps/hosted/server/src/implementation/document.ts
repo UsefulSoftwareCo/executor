@@ -8,13 +8,14 @@ import {
   readLastOrganization,
   type HostedDocumentContext,
 } from "../contracts/browser.ts";
-import { Cookies, HttpServerRequest } from "effect/unstable/http";
+import { Cookies, HttpServerRequest } from "effect/http";
+import type { ResourceOrigins } from "@executor-js/mcp-auth";
 
 /**
  * A missing session produces `null`; a failed lookup fails, so the page reports that it is
  * unavailable instead of redirecting a signed-in person to sign-in.
  */
-export const hostedDocumentContext = (api: DocumentApi) =>
+export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api: DocumentApi) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const response = yield* Effect.tryPromise({
@@ -35,5 +36,6 @@ export const hostedDocumentContext = (api: DocumentApi) =>
     return {
       session,
       lastOrganization: readLastOrganization(saved, session),
+      resourceOrigins,
     } satisfies HostedDocumentContext;
   }).pipe(Effect.withSpan("dashboard.session"));

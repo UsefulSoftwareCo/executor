@@ -64,7 +64,10 @@ export const recordExportFailure = (
     | "interrupted"
     | "partial-success"
     | "capacity"
-    | "acknowledgement" = "transport",
+    | "acknowledgement"
+    | "timeout"
+    | "relay"
+    | "shutdown",
   records = 0,
 ) => {
   const signal = path.endsWith("/traces")
@@ -73,7 +76,9 @@ export const recordExportFailure = (
       ? "logs"
       : path.endsWith("/metrics")
         ? "metrics"
-        : "other";
+        : path === "app"
+          ? "app"
+          : "other";
   return Metric.update(Metric.withAttributes(exportFailures, { signal, reason }), 1).pipe(
     Effect.andThen(
       Metric.update(Metric.withAttributes(rejectedRecords, { signal, reason }), records),

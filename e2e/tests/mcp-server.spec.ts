@@ -18,6 +18,21 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
+/**
+ * MCP clients print a refused request's body after their own prefix, such as "Error POSTing to
+ * endpoint:", so the JSON-RPC error names the grant's own reason for the refusal.
+ */
+const refusal = (message: string) => ({
+  jsonrpc: "2.0",
+  id: null,
+  error: {
+    // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
+    code: -32600,
+    message: `GrantForbidden (HTTP 403): ${message}`,
+    data: { code: "GrantForbidden", status: 403 },
+  },
+});
+const listTools = { jsonrpc: "2.0", id: 1, method: "tools/list" };
 
 layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
   it.effect(scenarios.mcpProtocol.title, (context) =>
@@ -164,7 +179,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const actors = yield* Actors,
+        const api = yield* Api,
+          actors = yield* Actors,
           browser = yield* Browser,
           evidence = yield* Evidence;
         const oauth = yield* McpOAuth,
@@ -189,6 +205,49 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           mcp.connect(token, "without-resource-browser-mode", { mode: "browser" }),
         );
         expect(Exit.isFailure(other)).toBe(true);
+        const anonymous = yield* api.session();
+        const bearer = { authorization: `Bearer ${Redacted.value(token)}` };
+        const browserMode = yield* api.request(
+          anonymous,
+          "POST",
+          "/mcp?elicitation_mode=browser",
+          listTools,
+          bearer,
+        );
+        expect(browserMode.status).toBe(403);
+        expect(browserMode.body).toMatchObject(
+          refusal(
+            "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
+          ),
+        );
+        yield* evidence.step(
+          "A grant issued at the model-mode URL cannot be narrowed to browser approval",
+          Effect.gen(function* () {
+            // No URL could serve it: its own URL cannot ask for browser approval.
+            const narrowed = yield* api.request(
+              actors.owner,
+              "POST",
+              "/api/auth/mcp/grants/narrow",
+              {
+                id: grant.grantId,
+                policy: { kind: "tools", apps: [], approval: "browser" },
+              },
+            );
+            expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(403);
+            expect(narrowed.body).toMatchObject({
+              message:
+                "Browser approval needs a grant issued at an MCP URL with elicitation_mode=browser.",
+            });
+            const relisted = yield* client.use("The grant still serves its own URL", (client) =>
+              client.listTools(),
+            );
+            expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
+              "execute",
+              "resume",
+              "skills",
+            ]);
+          }),
+        );
         yield* oauth.revoke(grant);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
@@ -224,40 +283,57 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           content: Schema.String,
           deployment: Schema.String,
         });
+        const instructions = yield* client.use("Read the server's MCP instructions", (client) =>
+          Promise.resolve(client.getInstructions()),
+        );
         // The default app installs asynchronously after signup. Observe its public
         // MCP catalog instead of depending on how long earlier test actions took.
-        const guide = yield* client
-          .use("Discover the default Executor app's authoring skill", (client, signal) =>
+        const executorSkills = yield* client
+          .use("Discover the default Executor app's skills", (client, signal) =>
             client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
           )
           .pipe(
             Effect.flatMap((result) =>
               Schema.decodeUnknownEffect(skillIndex)(result.structuredContent),
             ),
-            Effect.map((index) =>
-              index.skills.find(
-                (entry) => entry.app.slug === "executor" && entry.name === "app-authoring",
-              ),
-            ),
+            Effect.map((index) => index.skills.filter((entry) => entry.app.slug === "executor")),
             Effect.repeat({
               schedule: Schedule.spaced("250 millis"),
-              until: (guide) => guide !== undefined,
+              until: (skills) => skills.length > 0,
             }),
             Effect.timeout("15 seconds"),
           );
+        expect(executorSkills.map((entry) => entry.name).sort()).toEqual([
+          "app-authoring",
+          "code-mode",
+          "executor",
+        ]);
+        const guide = executorSkills.find((entry) => entry.name === "executor");
         if (guide === undefined)
-          return yield* Effect.die("The installed Executor app must contain its authoring skill");
-        const guideResponse = yield* client.use(
+          return yield* Effect.die("The installed Executor app must contain its entry skill");
+        const readExecutorSkill = (name: string, operation: string) =>
+          client
+            .use(operation, (client, signal) =>
+              client.callTool(
+                { name: "skills", arguments: { app: guide.app.slug, name } },
+                undefined,
+                { signal },
+              ),
+            )
+            .pipe(
+              Effect.flatMap((response) =>
+                Schema.decodeUnknownEffect(skillDocument)(response.structuredContent),
+              ),
+            );
+        const entry = yield* readExecutorSkill("executor", "Read the Executor app's entry skill");
+        // The instructions are the entry skill without its frontmatter, so the two cannot drift.
+        expect(entry.content).toMatch(/^---\nname: executor\n/);
+        expect(instructions).toBe(entry.content.replace(/^---\n[\s\S]*?\n---\n/, "").trim());
+        expect(instructions).toContain("`code-mode`");
+        expect(instructions).toContain("`app-authoring`");
+        const guideDocument = yield* readExecutorSkill(
+          "app-authoring",
           "Read authoring instructions before connecting the Executor OAuth account",
-          (client, signal) =>
-            client.callTool(
-              { name: "skills", arguments: { app: guide.app.slug, name: guide.name } },
-              undefined,
-              { signal },
-            ),
-        );
-        const guideDocument = yield* Schema.decodeUnknownEffect(skillDocument)(
-          guideResponse.structuredContent,
         );
         expect(guideDocument.content).toContain("# Build an Executor app");
         const executorSource = yield* body(

@@ -19,7 +19,7 @@ Read these files in order:
 8. `src/contracts/dashboard.ts` defines the typed dashboard API;
    `src/implementation/dashboard.ts` projects SDK data and `web.ts` serves the UI.
 
-The exported `localApi(config, crypto)` is an Effect layer containing the SDK, MCP and dashboard routes.
+The exported `localApi(config, crypto, auth, options)` is an Effect layer containing the SDK, MCP and dashboard routes.
 The caller supplies Web Crypto and the HTTP platform and owns its scope. Closing the scope
 closes the database. The executable entry point binds only to `127.0.0.1`.
 Effect's Node runtime handles signals and shuts down the listener and database.
@@ -180,7 +180,8 @@ The public HTML and bundled assets contain no key or account data.
 Inspect apps, saved account selections, live tools, retained deployments and
 source files. The Accounts page shows provider metadata and the apps that use
 each account. It never returns saved credentials. This first dashboard is
-also supports catalog imports, reusable account creation and app account selection.
+also supports catalog imports and app account selection. Accounts are connected and their
+credentials replaced from an app's Accounts tab, which selects them for that app.
 The SDK and MCP expose the underlying operations to other clients.
 
 The React UI lives in `apps/local/web`. Effect Atom reads the shared HTTP API
@@ -217,13 +218,15 @@ a cross-process reconnect manager remain separate work.
 - Transport: Streamable HTTP
 - URL: `http://127.0.0.1:4312/mcp`
 - Header: `Authorization: Bearer <EXECUTOR_API_KEY>`
-- Tools: `skills`, for authoring docs; `execute`, with a `code` string
+- Tools: `skills`, for app documents; `execute`, with a `code` string
 
-Before writing an app, discover the Executor app with `skills({})`, then call
-`skills` with `{ app: "executor", name: "app-authoring" }` using its current slug. It returns
-the guide with runnable source, schema helpers, provider accounts and the
-deployment flow. Call it with `{}` to list skills from accessible apps. The guide is an ordinary
-skill file in the Executor app deployment.
+The server sends the Executor app's `executor` skill as its MCP instructions.
+Discover the Executor app with `skills({})`, then read that skill with
+`{ app: "executor", name: "executor" }` using its current slug. It links to
+`code-mode`, which covers calling tools from `execute`, and `app-authoring`,
+which has runnable source, schema helpers, provider accounts and the deployment
+flow. Read `app-authoring` before writing an app. These are ordinary skill files
+in the Executor app deployment.
 
 Start discovery inside `execute` with this code:
 
@@ -231,7 +234,8 @@ Start discovery inside `execute` with this code:
 return await tools.search({ query: "Executor" });
 ```
 
-Search returns exact callable paths and signatures. The Executor app exposes
+Search returns exact callable paths, one-line descriptions and input types;
+`tools.search.describe({ paths })` returns full signatures. The Executor app exposes
 `deployApp`, `addApp`, `listApps`, `getApp`, `addAccount`, `listAccounts`,
 `getAccount`, `activateDeployment` and `listTools`. Account selections use
 `apps.profiles` with an explicit profile and expected revision.
@@ -263,7 +267,7 @@ already completed are not rolled back when an execution fails or is cancelled.
 - List live tools and invoke them using a snapshot of saved account selections.
 - Activate retained deployments in the same code lineage.
 - Serve MCP execute for app calls and management through the bundled Executor app.
-- Serve a read-only skills tool for deployed app documents, including the Executor app’s authoring guide.
+- Serve a read-only skills tool for deployed app documents, including the Executor app’s `executor`, `code-mode` and `app-authoring` skills.
 - Handle July 2026 and November 2025 MCP requests, with authentication on every request.
 - Serve a local dashboard over the same persisted apps and accounts, with catalog imports and account setup.
 

@@ -1,7 +1,7 @@
 /** Browser-pairing shortcuts mounted only by the local development entry point. */
 import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 import { Effect, Layer, Redacted, Schema } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerResponse } from "effect/http";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";
 import { AuthForbidden } from "../contracts/auth.ts";

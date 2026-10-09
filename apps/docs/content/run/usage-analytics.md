@@ -24,7 +24,7 @@ returns `FeedbackDisabled`.
 ## What is sent
 
 Each event carries an anonymous install ID, made on first start and kept in the
-data directory, plus the product (`local`, `desktop` or `self-host`) and its
+data directory, plus the product (`cli`, `desktop` or `self-host`) and its
 version.
 
 - **Startup:** product, version, release channel, operating system,

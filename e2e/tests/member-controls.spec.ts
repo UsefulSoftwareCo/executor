@@ -364,18 +364,20 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 .click()
                 .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
             );
+            // Credentials are replaced only from an app, so Accounts never offers it.
             expect(
-              yield* browser.use("Update credentials is disabled", (page) =>
+              yield* browser.use("Accounts offers no credential update", (page) =>
                 page
                   .getByRole("button", { name: `Manage ${name}`, exact: true })
                   .click()
                   .then(() =>
-                    page
-                      .getByRole("menuitem", { name: "Update credentials", exact: true })
-                      .getAttribute("aria-disabled"),
+                    page.getByRole("menuitem", { name: "Edit details", exact: true }).waitFor(),
+                  )
+                  .then(() =>
+                    page.getByRole("menuitem", { name: "Update credentials", exact: true }).count(),
                   ),
               ),
-            ).toBe("true");
+            ).toBe(0);
             yield* browser.use("Close the account menu", (page) => page.keyboard.press("Escape"));
             yield* openAccountAction("Edit details");
             expect(

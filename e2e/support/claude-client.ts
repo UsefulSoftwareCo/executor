@@ -10,10 +10,11 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Key } from "@kitlangton/terminal-control";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
+import { targetHosts } from "./role-hosts.ts";
 import { Terminal } from "./terminal.ts";
 
 class ClaudeFailed extends Schema.TaggedError<ClaudeFailed>()("ClaudeFailed", {
@@ -70,7 +71,7 @@ const make = Effect.gen(function* () {
         config,
         JSON.stringify({
           mcpServers: {
-            executor_e2e: { type: "http", url: `${target.metadata.origin}/mcp` },
+            executor_e2e: { type: "http", url: `${targetHosts(target).mcp}/mcp` },
           },
         }),
         { mode: 0o600 },
@@ -113,7 +114,7 @@ const make = Effect.gen(function* () {
           ANTHROPIC_API_KEY: Redacted.value(apiKey),
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
           BROWSER: `${directory}/bin/open`,
-          E2E_BROWSER_ORIGIN: target.metadata.origin,
+          E2E_BROWSER_ORIGIN: targetHosts(target).browser,
           E2E_BROWSER_REQUEST: request,
         },
       });
@@ -198,7 +199,7 @@ const make = Effect.gen(function* () {
           const callback = url ? URL.parse(url.searchParams.get("redirect_uri") ?? "") : null;
           if (
             !url ||
-            url.origin !== target.metadata.origin ||
+            url.origin !== targetHosts(target).browser ||
             url.pathname !== "/api/auth/oauth2/authorize" ||
             !clientId ||
             !callback

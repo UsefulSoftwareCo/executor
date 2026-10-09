@@ -6,13 +6,13 @@
  * unchanged.
  *
  * Once released this protocol is frozen like the earlier ones: `bun run check` compares `protocol5` with
- * `packages/apps/protocols/5.json`. Define the next protocol instead of editing this file.
+ * `packages/apps/protocols/5.json`. The module imports only `effect` and earlier protocol modules,
+ * so no change elsewhere can alter it. Define the next protocol instead of editing this file.
  * See notes/apps-publishing.md.
  */
 import { Schema } from "effect";
-import { DatabaseSchema } from "@executor-js/app-data/contracts";
-import { AccountCheckResult } from "../provider.ts";
-import { WorkflowReplay, WorkflowRunId } from "../workflows.ts";
+import { HttpUrl } from "./oauth.ts";
+import { DatabaseSchema, WorkflowReplay, WorkflowRunId } from "./1.ts";
 import {
   DeclaredProvider,
   InvocationDeadline,
@@ -22,6 +22,26 @@ import {
 } from "./4.ts";
 
 export * from "./4.ts";
+
+const displayText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255));
+
+/**
+ * Upstream identity that a passing account check may report for display. Only these fields are
+ * retained; the host never stores raw provider responses.
+ */
+export const AccountInfo = Schema.Struct({
+  externalId: Schema.optionalKey(displayText),
+  displayName: Schema.optionalKey(displayText),
+  username: Schema.optionalKey(displayText),
+  email: Schema.optionalKey(displayText),
+  avatarUrl: Schema.optionalKey(HttpUrl),
+  profileUrl: Schema.optionalKey(HttpUrl),
+});
+export type AccountInfo = typeof AccountInfo.Type;
+
+/** A passing account check. Failures are thrown, so there is no failing variant. */
+export const AccountCheckResult = Schema.Struct({ accountInfo: Schema.optionalKey(AccountInfo) });
+export type AccountCheckResult = typeof AccountCheckResult.Type;
 
 /** Account slots available without binding accounts or evaluating the app factory. */
 export const DeclaredRequirements = Schema.Struct({

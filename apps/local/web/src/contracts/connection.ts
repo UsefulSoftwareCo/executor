@@ -4,8 +4,8 @@ import { DashboardRuntime } from "./telemetry.ts";
 /** Local auth state uses the same HTTP contracts as the server. Credentials never enter storage. */
 import { LocalAuthApi, type BootstrapToken } from "@executor-js/local-server/auth";
 import { Effect } from "effect";
-import { HttpClient } from "effect/unstable/http";
-import { Atom, AtomHttpApi } from "effect/unstable/reactivity";
+import { HttpClient } from "effect/http";
+import { Atom, AtomHttpApi } from "effect/reactivity";
 
 /** Browser cookie authentication is automatic on same-origin requests. */
 export class AuthClient extends AtomHttpApi.Service<AuthClient>()("AuthClient", {

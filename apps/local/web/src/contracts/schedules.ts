@@ -5,7 +5,7 @@ import { BrowserAtoms } from "./telemetry.ts";
 /** Product transport owns schedule atoms; each mutation belongs to one app and schedule. */
 import type { AppId, ProfileId, ScheduleSettings } from "@executor-js/sdk";
 import { Data, Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, upsert } from "@executor-js/ui/contracts/mutations";
 import { pollingQuery, steadyPolling } from "@executor-js/ui/contracts/polling";
 import type { ApprovalListItem } from "@executor-js/ui/contracts/schedules";

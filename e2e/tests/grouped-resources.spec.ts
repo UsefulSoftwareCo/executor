@@ -120,7 +120,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
           [actors.organization.id, actors.organization.slug].map(
             (org) => `/api/organizations/${org}/apps/${app.id}/workflows`,
           ),
-          "fail",
+          "undeclared",
           { query: { profile: personal.profile } },
         );
         yield* refreshVisiblePage;

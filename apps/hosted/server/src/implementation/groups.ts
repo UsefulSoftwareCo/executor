@@ -1,7 +1,7 @@
 /** Group writes commit metadata and memberships together, after locking current authority. */
 import { Effect, Schema } from "effect";
-import { SqlClient, SqlError } from "effect/unstable/sql";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { SqlClient, SqlError } from "effect/sql";
+import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import {
   CurrentOrganization,

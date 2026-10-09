@@ -12,18 +12,20 @@
     "./local": "./src/local.ts",
     "./files": "./src/files.ts",
     "./process": "./src/process.ts",
-    "./product-analytics": "./src/product-analytics.ts"
+    "./product-analytics": "./src/product-analytics.ts",
+    "./recorded-failure": "./src/recorded-failure.ts"
   },
   "scripts": {
     "build:motel": "bun scripts/build-motel.ts"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.11.0",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "workerd": "1.20260901.1"
+    "@executor-js/utils": "workspace:*",
+    "effect": "4.0.1",
+    "workerd": "1.20260918.1"
   },
   "devDependencies": {
-    "@effect/platform-bun": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-bun@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d"
+    "@effect/platform-bun": "4.0.1",
+    "@effect/platform-node": "4.0.1"
   }
 }

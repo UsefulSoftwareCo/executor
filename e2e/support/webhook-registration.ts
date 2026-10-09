@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Ref, Schema } from "effect";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 class RegistrationFixtureFailed extends Schema.TaggedError<RegistrationFixtureFailed>()(
   "RegistrationFixtureFailed",
   {},

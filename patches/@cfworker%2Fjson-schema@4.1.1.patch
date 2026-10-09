@@ -1,8 +1,20 @@
 diff --git a/dist/commonjs/validate.js b/dist/commonjs/validate.js
-index 75a3d4d9986e7fbb049103d4c6a4a7b0465a3f22..94fbc0b212e0b11cff98d70f30da3f5c585d5a2c 100644
+index 75a3d4d9986e7fbb049103d4c6a4a7b0465a3f22..bcea1a2836372ff59b8610565a4b9f7fe38213e7 100644
 --- a/dist/commonjs/validate.js
 +++ b/dist/commonjs/validate.js
-@@ -429,7 +429,7 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
+@@ -50,7 +50,10 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
+     if ($recursiveAnchor === true && recursiveAnchor === null) {
+         recursiveAnchor = schema;
+     }
+-    if ($recursiveRef === '#') {
++    // Apply every recursive reference. A schema nested under a pointer refers to its own root by that
++    // pointer, which is also the target used when no recursive anchor is in scope. Only "#" was
++    // applied before, so any other value was silently skipped.
++    if ($recursiveRef !== undefined) {
+         const refSchema = recursiveAnchor === null
+             ? lookup[__absolute_recursive_ref__]
+             : recursiveAnchor;
+@@ -429,7 +432,7 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
          if (!stop && $patternProperties !== undefined) {
              const keywordLocation = `${schemaLocation}/patternProperties`;
              for (const pattern in $patternProperties) {
@@ -11,7 +23,7 @@ index 75a3d4d9986e7fbb049103d4c6a4a7b0465a3f22..94fbc0b212e0b11cff98d70f30da3f5c
                  const subSchema = $patternProperties[pattern];
                  for (const key in instance) {
                      if (!regex.test(key)) {
-@@ -782,7 +782,7 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
+@@ -782,7 +785,7 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
                  error: `String is too long (${length} > ${$maxLength}).`
              });
          }
@@ -20,7 +32,7 @@ index 75a3d4d9986e7fbb049103d4c6a4a7b0465a3f22..94fbc0b212e0b11cff98d70f30da3f5c
              errors.push({
                  instanceLocation,
                  keyword: 'pattern',
-@@ -803,3 +803,12 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
+@@ -803,3 +806,12 @@ function validate(instance, schema, draft = '2019-09', lookup = (0, dereference_
      }
      return { valid: errors.length === 0, errors };
  }
@@ -34,10 +46,22 @@ index 75a3d4d9986e7fbb049103d4c6a4a7b0465a3f22..94fbc0b212e0b11cff98d70f30da3f5c
 +    }
 +}
 diff --git a/dist/esm/validate.js b/dist/esm/validate.js
-index 7a523741614bd8255f5adaf0393e1ab5e7595b59..c1931330d4436ba3d610bae2100131b2ba698445 100644
+index 7a523741614bd8255f5adaf0393e1ab5e7595b59..63d91eed50ad7870a7614bbdecc4f6c2c4fb70a0 100644
 --- a/dist/esm/validate.js
 +++ b/dist/esm/validate.js
-@@ -426,7 +426,7 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
+@@ -47,7 +47,10 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
+     if ($recursiveAnchor === true && recursiveAnchor === null) {
+         recursiveAnchor = schema;
+     }
+-    if ($recursiveRef === '#') {
++    // Apply every recursive reference. A schema nested under a pointer refers to its own root by that
++    // pointer, which is also the target used when no recursive anchor is in scope. Only "#" was
++    // applied before, so any other value was silently skipped.
++    if ($recursiveRef !== undefined) {
+         const refSchema = recursiveAnchor === null
+             ? lookup[__absolute_recursive_ref__]
+             : recursiveAnchor;
+@@ -426,7 +429,7 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
          if (!stop && $patternProperties !== undefined) {
              const keywordLocation = `${schemaLocation}/patternProperties`;
              for (const pattern in $patternProperties) {
@@ -46,7 +70,7 @@ index 7a523741614bd8255f5adaf0393e1ab5e7595b59..c1931330d4436ba3d610bae2100131b2
                  const subSchema = $patternProperties[pattern];
                  for (const key in instance) {
                      if (!regex.test(key)) {
-@@ -779,7 +779,7 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
+@@ -779,7 +782,7 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
                  error: `String is too long (${length} > ${$maxLength}).`
              });
          }
@@ -55,7 +79,7 @@ index 7a523741614bd8255f5adaf0393e1ab5e7595b59..c1931330d4436ba3d610bae2100131b2
              errors.push({
                  instanceLocation,
                  keyword: 'pattern',
-@@ -800,3 +800,12 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
+@@ -800,3 +803,12 @@ export function validate(instance, schema, draft = '2019-09', lookup = dereferen
      }
      return { valid: errors.length === 0, errors };
  }

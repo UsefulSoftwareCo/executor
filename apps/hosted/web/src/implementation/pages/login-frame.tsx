@@ -13,6 +13,9 @@ export function LoginFrame({
   return (
     <main className="auth-page flex min-h-dvh flex-col items-center justify-center bg-background px-4 py-12 text-foreground">
       <div className="w-full max-w-110">
+        <a href="/" aria-label="Executor home" className="mx-auto mb-5 block size-10">
+          <img src="/favicon.png" alt="" className="size-10" />
+        </a>
         <h1 className="mb-6 text-center text-2xl font-semibold leading-8 tracking-tight">
           {title}
         </h1>

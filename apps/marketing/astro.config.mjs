@@ -3,7 +3,7 @@ import { defineConfig } from "astro/config";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@astrojs/react";
 import { sentryVitePlugin } from "@sentry/vite-plugin";
-import { siteOrigin } from "./src/content/site-origin.ts";
+import { apiOrigin, siteOrigin } from "./src/content/site-origin.ts";
 import { assetsInlineLimit } from "./src/script-assets.ts";
 
 // The marketing pages are built as static files. The parent application owns
@@ -13,6 +13,8 @@ export default defineConfig({
   output: "static",
   integrations: [react()],
   vite: {
+    // The Apps pages read the registry in the browser, from the deployment's API host.
+    define: { "import.meta.env.PUBLIC_EXECUTOR_API_ORIGIN": JSON.stringify(apiOrigin) },
     build: { sourcemap: "hidden", assetsInlineLimit },
     plugins: [
       tailwindcss(),

@@ -3,10 +3,10 @@ import { revalidated } from "./refresh.ts";
 import type { App, AppId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
 import { Array as Arr, Data, Effect, Schema, type Cause } from "effect";
-import type { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpApiClient } from "effect/http-api";
 import { hydratedResult, requestKey } from "./http.ts";
-import { Atom } from "effect/unstable/reactivity";
-import { acknowledge, acknowledgedQuery } from "./mutations.ts";
+import { Atom } from "effect/reactivity";
+import { acknowledge, acknowledgedQuery, readInto } from "./mutations.ts";
 
 class OwnedCopy extends Data.Class<{ readonly app: AppId }> {}
 class PublicCopy extends Data.Class<{ readonly package: string; readonly commit: string }> {}
@@ -117,13 +117,15 @@ export const makeAppManagementAtoms = <R, E>(
       ) =>
         Effect.gen(function* () {
           const api = yield* client;
-          const current = yield* api.source({ params: { ...params, app } });
+          // Publish the read, so a person who discards after a conflict loads the version it found.
+          const current = yield* readInto(
+            get,
+            workspace(app),
+            api.source({ params: { ...params, app } }),
+          );
           const file = current.files.find((item) => item.path === input.path);
-          if ((file === undefined ? null : file.content) !== input.base) {
-            // Let the editor offer the newer version when the person discards their draft.
-            get.refresh(workspace(app));
+          if ((file === undefined ? null : file.content) !== input.base)
             return { _tag: "FileChanged" as const };
-          }
           const files =
             file === undefined
               ? Arr.append(current.files, { path: input.path, content: input.content })
@@ -134,7 +136,11 @@ export const makeAppManagementAtoms = <R, E>(
             params: { ...params, app },
             payload: { expected: current.revision.commit, files, message: input.message },
           });
-          acknowledge(get, workspace(app), (previous) => ({ ...previous, ...saved }));
+          acknowledge(get, workspace(app), (previous) => ({
+            ...previous,
+            revision: saved.revision,
+            files,
+          }));
           get.refresh(source(app));
           get.refresh(history(app));
           return { _tag: "Committed" as const, commit: saved.revision.commit };

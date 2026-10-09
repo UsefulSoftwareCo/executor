@@ -22,6 +22,7 @@ import {
   ScheduleConflict,
   ScheduleInvalid,
 } from "../contracts/schedules.ts";
+import { InvocationRun } from "../contracts/runtime.ts";
 import { ScheduleObservation } from "../contracts/scheduler.ts";
 import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
@@ -647,6 +648,7 @@ export const makeSchedules = (
                   Effect.withErrorReporting,
                   Effect.catch((error) => finish(claim, "failed", diagnostic(error))),
                   Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
+                  Effect.provideService(InvocationRun, claim.id),
                   Effect.withSpan("schedule.run", {
                     attributes: {
                       "executor.run.id": claim.id,
@@ -919,6 +921,7 @@ export const makeSchedules = (
                     }),
                   ),
                   Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
+                  Effect.provideService(InvocationRun, claim.id),
                   Effect.withSpan("schedule.run", {
                     attributes: {
                       "executor.run.id": claim.id,

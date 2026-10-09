@@ -4,4 +4,5 @@
 import "../contracts/swagger-client.ts";
 
 export type SwaggerClient = typeof import("swagger-client").default;
+// oxlint-disable-next-line executor/authored-code-through-adapter -- dynamic import
 export const loadSwaggerClient = () => import("swagger-client").then((module) => module.default);

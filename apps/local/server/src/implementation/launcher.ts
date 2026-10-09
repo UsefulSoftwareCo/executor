@@ -1,8 +1,8 @@
 /** Local launcher behavior. Runtime process APIs are supplied only at entry points. */
 import { Console, Effect, Redacted } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { LocalAuthApi } from "../contracts/auth.ts";
 import { localConfiguration } from "./bootstrap.ts";
 import { StartupFailed, type LaunchMode } from "../contracts/startup.ts";
@@ -41,7 +41,9 @@ export const launch = (mode: LaunchMode, platform: string, installation?: string
       return yield* Console.log(Redacted.value(link.url));
     }
     const bootstrap = mode === "desktop" ? yield* readDesktopBootstrap : undefined;
-    const server = yield* startLocalServer(settings, bootstrap);
+    const server = yield* startLocalServer(settings, bootstrap, {
+      product: mode === "desktop" ? "desktop" : "cli",
+    });
     if (mode === "desktop") {
       // A desktop parent parses this readiness line before opening its renderer.
       // Its bootstrap credential came through fd3 and is never echoed here.

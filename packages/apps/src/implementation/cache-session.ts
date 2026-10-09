@@ -9,6 +9,7 @@ export const isolatedCacheSession = (callback: (input: unknown) => Promise<unkno
   const pending = new Set<Promise<void>>();
   const cache: HostCache = {
     transport: (command) =>
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's cache RPC
       Effect.tryPromise({
         try: () => callback(Schema.encodeSync(CacheCommand)(command)),
         catch: () => new CacheError({ reason: "storage" }),
@@ -23,6 +24,7 @@ export const isolatedCacheSession = (callback: (input: unknown) => Promise<unkno
       Effect.gen(function* () {
         const services = yield* Effect.context<never>();
         // The bridge owns this boundary. drain/cancel retain the RPC callback and await every task.
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's background refresh
         const promise = Effect.runPromiseWith(services)(
           task.pipe(
             Effect.timeout("30 seconds"),
@@ -41,6 +43,7 @@ export const isolatedCacheSession = (callback: (input: unknown) => Promise<unkno
       }),
   };
   const drain = async () => {
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's background refreshes
     while (pending.size > 0) await Promise.all(pending);
   };
   return {
@@ -48,6 +51,7 @@ export const isolatedCacheSession = (callback: (input: unknown) => Promise<unkno
     drain,
     cancel: async () => {
       controller.abort();
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's background refreshes
       await drain();
     },
   };

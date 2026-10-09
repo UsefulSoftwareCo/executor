@@ -2,7 +2,7 @@ import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
 import { QueryView } from "@executor-js/ui/dashboard/context";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Cause, Exit, Option } from "effect";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useForm, useStore } from "@tanstack/react-form";

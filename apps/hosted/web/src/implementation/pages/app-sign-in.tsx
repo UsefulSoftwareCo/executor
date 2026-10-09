@@ -2,7 +2,7 @@ import type { ProfileId } from "@executor-js/sdk";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { App } from "@executor-js/sdk";
 import { Button } from "@executor-js/ui/components/button";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect } from "react";
 import {
   appSignInFailureMessage,

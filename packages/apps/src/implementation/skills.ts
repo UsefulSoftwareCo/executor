@@ -1,10 +1,13 @@
 /** Remote skill readers return complete portable bundles, never installed host files. */
 import { Effect, Ref, Schema, Stream } from "effect";
-import { FetchHttpClient, HttpBody, HttpClient } from "effect/unstable/http";
+import { Base64, Hex } from "effect/encoding";
+import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { skillFromFiles } from "./skill-files.ts";
 import { wrap } from "./schema.ts";
-import { httpProviderError } from "./provider-error.ts";
+import { fromPromise, method, toPromise } from "./authoring.ts";
+import { accountProviderError, httpProviderError } from "./provider-error.ts";
 import { InflateLimitExceeded } from "./inflate.ts";
+import { failOnNetworkRefusal } from "./network.ts";
 import {
   gitRequestHeaders,
   lsRefsRequest,
@@ -13,9 +16,11 @@ import {
   refCandidates,
   treeFetchRequest,
 } from "./git.ts";
-import { catalogCache } from "./catalog-cache.ts";
-import type { AppCache } from "../contracts/cache.ts";
+import { catalogCache, catalogScope, type CatalogScopeProblem } from "./catalog-cache.ts";
+import type { AppCache, CacheLoadContext } from "../contracts/cache.ts";
 import type { JsonValue } from "../contracts/schema.ts";
+import { NetworkRefused, networkRefusalStatus } from "../contracts/network.ts";
+import { ProviderError } from "../contracts/provider-error.ts";
 import {
   AppSkillMetadata,
   AppSkillSource,
@@ -31,7 +36,7 @@ import {
 } from "../contracts/skills.ts";
 
 const failed = (reason: SkillLoadFailed["reason"]) => new SkillLoadFailed({ reason });
-/** Keep only the status and whether the service reported a rate limit. */
+/** Keep only the status the request returned and whether it reported a rate limit. */
 const rejected = (status: number, headers: Readonly<Record<string, string>>) =>
   new SkillLoadFailed({
     reason:
@@ -62,20 +67,24 @@ const describe = (service: string, { reason, status }: SkillLoadFailed) => {
 /** Give every failure without a message one that names the service. */
 export const withService =
   (service: string | undefined) =>
-  <A, R>(effect: Effect.Effect<A, SkillLoadFailed, R>) =>
+  <A, R>(effect: Effect.Effect<A, SkillLoadFailed | NetworkRefused, R>) =>
     service === undefined || !Schema.is(SkillServiceName)(service)
       ? effect
       : effect.pipe(
           Effect.mapError((error) =>
-            !error.message
+            Schema.is(SkillLoadFailed)(error) && !error.message
               ? new SkillLoadFailed({
                   reason: error.reason,
                   message: describe(service, error),
                   ...(error.status === undefined ? {} : { status: error.status }),
+                  ...(error.missing === undefined ? {} : { missing: error.missing }),
                 })
               : error,
           ),
         );
+/** Keep network refusals and the loader's own failures; anything else did not load. */
+const loaderFailure = (error: unknown, otherwise: () => SkillLoadFailed) =>
+  Schema.is(SkillLoadFailed)(error) || Schema.is(NetworkRefused)(error) ? error : otherwise();
 const parse = <S extends Schema.Top>(schema: S, input: unknown) =>
   Schema.decodeUnknownEffect(schema)(input).pipe(Effect.mapError(() => failed("document")));
 
@@ -95,15 +104,18 @@ const resourcePath = (path: string) => {
 const pathUrl = (base: string, path: string) =>
   new URL(path.split("/").map(encodeURIComponent).join("/"), base).href;
 
+interface ReadRequest {
+  readonly headers?: Readonly<Record<string, string>>;
+  /** Describe a refusal by Executor's app network; defaults to the refusal itself. */
+  readonly refused?: (refused: NetworkRefused) => SkillLoadFailed | NetworkRefused;
+}
+
 /** One loader invocation owns its byte budget and all of its network requests. */
 export const reader = (transport: SkillTransport) =>
   Effect.gen(function* () {
     const budget = yield* Ref.make(0);
     /** Fetch one response body within the per-file and per-load byte limits. */
-    const fetchBytes = (
-      url: string,
-      post?: { readonly body: Uint8Array; readonly headers: Record<string, string> },
-    ) =>
+    const fetchBytes = (url: string, request: ReadRequest & { readonly body?: Uint8Array } = {}) =>
       Effect.gen(function* () {
         const parsed = yield* Effect.try({
           try: () => new URL(url),
@@ -116,20 +128,29 @@ export const reader = (transport: SkillTransport) =>
           parsed.hash
         )
           return yield* failed("source");
+        const refusal = request.refused ?? ((refused: NetworkRefused) => refused);
         const client = HttpClient.withScope(yield* HttpClient.HttpClient);
         const headers = {
           "User-Agent": "executor-skills",
           Accept: "application/json, text/plain",
           "Cache-Control": "no-cache",
+          ...request.headers,
         };
         const response = yield* (
-          post === undefined
+          request.body === undefined
             ? client.get(parsed, { headers })
             : client.post(parsed, {
-                headers: { ...headers, ...post.headers },
-                body: HttpBody.uint8Array(post.body, post.headers["Content-Type"]),
+                headers,
+                body: HttpBody.uint8Array(request.body, request.headers?.["Content-Type"]),
               })
-        ).pipe(Effect.mapError(() => failed("request")));
+        ).pipe(
+          // `ctx.fetch` rejects with a network refusal; any other failed request got no answer.
+          Effect.mapError((error) =>
+            Schema.is(NetworkRefused)(error.cause) ? refusal(error.cause) : failed("request"),
+          ),
+        );
+        // A response marked as a network refusal fails as one, whatever its status.
+        yield* failOnNetworkRefusal(response).pipe(Effect.mapError(refusal));
         if (response.status < 200 || response.status >= 300)
           return yield* rejected(response.status, response.headers);
         const chunks: Uint8Array[] = [];
@@ -159,8 +180,8 @@ export const reader = (transport: SkillTransport) =>
         Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
         Effect.provideService(FetchHttpClient.Fetch, transport.fetch ?? globalThis.fetch),
       );
-    const read = (url: string) =>
-      fetchBytes(url).pipe(
+    const read = (url: string, request: ReadRequest = {}) =>
+      fetchBytes(url, request).pipe(
         Effect.flatMap((result) =>
           Effect.try({
             try: () => new TextDecoder("utf-8", { fatal: true }).decode(result),
@@ -180,53 +201,99 @@ const unreadable = () =>
     message: "GitHub returned a git response Executor could not read.",
   });
 const git = <A>(run: () => A | Promise<A>) =>
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- this module's git parsing
   Effect.tryPromise({
     try: async () => run(),
     catch: (error) => (error instanceof InflateLimitExceeded ? failed("limit") : unreadable()),
   });
 
+/** The hosts a GitHub read sends its token to; its provider must allow both. */
+const githubHosts = ["github.com", "raw.githubusercontent.com"] as const;
+
+/**
+ * One read's requests to a repository, carrying the token on each when one is given. Git's smart
+ * HTTP takes it as a Basic password and raw file reads as a token, so a handle in either is
+ * replaced with the value only on requests to the provider's hosts.
+ */
+const githubRequests = (remote: Remote, repo: string, token: string | undefined) => {
+  // The loader names the host it requested, which the app's fetch may have redirected.
+  const refused = (host: string) => (refusal: NetworkRefused) =>
+    refusal.refusal.reason === "credential_host"
+      ? new SkillLoadFailed({
+          reason: "source",
+          status: networkRefusalStatus,
+          message: `A request with the GitHub token to ${host} was refused because the account's provider does not declare that host. The provider must declare hosts ${githubHosts.join(" and ")}; reconnect an account connected with other hosts.`,
+        })
+      : refusal;
+  const upload = (body: Uint8Array) =>
+    remote.fetchBytes(`https://${githubHosts[0]}/${repo}.git/git-upload-pack`, {
+      body,
+      headers: {
+        ...gitRequestHeaders,
+        ...(token === undefined
+          ? {}
+          : { Authorization: `Basic ${Base64.encode(`x-access-token:${token}`)}` }),
+      },
+      refused: refused(githubHosts[0]),
+    });
+  const file = (commit: string, path: string) =>
+    remote.read(pathUrl(`https://${githubHosts[1]}/${repo}/${commit}/`, path), {
+      ...(token === undefined ? {} : { headers: { Authorization: `token ${token}` } }),
+      refused: refused(githubHosts[1]),
+    });
+  return { repo, authenticated: token !== undefined, upload, file };
+};
+type GitHub = ReturnType<typeof githubRequests>;
+
 /**
  * Resolve a branch, tag or HEAD with git's `ls-refs`, asking only for the matching refs so large
  * repositories stay small.
  */
-const resolveCommit = (remote: Remote, repo: string, ref: string | undefined) =>
+const resolveCommit = (github: GitHub, ref: string | undefined) =>
   Effect.gen(function* () {
+    const { repo } = github;
     if (ref !== undefined && /^[a-f0-9]{40}$/.test(ref)) return ref;
     const names = refCandidates(ref);
-    const response = yield* remote
-      .fetchBytes(`https://github.com/${repo}.git/git-upload-pack`, {
-        body: lsRefsRequest(names),
-        headers: gitRequestHeaders,
-      })
-      .pipe(
-        // GitHub asks for credentials when a repository is missing or private.
-        Effect.mapError((error) =>
-          error.status === 401 || error.status === 404
-            ? new SkillLoadFailed({
-                reason: "source",
-                message: `GitHub has no public repository named ${repo}.`,
-                status: error.status,
-              })
-            : error,
-        ),
-      );
+    const response = yield* github.upload(lsRefsRequest(names)).pipe(
+      Effect.mapError((error) => {
+        if (!Schema.is(SkillLoadFailed)(error) || error.reason !== "request") return error;
+        // Without credentials GitHub asks for them when a repository is missing or private. The
+        // status reached the app's code, which may have replaced the fetch, so the repository is
+        // not claimed missing.
+        if (!github.authenticated && (error.status === 404 || error.status === 401))
+          return new SkillLoadFailed({
+            reason: "source",
+            message: `Reading GitHub repository ${repo} without credentials returned HTTP ${error.status}: it may not exist, or it may be private. To read a private repository, pass a GitHub account and its token.`,
+            status: error.status,
+            missing: "repository",
+          });
+        // With them, GitHub answers 404 for a repository the token cannot read as for one that
+        // does not exist, and the token is Executor's to send, so neither is claimed.
+        if (github.authenticated && error.status === 404)
+          return new SkillLoadFailed({
+            reason: "request",
+            message: `GitHub repository ${repo} is not available with the account's token (HTTP 404). Check the repository name and that the token can read it.`,
+            status: error.status,
+          });
+        return error;
+      }),
+    );
     const refs = yield* git(() => parseLsRefs(response));
     const commit = names.map((name) => refs.get(name)).find((sha) => sha !== undefined);
+    // The refs read from the repository include none with this name.
     if (commit === undefined)
       return yield* new SkillLoadFailed({
         reason: "source",
-        message: `GitHub repository ${repo} has no branch or tag named ${ref}.`,
+        message: `The refs read from GitHub repository ${repo} include no branch or tag named ${ref}.`,
+        missing: "ref",
       });
     return commit;
   });
 
 /** List files at a commit from a shallow git fetch of its trees, without file contents. */
-const listFiles = (remote: Remote, repo: string, commit: string, path: string | undefined) =>
-  remote
-    .fetchBytes(`https://github.com/${repo}.git/git-upload-pack`, {
-      body: treeFetchRequest(commit),
-      headers: gitRequestHeaders,
-    })
+const listFiles = (github: GitHub, commit: string, path: string | undefined) =>
+  github
+    .upload(treeFetchRequest(commit))
     .pipe(
       Effect.flatMap((response) =>
         git(() =>
@@ -249,13 +316,12 @@ type SkillDirectories = typeof SkillDirectories.Type;
 
 /** Group the files at a commit by skill directory, within the file limit. */
 const skillDirectories = (
-  remote: Remote,
-  repo: string,
+  github: GitHub,
   commit: string,
   path: string | undefined,
-): Effect.Effect<SkillDirectories, SkillLoadFailed> =>
+): Effect.Effect<SkillDirectories, SkillLoadFailed | NetworkRefused> =>
   Effect.gen(function* () {
-    const files = yield* listFiles(remote, repo, commit, path);
+    const files = yield* listFiles(github, commit, path);
     const documents = files.filter(
       (file) => file.path === "SKILL.md" || file.path.endsWith("/SKILL.md"),
     );
@@ -275,98 +341,207 @@ const skillDirectories = (
 const cachedSkillDirectories = (
   cache: AppCache,
   transport: SkillTransport,
-  repo: string,
+  options: GitHubSkillsOptions,
   commit: string,
-  path: string | undefined,
 ) =>
-  Effect.tryPromise({
-    try: () =>
-      cache.get({
-        key: ["apps/githubSkills/directories", 1, repo, commit, path ?? null],
-        schema: wrap(SkillDirectories, false),
-        freshFor: "7 days",
-        load: (context) =>
-          Effect.runPromise(
-            // Keep the author's fetch, as every other read in this load does.
-            reader({ fetch: transport.fetch, signal: context.signal }).pipe(
-              Effect.flatMap((remote) => skillDirectories(remote, repo, commit, path)),
+  fromPromise(
+    method(cache, "get"),
+    "cache",
+  )<typeof SkillDirectories.Type>({
+    key: ["apps/githubSkills/directories", 1, options.repo, commit, options.path ?? null],
+    schema: wrap(SkillDirectories, false),
+    freshFor: "7 days",
+    // Executor's own loader: the app's cache runs it natively, so only its requests are upstream.
+    load: toPromise(
+      (context: CacheLoadContext) =>
+        // Keep the author's fetch and this read's token, as every other request in it does.
+        reader({ fetch: transport.fetch, signal: context.signal }).pipe(
+          Effect.flatMap((remote) =>
+            skillDirectories(
+              githubRequests(remote, options.repo, options.token),
+              commit,
+              options.path,
             ),
-            { signal: context.signal },
           ),
-      }),
-    catch: (error) =>
-      Schema.is(SkillLoadFailed)(error)
-        ? error
-        : new SkillLoadFailed({
+        ),
+      // A cache may call the loader as a Promise; its own signal cancels that load.
+      (context) => context.signal,
+    ),
+  }).pipe(
+    Effect.mapError((error) =>
+      loaderFailure(
+        error,
+        () =>
+          new SkillLoadFailed({
             reason: "request",
             message: "Executor could not read or update the app cache for skills.",
           }),
-  });
+      ),
+    ),
+  );
 
 /**
- * Keep a loaded catalog in the app cache, paged and refreshed like an MCP tool catalog. A refresh
- * keeps the author's fetch and uses the cache's signal, never the finished request's.
+ * What one request says about a source's current publication, and how to load its skills. Equal
+ * `id`s have equal skills, so a kept catalog with the same `id` is still current. A source that
+ * cannot tell from that request has no `id`.
+ */
+interface Publication {
+  readonly id: string | undefined;
+  readonly load: Effect.Effect<typeof AppSkills.Type, SkillLoadFailed | NetworkRefused>;
+}
+/** Hex SHA-256 of a value's JSON. */
+const digest = (value: unknown) =>
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
+  Effect.promise(() =>
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value))),
+  ).pipe(Effect.map((bytes) => Hex.encode(new Uint8Array(bytes))));
+/** The one request that checks a publication, bounded so a slow source fails the read promptly. */
+const checked = <A, E>(request: Effect.Effect<A, E>) =>
+  request.pipe(
+    Effect.timeoutOrElse({
+      duration: skillLoadLimits.checkMillis,
+      orElse: () => Effect.fail(failed("request")),
+    }),
+  );
+
+/**
+ * Keep a loaded catalog in the app cache, paged like an MCP tool catalog. Past `freshFor` it is
+ * never served unchecked: the read awaits one request for the source's publication and loads the
+ * source again only when that changed, so a read never answers with a catalog that a background
+ * refresh replaces moments later. A failed check fails the read; the kept catalog stays for the
+ * next one. The check keeps the author's fetch and uses the cache's signal.
  */
 const cachedCatalog = (
   options: SkillCacheOptions & SkillTransport,
   prefix: readonly JsonValue[],
-  load: (
+  publication: (
     transport: SkillTransport,
     cache: AppCache | undefined,
-  ) => Effect.Effect<typeof AppSkills.Type, SkillLoadFailed>,
+  ) => Effect.Effect<Publication, SkillLoadFailed | NetworkRefused>,
 ) =>
   options.cache === undefined
-    ? load(options, undefined)
+    ? publication(options, undefined).pipe(Effect.flatMap((source) => source.load))
     : catalogCache({
         cache: options.cache,
         ...(options.freshFor === undefined ? {} : { freshFor: options.freshFor }),
         ...(options.staleFor === undefined ? {} : { staleFor: options.staleFor }),
+        stale: "revalidate",
         prefix,
         schema: AppSkillSource,
         summary: { schema: AppSkillMetadata, of: ({ files: _files, ...metadata }) => metadata },
-        load: (context) =>
-          (context === undefined
-            ? load(options, options.cache)
-            : load({ fetch: options.fetch, signal: context.signal }, context.cache)
-          ).pipe(Effect.map((tools) => ({ tools }))),
+        load: (context, kept) =>
+          Effect.gen(function* () {
+            const source = yield* context === undefined
+              ? publication(options, options.cache)
+              : publication({ fetch: options.fetch, signal: context.signal }, context.cache);
+            if (source.id === undefined) return { tools: yield* source.load };
+            const previous = kept === undefined ? undefined : yield* kept;
+            const tools =
+              previous?.header?.["publication"] === source.id
+                ? yield* previous.tools
+                : yield* source.load;
+            return { tools, header: { publication: source.id } };
+          }),
       }).pipe(
         Effect.flatMap((catalog) => catalog.list()),
         Effect.mapError((error) =>
-          Schema.is(SkillLoadFailed)(error)
-            ? error
-            : new SkillLoadFailed({
+          loaderFailure(
+            error,
+            () =>
+              new SkillLoadFailed({
                 reason: "request",
                 message: "Executor could not read or update the app cache for skills.",
               }),
+          ),
         ),
       );
 
-export const githubSkillsEffect = (options: GitHubSkillsOptions) =>
+/** A token is a header value: visible ASCII, as GitHub tokens and Executor's handles are. */
+const GitHubToken = Schema.String.check(Schema.isPattern(/^[\x21-\x7e]+$/u));
+
+const scopeMessages = {
+  "missing-account": "A GitHub token needs its account. Pass account: ctx.accounts.<slot> with it.",
+  "unselected-account": "The GitHub account is not one of this app's selected accounts.",
+} satisfies Record<CatalogScopeProblem, string>;
+
+/**
+ * The cache a catalog lives in. A private catalog stays in its account's scope, as MCP and GraphQL
+ * catalogs do, so another account never reads it. The token never enters a key.
+ */
+const githubCache = (options: GitHubSkillsOptions) =>
+  options.account !== undefined && !Schema.is(GitHubToken)(options.token)
+    ? Effect.fail(
+        new SkillLoadFailed({
+          reason: "source",
+          message: "The GitHub account was passed without a valid token.",
+        }),
+      )
+    : catalogScope(
+        options,
+        options.token,
+        (problem) => new SkillLoadFailed({ reason: "source", message: scopeMessages[problem] }),
+      );
+
+/** GitHub rejected the account's token or refused its request; name the account. */
+const attributed =
+  (account: { readonly id: string } | undefined) =>
+  (error: SkillLoadFailed | NetworkRefused): SkillLoadFailed | NetworkRefused | ProviderError =>
+    account !== undefined &&
+    Schema.is(SkillLoadFailed)(error) &&
+    error.reason === "request" &&
+    (error.status === 401 || error.status === 403)
+      ? accountProviderError(
+          new ProviderError({
+            reason: error.status === 401 ? "unauthorized" : "rejected",
+            status: error.status,
+          }),
+          account.id,
+        )
+      : error;
+
+export const githubSkillsEffect = (
+  options: GitHubSkillsOptions,
+): Effect.Effect<typeof AppSkills.Type, SkillLoadFailed | NetworkRefused | ProviderError> =>
   Effect.gen(function* () {
     if (
       !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(options.repo) ||
       (options.path !== undefined && !resourcePath(options.path))
     )
       return yield* failed("source");
+    const cache = yield* githubCache(options);
     return yield* cachedCatalog(
-      options,
+      cache === undefined ? options : { ...options, cache },
       ["apps/githubSkills/catalog", 1, options.repo, options.ref ?? null, options.path ?? null],
-      (transport, cache) => githubCatalog(options, transport, cache),
+      (transport, cache) => githubPublication(options, transport, cache),
     );
-  }).pipe(withService("GitHub"));
+  }).pipe(withService("GitHub"), Effect.mapError(attributed(options.account)));
 
-const githubCatalog = (
+/** A branch or tag resolves to its commit with one request; the commit identifies the files. */
+const githubPublication = (
   options: GitHubSkillsOptions,
   transport: SkillTransport,
   cache: AppCache | undefined,
 ) =>
   Effect.gen(function* () {
-    const remote = yield* reader(transport);
-    const commit = yield* resolveCommit(remote, options.repo, options.ref);
+    const github = githubRequests(yield* reader(transport), options.repo, options.token);
+    const commit = yield* checked(resolveCommit(github, options.ref));
+    return {
+      id: commit,
+      load: githubCatalog(options, github, commit, transport, cache),
+    } satisfies Publication;
+  });
+
+const githubCatalog = (
+  options: GitHubSkillsOptions,
+  github: GitHub,
+  commit: string,
+  transport: SkillTransport,
+  cache: AppCache | undefined,
+) =>
+  Effect.gen(function* () {
     const resources = yield* cache === undefined
-      ? skillDirectories(remote, options.repo, commit, options.path)
-      : cachedSkillDirectories(cache, transport, options.repo, commit, options.path);
-    const base = `https://raw.githubusercontent.com/${options.repo}/${commit}/`;
+      ? skillDirectories(github, commit, options.path)
+      : cachedSkillDirectories(cache, transport, options, commit);
     const skills = yield* Effect.forEach(
       resources,
       ({ directory, files }) =>
@@ -378,7 +553,7 @@ const githubCatalog = (
                 const path = file.path.slice(directory.length);
                 if (!resourcePath(file.path) || !resourcePath(path) || file.mode === "120000")
                   return yield* failed("source");
-                return { path, content: yield* remote.read(pathUrl(base, file.path)) };
+                return { path, content: yield* github.file(commit, file.path) };
               }),
             { concurrency: skillLoadLimits.concurrency },
           );
@@ -415,15 +590,28 @@ export const wellKnownSkillsEffect = (options: WellKnownSkillsOptions) =>
     return yield* cachedCatalog(
       options,
       ["apps/wellKnownSkills/catalog", 1, url.href],
-      (transport) => wellKnownCatalog(url, transport),
+      (transport) => wellKnownPublication(url, transport),
     );
   }).pipe(withService(URL.canParse(options.url) ? new URL(options.url).hostname : undefined));
 
-const wellKnownCatalog = (url: URL, transport: SkillTransport) =>
+/**
+ * Read the index once. Publishers change an entry's `version` whenever its files change, so an
+ * index whose every entry has one identifies its publication. Without versions only the files can
+ * show a change, and every check loads them.
+ */
+const wellKnownPublication = (url: URL, transport: SkillTransport) =>
   Effect.gen(function* () {
     const remote = yield* reader(transport);
-    const first = yield* remote.read(url.href);
+    const first = yield* checked(remote.read(url.href));
     const index = yield* parse(Schema.fromJsonString(Index), first);
+    const id = index.skills.every((skill) => skill.version !== undefined)
+      ? yield* digest(index.skills.map(({ name, version, files }) => [name, version, files]))
+      : undefined;
+    return { id, load: wellKnownCatalog(url, remote, first, index) } satisfies Publication;
+  });
+
+const wellKnownCatalog = (url: URL, remote: Remote, first: string, index: typeof Index.Type) =>
+  Effect.gen(function* () {
     if (
       index.skills.reduce((count, skill) => count + skill.files.length, 0) > skillLoadLimits.files
     )

@@ -1,6 +1,6 @@
 /** Enforce the preview deadline even if a scheduled cleanup run or provider is delayed. */
 import { Clock, Config, Effect, Option, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { testStage } from "./stage.ts";
 
 /** Test stages must supply the registry deadline; configured production stages have no expiry. */

@@ -2,39 +2,35 @@
  * Host protocol 4: protocol 3 plus call kinds and routers. `call` carries the caller's `kind`, and
  * a bundle refuses a call whose tool has the other kind with `HostKindMismatch`. Inspection
  * answers with a catalog of tools and the routers that group them, instead of a list of tools.
- * Messages it does not change are protocol 3's, imported from its frozen module.
+ * Messages it does not change are protocol 3's, taken from its frozen module.
  *
  * Once released, this protocol is frozen like the earlier ones: `bun run check` compares
- * `protocol4` with `packages/apps/protocols/4.json`. See notes/apps-publishing.md.
+ * `protocol4` with `packages/apps/protocols/4.json`. The module imports only `effect` and earlier
+ * protocol modules, so no change elsewhere can alter it. See notes/apps-publishing.md.
  */
 import { Schema } from "effect";
-import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
-import { ElicitationReply, FormElicitation } from "../elicitation.ts";
-import { McpError } from "../mcp-error-legacy.ts";
-import { ProviderError } from "../provider-error.ts";
-import { RouterIcon } from "../router.ts";
-import { OperationSchedule } from "../schedules.ts";
-import { JsonObject, JsonValue } from "../schema.ts";
-import { AppSkillName, SkillLoadFailed } from "../skills.ts";
-import { ToolAnnotations } from "../tools.ts";
-import { WebhookCommand } from "../webhook-protocol.ts";
 import {
+  AppSkillName,
+  JsonObject,
+  JsonValue,
+  McpError,
+  OperationSchedule,
+  ProviderError,
+  SkillLoadFailed,
+  ToolAnnotations,
+  WebhookCommand,
   WorkflowCommand,
-  WorkflowControlCommand,
   WorkflowReplay,
-  WorkflowRpcCommand,
-  WorkflowRpcResult,
   WorkflowRunId,
-} from "../workflows.ts";
+} from "./1.ts";
 import {
-  DeclaredRequirements,
   HostDeclarationInvalid,
   HostError as HostErrorV3,
   HostEvaluationFailed,
   InvocationDeadline,
   ResolvedAccounts,
-  SkillCatalogResponse,
   TrustedToolApproval,
+  protocol3,
 } from "./3.ts";
 
 export {
@@ -62,6 +58,15 @@ export {
   HostToolPolicyFailed,
   HostOutputInvalid,
 } from "./3.ts";
+
+/** An image a client may show beside a router, such as an MCP server's own icon. Models never read it. */
+export const RouterIcon = Schema.Struct({
+  src: Schema.NonEmptyString,
+  mimeType: Schema.optionalKey(Schema.String),
+  sizes: Schema.optionalKey(Schema.Array(Schema.String)),
+  theme: Schema.optionalKey(Schema.Literals(["light", "dark"])),
+});
+export type RouterIcon = typeof RouterIcon.Type;
 
 /**
  * Serializable live tool metadata; executable callbacks never cross this boundary. `name` is the
@@ -223,16 +228,16 @@ export const protocol4 = {
     invocation: HostInvocation,
     request: HostRequest,
     response: HostResponse,
-    requirements: DeclaredRequirements,
+    requirements: protocol3.schemas.requirements,
     catalog: HostedCatalog,
     catalogSummary: HostedCatalogSummary,
-    skills: SkillCatalogResponse,
-    elicitationRequest: FormElicitation,
-    elicitationReply: ElicitationReply,
-    workflowStep: WorkflowRpcCommand,
-    workflowStepReply: WorkflowRpcResult,
-    workflowControl: WorkflowControlCommand,
-    cacheCommand: CacheCommand,
-    cacheReply: CacheReply,
+    skills: protocol3.schemas.skills,
+    elicitationRequest: protocol3.schemas.elicitationRequest,
+    elicitationReply: protocol3.schemas.elicitationReply,
+    workflowStep: protocol3.schemas.workflowStep,
+    workflowStepReply: protocol3.schemas.workflowStepReply,
+    workflowControl: protocol3.schemas.workflowControl,
+    cacheCommand: protocol3.schemas.cacheCommand,
+    cacheReply: protocol3.schemas.cacheReply,
   },
 } as const;

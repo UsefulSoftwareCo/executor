@@ -1,7 +1,7 @@
 /** Hosted resolvers bind organization identity here, outside reusable atoms and views. */
 import type { CustomAppInput } from "@executor-js/catalog/contracts";
 import { Effect } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import type { AppId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { providerDisplayUrl, type InstallApp } from "@executor-js/ui/contracts/dashboard";

@@ -6,7 +6,7 @@
  * environment `R`. For the SQL adapter, `R` is `SqlClient.SqlClient`.
  */
 import type { Effect } from "effect";
-import type { SqlError } from "effect/unstable/sql/SqlError";
+import type { SqlError } from "effect/sql/SqlError";
 import type { QueryError } from "./errors.ts";
 import type { Relation } from "./schema/relation.ts";
 import type { AnySchema } from "./schema/schema.ts";

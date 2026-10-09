@@ -3,7 +3,7 @@ import { useId, useState, type ReactNode } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { AppId, Tool } from "@executor-js/sdk";
 import type { GrantPolicy } from "@executor-js/mcp-auth/grants";
-import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { RadioGroup } from "radix-ui";
 import { Checkbox } from "../components/checkbox.tsx";
 import { Button } from "../components/button.tsx";

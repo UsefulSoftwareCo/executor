@@ -26,7 +26,7 @@ import {
   HttpRouter,
   HttpServer,
   HttpServerRequest,
-} from "effect/unstable/http";
+} from "effect/http";
 import { selfHostDatabaseSchema } from "./implementation/database-schema.ts";
 import {
   selfHostExecutorServices,

@@ -7,21 +7,21 @@ import {
   HttpClientError,
   HttpClientRequest,
   HttpMethod,
-} from "effect/unstable/http";
+} from "effect/http";
 import { captureTelemetry, pendingSpan, traceHeaders } from "@executor-js/telemetry";
 import * as Git from "isomorphic-git";
 import { Volume, createFsFromVolume } from "memfs";
-import { SourceFiles } from "@executor-js/sdk/core";
 import {
   AppCodeId,
   SourceError,
+  SourceFiles,
   Branch,
   GitCommit,
-  Commit,
+  SourceCommit,
   sourceFiles,
   sourceFits,
   type RepositoryBackend,
-} from "../contracts/repositories.ts";
+} from "@executor-js/sdk/core";
 
 import type { ArtifactsTokens } from "../contracts/artifacts-tokens.ts";
 
@@ -373,15 +373,15 @@ export const cloudflareRepositories = (
           ),
         );
         const ref = refs.find((ref) => ref.ref === `refs/heads/${name}`);
-        return ref === undefined ? null : yield* Schema.decodeUnknownEffect(Commit)(ref.oid);
+        return ref === undefined ? null : yield* Schema.decodeUnknownEffect(SourceCommit)(ref.oid);
       }).pipe(Effect.mapError(failure)),
     read: (id, ref) =>
       Effect.gen(function* () {
-        if (!Schema.is(Commit)(ref) && !Schema.is(Branch)(ref))
+        if (!Schema.is(SourceCommit)(ref) && !Schema.is(Branch)(ref))
           return yield* new SourceError({ reason: "invalid-source" });
         const value = yield* session(access(id));
         const options = { fs: value.fs, dir: value.dir };
-        const requested = Schema.is(Commit)(ref) ? ref : `refs/heads/${ref}`;
+        const requested = Schema.is(SourceCommit)(ref) ? ref : `refs/heads/${ref}`;
         // Request only this snapshot, including when its SHA is no longer a branch tip.
         yield* withGit("source.git.clone", value, (http) =>
           Effect.tryPromise({
@@ -397,11 +397,11 @@ export const cloudflareRepositories = (
                 noTags: true,
               }),
             catch: (cause) =>
-              Schema.is(Commit)(ref) ? failure(cause) : branchFailure(cause, requested),
+              Schema.is(SourceCommit)(ref) ? failure(cause) : branchFailure(cause, requested),
           }),
         );
         const result = yield* Effect.gen(function* () {
-          const commit = Schema.is(Commit)(ref)
+          const commit = Schema.is(SourceCommit)(ref)
             ? ref
             : yield* Effect.tryPromise({
                 try: () => Git.resolveRef({ ...options, ref: `refs/remotes/origin/${ref}` }),
@@ -438,7 +438,7 @@ export const cloudflareRepositories = (
           return { commit, files };
         }).pipe(Effect.withSpan("source.git.tree"));
         return {
-          commit: yield* Schema.decodeUnknownEffect(Commit)(result.commit),
+          commit: yield* Schema.decodeUnknownEffect(SourceCommit)(result.commit),
           files: yield* sourceFiles(yield* Schema.decodeUnknownEffect(SourceFiles)(result.files)),
         };
       }).pipe(Effect.mapError(failure), Effect.tapError(observeFailure)),
@@ -571,7 +571,7 @@ export const cloudflareRepositories = (
             return commit;
           }),
         ).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Commit)),
+          Effect.flatMap(Schema.decodeUnknownEffect(SourceCommit)),
           Effect.mapError(failure),
           Effect.tapError(observeFailure),
         );

@@ -5,14 +5,15 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import type { Workflow } from "@cloudflare/workers-types";
 import { Cause, Effect, Schema } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
+import { ScheduleWakeup } from "@executor-js/hosted-server";
 import {
   provision,
   provisionTeam,
   ProvisioningFailed,
   type ProvisioningServices,
 } from "@executor-js/hosted-server/provisioning";
-import { SqlClient } from "effect/unstable/sql";
-import { cloudExecutor } from "./executor.ts";
+import { SqlClient } from "effect/sql";
+import { cloudProduct } from "./product.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { cloudEmail } from "./email.ts";
 import { cloudWelcomeEmails } from "./welcome-email.ts";
@@ -21,13 +22,13 @@ import { AppDomainController } from "./app-domain-controller-worker.ts";
 import { billingLive } from "../implementation/billing.ts";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
-import { cloudSchedules } from "./schedules.ts";
+import { cloudBackgroundJobs } from "./background-jobs.ts";
 
 /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
 export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
   "Provisioning",
   Effect.gen(function* () {
-    const executor = yield* cloudExecutor(
+    const executor = yield* cloudProduct(
       yield* appDataSupervisors,
       yield* cloudArtifactsTokensLive,
     );
@@ -35,8 +36,10 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
     const domains = yield* AppDomainCoordinator.from(AppDomainController);
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
     const analytics = yield* cloudAnalytics;
-    // Default installation and member setup save profiles; wake their setup once committed.
-    const schedules = yield* cloudSchedules;
+    // Default installation and member setup save profiles; wake their setup once committed. A
+    // workflow step is not placed, so it must not be the coordinator's first caller: it asks the
+    // placed handler to, in a step of its own that is retried until the handler has woken it.
+    const jobs = yield* cloudBackgroundJobs;
     const services: ProvisioningServices = {
       requireVerifiedEmail: true,
       user: (id) =>
@@ -69,11 +72,13 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
                     Effect.provideService(SqlClient.SqlClient, sql),
                   );
                 }).pipe(
+                  // The next step wakes the coordinator.
+                  Effect.provideService(ScheduleWakeup, Effect.void),
                   Effect.provide(executor),
-                  Effect.provide(schedules.layer),
                   Effect.scoped,
                   Effect.provideContext(context),
-                  Effect.orDie,
+                  // The engine retries typed failures only; a defect ends the workflow at once.
+                  Effect.mapError(() => new ProvisioningFailed()),
                 ),
               })
               .pipe(
@@ -88,6 +93,26 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
                         yield* Effect.logError("Provisioning workflow failed", { job: id });
                         return yield* Effect.die(new Error("Provisioning failed"));
                       }),
+                ),
+              );
+            // After every successful provisioning, not only an attempt that saved profiles: an
+            // earlier attempt may have committed them and failed later, and its retry finds
+            // nothing left to do. A wake with nothing to set up is one empty pass.
+            yield* step
+              .do({
+                name: "schedule-wake",
+                retries: { limit: 5, delay: "2 seconds", backoff: "exponential" },
+                timeout: "1 minute",
+                effect: jobs
+                  .request("schedule-wake")
+                  .pipe(Effect.provideContext(context), Effect.orDie),
+              })
+              .pipe(
+                // Provisioning itself succeeded; the minute job wakes the coordinator anyway.
+                Effect.catchCause((cause) =>
+                  Cause.hasInterrupts(cause)
+                    ? Effect.interrupt
+                    : Effect.logError("Schedule wake after provisioning failed", { job: id }),
                 ),
               );
           }).pipe(Effect.orDie),

@@ -1,5 +1,5 @@
 /** Validate both sides of a tool's form and bind delivery to its invocation lifetime. */
-import { Effect, Schema } from "effect";
+import { Effect, Schema, type Context } from "effect";
 import {
   ElicitationFailed,
   ElicitationResponse,
@@ -7,7 +7,9 @@ import {
   type ElicitationHandler,
   type Elicit,
 } from "../contracts/elicitation.ts";
+import { owned } from "@executor-js/telemetry";
 import { toPromise } from "./authoring.ts";
+import { elicitationWaitSpan } from "./invocation-timing.ts";
 import { jsonSchemaDecoder } from "./schema.ts";
 
 /** Parse a form and retain its response parser, so invalid answers can be rejected before consuming a host continuation. */
@@ -39,14 +41,26 @@ export const prepareElicitation = (input: unknown) =>
     return { request, respond };
   });
 
-/** Bind a validated interaction to the live invocation; transport adapters share its form parser. */
-export const makeElicit = (handler: ElicitationHandler | undefined, signal: AbortSignal): Elicit =>
+/**
+ * Bind a validated interaction to the live invocation; transport adapters share its form parser.
+ * Authored code's Promise calls run in the invocation's telemetry, like framework callers.
+ */
+export const makeElicit = (
+  handler: ElicitationHandler | undefined,
+  signal: AbortSignal,
+  telemetry: Context.Context<never>,
+): Elicit =>
   toPromise(
     (input: FormElicitation) =>
       Effect.gen(function* () {
         if (handler === undefined) return yield* new ElicitationFailed({ reason: "unavailable" });
         const form = yield* prepareElicitation(input);
-        return yield* handler(form.request, signal).pipe(Effect.flatMap(form.respond));
+        // Waiting for the answer is the person's time, wherever the question came from.
+        return yield* handler(form.request, signal).pipe(
+          owned("person", elicitationWaitSpan),
+          Effect.flatMap(form.respond),
+        );
       }),
     signal,
+    telemetry,
   );

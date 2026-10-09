@@ -1,6 +1,6 @@
 /** Startup failures are safe to display; transport payloads and keys stay out of diagnostics. */
 import { Schema } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 
 /** System codes permitted in persistent startup diagnostics. */
 export const StartupCode = Schema.Literals([

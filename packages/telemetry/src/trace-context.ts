@@ -3,8 +3,8 @@ import { Effect, Option, Schema, Tracer } from "effect";
 
 /** Trace metadata conveys no authorization and must never contain app values or credentials. */
 export const TraceContext = Schema.Struct({
-  traceId: Schema.String.check(Schema.isPattern(/^(?!0{32}$)[a-f0-9]{32}$/)),
-  spanId: Schema.String.check(Schema.isPattern(/^(?!0{16}$)[a-f0-9]{16}$/)),
+  traceId: Schema.String.check(Schema.isPattern(/^(?!0{32}$)[a-f0-9]{32}$/u)),
+  spanId: Schema.String.check(Schema.isPattern(/^(?!0{16}$)[a-f0-9]{16}$/u)),
   sampled: Schema.Boolean,
 });
 /** Decoded, non-authorizing trace identity. */

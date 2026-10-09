@@ -1,0 +1,32 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index bf85c8b78915bee1252a41420a742b306ed3bcdd..661dc2537968058c46af712b42e897b895ea1793 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -1986,8 +1986,11 @@ function verifyApiKey({ configurations, schema, deleteAllExpiredApiKeys }) {
+ 				ctx.context.logger.error("Failed to delete expired API keys:", err);
+ 			}));
+ 		} catch (error) {
++			// Only a refusal is an invalid key. A storage failure, such as a database connect
++			// timeout, rejects so the caller can report verification as unavailable.
++			if (!isAPIError(error)) throw error;
+ 			ctx.context.logger.error("Failed to validate API key:", error);
+-			if (isAPIError(error)) return ctx.json({
++			return ctx.json({
+ 				valid: false,
+ 				error: {
+ 					...error.body,
+@@ -1996,14 +1999,6 @@ function verifyApiKey({ configurations, schema, deleteAllExpiredApiKeys }) {
+ 				},
+ 				key: null
+ 			});
+-			return ctx.json({
+-				valid: false,
+-				error: {
+-					message: API_KEY_ERROR_CODES.INVALID_API_KEY,
+-					code: "INVALID_API_KEY"
+-				},
+-				key: null
+-			});
+ 		}
+ 		const { key: _, ...returningApiKey } = apiKey ?? {
+ 			key: 1,

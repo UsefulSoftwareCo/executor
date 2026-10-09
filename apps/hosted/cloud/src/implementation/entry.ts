@@ -1,7 +1,7 @@
 import { browserReturnTo, type BrowserSession } from "@executor-js/hosted-server/browser/contracts";
 import type { AuthenticationUnavailable } from "@executor-js/hosted-server";
 import { Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { CloudEntry, CloudEntryPage } from "../contracts/entry.ts";
 import { Onboarding, OnboardingInvitation, OnboardingReady } from "../contracts/onboarding.ts";
 import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";
@@ -25,22 +25,30 @@ export const resolveCloudEntry = (
     const current = yield* session(headers);
     if (current === null)
       return page !== "create"
-        ? CloudEntryPage.make({ kind: "page", path: `/${page}`, session: null, onboarding: null })
+        ? CloudEntryPage.make({
+            kind: "page",
+            path: `/${page}`,
+            session: null,
+            onboarding: null,
+            passkeyEnrollment: false,
+          })
         : { kind: "redirect" as const, location: "/login?redirect=%2Fcreate" };
+    // The page cannot read this browser's cookie while the server renders it, so it gets the answer.
+    const enrollment = (headers.get("cookie") ?? "")
+      .split(";")
+      .some(
+        (cookie) =>
+          cookie.trim() ===
+          `${passkeyEnrollmentCookie.name}=${encodeURIComponent(current.user.id)}`,
+      );
     if (page !== "create") {
-      const enrollment = (headers.get("cookie") ?? "")
-        .split(";")
-        .some(
-          (cookie) =>
-            cookie.trim() ===
-            `${passkeyEnrollmentCookie.name}=${encodeURIComponent(current.user.id)}`,
-        );
       if (enrollment)
         return CloudEntryPage.make({
           kind: "page",
           path: "/login",
           session: current,
           onboarding: null,
+          passkeyEnrollment: true,
         });
       const destination = browserReturnTo(redirect);
       if (destination !== "/" && destination !== "/create")
@@ -65,6 +73,7 @@ export const resolveCloudEntry = (
         path: entry.organizations.length > 0 ? "/" : "/create",
         session: current,
         onboarding: entry,
+        passkeyEnrollment: enrollment,
       });
     }
     return CloudEntryPage.make({
@@ -72,6 +81,7 @@ export const resolveCloudEntry = (
       path: "/create",
       session: current,
       onboarding: entry,
+      passkeyEnrollment: enrollment,
     });
   });
 

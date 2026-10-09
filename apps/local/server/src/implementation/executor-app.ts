@@ -1,28 +1,15 @@
 /** Install the bundled management app using the same deployment and account operations as user apps. */
-import {
-  OwnerId,
-  AccountId,
-  StorageError,
-  type ExecutorDatabase,
-  type Credentials,
-  type Executor,
-} from "@executor-js/sdk/core";
-import { Effect, Redacted, Schema } from "effect";
+import { OwnerId, StorageError, type Executor } from "@executor-js/sdk/core";
+import { Effect, Redacted } from "effect";
 import type { ServerConfig } from "../contracts/config.ts";
 import { executorAppSource } from "./executor-app-source.ts";
 
 const owner = OwnerId.make("executor-local");
 
 /** Keep the host's bundled source and explicitly configured local API connection ready across restarts. */
-export const installExecutorApp = (
-  executor: Executor,
-  storage: ExecutorDatabase,
-  credentials: Credentials,
-  config: ServerConfig,
-) =>
+export const installExecutorApp = (executor: Executor, config: ServerConfig) =>
   Effect.gen(function* () {
     const files = yield* executorAppSource();
-    const db = storage.orm("4.0.5");
     const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
     const current =
       existing === undefined ? undefined : yield* executor.apps.source({ owner, app: existing.id });
@@ -51,23 +38,15 @@ export const installExecutorApp = (
       baseUrl: `http://127.0.0.1:${config.port}`,
       apiKey: Redacted.value(config.apiKey),
     });
-    const profile = yield* db
-      .findFirst("profiles", {
-        where: (b) =>
-          b.and(
-            b("app", "=", app.id),
-            b("subject", "=", "local"),
-            b("idempotencyKey", "=", "executor-default"),
-          ),
-      })
-      .pipe(Effect.mapError(() => new StorageError()));
+    const profile =
+      (yield* executor.apps.profiles.list({
+        app: app.id,
+        owner,
+        subject: "local",
+        idempotencyKey: "executor-default",
+      }))[0] ?? null;
     // The immutable creation request retains the host-owned account even after a user clears its selection.
-    const selected =
-      profile === null
-        ? undefined
-        : (yield* Schema.decodeUnknownEffect(
-            Schema.Struct({ accounts: Schema.Struct({ executor: AccountId }) }),
-          )(profile.request).pipe(Effect.mapError(() => new StorageError()))).accounts.executor;
+    const selected = profile === null ? undefined : profile.request.accounts.executor;
     const account =
       typeof selected === "string"
         ? yield* executor.accounts.get({ account: selected })
@@ -80,13 +59,7 @@ export const installExecutorApp = (
           });
     if (account.provider !== requirement.provider) return yield* Effect.fail(new StorageError());
     // Update the host-owned connection in place when its configured port/key changes; keep the account ID stable.
-    const encryptedCredentials = yield* credentials.encrypt(account.id, fields);
-    yield* db
-      .updateMany("accounts", {
-        where: (b) => b("id", "=", account.id),
-        set: { encryptedCredentials },
-      })
-      .pipe(Effect.mapError(() => new StorageError()));
+    yield* executor.accounts.replaceCredentials({ owner, account: account.id, fields });
     const saved =
       profile === null
         ? yield* executor.apps.profiles.create({

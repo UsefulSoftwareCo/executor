@@ -6,7 +6,7 @@ import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/
 /** Deployment and account identities invalidate discovery without freezing dynamic catalogs. */
 import type { App, AppId, DeploymentId, ProfileId, Profile } from "@executor-js/sdk";
 import { Data } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { HostedClient } from "./api.ts";
 import { protectedQuery } from "./protected-query.ts";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";

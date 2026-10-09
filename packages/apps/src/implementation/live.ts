@@ -1,9 +1,13 @@
 /** Client primitives use Effect Atom while authors keep ordinary schemas and Promise transports. */
 import { Effect, Schema as EffectSchema, Stream } from "effect";
-import { Atom } from "effect/unstable/reactivity";
-import { AppQueryFailed, type OperationReference, type QueryTransport } from "../contracts/live.ts";
+import { Atom } from "effect/reactivity";
+import {
+  AppQueryFailed,
+  OperationName,
+  type OperationReference,
+  type QueryTransport,
+} from "../contracts/live.ts";
 import { JsonValue } from "../contracts/schema.ts";
-import { StorageName } from "../contracts/storage.ts";
 import type { Operation } from "./operations.ts";
 import { decoderOf, type Schema } from "./schema.ts";
 
@@ -21,7 +25,7 @@ export const queryReference = <Query>(
     ? string
     : never,
 ): OperationReference<InputOf<Query>, OutputOf<Query>, "query"> => ({
-  name: EffectSchema.decodeUnknownSync(StorageName)(name),
+  name: EffectSchema.decodeUnknownSync(OperationName)(name),
   kind: "query",
 });
 /** Make a mutation reference using a type-only server import. */
@@ -30,7 +34,7 @@ export const mutationReference = <Mutation>(
     ? string
     : never,
 ): OperationReference<InputOf<Mutation>, OutputOf<Mutation>, "mutation"> => ({
-  name: EffectSchema.decodeUnknownSync(StorageName)(name),
+  name: EffectSchema.decodeUnknownSync(OperationName)(name),
   kind: "mutation",
 });
 

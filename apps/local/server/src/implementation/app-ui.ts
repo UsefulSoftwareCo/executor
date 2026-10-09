@@ -25,10 +25,10 @@ import {
 } from "apps/ui/contracts";
 import { appDocument, appAsset, appWatchScript } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
-import { currentTraceContext } from "@executor-js/telemetry";
+import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
 import { Effect, Result, Schema, Stream } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { appSessionCookie } from "../contracts/app-ui.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import type { LocalAuth } from "./auth.ts";
@@ -43,7 +43,7 @@ const accountIds = (accounts: SelectedAccounts) =>
 /** Build app handlers and session middleware; the host composition registers their routes. */
 export const appUi = (
   executor: Executor,
-  storage: ExecutorDatabase,
+  reactivity: ExecutorDatabase["reactivity"],
   runtime: Runtime,
   config: ServerConfig,
   auth: LocalAuth,
@@ -54,18 +54,19 @@ export const appUi = (
   >,
 ) => {
   const native = runtime;
-  const db = storage.orm("4.0.5");
   const current = (id: AppId) =>
     executor.apps
       .get({ app: id, owner: OwnerId.make("local") })
       .pipe(Effect.mapError(() => failed()));
   const deployment = (app: Effect.Success<ReturnType<typeof current>>, id = app.activeDeployment) =>
     Effect.gen(function* () {
-      const row = yield* db.findFirst("deployments", {
-        select: ["id", "build"],
-        where: (b) => b.and(b("id", "=", id), b("code", "=", app.code)),
+      if (id === null) return yield* failed();
+      const metadata = yield* executor.apps.deployment({
+        app: app.id,
+        owner: OwnerId.make("local"),
+        deployment: id,
       });
-      return yield* Schema.decodeUnknownEffect(UiBuild)(row);
+      return UiBuild.make({ id: metadata.id, build: metadata.build });
     }).pipe(Effect.mapError(() => failed()));
   const authorize = Effect.gen(function* () {
     const { target, request } = yield* appRequest(config.port);
@@ -173,7 +174,7 @@ export const appUi = (
   const versions = Effect.gen(function* () {
     yield* authorize;
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const versions = storage.reactivity.subscribe(authorize).pipe(
+    const versions = reactivity.subscribe(authorize).pipe(
       Stream.map(({ value }) => value.activeDeployment),
       Stream.changes,
       Stream.map((deployment) => `event: version\ndata: ${JSON.stringify({ deployment })}\n\n`),
@@ -189,6 +190,8 @@ export const appUi = (
     });
   }).pipe(htmlResponse);
   const asset = Effect.gen(function* () {
+    // The app's build chose its assets' file names.
+    yield* recordRoute("/_executor/assets/:deployment/:asset");
     const app = yield* authorize;
     const params = yield* HttpRouter.schemaPathParams(
       Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
@@ -231,6 +234,8 @@ export const appUi = (
       return { app: app.name, problems, fix: fix.href, choose: yield* chooser(app.id, page) };
     });
   const page = Effect.gen(function* () {
+    // The app chose its pages' paths.
+    yield* recordRoute("/:page");
     const app = yield* authorize;
     const { target } = yield* appRequest(config.port);
     const version = yield* deployment(app);

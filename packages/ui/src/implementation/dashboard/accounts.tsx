@@ -20,7 +20,6 @@ export function AccountsPage<E>({
   Failure,
   ...props
 }: QueryProps<Inventory, E> & {
-  readonly action?: ReactNode;
   readonly filters?: ReactNode;
   readonly empty?: ReactNode;
   readonly accountActions?: (account: AccountSummary) => ReactNode;
@@ -36,9 +35,7 @@ export function AccountsPage<E>({
         title="Accounts"
         description="Saved sign-ins, available to your apps."
         {...(Option.isSome(data) ? { count: data.value.accounts.length } : {})}
-      >
-        {(!Option.isSome(data) || data.value.accounts.length > 0) && props.action}
-      </PageHeader>
+      />
       <div className="list-toolbar mb-4 flex flex-wrap items-center gap-[10px_16px]">
         {(!Option.isSome(data) || data.value.accounts.length > 0 || search.length > 0) && (
           <SearchInput value={search} onChange={setSearch} placeholder="Search accounts…" />
@@ -59,9 +56,7 @@ export function AccountsPage<E>({
             {...props}
             empty={
               props.empty ?? (
-                <Empty title="No accounts yet" action={props.action}>
-                  Add an account to use it with your apps.
-                </Empty>
+                <Empty title="No accounts yet">Open an app to connect an account.</Empty>
               )
             }
           />

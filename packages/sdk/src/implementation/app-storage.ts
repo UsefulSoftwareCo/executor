@@ -2,8 +2,6 @@ import type { ResourceLifecycle } from "../contracts/executor.ts";
 /** Configured-app data dispatch. Platform storage never holds authored rows. */
 import { Effect, Result, Schema, Stream } from "effect";
 import type { WorkflowHostControls } from "apps/contracts";
-import type { AppDatabases } from "@executor-js/app-data";
-import { bindAppStorage } from "./app-database.ts";
 import { Json } from "../contracts/shared.ts";
 import { HostOperationNotFound } from "apps/contracts";
 import { AppDataFailed, AppDataNotFound, type AppDataInput } from "../contracts/app-data.ts";
@@ -12,13 +10,13 @@ import type { ExecutorDatabase } from "./storage.ts";
 import { database } from "./database.ts";
 import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import type { makeOAuth } from "./oauth.ts";
+import { ownsDatabase } from "../contracts/apps.ts";
 
 /** Bind data calls to fresh saved app/deployment/account selections. */
 export const makeAppData = (
   storage: ExecutorDatabase,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   runtime: Runtime,
-  appStorage?: AppDatabases,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
@@ -34,10 +32,9 @@ export const makeAppData = (
       const accounts = yield* resolve(state, resolveAccount, lifecycle);
       return yield* runtime[kind]({
         build: state.deployment.build,
-        database: state.deployment.requirements.database !== undefined,
+        database: ownsDatabase(state.deployment.requirements),
         ...accounts,
         app: state.app.id,
-        ...(yield* bindAppStorage(appStorage, state.app.id)),
         ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
         name: input.name,
         input: input.input,
@@ -76,7 +73,7 @@ export const makeAppData = (
                       // The initial notification is skipped only if its writes were
                       // already observed by a successful query. Setup races still reread.
                       Stream.succeed(undefined),
-                      state.deployment.requirements.database === undefined
+                      !ownsDatabase(state.deployment.requirements)
                         ? Stream.empty
                         : changes(input.app).pipe(
                             Stream.mapError(

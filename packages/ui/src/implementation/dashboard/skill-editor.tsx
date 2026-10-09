@@ -4,7 +4,7 @@ import { Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { App } from "@executor-js/sdk";
 import { Exit, type Cause } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import {
   lazy,
   Suspense,
@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "../components/dropdown-menu.tsx";
 import { Textarea } from "../components/textarea.tsx";
+import { useHydrated } from "../hooks/hydrated.ts";
 import {
   joinSkillDocument,
   skillDescription,
@@ -32,9 +33,9 @@ import {
 } from "./skill-document.ts";
 
 /**
- * Readers never download the editor; it loads when an editable file opens. The editor reads
- * browser storage while it renders, so a server never renders it. A server build drops each
- * import below: every module a Worker uploads is compiled whenever one of its isolates starts.
+ * Readers never download the editor; it loads when an editable file opens. `SkillFileEditor`
+ * renders it only in a browser, after hydration, so a server build drops each import below:
+ * every module a Worker uploads is compiled whenever one of its isolates starts.
  */
 const serverRender = () => Promise.reject(new Error("The skill editor renders only in a browser"));
 const VisualEditor = lazy(() =>
@@ -50,12 +51,16 @@ const VimEditor = lazy(() =>
 
 const vimKey = "executor:skill-editor:vim";
 
-/** A per-browser preference: people who use Vim keys want them in every file. */
-function useVimMode() {
-  const [enabled, setEnabled] = useState(() => localStorage.getItem(vimKey) === "on");
+/**
+ * A per-browser preference: people who use Vim keys want them in every file. The server cannot
+ * see it, so it reads as off until the page has hydrated.
+ */
+function useVimMode(hydrated: boolean) {
+  const [chosen, setChosen] = useState<boolean>();
+  const enabled = chosen ?? (hydrated && localStorage.getItem(vimKey) === "on");
   const set = (next: boolean) => {
     localStorage.setItem(vimKey, next ? "on" : "off");
-    setEnabled(next);
+    setChosen(next);
   };
   return [enabled, set] as const;
 }
@@ -108,6 +113,9 @@ export interface SkillEditing<E> {
 /**
  * The file is the editor: it renders like the reader and is always editable. The header shows
  * the save controls. `reader` stands in while the editor code loads, so the page never jumps.
+ * The editor reads this browser's settings and loads its code in the browser, so the server and
+ * the hydrating render show the header, description and reader, and the editor then replaces
+ * only the reader.
  */
 export function SkillFileEditor<E>({
   app,
@@ -140,11 +148,11 @@ export function SkillFileEditor<E>({
   const [description, setDescription] = useState(() => skillDescription(parts.frontmatter));
   const [body, setBody] = useState(parts.body);
   const markdown = /\.md$/i.test(path);
-  const [vimMode, setVimMode] = useVimMode();
+  const hydrated = useHydrated();
+  const [vimMode, setVimMode] = useVimMode(hydrated);
+  const [chosenMode, setMode] = useState<"visual" | "markdown">();
   // Vim keys edit the Markdown source, so Vim users open files there.
-  const [mode, setMode] = useState<"visual" | "markdown">(
-    markdown && !vimMode ? "visual" : "markdown",
-  );
+  const mode = chosenMode ?? (markdown && !vimMode ? "visual" : "markdown");
   // Each visual session keeps bytes relative to the text it loaded.
   const [session, setSession] = useState({ id: 0, original: parts.body });
   const commit = useAtomSet(editing.atoms.commitFile(app.id), { mode: "promiseExit" });
@@ -237,7 +245,7 @@ export function SkillFileEditor<E>({
                 checked={vimMode}
                 onToggle={() => {
                   setVimMode(!vimMode);
-                  if (!vimMode) setMode("markdown");
+                  setMode(vimMode ? mode : "markdown");
                 }}
               >
                 Vim mode
@@ -282,6 +290,7 @@ export function SkillFileEditor<E>({
               }
             }}
             rows={1}
+            readOnly={!hydrated}
             maxLength={1024}
             required
             placeholder="Describe when agents should use this skill"
@@ -289,7 +298,9 @@ export function SkillFileEditor<E>({
           />
         </label>
       )}
-      {mode === "visual" ? (
+      {!hydrated ? (
+        reader
+      ) : mode === "visual" ? (
         <Suspense fallback={reader}>
           <VisualEditor
             key={session.id}

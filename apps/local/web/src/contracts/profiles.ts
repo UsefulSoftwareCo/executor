@@ -2,7 +2,7 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import type { AppId, ProfileId, ProfileInputs, Profile } from "@executor-js/sdk";
 import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 import { pollingQuery, steadyPolling } from "@executor-js/ui/contracts/polling";
@@ -19,12 +19,32 @@ const source = Atom.family((key: AppKey) =>
 const query = Atom.family((key: AppKey) => pollingQuery(source(key), steadyPolling));
 /** Shared per-app metadata for the picker and setup form. */
 export const profilesAtom = (key: { app: AppId }) => query(new AppKey({ app: key.app }));
-const acknowledgeProfile = (get: Atom.FnContext, key: AppKey, saved: Profile) => {
+const acknowledgeProfile = (get: Atom.FnContext, key: { readonly app: AppId }, saved: Profile) => {
   const merge = (rows: readonly Profile[]) =>
     saved.status === "removed" ? rows.filter((row) => row.id !== saved.id) : upsert(rows, saved);
   acknowledge(get, source(new AppKey({ app: key.app })), merge);
   acknowledge(get, overviewAtom, (data) => ({ ...data, profiles: merge(data.profiles) }));
 };
+/** A completed app connection changed a profile's selection on the server; read it again. */
+export const profileSelectionChanged = (get: Atom.FnContext | Atom.AtomContext, app: AppId) => {
+  get.registry.refresh(source(new AppKey({ app })));
+  get.registry.refresh(overviewAtom);
+};
+/** Create a profile once for an app connection; retries with the same key return it. */
+export const createProfile = (
+  get: Atom.FnContext,
+  key: {
+    readonly app: AppId;
+    readonly accounts: import("@executor-js/sdk").SelectedAccounts;
+    readonly idempotencyKey: string;
+  },
+) =>
+  Effect.flatMap(DashboardClient, (client) =>
+    client.profiles.create({
+      params: { app: key.app },
+      payload: { accounts: key.accounts, idempotencyKey: key.idempotencyKey },
+    }),
+  ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeProfile(get, key, saved))));
 /** Stable operation identities prevent edits on one setup from cancelling another. */
 export const profileMutations = (key: { app: AppId; profile: ProfileId }) =>
   mutations(new Target(key));

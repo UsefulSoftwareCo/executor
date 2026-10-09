@@ -53,5 +53,6 @@ start("bun", ["apps/hosted/self-host/src/main.ts"], root, {
 });
 start("node", ["apps/hosted/self-host/scripts/development-web.ts"], root, {
   HOSTED_API_URL: api,
+  BETTER_AUTH_URL: origin,
 });
 console.log(`Executor self-host: ${origin} (API ${api})`);

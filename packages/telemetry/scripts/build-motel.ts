@@ -2,7 +2,7 @@
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { realpath } from "node:fs";
 import { promisify } from "node:util";
 
@@ -21,7 +21,7 @@ const build = Effect.gen(function* () {
         Schema.fromJsonString(
           Schema.Struct({
             repository: Schema.NonEmptyString,
-            revision: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+            revision: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
           }),
         ),
       ),

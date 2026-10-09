@@ -8,7 +8,7 @@ import {
   mcpSessionKey,
 } from "@executor-js/hosted-server";
 import { Effect, RcMap } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 
 /** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
 export const selfHostMcp = Effect.gen(function* () {
@@ -17,10 +17,10 @@ export const selfHostMcp = Effect.gen(function* () {
     idleTimeToLive: "30 minutes",
     capacity: 256,
   });
-  const http = authenticatedMcp((access) =>
+  const http = authenticatedMcp((access, address) =>
     Effect.gen(function* () {
       const handler = yield* RcMap.get(sessions, mcpSessionKey(access));
-      return yield* dispatchHostedMcp(access, handler.http);
+      return yield* dispatchHostedMcp(access, address, handler.http);
     }).pipe(
       Effect.catchTag("ExceededCapacityError", () =>
         Effect.succeed(

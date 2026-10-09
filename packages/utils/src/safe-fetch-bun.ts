@@ -1,6 +1,6 @@
 /** Bun fetch adapter that connects only to an address checked by the shared host policy. */
 import { Effect } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { DestinationRefused, safeLookup, type AddressLookup } from "./safe-dns.ts";
 import { parseDestination, type UrlPolicy } from "./url-policy.ts";
 

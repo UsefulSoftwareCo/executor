@@ -7,7 +7,7 @@ import {
   type WebhookId,
 } from "@executor-js/sdk";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { Exit, Schema } from "effect";
 import { useState, type ComponentType, type ReactNode } from "react";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";

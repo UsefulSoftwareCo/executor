@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { EvidenceReport } from "../report-model.ts";
 import { RecordingPlayer } from "./recording-player.tsx";
 import { StateStoryboard } from "./state-storyboard.tsx";

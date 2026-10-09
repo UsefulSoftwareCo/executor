@@ -9,7 +9,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Exit, Fiber, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";

@@ -6,7 +6,7 @@
 import { OrganizationId, OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { UiFailed } from "apps/ui/contracts";
 import { Context, DateTime, Effect, Predicate, Schema } from "effect";
-import { SqlClient, SqlError } from "effect/unstable/sql";
+import { SqlClient, SqlError } from "effect/sql";
 
 export const AppDomainStatus = Schema.Literals(["pending", "ready", "failed"]);
 

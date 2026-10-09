@@ -1,6 +1,6 @@
 /** Shared MCP elicitation data. Delivery belongs to the host, independently of its transport. */
 import { Schema, type Effect } from "effect";
-import * as McpSchema from "effect/unstable/ai/McpSchema";
+import * as McpSchema from "effect/ai/McpSchema";
 import { JsonObject, type JsonValue } from "./schema.ts";
 
 /** Maximum human-input wait, separate from active provider execution time. */

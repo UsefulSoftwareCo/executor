@@ -10,7 +10,7 @@ import { createServer } from "node:net";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Config, Console, Effect, Exit, Fiber, Schedule, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { driver } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";

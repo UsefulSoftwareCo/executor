@@ -96,7 +96,8 @@ export default defineApp({accounts:{}}, {tools: router({
                 operationName: "runtime.cloud.build",
                 tags: expect.objectContaining({
                   "build.stage": "compile",
-                  "build.cause": expect.stringContaining("Worker exceeded memory limit"),
+                  // The failure's tag; its message can quote the deployer's source.
+                  "build.error": "BuildMemoryExceeded",
                 }),
               }),
             }),
@@ -156,6 +157,72 @@ export default defineApp({accounts:{}}, {tools: router({
         });
         expect(working.status).toBe(200);
         expect(working.body).toBe("recovered");
+      }),
+    ),
+  );
+  it.effect(scenarios.cloudCompilerUiFiles.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const prefix = `/api/organizations/${actors.organization.id}/apps`;
+        // Synthetic static files, larger than a typical UI. Embedded in the server entry, they
+        // exhausted the compiler's memory; the host serves them as UI assets instead.
+        const publicFiles = Array.from({ length: 10 }, (_, chunk) => ({
+          path: `ui/public/vendor/chunk-${chunk}.js`,
+          content: Array.from(
+            { length: 12_000 },
+            (_, line) => `export const v${line}="grammar ${chunk} scope ${line} \\"quoted\\"";\n`,
+          ).join(""),
+        }));
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
+          name: `Large UI ${randomUUID().slice(0, 8)}`,
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, query, object, router } from "apps";
+export default defineApp({accounts:{}}, async (ctx) => ({tools: router({
+  inspect:query({description:"List retained files",input:object({})},async()=>ctx.files.map((file)=>file.path)),
+})}));`,
+            },
+            {
+              path: "package.json",
+              content: JSON.stringify({
+                type: "module",
+                dependencies: withApps({ react: "19.2.0", "react-dom": "19.2.0" }),
+              }),
+            },
+            {
+              path: "ui/index.html",
+              content:
+                '<!doctype html><html><head><title>Large UI</title></head><body><div id="root"></div><script type="module" src="./main.tsx"></script></body></html>',
+            },
+            {
+              path: "ui/main.tsx",
+              content:
+                'import { createRoot } from "react-dom/client";\ncreateRoot(document.getElementById("root")!).render(<p>Ready</p>);\n',
+            },
+            ...publicFiles,
+          ],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body).slice(0, 500)).toBe(200);
+        const app = yield* body(App, deployed);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
+        );
+        const retained = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/${app.id}/tools/call`,
+          {
+            tool: "inspect",
+            kind: "query",
+            input: {},
+          },
+        );
+        expect(retained.status).toBe(200);
+        expect(retained.body).toEqual(["index.ts", "package.json"]);
       }),
     ),
   );
@@ -236,7 +303,8 @@ export default defineApp({accounts:{}}, {tools: router({
                   operationName: "runtime.cloud.build",
                   tags: expect.objectContaining({
                     "build.stage": "compile",
-                    "build.cause": expect.stringContaining("The compiler did not answer"),
+                    // The deadline is the compiler span's; the build records the failure's tag.
+                    "build.error": "RuntimeBuildFailed",
                   }),
                 }),
               }),

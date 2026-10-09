@@ -8,7 +8,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, FileSystem, Option, Path, Schedule, Schema, Scope, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { TestLive, withCase } from "../support/case.ts";
 import { startLocalProduct, workflowEngines } from "../support/local-workflow-engines.ts";
 import { driver } from "../support/platform.ts";

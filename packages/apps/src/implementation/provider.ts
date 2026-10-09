@@ -57,6 +57,6 @@ export const defineProvider = <const Auth extends AuthMethods>({
   if (health === undefined) return new Provider(options);
   // SAFETY: the host runs a check only with an account bound against this provider: its method is
   // a key of `auth` and its fields were decoded by that method's schema, as `Auth` promises.
-  const run = fromPromise(health) as unknown as AccountCheck<AuthMethods>["run"];
+  const run = fromPromise(health, "check") as unknown as AccountCheck<AuthMethods>["run"];
   return new Provider({ ...options, health: { run } });
 };

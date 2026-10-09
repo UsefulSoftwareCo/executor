@@ -10,12 +10,13 @@
  * message is protocol 6's, re-exported unchanged.
  *
  * Once released this protocol is frozen like the earlier ones: `bun run check` compares `protocol7` with
- * `packages/apps/protocols/7.json`. Define the next protocol instead of editing this file.
+ * `packages/apps/protocols/7.json`. The module imports only `effect` and earlier protocol modules,
+ * so no change elsewhere can alter it. Define the next protocol instead of editing this file.
  * See notes/apps-publishing.md.
  */
 import { Schema } from "effect";
-import { OAuth2Config } from "../provider.ts";
-import { JsonObject } from "../schema.ts";
+import { JsonObject } from "./1.ts";
+import { OAuth2Config } from "./oauth-6.ts";
 import {
   DeclaredRequirements as PreviousRequirements,
   ResolvedAccount as PreviousAccount,

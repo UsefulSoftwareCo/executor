@@ -21,6 +21,7 @@ export const isolatedWorkflowExecution = (
 ): WorkflowExecution => {
   const runId = Schema.decodeUnknownSync(WorkflowRunId)(run);
   const request = (input: typeof WorkflowRpcCommand.Type, callback?: () => Promise<unknown>) =>
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's workflow RPC
     Effect.tryPromise({
       try: () => deliver(input, callback),
       catch: () => new WorkflowFailure({ reason: "engine", retryable: true }),
@@ -82,6 +83,7 @@ export const isolatedWorkflowControls = (
   deliver: (input: unknown) => Promise<unknown>,
 ): WorkflowHostControls => {
   const request = (input: unknown) =>
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's workflow RPC
     Effect.tryPromise({
       try: () => deliver(input),
       catch: () => new WorkflowFailure({ reason: "engine", retryable: true }),

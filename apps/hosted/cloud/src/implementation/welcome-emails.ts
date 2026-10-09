@@ -1,11 +1,11 @@
 import { Effect, Redacted, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import {
   WelcomeEmailUnavailable,
   type SendWelcomeEmail,
   type UnsubscribeLinks,
 } from "../contracts/email.ts";
-import { welcomeEmailMessage } from "./email-messages.ts";
+import { welcomeEmailMessage, type WelcomeEmailOrigins } from "./email-messages.ts";
 
 const Recipients = Schema.Array(
   Schema.Struct({
@@ -24,7 +24,7 @@ const Recipients = Schema.Array(
 export const deliverWelcomeEmails = (
   send: SendWelcomeEmail,
   links: (id: string, email: string) => Effect.Effect<UnsubscribeLinks, WelcomeEmailUnavailable>,
-  origin: string,
+  origins: WelcomeEmailOrigins,
   user?: string,
 ) =>
   Effect.gen(function* () {
@@ -67,7 +67,7 @@ export const deliverWelcomeEmails = (
           Redacted.value(recipient.email),
           Redacted.value(recipient.name),
           yield* links(recipient.id, Redacted.value(recipient.email)),
-          origin,
+          origins,
         ),
       ).pipe(
         Effect.timeout("15 seconds"),

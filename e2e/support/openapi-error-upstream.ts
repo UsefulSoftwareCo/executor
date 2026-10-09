@@ -1,12 +1,7 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, JsonSchema, Layer, Schema, SchemaRepresentation, Stream } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { createServer } from "node:http";
 
 /** Private response content must never be copied into an agent diagnostic. */
@@ -102,9 +97,16 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
         },
       },
     });
+    // Each pet declares its discriminator as a plain string, so only the mapping selects one.
+    const pet = (sound: string) => ({
+      type: "object",
+      properties: { petType: { type: "string" }, [sound]: { type: "boolean" } },
+      required: ["petType", sound],
+    });
     Object.assign(document, {
       components: {
         ...document.components,
+        schemas: { ...document.components.schemas, Cat: pet("meow"), Dog: pet("bark") },
         parameters: {
           WireId: {
             name: "id",
@@ -122,6 +124,19 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
       },
     });
     Object.assign(document.paths, {
+      // The API serves no items, so every call fails with a status the document does not declare.
+      "/items/{item}": {
+        get: {
+          operationId: "getItem",
+          parameters: [{ name: "item", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            "200": {
+              description: "Item",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+          },
+        },
+      },
       "/wire/{id}": {
         post: {
           operationId: "wire",
@@ -151,6 +166,35 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
           },
         },
       },
+      "/pets": {
+        post: {
+          operationId: "adopt",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    { $ref: "#/components/schemas/Cat" },
+                    { $ref: "#/components/schemas/Dog" },
+                  ],
+                  // A mapping may name a schema by reference or by component name.
+                  discriminator: {
+                    propertyName: "petType",
+                    mapping: { cat: "#/components/schemas/Cat", dog: "Dog" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Adopted pet",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+          },
+        },
+      },
     });
     const routes = Layer.mergeAll(
       HttpRouter.add(
@@ -167,6 +211,11 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
         }),
       ),
       HttpRouter.add("GET", "/openapi.json", HttpServerResponse.json(document)),
+      HttpRouter.add(
+        "GET",
+        "/items/*",
+        HttpServerResponse.text(openapiSecretMarker, { status: 404, contentType: "text/plain" }),
+      ),
       HttpRouter.add(
         "GET",
         "/failure",

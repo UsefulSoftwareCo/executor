@@ -1,5 +1,7 @@
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
+import { StorageError, type App, type DeploymentId } from "@executor-js/sdk/core";
+import { ScheduleWakeup } from "../contracts/schedules.ts";
 
 /**
  * One-off: ask every organization's default Executor app to move to the current template.
@@ -19,3 +21,26 @@ export const queueExecutorAppUpgrades = Effect.gen(function* () {
     where organization.metadata::jsonb -> 'executorDefaults' ->> 'deployment' is not null
     order by organization.id, "user"."emailVerified" desc, member.role = 'owner' desc, member."createdAt"`;
 });
+
+/**
+ * After a data step redeploys an organization's default Executor app, record the new deployment
+ * where the replaced one was recorded. Member setup trusts only the recorded deployment as
+ * Executor's own; a copy recorded under another deployment, or none, stays as it was.
+ */
+export const executorDefaultRedeployed = (
+  app: App,
+  replaced: DeploymentId,
+  deployment: DeploymentId,
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`update "organization" set metadata = jsonb_set(
+        metadata::jsonb, '{executorDefaults,deployment}', to_jsonb(${deployment}::text)
+      )::text
+      where metadata::jsonb -> 'executorDefaults' ->> 'app' = ${app.id}
+        and metadata::jsonb -> 'executorDefaults' ->> 'deployment' = ${replaced}`.pipe(
+      Effect.mapError(() => new StorageError()),
+    );
+    // The new deployment leaves the app's profiles to set up again; polling recovers a missed wake.
+    yield* Effect.flatten(ScheduleWakeup);
+  });

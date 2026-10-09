@@ -29,7 +29,8 @@ await tools["support-inbox"].archive({ id: "msg_1" });
 await tools.acme.issues.close({ id: "123" });
 ```
 
-`tools.search` returns that exact expression along with the input schema, so an
+`tools.search` returns that exact expression along with the input type, and
+`tools.search.describe` returns the whole signature with the output type, so an
 agent does not have to guess.
 
 Which tools are available can depend on the app's configuration. A tool needing

@@ -7,7 +7,7 @@ import {
   migrateProductSteps,
 } from "@executor-js/hosted-server/migrations";
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { cloudAuthSetup } from "./auth-provisioning.ts";
 import { migrateAppDomainRecords } from "./app-domain-records.ts";
 
@@ -105,6 +105,21 @@ export const migrateBillingSeats = Effect.gen(function* () {
   )`;
 }).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
 
+/**
+ * Organization removals whose Workflow start succeeded, so the removal job reads only starts never
+ * recorded instead of every running tombstone. Additive: the running server never reads it, and a
+ * tombstone without a row is started again under its stored instance, which adopts the existing
+ * run. No foreign key, so creating it takes no lock on the tombstones every request reads.
+ */
+export const migrateOrganizationRemovalStarts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists cloud_organization_removal_start (
+    organization_id text primary key,
+    instance_id text not null,
+    started_at timestamptz not null default now()
+  )`;
+}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+
 /** Apply Better Auth and product migrations, then close both database pools. */
 export const migrateCloudDatabase = Effect.scoped(
   Effect.gen(function* () {
@@ -125,6 +140,7 @@ export const migrateCloudDatabase = Effect.scoped(
         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
         "2_billing_seats": migrateBillingSeats,
         "3_app_domain_records": migrateAppDomainRecords,
+        "4_organization_removal_starts": migrateOrganizationRemovalStarts,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

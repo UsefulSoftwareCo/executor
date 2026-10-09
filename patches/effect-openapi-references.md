@@ -1,6 +1,6 @@
 # OpenAPI conversion reference hook
 
-`effect@c7d1ffff.patch` adds an optional `onReference` callback to Effect's
+`effect@4.0.1.patch` adds an optional `onReference` callback to Effect's
 OpenAPI 3.0 and 3.1 schema converters. The existing converters own traversal.
 The callback receives original reference strings before rewriting. It does not
 follow targets, visit examples or defaults, or visit ignored 3.0 ref siblings.

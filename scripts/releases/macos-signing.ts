@@ -1,6 +1,6 @@
 /** Choose one macOS signing identity per build; no signing secret reaches persistent storage. */
 import { Config, Effect, FileSystem, Path, Redacted, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** The macOS section electron-builder needs for the chosen signing mode. */
 export interface MacSigningConfiguration {

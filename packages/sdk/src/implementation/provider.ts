@@ -1,13 +1,6 @@
 /** Deterministic provider identity and validation of serialized field declarations. */
-import {
-  type Crypto,
-  Effect,
-  Encoding,
-  JsonSchema,
-  Redacted,
-  Schema,
-  SchemaRepresentation,
-} from "effect";
+import { type Crypto, Effect, JsonSchema, Redacted, Schema, SchemaRepresentation } from "effect";
+import { Hex } from "effect/encoding";
 import { AccountFieldsInvalid } from "../contracts/account.ts";
 import { AuthMethodInvalid, ProviderDefinition } from "../contracts/provider.ts";
 import { ProviderId, StorageError, type Json } from "../contracts/shared.ts";
@@ -42,7 +35,7 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
     const hash = yield* crypto
       .digest("SHA-256", new TextEncoder().encode(canonical(content)))
       .pipe(Effect.mapError(() => new StorageError()));
-    return { id: ProviderId.make(`prv_${Encoding.encodeHex(hash)}`), definition: parsed, shared };
+    return { id: ProviderId.make(`prv_${Hex.encode(hash)}`), definition: parsed, shared };
   });
 
 /**

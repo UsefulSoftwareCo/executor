@@ -1,0 +1,327 @@
+diff --git a/dist/PgClient.d.ts b/dist/PgClient.d.ts
+index 7fb7def..19c13fd 100644
+--- a/dist/PgClient.d.ts
++++ b/dist/PgClient.d.ts
+@@ -77,6 +77,13 @@ export interface PgClientConfig {
+      */
+     readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined;
+     readonly connectTimeout?: Duration.Input | undefined;
++    /**
++     * How many times a failed connection attempt is made again. Only retryable
++     * failures are retried, such as a transport error or `connectTimeout`; an
++     * attempt has sent no statement. Each attempt has its own `connectTimeout`.
++     * Defaults to `0`.
++     */
++    readonly connectRetries?: number | undefined;
+     readonly stream?: (() => Duplex) | undefined;
+     /**
+      * Overrides `startupParameters.application_name`, the URL's `application_name`,
+diff --git a/dist/PgConnection.d.ts b/dist/PgConnection.d.ts
+index 20ffe14..cef2894 100644
+--- a/dist/PgConnection.d.ts
++++ b/dist/PgConnection.d.ts
+@@ -66,6 +66,13 @@ export interface Config {
+      */
+     readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined;
+     readonly connectTimeout?: Duration.Input | undefined;
++    /**
++     * How many times a failed connection attempt is made again. Only retryable
++     * failures are retried, such as a transport error or `connectTimeout`; an
++     * attempt has sent no statement. Each attempt has its own `connectTimeout`.
++     * Defaults to `0`.
++     */
++    readonly connectRetries?: number | undefined;
+     /**
+      * Overrides `startupParameters.application_name`, the URL's `application_name`,
+      * and the default `"@effect/sql-pg"`, in that order.
+@@ -207,7 +214,10 @@ export declare const PgConnection: Context.Service<PgConnection, PgConnection>;
+  * Password resolution, transport, optional `SSLRequest`, startup, and
+  * authentication run under `connectTimeout` (5 seconds by default). The effect
+  * resolves when the backend sends `ReadyForQuery`. Closing the scope sends
+- * `Terminate` and ends the socket.
++ * `Terminate` and ends the socket. A retryable failure is retried up to
++ * `connectRetries` times; each attempt's `sql.connect` span records its
++ * `db.connect.attempt`, and a retry records the previous failure as
++ * `db.connect.retry_reason`.
+  *
+  * Use `sslmode=require` or explicit `ssl: true` to require encryption.
+  * Unix sockets and custom streams should set `ssl.servername` explicitly.
+diff --git a/dist/PgConnection.js b/dist/PgConnection.js
+index 2cb7481..acb2a41 100644
+--- a/dist/PgConnection.js
++++ b/dist/PgConnection.js
+@@ -61,22 +61,36 @@ export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConne
+  * @category constructors
+  * @since 4.0.0
+  */
+-export const make = options => Effect.flatMap(resolveConfig(options), config => Effect.acquireRelease(Effect.gen(function* () {
+-  const password = yield* PasswordInternal.resolve(config.password);
+-  const session = yield* connect(config, password);
+-  return new PgConnectionImpl(options, config, session, options.types);
+-}), connection => Effect.sync(() => connection.closeUnsafe()), {
+-  interruptible: true
+-}).pipe(Effect.timeoutOrElse({
+-  duration: config.connectTimeout,
+-  orElse: () => Effect.fail(new SqlError({
+-    reason: new ConnectionError({
+-      cause: new Error("Connection timed out"),
+-      message: "PgConnection: Connection timed out",
+-      operation: "connect"
+-    })
+-  }))
+-})));
++export const make = options => Effect.flatMap(resolveConfig(options), config => {
++  const retries = options.connectRetries ?? 0;
++  const attempt = (number, previous) => Effect.acquireRelease(Effect.gen(function* () {
++    const password = yield* PasswordInternal.resolve(config.password);
++    const session = yield* connect(config, password).pipe(Effect.withSpan("sql.connect", {
++      kind: "client",
++      attributes: previous === undefined ? {
++        "db.connect.attempt": number
++      } : {
++        "db.connect.attempt": number,
++        "db.connect.retry_reason": previous.message
++      }
++    }));
++    return new PgConnectionImpl(options, config, session, options.types);
++  }), connection => Effect.sync(() => connection.closeUnsafe()), {
++    interruptible: true
++  }).pipe(Effect.timeoutOrElse({
++    duration: config.connectTimeout,
++    orElse: () => Effect.fail(new SqlError({
++      reason: new ConnectionError({
++        cause: new Error("Connection timed out"),
++        message: "PgConnection: Connection timed out",
++        operation: "connect"
++      })
++    }))
++  }));
++  // An attempt that failed sent no statement, so making it again cannot repeat any work.
++  const attempts = (number, previous) => number > retries ? attempt(number, previous) : Effect.catchIf(attempt(number, previous), error => error.isRetryable, error => attempts(number + 1, error));
++  return attempts(1, undefined);
++});
+ const abortDrainTimeoutMillis = 5000;
+ const abortDrainGraceMillis = 10;
+ /** PostgreSQL `query_canceled` SQLSTATE. */
+@@ -1051,7 +1065,7 @@ const drainAborted = (conn, timeoutMessage, abort) => {
+   return Effect.andThen(Effect.raceFirst(Deferred.await(drained), grace), Effect.suspend(() => Deferred.isDoneUnsafe(drained) ? Effect.void : cancelAndDrain));
+ };
+ /** One cycle on a connection that carries a single statement at a time. */
+-const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
++const runQuery = (conn, plan, wantRows) => Effect.useSpan("sql.wire", { kind: "client" }, span => Effect.callback(resume => {
+   if (conn.deadWith !== undefined) {
+     resume(Effect.fail(conn.deadWith));
+     return;
+@@ -1060,12 +1074,30 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
+     conn.consumer = undefined;
+     resume(effect);
+   });
+-  conn.consumer = machine;
++  const started = Date.now();
++  let firstMessage = true;
++  span.attribute("db.wire.request_bytes", plan.frame.byteLength);
++  span.attribute("db.wire.clock", "date-now");
++  conn.consumer = {
++    onMessage: message => {
++      const elapsed = Date.now() - started;
++      if (firstMessage) {
++        firstMessage = false;
++        span.attribute("db.wire.first_message_ms", elapsed);
++      }
++      if (message._tag === "CommandComplete") span.attribute("db.wire.command_complete_ms", elapsed);
++      if (message._tag === "ReadyForQuery") span.attribute("db.wire.ready_ms", elapsed);
++      machine.onMessage(message);
++    },
++    onFatal: error => machine.onFatal(error)
++  };
+   // A reused statement has no `RowDescription` coming, so its reader has to
+   // be in place before the rows are.
+   conn.session.parser.readField = machine.readField;
+   try {
+-    conn.session.socket.write(plan.frame);
++    conn.session.socket.write(plan.frame, () => {
++      span.attribute("db.wire.write_callback_ms", Date.now() - started);
++    });
+   } catch (cause) {
+     conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
+   }
+@@ -1076,7 +1108,7 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
+       onDrained();
+     }));
+   });
+-});
++}));
+ const emptyFields = [];
+ /** Derives the per-column readers and the row constructor for a description. */
+ const describe = (fields, registry) => {
+diff --git a/src/PgClient.ts b/src/PgClient.ts
+index 458df7f..1967c1e 100644
+--- a/src/PgClient.ts
++++ b/src/PgClient.ts
+@@ -96,6 +96,13 @@ export interface PgClientConfig {
+   readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined
+ 
+   readonly connectTimeout?: Duration.Input | undefined
++  /**
++   * How many times a failed connection attempt is made again. Only retryable
++   * failures are retried, such as a transport error or `connectTimeout`; an
++   * attempt has sent no statement. Each attempt has its own `connectTimeout`.
++   * Defaults to `0`.
++   */
++  readonly connectRetries?: number | undefined
+ 
+   readonly stream?: (() => Duplex) | undefined
+ 
+diff --git a/src/PgConnection.ts b/src/PgConnection.ts
+index 1b01a1d..0beae51 100644
+--- a/src/PgConnection.ts
++++ b/src/PgConnection.ts
+@@ -95,6 +95,13 @@ export interface Config {
+    */
+   readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined
+   readonly connectTimeout?: Duration.Input | undefined
++  /**
++   * How many times a failed connection attempt is made again. Only retryable
++   * failures are retried, such as a transport error or `connectTimeout`; an
++   * attempt has sent no statement. Each attempt has its own `connectTimeout`.
++   * Defaults to `0`.
++   */
++  readonly connectRetries?: number | undefined
+   /**
+    * Overrides `startupParameters.application_name`, the URL's `application_name`,
+    * and the default `"@effect/sql-pg"`, in that order.
+@@ -266,7 +273,10 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
+  * Password resolution, transport, optional `SSLRequest`, startup, and
+  * authentication run under `connectTimeout` (5 seconds by default). The effect
+  * resolves when the backend sends `ReadyForQuery`. Closing the scope sends
+- * `Terminate` and ends the socket.
++ * `Terminate` and ends the socket. A retryable failure is retried up to
++ * `connectRetries` times; each attempt's `sql.connect` span records its
++ * `db.connect.attempt`, and a retry records the previous failure as
++ * `db.connect.retry_reason`.
+  *
+  * Use `sslmode=require` or explicit `ssl: true` to require encryption.
+  * Unix sockets and custom streams should set `ssl.servername` explicitly.
+@@ -275,30 +285,48 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
+  * @since 4.0.0
+  */
+ export const make = (options: Config): Effect.Effect<PgConnection, SqlError, Scope.Scope> =>
+-  Effect.flatMap(resolveConfig(options), (config) =>
+-    Effect.acquireRelease(
+-      Effect.gen(function*() {
+-        const password = yield* PasswordInternal.resolve(config.password)
+-        const session = yield* connect(config, password)
+-        return new PgConnectionImpl(options, config, session, options.types)
+-      }),
+-      (connection) => Effect.sync(() => connection.closeUnsafe()),
+-      { interruptible: true }
+-    ).pipe(
+-      Effect.timeoutOrElse({
+-        duration: config.connectTimeout,
+-        orElse: () =>
+-          Effect.fail(
+-            new SqlError({
+-              reason: new ConnectionError({
+-                cause: new Error("Connection timed out"),
+-                message: "PgConnection: Connection timed out",
+-                operation: "connect"
++  Effect.flatMap(resolveConfig(options), (config) => {
++    const retries = options.connectRetries ?? 0
++    const attempt = (number: number, previous: SqlError | undefined) =>
++      Effect.acquireRelease(
++        Effect.gen(function*() {
++          const password = yield* PasswordInternal.resolve(config.password)
++          const session = yield* connect(config, password).pipe(Effect.withSpan("sql.connect", {
++            kind: "client",
++            attributes: previous === undefined
++              ? { "db.connect.attempt": number }
++              : { "db.connect.attempt": number, "db.connect.retry_reason": previous.message }
++          }))
++          return new PgConnectionImpl(options, config, session, options.types)
++        }),
++        (connection) => Effect.sync(() => connection.closeUnsafe()),
++        { interruptible: true }
++      ).pipe(
++        Effect.timeoutOrElse({
++          duration: config.connectTimeout,
++          orElse: () =>
++            Effect.fail(
++              new SqlError({
++                reason: new ConnectionError({
++                  cause: new Error("Connection timed out"),
++                  message: "PgConnection: Connection timed out",
++                  operation: "connect"
++                })
+               })
+-            })
+-          )
+-      })
+-    ))
++            )
++        })
++      )
++    // An attempt that failed sent no statement, so making it again cannot repeat any work.
++    const attempts = (number: number, previous: SqlError | undefined): Effect.Effect<PgConnection, SqlError, Scope.Scope> =>
++      number > retries
++        ? attempt(number, previous)
++        : Effect.catchIf(
++          attempt(number, previous),
++          (error) => error.isRetryable,
++          (error) => attempts(number + 1, error)
++        )
++    return attempts(1, undefined)
++  })
+ 
+ interface Session {
+   readonly socket: Duplex
+@@ -1518,7 +1546,7 @@ const runQuery = (
+   plan: Plan,
+   wantRows: boolean
+ ): Effect.Effect<QueryOutput, SqlError> =>
+-  Effect.callback<QueryOutput, SqlError>((resume) => {
++  Effect.useSpan("sql.wire", { kind: "client" }, (span) => Effect.callback<QueryOutput, SqlError>((resume) => {
+     if (conn.deadWith !== undefined) {
+       resume(Effect.fail(conn.deadWith))
+       return
+@@ -1527,12 +1555,30 @@ const runQuery = (
+       conn.consumer = undefined
+       resume(effect)
+     })
+-    conn.consumer = machine
++    const started = Date.now()
++    let firstMessage = true
++    span.attribute("db.wire.request_bytes", plan.frame.byteLength)
++    span.attribute("db.wire.clock", "date-now")
++    conn.consumer = {
++      onMessage: (message) => {
++        const elapsed = Date.now() - started
++        if (firstMessage) {
++          firstMessage = false
++          span.attribute("db.wire.first_message_ms", elapsed)
++        }
++        if (message._tag === "CommandComplete") span.attribute("db.wire.command_complete_ms", elapsed)
++        if (message._tag === "ReadyForQuery") span.attribute("db.wire.ready_ms", elapsed)
++        machine.onMessage(message)
++      },
++      onFatal: (error) => machine.onFatal(error)
++    }
+     // A reused statement has no `RowDescription` coming, so its reader has to
+     // be in place before the rows are.
+     conn.session.parser.readField = machine.readField
+     try {
+-      conn.session.socket.write(plan.frame)
++      conn.session.socket.write(plan.frame, () => {
++        span.attribute("db.wire.write_callback_ms", Date.now() - started)
++      })
+     } catch (cause) {
+       conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
+     }
+@@ -1545,7 +1591,7 @@ const runQuery = (
+           onDrained()
+         }))
+     })
+-  })
++  }))
+ 
+ /** Turns one decoded row into an object keyed by column name. */
+ type RowBuilder = (rowValues: ReadonlyArray<unknown>) => Row

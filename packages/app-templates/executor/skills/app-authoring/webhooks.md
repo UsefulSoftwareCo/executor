@@ -5,9 +5,10 @@ Apps may return a `webhooks` catalog. Define an `account` slot, `config` and
 Keep these callbacks together. The host supplies a stable `subscriptionId`,
 `callbackUrl`, signing `secret`, and the selected source `account`; other saved
 accounts are available in context. Use `WebhookContext<typeof requirements>` for
-external lifecycle handlers. It exposes writable `ctx.db` when the app declares
-a database, and excludes `elicit` in both the type and runtime object. Registration,
-delivery and cleanup each own their storage transaction. Registration and cleanup must
+external lifecycle handlers. It exposes writable `ctx.sql` when the app declares
+`sql`, and excludes `elicit` in both the type and runtime object. No handler runs
+inside a transaction, so `register` can wait on a provider that verifies the
+callback URL by calling `handle` before it answers. Registration and cleanup must
 be idempotent. A callback must verify the provider signature over raw bytes
 before parsing the body or performing side effects.
 

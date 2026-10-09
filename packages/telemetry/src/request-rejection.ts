@@ -4,7 +4,7 @@
  * place that can record why. Incident reporting skips them.
  */
 import { Context, Effect, ErrorReporter, Option, type SchemaIssue, Tracer } from "effect";
-import { HttpApiError } from "effect/unstable/httpapi";
+import { HttpApiError } from "effect/http-api";
 
 /** Request parts the caller supplies. Response encoding failures (Body, ResponseHeaders) are server faults. */
 const requestKinds: ReadonlySet<HttpApiError.HttpApiSchemaError["kind"]> = new Set([

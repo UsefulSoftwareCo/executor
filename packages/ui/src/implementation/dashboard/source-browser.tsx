@@ -6,7 +6,7 @@ import type {
   SourceDisplayFile,
 } from "@executor-js/app-management/contracts/source-display";
 import { Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowRight01Icon,

@@ -5,8 +5,8 @@
  * the order they finish. One request serves a page's reads in one isolate.
  */
 import { Predicate, Schema } from "effect";
-import type { HttpApiEndpoint } from "effect/unstable/httpapi";
-import { HttpApiSchema } from "effect/unstable/httpapi";
+import type { HttpApiEndpoint } from "effect/http-api";
+import { HttpApiSchema } from "effect/http-api";
 
 /** Every host that batches serves its batches here, beside its API. */
 export const dashboardBatchPath = "/api/dashboard/batch";

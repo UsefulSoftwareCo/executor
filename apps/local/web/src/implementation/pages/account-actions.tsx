@@ -1,6 +1,5 @@
 import type { DashboardError } from "../../contracts/errors.ts";
 import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
-import { accountNeedsSignIn } from "@executor-js/ui/contracts/dashboard";
 import {
   AccountActionsMenu,
   AccountDialog,
@@ -13,7 +12,6 @@ import { DropdownMenuItem, DropdownMenuSeparator } from "@executor-js/ui/compone
 import { useAtomSet } from "@effect/atom-react";
 import type { AccountId } from "@executor-js/sdk";
 import type { DashboardAccountDetail } from "@executor-js/local-server/contracts";
-import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import {
   accountAtom,
@@ -29,7 +27,10 @@ export type AccountDialogKind = "edit" | "disconnect" | "health";
 
 const managed = "This account is managed by the local server.";
 
-/** Row actions replace the account page; credential replacement keeps its own form page. */
+/**
+ * Row actions replace the account page: name, health and disconnection, in place. Credentials
+ * are replaced from an app that uses the account, which knows the hosts they are sent to.
+ */
 export function LocalAccountActions({
   account,
   open,
@@ -37,31 +38,15 @@ export function LocalAccountActions({
   readonly account: AccountSummary;
   readonly open: (dialog: AccountDialogKind) => void;
 }) {
-  const needsSignIn = accountNeedsSignIn(account);
-  const credentials = needsSignIn ? "Reconnect" : "Update credentials";
   return (
-    <>
-      {needsSignIn && (
-        <Button variant="outline" size="sm" asChild>
-          <Link to="/accounts/$accountId/credentials" params={{ accountId: account.id }}>
-            {credentials}
-          </Link>
-        </Button>
-      )}
-      <AccountActionsMenu account={account}>
-        <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
-        <DropdownMenuItem asChild>
-          <Link to="/accounts/$accountId/credentials" params={{ accountId: account.id }}>
-            {credentials}
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem variant="destructive" onSelect={() => open("disconnect")}>
-          Disconnect account
-        </DropdownMenuItem>
-      </AccountActionsMenu>
-    </>
+    <AccountActionsMenu account={account}>
+      <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
+      <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem variant="destructive" onSelect={() => open("disconnect")}>
+        Disconnect account
+      </DropdownMenuItem>
+    </AccountActionsMenu>
   );
 }
 

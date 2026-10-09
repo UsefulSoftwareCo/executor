@@ -1,7 +1,16 @@
-/** Host protocol 6 adds an explicit authorization-server metadata URL to OAuth discovery. */
+/**
+ * Host protocol 6: protocol 5 plus an explicit authorization-server metadata URL on OAuth
+ * discovery, in both requirements and resolved account bindings. Every other message is protocol
+ * 5's, re-exported unchanged.
+ *
+ * Once released this protocol is frozen like the earlier ones: `bun run check` compares `protocol6`
+ * with `packages/apps/protocols/6.json`. The module imports only `effect` and earlier protocol
+ * modules, so no change elsewhere can alter it. Define the next protocol instead of editing this
+ * file. See notes/apps-publishing.md.
+ */
 import { Schema } from "effect";
-import { OAuth2Config } from "../provider.ts";
-import { JsonObject } from "../schema.ts";
+import { JsonObject } from "./1.ts";
+import { OAuth2Config } from "./oauth-6.ts";
 import {
   DeclaredRequirements as PreviousRequirements,
   ResolvedAccount as PreviousAccount,

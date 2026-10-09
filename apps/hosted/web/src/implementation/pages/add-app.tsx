@@ -1,4 +1,4 @@
-import { usePageUrl } from "@executor-js/dashboard-start/page";
+import { useMcpOrigin } from "../resource-origin.ts";
 import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
 import { appManagement } from "../../contracts/app-management.ts";
 import { useAtomMount } from "@effect/atom-react";
@@ -9,7 +9,7 @@ import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboar
 import { InstallPublication } from "@executor-js/ui/dashboard/install-publication";
 import { type AppAcknowledgement } from "@executor-js/ui/contracts/app-management";
 import type { CatalogEntry } from "@executor-js/catalog/contracts";
-import type { Publication } from "@executor-js/app-registry/contracts";
+import type { Publication } from "@executor-js/sdk";
 import type { App } from "@executor-js/sdk";
 import { useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -22,7 +22,7 @@ type Selection =
   | { readonly kind: "publication"; readonly publication: typeof Publication.Type };
 /** Public publications and integration templates share Add app and the same organization-owned app records. */
 export function AddAppPage() {
-  const page = usePageUrl();
+  const mcpOrigin = useMcpOrigin();
   const atoms = useDashboardAtoms();
   useAtomMount(atoms.catalog);
   const { organization, slug: organizationSlug } = useOrganizationRoute();
@@ -59,7 +59,7 @@ export function AddAppPage() {
         Failure={HostedFailure}
         key={selection.entry.id}
         entry={selection.entry}
-        endpoint={`${page.origin}/mcp`}
+        endpoint={`${mcpOrigin}/mcp`}
         onBack={back}
         onInstalled={installed}
       />

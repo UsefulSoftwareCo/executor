@@ -30,6 +30,7 @@ export const cacheKey = (key: unknown) =>
     const bytes = new TextEncoder().encode(canonical(parsed));
     if (bytes.byteLength > cacheLimits.keyBytes)
       return yield* new CacheError({ reason: "capacity" });
+    // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
     const hash = yield* Effect.tryPromise({
       try: () => crypto.subtle.digest("SHA-256", bytes),
       catch: () => new CacheError({ reason: "invalid" }),
@@ -43,6 +44,12 @@ export interface CacheGet<A> {
   readonly schema: Schema.Decoder<A>;
   readonly freshFor: Duration.Input;
   readonly staleFor?: Duration.Input;
+  /**
+   * What a read does with a value past `freshFor` and within `staleFor`. `serve`, the default,
+   * returns it while one background load replaces it. `revalidate` awaits that load first, like a
+   * miss; the value stays readable to the load, which can confirm it instead of rebuilding it.
+   */
+  readonly stale?: "serve" | "revalidate";
   readonly load: Effect.Effect<A, unknown>;
 }
 
@@ -150,13 +157,14 @@ export const makeCache = (
           yield* Effect.annotateCurrentSpan("cache.result", "fresh");
           return yield* decode(entry.value);
         }
-        if (!refresh && entry !== null && now < entry.staleUntil) {
+        const kept = !refresh && entry !== null && now < entry.staleUntil;
+        if (kept && options.stale !== "revalidate") {
           yield* Effect.annotateCurrentSpan("cache.result", "stale");
           if (lease !== null) yield* background(load(lease).pipe(Effect.asVoid));
           return yield* decode(entry.value);
         }
         if (lease !== null) {
-          yield* Effect.annotateCurrentSpan("cache.result", "miss");
+          yield* Effect.annotateCurrentSpan("cache.result", kept ? "revalidated" : "miss");
           return yield* load(lease);
         }
         if (now >= waitUntil) {
@@ -204,7 +212,10 @@ export const makeCache = (
         Effect.flatMap((key) => transport({ operation: "invalidate", key })),
         Effect.asVoid,
       ),
-    /** Read fresh data, refresh stale data in the background, or wait for the lease owner. */
+    /**
+     * Read fresh data, refresh stale data in the background (or first, with `stale: "revalidate"`),
+     * or wait for the lease owner.
+     */
     get: <A>(options: CacheGet<A>) => get(options, false),
     /** Force one awaited refresh without removing the retained value. Concurrent refreshes share a load. */
     revalidate: <A>(options: CacheGet<A>) => get(options, true),

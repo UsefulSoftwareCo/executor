@@ -8,18 +8,20 @@ use — and connects them to **apps**. An app is a small program that turns thos
 accounts into **tools**. People use those tools in the dashboard. Agents use
 them through one MCP endpoint.
 
-You connect an account once. Any app that needs the same **provider** can select
+You connect an account once. Any app that needs the same **provider** can use
 it, without a second copy of the credential. The agent never sees the
 credential; Executor attaches it inside the app.
 
 ## The short version
 
 <Steps>
-  <Step title="Connect an account">
-    Save a credential once, such as an API key or an OAuth sign-in.
-  </Step>
   <Step title="Add an app">
-    Select which account fills each of the app's requirements.
+    Add one from the catalog, copy a public listing, or deploy your own source.
+  </Step>
+  <Step title="Connect its accounts">
+    On the app's Accounts tab, connect a credential such as an API key or an
+    OAuth sign-in, or choose one you saved for another app, for each requirement.
+    Those choices are your profile for the app.
   </Step>
   <Step title="Use it">
     Connect your agent to the MCP endpoint, or use the app in the dashboard.
@@ -28,8 +30,8 @@ credential; Executor attaches it inside the app.
 
 ## Where to run it
 
-- **Hosted**: sign in at [v2.executor.sh](https://v2.executor.sh). This is the
-  beta origin. There is nothing to install.
+- **Hosted**: sign in at [app.executor.sh](https://app.executor.sh). There is
+  nothing to install.
 - **Local**: run the server on your own machine with the
   [command line](/run/cli). Your accounts stay on that machine.
 - **Self-host**: run the server in [Docker](/run/self-host) on your own
@@ -42,7 +44,7 @@ self-host add organizations and browser sign-in.
 
 <CardGroup cols={2}>
   <Card title="Connect an account" href="/connect-an-account" icon="key">
-    Save a credential and select it for an app.
+    Save a credential and use it in an app.
   </Card>
   <Card title="Add an MCP client" href="/mcp-clients" icon="terminal">
     Point Claude Code, Cursor or Codex at your endpoint.

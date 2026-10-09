@@ -1,5 +1,5 @@
 import { _electron, type ElectronApplication } from "playwright";
-import { Config, Effect, FileSystem, Option, Path, Schedule, Schema } from "effect";
+import { Config, Console, Effect, Exit, FileSystem, Option, Path, Schedule, Schema } from "effect";
 import { driver } from "./platform.ts";
 
 /** Request a browser link across Electron's real session boundary, without an API key. */
@@ -47,7 +47,7 @@ export const launchDesktop = (options: {
         args: [desktop, "--disable-gpu"],
       };
     }
-    return yield* Effect.acquireRelease(
+    const electron = yield* Effect.acquireRelease(
       driver("launch desktop", () =>
         _electron.launch({
           executablePath: launch.executablePath,
@@ -58,15 +58,81 @@ export const launchDesktop = (options: {
       ),
       (electron) => driver("close desktop", () => electron.close()).pipe(Effect.orDie),
     );
+    // A failed or timed-out scenario prints the desktop's own record of its backend starts, exits
+    // and restarts before the window closes, which shows the step it stopped at.
+    const data = options.env.EXECUTOR_DESKTOP_DATA_DIR;
+    if (data !== undefined)
+      yield* Effect.addFinalizer((exit) =>
+        Exit.isSuccess(exit)
+          ? Effect.void
+          : desktopEvents(data).pipe(
+              Effect.flatMap((events) => Console.error(lifecycleLog(events))),
+              Effect.ignore,
+            ),
+      );
+    return electron;
   });
 
+/** Messages the desktop writes itself as it starts, stops and restarts its backend. */
+const lifecycleMessages = new Set([
+  "Starting Executor desktop",
+  "Desktop backend started",
+  "Desktop backend could not start",
+  "Desktop backend ready",
+  "Desktop backend exited",
+  "Desktop backend stopped",
+  "Restarting the desktop backend",
+  "Executor desktop ready",
+  "Showing desktop recovery",
+  "Resetting Executor data",
+  "Moved Executor data to a backup",
+  "Executor data reset failed",
+  "Desktop stopped",
+]);
+
+/**
+ * The lifecycle events as the desktop's structured fields only. A backend's stderr and the other
+ * events' messages, such as the renderer's console, may hold anything a process printed, so they
+ * are counted rather than shown.
+ */
+const lifecycleLog = (events: ReadonlyArray<DesktopEvent>) => {
+  const lifecycle = events.filter((event) => lifecycleMessages.has(event.message));
+  const lines = lifecycle.map(({ annotations: { stderr, ...annotations }, ...event }) =>
+    JSON.stringify({
+      ...event,
+      annotations: {
+        ...annotations,
+        ...(stderr === undefined ? {} : { stderrCharacters: stderr.length }),
+      },
+    }),
+  );
+  return [
+    "Desktop lifecycle at the end of the scenario:",
+    ...lines,
+    `Other desktop log events not shown: ${events.length - lifecycle.length}.`,
+  ].join("\n");
+};
+
+// A failed assertion prints the whole event, so keep what tells runs apart: when it was logged,
+// which backend run it describes and how that run ended.
 const LogLine = Schema.fromJsonString(
   Schema.Struct({
+    timestamp: Schema.String,
+    level: Schema.String,
     message: Schema.String,
     annotations: Schema.Struct({
+      run: Schema.optional(Schema.Number),
       pid: Schema.optional(Schema.Number),
       kind: Schema.optional(Schema.String),
       ready: Schema.optional(Schema.Boolean),
+      exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+      signal: Schema.optional(Schema.NullOr(Schema.String)),
+      configuration: Schema.optional(Schema.String),
+      stderr: Schema.optional(Schema.String),
+      recovery: Schema.optional(
+        Schema.Struct({ stage: Schema.String, reason: Schema.optional(Schema.String) }),
+      ),
+      backup: Schema.optional(Schema.String),
       delayMillis: Schema.optional(Schema.Number),
     }),
   }),
@@ -83,7 +149,20 @@ export const desktopEvents = (directory: string) =>
     const text = yield* fs.readFileString(file);
     return text.split("\n").flatMap((line) => {
       const entry = Schema.decodeUnknownOption(LogLine)(line);
-      return Option.isSome(entry) ? [entry.value] : [];
+      if (Option.isNone(entry)) return [];
+      const { stderr } = entry.value.annotations;
+      // A failed assertion prints this. Redact pairing links as managed-server.ts does.
+      return stderr === undefined
+        ? [entry.value]
+        : [
+            {
+              ...entry.value,
+              annotations: {
+                ...entry.value.annotations,
+                stderr: stderr.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>"),
+              },
+            },
+          ];
     });
   });
 
@@ -168,6 +247,40 @@ export const answeredDialogs = (electron: ElectronApplication) =>
         Reflect.get(globalThis, "executorE2EDialogs") as
           | Array<{ title: string; message: string; detail: string }>
           | undefined,
+    ),
+  );
+
+/**
+ * Report a replaced document's failed load after the desktop's own page has committed, as
+ * Windows does when the dashboard is still loading as its server exits: `did-fail-load` with the
+ * dashboard's URL arrives between the startup page's `did-navigate` and `did-stop-loading`.
+ * `lateLoadFailures` counts the reports.
+ */
+export const reportReplacedLoadFailuresLate = (electron: ElectronApplication) =>
+  driver("report replaced loads' failures late", () =>
+    electron.evaluate(({ BrowserWindow }) => {
+      const [window] = BrowserWindow.getAllWindows();
+      if (window === undefined) throw new Error("The desktop has no window");
+      const contents = window.webContents;
+      const record = { reported: 0 };
+      Object.assign(globalThis, { executorE2ELateLoadFailures: record });
+      let previous = contents.getURL();
+      contents.on("did-navigate", (_event, url) => {
+        const replaced = previous;
+        previous = url;
+        if (!url.startsWith("data:") || replaced.startsWith("data:")) return;
+        record.reported += 1;
+        contents.emit("did-fail-load", {}, -3, "", replaced, true);
+      });
+    }),
+  );
+
+export const lateLoadFailures = (electron: ElectronApplication) =>
+  driver("read late load failure reports", () =>
+    electron.evaluate(
+      () =>
+        (Reflect.get(globalThis, "executorE2ELateLoadFailures") as { reported: number } | undefined)
+          ?.reported ?? 0,
     ),
   );
 

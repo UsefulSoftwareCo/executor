@@ -1,7 +1,7 @@
 /** Local API key rotation. The backend owns key storage, so rotation runs its entry after it stops. */
 import { dialog } from "electron";
 import { Effect, Schema, Semaphore, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { RotationResult } from "../contracts/desktop.ts";
 
 const show = (options: Electron.MessageBoxOptions) =>

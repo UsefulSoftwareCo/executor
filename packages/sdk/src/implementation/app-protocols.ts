@@ -7,6 +7,7 @@
 import { Effect, Schema } from "effect";
 import {
   HostKindMismatch,
+  HostOperationNotFound,
   protocol1,
   protocol2,
   protocol3,
@@ -41,29 +42,80 @@ export interface AppProtocol {
   readonly response: (command: HostRequest, body: unknown) => Effect.Effect<unknown>;
   /** Adapt the workflow steps a bundle of this protocol invokes to the host's current model. */
   readonly workflow: (execution: WorkflowExecution) => WorkflowExecution;
+  /**
+   * Whether this protocol's data calls may run alongside each other. Earlier bundles keep a
+   * database transaction open for a whole call, so their facet runs one call at a time.
+   */
+  readonly concurrentData: boolean;
+  /**
+   * Whether this protocol's bundles read sealed credential handles for providers that declare
+   * hosts. Earlier frameworks know no hosts and read every field as a real value, so sealing
+   * would hand them handles as secrets: their accounts leave the runner unsealed, even when the
+   * account was connected through a later app that declared hosts.
+   */
+  readonly sealedCredentials: boolean;
 }
 
-/** Protocol 8 is the host's current protocol, so its messages need no conversion. */
-const protocol8: AppProtocol = {
-  version: 8,
+/** Protocol 11 is the host's current protocol, so its messages need no conversion. */
+const protocol11: AppProtocol = {
+  version: 11,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(8),
+  nodeEntry: nodeAppEntry(11),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
   response: (_command, body) => Effect.succeed(body),
   workflow: (execution) => execution,
+  concurrentData: true,
+  sealedCredentials: true,
 };
 
-/** Protocol 7 replies lack optional MCP fallback diagnostics. */
+/**
+ * Protocol 10 is protocol 11 without events. Its requirements declare none and its replies emit
+ * none, so every message and reply is unchanged.
+ */
+const protocol10: AppProtocol = { ...protocol11, version: 10, nodeEntry: nodeAppEntry(10) };
+
+/**
+ * Protocol 9 is protocol 10 without app-owned SQL. Its apps never declare `sql`, so the host never
+ * sends them `migrate`, and every other message and reply is unchanged. Their document store holds
+ * a transaction across a whole call.
+ */
+const protocol9: AppProtocol = {
+  ...protocol10,
+  version: 9,
+  nodeEntry: nodeAppEntry(9),
+  refuse: (command) =>
+    command.operation === "migrate"
+      ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
+      : undefined,
+  concurrentData: false,
+};
+
+/**
+ * Protocol 8 is protocol 9 without the session an MCP failure's request carried or what a skill
+ * source is missing. Its failures are protocol 9 failures without that detail, so every reply is
+ * unchanged.
+ */
+const protocol8: AppProtocol = { ...protocol9, version: 8, nodeEntry: nodeAppEntry(8) };
+
+/**
+ * Protocol 7 is protocol 8 without upstream failure detail. Its failures are protocol 8 failures
+ * that carry no thrown error fields, provider phase or service error, so every reply is unchanged.
+ */
 const protocol7: AppProtocol = { ...protocol8, version: 7, nodeEntry: nodeAppEntry(7) };
 
 /**
- * Protocol 6 is protocol 7 without credential hosts or field exposure. Its providers never declare
- * hosts, so the host sends them real values unless an account was connected with hosts, and every
- * message and reply is unchanged.
+ * Protocol 6 is protocol 7 without credential hosts or field exposure. Its bundles read every
+ * credential field as a real value, so the host never seals their accounts, whichever app the
+ * account was connected through. Every message and reply is unchanged.
  */
-const protocol6: AppProtocol = { ...protocol7, version: 6, nodeEntry: nodeAppEntry(6) };
+const protocol6: AppProtocol = {
+  ...protocol7,
+  version: 6,
+  nodeEntry: nodeAppEntry(6),
+  sealedCredentials: false,
+};
 
 /** Protocol 5 has the same commands; its OAuth declarations lack a metadata URL override. */
 const protocol5: AppProtocol = { ...protocol6, version: 5, nodeEntry: nodeAppEntry(5) };
@@ -134,6 +186,8 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
           name: `${input.kind === "query" ? "queries" : "mutations"}.${input.name}`,
         }),
     }),
+    concurrentData: false,
+    sealedCredentials: false,
   };
 };
 
@@ -147,6 +201,9 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol6,
     protocol7,
     protocol8,
+    protocol9,
+    protocol10,
+    protocol11,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

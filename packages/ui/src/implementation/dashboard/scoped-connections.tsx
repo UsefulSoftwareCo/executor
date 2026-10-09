@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { AccountId, App, AppId, Profile, ToolName } from "@executor-js/sdk";
 import { ConnectionId, type ConnectionView } from "@executor-js/mcp-auth/connections";
 import type { AccountSummary, FailureProps, Inventory, Query } from "../../contracts/dashboard.ts";
@@ -20,6 +20,7 @@ import {
   connectionTargetKey,
   connectionTargetLabel,
   connectionToolsLabel,
+  connectionEventsLabel,
   type ScopedConnectionBindings,
 } from "../../contracts/scoped-connections.ts";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -53,6 +54,7 @@ import {
   accountOption,
   initialSelection,
   selectionIssue,
+  declaresEvents,
   type AppChoices,
 } from "./connection-app-picker.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
@@ -104,6 +106,7 @@ const connectionDraft = (
       id: item.app,
       name: choice?.app.name ?? "Unavailable app",
       tools: item.tools,
+      ...(item.events === undefined ? {} : { events: item.events }),
       targets: item.runsAs.map((target): ConnectionTarget => {
         if (target.kind === "app") return target;
         const option = choice?.options.find(
@@ -132,6 +135,7 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
   revoke,
   Failure,
   installation,
+  agents,
   docs = publicDocsBaseUrl,
   renderTools,
 }: ScopedConnectionBindings<EL, ES, ER> & {
@@ -139,6 +143,8 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
   /** Renders every failure: inventory, connection reads, saves and revocation. */
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly installation: ReactNode;
+  /** The agents connected through these URLs, when the host lists them. */
+  readonly agents?: ReactNode;
   /** Documentation the setup prompt points agents to. */
   readonly docs?: string;
   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
@@ -223,6 +229,7 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
                 )
               }
             </QueryView>
+            {agents}
           </div>
         )}
         {view.kind === "editor" && (
@@ -889,6 +896,11 @@ function ConnectionAccessList({
                 ) : (
                   <span className="px-3 text-xs text-muted-foreground">
                     {connectionToolsLabel(selection.tools)}, including new ones
+                  </span>
+                )}
+                {declaresEvents(app) && (
+                  <span className="px-3 text-xs text-muted-foreground">
+                    {connectionEventsLabel(selection.events)}
                   </span>
                 )}
               </div>

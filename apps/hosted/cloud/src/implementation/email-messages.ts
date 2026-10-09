@@ -9,6 +9,11 @@ const purposes = {
     heading: "Your sign-in code",
     instruction: "Copy and paste this code into Executor to sign in.",
   },
+  /** A sign-in code for an email with no account yet; verifying it creates the account. */
+  "sign-up": {
+    heading: "Your sign-up code",
+    instruction: "Copy and paste this code into Executor to create your account.",
+  },
   "email-verification": {
     heading: "Verify your email address",
     instruction: "Copy and paste this code into Executor to verify your email address.",
@@ -91,6 +96,15 @@ export const invitationEmailMessage = ({
 };
 
 /**
+ * The docs live on the site origin, the edge when the deployment has role hosts; the MCP
+ * endpoint is on the canonical MCP origin.
+ */
+export interface WelcomeEmailOrigins {
+  readonly site: string;
+  readonly resourceOrigin: string;
+}
+
+/**
  * A personal, all-lowercase welcome with matching text and HTML; recipient names are
  * escaped, never markup. It carries one starter prompt with the deployment's MCP URL and
  * the docs link, and the unsubscribe link is an ordinary sentence rather than a footer.
@@ -99,13 +113,12 @@ export const welcomeEmailMessage = (
   email: string,
   name: string,
   links: UnsubscribeLinks,
-  origin: string,
+  origins: WelcomeEmailOrigins,
 ): AuthEmail => {
-  // IaC serves the docs and MCP endpoint on the same canonical cloud origin.
-  const docsUrl = `${origin}/docs`;
+  const docsUrl = `${origins.site}/docs`;
   const firstName = name.trim().split(/\s+/)[0];
   const greeting = firstName && !firstName.includes("@") ? `hey ${firstName},` : "hey there,";
-  const starterPrompt = `add the executor mcp server at ${origin}/mcp, then read the executor docs at ${docsUrl} and work out how you can best use executor to help me.`;
+  const starterPrompt = `add the executor mcp server at ${origins.resourceOrigin}/mcp, then read the executor docs at ${docsUrl} and work out how you can best use executor to help me.`;
   const paragraphs = [
     greeting,
     "i'm rhys, founder of executor - thanks for signing up!",
@@ -147,7 +160,10 @@ export const emailCodeMessage = ({
   const unsolicited = "If you didn't request this, you can safely ignore this email.";
   return {
     to: email,
-    subject: type === "sign-in" ? "Your Executor sign-in code" : `Executor: ${heading}`,
+    subject:
+      type === "sign-in" || type === "sign-up"
+        ? `Your Executor ${type} code`
+        : `Executor: ${heading}`,
     text: Redacted.make(
       `Executor\n\n${heading}\n\n${instruction}\n\n${otp}\n\n${expiry}\n\n${unsolicited}`,
     ),

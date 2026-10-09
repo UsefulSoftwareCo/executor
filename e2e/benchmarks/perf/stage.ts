@@ -7,8 +7,8 @@
  * process; the retained stage keeps running until it is explicitly destroyed.
  */
 import { Clock, Console, Effect, FileSystem, Path, Redacted, Schedule, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient } from "effect/http";
 import { startFixtureControl, fixtureControlEnvironment } from "../../sdk/fixtures.ts";
 
 export class StageFailed extends Schema.TaggedError<StageFailed>()("StageFailed", {
@@ -26,7 +26,7 @@ export const StageControl = Schema.Struct({
 export type StageControl = typeof StageControl.Type;
 
 export const perfSlug = Schema.String.check(
-  Schema.isPattern(/^perf-[a-z0-9-]+-0925$/, {
+  Schema.isPattern(/^perf-[a-z0-9-]+-0925$/u, {
     message: "Perf stages for this run are named perf-<key>-0925",
   }),
 );

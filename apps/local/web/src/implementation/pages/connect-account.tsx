@@ -1,9 +1,9 @@
 import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
 import type { DashboardError } from "../../contracts/errors.ts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Cause, Result } from "effect";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { LockKeyholeIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import type { AccountConnection } from "@executor-js/sdk";
@@ -17,9 +17,9 @@ import {
 } from "../../contracts/account-connections.ts";
 import { faviconUrl } from "@executor-js/ui/contracts/icons";
 import { Button } from "@executor-js/ui/components/button";
-import { Failure } from "../components/common.tsx";
+import { ConnectionLinkFailure } from "../components/common.tsx";
 import { AccountForm } from "@executor-js/ui/dashboard/account-form";
-import { OAuthFields } from "./oauth-fields.tsx";
+import { LinkOAuthFields } from "./oauth-fields.tsx";
 
 /** A standalone, mobile-sized handoff page with no dashboard navigation or access. */
 export function ConnectAccountPage() {
@@ -31,31 +31,36 @@ export function ConnectAccountPage() {
         <img src="/favicon.png" alt="" />
         executor
       </div>
-      <section className="account-connect-card w-full max-w-105 p-[28px] border border-border rounded-[12px] bg-background [&_h1]:text-[22px] [&_h1]:font-semibold [&_h1]:tracking-[-0.03em] [&_h1]:[margin:0_0_8px] [&_p]:text-muted-foreground [&_p]:text-[13px] [&_.setup-form]:w-full [&_.setup-form]:max-w-none [&_.setup-form]:p-0 [&_.setup-form]:border-0 [&_.setup-form_.form-actions_>_button]:w-full [&_>_button]:w-full max-[480px]:py-[22px] max-[480px]:px-[18px]">
+      <section className="account-connect-card w-full max-w-105 p-[28px] border border-border rounded-[12px] bg-background [&_h1]:text-[22px] [&_h1]:font-semibold [&_h1]:tracking-[-0.03em] [&_h1]:[margin:0_0_8px] [&_.setup-form]:w-full [&_.setup-form]:max-w-none [&_.setup-form]:p-0 [&_.setup-form]:border-0 [&_.setup-form_.form-actions_>_button]:w-full [&_>_button]:w-full max-[480px]:py-[22px] max-[480px]:px-[18px]">
         {!entry ? (
           <>
             <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
               Open a new connection link
             </h1>
-            <p>Ask your agent for a link to connect this account.</p>
+            <p className="text-[13px] text-muted-foreground">
+              Ask your agent for a link to connect this account.
+            </p>
           </>
         ) : AsyncResult.isFailure(result) ? (
-          <Failure cause={result.cause} />
+          <ConnectionLinkFailure cause={result.cause} />
         ) : !AsyncResult.isSuccess(result) || !result.value ? (
           <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
             Loading connection…
           </h1>
         ) : (
-          <>
-            {result.value.completion && Result.isFailure(result.value.completion) && (
-              <Failure cause={Cause.fail(result.value.completion.failure)} />
-            )}
-            <ConnectionForm
-              key={entry.connection}
-              grant={entry}
-              connection={result.value.connection}
-            />
-          </>
+          <ConnectionForm
+            key={entry.connection}
+            grant={entry}
+            connection={result.value.connection}
+            failure={
+              result.value.completion && Result.isFailure(result.value.completion) ? (
+                <ConnectionLinkFailure
+                  cause={Cause.fail(result.value.completion.failure)}
+                  layout="compact"
+                />
+              ) : undefined
+            }
+          />
         )}
       </section>
     </main>
@@ -65,9 +70,12 @@ export function ConnectAccountPage() {
 function ConnectionForm({
   grant,
   connection,
+  failure,
 }: {
   readonly grant: ConnectionGrant;
   readonly connection: AccountConnection;
+  /** How the sign-in this page returned from failed, shown under the heading. */
+  readonly failure?: ReactNode;
 }) {
   const [state, setState] = useState(connection.state);
   const [pending, setPending] = useState(false);
@@ -78,7 +86,8 @@ function ConnectionForm({
   const icon = faviconUrl(providerDisplayUrl(connection.provider.definition), 32);
   if (state.status !== "pending")
     return (
-      <div className="account-connect-result py-[24px] px-0 text-center [&_>_svg]:[margin:0_auto_18px]">
+      <div className="account-connect-result py-[24px] px-0 text-center [&_>_svg]:[margin:0_auto_18px] [&_p]:text-[13px] [&_p]:text-muted-foreground">
+        {failure && <div className="mb-5 text-left">{failure}</div>}
         {state.status === "completed" && (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} aria-hidden size={28} />
         )}
@@ -111,31 +120,32 @@ function ConnectionForm({
         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
           Connect {connection.provider.definition.name}
         </h1>
-        <p>
+        <p className="text-[13px] text-muted-foreground">
           {connection.target ? `For ${connection.target.name}` : "Save this account in Executor."}
         </p>
       </header>
+      {failure && <div className="-mt-3 mb-4">{failure}</div>}
       <AccountForm
         provider={connection.provider}
         {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
-        Failure={Failure}
+        Failure={ConnectionLinkFailure}
         submitLabel="Connect account"
         disabled={pending}
         onPendingChange={setPending}
-        submit={(input: AccountSubmission) => submit({ payload: { ...grant, ...input } })}
+        submit={(input: AccountSubmission) => submit({ ...grant, ...input })}
         onSaved={(account) => setState({ status: "completed", account })}
         oauth={(props) => (
-          <OAuthFields
+          <LinkOAuthFields
             provider={connection.provider}
-            connection={grant}
+            grant={grant}
             onSaved={(account) => setState({ status: "completed", account })}
             {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
             {...props}
           />
         )}
       />
-      {error && <Failure cause={error} />}
-      <p className="account-connect-privacy flex items-center justify-center gap-1.5 [margin:22px_0_8px]">
+      {error && <ConnectionLinkFailure cause={error} />}
+      <p className="account-connect-privacy flex items-center justify-center gap-1.5 [margin:22px_0_8px] text-[13px] text-muted-foreground">
         <HugeiconsIcon icon={LockKeyholeIcon} strokeWidth={2} aria-hidden size={13} />
         Credentials go directly to Executor.
       </p>

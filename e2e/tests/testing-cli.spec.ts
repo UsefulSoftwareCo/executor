@@ -1,6 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schedule, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { TestLive, withCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";

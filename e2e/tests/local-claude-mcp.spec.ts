@@ -19,7 +19,7 @@ layer(TestLive, { excludeTestServices: true })("Claude Code Local MCP", (it) => 
         const fixture = yield* evidence.step("Prepare a callable synthetic app", deployLocalMcpApp);
         const client = yield* claude.start;
         const request = yield* client.requestConnection;
-        yield* consent.approve(request);
+        yield* consent.approve({ ...request, client: "Claude Code (executor_e2e)" });
         yield* client.finishConnection;
         const result = yield* client.invoke(fixture.name, fixture.receipt);
         expect(result).toContain(fixture.receipt);

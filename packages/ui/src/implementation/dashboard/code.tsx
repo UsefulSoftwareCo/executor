@@ -1,5 +1,5 @@
 import { codeLanguage, type CodeLanguage } from "../../contracts/code-language.ts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";

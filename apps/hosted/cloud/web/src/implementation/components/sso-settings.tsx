@@ -11,7 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@executor-js/ui/components/card";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Exit, Option, Redacted } from "effect";
 import { useState } from "react";
 import { billingAtom } from "../../contracts/billing.ts";

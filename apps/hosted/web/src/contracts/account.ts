@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { observeBrowserUsage } from "./product-analytics.ts";

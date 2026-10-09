@@ -5,7 +5,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -248,7 +248,12 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           yield* api.request(
             actors.owner,
             "POST",
-            `${prefix}/accounts/${publicAccount.id}/connections`,
+            `${prefix}/apps/${publicClient.app.id}/connections`,
+            {
+              requirement: "service",
+              profile: publicClient.profile.id,
+              account: publicAccount.id,
+            },
           ),
         );
         const reconnectStart = yield* start(reconnection.id, clients.public, null);
@@ -350,8 +355,8 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             .waitFor({ state: "visible" })
             .then(() =>
               dialog
-                .getByText("Enter its client ID here, and its client secret if it has one.", {
-                  exact: true,
+                .getByText("then enter its client ID (and secret, if it has one).", {
+                  exact: false,
                 })
                 .count(),
             )

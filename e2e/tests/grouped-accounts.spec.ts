@@ -179,7 +179,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
         ).toBe(0);
         yield* held.release;
         yield* browser.use("The selected catalog failure is visible", (page) =>
-          page.getByRole("alert", { name: "Action unavailable", exact: true }).waitFor(),
+          page.getByRole("alert", { name: "Can’t reach Executor", exact: true }).waitFor(),
         );
         yield* browser.use("Retry Work", (page) =>
           page.getByRole("button", { name: "Try again", exact: true }).click(),

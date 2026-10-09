@@ -1,15 +1,8 @@
 /** Typed account management; successful responses contain metadata only. */
-import type {
-  Account,
-  AccountId,
-  AccountFieldsInput,
-  AppId,
-  OAuthClientInput,
-  ProviderId,
-} from "@executor-js/sdk";
+import type { Account, AccountId, AccountFieldsInput, AppId, ProviderId } from "@executor-js/sdk";
 import { DashboardAccountDetail } from "@executor-js/local-server/contracts";
 import { Effect, Option } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
 import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
 import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";
@@ -78,14 +71,6 @@ export const checkAccountAtom = Atom.family((account: AccountId) =>
     ),
   ),
 );
-/** Credential responses do not prove provider health; reload those projections. */
-export const replaceAccountCredentialsAtom = Atom.family((account: AccountId) =>
-  DashboardClient.runtime.fn((fields: typeof AccountFieldsInput.Type, get) =>
-    Effect.flatMap(DashboardClient, (client) =>
-      client.dashboard.replaceAccountCredentials({ params: { account }, payload: { fields } }),
-    ).pipe(Effect.tap((saved) => Effect.sync(() => accountCredentialsChanged(get, saved)))),
-  ),
-);
 /** A fresh read of which apps select an account, taken after a selection change commits. */
 export const accountUsageAtom = DashboardClient.runtime.fn((account: AccountId) =>
   Effect.flatMap(DashboardClient, (client) => client.dashboard.account({ params: { account } })),
@@ -109,23 +94,6 @@ export const disconnectAccountAtom = Atom.family((account: AccountId) =>
     ),
   ),
 );
-export const reconnectAccountAtom = DashboardClient.runtime.fn(
-  (
-    input: {
-      params: { account: AccountId };
-      payload: { client?: OAuthClientInput };
-    },
-    get,
-  ) =>
-    Effect.flatMap(DashboardClient, (client) => client.dashboard.reconnectAccount(input)).pipe(
-      Effect.tap((result) =>
-        Effect.sync(() => {
-          if (result.status === "completed") accountCredentialsChanged(get, result.account);
-        }),
-      ),
-    ),
-);
-
 /**
  * All dashboard credential paths invalidate unknown health and account-dependent catalogs.
  * The inventory gates every dashboard page, so it reloads in place instead of being cleared.

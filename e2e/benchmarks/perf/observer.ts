@@ -8,8 +8,8 @@
  * and credentials are never written. The role password stays in this process's memory.
  */
 import { Config, Console, Effect, FileSystem, Redacted, Schedule, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { perfSlug } from "./stage.ts";
 

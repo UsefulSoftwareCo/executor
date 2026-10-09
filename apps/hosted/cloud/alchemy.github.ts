@@ -9,8 +9,15 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
 import { retain } from "alchemy/RemovalPolicy";
-import { Config, Effect, Layer } from "effect";
+import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { stackState } from "./src/infrastructure/state.ts";
+import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-settings.ts";
+import { BrowserOrigin, browserOriginSetting } from "./src/infrastructure/stage.ts";
+import {
+  CheckSince,
+  missingV1MembershipCheckSince,
+  missingV1WorkosKey,
+} from "./src/infrastructure/v1-membership-settings.ts";
 
 /**
  * Secrets seeded from the environment. `op run --env-file=.env.ci.op` resolves the 1Password
@@ -26,6 +33,8 @@ const productionSecrets = [
   "AUTUMN_SECRET_KEY",
   "AXIOM_TOKEN",
   "BETTER_AUTH_SECRET",
+  "CHATGPT_CLIENT_ID",
+  "CHATGPT_CLIENT_SECRET",
   "CONTEXT_DEV_API_KEY",
   "EXECUTOR_ENCRYPTION_KEY",
   "GOOGLE_CLIENT_ID",
@@ -48,7 +57,6 @@ const productionVariables = [
   "CLOUDFLARE_ZONE_ID",
   "CLOUD_PLACEMENT_REGION",
   "EXECUTOR_APP_UI_BASE_URL",
-  "OAUTH_PROXY_PRODUCTION_URL",
   "PLANETSCALE_CLUSTER_SIZE",
   "PLANETSCALE_DATABASE_NAME",
   "PLANETSCALE_ORGANIZATION",
@@ -66,17 +74,13 @@ const productionVariables = [
 
 /**
  * Required status checks on `main`. These are the contexts reported by `ci.yml` calling
- * `checks.yml` (PR #246). `CI_RULESET_ENFORCEMENT` defaults to `active`, so an apply that
+ * `checks.yml` (PR #246). The E2E jobs run as matrix runners whose names change with the
+ * selection, so `checks / e2e` stands for all of them. `CI_RULESET_ENFORCEMENT` defaults to `active`, so an apply that
  * cannot create the ruleset fails loudly rather than leaving `main` silently unprotected.
  * Rulesets need GitHub Pro on a private repository, which is the blocker today; `.env.ci.op`
  * sets `disabled` until the plan allows them. `evaluate` is log only and blocks nothing.
  */
-const requiredStatusChecks = [
-  "checks / check",
-  "checks / e2e-local",
-  "checks / e2e-self-host",
-  "checks / e2e-cloud",
-] as const;
+const requiredStatusChecks = ["checks / check", "checks / e2e"] as const;
 
 export default Alchemy.Stack(
   "executor-next-ci",
@@ -238,6 +242,61 @@ export default Alchemy.Stack(
         ),
       ),
     );
+
+    /**
+     * Where production's social sign-ins return, and so the OAuth proxy's production URL: the
+     * edge on `executor.sh`, whichever host serves sign-in. It is fixed by the code, not by
+     * `.env.ci.op`; the deploy refuses any other value (`deploy-settings.ts`).
+     */
+    yield* GitHub.Variable("production-OAUTH_PROXY_PRODUCTION_URL", {
+      ...target,
+      name: "OAUTH_PROXY_PRODUCTION_URL",
+      value: productionSocialCallbackOrigin,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * The rollback switch (`notes/cloud-domains.md`): `deployment` serves the dashboard and
+     * sign-in on `v2.executor.sh` again. `.env.ci.op` sets it; unset is `app`, the cutover.
+     */
+    const browserOrigin: BrowserOrigin = yield* browserOriginSetting;
+    yield* GitHub.Variable("production-CLOUD_BROWSER_ORIGIN", {
+      ...target,
+      name: "CLOUD_BROWSER_ORIGIN",
+      value: browserOrigin,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * The v1 sign-in check: v1's WorkOS API key, and the instant the check shipped. Accounts
+     * created before that instant skip it. Production requires both, so this stack refuses to
+     * apply without them and says what to set: the key's Agents vault reference, and the cutoff,
+     * set in `.env.ci.op` at the merge that ships the check.
+     */
+    const v1Key = yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(
+      Config.option,
+      Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
+    );
+    if (Option.isNone(v1Key)) return yield* Effect.die(new Error(missingV1WorkosKey));
+    const v1Since = yield* Config.String("V1_MEMBERSHIP_CHECK_SINCE").pipe(
+      Config.option,
+      Effect.map(
+        Option.filter((value) => Option.isSome(Schema.decodeUnknownOption(CheckSince)(value))),
+      ),
+    );
+    if (Option.isNone(v1Since)) return yield* Effect.die(new Error(missingV1MembershipCheckSince));
+    yield* GitHub.Secret("production-V1_WORKOS_API_KEY", {
+      ...target,
+      name: "V1_WORKOS_API_KEY",
+      value: v1Key.value,
+      environment: production,
+    }).pipe(retain());
+    yield* GitHub.Variable("production-V1_MEMBERSHIP_CHECK_SINCE", {
+      ...target,
+      name: "V1_MEMBERSHIP_CHECK_SINCE",
+      value: v1Since.value,
+      environment: production,
+    }).pipe(retain());
 
     // Rulesets are unavailable on private repositories under the GitHub Free plan, so
     // `CI_RULESET_ENFORCEMENT=disabled` skips the resource instead of asking GitHub for it.

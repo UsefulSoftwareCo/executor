@@ -5,13 +5,9 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { developmentDashboard } from "@executor-js/dashboard-start/development";
 import { hostedDocumentContext } from "@executor-js/hosted-server/document";
+import { singleResourceOrigin } from "@executor-js/mcp-auth/grants";
 import { Config, Console, Effect, Layer, Path } from "effect";
-import {
-  FetchHttpClient,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const isApiPath = (pathname: string) =>
   pathname === "/api" ||
@@ -86,6 +82,8 @@ const main = Effect.scoped(
     const path = yield* Path.Path;
     const port = yield* Config.Number("PORT");
     const apiOrigin = yield* Config.String("HOSTED_API_URL");
+    // The development origin serves the dashboard and the MCP and API resources alike.
+    const origin = yield* Config.String("BETTER_AUTH_URL");
     const root = path.resolve(
       path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))),
       "../web",
@@ -108,7 +106,8 @@ const main = Effect.scoped(
         if (isApiPath(pathname)) return yield* apiProxy(apiOrigin);
         const lastSegment = pathname.slice(pathname.lastIndexOf("/") + 1);
         if (pathname.startsWith("/@") || lastSegment.includes(".")) return yield* dashboard.handler;
-        if (request.method === "GET") return yield* dashboard.document(hostedDocumentContext);
+        if (request.method === "GET")
+          return yield* dashboard.document(hostedDocumentContext(singleResourceOrigin(origin)));
         return yield* dashboard.handler;
       }),
     ).pipe(HttpRouter.provideRequest(FetchHttpClient.layer));

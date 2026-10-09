@@ -5,7 +5,7 @@ import { AppUiAddressInvalid } from "@executor-js/hosted-server/app-ui/contracts
 import { OrganizationId, OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { UiFailed } from "apps/ui/contracts";
 import { Clock, Effect, Redacted, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { timingSafeEqual } from "node:crypto";
 import { AppDomainController } from "./app-domain-controller-worker.ts";
 import { appDomainControlSecret } from "./app-domain-control.ts";

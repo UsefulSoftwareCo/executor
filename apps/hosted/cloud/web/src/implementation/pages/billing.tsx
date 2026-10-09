@@ -1,5 +1,5 @@
 import { PageSkeleton, DetailSkeleton } from "@executor-js/ui/dashboard/loading";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Alert, AlertDescription } from "@executor-js/ui/components/alert";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Card } from "@executor-js/ui/components/card";
@@ -7,9 +7,35 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
 import { useOrganizationRoute } from "@executor-js/hosted-web/organization";
 import { Button } from "@executor-js/ui/components/button";
-import { Exit, Option } from "effect";
-import { useState } from "react";
-import { billingAtom, checkoutAtom, portalAtom } from "../../contracts/billing.ts";
+import { Duration, Exit, Option } from "effect";
+import { useEffect, useState } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Tick02Icon } from "@hugeicons/core-free-icons";
+import {
+  billingAtom,
+  checkoutAtom,
+  checkoutSettlementWindow,
+  planActive,
+  portalAtom,
+} from "../../contracts/billing.ts";
+import type { BillingPlan } from "../../../../src/contracts/billing.ts";
+
+const members = (count: number) =>
+  `${count.toLocaleString("en-US")} member${count === 1 ? "" : "s"}`;
+
+/** What a plan includes, stated from the billing catalog's own items. */
+const planFeatures = (plan: typeof BillingPlan.Type) => [
+  ...(plan.trial === null
+    ? []
+    : [`${plan.trial.days}-day free trial${plan.trial.cardRequired ? ", card required" : ""}`]),
+  plan.members === null
+    ? plan.price?.unit === "member"
+      ? "Any number of members, billed per member"
+      : "Unlimited members"
+    : `Up to ${members(plan.members)}`,
+  ...(plan.domainVerification ? ["Verified domains: teammates join with their work email"] : []),
+  ...(plan.purchase === "contact" ? ["Custom contract and dedicated support"] : []),
+];
 
 /**
  * The checkout and portal answers are navigation targets, so the browser checks one thing at the
@@ -25,29 +51,50 @@ const openBillingUrl = (url: string) => {
 };
 
 /** Checkout return context is only a UI hint, never evidence of payment or authority. */
-export const billingSearch = (search: Record<string, unknown>) => ({
-  organization: typeof search.organization === "string" ? search.organization : "",
-  plan: typeof search.plan === "string" ? search.plan : "",
+export const billingSearch = (
+  search: Record<string, unknown>,
+): { readonly organization?: string; readonly plan?: string } => ({
+  ...(typeof search.organization === "string" ? { organization: search.organization } : {}),
+  ...(typeof search.plan === "string" ? { plan: search.plan } : {}),
 });
 
-function BillingDetails({ returned }: { readonly returned: ReturnType<typeof billingSearch> }) {
+interface BillingProps {
+  readonly returned: ReturnType<typeof billingSearch>;
+  /** Drop the checkout return from the address, so reloading or a bookmark does not wait again. */
+  readonly onCheckoutSettled: () => void;
+}
+
+function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
   const organization = useOrganizationRoute();
-  const { result, data, refresh } = useQuery(billingAtom(organization.organization));
+  const awaitingPlan =
+    returned.organization === organization.id && returned.plan ? returned.plan : undefined;
+  /** A returned checkout whose plan was still not in effect when the page stopped waiting. */
+  const [unconfirmedPlan, setUnconfirmedPlan] = useState<string>();
+  const { result, data, refresh } = useQuery(billingAtom(organization.organization, awaitingPlan));
   const checkout = useAtomSet(checkoutAtom, { mode: "promiseExit" });
   const portal = useAtomSet(portalAtom, { mode: "promiseExit" });
   const checkoutState = useAtomValue(checkoutAtom);
   const portalState = useAtomValue(portalAtom);
   const [error, setError] = useState<string | null>(null);
   const busy = checkoutState.waiting || portalState.waiting || !AsyncResult.isSuccess(result);
-  const waitingForPlan =
-    returned.organization === organization.id &&
-    returned.plan !== "" &&
+  const confirmed =
+    awaitingPlan !== undefined && Option.isSome(data) && planActive(data.value, awaitingPlan);
+  const waitingForPlan = awaitingPlan !== undefined && Option.isSome(data) && !confirmed;
+  const unconfirmed =
+    unconfirmedPlan !== undefined &&
     Option.isSome(data) &&
-    !data.value.subscriptions.some(
-      (subscription) =>
-        subscription.planId === returned.plan &&
-        ["active", "trialing"].includes(subscription.status),
-    );
+    !planActive(data.value, unconfirmedPlan);
+  useEffect(() => {
+    if (confirmed) onCheckoutSettled();
+  }, [confirmed, onCheckoutSettled]);
+  useEffect(() => {
+    if (awaitingPlan === undefined) return;
+    const timer = setTimeout(() => {
+      setUnconfirmedPlan(awaitingPlan);
+      onCheckoutSettled();
+    }, Duration.toMillis(checkoutSettlementWindow));
+    return () => clearTimeout(timer);
+  }, [awaitingPlan, onCheckoutSettled]);
   return (
     <section className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
       <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
@@ -69,7 +116,6 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
           Manage billing
         </Button>
       </div>
-      <p className="muted text-muted-foreground">{organization.name}</p>
       {returned.organization && returned.organization !== organization.id && (
         <Alert className="notice border border-border rounded-[8px] py-[12px] px-[16px] my-[20px] mx-0 text-[13px]">
           <AlertDescription>
@@ -84,6 +130,22 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
         >
           <AlertDescription>
             Waiting for payment confirmation. This page updates automatically.
+          </AlertDescription>
+        </Alert>
+      )}
+      {unconfirmed && (
+        <Alert
+          className="notice border border-border rounded-[8px] py-[12px] px-[16px] my-[20px] mx-0 text-[13px]"
+          role="status"
+        >
+          <AlertDescription className="gap-2">
+            <p>
+              Payment confirmation is taking longer than expected. If you completed checkout, your
+              plan appears here once the payment provider confirms it.
+            </p>
+            <Button variant="outline" size="sm" onClick={refresh} disabled={result.waiting}>
+              Check again
+            </Button>
           </AlertDescription>
         </Alert>
       )}
@@ -127,7 +189,9 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
                         {plan.purchase === "contact" ? (
                           "Custom"
                         ) : plan.price === null ? (
-                          "Free"
+                          <>
+                            $0<span> / month</span>
+                          </>
                         ) : (
                           <>
                             {new Intl.NumberFormat("en-US", {
@@ -143,6 +207,18 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
                           </>
                         )}
                       </p>
+                      <ul className="flex flex-col gap-1.5 text-[13px] text-muted-foreground">
+                        {planFeatures(plan).map((feature) => (
+                          <li key={feature} className="flex gap-2">
+                            <HugeiconsIcon
+                              icon={Tick02Icon}
+                              size={14}
+                              className="mt-0.5 shrink-0 text-foreground"
+                            />
+                            {feature}
+                          </li>
+                        ))}
+                      </ul>
                       {plan.purchase === "contact" && !subscription ? (
                         <Button asChild variant="outline">
                           <a href="mailto:rhys@executor.sh?subject=Executor%20Enterprise%20inquiry">
@@ -175,8 +251,12 @@ function BillingDetails({ returned }: { readonly returned: ReturnType<typeof bil
                           {subscription
                             ? subscription.status === "scheduled"
                               ? "Scheduled"
-                              : "Current plan"
-                            : `Choose ${plan.name}`}
+                              : subscription.status === "trialing"
+                                ? "Current plan · Trial"
+                                : "Current plan"
+                            : plan.trial !== null
+                              ? `Start ${plan.trial.days}-day trial`
+                              : `Choose ${plan.name}`}
                         </Button>
                       )}
                     </article>
@@ -202,7 +282,7 @@ function BillingFailure({ retry }: { readonly retry?: (() => void) | undefined }
   );
 }
 /** Members never fetch billing; the backend independently enforces the same rule. */
-export function BillingPage({ returned }: { readonly returned: ReturnType<typeof billingSearch> }) {
+export function BillingPage({ returned, onCheckoutSettled }: BillingProps) {
   const organization = useOrganizationRoute();
   if (organization.role === undefined) return <PageSkeleton title="Billing" />;
   if (organization.role === "member")
@@ -227,5 +307,11 @@ export function BillingPage({ returned }: { readonly returned: ReturnType<typeof
         </EmptyState>
       </section>
     );
-  return <BillingDetails key={organization.organization} returned={returned} />;
+  return (
+    <BillingDetails
+      key={organization.organization}
+      returned={returned}
+      onCheckoutSettled={onCheckoutSettled}
+    />
+  );
 }

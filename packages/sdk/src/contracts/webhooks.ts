@@ -1,9 +1,10 @@
+import { ApiError } from "@executor-js/utils/api-error";
 import { AppProviderFailed } from "./tools.ts";
 import { ProfileId } from "./shared.ts";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Durable, account-bound webhook subscriptions. Products authorize management; callbacks authenticate in app code. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { HostedWebhook, WebhookRequestData, WebhookResponseData } from "apps/contracts";
 import {
   AppId,
@@ -69,23 +70,41 @@ export const WebhookSubscription = Schema.Struct({
 /** Parsed subscription metadata for SDK and product views. */
 export type WebhookSubscription = typeof WebhookSubscription.Type;
 /** A subscription does not exist within the requested app. */
-export class WebhookNotFound extends Schema.TaggedError<WebhookNotFound>()(
-  "WebhookNotFound",
-  {},
-  { httpApiStatus: 404 },
-) {}
+export const WebhookNotFound = ApiError.define({
+  tag: "WebhookNotFound",
+  status: 404,
+  message: "No webhook subscription with this key exists for this app.",
+});
+export type WebhookNotFound = typeof WebhookNotFound.Type;
 /** Existing work must finish, or the stable key was reused for different configuration. */
-export class WebhookConflict extends Schema.TaggedError<WebhookConflict>()(
-  "WebhookConflict",
-  {},
-  { httpApiStatus: 409 },
-) {}
+export const WebhookConflict = ApiError.define({
+  tag: "WebhookConflict",
+  status: 409,
+  message:
+    "The webhook subscription is busy or changed since it was read. Read it again, then retry; a reused key must keep its configuration.",
+});
+export type WebhookConflict = typeof WebhookConflict.Type;
+const webhookFailures = {
+  unavailable:
+    "This host has no public webhook address, so it cannot create webhook subscriptions.",
+  definition:
+    "The app does not declare this webhook, or its webhook declarations could not be read.",
+  input:
+    "The webhook setup does not match the app's declaration. Check the selected account and the webhook configuration.",
+  delivery: "The webhook delivery could not be accepted.",
+  inactive: "The webhook subscription is stopped or disabled, or its profile is no longer active.",
+} as const;
 /** The host cannot run this webhook. Internal provider failures and payloads remain private. */
-export class WebhookFailed extends Schema.TaggedError<WebhookFailed>()(
-  "WebhookFailed",
-  { reason: Schema.Literals(["unavailable", "definition", "input", "delivery", "inactive"]) },
-  { httpApiStatus: 422 },
-) {}
+export const WebhookFailed = ApiError.define({
+  tag: "WebhookFailed",
+  status: 422,
+  fields: {
+    reason: Schema.Literals(["unavailable", "definition", "input", "delivery", "inactive"]),
+  },
+  message: ({ reason }) => webhookFailures[reason],
+  recorded: ({ reason }) => webhookFailures[reason],
+});
+export type WebhookFailed = typeof WebhookFailed.Type;
 /** Shared operation failures, retained as concrete schema variants at HTTP boundaries. */
 export const WebhookErrors = [
   AppProviderFailed,

@@ -15,8 +15,16 @@ import { appsManifest } from "../support/apps-release.ts";
 
 const Failure = Schema.Struct({
   _tag: Schema.Literal("AppProviderFailed"),
+  message: Schema.String,
   reason: Schema.String,
   status: Schema.Number,
+  phase: Schema.optional(Schema.String),
+  upstream: Schema.optional(
+    Schema.Struct({
+      code: Schema.Union([Schema.String, Schema.Number]),
+      message: Schema.optional(Schema.String),
+    }),
+  ),
   account: Schema.optional(
     Schema.Struct({ id: Schema.String, label: Schema.String, provider: Schema.String }),
   ),
@@ -155,6 +163,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
       response: Effect.Success<ReturnType<typeof catalog>>,
       reason: string,
       status: number,
+      phase?: string,
     ) =>
       Effect.gen(function* () {
         expect(response.status, `${kind}: ${JSON.stringify(response.body)}`).toBe(502);
@@ -163,17 +172,44 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
           reason,
           status,
           account: { id: affected, label: "personal" },
+          ...(phase === undefined ? {} : { phase }),
         });
         expect(JSON.stringify(response.body)).not.toMatch(
           new RegExp(`${providerSecretMarker}|Forged|stack|synthetic-personal`),
         );
+        return parsed;
       });
+    // A service states why it refused in its Bearer challenge, as when a saved sign-in belongs
+    // to another organization. Callers see that error with the account's credential replaced.
+    const challenge = {
+      "www-authenticate":
+        'Bearer realm="example", error="invalid_token", error_description="Token synthetic-personal belongs to another organization"',
+    };
+    const expectStated = (failure: typeof Failure.Type, phase: string) => {
+      expect(failure.upstream).toEqual({
+        code: "invalid_token",
+        message: "Token [redacted] belongs to another organization",
+      });
+      expect(failure.message).toContain(phase);
+      expect(failure.message).toContain(
+        'invalid_token: "Token [redacted] belongs to another organization"',
+      );
+    };
+    // Listing evaluates the app; an MCP server's own session setup is named more precisely.
+    const listing = kind === "mcp" ? "connect" : "discover";
     if (kind !== "openapi") {
       // A slow rejection, as a cold app start or a distant service makes it. Executor
       // remembers slow listing failures for MCP discovery, but a caller that waits for
       // the listing, such as the dashboard, must see the recovered service on its next read.
-      yield* upstream.configure({ status: 401, delayMs: 1_500 });
-      yield* assertFailure(yield* catalog(), "unauthorized", 401);
+      // The custom app raises its own ProviderError, which states nothing.
+      yield* upstream.configure({
+        status: 401,
+        delayMs: 1_500,
+        ...(kind === "custom" ? {} : { headers: challenge }),
+      });
+      const listed = yield* assertFailure(yield* catalog(), "unauthorized", 401, listing);
+      if (kind !== "custom")
+        expectStated(listed, kind === "mcp" ? "while connecting" : "while listing its tools");
       // Lazy MCP sources do not discover tools when listing unrelated webhooks.
       const setup = yield* api.request(
         actors.owner,
@@ -185,7 +221,14 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
     }
     yield* upstream.configure({ status: 401, phase: "call" });
     expect((yield* catalog()).status).toBe(200);
-    yield* assertFailure(yield* call(), "unauthorized", 401);
+    yield* assertFailure(yield* call(), "unauthorized", 401, "call");
+    if (kind === "mcp") {
+      yield* upstream.configure({ status: 401, phase: "call", headers: challenge });
+      expectStated(
+        yield* assertFailure(yield* call(), "unauthorized", 401, "call"),
+        "while calling a tool",
+      );
+    }
     if (kind !== "custom") {
       for (const [status, headers, reason] of [
         [403, {}, "rejected"],

@@ -16,7 +16,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { chromium } from "playwright";
 
 export class FlamechartFailed extends Schema.TaggedError<FlamechartFailed>()("FlamechartFailed", {

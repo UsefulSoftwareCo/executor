@@ -1,5 +1,5 @@
 /** Host responses around app sign-in. They carry no script and never contain product credentials. */
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 import { appSignInCallbackPath, type AppSignInId } from "../contracts/ui-auth.ts";
 
 /** Private app responses must not leak authentication URLs through caches or referrers. */

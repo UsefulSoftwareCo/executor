@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react";
-import { ArrowDown01Icon, InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Cause, Exit, Option, Redacted } from "effect";
 import type { Account, OAuthClientSetup } from "@executor-js/sdk";
 import type { OAuthSubmission } from "../../contracts/credentials.ts";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ComponentType, ReactNode } from "react";
-import { Alert, AlertDescription, AlertTitle } from "../components/alert.tsx";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { CopyButton } from "./code.tsx";
-import { AsyncResult } from "effect/unstable/reactivity";
-import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
+import { AsyncResult } from "effect/reactivity";
+import type { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { undeclaredError } from "@executor-js/utils/connection-failure";
 import { ErrorNotice } from "./error-notice.tsx";
 import { useQuery } from "./context.tsx";
 
@@ -33,7 +33,9 @@ export function OAuthSetup<E extends UserFacingError>({
   const loading = Option.isNone(data);
   const action = failed ? (
     <ErrorNotice
-      error={Option.getOrElse(Cause.findErrorOption(result.cause), () => new UnexpectedError())}
+      error={Option.getOrElse(Cause.findErrorOption(result.cause), () =>
+        undeclaredError(result.cause),
+      )}
       context="While preparing account sign-in."
       retry={refresh}
       retrying={result.waiting}
@@ -65,6 +67,7 @@ export function OAuthFields<A, E>({
   onAuthorized,
   requiresClient,
   Failure,
+  access,
   onPendingChange,
   manualClient = false,
   setup,
@@ -79,6 +82,8 @@ export function OAuthFields<A, E>({
   readonly onAuthorized: (value: NoInfer<A>) => "navigating" | "done";
   readonly requiresClient: (cause: Cause.Cause<NoInfer<E>>) => boolean;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+  /** Where the sign-in goes once saved, shown just above the Connect action. */
+  readonly access?: ReactNode;
   readonly disabled?: boolean;
   readonly onPendingChange?: (pending: boolean) => void;
   readonly manualClient?: boolean | undefined;
@@ -90,10 +95,24 @@ export function OAuthFields<A, E>({
   const [customClient, setManual] = useState(manualClient);
   const manual = customClient || (setup !== "unresolved" && setup.mode === "client-required");
   const machine = setup !== "unresolved" && setup.grant === "client_credentials";
+  const userScopes =
+    setup !== "unresolved" && setup.grant === "authorization_code" ? (setup.userScopes ?? []) : [];
+  const requested = setup === "unresolved" ? 0 : setup.scopes.length + userScopes.length;
   const method = setup === "unresolved" ? "none" : setup.tokenEndpointAuthMethod;
   // An undeclared method accepts either a public client or one with a secret.
   const acceptsSecret = method !== "none";
   const needsSecret = method !== undefined && method !== "none";
+  const details = needsSecret
+    ? "client ID and secret"
+    : acceptsSecret
+      ? "client ID (and secret, if it has one)"
+      : "client ID";
+  // Client entry's one line of help; a failure, which carries its own recovery, replaces it.
+  const guidance = machine
+    ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
+    : setup !== "unresolved" && setup.mode === "client-required"
+      ? `Executor can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
+      : `Use an OAuth app in ${providerName} that allows this redirect URL, and enter its ${details}.`;
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [pending, setPending] = useState(false);
@@ -142,46 +161,29 @@ export function OAuthFields<A, E>({
   }, [onPendingChange]);
   return (
     <>
-      {manual && (
-        <>
-          <Alert role="note" className="gap-y-2 bg-muted/30 px-3 py-3">
-            <HugeiconsIcon icon={InformationCircleIcon} aria-hidden="true" />
-            <AlertTitle className="text-[13px]">Set up an OAuth client</AlertTitle>
-            <AlertDescription className="gap-2 text-xs leading-relaxed">
-              <p>
-                {machine
-                  ? "This service uses an OAuth client ID and secret to connect."
-                  : setup !== "unresolved" && setup.mode === "client-required"
-                    ? "Executor can’t set up sign-in automatically for this service."
-                    : "Use your OAuth app’s details to connect this account."}
-              </p>
-              <ol className="list-decimal space-y-1 pl-4">
-                <li>Open or create an OAuth app in {providerName}’s developer settings.</li>
-                {!machine ? (
-                  <li>Add the redirect URL below to that app.</li>
-                ) : setup.scopes.length > 0 ? (
-                  <li>Enable the permissions listed below for that app.</li>
-                ) : null}
-                <li>
-                  {needsSecret
-                    ? "Enter its client ID and client secret here."
-                    : acceptsSecret
-                      ? "Enter its client ID here, and its client secret if it has one."
-                      : "Enter its client ID here."}
-                </li>
-              </ol>
-            </AlertDescription>
-          </Alert>
-          {!machine && (
-            <div className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
-              <span>Redirect URL</span>
-              <div className="oauth-redirect flex items-start gap-3 [&_>_code]:flex-1 [&_>_code]:min-w-0 [&_>_code]:py-[3px] [&_>_code]:px-0 [&_>_code]:font-mono [&_>_code]:text-[12px] [&_>_code]:font-normal [&_>_code]:wrap-anywhere [&_>_code]:[user-select:all]">
-                <code>{redirectUri}</code>
-                <CopyButton code={redirectUri} label="Copy redirect URL" inline />
-              </div>
-            </div>
-          )}
-        </>
+      {error ? (
+        <Failure cause={error} layout="compact" />
+      ) : (
+        manual && (
+          <p className="text-[13px] leading-5 text-pretty text-muted-foreground">{guidance}</p>
+        )
+      )}
+      {manual && !machine && (
+        <div className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
+          <span>Redirect URL</span>
+          <div className="oauth-redirect flex min-h-9 items-center gap-1 rounded-md border bg-muted/60 py-0.5 pr-0.5 pl-3">
+            <code className="min-w-0 flex-1 font-mono text-xs font-normal wrap-anywhere [user-select:all]">
+              {redirectUri}
+            </code>
+            <CopyButton
+              code={redirectUri}
+              label="Copy redirect URL"
+              text=""
+              size="icon-sm"
+              inline
+            />
+          </div>
+        </div>
       )}
       {manual && (
         <>
@@ -214,8 +216,8 @@ export function OAuthFields<A, E>({
           )}
         </>
       )}
-      {error && <Failure cause={error} />}
-      <div className="form-actions pt-1">
+      <div className="form-actions flex flex-col gap-3 pt-1">
+        {access}
         <div role="group" aria-label="Connection options" className="relative flex flex-col gap-4">
           <div className="flex min-h-9 flex-col max-[740px]:min-h-11">
             {setupAction ?? (
@@ -228,7 +230,7 @@ export function OAuthFields<A, E>({
               </Button>
             )}
           </div>
-          {setup !== "unresolved" && (setup.mode === "saved" || setup.scopes.length > 0) ? (
+          {setup !== "unresolved" && (setup.mode === "saved" || requested > 0) ? (
             <details className="group/advanced min-w-0 border-t pt-3">
               <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                 <HugeiconsIcon
@@ -238,6 +240,11 @@ export function OAuthFields<A, E>({
                   aria-hidden
                 />
                 <span>Advanced</span>
+                {requested > 0 && (
+                  <span className="font-normal tabular-nums">
+                    · {requested} {requested === 1 ? "permission" : "permissions"} requested
+                  </span>
+                )}
               </summary>
               <div className="space-y-4 pt-4">
                 {setup.mode === "saved" && (
@@ -264,31 +271,8 @@ export function OAuthFields<A, E>({
                     </Button>
                   </div>
                 )}
-                {setup.scopes.length > 0 && (
-                  <section className="space-y-2">
-                    <h3 className="flex items-center gap-2 text-xs font-medium">
-                      <span>Required permissions</span>
-                      <span className="font-normal tabular-nums text-muted-foreground">
-                        {setup.scopes.length}
-                      </span>
-                    </h3>
-                    <div
-                      role="region"
-                      aria-label="Required permissions"
-                      tabIndex={0}
-                      className="flex max-h-[min(14rem,30dvh)] flex-wrap gap-1.5 overflow-y-auto overscroll-contain rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                    >
-                      {setup.scopes.map((scope) => (
-                        <code
-                          key={scope}
-                          className="max-w-full rounded bg-muted px-2 py-1 text-xs break-all"
-                        >
-                          {scope}
-                        </code>
-                      ))}
-                    </div>
-                  </section>
-                )}
+                <Permissions label="Requested permissions" scopes={setup.scopes} />
+                <Permissions label="User token permissions" scopes={userScopes} />
               </div>
             </details>
           ) : (
@@ -300,5 +284,36 @@ export function OAuthFields<A, E>({
         </div>
       </div>
     </>
+  );
+}
+
+/** What sign-in asks the provider for, shown before the user leaves for its consent page. */
+function Permissions({
+  label,
+  scopes,
+}: {
+  readonly label: string;
+  readonly scopes: readonly string[];
+}) {
+  if (scopes.length === 0) return null;
+  return (
+    <section className="space-y-2">
+      <h3 className="flex items-center gap-2 text-xs font-medium">
+        <span>{label}</span>
+        <span className="font-normal tabular-nums text-muted-foreground">{scopes.length}</span>
+      </h3>
+      <div
+        role="region"
+        aria-label={label}
+        tabIndex={0}
+        className="flex max-h-[min(14rem,30dvh)] flex-wrap gap-1.5 overflow-y-auto overscroll-contain rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        {scopes.map((scope) => (
+          <code key={scope} className="max-w-full rounded bg-muted px-2 py-1 text-xs break-all">
+            {scope}
+          </code>
+        ))}
+      </div>
+    </section>
   );
 }

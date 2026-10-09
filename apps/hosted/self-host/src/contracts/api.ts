@@ -1,6 +1,6 @@
 import { HostedAppUi } from "@executor-js/hosted-server/app-ui/contracts";
 import { HostedApi, hostedApiDocument } from "@executor-js/hosted-server/contracts";
-import { OpenApi } from "effect/unstable/httpapi";
+import { OpenApi } from "effect/http-api";
 
 /** Complete Executor Self-host API. Compose every self-host product endpoint here. */
 export const ExecutorSelfHostApi = HostedApi.add(HostedAppUi).annotate(

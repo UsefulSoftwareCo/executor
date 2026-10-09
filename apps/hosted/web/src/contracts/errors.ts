@@ -1,8 +1,8 @@
 import { registryErrorMessage } from "@executor-js/ui/contracts/registry-error";
 import type { HostedApi } from "@executor-js/hosted-server/contracts";
 import { Cause, Match, Option, type Schema } from "effect";
-import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
+import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
 
 type Groups = (typeof HostedApi.groups)[keyof typeof HostedApi.groups];
 /** The hosted API owns its error algebra, including membership and authentication failures. */
@@ -36,6 +36,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     ScheduleNotFound: () => "This schedule or run is no longer available.",
     ConnectionNotFound: () => "This connection was revoked or no longer exists.",
     ConnectionIdTaken: () => "This connection could not be created. Close the form and try again.",
+    ConnectedAgentNotFound: () => "This agent is no longer connected.",
     ConnectionAccessInvalid: ({ reason }) =>
       ({
         app: "An included app is no longer available to you. Remove it and try again.",
@@ -107,7 +108,7 @@ const errorMessage = Match.type<HostedError>().pipe(
       "This server documents a different framework version. Search again without a version.",
     ToolKindMismatch: () =>
       "This tool changed between a query and a mutation. Reload the app’s tools and try again.",
-    ToolBlocked: () => "The tool's approval policy blocked this tool call. The tool did not run.",
+    ToolBlocked: (error) => `${error.description} ${error.recovery.action}`,
     ToolApprovalRequired: () =>
       "The tool requires approval. The tool did not run. Approval handling is not available yet.",
     ToolPolicyFailed: () =>

@@ -1,4 +1,4 @@
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Effect } from "effect";
 import { useEffect } from "react";
@@ -20,7 +20,7 @@ export function OAuthCallbackPage() {
     if (!reconnect)
       requestName({
         account: result.value.id,
-        ...(destination.to === "/apps/$appId/setup" ? { app: destination.params.appId } : {}),
+        ...(destination.to === "/apps/$appId" ? { app: destination.params.appId } : {}),
       });
     void navigate(destination);
   }, [result, navigate, requestName]);

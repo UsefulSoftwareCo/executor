@@ -8,6 +8,8 @@ export const CloudEntryPage = Schema.Struct({
   path: Schema.Literals(["/login", "/login/sso", "/create", "/"]),
   session: BrowserSession,
   onboarding: Schema.NullOr(OnboardingEntry),
+  /** This browser holds the signed-in user's passkey enrollment cookie. */
+  passkeyEnrollment: Schema.Boolean,
 });
 export type CloudEntryPage = typeof CloudEntryPage.Type;
 /** The server selects a document or a validated internal return destination before rendering. */

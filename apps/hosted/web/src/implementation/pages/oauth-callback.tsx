@@ -1,4 +1,4 @@
-import { AtomRegistry } from "effect/unstable/reactivity";
+import { AtomRegistry } from "effect/reactivity";
 import { RegistryContext } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Effect, Exit, Option, Redacted, Schema, Cause } from "effect";
@@ -47,15 +47,17 @@ export function OAuthCallbackPage() {
   const registry = useContext(RegistryContext);
   const started = useRef(false);
   const [state, setState] = useState<CallbackState>({ status: "connecting" });
-  const [stored] = useState(() =>
-    Schema.decodeUnknownOption(Schema.fromJsonString(PendingOAuth))(
-      sessionStorage.getItem("executor:hosted:oauth"),
-    ),
-  );
-  const [pending, setPending] = useState(stored);
+  const [pending, setPending] = useState<Option.Option<typeof PendingOAuth.Type>>(Option.none());
   useEffect(() => {
     if (started.current) return;
     started.current = true;
+    // The server renders this page too and cannot see the tab's storage, so the context is read
+    // once the page has hydrated; until then both render the same neutral progress.
+    const stored = Schema.decodeUnknownOption(Schema.fromJsonString(PendingOAuth))(
+      sessionStorage.getItem("executor:hosted:oauth"),
+    );
+    // oxlint-disable-next-line react/set-state-in-effect -- one-time callback handling on mount
+    setPending(stored);
     const callbackSearch = window.location.search;
     window.history.replaceState(null, "", "/oauth/callback");
     if (!new URLSearchParams(callbackSearch).has("state")) {
@@ -163,16 +165,20 @@ export function OAuthCallbackPage() {
           search: { account: result.value.id },
         });
     })();
-  }, [registry, navigate, stored]);
+  }, [registry, navigate]);
   return (
     <ConnectionStatusPage
       status={state.status}
       message={
         state.status !== "connecting"
           ? state.message
-          : Option.isSome(pending) && pending.value.app !== null
-            ? "Finishing sign-in. You’ll return to the app automatically."
-            : "Finishing sign-in. You’ll return to your accounts automatically."
+          : Option.match(pending, {
+              onNone: () => "Finishing sign-in…",
+              onSome: (context) =>
+                context.app !== null
+                  ? "Finishing sign-in. You’ll return to the app automatically."
+                  : "Finishing sign-in. You’ll return to your accounts automatically.",
+            })
       }
     >
       {state.status !== "connecting" && (

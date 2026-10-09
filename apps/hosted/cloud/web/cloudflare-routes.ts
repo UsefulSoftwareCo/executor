@@ -67,12 +67,5 @@ export const cloudflareRoutes = (): Plugin => ({
     const source = JSON.stringify([...patterns].sort(), null, 2) + "\n";
     if (!existsSync(dashboardRoutesFile) || readFileSync(dashboardRoutesFile, "utf8") !== source)
       writeFileSync(dashboardRoutesFile, source);
-    // Every file under /assets is named by its content hash, so a cached copy is never stale.
-    // Marketing and docs publish under /_astro and /docs, outside this rule.
-    this.emitFile({
-      type: "asset",
-      fileName: "_headers",
-      source: "/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n",
-    });
   },
 });
