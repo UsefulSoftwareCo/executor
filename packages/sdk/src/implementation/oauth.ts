@@ -1335,7 +1335,8 @@ export const makeOAuth = (
           const { fields, tokens, sealed } = result.success;
           // The service may already have rotated the refresh token the store now holds under its
           // new seal. Keep that seal under the claim before anything else can fail, so a renewal
-          // that resumes this abandoned claim starts from it instead of the replaced token.
+          // that resumes this abandoned claim starts from it instead of the replaced token. A seal
+          // the store returns but cannot open again leaves the grant unusable until a new sign-in.
           if (sealed !== undefined)
             yield* query(() =>
               db.updateMany("oauthGrants", {
@@ -1397,8 +1398,8 @@ export const makeOAuth = (
         // times out or disconnects would otherwise abandon a live claim, and with it any rotated
         // refresh token the service has already issued. The token request is bounded by its own
         // timeout, so an interruption waits at most that long plus the save. With a credentials
-        // store, the renewal and the decrypt and two encrypts after it are each one bounded call
-        // to the store.
+        // store, the renewal and the decrypt and two encrypts after it are four calls to the store,
+        // so an interruption can wait for all four of their timeouts plus the save.
         resolution.contested = true;
         const renewed = yield* Effect.uninterruptible(
           Effect.gen(function* () {

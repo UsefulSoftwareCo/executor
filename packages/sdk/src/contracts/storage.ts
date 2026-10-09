@@ -123,12 +123,15 @@ export class CredentialsRenewalRefused extends Schema.TaggedError<CredentialsRen
 
 /** A renewal a credentials store performed. */
 export interface CredentialsRenewed {
-  /** Public token response members. Never refresh_token, id_token, client_secret or client_assertion. */
+  /**
+   * Public token response members. Never refresh_token, id_token, client_secret or
+   * client_assertion.
+   */
   readonly tokens: Redacted.Redacted<JsonObject>;
   /**
    * The grant sealed again, holding any rotated refresh token. The host decrypts it, sets the
-   * renewed fields and lifetime and encrypts it once more, so `encrypt` keeps the store's own
-   * placeholders.
+   * renewed fields and lifetime and encrypts it once more, so the store's `encrypt` must keep its
+   * own placeholders, or the rotated refresh token is lost.
    */
   readonly sealed: Uint8Array;
 }
@@ -172,12 +175,15 @@ export interface Credentials {
    * The host seals several records under the same identities and still runs sign-in and the
    * client credentials setup exchange itself. So a store may replace `refreshToken` and
    * `client.client_secret` with placeholders only in the grant: a record under an `acc_` identity
-   * with `server`, `client`, `fields` and `response` keys. The account fields under the same identity, the sign-in
-   * attempt under `oauth_` and the saved client under `client_` (top-level `client_secret`) must
-   * decrypt to their real values. The host reads only whether the placeholders are present.
+   * with `server`, `client`, `fields` and `response` keys. The account fields under the same
+   * identity, the sign-in attempt under `oauth_` and the saved client under `client_` (top-level
+   * `client_secret`) must decrypt to their real values. The host reads only whether the
+   * placeholders are present.
    *
    * Performs the RFC 6749 `refresh_token` or `client_credentials` request, and for a refreshed ID
-   * token the OIDC Core §12.2 subject check (reason `subject_changed`). Returns no secret.
+   * token the OIDC Core §12.2 subject check (reason `subject_changed`). Returns no secret. If the
+   * service rotates the token but the answer never reaches the host, the host keeps the old seal,
+   * as it does after a lost answer to its own token request.
    */
   readonly renew?: (
     identity: AccountId,
