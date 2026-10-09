@@ -12,12 +12,7 @@ import {
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { Base64 } from "effect/encoding";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
-
-/** `EXECUTOR_CREDENTIAL_ADAPTER_URL` is not an adapter origin the host's egress policy allows. */
-export class CredentialAdapterUrlInvalid extends Schema.TaggedError<CredentialAdapterUrlInvalid>()(
-  "CredentialAdapterUrlInvalid",
-  { message: Schema.String },
-) {}
+import { CredentialAdapterUrlInvalid } from "../contracts/credential-adapter.ts";
 
 /**
  * `EXECUTOR_CREDENTIAL_ADAPTER_URL`, checked at startup. Unset, the host encrypts with
@@ -31,11 +26,12 @@ export const credentialAdapterSetting = (egress: HostEgress) =>
         onNone: () => Effect.succeed(Option.none<URL>()),
         onSome: (value) => {
           const url = parseDestination(value, egress.policy);
-          return url === undefined
+          // Routes are joined to the path, so a query would be dropped from every request.
+          return url === undefined || url.search !== ""
             ? Effect.fail(
                 new CredentialAdapterUrlInvalid({
                   message:
-                    "EXECUTOR_CREDENTIAL_ADAPTER_URL must be an HTTPS URL, or loopback HTTP where this host allows it, with no credentials or fragment.",
+                    "EXECUTOR_CREDENTIAL_ADAPTER_URL must be an HTTPS URL, or loopback HTTP where this host allows it, with no credentials, query or fragment.",
                 }),
               )
             : Effect.succeed(Option.some(url));

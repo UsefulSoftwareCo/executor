@@ -50,8 +50,8 @@ export {
   clientMetadataSetting,
   type ClientMetadataSetting,
 } from "./implementation/oauth-client-metadata.ts";
+export * from "./contracts/credential-adapter.ts";
 export {
-  CredentialAdapterUrlInvalid,
   credentialAdapterSetting,
   httpCredentialAdapter,
 } from "./implementation/credential-adapter.ts";

@@ -159,8 +159,10 @@ records redact the bytes; public account records contain only metadata.
 A `Credentials` store may also implement `renew` and `revoke`. OAuth renewal and the
 revocation after an account is deleted then run inside the store, and the host never reads
 the refresh token or client secret. Self-host uses such a store over HTTP when
-`EXECUTOR_CREDENTIAL_ADAPTER_URL` is set, instead of `EXECUTOR_ENCRYPTION_KEY`: it posts JSON to
-`/encrypt`, `/decrypt`, `/renew` and `/revoke` under that URL, with sealed bytes in base64. The
+`EXECUTOR_CREDENTIAL_ADAPTER_URL` is set: it posts JSON to `/encrypt`, `/decrypt`, `/renew` and
+`/revoke` under that URL, with sealed bytes in base64. The host sends no credential of its own,
+so the adapter must authenticate it, for example with mTLS or a network policy.
+`EXECUTOR_ENCRYPTION_KEY` is still read, or generated when unset, but seals nothing. The
 store holds every sealed record, not only OAuth grants, so with the setting on every encrypt and
 decrypt in OAuth, webhooks, workflows, tool approvals, events, accounts and credential handles
 goes to the adapter, and an adapter outage stops webhook and workflow secret handling too.

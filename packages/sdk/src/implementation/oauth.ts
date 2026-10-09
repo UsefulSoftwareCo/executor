@@ -83,15 +83,15 @@ import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new StorageError()));
 
-/** Token response members that stay with the host or the credentials store, never the account. */
-const hostOnly = ["refresh_token", "id_token", "client_secret", "client_assertion"];
-
 /** Apply the authored output schema after removing host-only token material. */
 const project = (response: JsonObject, fields: unknown) =>
   Effect.gen(function* () {
     const input = yield* decode(JsonObject, fields);
     const publicFields = Object.fromEntries(
-      Object.entries(input).filter(([key]) => !hostOnly.includes(key)),
+      Object.entries(input).filter(
+        ([key]) =>
+          !["refresh_token", "id_token", "client_secret", "client_assertion"].includes(key),
+      ),
     );
     const decoder = yield* Effect.try({
       try: () =>
@@ -128,23 +128,29 @@ const retryAfterOf = (reason: string, error: OAuthProtocolFailed) =>
     : {};
 
 /**
- * The tokens a credentials store's renewal returned, without host-only members. RFC 6749 §5.1
- * gives `expires_in` as a number; any other shape is a response Executor cannot use.
+ * The tokens a credentials store's renewal returned. RFC 6749 §5.1 gives `expires_in` as a
+ * number; any other shape is a response Executor cannot use. `project` drops host-only members
+ * before anything reaches the account.
  */
 const RenewedTokens = Schema.StructWithRest(
   Schema.Struct({ expires_in: Schema.optional(Schema.Number) }),
   [JsonObject],
 );
 const renewedTokens = (tokens: Redacted.Redacted<JsonObject>) =>
-  Schema.decodeUnknownEffect(RenewedTokens)(
-    Object.fromEntries(
-      Object.entries(Redacted.value(tokens)).filter(([key]) => !hostOnly.includes(key)),
-    ),
-  ).pipe(
+  Schema.decodeUnknownEffect(RenewedTokens)(Redacted.value(tokens)).pipe(
     Effect.mapError(
       () => new OAuthProtocolFailed({ reason: "invalid_response", code: "schema_decode" }),
     ),
   );
+
+/** A renewal's token response, with the grant a credentials store sealed again when it renewed. */
+type Renewal = Effect.Effect<
+  {
+    readonly tokens: { readonly expires_in?: number | undefined; readonly [key: string]: unknown };
+    readonly sealed?: Uint8Array | undefined;
+  },
+  OAuthProtocolFailed
+>;
 
 /**
  * RFC 6749 §5.1 gives a token's lifetime in seconds from issue. oauth4webapi rejects negative
@@ -1207,28 +1213,17 @@ export const makeOAuth = (
             (!renewable && grant.expiresAt > now))
         )
           return Redacted.make(grant.fields);
-        if (protocol === undefined) return yield* reconnect("not_renewable");
+        // Neither the host nor a credentials store can renew a grant without a refresh token; it
+        // reconnects, as `usable` reports.
+        if (protocol === undefined || options === undefined || !renewable)
+          return yield* reconnect("not_renewable");
         const stage = grant.grant === "client_credentials" ? "clientCredentials" : "refresh";
         const store = credentials.renew;
-        if (store !== undefined)
-          yield* Effect.annotateCurrentSpan("oauth.renewal.custody", "store");
         // A store that renews holds the real refresh token and client secret; the host applies
         // its URL policy to the saved token endpoint, as its own transport would.
-        const renewal:
-          | Effect.Effect<
-              {
-                readonly tokens: {
-                  readonly expires_in?: number | undefined;
-                  readonly [key: string]: unknown;
-                };
-                readonly sealed?: Uint8Array | undefined;
-              },
-              OAuthProtocolFailed
-            >
-          | undefined =
+        const renewal: Renewal | undefined =
           store !== undefined
-            ? options === undefined ||
-              parseDestination(grant.server.token_endpoint, options.urlPolicy) === undefined
+            ? parseDestination(grant.server.token_endpoint, options.urlPolicy) === undefined
               ? Effect.fail(new OAuthProtocolFailed({ reason: "destination_blocked" }))
               : store(account.id, Redacted.make(row.encrypted)).pipe(
                   Effect.mapError(fromRefusal),
@@ -1247,6 +1242,8 @@ export const makeOAuth = (
         const claim = `refresh_${yield* nextId}`;
         /** Renew under the claim and save the outcome; undefined when the claim was lost. */
         const settle = Effect.gen(function* () {
+          if (store !== undefined)
+            yield* Effect.annotateCurrentSpan("oauth.renewal.custody", "store");
           const result = yield* renewal.pipe(
             Effect.annotateSpans("oauth.provider.id", account.provider),
             Effect.mapError((error) => {
@@ -1336,6 +1333,16 @@ export const makeOAuth = (
             });
           }
           const { fields, tokens, sealed } = result.success;
+          // The service may already have rotated the refresh token the store now holds under its
+          // new seal. Keep that seal under the claim before anything else can fail, so a renewal
+          // that resumes this abandoned claim starts from it instead of the replaced token.
+          if (sealed !== undefined)
+            yield* query(() =>
+              db.updateMany("oauthGrants", {
+                where: (b) => b.and(b("id", "=", account.id), b("status", "=", claim)),
+                set: { encrypted: sealed },
+              }),
+            );
           const updatedAt = new Date(yield* Clock.currentTimeMillis);
           // A store that renewed sealed the grant again with any rotated refresh token. Its view of
           // that grant takes the renewed fields and lifetime, and the store seals it once more.
@@ -1389,7 +1396,9 @@ export const makeOAuth = (
         // From claiming the grant to settling it, the renewal cannot be interrupted: a caller that
         // times out or disconnects would otherwise abandon a live claim, and with it any rotated
         // refresh token the service has already issued. The token request is bounded by its own
-        // timeout, so an interruption waits at most that long plus the save.
+        // timeout, so an interruption waits at most that long plus the save. With a credentials
+        // store, the renewal and the decrypt and two encrypts after it are each one bounded call
+        // to the store.
         resolution.contested = true;
         const renewed = yield* Effect.uninterruptible(
           Effect.gen(function* () {
