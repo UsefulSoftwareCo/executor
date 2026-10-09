@@ -725,7 +725,7 @@ const optionalTokenMembers = new Set([
  * space-delimited string. A missing `token_type` is Bearer: Shopify, ClickUp and Mailchimp omit
  * it, and Executor sends every access token as a Bearer token.
  */
-const normalizedTokens = (body: object) => {
+export const normalizedTokens = (body: object) => {
   const tokens: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body)) {
     if (optionalTokenMembers.has(key) && (value === null || (value === "" && key !== "scope")))

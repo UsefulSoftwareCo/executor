@@ -75,6 +75,7 @@ import {
   idTokenIdentity,
   isOAuthErrorResponse,
   makeOAuthProtocol,
+  normalizedTokens,
   OAuthProtocolFailed,
 } from "./oauth-protocol.ts";
 import { defaultLabel, ownedAccount } from "./accounts.ts";
@@ -128,19 +129,25 @@ const retryAfterOf = (reason: string, error: OAuthProtocolFailed) =>
     : {};
 
 /**
- * The tokens a credentials store's renewal returned. RFC 6749 §5.1 gives `expires_in` as a
- * number, and some services send it as a numeric string, which oauth4webapi accepts on the
- * host's own request; any other shape is a response Executor cannot use. `project` drops
- * host-only members before anything reaches the account.
+ * The tokens a credentials store's renewal returned, normalized as the host normalizes its own
+ * token response, so a store may pass the service's body as it came. RFC 6749 §5.1 gives
+ * `expires_in` as a non-negative number, and some services send it as a numeric string, which
+ * oauth4webapi accepts on the host's own request; any other shape, including a negative
+ * lifetime, is a response Executor cannot use. `project` drops host-only members before
+ * anything reaches the account.
  */
 const RenewedTokens = Schema.StructWithRest(
   Schema.Struct({
-    expires_in: Schema.optional(Schema.Union([Schema.Number, Schema.FiniteFromString])),
+    expires_in: Schema.optional(
+      Schema.Union([Schema.Number, Schema.FiniteFromString]).check(
+        Schema.isGreaterThanOrEqualTo(0),
+      ),
+    ),
   }),
   [JsonObject],
 );
 const renewedTokens = (tokens: Redacted.Redacted<JsonObject>) =>
-  Schema.decodeUnknownEffect(RenewedTokens)(Redacted.value(tokens)).pipe(
+  Schema.decodeUnknownEffect(RenewedTokens)(normalizedTokens(Redacted.value(tokens))).pipe(
     Effect.mapError(
       () => new OAuthProtocolFailed({ reason: "invalid_response", code: "schema_decode" }),
     ),
