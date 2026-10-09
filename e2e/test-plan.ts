@@ -2591,7 +2591,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-credential-adapter.spec.ts",
     title:
-      "with a credential adapter configured, OAuth renewal runs inside the adapter, the rotated refresh token stays there, and the host's responses and traces never carry it, and a renewal interrupted after the token rotated resumes from the adapter's new seal",
+      "with a credential adapter configured, the adapter makes every OAuth renewal and keeps the rotated refresh token, a restarted host renews from the adapter's seal, and a renewal interrupted after the token rotated resumes from the adapter's new seal",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
