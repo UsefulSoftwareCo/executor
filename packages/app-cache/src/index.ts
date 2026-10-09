@@ -71,8 +71,11 @@ export const makeCache = (
   const keyOf = (key: Schema.Json) => cacheKey([scope, key]);
   const readKeys = (keys: readonly string[]) =>
     transport({ operation: "read", keys }).pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.NullOr(CacheEntry)))),
-      Effect.mapError(() => new CacheError({ reason: "storage" })),
+      Effect.flatMap((reply) =>
+        Schema.decodeUnknownEffect(Schema.Array(Schema.NullOr(CacheEntry)))(reply).pipe(
+          Effect.mapError(() => new CacheError({ reason: "storage" })),
+        ),
+      ),
     );
   const durations = (freshFor: Duration.Input, staleFor: Duration.Input = 0) =>
     Effect.try({
