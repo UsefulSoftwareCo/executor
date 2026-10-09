@@ -22,9 +22,12 @@ env:
   EXECUTOR_DISABLE_ANALYTICS: "1"
   EXECUTOR_DISABLE_INTEGRATIONS_FETCH: "1"
 
+# Outside contributions are ported into the private repo, which runs the
+# checks there, so fork PRs skip CI here. Jobs that need `changes` skip with it.
 jobs:
   changes:
     name: Changed paths
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
@@ -78,6 +81,7 @@ jobs:
 
   format:
     name: Format
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
@@ -101,6 +105,7 @@ jobs:
 
   lint:
     name: Lint
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
@@ -124,6 +129,7 @@ jobs:
 
   typecheck:
     name: Typecheck
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     env:
@@ -165,6 +171,7 @@ jobs:
 
   test:
     name: Test
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 15
     # Run eight independent packages at once and cap each Vitest process at two
