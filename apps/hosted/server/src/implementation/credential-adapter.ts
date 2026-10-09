@@ -17,6 +17,8 @@ import { CredentialAdapterUrlInvalid } from "../contracts/credential-adapter.ts"
 /**
  * `EXECUTOR_CREDENTIAL_ADAPTER_URL`, checked at startup. Unset, the host encrypts with
  * `EXECUTOR_ENCRYPTION_KEY`. The adapter authenticates the host itself, by mTLS or network policy.
+ * Every request also passes the connect-time address check, so an adapter on a private network
+ * needs its exact HTTP origin in `EXECUTOR_URL_ALLOW_HTTP_ORIGINS`.
  */
 export const credentialAdapterSetting = (egress: HostEgress) =>
   Config.String("EXECUTOR_CREDENTIAL_ADAPTER_URL").pipe(
@@ -31,7 +33,7 @@ export const credentialAdapterSetting = (egress: HostEgress) =>
             ? Effect.fail(
                 new CredentialAdapterUrlInvalid({
                   message:
-                    "EXECUTOR_CREDENTIAL_ADAPTER_URL must be an HTTPS URL, or loopback HTTP where this host allows it, with no credentials, query or fragment.",
+                    "EXECUTOR_CREDENTIAL_ADAPTER_URL must be an HTTPS URL, or an HTTP URL this host allows (loopback, or an origin in EXECUTOR_URL_ALLOW_HTTP_ORIGINS), with no credentials, query or fragment. An adapter on a private or internal host needs its exact HTTP origin in EXECUTOR_URL_ALLOW_HTTP_ORIGINS.",
                 }),
               )
             : Effect.succeed(Option.some(url));
@@ -54,7 +56,8 @@ const bytesOf = (value: string) =>
 /**
  * `POST {url}/encrypt|decrypt|renew|revoke` with JSON bodies; bytes travel as base64. Any
  * transport failure, unexpected status or undecodable body is a `CredentialsError`. `/renew`
- * answers 422 with the refusal's fields when the service refused the renewal.
+ * answers 422 with the refusal's fields when the service refused the renewal. The host waits 30
+ * seconds for each answer, so `/renew` must give the service a shorter deadline of its own.
  */
 export const httpCredentialAdapter = (url: URL, egress: HostEgress): Credentials => {
   const post = (route: string, body: object) =>
