@@ -50,6 +50,8 @@ Optional overrides are `BETTER_AUTH_URL` (exact public origin),
 `BETTER_AUTH_SECRET` (at least 32 characters), and `EXECUTOR_ENCRYPTION_KEY`
 (exactly 64 hexadecimal characters). Explicit keys stay in your secret manager;
 the server saves only keys it generates. Keep the original values across upgrades.
+`EXECUTOR_CREDENTIAL_ADAPTER_URL` points sealing and OAuth renewal at an external
+credentials store instead of that key; see the SDK section of the root README.
 
 Open [http://localhost:4400](http://localhost:4400) and complete the first-admin setup.
 Self-host uses password login by default. Add an app, then connect an account from

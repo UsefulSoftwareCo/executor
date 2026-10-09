@@ -98,8 +98,9 @@ export interface StorageHost {
 }
 /**
  * A credentials store refused to renew a grant, in the terms of the service's answer. The host
- * classifies it as it classifies its own token request: only `invalid_grant` and
- * `subject_changed` end the grant.
+ * classifies it as it classifies its own token request. `subject_changed` ends the grant on its
+ * own; `invalid_grant` ends it only with `answer: "error_body"` or the service's `status`, since a
+ * refusal that names no answer from the service reads as an incompatible response.
  */
 export class CredentialsRenewalRefused extends Schema.TaggedError<CredentialsRenewalRefused>()(
   "CredentialsRenewalRefused",
@@ -171,7 +172,7 @@ export interface Credentials {
    * The host seals several records under the same identities and still runs sign-in and the
    * client credentials setup exchange itself. So a store may replace `refreshToken` and
    * `client.client_secret` with placeholders only in the grant: a record under an `acc_` identity
-   * with `server` and `fields` keys. The account fields under the same identity, the sign-in
+   * with `server`, `client`, `fields` and `response` keys. The account fields under the same identity, the sign-in
    * attempt under `oauth_` and the saved client under `client_` (top-level `client_secret`) must
    * decrypt to their real values. The host reads only whether the placeholders are present.
    *
@@ -185,6 +186,8 @@ export interface Credentials {
   /**
    * RFC 7009 revocation of a deleted account's grant with the store's real token: the refresh
    * token when present, otherwise the access token. Outcomes match the host's own revocation.
+   * The host calls it once, after deleting the account, whatever the outcome; how long the store
+   * keeps the grant's secrets after that is the store's decision.
    */
   readonly revoke?: (
     identity: AccountId,
