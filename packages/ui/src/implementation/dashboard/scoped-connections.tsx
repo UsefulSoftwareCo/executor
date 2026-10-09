@@ -420,7 +420,7 @@ function ConnectionList<E>({
   );
 }
 
-function SearchInput({
+export function SearchInput({
   value,
   onChange,
   placeholder,
@@ -491,7 +491,7 @@ function Tabs<T extends string>({
 }
 
 /** Bulk-including apps leaves each waiting for an account; assign one account to all that accept it. */
-function AssignAccount({
+export function AssignAccount({
   apps,
   byId,
   accounts,
