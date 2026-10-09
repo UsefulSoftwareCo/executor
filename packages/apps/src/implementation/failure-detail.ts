@@ -190,7 +190,7 @@ export const parseMcpError = (
   secrets: readonly string[],
 ): Option.Option<HostMcpError> =>
   Schema.decodeUnknownOption(McpError)(error).pipe(
-    Option.map(({ phase, reason, status, upstream, session }) => {
+    Option.map(({ phase, reason, status, upstream, session, initialized, fallback }) => {
       const stated = redactUpstream(upstream, secrets);
       return new HostMcpError({
         phase,
@@ -198,6 +198,8 @@ export const parseMcpError = (
         ...(status === undefined ? {} : { status }),
         ...(stated === undefined ? {} : { upstream: stated }),
         ...(session === undefined ? {} : { session }),
+        ...(initialized === undefined ? {} : { initialized }),
+        ...(fallback === undefined ? {} : { fallback }),
       });
     }),
   );

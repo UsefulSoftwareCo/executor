@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { appsManifest, databaseFiles, withApps, mcpSdkVersion } from "../support/apps-release.ts";
+import { appsManifest, databaseFiles, withApps, mcpDependencies } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, ReceivedRequest } from "../support/credential-upstream.ts";
@@ -416,7 +416,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
                 {
                   path: "package.json",
                   content: JSON.stringify({
-                    dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+                    dependencies: withApps(mcpDependencies),
                   }),
                 },
               ),

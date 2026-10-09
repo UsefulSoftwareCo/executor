@@ -4670,6 +4670,86 @@ export const scenarios = plan({
       local: na("Hosted account selection covers the shared catalog diagnostics."),
     },
   },
+  mcpNegotiationTimeout: {
+    fixtures: "actors",
+    file: "mcp-protocol.spec.ts",
+    title: "MCP apps close interrupted modern discovery probes",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
+  mcpFallbackTimeout: {
+    fixtures: "actors",
+    file: "mcp-protocol.spec.ts",
+    title: "MCP apps retain the original HTTP failure when SSE fallback times out",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
+  mcpModernElicitation: {
+    fixtures: "actors",
+    file: "mcp-protocol.spec.ts",
+    title: "MCP apps complete modern elicitation across independent runtimes",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
+  mcpModernProtocol: {
+    fixtures: "actors",
+    file: "mcp-protocol.spec.ts",
+    title: "MCP apps discover and call modern tools across independent runtimes",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
+  mcpLegacyProtocol: {
+    fixtures: "actors",
+    file: "mcp-protocol.spec.ts",
+    title: "MCP apps retain legacy Streamable HTTP discovery and calls",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
+  mcpLegacySseProtocol: {
+    fixtures: "actors",
+    file: "mcp-protocol.spec.ts",
+    title: "MCP apps retain legacy SSE fallback discovery and calls",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
+  mcpFallbackRefused: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "MCP apps retain primary refusals and sanitized SSE fallback failures",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
+  mcpSessionLost: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "MCP apps distinguish lost initialized sessions from unsupported endpoints",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The upstream is a scoped loopback MCP listener."),
+      local: na("Self-host exercises the shared outbound app MCP client."),
+    },
+  },
   mcpExecuteAppThrew: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",

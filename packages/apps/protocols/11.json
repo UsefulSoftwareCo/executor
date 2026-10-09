@@ -1951,13 +1951,375 @@
           "isOptional": true
         }
       ]
+    },
+    "catalog": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "tools",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "$shared": "a1b1350e78156beb"
+                  },
+                  {
+                    "name": "name",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "router",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "tags",
+                    "type": {
+                      "_tag": "Arrays",
+                      "rest": [
+                        {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "description",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "inputSchema",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [],
+                      "indexSignatures": [
+                        {
+                          "parameter": {
+                            "_tag": "String"
+                          },
+                          "type": {
+                            "_tag": "Declaration",
+                            "representation": {
+                              "id": "effect/schema/Json",
+                              "payload": null
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "readOnly",
+                    "type": {
+                      "_tag": "Boolean"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "title",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "outputSchema",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [],
+                      "indexSignatures": [
+                        {
+                          "parameter": {
+                            "_tag": "String"
+                          },
+                          "type": {
+                            "_tag": "Declaration",
+                            "representation": {
+                              "id": "effect/schema/Json",
+                              "payload": null
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "annotations",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [
+                        {
+                          "name": "title",
+                          "type": {
+                            "_tag": "String"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "readOnlyHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "destructiveHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "idempotentHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "openWorldHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "_meta",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [],
+                      "indexSignatures": [
+                        {
+                          "parameter": {
+                            "_tag": "String"
+                          },
+                          "type": {
+                            "_tag": "Declaration",
+                            "representation": {
+                              "id": "effect/schema/Json",
+                              "payload": null
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "$shared": "270b61f7e0a0d074"
+        }
+      ]
+    },
+    "catalogSummary": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "tools",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "$shared": "a1b1350e78156beb"
+                  },
+                  {
+                    "name": "name",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "router",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "tags",
+                    "type": {
+                      "_tag": "Arrays",
+                      "rest": [
+                        {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "description",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "readOnly",
+                    "type": {
+                      "_tag": "Boolean"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "title",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "annotations",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [
+                        {
+                          "name": "title",
+                          "type": {
+                            "_tag": "String"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "readOnlyHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "destructiveHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "idempotentHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        },
+                        {
+                          "name": "openWorldHint",
+                          "type": {
+                            "_tag": "Boolean"
+                          },
+                          "isOptional": true
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "$shared": "270b61f7e0a0d074"
+        }
+      ]
     }
   },
   "unchanged": [
     "invocation",
     "request",
-    "catalog",
-    "catalogSummary",
     "skills",
     "elicitationRequest",
     "elicitationReply",
@@ -2554,6 +2916,142 @@
               {
                 "_tag": "Literal",
                 "literal": true
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "initialized",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Boolean"
+              },
+              {
+                "_tag": "Null"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "fallback",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "phase",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Literal",
+                          "literal": "connect"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "discover"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "call"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "schema"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "transport"
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "reason",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Literal",
+                          "literal": "request"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "unauthorized"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "invalid_response"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "timeout"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "invalid_input"
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "status",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Union",
+                          "types": [
+                            {
+                              "_tag": "Number",
+                              "checks": [
+                                {
+                                  "_tag": "Filter",
+                                  "representation": {
+                                    "id": "effect/schema/isFinite",
+                                    "payload": null
+                                  }
+                                }
+                              ]
+                            },
+                            {
+                              "_tag": "Union",
+                              "types": [
+                                {
+                                  "_tag": "Literal",
+                                  "literal": "Infinity"
+                                },
+                                {
+                                  "_tag": "Literal",
+                                  "literal": "-Infinity"
+                                },
+                                {
+                                  "_tag": "Literal",
+                                  "literal": "NaN"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "_tag": "Null"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
               },
               {
                 "_tag": "Null"
@@ -3857,5 +4355,359 @@
       }
     }
   },
-  "shared": {}
+  "shared": {
+    "0c12a542f8bcbcb2": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "path",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "title",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "description",
+          "type": {
+            "_tag": "String"
+          },
+          "isOptional": true
+        },
+        {
+          "name": "icons",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "src",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMinLength",
+                            "payload": {
+                              "minLength": 1
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "mimeType",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "sizes",
+                    "type": {
+                      "_tag": "Arrays",
+                      "rest": [
+                        {
+                          "_tag": "String"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "theme",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Literal",
+                          "literal": "light"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "dark"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "tags",
+          "type": {
+            "_tag": "Objects",
+            "propertySignatures": [],
+            "indexSignatures": [
+              {
+                "parameter": {
+                  "_tag": "String",
+                  "checks": [
+                    {
+                      "_tag": "Filter",
+                      "representation": {
+                        "id": "effect/schema/isMinLength",
+                        "payload": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "type": {
+                  "_tag": "String"
+                }
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "skill",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "_tag": "Filter"
+              }
+            ]
+          },
+          "isOptional": true
+        },
+        {
+          "name": "error",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Reference",
+                "$ref": "ProviderErrorEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "McpErrorEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "SkillLoadFailedEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "HostDeclarationInvalidEncoded"
+              },
+              {
+                "_tag": "Reference",
+                "$ref": "HostEvaluationFailedEncoded"
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ]
+    },
+    "16304fd2e30a0779": {
+      "_tag": "Arrays",
+      "rest": [
+        {
+          "$shared": "0c12a542f8bcbcb2"
+        }
+      ]
+    },
+    "270b61f7e0a0d074": {
+      "name": "routers",
+      "type": {
+        "$shared": "16304fd2e30a0779"
+      },
+      "isOptional": false
+    },
+    "885e3b9b225a40d5": {
+      "_tag": "Arrays",
+      "rest": [
+        {
+          "$shared": "8d146f8a77931c63"
+        }
+      ]
+    },
+    "8d146f8a77931c63": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "name",
+          "type": {
+            "_tag": "String",
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMinLength",
+                  "payload": {
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "timing",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "kind",
+                    "type": {
+                      "_tag": "Literal",
+                      "literal": "interval"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "milliseconds",
+                    "type": {
+                      "_tag": "Number",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isInt",
+                            "payload": null
+                          }
+                        },
+                        {
+                          "_tag": "Filter",
+                          "annotations": {
+                            "message": "Schedule intervals must be at least 60 seconds"
+                          }
+                        },
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isLessThanOrEqualTo",
+                            "payload": {
+                              "maximum": 9007199254740991
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  }
+                ]
+              },
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "kind",
+                    "type": {
+                      "_tag": "Literal",
+                      "literal": "cron"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "calendar",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [
+                        {
+                          "name": "expression",
+                          "type": {
+                            "_tag": "String",
+                            "checks": [
+                              {
+                                "_tag": "Filter",
+                                "representation": {
+                                  "id": "effect/schema/isMinLength",
+                                  "payload": {
+                                    "minLength": 1
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          "isOptional": false
+                        },
+                        {
+                          "name": "timezone",
+                          "type": {
+                            "_tag": "String",
+                            "checks": [
+                              {
+                                "_tag": "Filter",
+                                "representation": {
+                                  "id": "effect/schema/isMinLength",
+                                  "payload": {
+                                    "minLength": 1
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          "isOptional": false
+                        }
+                      ],
+                      "checks": [
+                        {
+                          "_tag": "Filter"
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  }
+                ]
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "input",
+          "type": {
+            "_tag": "Declaration",
+            "representation": {
+              "id": "effect/schema/Json",
+              "payload": null
+            }
+          },
+          "isOptional": false
+        }
+      ]
+    },
+    "a1b1350e78156beb": {
+      "name": "schedules",
+      "type": {
+        "$shared": "885e3b9b225a40d5"
+      },
+      "isOptional": true
+    }
+  }
 }

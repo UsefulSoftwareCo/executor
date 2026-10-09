@@ -66,6 +66,20 @@ export class McpError extends Schema.TaggedError<McpError>()("McpError", {
    * it whose side a failure is on.
    */
   session: Schema.optional(Schema.Literal(true)),
+  initialized: Schema.optional(Schema.Boolean),
+  fallback: Schema.optional(
+    Schema.Struct({
+      phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
+      reason: Schema.Literals([
+        "request",
+        "unauthorized",
+        "invalid_response",
+        "timeout",
+        "invalid_input",
+      ]),
+      status: Schema.optional(Schema.Number),
+    }),
+  ),
 }) {}
 
 /** A skill loader failure as it crosses the host boundary. Apps throw the author-facing class from `apps/skills`. */

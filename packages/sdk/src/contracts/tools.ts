@@ -311,16 +311,28 @@ export const McpFailure = Schema.Struct({
   upstream: McpError.fields.upstream,
   /** The refused request carried the session ID the server issued at initialization. */
   session: McpError.fields.session,
+  initialized: McpError.fields.initialized,
+  fallback: McpError.fields.fallback,
 });
 export type McpFailure = typeof McpFailure.Type;
 
 /** An MCP failure's fields, without keys for absent ones. */
-const mcpFailure = ({ phase, reason, status, upstream, session }: McpError): McpFailure => ({
+const mcpFailure = ({
+  phase,
+  reason,
+  status,
+  upstream,
+  session,
+  initialized,
+  fallback,
+}: McpError): McpFailure => ({
   phase,
   reason,
   ...(status === undefined ? {} : { status }),
   ...(upstream === undefined ? {} : { upstream }),
   ...(session === undefined ? {} : { session }),
+  ...(initialized === undefined ? {} : { initialized }),
+  ...(fallback === undefined ? {} : { fallback }),
 });
 
 /**
@@ -350,9 +362,16 @@ export const mcpFailurePresentation = ({
   status,
   upstream,
   session,
+  initialized,
+  fallback,
 }: McpFailure) => {
   const http = status === undefined ? "" : ` (HTTP ${status})`;
-  const answered = upstreamText(upstream, "The server answered with JSON-RPC error");
+  const answered =
+    upstreamText(upstream, "The server answered with JSON-RPC error") +
+    (initialized === true ? " The Streamable HTTP session failed after initialization." : "") +
+    (fallback === undefined
+      ? ""
+      : ` Legacy SSE fallback also failed${fallback.status === undefined ? "" : ` (HTTP ${fallback.status})`}${fallback.reason === "timeout" ? " because it timed out" : ""}.`);
   const stage =
     phase === "connect" || phase === "transport"
       ? "connecting"

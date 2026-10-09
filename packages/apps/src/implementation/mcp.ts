@@ -3,19 +3,17 @@ import { ProviderError } from "../contracts/provider-error.ts";
 import type { UpstreamError } from "../contracts/failure.ts";
 import { bodyUpstreamError } from "./upstream-error.ts";
 /** Official MCP transports at an Effect boundary. Connections belong to one operation. */
-import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
-  ErrorCode,
-  McpError as ProtocolError,
-  ToolListChangedNotificationSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-import { SSEClientTransport, SseError } from "@modelcontextprotocol/sdk/client/sse.js";
-import {
+  UnauthorizedError,
+  Client,
+  SdkError,
+  SdkErrorCode,
+  SdkHttpError,
+  SSEClientTransport,
+  SseError,
   StreamableHTTPClientTransport,
-  StreamableHTTPError,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
+  type FetchLike,
+} from "@modelcontextprotocol/client";
 import { captureTelemetry, owned } from "@executor-js/telemetry";
 import {
   Clock,
@@ -70,29 +68,61 @@ const failure = (
   phase: McpError["phase"],
   error: unknown,
 ): McpError | ProviderError | NetworkRefused => {
-  if (
-    Schema.is(ProviderError)(error) ||
-    Schema.is(McpError)(error) ||
-    Schema.is(NetworkRefused)(error)
-  )
-    return error;
-  const code =
-    error instanceof UnauthorizedError
-      ? 401
-      : error instanceof StreamableHTTPError || error instanceof SseError
-        ? error.code
-        : undefined;
-  if (code !== undefined && code >= 300 && code <= 599)
-    return httpProviderError(code) ?? new McpError({ phase, reason: "request", status: code });
+  const pending: unknown[] = [error];
+  const seen = new Set<unknown>();
+  let timedOut = false;
+  let invalidResponse = false;
+  for (let depth = 0; pending.length > 0 && depth < 16; depth++) {
+    const cause = pending.shift();
+    if (seen.has(cause)) continue;
+    seen.add(cause);
+    if (
+      Schema.is(ProviderError)(cause) ||
+      Schema.is(McpError)(cause) ||
+      Schema.is(NetworkRefused)(cause)
+    )
+      return cause;
+    const status = Match.value(cause).pipe(
+      Match.when(
+        (value: unknown) => value instanceof UnauthorizedError,
+        () => 401,
+      ),
+      Match.when(
+        (value: unknown) => value instanceof SdkHttpError,
+        (value) => value.status,
+      ),
+      Match.when(
+        (value: unknown) => value instanceof SseError,
+        (value) => value.code,
+      ),
+      Match.orElse(() => undefined),
+    );
+    if (status !== undefined && status >= 300 && status <= 599)
+      return httpProviderError(status) ?? new McpError({ phase, reason: "request", status });
+    if (cause instanceof SdkError && cause.code === SdkErrorCode.RequestTimeout) timedOut = true;
+    if (
+      unreadable(cause) ||
+      (status !== undefined && (status < 300 || status > 599)) ||
+      (cause instanceof SdkError &&
+        (cause.code === SdkErrorCode.InvalidResult ||
+          cause.code === SdkErrorCode.ClientHttpUnexpectedContent))
+    )
+      invalidResponse = true;
+    if (typeof cause === "object" && cause !== null) {
+      if ("cause" in cause) pending.push(cause.cause);
+      if (
+        "data" in cause &&
+        typeof cause.data === "object" &&
+        cause.data !== null &&
+        "cause" in cause.data
+      )
+        pending.push(cause.data.cause);
+    }
+  }
   const upstream = answeredError(error);
   return new McpError({
     phase,
-    reason:
-      code !== undefined || unreadable(error)
-        ? "invalid_response"
-        : error instanceof ProtocolError && error.code === ErrorCode.RequestTimeout
-          ? "timeout"
-          : "request",
+    reason: timedOut ? "timeout" : invalidResponse ? "invalid_response" : "request",
     ...(upstream === undefined ? {} : { upstream }),
   });
 };
@@ -146,6 +176,10 @@ const errorBody = (response: HttpClientResponse.HttpClientResponse) =>
     };
   });
 
+const sentMethod = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ method: Schema.String })),
+);
+
 // The library consumes Web Responses; Effect owns requests and streaming bodies.
 // Retain the transport abort signal after response headers arrive.
 const transportFetch =
@@ -154,10 +188,18 @@ const transportFetch =
     telemetry: Effect.Success<typeof captureTelemetry>,
     rejected: Deferred.Deferred<never, ProviderError | NetworkRefused>,
     answered: Ref.Ref<ErrorResponses>,
+    initialized: () => void,
   ): FetchLike =>
   (url, init) =>
     Effect.runPromiseWith(telemetry.context)(
       Effect.gen(function* () {
+        if (
+          Option.exists(
+            sentMethod(init?.body),
+            (message) => message.method === "notifications/initialized",
+          )
+        )
+          initialized();
         // Executor's own refusals name the setting or server response at fault, never a network failure.
         const target = yield* Effect.try({
           try: () => new URL(url),
@@ -246,6 +288,7 @@ const explain = <E>(
     return error;
   const upstream = error.upstream ?? response.upstream;
   return new McpError({
+    ...error,
     phase: error.phase,
     reason: error.reason,
     status: error.status,
@@ -268,118 +311,161 @@ function withClient<A, E>(
   use: (client: Client) => Effect.Effect<A, E>,
   changed?: Effect.Effect<void, unknown>,
 ) {
-  const attempt = (kind: "http" | "sse") =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const telemetry = yield* captureTelemetry;
-        const rejected = yield* Deferred.make<never, ProviderError | NetworkRefused>();
-        const answered = yield* Ref.make<ErrorResponses>(new Map());
-        const pending = new Set<Promise<void>>();
-        const { client, transport } = yield* Effect.acquireRelease(
-          Effect.sync(() => {
-            const fetch = transportFetch(connection, telemetry, rejected, answered);
-            const client = new Client(
-              { name: "executor-apps", version: "0.1.0" },
-              {
-                jsonSchemaValidator: mcpJsonSchemaValidator,
-                capabilities: mode === "call" ? { elicitation: { form: {} } } : {},
-              },
-            );
-            if (changed !== undefined) {
-              client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
-                const task = Effect.runPromiseWith(telemetry.context)(
-                  changed.pipe(
-                    Effect.timeout("5 seconds"),
-                    Effect.catchCause(() => Effect.logWarning("MCP catalog invalidation failed")),
-                  ),
-                );
-                pending.add(task);
-                // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's catalog invalidation
-                return task.finally(() => pending.delete(task));
+  return Effect.suspend(() => {
+    let pendingFallback: McpError | undefined;
+    const attempt = (kind: "http" | "sse", original?: McpError) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const telemetry = yield* captureTelemetry;
+          const rejected = yield* Deferred.make<never, ProviderError | NetworkRefused>();
+          const answered = yield* Ref.make<ErrorResponses>(new Map());
+          const pending = new Set<Promise<void>>();
+          let initialized = false;
+          const { client, transport } = yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              const fetch = transportFetch(connection, telemetry, rejected, answered, () => {
+                initialized = true;
               });
-            }
-            return {
-              client,
-              transport:
-                kind === "http"
-                  ? new StreamableHTTPClientTransport(connection.url, {
-                      fetch,
-                      reconnectionOptions: {
-                        maxRetries: 0,
-                        initialReconnectionDelay: 1_000,
-                        maxReconnectionDelay: 1_000,
-                        reconnectionDelayGrowFactor: 1,
-                      },
-                    })
-                  : new SSEClientTransport(connection.url, { fetch }),
-            };
-          }),
-          ({ client, transport }) =>
-            Effect.gen(function* () {
-              client.removeNotificationHandler("notifications/tools/list_changed");
-              // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's catalog invalidations
-              yield* Effect.promise(async () => {
-                await Promise.allSettled(pending);
-              });
-              if (
-                transport instanceof StreamableHTTPClientTransport &&
-                transport.sessionId !== undefined
-              ) {
-                // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
-                yield* Effect.tryPromise(() => transport.terminateSession()).pipe(
-                  Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs),
-                  Effect.ignore,
-                );
-              }
-              // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
-              yield* Effect.tryPromise(() => client.close()).pipe(
-                Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs),
-                Effect.ignore,
+              const client = new Client(
+                { name: "executor-apps", version: "0.1.0" },
+                {
+                  jsonSchemaValidator: mcpJsonSchemaValidator,
+                  versionNegotiation: { mode: kind === "http" ? "auto" : "legacy" },
+                  capabilities: mode === "call" ? { elicitation: { form: {} } } : {},
+                },
               );
-            }).pipe(owned("upstream", "provider.mcp.close")),
-        );
-        // Hide the SDK getter that conflicts with its own exact-optional Transport type.
-        const wire: Omit<StreamableHTTPClientTransport, "sessionId"> | SSEClientTransport =
-          transport;
-        // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
-        yield* Effect.tryPromise({
-          try: (signal) => client.connect(wire, { signal, timeout: connection.timeoutMs }),
-          catch: (error) => failure("connect", error),
-        }).pipe(
-          Effect.raceFirst(Deferred.await(rejected)),
-          Effect.catch(explained("connect", answered)),
-          Effect.timeout(connection.timeoutMs),
-          owned("upstream", "provider.mcp.connect"),
-        );
-        return yield* use(client).pipe(
-          Effect.raceFirst(Deferred.await(rejected)),
-          Effect.catch(explained(mode, answered)),
-        );
-      }),
-    ).pipe(
-      owned("upstream", "provider.mcp.session", {
-        attributes: {
-          "mcp.transport": kind,
-          "mcp.operation": mode,
-          "server.address": connection.url.hostname,
+              if (changed !== undefined) {
+                client.setNotificationHandler("notifications/tools/list_changed", () => {
+                  const task = Effect.runPromiseWith(telemetry.context)(
+                    changed.pipe(
+                      Effect.timeout("5 seconds"),
+                      Effect.catchCause(() => Effect.logWarning("MCP catalog invalidation failed")),
+                    ),
+                  );
+                  pending.add(task);
+                  // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor catalog invalidation
+                  return task.finally(() => pending.delete(task));
+                });
+              }
+              return {
+                client,
+                transport:
+                  kind === "http"
+                    ? new StreamableHTTPClientTransport(connection.url, {
+                        fetch,
+                        reconnectionOptions: {
+                          maxRetries: 0,
+                          initialReconnectionDelay: 1_000,
+                          maxReconnectionDelay: 1_000,
+                          reconnectionDelayGrowFactor: 1,
+                        },
+                      })
+                    : new SSEClientTransport(connection.url, { fetch }),
+              };
+            }),
+            ({ client, transport }) =>
+              Effect.gen(function* () {
+                client.removeNotificationHandler("notifications/tools/list_changed");
+                // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor catalog invalidations
+                yield* Effect.promise(async () => {
+                  await Promise.allSettled(pending);
+                });
+                if (
+                  transport instanceof StreamableHTTPClientTransport &&
+                  transport.sessionId !== undefined
+                ) {
+                  // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
+                  yield* Effect.tryPromise(() => transport.terminateSession()).pipe(
+                    Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs),
+                    Effect.ignore,
+                  );
+                }
+                // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
+                yield* Effect.tryPromise(async () => {
+                  // Auto negotiation probes before Client owns the transport.
+                  // Closing it explicitly also aborts an interrupted discovery probe.
+                  try {
+                    await transport.close();
+                  } finally {
+                    await client.close();
+                  }
+                }).pipe(Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs), Effect.ignore);
+              }).pipe(owned("upstream", "provider.mcp.close")),
+          );
+          // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
+          yield* Effect.tryPromise({
+            try: (signal) => client.connect(transport, { signal, timeout: connection.timeoutMs }),
+            catch: (error) => {
+              const projected = failure("connect", error);
+              return Schema.is(McpError)(projected) && kind === "http"
+                ? new McpError({ ...projected, initialized })
+                : projected;
+            },
+          }).pipe(
+            Effect.raceFirst(Deferred.await(rejected)),
+            Effect.catch(explained("connect", answered)),
+            Effect.timeout(connection.timeoutMs),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(new McpError({ phase: "connect", reason: "timeout" })),
+            ),
+            Effect.mapError((error) =>
+              original === undefined
+                ? error
+                : new McpError({
+                    ...original,
+                    fallback: {
+                      phase: Schema.is(McpError)(error) ? error.phase : "connect",
+                      reason: Schema.is(McpError)(error) ? error.reason : "request",
+                      ...(Schema.is(McpError)(error) || Schema.is(ProviderError)(error)
+                        ? error.status === undefined
+                          ? {}
+                          : { status: error.status }
+                        : {}),
+                    },
+                  }),
+            ),
+            owned("upstream", "provider.mcp.connect"),
+          );
+          pendingFallback = undefined;
+          return yield* use(client).pipe(
+            Effect.raceFirst(Deferred.await(rejected)),
+            Effect.catch(explained(mode, answered)),
+          );
+        }),
+      ).pipe(
+        owned("upstream", "provider.mcp.session", {
+          attributes: {
+            "mcp.transport": kind,
+            "mcp.operation": mode,
+            "server.address": connection.url.hostname,
+          },
+        }),
+      );
+    return attempt("http").pipe(
+      // Fallback is only for negotiation. Tool calls are never automatically replayed.
+      Effect.catchIf(
+        (error): error is Extract<typeof error, McpError> =>
+          Schema.is(McpError)(error) &&
+          error.phase === "connect" &&
+          (error.status === 404 || error.status === 405),
+        (error) => {
+          pendingFallback = error;
+          return attempt("sse", error);
         },
-      }),
+      ),
+      (operation) =>
+        mode === "discover" ? operation.pipe(Effect.timeout(connection.timeoutMs)) : operation,
+      Effect.catchTag("TimeoutError", () =>
+        Effect.fail(
+          new McpError(
+            pendingFallback === undefined
+              ? { phase: "transport", reason: "timeout" }
+              : { ...pendingFallback, fallback: { phase: "connect", reason: "timeout" } },
+          ),
+        ),
+      ),
     );
-  return attempt("http").pipe(
-    // Fallback is only for negotiation. Tool calls are never automatically replayed.
-    Effect.catch((error) =>
-      Schema.is(McpError)(error) &&
-      error.phase === "connect" &&
-      (error.status === 404 || error.status === 405)
-        ? attempt("sse")
-        : Effect.fail(error),
-    ),
-    (operation) =>
-      mode === "discover" ? operation.pipe(Effect.timeout(connection.timeoutMs)) : operation,
-    Effect.catchTag("TimeoutError", () =>
-      Effect.fail(new McpError({ phase: "transport", reason: "timeout" })),
-    ),
-  );
+  });
 }
 
 /** Discover and call with a fresh selected-account transport for each operation. */

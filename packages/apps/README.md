@@ -25,12 +25,12 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-| Import           | Helper                   | App dependency              |
-| ---------------- | ------------------------ | --------------------------- |
-| `apps/mcp`       | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
-| `apps/mcp/stdio` | `stdioRouter`            | `@modelcontextprotocol/sdk` |
-| `apps/graphql`   | `graphqlRouter`          | `graphql`                   |
-| `apps/openapi`   | `liveOpenapiRouter`      | None                        |
+| Import           | Helper                   | App dependency                                               |
+| ---------------- | ------------------------ | ------------------------------------------------------------ |
+| `apps/mcp`       | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/client`, `@modelcontextprotocol/core` |
+| `apps/mcp/stdio` | `stdioRouter`            | `@modelcontextprotocol/client`, `@modelcontextprotocol/core` |
+| `apps/graphql`   | `graphqlRouter`          | `graphql`                                                    |
+| `apps/openapi`   | `liveOpenapiRouter`      | None                                                         |
 
 MCP and GraphQL are optional peers. Subpath imports isolate their module graphs;
 optional peers keep unused libraries out of the dependency installation. The
@@ -43,7 +43,10 @@ a host with process support.
 Declare the needed peer in the deployed app's `package.json`, for example:
 
 ```json
-{ "name": "deepwiki", "dependencies": { "@modelcontextprotocol/sdk": "1.32.1" } }
+{
+  "name": "deepwiki",
+  "dependencies": { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" }
+}
 ```
 
 Product runtimes compile authored source and declared dependencies inside workerd,

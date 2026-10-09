@@ -13,8 +13,10 @@ import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { mcpProtocolUpstream } from "../support/mcp-protocol-upstream.ts";
 import { requestGate } from "../support/request-gate.ts";
-import { appsManifest, withApps, mcpSdkVersion } from "../support/apps-release.ts";
+
+import { appsManifest, withApps, mcpDependencies } from "../support/apps-release.ts";
 
 // A refresh that runs until its 30 s background limit unless cancelled.
 const slowRefresh = `const slowRefresh = (signal) => new Promise((resolve) => {
@@ -187,7 +189,7 @@ const mcpAppFiles = (url: string) => [
   {
     path: "package.json",
     content: JSON.stringify({
-      dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+      dependencies: withApps(mcpDependencies),
     }),
   },
   {
@@ -525,6 +527,105 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
+  for (const [scenario, route] of [
+    [scenarios.mcpFallbackRefused, "missing"],
+    [scenarios.mcpSessionLost, "session-loss"],
+  ] as const) {
+    it.effect(scenario.title, (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            mcp = yield* McpClient,
+            evidence = yield* Evidence;
+          const upstream = yield* mcpProtocolUpstream();
+          const prefix = `/api/organizations/${actors.organization.id}`;
+          const key = yield* body(
+            Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+            yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+              name: "Refused MCP server",
+            }),
+          );
+          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+            name: `Moved MCP ${randomUUID().slice(0, 8)}`,
+            files: [
+              {
+                path: "package.json",
+                content: JSON.stringify({
+                  dependencies: withApps(mcpDependencies),
+                }),
+              },
+              {
+                path: "index.ts",
+                content: `import { defineApp, router } from "apps";
+import { mcpRouter } from "apps/mcp";
+export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(`${upstream.origin}/${route}?private=credential-sentinel`)} }) }));`,
+              },
+            ],
+          });
+          expect(deployed.status).toBe(200);
+          const app = yield* body(App, deployed);
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              yield* api.request(actors.owner, "POST", "/api/auth/api-key/delete", {
+                keyId: key.id,
+              });
+              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
+            }).pipe(Effect.orDie),
+          );
+          const client = yield* mcp.connect(key.key, "refused-mcp", {
+            organization: actors.organization.id,
+          });
+          const code = `return await tools[${JSON.stringify(app.slug)}].anything({});`;
+          const started = yield* Clock.currentTimeMillis;
+          const result = yield* client.use(
+            "Call a tool of an app whose MCP server refuses connections",
+            (client, signal) =>
+              client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+          );
+          const elapsed = (yield* Clock.currentTimeMillis) - started;
+          yield* evidence.json("refused-result.json", {
+            elapsed,
+            result: result.structuredContent,
+          });
+          const failed = yield* Schema.decodeUnknownEffect(Failed)(result.structuredContent);
+          const reason = failed.unavailableApps.find((entry) => entry.app === app.id)?.reason ?? "";
+          // The MCP server's refusal is named, instead of a generic tool-definition failure.
+          expect(reason).toContain("refused the request while connecting (HTTP 404)");
+          expect(failed.execution.error.kind).toBe("ToolFailure");
+          expect(failed.execution.error.message).toContain("HTTP 404");
+          expect(failed.execution.error.message).toContain(
+            "Legacy SSE fallback also failed (HTTP 405)",
+          );
+          expect(
+            failed.execution.error.message.includes("session failed after initialization"),
+          ).toBe(route === "session-loss");
+          expect(JSON.stringify(result.structuredContent)).not.toContain("credential-sentinel");
+          expect(JSON.stringify(result.structuredContent)).not.toContain("upstream-body-secret");
+          yield* evidence.json("refused-upstream-requests.json", upstream.requests);
+          expect(
+            upstream.requests.some((request) => request.method === "GET" && request.status === 405),
+          ).toBe(true);
+          if (route === "session-loss") {
+            expect(
+              upstream.requests.some(
+                (request) => request.method === "initialize" && request.status === 200,
+              ),
+            ).toBe(true);
+            expect(
+              upstream.requests.some(
+                (request) =>
+                  request.method === "notifications/initialized" && request.status === 404,
+              ),
+            ).toBe(true);
+          }
+          // A deterministic refusal fails without waiting for a connection timeout.
+          expect(elapsed).toBeLessThan(10_000);
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    );
+  }
   it.effect(scenarios.mcpExecuteAppThrew.title, (context) =>
     withHostedCase(
       context,
@@ -829,7 +930,7 @@ return messages;`,
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+                dependencies: withApps(mcpDependencies),
               }),
             },
             {

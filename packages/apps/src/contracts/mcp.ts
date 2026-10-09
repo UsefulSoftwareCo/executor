@@ -169,6 +169,20 @@ export class McpError extends Schema.TaggedError<McpError>()("McpError", {
   status: Schema.optional(Schema.Number),
   upstream: Schema.optional(UpstreamError),
   session: Schema.optional(Schema.Literal(true)),
+  initialized: Schema.optional(Schema.Boolean),
+  fallback: Schema.optional(
+    Schema.Struct({
+      phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
+      reason: Schema.Literals([
+        "request",
+        "unauthorized",
+        "invalid_response",
+        "timeout",
+        "invalid_input",
+      ]),
+      status: Schema.optional(Schema.Number),
+    }),
+  ),
 }) {}
 
 /**

@@ -2,13 +2,9 @@ import { owned } from "@executor-js/telemetry";
 import type { ProviderError } from "../contracts/provider-error.ts";
 import type { NetworkRefused } from "../contracts/network.ts";
 /** One upstream call, with form requests forwarded to the invocation's existing elicitation capability. */
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import {
-  ElicitRequestSchema,
-  ElicitResultSchema,
-  ErrorCode,
-  McpError as ProtocolError,
-} from "@modelcontextprotocol/sdk/types.js";
+import type { Client } from "@modelcontextprotocol/client";
+import { ProtocolErrorCode, ProtocolError } from "@modelcontextprotocol/client";
+import { ElicitResultSchema, ToolSchema } from "@modelcontextprotocol/core";
 import { Clock, Deferred, Effect, Option, Queue, Schema } from "effect";
 import { ElicitationFailed, defaultElicitationLimits } from "../contracts/elicitation.ts";
 import {
@@ -16,6 +12,7 @@ import {
   McpError,
   McpToolResult,
   type McpToolContext,
+  type McpToolMetadata,
 } from "../contracts/mcp.ts";
 import type { JsonObject } from "../contracts/schema.ts";
 import { fromPromise } from "./authoring.ts";
@@ -65,7 +62,7 @@ function callBudget(timeoutMs: number) {
 /** Register prompts only around tools/call, preserve metadata, and close every callback with the call. Never retries. */
 export const mcpCall = (
   client: Client,
-  name: string,
+  tool: McpToolMetadata,
   input: JsonObject,
   context: McpToolContext,
   timeoutMs: number,
@@ -73,6 +70,13 @@ export const mcpCall = (
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK schema validation
+      const checked = yield* Effect.promise(() =>
+        Promise.resolve(ToolSchema["~standard"].validate(tool)),
+      );
+      if (checked.issues !== undefined)
+        return yield* new McpError({ phase: "schema", reason: "invalid_response" });
+      const definition = checked.value;
       const budget = yield* callBudget(timeoutMs);
       const failed = yield* Deferred.make<never, ElicitationFailed>();
       const runtime = yield* Effect.context<never>();
@@ -87,8 +91,8 @@ export const mcpCall = (
             await Promise.allSettled(callbacks);
           }),
       );
-      client.setRequestHandler(ElicitRequestSchema, (request, extra) => {
-        const signal = AbortSignal.any([lifetime.signal, extra.signal]);
+      client.setRequestHandler("elicitation/create", (request, extra) => {
+        const signal = AbortSignal.any([lifetime.signal, extra.mcpReq.signal]);
         const interaction = Effect.gen(function* () {
           const form = yield* prepareElicitation({
             ...request.params,
@@ -114,22 +118,25 @@ export const mcpCall = (
                 }),
               ),
             )
-            .pipe(Effect.withSpan("provider.mcp.elicitation"));
-          return yield* form.respond(answer).pipe(
-            Effect.flatMap((response) =>
-              Effect.try({
-                try: () => ElicitResultSchema.parse(response),
-                catch: () => new ElicitationFailed({ reason: "invalid-response" }),
-              }),
-            ),
+            .pipe(owned("upstream", "provider.mcp.elicitation"));
+          const response = yield* form.respond(answer);
+          // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK schema validation
+          const validated = yield* Effect.promise(() =>
+            Promise.resolve(ElicitResultSchema["~standard"].validate(response)),
           );
+          if (validated.issues !== undefined)
+            return yield* new ElicitationFailed({ reason: "invalid-response" });
+          return validated.value;
         }).pipe(Effect.tapError((error) => Deferred.fail(failed, error)));
         // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's elicitation, whose app callback enters through fromPromise
         const callback = Effect.runPromiseWith(runtime)(interaction, { signal }).catch(() => {
           if (!lifetime.signal.aborted)
             Effect.runSync(Deferred.fail(failed, new ElicitationFailed({ reason: "transport" })));
           // Never send a host error, credential, stack or callback exception to the upstream server.
-          throw new ProtocolError(ErrorCode.InternalError, "User input could not be delivered");
+          throw new ProtocolError(
+            ProtocolErrorCode.InternalError,
+            "User input could not be delivered",
+          );
         });
         callbacks.add(callback);
         // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's elicitation
@@ -138,10 +145,14 @@ export const mcpCall = (
       // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
       return yield* Effect.tryPromise({
         try: (signal) =>
-          client.callTool({ name, arguments: input }, undefined, {
-            signal: AbortSignal.any([signal, lifetime.signal]),
-            timeout: mcpSdkTimerCeilingMs,
-          }),
+          client.callTool(
+            { name: tool.name, arguments: input },
+            {
+              toolDefinition: definition,
+              signal: AbortSignal.any([signal, lifetime.signal]),
+              timeout: mcpSdkTimerCeilingMs,
+            },
+          ),
         catch: (error) => failure("call", error),
       }).pipe(
         Effect.raceFirst(Deferred.await(failed)),
@@ -162,7 +173,7 @@ export const mcpCall = (
       attributes: {
         "rpc.system.name": "jsonrpc",
         "rpc.method": "tools/call",
-        "mcp.tool.name": name,
+        "mcp.tool.name": tool.name,
       },
     }),
   );

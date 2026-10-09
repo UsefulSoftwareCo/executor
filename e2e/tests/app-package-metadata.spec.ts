@@ -9,7 +9,7 @@ import { Workspace } from "../support/app-authoring.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { publicTemplateUpstream } from "../support/template-upstream.ts";
-import { appsVersion, mcpSdkVersion } from "../support/apps-release.ts";
+import { appsVersion, mcpDependencies } from "../support/apps-release.ts";
 
 const Package = Schema.fromJsonString(
   Schema.Struct({
@@ -66,7 +66,7 @@ layer(HostedLive, { excludeTestServices: true })("App package metadata", (it) =>
           // New apps pin the exact apps release the host ships, and the MCP SDK it is built with.
           expect(metadata.dependencies).toEqual({
             apps: appsVersion,
-            "@modelcontextprotocol/sdk": mcpSdkVersion,
+            ...mcpDependencies,
           });
           const source = before.files.find((file) => file.path === "index.ts");
           expect(source?.content).not.toMatch(/\bname\s*:/);

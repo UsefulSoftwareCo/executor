@@ -24,8 +24,9 @@ Generated source includes `package.json` with an npm-safe name derived from the
 import name. An explicit scoped name is preserved. Hosted import flows add the
 authenticated organization’s handle before saving these files:
 `@organization/app-name`. The manifest declares the exact `apps` release this host
-ships (`packages/apps/package.json`) and `@modelcontextprotocol/sdk` at the version
-that release is built with. Every app declares `apps`; see
+ships (`packages/apps/package.json`) and `@modelcontextprotocol/client` and
+`@modelcontextprotocol/core` at the versions that release is built with (currently
+`2.0.0` for both). Every app declares `apps`; see
 [publishing apps](../../notes/apps-publishing.md#framework-selection).
 
 Discovery runs with the selected account during evaluation. Nothing here caches
