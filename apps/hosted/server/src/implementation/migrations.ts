@@ -12,6 +12,7 @@ import { migrateResourceAccess } from "./resource-schema.ts";
 import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
 import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
 import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
+import { migrateEvaluatedDeclarations } from "./evaluated-schema.ts";
 
 /** Migration failures stop startup; callers must not log the driver's secret-bearing cause. */
 export class HostedMigrationFailed extends Schema.TaggedError<HostedMigrationFailed>()(
@@ -63,6 +64,8 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   "5_upgrade_executor_apps": queueExecutorAppUpgrades,
   // Step 5 skipped apps whose only change since deployment was the framework pin commit.
   "6_upgrade_pinned_executor_apps": queueExecutorAppUpgrades,
+  // Additive: the running server never reads it.
+  "7_evaluated_declarations": migrateEvaluatedDeclarations,
 });
 
 /**
