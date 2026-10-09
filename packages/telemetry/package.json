@@ -13,7 +13,8 @@
     "./files": "./src/files.ts",
     "./process": "./src/process.ts",
     "./product-analytics": "./src/product-analytics.ts",
-    "./recorded-failure": "./src/recorded-failure.ts"
+    "./recorded-failure": "./src/recorded-failure.ts",
+    "./transport": "./src/transport.ts"
   },
   "scripts": {
     "build:motel": "bun scripts/build-motel.ts"

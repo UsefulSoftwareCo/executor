@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  Clock,
   Config,
   Console,
   Effect,
@@ -633,91 +634,92 @@ http.createServer((request, response) => {
             ]);
             expect(observed.blockedConnections).toBe(0);
           }
-          const collector =
-            (restart ? runtime : initialRuntime) === "executor-host"
-              ? "http://127.0.0.1:4318"
-              : (yield* run(["exec", id, "cat", "/app/data/diagnostics/collector.json"]).pipe(
-                  Effect.flatMap(
-                    Schema.decodeUnknownEffect(
-                      Schema.fromJsonString(Schema.Struct({ url: Schema.String })),
+          // The image under test serves its collector only on a private Unix socket, which
+          // operators read through `executor-host telemetry`. An earlier image may still listen
+          // on loopback, or name its collector's port in collector.json.
+          const legacyCollector =
+            restart || initialImage === image
+              ? undefined
+              : initialRuntime === "executor-host"
+                ? "http://127.0.0.1:4318"
+                : (yield* run(["exec", id, "cat", "/app/data/diagnostics/collector.json"]).pipe(
+                    Effect.flatMap(
+                      Schema.decodeUnknownEffect(
+                        Schema.fromJsonString(Schema.Struct({ url: Schema.String })),
+                      ),
                     ),
-                  ),
-                )).url;
-          const delivered = yield* run([
-            "run",
-            "--rm",
-            "--network",
-            `container:${id}`,
-            "node:24-bookworm-slim",
-            "node",
-            "-e",
-            "fetch(process.argv[1]).then(r => r.text()).then(text => process.stdout.write(text))",
-            `${collector}/api/traces/${trace}/spans`,
-          ]).pipe(
-            Effect.flatMap(
-              Schema.decodeUnknownEffect(
-                Schema.fromJsonString(
-                  Schema.Struct({
-                    data: Schema.Array(
-                      Schema.Struct({
-                        span: Schema.Struct({
-                          serviceName: Schema.String,
-                          tags: Schema.Record(Schema.String, Schema.String),
+                  )).url;
+          const readCollector = (path: string) =>
+            legacyCollector === undefined
+              ? run(["exec", id, "executor-host", "telemetry", path])
+              : run([
+                  "run",
+                  "--rm",
+                  "--network",
+                  `container:${id}`,
+                  "node:24-bookworm-slim",
+                  "node",
+                  "-e",
+                  "fetch(process.argv[1]).then(r => r.text()).then(text => process.stdout.write(text))",
+                  `${legacyCollector}${path}`,
+                ]);
+          const spansOf = (traceId: string) =>
+            readCollector(`/api/traces/${traceId}/spans`).pipe(
+              Effect.flatMap(
+                Schema.decodeUnknownEffect(
+                  Schema.fromJsonString(
+                    Schema.Struct({
+                      data: Schema.Array(
+                        Schema.Struct({
+                          span: Schema.Struct({
+                            serviceName: Schema.String,
+                            tags: Schema.Record(Schema.String, Schema.String),
+                          }),
                         }),
-                      }),
-                    ),
-                  }),
+                      ),
+                    }),
+                  ),
                 ),
               ),
-            ),
-            Effect.flatMap((trace) =>
-              trace.data.some(
-                ({ span }) =>
-                  span.serviceName === "executor-selfhost" &&
-                  span.tags["service.version"] === expectedVersion,
-              )
-                ? Effect.succeed(trace)
-                : Effect.fail("Released version has not reached the collector"),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 30 }),
-          );
+              Effect.flatMap((trace) =>
+                trace.data.some(
+                  ({ span }) =>
+                    span.serviceName === "executor-selfhost" &&
+                    span.tags["service.version"] === expectedVersion,
+                )
+                  ? Effect.succeed(trace)
+                  : Effect.fail("Released version has not reached the collector"),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 30 }),
+            );
+          const delivered = yield* spansOf(trace);
           expect(
             delivered.data.some(({ span }) => span.tags["service.version"] === expectedVersion),
           ).toBe(true);
           if (!restart) beforeRestartTrace = trace;
           else if (runtime === "executor-host") {
             expect(beforeRestartTrace).toBeDefined();
+            // The host reports the collector's answer and exits with an error for any other
+            // status than 200.
             const discarded = yield* run([
-              "run",
-              "--rm",
-              "--network",
-              `container:${id}`,
-              "node:24-bookworm-slim",
-              "node",
-              "-e",
-              "fetch(process.argv[1]).then(r => process.stdout.write(String(r.status)))",
-              `${collector}/api/traces/${beforeRestartTrace}`,
+              "exec",
+              id,
+              "sh",
+              "-c",
+              'executor-host telemetry "$1" 2>&1 >/dev/null || true',
+              "sh",
+              `/api/traces/${beforeRestartTrace}`,
             ]);
             expect(
               discarded.trim(),
               "Motel resets independently while product state is retained",
-            ).toBe("404");
+            ).toBe("Executor: the telemetry collector answered 404");
             expect((yield* run(["exec", id, "/app/workerd", "--version"])).trim()).toBe(
               yield* pinnedWorkerd,
             );
-            // The collector shares the product's memory limit. It holds at most four exports of
+            // The collector shares the container's memory limit. It holds at most four exports of
             // 16 MiB in flight and refuses beyond that; the product's own exports fit.
-            const ingest = yield* run([
-              "run",
-              "--rm",
-              "--network",
-              `container:${id}`,
-              "node:24-bookworm-slim",
-              "node",
-              "-e",
-              "fetch(process.argv[1]).then(r => r.text()).then(text => process.stdout.write(text))",
-              `${collector}/api/ingest`,
-            ]).pipe(
+            const ingest = yield* readCollector("/api/ingest").pipe(
               Effect.flatMap(
                 Schema.decodeUnknownEffect(
                   Schema.fromJsonString(
@@ -740,6 +742,40 @@ http.createServer((request, response) => {
               maxBytes: 16 * 1024 * 1024,
               refused: { queueFull: 0, tooLarge: 0, invalid: 0, storeFailed: 0 },
             });
+            // The collector runs in its own workerd process, so indexing spans no longer blocks the
+            // product's JavaScript thread. Stopping it leaves the product serving; the host
+            // restarts it after waiting a second, and the new collector stores the product's spans.
+            const collectorProcess = run([
+              "exec",
+              id,
+              "sh",
+              "-c",
+              // The pattern is built at runtime so this shell's own command line does not match it.
+              'm=motel; for p in /proc/[0-9]*; do case "$(cat "$p/cmdline" 2>/dev/null)" in *"$m.capnp"*) echo "${p#/proc/}";; esac; done',
+            ]).pipe(Effect.map((output) => output.trim()));
+            const firstCollector = yield* collectorProcess;
+            expect(firstCollector).toMatch(/^\d+$/);
+            const killed = yield* Clock.currentTimeMillis;
+            yield* run(["exec", id, "sh", "-c", `kill ${firstCollector}`]);
+            expect((yield* request("/health")).status).toBe(200);
+            const restartedCollector = yield* collectorProcess.pipe(
+              Effect.flatMap((pid) =>
+                /^\d+$/.test(pid) && pid !== firstCollector
+                  ? Effect.succeed(pid)
+                  : Effect.fail("The collector has not restarted"),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+            );
+            expect(restartedCollector).not.toBe(firstCollector);
+            expect(
+              (yield* Clock.currentTimeMillis) - killed,
+              "the host waits before restarting the collector",
+            ).toBeGreaterThanOrEqual(1000);
+            const afterRestart = randomBytes(16).toString("hex");
+            expect((yield* request("/api/viewer", undefined, cookie, afterRestart)).status).toBe(
+              200,
+            );
+            yield* spansOf(afterRestart);
             expect(
               yield* processes.exitCode(
                 ChildProcess.make("docker", [
@@ -918,6 +954,459 @@ const result=await pg.query('SELECT name FROM "user"');await pg.close();process.
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );
+
+// Operators can let apps fetch private addresses. The bundled collector stores and serves every
+// app's traces without authentication, so it listens on no TCP port: with private fetch on, an
+// authored app reaches none of its routes on any port in the container. The product still
+// exports to it over a private Unix socket, and operators read it through the host.
+it.live("released image keeps its collector out of apps' reach with private fetch on", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
+      const run = (args: readonly string[], env: Record<string, string> = {}) =>
+        processes.string(
+          ChildProcess.make("docker", args, {
+            env,
+            extendEnv: true,
+            stderr: args[0] === "logs" ? "pipe" : "inherit",
+          }),
+          { includeStderr: args[0] === "logs" },
+        );
+      const id = `executor-collector-${randomBytes(6).toString("hex")}`;
+      const registry = yield* containerNpmRegistry;
+      const port = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const listener = yield* Effect.acquireRelease(
+            Effect.sync(() => createServer()),
+            (listener) =>
+              driver(
+                "release port",
+                () => new Promise<void>((resolve) => listener.close(() => resolve())),
+              ).pipe(Effect.orDie),
+          );
+          return yield* driver(
+            "allocate port",
+            () =>
+              new Promise<number>((resolve, reject) => {
+                listener.once("error", reject);
+                listener.listen(0, "127.0.0.1", () => {
+                  const address = listener.address();
+                  if (address === null || typeof address === "string")
+                    reject(new Error("No test port"));
+                  else resolve(address.port);
+                });
+              }),
+          );
+        }),
+      );
+      const containerPort = 8080;
+      const origin = `http://localhost:${port}`;
+      const environment: Record<string, string> = {
+        // Release scenarios never send product analytics, even from an image with a baked key.
+        DO_NOT_TRACK: "1",
+        PORT: String(containerPort),
+        BETTER_AUTH_URL: origin,
+        BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+        EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "true",
+      };
+      yield* Effect.acquireRelease(
+        run(
+          [
+            "run",
+            "--detach",
+            "--name",
+            id,
+            "--init",
+            "--publish",
+            `127.0.0.1:${port}:${containerPort}`,
+            ...Object.keys(environment).flatMap((name) => ["--env", name]),
+            ...registry.docker,
+            image,
+          ],
+          environment,
+        ),
+        // An anonymous data volume is removed with the container.
+        () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
+      );
+      yield* Effect.addFinalizer((exit) =>
+        Exit.isFailure(exit)
+          ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+          : Effect.void,
+      );
+      const request = (route: string, data?: unknown, cookie?: string, trace?: string) =>
+        driver("collector image HTTP request", () =>
+          fetch(`http://127.0.0.1:${port}${route}`, {
+            method: data === undefined ? "GET" : "POST",
+            headers: {
+              origin,
+              "content-type": "application/json",
+              ...(cookie === undefined ? {} : { cookie }),
+              ...(trace === undefined ? {} : { traceparent: `00-${trace}-1234567890abcdef-01` }),
+            },
+            ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+          }),
+        );
+      yield* request("/health").pipe(
+        Effect.flatMap((r) => (r.status === 200 ? Effect.void : Effect.fail("not ready"))),
+        Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 200 }),
+      );
+      const setup = yield* request("/api/auth/self-host/setup", {
+        name: "Collector Owner",
+        email: "collector@example.test",
+        password: "Synthetic-collector-password-123!",
+        organizationName: "Collector lab",
+      });
+      expect(setup.status).toBe(200);
+      const cookie = setup.headers
+        .getSetCookie()
+        .map((part) => part.split(";")[0])
+        .join("; ");
+      const organizations = yield* request("/api/auth/organization/list", undefined, cookie);
+      expect(organizations.status).toBe(200);
+      const [organization] = yield* Schema.decodeUnknownEffect(
+        Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
+      )(yield* driver("organization response", () => organizations.json()));
+      const prefix = `/api/organizations/${organization.id}`;
+      const deployed = yield* request(
+        `${prefix}/apps/deploy`,
+        {
+          name: "Collector probe",
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, query, object, string, router } from "apps";
+export default defineApp({ accounts: {} }, async () => ({
+  tools: router({
+    probe: query({ input: object({ url: string(), body: string() }) }, async (ctx, input) => {
+      try {
+        const response = await ctx.fetch(input.url, input.body === "" ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: input.body });
+        return "reached " + response.status + " " + (await response.text()).slice(0, 4000);
+      } catch (error) { return "refused " + (error instanceof Error ? error.message : String(error)); }
+    }),
+  })
+}));`,
+            },
+            appsManifest,
+          ],
+        },
+        cookie,
+      );
+      expect(deployed.status, yield* driver("deploy probe", () => deployed.clone().text())).toBe(
+        200,
+      );
+      const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+        yield* driver("probe app", () => deployed.json()),
+      );
+      const created = yield* request(
+        `${prefix}/apps/${app.id}/profiles`,
+        { accounts: {}, idempotencyKey: randomUUID() },
+        cookie,
+      );
+      expect(created.status).toBe(200);
+      const profile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+        yield* driver("probe profile", () => created.json()),
+      );
+      const probe = (url: string, body = "") =>
+        request(
+          `${prefix}/apps/${app.id}/tools/call`,
+          { profile: profile.id, tool: "probe", kind: "query", input: { url, body } },
+          cookie,
+        ).pipe(
+          Effect.flatMap((response) => driver(`probe ${url}`, () => response.json())),
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.String)),
+        );
+      const productTrace = randomBytes(16).toString("hex");
+      expect((yield* request("/api/viewer", undefined, cookie, productTrace)).status).toBe(200);
+      // The product exports over the socket, and the operator reads the trace through the host.
+      // Once it is stored, a read route that an app could reach would return it.
+      const telemetry = (path: string) => run(["exec", id, "executor-host", "telemetry", path]);
+      const spans = (trace: string) =>
+        telemetry(`/api/traces/${trace}/spans`).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.fromJsonString(
+                Schema.Struct({
+                  data: Schema.Array(
+                    Schema.Struct({ span: Schema.Struct({ serviceName: Schema.String }) }),
+                  ),
+                }),
+              ),
+            ),
+          ),
+          Effect.flatMap((trace) =>
+            trace.data.some(({ span }) => span.serviceName === "executor-selfhost")
+              ? Effect.succeed(trace)
+              : Effect.fail("The product's spans have not reached the collector"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 30 }),
+        );
+      yield* spans(productTrace);
+      const tcpTables = run(["exec", id, "cat", "/proc/net/tcp", "/proc/net/tcp6"]).pipe(
+        Effect.map((table) =>
+          table
+            .split("\n")
+            .map((line) => line.trim().split(/\s+/))
+            .filter((fields) => /^[0-9A-F]+:[0-9A-F]{4}$/.test(fields[1] ?? "")),
+        ),
+      );
+      // Every TCP port listening in the container's network namespace, and Motel's old port.
+      const listening = (yield* tcpTables)
+        .filter((fields) => fields[3] === "0A")
+        .map((fields) => Number.parseInt(fields[1]!.split(":")[1]!, 16));
+      const ports = [...new Set([...listening, 4318])].sort((a, b) => a - b);
+      expect(ports).toContain(containerPort);
+      const injectedTrace = randomBytes(16).toString("hex");
+      const injected = JSON.stringify({
+        resourceSpans: [
+          {
+            resource: {
+              attributes: [{ key: "service.name", value: { stringValue: "executor-selfhost" } }],
+            },
+            scopeSpans: [
+              {
+                spans: [
+                  {
+                    traceId: injectedTrace,
+                    spanId: randomBytes(8).toString("hex"),
+                    name: "injected by an app",
+                    kind: 1,
+                    startTimeUnixNano: "1700000000000000000",
+                    endTimeUnixNano: "1700000000001000000",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+      // A refusal names the URL it refused, so only a response the app received is checked.
+      const received = (result: string) => (result.startsWith("reached ") ? result : "");
+      for (const listener of ports) {
+        const base = `http://127.0.0.1:${listener}`;
+        const read = yield* probe(`${base}/api/traces/${productTrace}/spans`);
+        expect(
+          received(read),
+          `an app reads the product's traces on port ${listener}`,
+        ).not.toContain(productTrace);
+        const counters = yield* probe(`${base}/api/ingest`);
+        expect(
+          received(counters),
+          `an app reads collector counters on port ${listener}`,
+        ).not.toContain("maxPending");
+        const written = yield* probe(`${base}/v1/traces`, injected);
+        if (listener === 4318) {
+          expect(read, "nothing listens on Motel's old port").toMatch(/^refused /);
+          expect(counters).toMatch(/^refused /);
+          expect(written).toMatch(/^refused /);
+        }
+      }
+      // Spans the product exported after the probes have arrived, so an app's write would have too.
+      const laterTrace = randomBytes(16).toString("hex");
+      expect((yield* request("/api/viewer", undefined, cookie, laterTrace)).status).toBe(200);
+      yield* spans(laterTrace);
+      expect(
+        (yield* run([
+          "exec",
+          id,
+          "sh",
+          "-c",
+          'executor-host telemetry "$1" 2>&1 >/dev/null || true',
+          "sh",
+          `/api/traces/${injectedTrace}`,
+        ])).trim(),
+        "no app wrote spans into the collector",
+      ).toBe("Executor: the telemetry collector answered 404");
+      // Motel's own process holds its Unix socket and no TCP socket. The image has no tools to
+      // read another process's descriptors, so a client in its process namespace reads them as
+      // the same user.
+      const collectorSockets = yield* run([
+        "run",
+        "--rm",
+        "--pid",
+        `container:${id}`,
+        "--user",
+        "1000",
+        "node:24-bookworm-slim",
+        "node",
+        "-e",
+        `const fs = require("node:fs");
+const pid = fs.readdirSync("/proc").filter((p) => /^\\d+$/.test(p)).find((p) => {
+  try { return fs.readFileSync("/proc/" + p + "/cmdline", "utf8").includes(["motel", "capnp"].join(".")); } catch { return false; }
+});
+const inodes = fs.readdirSync("/proc/" + pid + "/fd").flatMap((fd) => {
+  try { return [fs.readlinkSync("/proc/" + pid + "/fd/" + fd)]; } catch { return []; }
+}).flatMap((target) => /^socket:\\[(\\d+)\\]$/.exec(target)?.slice(1) ?? []);
+const table = (name) => fs.readFileSync("/proc/" + pid + "/net/" + name, "utf8").split("\\n").slice(1).map((line) => line.trim().split(/\\s+/));
+process.stdout.write(JSON.stringify({
+  tcp: [...table("tcp"), ...table("tcp6")].filter((fields) => inodes.includes(fields[9])).map((fields) => fields[1]),
+  unix: table("unix").filter((fields) => inodes.includes(fields[6])).map((fields) => fields[7] ?? ""),
+}));`,
+      ]).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                tcp: Schema.Array(Schema.String),
+                unix: Schema.Array(Schema.String),
+              }),
+            ),
+          ),
+        ),
+      );
+      expect(collectorSockets.tcp, "the collector has no TCP socket").toEqual([]);
+      expect(collectorSockets.unix).toContainEqual(
+        expect.stringMatching(/^\/tmp\/executor-host-\d+\/motel\.sock$/),
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+// Every container mounts its product volume at the same path. Two containers that share a
+// temporary directory must still each keep their own collector while the other starts and stops.
+it.live("released images that share a temporary directory keep separate collectors", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
+      const run = (args: readonly string[], env: Record<string, string> = {}) =>
+        processes.string(
+          ChildProcess.make("docker", args, {
+            env,
+            extendEnv: true,
+            stderr: args[0] === "logs" ? "pipe" : "inherit",
+          }),
+          { includeStderr: args[0] === "logs" },
+        );
+      const name = `executor-shared-tmp-${randomBytes(6).toString("hex")}`;
+      const volume = (suffix: string) =>
+        Effect.acquireRelease(run(["volume", "create", `${name}-${suffix}`]), () =>
+          run(["volume", "rm", "--force", `${name}-${suffix}`]).pipe(Effect.orDie),
+        ).pipe(Effect.as(`${name}-${suffix}`));
+      const temporary = yield* volume("tmp");
+      // A sticky, world-writable directory, as /tmp is.
+      yield* run([
+        "run",
+        "--rm",
+        "--user",
+        "0",
+        "--entrypoint",
+        "sh",
+        "--volume",
+        `${temporary}:/shared-tmp`,
+        image,
+        "-c",
+        "chmod 1777 /shared-tmp",
+      ]);
+      const start = Effect.fn("start instance")(function* (suffix: string) {
+        const data = yield* volume(suffix);
+        const id = `${name}-${suffix}`;
+        const environment: Record<string, string> = {
+          DO_NOT_TRACK: "1",
+          PORT: "8080",
+          BETTER_AUTH_URL: "http://localhost:8080",
+          BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+          EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+          TMPDIR: "/shared-tmp",
+        };
+        yield* Effect.acquireRelease(
+          run(
+            [
+              "run",
+              "--detach",
+              "--name",
+              id,
+              "--init",
+              "--publish",
+              "127.0.0.1::8080",
+              "--volume",
+              `${temporary}:/shared-tmp`,
+              "--volume",
+              `${data}:/app/data`,
+              ...Object.keys(environment).flatMap((key) => ["--env", key]),
+              image,
+            ],
+            environment,
+          ),
+          () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
+        );
+        yield* Effect.addFinalizer((exit) =>
+          Exit.isFailure(exit)
+            ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+            : Effect.void,
+        );
+        return id;
+      });
+      const ready = (id: string) =>
+        Effect.gen(function* () {
+          yield* run(["exec", id, "executor-host", "health"]);
+          yield* run(["exec", id, "executor-host", "telemetry", "/api/health"]);
+        }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }));
+      // Each request carries a new trace id; the instance's own collector must store its spans.
+      const traced = Effect.fn("traced request")(function* (id: string) {
+        const published = (yield* run(["port", id, "8080/tcp"])).trim().split("\n")[0]!;
+        const trace = randomBytes(16).toString("hex");
+        yield* driver("traced request", () =>
+          fetch(`http://${published}/api/viewer`, {
+            headers: { traceparent: `00-${trace}-1234567890abcdef-01` },
+          }).then((response) => response.arrayBuffer()),
+        );
+        return trace;
+      });
+      const stored = (id: string, trace: string, problem: string) =>
+        run(["exec", id, "executor-host", "telemetry", `/api/traces/${trace}/spans`]).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.fromJsonString(
+                Schema.Struct({
+                  data: Schema.Array(
+                    Schema.Struct({ span: Schema.Struct({ serviceName: Schema.String }) }),
+                  ),
+                }),
+              ),
+            ),
+          ),
+          Effect.flatMap((spans) =>
+            spans.data.some(({ span }) => span.serviceName === "executor-selfhost")
+              ? Effect.void
+              : Effect.fail(`${id}: ${problem}`),
+          ),
+        );
+      const delivered = (id: string, trace: string) =>
+        stored(id, trace, "a new trace did not reach this instance's collector").pipe(
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+        );
+      // An instance keeps the traces it stored and stores new ones in its own collector.
+      const keeps = Effect.fn("instance keeps its collector")(function* (
+        id: string,
+        traces: readonly string[],
+        when: string,
+      ) {
+        yield* ready(id);
+        for (const trace of traces) yield* stored(id, trace, `lost a stored trace ${when}`);
+        const trace = yield* traced(id);
+        yield* delivered(id, trace);
+        return [...traces, trace];
+      });
+      const first = yield* start("a");
+      let firstTraces = yield* keeps(first, [], "on start");
+      const second = yield* start("b");
+      let secondTraces = yield* keeps(second, [], "on start");
+      firstTraces = yield* keeps(first, firstTraces, "after b started");
+      yield* run(["stop", second]);
+      firstTraces = yield* keeps(first, firstTraces, "after b stopped");
+      yield* run(["start", second]);
+      secondTraces = yield* keeps(second, secondTraces, "after b restarted");
+      firstTraces = yield* keeps(first, firstTraces, "after b restarted");
+      yield* run(["stop", first]);
+      secondTraces = yield* keeps(second, secondTraces, "after a stopped");
+      yield* run(["start", first]);
+      yield* keeps(first, firstTraces, "after a restarted");
+      yield* keeps(second, secondTraces, "after a restarted");
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
 
 // A tailnet name such as nexus.<tailnet>.ts.net resolves into 100.64.0.0/10. App isolates
 // may reach only public addresses, so the built-in Executor app must reach its own dashboard

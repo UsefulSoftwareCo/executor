@@ -2,12 +2,14 @@
  * Generate the MCP server instructions from the Executor app's `executor` skill, so the skill stays
  * their only source, and the digests telemetry uses to recognize the app's published skill files.
  * Hosts on every runtime import the results; Workers cannot read the files.
- * Pass --check to fail when a generated module is stale.
+ * Pass --check to fail when a generated module is stale. Either way it fails when the skill names
+ * an MCP SDK version other than the one `apps` is built with, which quick add pins.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
 import { Hex } from "effect/encoding";
+import apps from "apps/package.json" with { type: "json" };
 import { readExecutorSkillDocuments } from "../src/implementation/executor-skills.ts";
 
 class ExecutorIntroInvalid extends Schema.TaggedError<ExecutorIntroInvalid>()(
@@ -33,6 +35,16 @@ NodeRuntime.runMain(
       return yield* new ExecutorIntroInvalid({
         reason: "skills/executor/SKILL.md needs YAML frontmatter followed by a body.",
       });
+    const integrations = yield* fs.readFileString(
+      path.join(root, "executor/skills/app-authoring/integrations.md"),
+    );
+    for (const name of ["@modelcontextprotocol/client", "@modelcontextprotocol/core"] as const) {
+      const version = apps.devDependencies[name];
+      if (!integrations.includes(`\`${name}\` (currently \`${version}\`)`))
+        return yield* new ExecutorIntroInvalid({
+          reason: `skills/app-authoring/integrations.md must name ${name} as (currently \`${version}\`), the version apps is built with.`,
+        });
+    }
     // The same files the hosts publish, keyed as a skill document names them.
     const digests = yield* Effect.forEach(
       // Code-point order, so the output does not depend on the machine's locale.

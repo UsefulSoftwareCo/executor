@@ -6,7 +6,8 @@ import {
   type GetAccountConnection,
   type SubmitAccountConnection,
 } from "../contracts/account-connection.ts";
-import { Account, AccountNotFound } from "../contracts/account.ts";
+import { Account } from "../contracts/account.ts";
+import { AccountSelectionInvalid } from "../contracts/apps.ts";
 import { AuthMethodInvalid, Provider, ProviderNotFound } from "../contracts/provider.ts";
 import { StorageError, AccountConnectionId } from "../contracts/shared.ts";
 import { StoredConnectionTarget, type Credentials } from "../contracts/storage.ts";
@@ -100,8 +101,13 @@ export const makeAccountConnections = (
         let reconnectAccount: Account | null = null;
         if (input.account !== undefined) {
           const account = yield* ownedAccount(db, { account: input.account, owner: input.owner });
+          // The account exists, but it was saved for another provider definition of this slot.
           if (account.provider !== resolved.id)
-            return yield* new AccountNotFound({ account: input.account });
+            return yield* new AccountSelectionInvalid({
+              app: input.target.app,
+              slot: input.target.requirement,
+              reason: "provider_mismatch",
+            });
           reconnectAccount = yield* Schema.decodeUnknownEffect(Account)(account).pipe(
             Effect.mapError(() => new StorageError()),
           );

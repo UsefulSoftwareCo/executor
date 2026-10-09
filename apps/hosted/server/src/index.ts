@@ -2,6 +2,7 @@
 export { requestServices } from "./implementation/request-services.ts";
 export * from "./contracts/product-analytics.ts";
 export { withExecutorAnalytics } from "./implementation/product-analytics.ts";
+export { withDeploySetupWake } from "./implementation/deploy-setup.ts";
 export { HostedApi } from "./contracts/api.ts";
 export { HostedCatalog } from "./contracts/catalog.ts";
 export { hostedHandlers } from "./implementation/api.ts";

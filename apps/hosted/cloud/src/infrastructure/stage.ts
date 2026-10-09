@@ -226,19 +226,24 @@ export type CanonicalResourceOrigin = "deployment" | "role";
 export const canonicalResourceOrigin: CanonicalResourceOrigin = "role";
 
 /**
- * Where connected-account sign-ins return when the deployment has role hosts: the `redirect_uri`
- * every sign-in sends, the client metadata document lists and dynamic client registration
- * registers. `deployment` is `<deployment origin>/api/oauth/callback` (`v2.executor.sh`), which
- * every OAuth client registered so far names. `edge` is the permanent `executor.sh` callback, which
- * v1's edge forwards by the state prefix. Both bounce to the browser origin's callback page.
+ * Where connected-account sign-ins return when the deployment has role hosts. `current` is the
+ * permanent `executor.sh` callback, which v1's edge forwards by the state prefix: the `redirect_uri`
+ * new sign-ins send, the client metadata document lists and dynamic client registration
+ * registers. `previous` is the deployment origin's callback (`v2.executor.sh`), the only one OAuth
+ * clients saved before the move are registered with. Entered clients keep sending it; Executor
+ * registers its own clients again at `current`. Both
+ * bounce to the browser origin's callback page.
  */
-export type AccountCallbackOrigin = "deployment" | "edge";
+export interface AccountCallbacks {
+  readonly current: string;
+  readonly previous: readonly string[];
+}
 
-/**
- * Stays `deployment` until each OAuth client's registered redirect URIs are stored, so a sign-in
- * names `executor.sh` only through a client that lists it (`notes/cloud-domains.md`, Pending).
- */
-export const accountCallbackOrigin: AccountCallbackOrigin = "deployment";
+const accountCallbacksFor = (deployment: string, roles: Option.Option<RoleHosts>) =>
+  Option.map(roles, (r): AccountCallbacks => ({
+    current: new URL("/api/oauth/callback", r.edge).href,
+    previous: [new URL("/api/oauth/callback", deployment).href],
+  }));
 
 /** The resource origins for a deployment origin, its role hosts and the canonical choice. */
 const resourceOriginsFor = (
@@ -302,6 +307,8 @@ export interface CloudHosts {
   readonly issuer: string;
   readonly gitOrigins: readonly [string, ...string[]];
   readonly passkey: { readonly rpId: string; readonly origin: string };
+  /** Absent without role hosts, where the host's own or configured callback applies. */
+  readonly accountCallbacks: Option.Option<AccountCallbacks>;
 }
 
 /** The host layout of a deployment at `deployment`, with its browser origin setting. */
@@ -333,6 +340,7 @@ export const cloudHostsAt = (deployment: string) =>
           origin: browser,
         }),
       }),
+      accountCallbacks: accountCallbacksFor(deployment, roles),
     } satisfies CloudHosts;
   });
 

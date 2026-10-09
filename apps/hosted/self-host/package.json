@@ -39,7 +39,7 @@
     "@cloudflare/workers-types": "5.20260729.1",
     "@executor-js/authorization": "workspace:*",
     "@executor-js/catalog": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@types/proper-lockfile": "4.1.4",
     "esbuild": "0.28.2"
   }

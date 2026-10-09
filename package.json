@@ -133,7 +133,7 @@
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "@kitlangton/terminal-control": "^1.2.1",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@napi-rs/keyring": "2.1.0",
     "@oxlint/plugins": "^1.83.0",
     "@rhyssul/portless": "0.13.3",

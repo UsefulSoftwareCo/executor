@@ -22,6 +22,7 @@ import {
 } from "@executor-js/sdk/core";
 import { TemplateError } from "@executor-js/app-templates/contracts";
 import type { OrganizationId } from "./organization.ts";
+import type { ScheduleWakeup } from "./schedules.ts";
 
 /** A member job waits for the separate team installation to commit. */
 export class OrganizationDefaultsPending extends Schema.TaggedError<OrganizationDefaultsPending>()(
@@ -59,11 +60,14 @@ export interface ExecutorUserAccount {
   readonly name: string;
 }
 
-/** One-time product setup; installed apps retain their ordinary lifecycle afterward. */
+/**
+ * One-time product setup; installed apps retain their ordinary lifecycle afterward. Setup that
+ * saves profile intent wakes profile setup through the caller's {@link ScheduleWakeup}.
+ */
 export class OrganizationDefaults extends Context.Service<
   OrganizationDefaults,
   (
     organization: OrganizationId,
     user?: ExecutorUserAccount,
-  ) => Effect.Effect<void, typeof OrganizationDefaultsError.Type>
+  ) => Effect.Effect<void, typeof OrganizationDefaultsError.Type, ScheduleWakeup>
 >()("hosted/OrganizationDefaults") {}

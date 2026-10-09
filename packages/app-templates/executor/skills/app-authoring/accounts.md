@@ -4,6 +4,11 @@ Declare the provider's credential shape in source. The host derives its provider
 ID, stores account credentials and supplies a selected account on each call.
 Never put real tokens into source files or return them from tools.
 
+**The provider ID comes from the whole definition except `hosts`, including
+`name`, labels and OAuth `scopes`.** Changing any of them after users connect
+gives a new provider, and existing accounts no longer fit the slot. Users must
+connect a new account. Settle these before users connect.
+
 This is a complete `index.ts` for Vercel with an API token:
 
 ```ts

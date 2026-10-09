@@ -1,5 +1,9 @@
 /** The executor and the services every cloud Worker shares, including app pages. */
-import { HostedExecutor, withExecutorAnalytics } from "@executor-js/hosted-server";
+import {
+  HostedExecutor,
+  withDeploySetupWake,
+  withExecutorAnalytics,
+} from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
 import { BlobStore } from "@executor-js/sdk/core";
@@ -46,7 +50,10 @@ export const cloudProductServices = Effect.fn(function* (
       Effect.provide(RuntimeContext.phantom),
     );
   const services = Layer.mergeAll(
-    Layer.succeed(HostedExecutor, sdk.pipe(Effect.map(withExecutorAnalytics))),
+    Layer.succeed(
+      HostedExecutor,
+      sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
+    ),
     Layer.succeed(GroupDatabase, sql.pipe(Effect.mapError(() => new GroupsUnavailable()))),
     Layer.succeed(HostedAppRuntime, {
       asset: ({ build, path }) =>

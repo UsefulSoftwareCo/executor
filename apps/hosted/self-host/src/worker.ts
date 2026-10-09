@@ -8,6 +8,7 @@ import { executorSkillFiles } from "@executor-js/app-templates/executor";
 import { bindingWorkerdApps } from "@executor-js/sdk/workerd";
 import { ScheduleHostReady } from "@executor-js/sdk/scheduling";
 import { telemetryConfig, telemetryLayer } from "@executor-js/telemetry";
+import { CurrentTelemetryClient } from "@executor-js/telemetry/transport";
 import { urlPolicyConfig } from "@executor-js/utils/url-policy";
 import {
   Config,
@@ -38,6 +39,8 @@ import {
   bindingDashboard,
   bindingHttpClient,
   bindingRepositories,
+  bindingTelemetryClient,
+  collectorOrigin,
   type HttpBinding,
 } from "./implementation/workerd/bindings.ts";
 import {
@@ -63,6 +66,8 @@ interface Environment {
   readonly DASHBOARD: HttpBinding;
   readonly PUBLIC_FETCH: HttpBinding;
   readonly PRIVATE_FETCH: HttpBinding;
+  /** The bundled collector's private Unix socket, which the host connects. */
+  readonly MOTEL: HttpBinding;
   /** This product's own `SelfOrigin` entrypoint, for requests to the dashboard origin. */
   readonly SELF: HttpBinding;
   readonly APPS: Fetcher;
@@ -110,15 +115,17 @@ const prepare = (state: DurableObjectState, env: Environment) =>
     const common = yield* Layer.build(
       Layer.mergeAll(
         selfHostDatabaseSchema.pipe(Layer.provideMerge(PgliteClient.layer({ liveClient: pg }))),
-        telemetryLayer(
-          telemetry.traces === undefined && telemetry.logs === undefined
-            ? {
-                ...telemetry,
-                traces: { url: "http://127.0.0.1:4318/v1/traces" },
-                logs: { url: "http://127.0.0.1:4318/v1/logs" },
-              }
-            : telemetry,
-        ),
+        telemetry.traces === undefined && telemetry.logs === undefined
+          ? telemetryLayer({
+              ...telemetry,
+              traces: { url: `${collectorOrigin}/v1/traces` },
+              logs: { url: `${collectorOrigin}/v1/logs` },
+            }).pipe(
+              Layer.provideMerge(
+                Layer.effect(CurrentTelemetryClient, bindingTelemetryClient(env.MOTEL)),
+              ),
+            )
+          : telemetryLayer(telemetry),
         HttpServer.layerServices,
         BrowserCrypto.layer,
         Layer.succeed(ScheduleHostReady, Effect.void),

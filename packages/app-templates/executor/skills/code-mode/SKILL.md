@@ -74,7 +74,9 @@ a new `execute` to see the change.
 Every completed result lists `unavailableApps`: apps, profiles or routers that
 could not expose tools in this execution, each with a `reason`. Other apps keep
 working. Search leaves out an unavailable app's tools, `describe` reports their
-paths in `missing`, and calling one fails with that reason.
+paths in `missing`, and calling one fails with that reason. An app that needs
+an account and has no profile is listed only once a search or `describe` names
+it; a call into it fails with that reason.
 
 - `AppProfileRequired`: the app needs an account and you have no enabled
   profile. Connect an account (below), then start a new execution.
@@ -99,8 +101,11 @@ arguments or source, and never search their files for tokens. The Executor app
   `accounts.oauthSetup` lists the scopes it will request; tell the user.
 
 Search for these tools and read their input types first. Give the user the
-returned URL. After they finish, check the connection in a new execution, then
-start another to call the app's tools. Never wait or poll inside one program.
+returned `url`; hosted `accounts.connection` returns it again, with progress in
+`state.status`. To replace an account's credentials, pass its ID as `account`
+in the same request. After they finish, check the connection in a new
+execution, then start another to call the app's tools. Never wait or poll
+inside one program.
 
 ## Approvals and input
 
@@ -147,8 +152,9 @@ and for Executor errors a `response` with `code`, `status`, `message` and
 you. `toolCalls` lists every call in order with its `outcome`.
 
 - `ParseError`, `UnsupportedSyntax`: fix the program; `location` points at it.
-- `UnknownTool`: the path is wrong or its app did not load. Check
-  `unavailableApps` and search again. `suggestions` may list close paths.
+- `UnknownTool`: the path is wrong, its app did not load, or the app was
+  deployed after this execution loaded it. Check `unavailableApps` and
+  `suggestions`, then search again in a new execution.
 - `InvalidToolInput`, or a `response.code` of `InputInvalid`: the input does
   not match the signature; the message names the fields.
 - `ToolFailure`: the tool or its service failed. Follow `recovery`.

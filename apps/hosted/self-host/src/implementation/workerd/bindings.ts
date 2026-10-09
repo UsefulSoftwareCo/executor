@@ -135,6 +135,28 @@ export const bindingHttpClient = (
     );
   });
 
+/** The bundled collector's internal origin; it names a service binding, never a network address. */
+export const collectorOrigin = "http://motel.internal";
+
+/**
+ * Telemetry exports to the bundled collector go through its service binding, which the host
+ * connects to a private Unix socket. The collector has no TCP listener, so an app's fetch cannot
+ * reach it even when private fetch is allowed. Exports to any other collector use the network.
+ */
+export const bindingTelemetryClient = (collector: HttpBinding) =>
+  Effect.gen(function* () {
+    const routedFetch: typeof fetch = (input, init) => {
+      const request = new Request(input, init);
+      return URL.parse(request.url)?.origin === collectorOrigin
+        ? collector.fetch(request)
+        : fetch(request);
+    };
+    const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
+    return client.pipe(
+      HttpClient.transformResponse(Effect.provideService(FetchHttpClient.Fetch, routedFetch)),
+    );
+  });
+
 /** Serve only the build's asset manifest; a disk directory listing can never become a public page. */
 export const bindingDashboard = (assets: HttpBinding, files: Readonly<Record<string, string>>) =>
   dashboardRoutes(new Set(Object.keys(files)), (relative) =>

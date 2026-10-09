@@ -16,7 +16,7 @@ import { McpClient } from "../support/mcp-client.ts";
 import { mcpProtocolUpstream } from "../support/mcp-protocol-upstream.ts";
 import { requestGate } from "../support/request-gate.ts";
 
-import { appsManifest, withApps } from "../support/apps-release.ts";
+import { appsManifest, withApps, mcpDependencies } from "../support/apps-release.ts";
 
 // A refresh that runs until its 30 s background limit unless cancelled.
 const slowRefresh = `const slowRefresh = (signal) => new Promise((resolve) => {
@@ -189,10 +189,7 @@ const mcpAppFiles = (url: string) => [
   {
     path: "package.json",
     content: JSON.stringify({
-      dependencies: withApps({
-        "@modelcontextprotocol/client": "2.0.0",
-        "@modelcontextprotocol/core": "2.0.0",
-      }),
+      dependencies: withApps(mcpDependencies),
     }),
   },
   {
@@ -556,10 +553,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
               {
                 path: "package.json",
                 content: JSON.stringify({
-                  dependencies: withApps({
-                    "@modelcontextprotocol/client": "2.0.0",
-                    "@modelcontextprotocol/core": "2.0.0",
-                  }),
+                  dependencies: withApps(mcpDependencies),
                 }),
               },
               {
@@ -936,10 +930,7 @@ return messages;`,
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({
-                  "@modelcontextprotocol/client": "2.0.0",
-                  "@modelcontextprotocol/core": "2.0.0",
-                }),
+                dependencies: withApps(mcpDependencies),
               }),
             },
             {

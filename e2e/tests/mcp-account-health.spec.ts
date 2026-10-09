@@ -13,7 +13,7 @@ import {
   accountCheckUpstream,
   type AccountCheckAnswer,
 } from "../support/account-check-upstream.ts";
-import { withApps } from "../support/apps-release.ts";
+import { withApps, mcpDependencies } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({
@@ -79,10 +79,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({
-                  "@modelcontextprotocol/client": "2.0.0",
-                  "@modelcontextprotocol/core": "2.0.0",
-                }),
+                dependencies: withApps(mcpDependencies),
               }),
             },
           ],

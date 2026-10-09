@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -137,5 +139,67 @@ func TestProxyReportsStartingUntilWorkerdListens(t *testing.T) {
 
 	if status, body := post(t, front.URL); status != http.StatusServiceUnavailable || body != "Executor is starting" {
 		t.Fatalf("POST before workerd listens: %d %q", status, body)
+	}
+}
+
+// The collector runs beside the product: an exit is followed by a restart, not by the product
+// stopping. The waits double from the minimum to the maximum, so a collector that cannot start
+// does not spin, and return to the minimum after a run longer than the maximum.
+func TestSuperviseRestartsAnExitedProcessWithBackoff(t *testing.T) {
+	var mutex sync.Mutex
+	var waits []time.Duration
+	after := func(delay time.Duration) <-chan time.Time {
+		mutex.Lock()
+		waits = append(waits, delay)
+		mutex.Unlock()
+		return time.After(0)
+	}
+	var starts atomic.Int32
+	stop := supervise(func() *exec.Cmd {
+		// The fifth process outlives the maximum wait; every other one exits at once.
+		if starts.Add(1) == 5 {
+			return exec.Command("sh", "-c", "sleep 0.6; exit 1")
+		}
+		return exec.Command("sh", "-c", "exit 1")
+	}, 100*time.Millisecond, 400*time.Millisecond, after)
+	deadline := time.Now().Add(10 * time.Second)
+	for starts.Load() < 7 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	stop()
+	mutex.Lock()
+	recorded := append([]time.Duration(nil), waits...)
+	mutex.Unlock()
+	want := []time.Duration{100, 200, 400, 400, 100, 200}
+	if len(recorded) < len(want) {
+		t.Fatalf("waited %v, want at least %v ms", recorded, want)
+	}
+	for index, milliseconds := range want {
+		if recorded[index] != milliseconds*time.Millisecond {
+			t.Fatalf("waited %v, want %v ms first", recorded, want)
+		}
+	}
+	settled := starts.Load()
+	time.Sleep(100 * time.Millisecond)
+	if count := starts.Load(); count != settled {
+		t.Fatalf("started %d times after stop, want %d", count, settled)
+	}
+}
+
+func TestSuperviseStopsARunningProcess(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "stopped")
+	stop := supervise(func() *exec.Cmd {
+		return exec.Command("sh", "-c", `trap 'touch "$0"; exit 0' TERM; while :; do sleep 0.05; done`, marker)
+	}, time.Second, time.Second, time.After)
+	time.Sleep(200 * time.Millisecond)
+	returned := make(chan struct{})
+	go func() { stop(); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not return after SIGTERM")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the process was not sent SIGTERM: %v", err)
 	}
 }

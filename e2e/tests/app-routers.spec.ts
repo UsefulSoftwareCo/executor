@@ -15,7 +15,7 @@ import { createProfile } from "../support/profiles.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { outputContractProblems } from "../support/output-contract.ts";
-import { withApps } from "../support/apps-release.ts";
+import { withApps, mcpDependencies } from "../support/apps-release.ts";
 
 const Wire = Schema.Struct({
   id: Schema.optionalKey(Schema.Json),
@@ -203,10 +203,7 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({
-                  "@modelcontextprotocol/client": "2.0.0",
-                  "@modelcontextprotocol/core": "2.0.0",
-                }),
+                dependencies: withApps(mcpDependencies),
               }),
             },
             // Port 9 on loopback refuses connections, so the second server fails fast.
@@ -338,10 +335,7 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
               {
                 path: "package.json",
                 content: JSON.stringify({
-                  dependencies: withApps({
-                    "@modelcontextprotocol/client": "2.0.0",
-                    "@modelcontextprotocol/core": "2.0.0",
-                  }),
+                  dependencies: withApps(mcpDependencies),
                 }),
               },
               {

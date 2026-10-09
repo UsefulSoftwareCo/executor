@@ -43,7 +43,10 @@ a host with process support.
 Declare the needed peer in the deployed app's `package.json`, for example:
 
 ```json
-{ "name": "deepwiki", "dependencies": { "@modelcontextprotocol/sdk": "1.30.0" } }
+{
+  "name": "deepwiki",
+  "dependencies": { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" }
+}
 ```
 
 Product runtimes compile authored source and declared dependencies inside workerd,

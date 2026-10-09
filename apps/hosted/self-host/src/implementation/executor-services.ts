@@ -31,6 +31,7 @@ import {
   lazyHostedApiDocument,
   clientMetadataSetting,
   hostedOAuthClientName,
+  withDeploySetupWake,
   withExecutorAnalytics,
   executorDefaultRedeployed,
 } from "@executor-js/hosted-server";
@@ -116,7 +117,9 @@ export const selfHostExecutorServices = <E, R>(
           executor,
           blobs,
           agentGrants: auth.agentGrants,
-          executorAppRedeployed: executorDefaultRedeployed,
+          // Nothing sets profiles up yet: the schedule worker starts after these steps, and its
+          // first pass sets up the profiles a redeploy left pending.
+          executorAppRedeployed: executorDefaultRedeployed(Effect.void),
         },
         "private_hosted",
       );
@@ -147,6 +150,9 @@ export const selfHostExecutorServices = <E, R>(
         false,
       );
       const scheduleAuthority = yield* makeScheduledAuthority(executor);
+      // Records and wakes setup only inside requests that carry this instance's analytics sink
+      // and schedule wake.
+      const hosted = withDeploySetupWake(withExecutorAnalytics(executor));
       const groupDatabase = yield* SqlClient.SqlClient;
       const workflowRequests = yield* workerdHostHandler({
         executor: Effect.succeed(executor),
@@ -163,12 +169,11 @@ export const selfHostExecutorServices = <E, R>(
         Layer.succeed(
           AppManagementHost,
           Effect.succeed({
-            executor: withExecutorAnalytics(executor),
+            executor: hosted,
             access: yield* hostedAppCapabilities,
           }),
         ),
-        // Records only inside requests that carry this instance's analytics sink.
-        Layer.succeed(HostedExecutor, Effect.succeed(withExecutorAnalytics(executor))),
+        Layer.succeed(HostedExecutor, Effect.succeed(hosted)),
         Layer.succeed(OrganizationDefaults, initialize),
         Layer.succeed(HostedAppRuntime, toEffectRuntime(runtime, blobs)),
         // Self-host cannot remove an organization.

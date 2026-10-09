@@ -1,8 +1,8 @@
 /** Client code imports handler types only; no server module executes in the browser. */
-import type { listMessages, receiveMessage } from "./index.ts";
+import type { listMessages, receiveMessage } from "./index.js";
 import { array } from "apps";
 import { liveQueryAtom, queryReference, mutationReference, type QueryTransport } from "apps/client";
-import { Message } from "./schema.ts";
+import { Message } from "./schema.js";
 
 export const references = {
   listMessages: queryReference<typeof listMessages>("listMessages"),

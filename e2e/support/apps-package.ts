@@ -103,9 +103,9 @@ export const appsPackageExports = Effect.gen(function* () {
 });
 
 /**
- * Compiler diagnostics for app source checked as deploy.md tells an agent to: `tsc --noEmit
- * --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 index.ts`
- * with the staged package installed. Empty means the source type-checks.
+ * Compiler diagnostics for app source checked as deploy.md tells an agent to: `tsc --ignoreConfig
+ * --noEmit --strict --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022
+ * index.ts` with the staged package installed. Empty means the source type-checks.
  */
 export const strictTypeProblems = Effect.fn(function* (
   files: readonly { readonly path: string; readonly content: string }[],
@@ -127,9 +127,8 @@ export const strictTypeProblems = Effect.fn(function* (
     yield* fs.makeDirectory(path.dirname(path.join(directory, file.path)), { recursive: true });
     yield* fs.writeFileString(path.join(directory, file.path), file.content);
   }
-  // The checkout's tsconfig.json is an ancestor of the directory. With files named, tsc fails on
-  // it with TS5112 and checks nothing, so `--ignoreConfig` leaves deploy.md's flags as the whole
-  // configuration, as in an app directory without one.
+  // `--ignoreConfig` also skips the checkout's tsconfig.json, an ancestor of the directory, so
+  // deploy.md's flags are the whole configuration.
   const child = yield* processes.spawn(
     ChildProcess.make(
       "node",

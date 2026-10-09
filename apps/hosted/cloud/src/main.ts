@@ -289,6 +289,8 @@ export default Api.make(
         );
       });
     const dataSteps = (yield* cloudDataSteps(auth.agentGrants)).pipe(
+      // A step's redeploys wake profile setup once, after the job's request answers.
+      Effect.provide(schedules.layer),
       Effect.provide(executor),
       reportErrors,
       Effect.scoped,

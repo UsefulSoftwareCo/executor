@@ -78,13 +78,24 @@ export async function generateFrameworkReference() {
     "ui/main.tsx",
     "ui/index.html",
     "ui/style.css",
+    "ui/assets.d.ts",
     "package.json",
   ];
-  // The example deploys as written, so its manifest declares this release like every app.
+  // The example deploys as written, so its manifest declares this release like every app. It keeps
+  // the type packages the local type check in deploy.md needs; the workspace `apps` link is dropped.
   const deployable = (content) => {
-    const { name, type, dependencies } = JSON.parse(content);
+    const { name, type, dependencies, devDependencies } = JSON.parse(content);
+    const types = Object.entries(devDependencies).filter(([dependency]) =>
+      dependency.startsWith("@types/"),
+    );
     return `${JSON.stringify(
-      { name, private: true, type, dependencies: { apps: manifest.version, ...dependencies } },
+      {
+        name,
+        private: true,
+        type,
+        dependencies: { apps: manifest.version, ...dependencies },
+        devDependencies: Object.fromEntries(types),
+      },
       null,
       2,
     )}\n`;

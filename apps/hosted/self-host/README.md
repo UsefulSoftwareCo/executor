@@ -63,7 +63,9 @@ The health endpoint is [http://localhost:4400/health](http://localhost:4400/heal
 The Docker build produces a standalone server bundle. It prepares the trusted
 Worker host and framework once; authored apps still compile inside workerd.
 The image retains PGlite, one native workerd binary, the dashboard, and a small native host for Git, keys, locks, and HTTP. Executor,
-authored apps, workflows, and Motel share one workerd executable. Neither Bun nor
+authored apps, workflows, and Motel share one workerd executable. Motel runs as
+its own workerd process, so its indexing no longer blocks the product's JavaScript
+thread; the two still share the container's CPU, memory and disk. Neither Bun nor
 Node ships in the runtime image. Build tools
 and the workspace dependency tree stay in the build stage.
 

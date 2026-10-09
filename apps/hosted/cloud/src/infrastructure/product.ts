@@ -11,6 +11,7 @@ import {
   OrganizationRemovals,
   OrganizationRemovalUnavailable,
   OrganizationTombstones,
+  withDeploySetupWake,
   withExecutorAnalytics,
 } from "@executor-js/hosted-server";
 import type { HostedApiDocument } from "@executor-js/hosted-server/contracts";
@@ -82,9 +83,12 @@ export const cloudProduct = Effect.fn(function* (
     services,
     Layer.succeed(
       AppManagementHost,
-      Effect.all({ executor: sdk.pipe(Effect.map(withExecutorAnalytics)), access }).pipe(
-        Effect.provide(RuntimeContext.phantom),
-      ),
+      Effect.all({
+        executor: sdk.pipe(
+          Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor))),
+        ),
+        access,
+      }).pipe(Effect.provide(RuntimeContext.phantom)),
     ),
     Layer.succeed(AppGitOrigins, () => hosts.gitOrigins),
     Layer.succeed(ScheduledAuthority, (target) =>

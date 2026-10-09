@@ -102,7 +102,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "cloud-account-callback.spec.ts",
     title:
-      "Cloud connected-account sign-ins return through the deployment origin's callback to the browser origin, and the edge forwards v2's state prefix",
+      "Cloud connected-account sign-ins return through the edge's callback to the browser origin, and saved clients' deployment-origin callback still finishes there",
     targets: {
       cloud: managedCloud,
       "self-host": na("Self-host's callback is on its one origin; nothing forwards to it."),
@@ -1445,6 +1445,29 @@ export const scenarios = plan({
       local: na("Local checks for due work every second; it has no coordinator alarm."),
     },
   },
+  deploySetup: {
+    fixtures: "actors",
+    file: "deploy-setup.spec.ts",
+    title:
+      "Deploys wake profile setup, which reaches each new deployment, a schedule's change from interval to cron and an unchanged redeploy without a reconcile",
+    targets: {
+      cloud: managedCloud,
+      "self-host": scheduled,
+      local: na("Hosted profiles and deployment API scenario"),
+    },
+  },
+  memberSetupWake: {
+    fixtures: "actors",
+    file: "deploy-setup.spec.ts",
+    title: "Member setup wakes profile setup from its background provisioning job",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud installs a new team in its request with an immediate wake, or in its provisioning workflow, whose next step requests the schedule-wake job.",
+      ),
+      local: na("Local has no hosted provisioning jobs."),
+    },
+  },
   cloudMcpObjectConnections: {
     fixtures: "actors",
     file: "cloud-database-placement.spec.ts",
@@ -2679,6 +2702,16 @@ export const scenarios = plan({
     file: "api-document-patterns.spec.ts",
     title: "the published API document keeps the string patterns requests must match",
     targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
+  },
+  toolIndexRedeploy: {
+    fixtures: "actors",
+    file: "tool-index-redeploy.spec.ts",
+    title: "a deploy changes a profile's MCP tools and its setup settles without a profile update",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted profiles and deployment API scenario"),
+    },
   },
   appDeclarations: {
     fixtures: "actors",
@@ -4500,6 +4533,18 @@ export const scenarios = plan({
       local: scheduled,
       "self-host": na("Hosted grant restrictions are covered by liveGrantRestrictions."),
       cloud: na("Hosted grant restrictions are covered by liveGrantRestrictions."),
+    },
+  },
+  connectionLinkReadAgain: {
+    fixtures: "actors",
+    file: "connection-link.spec.ts",
+    title:
+      "agents read a pending connection's sign-in link back, are told to connect a new account after a provider change, and another organization's admin cannot read the link",
+    managementProfiles: ["owner"],
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local issues bearer links through accountConnect.issue, not hosted connections."),
     },
   },
   appManagementContractsHosted: {

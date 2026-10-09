@@ -1,7 +1,6 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { StorageError, type App, type DeploymentId } from "@executor-js/sdk/core";
-import { ScheduleWakeup } from "../contracts/schedules.ts";
 
 /**
  * One-off: ask every organization's default Executor app to move to the current template.
@@ -25,22 +24,20 @@ export const queueExecutorAppUpgrades = Effect.gen(function* () {
 /**
  * After a data step redeploys an organization's default Executor app, record the new deployment
  * where the replaced one was recorded. Member setup trusts only the recorded deployment as
- * Executor's own; a copy recorded under another deployment, or none, stays as it was.
+ * Executor's own; a copy recorded under another deployment, or none, stays as it was. The host
+ * names how the step wakes profile setup, which the new deployment leaves pending.
  */
-export const executorDefaultRedeployed = (
-  app: App,
-  replaced: DeploymentId,
-  deployment: DeploymentId,
-) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`update "organization" set metadata = jsonb_set(
+export const executorDefaultRedeployed =
+  (wake: Effect.Effect<void>) => (app: App, replaced: DeploymentId, deployment: DeploymentId) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`update "organization" set metadata = jsonb_set(
         metadata::jsonb, '{executorDefaults,deployment}', to_jsonb(${deployment}::text)
       )::text
       where metadata::jsonb -> 'executorDefaults' ->> 'app' = ${app.id}
         and metadata::jsonb -> 'executorDefaults' ->> 'deployment' = ${replaced}`.pipe(
-      Effect.mapError(() => new StorageError()),
-    );
-    // The new deployment leaves the app's profiles to set up again; polling recovers a missed wake.
-    yield* Effect.flatten(ScheduleWakeup);
-  });
+        Effect.mapError(() => new StorageError()),
+      );
+      // Polling recovers a missed wake.
+      yield* wake;
+    });

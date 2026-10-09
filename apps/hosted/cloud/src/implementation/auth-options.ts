@@ -3,13 +3,7 @@ import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { authOptions } from "@executor-js/hosted-server";
 import { HttpUrl } from "@executor-js/sdk/core";
-import {
-  accountCallbackOrigin,
-  cloudHosts,
-  type AccountCallbackOrigin,
-  type CloudHosts,
-  type RoleHosts,
-} from "../infrastructure/stage.ts";
+import { cloudHosts, type CloudHosts } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { organization } from "better-auth/plugins/organization";
@@ -68,12 +62,6 @@ const OAuthProxySettings = Schema.Struct({
 const socialCallbackOrigin = (hosts: CloudHosts) =>
   Option.match(hosts.roles, { onNone: () => hosts.browser, onSome: (roles) => roles.edge });
 
-/** The connected-account callback on the origin `setting` names. */
-const accountCallback = (setting: AccountCallbackOrigin, deployment: string, roles: RoleHosts) =>
-  HttpUrl.make(
-    new URL("/api/oauth/callback", setting === "deployment" ? deployment : roles.edge).href,
-  );
-
 /** Require both cloud social providers and reject blank credentials at startup. */
 export const cloudAuthSettings = Effect.gen(function* () {
   const hosts = yield* cloudHosts;
@@ -85,10 +73,9 @@ export const cloudAuthSettings = Effect.gen(function* () {
     Config.option,
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Option(HttpUrl))),
   );
-  // With role hosts, connected-account sign-ins return to the callback `accountCallbackOrigin`
-  // selects, which sends the browser to the browser origin. Without them, an operator may set a
-  // relay.
-  const oauthRedirectUri = Option.isNone(hosts.roles)
+  // With role hosts, new connected-account sign-ins return to the edge's callback, which sends the
+  // browser to the browser origin. Without them, an operator may set a relay.
+  const oauthRedirectUri = Option.isNone(hosts.accountCallbacks)
     ? configuredRedirectUri
     : Option.isSome(configuredRedirectUri)
       ? yield* Effect.die(
@@ -96,7 +83,7 @@ export const cloudAuthSettings = Effect.gen(function* () {
             "EXECUTOR_OAUTH_CALLBACK_URL is derived from the role hosts; remove it from this deployment",
           ),
         )
-      : Option.some(accountCallback(accountCallbackOrigin, hosts.deployment, hosts.roles.value));
+      : Option.some(HttpUrl.make(hosts.accountCallbacks.value.current));
   // Emulated sign-ins never resolve the real proxy credentials, including bindings retained from
   // a previous non-emulated version: they name production and its shared secret. A run that
   // proves the proxy names an emulated one, whose production is another emulated deployment.

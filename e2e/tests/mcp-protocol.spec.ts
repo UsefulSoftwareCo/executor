@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { withApps } from "../support/apps-release.ts";
+import { withApps, mcpDependencies } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
@@ -23,10 +23,7 @@ const deploy = Effect.fn("McpProtocol.deploy")(function* (url: string, timeoutMs
       {
         path: "package.json",
         content: JSON.stringify({
-          dependencies: withApps({
-            "@modelcontextprotocol/client": "2.0.0",
-            "@modelcontextprotocol/core": "2.0.0",
-          }),
+          dependencies: withApps(mcpDependencies),
         }),
       },
       {

@@ -3,8 +3,8 @@ import { createRoot } from "react-dom/client";
 import { array } from "apps";
 import { createAppClient, mutationReference, queryReference } from "apps/client";
 import { useAppQuery } from "apps/react";
-import type { listMessages, receiveMessage } from "../index.ts";
-import { Message } from "../schema.ts";
+import type { listMessages, receiveMessage } from "../index.js";
+import { Message } from "../schema.js";
 import "./style.css";
 
 const client = createAppClient();

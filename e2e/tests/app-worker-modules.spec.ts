@@ -17,7 +17,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { appsManifest, withApps } from "../support/apps-release.ts";
+import { appsManifest, withApps, mcpDependencies } from "../support/apps-release.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 
 const Rpc = Schema.Struct({
@@ -117,10 +117,8 @@ export default defineApp({ accounts: {} }, { tools: router({ ping }) });`;
 const entryApps = (origin: string) => [
   {
     entry: "mcp",
-    dependencies: {
-      "@modelcontextprotocol/client": "2.0.0",
-      "@modelcontextprotocol/core": "2.0.0",
-    },
+    dependencies: mcpDependencies,
+
     tool: "remote.echo",
     source: `import { defineApp, router } from "apps";
 import { mcpRouter } from "apps/mcp";

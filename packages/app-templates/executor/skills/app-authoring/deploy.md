@@ -93,11 +93,42 @@ never `apps@latest` or an unpinned `apps`:
 ```sh
 cd hello
 npm install --no-package-lock
-npx -p typescript tsc --noEmit --strict --skipLibCheck \
+npx -y -p typescript@7 tsc --ignoreConfig --noEmit --strict --skipLibCheck \
   --module nodenext --moduleResolution nodenext --target es2022 index.ts
 ```
 
-Add a `tsconfig.json` with JSX settings when the app has React UI files.
+For a React UI, declare `@types/react@19` and `@types/react-dom@19` in
+`devDependencies`, and declare the asset types the UI imports in
+`ui/assets.d.ts`. Images and fonts import as URL strings; declare other
+extensions, such as `*.png`, the same way:
+
+```ts
+declare module "*.css";
+declare module "*.svg" {
+  const url: string;
+  export default url;
+}
+declare module "*.woff2" {
+  const url: string;
+  export default url;
+}
+```
+
+The `live-inbox` example already has the type packages and `ui/assets.d.ts`.
+An example from an older `apps` release may lack them and import `./schema.ts`;
+add them and change those imports to `.js`. Then add `--jsx react-jsx`, the UI
+entry and the declaration file:
+
+```sh
+npx -y -p typescript@7 tsc --ignoreConfig --noEmit --strict --skipLibCheck \
+  --module nodenext --moduleResolution nodenext --target es2022 \
+  --jsx react-jsx index.ts ui/main.tsx ui/assets.d.ts
+```
+
+Neither this check nor the build reads `tsconfig.json`; `--ignoreConfig` skips
+it. A `tsconfig.json` is still useful for editors, but its `include` does not
+add files here, so name the declaration file in the command.
+
 Write relative imports as NodeNext requires: `import { provider } from "./provider.js"`
 loads `provider.ts`, in server and UI files alike. The build fails at an import
 that matches no deployed file. Failed builds report the source file and line
@@ -345,6 +376,13 @@ again and reconcile the edits before retrying. Deployment returns `{ app,
 deployment }`, preserves the app ID and data, and never updates the Git branch.
 It has no expected-active-deployment argument. Check profiles after changing
 account requirements; saved selections can become incompatible with new code.
+
+Every profile follows the active deployment, so do not update or reconcile a
+profile to pick up new code. The next `execute` lists and calls the new tools.
+A deploy marks each profile's setup `pending` and starts background setup,
+which re-registers its webhooks and schedules, usually within seconds. `pending`
+does not block tool calls. Setup that cannot finish shows `needs-setup` or
+`failed` with its cause.
 
 `apps.deployments` lists retained versions. `apps.source` accepts an optional
 `query.deployment` to read a specific version. `apps.activate` requires

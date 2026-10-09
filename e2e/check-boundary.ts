@@ -105,13 +105,14 @@ const check = Effect.gen(function* () {
             return;
           problems.push(`${label}: forbidden E2E import ${specifier}`);
         };
-        // The host's apps release is data in the apps package manifest, imported as JSON: the
+        // Framework and standalone SDK release metadata comes from package manifests imported as JSON: the
         // fixtures declare the version the hosts ship. No implementation is imported.
         const appsManifest = (node: ts.ImportDeclaration) =>
           label === `support${path.sep}apps-release.ts` &&
           ts.isStringLiteral(node.moduleSpecifier) &&
-          path.resolve(path.dirname(file), node.moduleSpecifier.text) ===
-            path.resolve("packages/apps/package.json") &&
+          [path.resolve("packages/apps/package.json"), path.resolve("package.json")].includes(
+            path.resolve(path.dirname(file), node.moduleSpecifier.text),
+          ) &&
           node.attributes?.elements.some(
             (attribute) =>
               attribute.name.text === "type" &&

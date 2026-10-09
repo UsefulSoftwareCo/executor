@@ -8,14 +8,14 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
-import { withApps } from "../support/apps-release.ts";
+import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
 
 // NodeNext requires `.js` specifiers for TypeScript sources, from the server and the UI alike.
 const files = [
   {
     path: "package.json",
     content: JSON.stringify({
-      dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
+      dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
     }),
   },
   {

@@ -69,12 +69,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       analytics === undefined
         ? effect
         : effect.pipe(Effect.provideService(ProductAnalytics, analytics.product));
-    yield* drainProvisioning(selfHostProvisioningServices).pipe(
-      Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
-      Effect.repeat(Schedule.spaced("1 second")),
-      Effect.provide(executorServices),
-      Effect.forkScoped,
-    );
     const scheduler = yield* Effect.gen(function* () {
       const executor = yield* Effect.flatten(HostedExecutor);
       const authorize = yield* ScheduledAuthority;
@@ -91,6 +85,18 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         ? worker
         : worker.pipe(Effect.provideService(ScheduleObservation, analytics.schedules));
     }).pipe(Effect.provide(executorServices));
+    // A span per wake, named as Cloud's coordinator wake, shows which write asked for setup.
+    const wake = scheduler.wakeProfiles.pipe(
+      Effect.withSpan("schedule.wake", { attributes: { "executor.schedule.wake": "change" } }),
+    );
+    // Member setup saves profiles and redeploys the default Executor app; it wakes their setup.
+    yield* drainProvisioning(selfHostProvisioningServices).pipe(
+      Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
+      Effect.repeat(Schedule.spaced("1 second")),
+      Effect.provideService(ScheduleWakeup, wake),
+      Effect.provide(executorServices),
+      Effect.forkScoped,
+    );
     const clientMetadata = yield* clientMetadataSetting(auth.origin);
     const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
     const appUi = hostedAppUi(addresses);
@@ -198,9 +204,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     );
     const product = yield* HttpRouter.toHttpEffect(productRoutes).pipe(
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
-      Effect.map((handler) =>
-        handler.pipe(Effect.provideService(ScheduleWakeup, scheduler.wakeProfiles)),
-      ),
+      Effect.map((handler) => handler.pipe(Effect.provideService(ScheduleWakeup, wake))),
     );
     const routes = HttpRouter.add(
       "*",

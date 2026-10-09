@@ -899,7 +899,23 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
     // Tool path prefixes that expose no tools in this execution, and those that do. A call is
     // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
     const namespaces: Namespaces = new Map();
+    /** The deployment each loaded namespace's tools came from. */
+    const loadedFrom = new Map<string, DeploymentId>();
     const unavailableApps = () => apps.flatMap((app) => failures.get(app.id) ?? []);
+    /**
+     * Report an app that exposes no tools, such as one that needs a profile, once a search or
+     * describe names it; otherwise its empty result would look like an app with no tools. A call
+     * already reports why in its error, and unnamed apps stay quiet: most members never set up
+     * most of their organization's account apps.
+     */
+    const reveal = (entry: typeof UnavailableApp.Type) =>
+      Effect.sync(() => {
+        const app = apps.find((candidate) => candidate.id === entry.app);
+        const failed = app === undefined ? undefined : failures.get(app.id);
+        if (failed === undefined || failed.includes(entry)) return;
+        failed.push(entry);
+        progress.unavailableApps = unavailableApps();
+      });
     /** Each loaded app's callable tools, for search. */
     const listed = new Map<string, ReadonlyArray<Entry>>();
 
@@ -960,8 +976,9 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
           return;
         }
         // An app that needs accounts exposes no target when the caller has no enabled profile.
-        // Report that only when the program calls into it: most members never set up most of
-        // their organization's account apps.
+        // A call into it fails with that reason, and a search or describe that names it lists it
+        // (see `reveal`). Unnamed, it stays quiet: most members never set up most of their
+        // organization's account apps.
         if (targets.length === 0) {
           namespaces.set(app.slug, {
             app: app.id,
@@ -988,6 +1005,7 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
             continue;
           }
           namespaces.set(namespace, "available");
+          if (catalog.deployment !== undefined) loadedFrom.set(namespace, catalog.deployment);
           // A router that could not list its tools is reported like an app, at its own namespace,
           // so a call into it explains why instead of reporting an unknown tool.
           const groups = new Map(catalog.routers.map((router) => [router.path, router]));
@@ -1134,6 +1152,11 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
             ? discovered
             : discovered.filter(({ app }) => names.some((name) => within(name, app.slug)));
         yield* load(selected);
+        if (names !== "all")
+          for (const { app } of selected) {
+            const entry = namespaces.get(app.slug);
+            if (unique(app) && entry !== undefined && entry !== "available") yield* reveal(entry);
+          }
         const entries = selected
           .flatMap(({ app }) => (unique(app) ? (listed.get(app.slug) ?? []) : []))
           .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
@@ -1146,7 +1169,16 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
       }).pipe(Effect.withSpan("mcp.search.discovery"));
     const reachable = (reach: ReadonlySet<string> | "all") =>
       reach === "all" ? discovered : discovered.filter(({ app }) => reach.has(app.slug));
-    return { tools, namespaces, load, reachable, searchable, unavailableApps };
+    const slugs = new Set(apps.map((app) => app.slug));
+    return {
+      tools,
+      namespaces,
+      load,
+      reachable,
+      searchable,
+      unavailableApps,
+      unknownTool: (error: CodeMode.Diagnostic) => unknownTool(error, loadedFrom, slugs),
+    };
   });
 }
 
@@ -1184,13 +1216,45 @@ const recordFailure = (progress: ExecutionProgress, error: Error) =>
     progress.failures.push(error);
   });
 
+/** The canonical path CodeMode's UnknownTool diagnostic names. */
+const unknownPath = (error: CodeMode.Diagnostic) =>
+  error.kind === "UnknownTool"
+    ? /^(?:Unknown tool(?: namespace)? |Tool )'([^']*)'/.exec(error.message)?.[1]
+    : undefined;
+
+/**
+ * Why a loaded app, or a slug no app had, has no such tool. Each execute lists apps when it
+ * starts and loads an app's tools when it first reaches it, so an app deployed or created by the
+ * program itself shows its new tools only in the next execute. CodeMode's own suggestion, that
+ * the tool may have been removed, sends agents looking for a cause that is not there. A typo
+ * cannot be told apart from a tool deployed later, so it gets the same message, which ends by
+ * sending the agent to search.
+ */
+const unknownTool = (
+  error: CodeMode.Diagnostic,
+  loadedFrom: ReadonlyMap<string, DeploymentId>,
+  slugs: ReadonlySet<string>,
+) => {
+  const path = unknownPath(error);
+  if (path === undefined) return undefined;
+  const segments = path.split(".");
+  const slug = segments[0] ?? "";
+  for (let length = segments.length; length > 0; length--) {
+    const deployment = loadedFrom.get(segments.slice(0, length).join("."));
+    if (deployment !== undefined)
+      return `This execute loaded '${slug}' from deployment ${deployment} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`;
+  }
+  if (!slugs.has(slug))
+    return `No app '${slug}' existed when this execute started. If it was created or deployed during this execute, call it in a new execute. Otherwise use search to find available tools.`;
+  return undefined;
+};
+
 /**
  * A call into an app that failed to load is not an unknown tool: report why the app is unavailable.
  * CodeMode names the unresolved canonical path in its UnknownTool diagnostic.
  */
 const unavailableTarget = (error: CodeMode.Diagnostic, namespaces: Namespaces) => {
-  if (error.kind !== "UnknownTool") return undefined;
-  const path = /^(?:Unknown tool(?: namespace)? |Tool )'([^']*)'/.exec(error.message)?.[1];
+  const path = unknownPath(error);
   if (path === undefined) return undefined;
   const segments = path.split(".");
   for (let length = segments.length; length > 0; length--) {
@@ -1360,8 +1424,13 @@ export function executeProgram(
         : unavailableTarget(result.error, prepared.namespaces);
       if (unavailable !== undefined)
         yield* Effect.annotateCurrentSpan("executor.unavailable_app.called", true);
+      const unknown =
+        result.ok || unavailable !== undefined ? undefined : prepared.unknownTool(result.error);
       const execution = executionDiagnostic({
         ...result,
+        ...(unknown === undefined || result.ok
+          ? {}
+          : { error: { ...result.error, suggestions: [unknown] } }),
         ...(unavailable === undefined
           ? {}
           : {

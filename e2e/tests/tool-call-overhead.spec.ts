@@ -18,7 +18,7 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { mcpOutcomeFixture, slowUpstreamMs } from "../support/mcp-outcome-fixture.ts";
 import { mcpInCallFixture } from "../support/mcp-in-call-fixture.ts";
-import { withApps } from "../support/apps-release.ts";
+import { withApps, mcpDependencies } from "../support/apps-release.ts";
 
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 type Tags = Readonly<Record<string, string>>;
@@ -368,7 +368,7 @@ export default defineApp({ accounts: {} }, { tools: router({
           `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
 export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)} }) }));`,
-          { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" },
+          mcpDependencies,
         );
         yield* execute(
           "Call a tool whose MCP server asks the person a question",
@@ -539,7 +539,7 @@ export default defineApp({ accounts: {} }, { tools: router({
 import { mcpRouter } from "apps/mcp";
 ${slowDigest(`(bytes: Uint8Array) => new TextDecoder().decode(bytes).includes('"current"')`)}
 export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache }) }));`,
-          { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" },
+          mcpDependencies,
         );
         yield* execute(
           "Call a tool whose MCP server announces a changed tool list",
@@ -627,7 +627,7 @@ export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await 
     return cache.read(key, schema);
   },
 } }) }));`,
-          { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" },
+          mcpDependencies,
         );
         yield* execute(
           "Call a tool whose catalog reads it through the app's own cache",
@@ -672,7 +672,7 @@ class AppCache {
   forAccount(account) { return new AppCache(this.inner.forAccount(account)); }
 }
 export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache: new AppCache(cache), revalidate: true }) }));`,
-          { "@modelcontextprotocol/client": "2.0.0", "@modelcontextprotocol/core": "2.0.0" },
+          mcpDependencies,
         );
         const result = yield* execute(
           "Call a tool whose catalog the app keeps in a cache class",

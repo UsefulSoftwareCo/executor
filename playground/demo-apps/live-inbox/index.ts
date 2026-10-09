@@ -9,7 +9,7 @@ import {
   string,
   router,
 } from "apps";
-import { Message } from "./schema.ts";
+import { Message } from "./schema.js";
 
 /** The `messages` table is created by migrations/0001_messages.sql. */
 const requirements = { accounts: {} };

@@ -20,7 +20,7 @@ import { App, Resource } from "../support/contracts.ts";
 import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
-import { withApps } from "../support/apps-release.ts";
+import { withApps, mcpDependencies } from "../support/apps-release.ts";
 
 const Counters = Schema.Struct({
   initialize: Schema.Number,
@@ -173,10 +173,7 @@ const source = (url: string, cached: boolean, accounts: boolean, unbound = false
   {
     path: "package.json",
     content: JSON.stringify({
-      dependencies: withApps({
-        "@modelcontextprotocol/client": "2.0.0",
-        "@modelcontextprotocol/core": "2.0.0",
-      }),
+      dependencies: withApps(mcpDependencies),
     }),
   },
   {

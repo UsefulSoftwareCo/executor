@@ -206,7 +206,10 @@ export const createExecutor = (
       accountConnections: {
         ...connections,
         ...oauth.connections,
-        findOAuth: (input) => Effect.flatMap(oauth.findOAuth(input), connections.get),
+        findOAuth: (input) =>
+          Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
+            Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),
+          ),
       },
       apps: {
         ...apps,

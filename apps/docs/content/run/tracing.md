@@ -32,8 +32,8 @@ The local diagnostics directory holds:
 Motel keeps seven days and targets 1 GiB. Each log file keeps four rotated
 archives at about 10 MiB each.
 
-Motel runs in workerd. In self-host Docker it shares the product's workerd
-process and keeps its SQLite files in the `motel` folder of
+Motel runs in workerd. In self-host Docker it runs as its own workerd process
+beside the product and keeps its SQLite files in the `motel` folder of
 `EXECUTOR_MOTEL_DATA_DIR`. This directory must be separate from `/app/data`. Replacing the container discards telemetry by
 default. Mount a separate volume at the Motel directory to retain it. The
 container does not include Node or Bun.
@@ -46,14 +46,21 @@ result does not mean that log export is broken. The search covers the last
 hour by default. Set `lookback`, for example `lookback=24h`, to search further
 back. Each log record also goes to the container log.
 
-The collector binds to container loopback on port 4318 and publishes no port.
-For the container named `executor-v2` in the [self-host instructions](/run/self-host),
-query it with a temporary container that shares its network:
+The collector listens only on a private Unix socket inside the container. It
+has no network port, so apps cannot reach it, even when
+`EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` is on. For the container named `executor-v2`
+in the [self-host instructions](/run/self-host), query it through the host
+process:
 
 ```bash
-docker run --rm --network container:executor-v2 curlimages/curl \
-  --fail --silent --show-error 'http://127.0.0.1:4318/api/traces?limit=20'
+docker exec executor-v2 executor-host telemetry '/api/traces?limit=20'
 ```
+
+Images before this change served the collector on container loopback port 4318.
+That port is gone. Scripts that read `http://127.0.0.1:4318` must use
+`executor-host telemetry` instead. An `OTEL_EXPORTER_OTLP_*` variable that points
+at `127.0.0.1:4318` now sends to a port nothing listens on: remove it to use the
+bundled collector, or point it at your own collector.
 
 The collector serves `/api/health`, `/api/traces`,
 `/api/traces/<trace-id>/spans`, `/api/logs/search` and `/openapi.json`.
