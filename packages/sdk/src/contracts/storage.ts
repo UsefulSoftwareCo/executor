@@ -17,7 +17,7 @@ import {
 } from "./shared.ts";
 import { AccountConnectionDestination } from "./account-connection.ts";
 import type { Effect, Redacted } from "effect";
-import type { OAuthClientId, OAuthAttemptId } from "./oauth.ts";
+import { OAuthProviderErrorCode, type OAuthClientId, type OAuthAttemptId } from "./oauth.ts";
 
 /**
  * Account metadata plus an opaque encrypted credential envelope. The future
@@ -96,7 +96,51 @@ export interface StorageHost {
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | StorageError, R>;
 }
-/** The host owns encryption and key custody. Ciphertexts are bound to their stable resource identity. */
+/**
+ * A credentials store refused to renew a grant, in the terms of the service's answer. The host
+ * classifies it as it classifies its own token request. `subject_changed` ends the grant on its
+ * own. `invalid_grant` ends it only with the service's `status`, below 500 and not 429; with a
+ * 2xx status it also needs `answer: "error_body"`. A refusal with no `status` reads as an
+ * incompatible response, as a lost answer to the host's own request would, and keeps the grant.
+ */
+export class CredentialsRenewalRefused extends Schema.TaggedError<CredentialsRenewalRefused>()(
+  "CredentialsRenewalRefused",
+  {
+    reason: Schema.Literals([
+      "request",
+      "invalid_grant",
+      "invalid_client",
+      "invalid_response",
+      "subject_changed",
+    ]),
+    status: Schema.optional(Schema.Int),
+    providerError: Schema.optional(OAuthProviderErrorCode),
+    /** The service answered with an RFC 6749 §5.2 error body, or a WWW-Authenticate challenge. */
+    answer: Schema.optional(Schema.Literals(["error_body", "challenge"])),
+    /** With HTTP 429, the time the answer's Retry-After header named. */
+    retryAfter: Schema.optional(Schema.Date),
+  },
+) {}
+
+/** A renewal a credentials store performed. */
+export interface CredentialsRenewed {
+  /**
+   * Public token response members. Never refresh_token, id_token, client_secret or
+   * client_assertion.
+   */
+  readonly tokens: Redacted.Redacted<JsonObject>;
+  /**
+   * The grant sealed again, holding any rotated refresh token. The host decrypts it, sets the
+   * renewed fields and lifetime and encrypts it once more, so the store's `encrypt` must keep its
+   * own placeholders, or the rotated refresh token is lost.
+   */
+  readonly sealed: Uint8Array;
+}
+
+/**
+ * The store owns encryption and key custody; a store with `renew` also owns the refresh exchange.
+ * Ciphertexts are bound to their stable resource identity.
+ */
 export interface Credentials {
   readonly encrypt: (
     identity:
@@ -124,4 +168,40 @@ export interface Credentials {
       | import("./events.ts").StoredEventId,
     bytes: Redacted.Redacted<Uint8Array>,
   ) => Effect.Effect<Redacted.Redacted<JsonObject>, CredentialsError>;
+  /**
+   * Renew an OAuth grant from the store's own sealed copy, so the host never reads its refresh
+   * token or client secret. When present, the host calls it instead of its own token request and
+   * keeps its claim, lease and outcome classification.
+   *
+   * The host seals several records under the same identities and still runs sign-in and the
+   * client credentials setup exchange itself. So a store may replace `refreshToken` and
+   * `client.client_secret` with placeholders only in the grant: a record under an `acc_` identity
+   * with `server`, `client`, `fields` and `response` keys. That shape is part of this contract:
+   * the host keeps it, and seals no other `acc_` record with all four keys. The account fields
+   * under the same identity, the sign-in attempt under `oauth_` and the saved client under
+   * `client_` (top-level `client_secret`) must decrypt to their real values. The host reads only
+   * whether the placeholders are present.
+   *
+   * Performs the RFC 6749 `refresh_token` or `client_credentials` request, and for a refreshed ID
+   * token the OIDC Core §12.2 subject check (reason `subject_changed`). Returns no secret. If the
+   * service rotates the token but the answer never reaches the host, the host keeps the old seal,
+   * as it does after a lost answer to its own token request. So a store's deadline for the
+   * service should be shorter than any deadline it is called under.
+   */
+  readonly renew?: (
+    identity: AccountId,
+    sealed: Redacted.Redacted<Uint8Array>,
+  ) => Effect.Effect<CredentialsRenewed, CredentialsError | CredentialsRenewalRefused>;
+  /**
+   * RFC 7009 revocation of a deleted account's grant with the store's real token: the refresh
+   * token when present, otherwise the access token. Outcomes match the host's own revocation.
+   * The host calls it once, after deleting the account, whatever the outcome; how long the store
+   * keeps the grant's secrets after that is the store's decision. The host does not check the
+   * revocation endpoint against its URL policy first, as its own request does; the endpoint
+   * passed that policy at sign-in, and applying the current policy is the store's choice.
+   */
+  readonly revoke?: (
+    identity: AccountId,
+    sealed: Redacted.Redacted<Uint8Array>,
+  ) => Effect.Effect<"revoked" | "unsupported" | "no_token" | "failed", CredentialsError>;
 }

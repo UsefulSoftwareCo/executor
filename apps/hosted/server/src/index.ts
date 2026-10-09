@@ -50,6 +50,11 @@ export {
   clientMetadataSetting,
   type ClientMetadataSetting,
 } from "./implementation/oauth-client-metadata.ts";
+export * from "./contracts/credential-adapter.ts";
+export {
+  credentialAdapterSetting,
+  httpCredentialAdapter,
+} from "./implementation/credential-adapter.ts";
 export type {
   HostedAccountConnection,
   HostedOAuthSignIn,

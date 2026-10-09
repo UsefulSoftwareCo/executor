@@ -28,6 +28,8 @@ import {
 } from "../contracts/oauth.ts";
 import type { OAuthTokenRequestFormat, OAuthTokenResponse } from "apps/contracts";
 import type { ProviderAuthMethod } from "../contracts/provider.ts";
+import type { CredentialsError } from "../contracts/shared.ts";
+import { CredentialsRenewalRefused } from "../contracts/storage.ts";
 import {
   challengeDiagnostics,
   descriptionLength,
@@ -472,6 +474,31 @@ const callbackFailure = (error: unknown): OAuthProtocolFailed => {
 export const isOAuthErrorResponse = (error: OAuthProtocolFailed) =>
   error.code === oauth.RESPONSE_BODY_ERROR || error.code === oauth.WWW_AUTHENTICATE_CHALLENGE;
 
+/**
+ * A renewal a credentials store refused, as the same answer to the host's own request would have
+ * failed. A store that cannot be reached or answers outside its contract is an outage: the grant
+ * is kept and renewed again on its next use.
+ */
+export const fromRefusal = (
+  refusal: CredentialsRenewalRefused | CredentialsError,
+): OAuthProtocolFailed => {
+  if (!Schema.is(CredentialsRenewalRefused)(refusal))
+    return new OAuthProtocolFailed({ reason: "request" });
+  const code =
+    refusal.answer === "error_body"
+      ? oauth.RESPONSE_BODY_ERROR
+      : refusal.answer === "challenge"
+        ? oauth.WWW_AUTHENTICATE_CHALLENGE
+        : undefined;
+  return new OAuthProtocolFailed({
+    reason: refusal.reason,
+    ...(code === undefined ? {} : { code }),
+    ...(refusal.status === undefined ? {} : { status: refusal.status }),
+    ...(refusal.providerError === undefined ? {} : { providerError: refusal.providerError }),
+    ...(refusal.retryAfter === undefined ? {} : { retryAfter: refusal.retryAfter }),
+  });
+};
+
 const observeFailure = (error: OAuthProtocolFailed) =>
   Effect.annotateCurrentSpan({
     "oauth.error.reason": error.reason,
@@ -698,7 +725,7 @@ const optionalTokenMembers = new Set([
  * space-delimited string. A missing `token_type` is Bearer: Shopify, ClickUp and Mailchimp omit
  * it, and Executor sends every access token as a Bearer token.
  */
-const normalizedTokens = (body: object) => {
+export const normalizedTokens = (body: object) => {
   const tokens: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body)) {
     if (optionalTokenMembers.has(key) && (value === null || (value === "" && key !== "scope")))
