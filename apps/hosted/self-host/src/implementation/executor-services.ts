@@ -30,6 +30,8 @@ import {
   noOrganizationRemovals,
   lazyHostedApiDocument,
   clientMetadataSetting,
+  credentialAdapterSetting,
+  httpCredentialAdapter,
   hostedOAuthClientName,
   withDeploySetupWake,
   withExecutorAnalytics,
@@ -70,6 +72,7 @@ export const selfHostExecutorServices = <E, R>(
       const key = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY");
       const origin = yield* Config.String("BETTER_AUTH_URL");
       const clientMetadata = yield* clientMetadataSetting(origin);
+      const credentialAdapter = yield* credentialAdapterSetting(egress);
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
@@ -82,7 +85,9 @@ export const selfHostExecutorServices = <E, R>(
       );
       const executor = yield* createExecutor({
         database: storage,
-        secret: key,
+        ...(Option.isSome(credentialAdapter)
+          ? { credentials: httpCredentialAdapter(credentialAdapter.value, egress) }
+          : { secret: key }),
         origin,
         git: repositories,
         blobs,

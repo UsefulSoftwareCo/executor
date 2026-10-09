@@ -50,6 +50,11 @@ export {
   clientMetadataSetting,
   type ClientMetadataSetting,
 } from "./implementation/oauth-client-metadata.ts";
+export {
+  CredentialAdapterUrlInvalid,
+  credentialAdapterSetting,
+  httpCredentialAdapter,
+} from "./implementation/credential-adapter.ts";
 export type {
   HostedAccountConnection,
   HostedOAuthSignIn,

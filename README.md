@@ -155,6 +155,15 @@ Accounts store metadata and opaque encrypted credential bytes. The credential
 adapter owns encryption, envelope format and key custody. The local server
 uses AES-GCM with an explicitly configured key. Parsed storage
 records redact the bytes; public account records contain only metadata.
+
+A `Credentials` store may also implement `renew` and `revoke`. OAuth renewal and the
+revocation after an account is deleted then run inside the store, and the host never reads
+the refresh token or client secret. Self-host uses such a store over HTTP when
+`EXECUTOR_CREDENTIAL_ADAPTER_URL` is set, instead of `EXECUTOR_ENCRYPTION_KEY`: it posts JSON to
+`/encrypt`, `/decrypt`, `/renew` and `/revoke` under that URL, with sealed bytes in base64. The
+store holds every sealed record, not only OAuth grants, so with the setting on every encrypt and
+decrypt in OAuth, webhooks, workflows, tool approvals, events, accounts and credential handles
+goes to the adapter, and an adapter outage stops webhook and workflow secret handling too.
 Deployments retain a Git commit reference, file count, build reference and declared
 account requirements. Source reads load files from Git; SQL stores no source bytes. Public app requirements come from the active deployment. No
 live tool catalog is stored.
