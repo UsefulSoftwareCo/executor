@@ -67,6 +67,7 @@ export const credentialAdapter = Effect.gen(function* () {
   const secrets = new Map<string, string>();
   let renewal: "unavailable" | undefined;
   let reseal: "unavailable" | undefined;
+  let lifetime: "text" | undefined;
   /** The bytes the latest renewal sealed. */
   let renewedBytes: string | undefined;
   const metrics = {
@@ -224,7 +225,11 @@ export const credentialAdapter = Effect.gen(function* () {
         const rotated = stringOf(parsed, "refresh_token");
         const renewed = rotated === undefined ? grant : { ...grant, refreshToken: rotated };
         const tokens = Object.fromEntries(
-          Object.entries(parsed).filter(([key]) => key !== "refresh_token" && key !== "id_token"),
+          Object.entries(parsed)
+            .filter(([key]) => key !== "refresh_token" && key !== "id_token")
+            .map(([key, value]) =>
+              key === "expires_in" && lifetime === "text" ? [key, String(value)] : [key, value],
+            ),
         );
         renewedBytes = seal(identity, renewed);
         return HttpServerResponse.jsonUnsafe({ tokens, bytes: renewedBytes });
@@ -360,14 +365,19 @@ export const credentialAdapter = Effect.gen(function* () {
      * `renew: "unavailable"` answers every renewal with 503, as an adapter outage would.
      * `reseal: "unavailable"` answers 503 once, to the host's decrypt of the bytes the next renewal
      * sealed, as an outage right after the service rotated the token would.
+     * `expiresIn: "text"` passes the service's `expires_in` on as a numeric string, as some
+     * services send it.
      */
     configure: (input: {
       readonly renew?: "unavailable" | null;
       readonly reseal?: "unavailable" | null;
+      readonly expiresIn?: "text" | null;
     }) =>
       Effect.sync(() => {
         if (input.renew !== undefined) renewal = input.renew === null ? undefined : input.renew;
         if (input.reseal !== undefined) reseal = input.reseal === null ? undefined : input.reseal;
+        if (input.expiresIn !== undefined)
+          lifetime = input.expiresIn === null ? undefined : input.expiresIn;
       }),
     metrics: Effect.sync(() => ({
       encrypts: metrics.encrypts,

@@ -2591,7 +2591,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-credential-adapter.spec.ts",
     title:
-      "with a credential adapter configured, the adapter makes every OAuth renewal and keeps the rotated refresh token, a restarted host renews from the adapter's seal, and a renewal interrupted after the token rotated resumes from the adapter's new seal",
+      "a credential adapter renews and keeps the rotated refresh token, across a host restart and an interrupted save",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
@@ -2604,7 +2604,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-credential-adapter.spec.ts",
     title:
-      "a credential adapter's refusals and outages are classified like the service's own answers: a refused client, a rate limit, an unknown error code and an outage keep the grant, invalid_grant reconnects, and a grant without a refresh token reconnects without asking the adapter",
+      "a credential adapter's refusals and outages are classified like the service's own answers, and only invalid_grant or a missing refresh token reconnects",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
