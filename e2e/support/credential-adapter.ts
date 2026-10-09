@@ -66,6 +66,9 @@ export const credentialAdapter = Effect.gen(function* () {
   /** Real secrets by placeholder. */
   const secrets = new Map<string, string>();
   let renewal: "unavailable" | undefined;
+  let reseal: "unavailable" | undefined;
+  /** The bytes the latest renewal sealed. */
+  let renewedBytes: string | undefined;
   const metrics = {
     encrypts: 0,
     decrypts: 0,
@@ -82,12 +85,17 @@ export const credentialAdapter = Effect.gen(function* () {
     return placeholder;
   };
   /**
-   * Only an OAuth grant hides its secrets: an account identity whose record has `server` and
-   * `fields`. The account's fields under the same identity, sign-in attempts (`oauth_`) and saved
-   * clients (`client_`) keep their real values, because the host still signs in with them.
+   * Only an OAuth grant hides its secrets: an account identity whose record has `server`,
+   * `client`, `fields` and `response`. The account's fields under the same identity, sign-in
+   * attempts (`oauth_`) and saved clients (`client_`) keep their real values, because the host
+   * still signs in with them.
    */
   const isGrant = (identity: string, record: Fields) =>
-    identity.startsWith("acc_") && "server" in record && "fields" in record;
+    identity.startsWith("acc_") &&
+    "server" in record &&
+    "client" in record &&
+    "fields" in record &&
+    "response" in record;
   const seal = (identity: string, record: Fields) => {
     const client = record["client"];
     const sealed: Fields = isGrant(identity, record)
@@ -218,7 +226,8 @@ export const credentialAdapter = Effect.gen(function* () {
         const tokens = Object.fromEntries(
           Object.entries(parsed).filter(([key]) => key !== "refresh_token" && key !== "id_token"),
         );
-        return HttpServerResponse.jsonUnsafe({ tokens, bytes: seal(identity, renewed) });
+        renewedBytes = seal(identity, renewed);
+        return HttpServerResponse.jsonUnsafe({ tokens, bytes: renewedBytes });
       }
       const challenge = status === 401 && answer.value.challenge !== undefined;
       return HttpServerResponse.jsonUnsafe(
@@ -272,7 +281,7 @@ export const credentialAdapter = Effect.gen(function* () {
   /** Read the host's request; a body this store did not seal for that identity is a 400. */
   const route = (
     path: "/encrypt" | "/decrypt" | "/renew" | "/revoke",
-    handle: (
+    respond: (
       input: typeof Request.Type,
     ) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, never>,
   ) =>
@@ -287,7 +296,7 @@ export const credentialAdapter = Effect.gen(function* () {
         );
         if (input._tag === "None") return HttpServerResponse.empty({ status: 400 });
         metrics.identities.add(input.value.identity);
-        return yield* handle(input.value);
+        return yield* respond(input.value);
       }),
     );
   const sealed = (input: typeof Request.Type) => open(input.identity, input.bytes);
@@ -304,15 +313,20 @@ export const credentialAdapter = Effect.gen(function* () {
     route("/decrypt", (input) =>
       Effect.sync(() => {
         metrics.decrypts++;
+        if (reseal === "unavailable" && input.bytes === renewedBytes) {
+          reseal = undefined;
+          return HttpServerResponse.empty({ status: 503 });
+        }
         const record = sealed(input);
         return record === undefined ? refused : HttpServerResponse.jsonUnsafe({ fields: record });
       }),
     ),
     route("/renew", (input) =>
       Effect.suspend(() => {
-        metrics.renewals++;
+        // An outage answers before any renewal is attempted, so it is not counted as one.
         if (renewal === "unavailable")
           return Effect.succeed(HttpServerResponse.empty({ status: 503 }));
+        metrics.renewals++;
         const record = sealed(input);
         return record === undefined || !isGrant(input.identity, record)
           ? Effect.succeed(refused)
@@ -342,10 +356,18 @@ export const credentialAdapter = Effect.gen(function* () {
   if (!("port" in server.address)) return yield* Effect.die("Adapter fixture needs a TCP listener");
   return {
     origin: `http://127.0.0.1:${server.address.port}`,
-    /** `renew: "unavailable"` answers every renewal with 503, as an adapter outage would. */
-    configure: (input: { readonly renew?: "unavailable" | null }) =>
+    /**
+     * `renew: "unavailable"` answers every renewal with 503, as an adapter outage would.
+     * `reseal: "unavailable"` answers 503 once, to the host's decrypt of the bytes the next renewal
+     * sealed, as an outage right after the service rotated the token would.
+     */
+    configure: (input: {
+      readonly renew?: "unavailable" | null;
+      readonly reseal?: "unavailable" | null;
+    }) =>
       Effect.sync(() => {
         if (input.renew !== undefined) renewal = input.renew === null ? undefined : input.renew;
+        if (input.reseal !== undefined) reseal = input.reseal === null ? undefined : input.reseal;
       }),
     metrics: Effect.sync(() => ({
       encrypts: metrics.encrypts,

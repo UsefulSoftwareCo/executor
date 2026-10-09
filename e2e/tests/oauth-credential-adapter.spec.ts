@@ -44,10 +44,20 @@ const Failure = Schema.Struct({
 /** Seconds a token lasts when a case needs it expired before the next call. */
 const shortLifetime = 1;
 const pastShortLifetime = "1200 millis";
-/** Values only the issuer and the adapter may hold; renewed access tokens are `synthetic-refreshed-token-<n>`. */
+/**
+ * Values that must not appear in a response or trace: the refresh token and client secret, the
+ * replaced first access token and the service's private error text. Renewed access tokens are
+ * `synthetic-refreshed-token-<n>`. The AES path keeps these out too, so this does not show that
+ * the adapter held them; the restart in the renewal scenario does.
+ */
 const assertPrivate = (value: unknown) => {
   const json = JSON.stringify(value);
-  for (const marker of ["synthetic-refresh-", "synthetic-client-secret", "PRIVATE_PROVIDER_ERROR"])
+  for (const marker of [
+    "synthetic-access-token",
+    "synthetic-refresh-",
+    "synthetic-client-secret",
+    "PRIVATE_PROVIDER_ERROR",
+  ])
     expect(json).not.toContain(marker);
 };
 
@@ -194,7 +204,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth credential adapter", (it
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { adapter, issuer, connect, expectRenewed, refreshes, spans, evidence } =
+        const { adapter, issuer, connect, read, expectRenewed, refreshes, spans, evidence } =
           yield* adapterFixture;
         // Every refresh replaces the refresh token, and the issuer refuses a replaced one, so only
         // the newest copy works. Tokens last 20 seconds, inside the host's 30-second renewal
@@ -234,12 +244,24 @@ layer(HostedLive, { excludeTestServices: true })("OAuth credential adapter", (it
         assertPrivate(trace);
         yield* evidence.json("adapter-renewal-trace.json", trace);
 
-        // A new process has only the saved grant: the rotated refresh token reaches it through the
-        // bytes the adapter sealed, or the issuer refuses the replaced one.
+        // This is the proof that the adapter holds the refresh token. A new process has only the
+        // saved grant: the rotated refresh token reaches it through the bytes the adapter sealed,
+        // or the issuer refuses the replaced one.
         yield* serverControl("stop");
         yield* serverControl("start");
         yield* expectRenewed(account.profile, before + 2);
         expect(yield* refreshes).toBe(before + 2);
+        expect((yield* adapter.metrics).renewals).toBe(yield* refreshes);
+
+        // The adapter fails after the service rotated the token, while the host seals the renewed
+        // grant again. Once the claim's lease lapses, the next call renews from the adapter's new
+        // seal; from the one before it, the issuer would refuse the replaced token.
+        yield* adapter.configure({ reseal: "unavailable" });
+        const lost = yield* read(account.profile);
+        expect(lost.status, JSON.stringify(lost.body)).toBe(500);
+        expect(lost.body).toMatchObject({ _tag: "CredentialsError" });
+        expect(yield* refreshes).toBe(before + 3);
+        yield* expectRenewed(account.profile, before + 4);
         expect((yield* adapter.metrics).renewals).toBe(yield* refreshes);
       }),
     ),
@@ -358,6 +380,31 @@ layer(HostedLive, { excludeTestServices: true })("OAuth credential adapter", (it
         });
         assertPrivate(trace);
         yield* evidence.json("adapter-refusal-trace.json", trace);
+
+        // A grant the service issued no refresh token for cannot be renewed by anyone: once its
+        // token expires it reconnects without a request to the adapter.
+        yield* issuer.configure({
+          tokenError: null,
+          refreshTokens: false,
+          expiresIn: shortLifetime,
+        });
+        const unrenewable = yield* connect("Synthetic adapter without refresh token");
+        const renewals = (yield* adapter.metrics).renewals;
+        yield* Effect.sleep(pastShortLifetime);
+        const expired = yield* read(unrenewable.profile);
+        expect(expired.status, JSON.stringify(expired.body)).toBe(409);
+        expect(yield* body(Failure, expired)).toMatchObject({
+          _tag: "OAuthReconnectRequired",
+          account: unrenewable.account,
+        });
+        expect((yield* adapter.metrics).renewals).toBe(renewals);
+        expect(
+          (yield* spans).data.find(
+            ({ span }) =>
+              span.operationName === "oauth.resolve" &&
+              span.tags["oauth.reconnect.reason"] !== undefined,
+          )?.span.tags,
+        ).toMatchObject({ "oauth.reconnect.reason": "not_renewable" });
       }),
     ),
   );

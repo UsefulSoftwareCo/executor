@@ -2591,12 +2591,10 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-credential-adapter.spec.ts",
     title:
-      "with a credential adapter configured, OAuth renewal runs inside the adapter, the rotated refresh token stays there, and the host's responses and traces never carry it",
+      "with a credential adapter configured, OAuth renewal runs inside the adapter, the rotated refresh token stays there, and the host's responses and traces never carry it, and a renewal interrupted after the token rotated resumes from the adapter's new seal",
     targets: {
       "self-host": scheduled,
-      cloud: na(
-        "Restarts a runner-owned self-host with the setting and uses a loopback adapter and issuer.",
-      ),
+      cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
       local: na(
         "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
       ),
@@ -2606,12 +2604,10 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-credential-adapter.spec.ts",
     title:
-      "a credential adapter's refusals and outages are classified like the service's own answers: a refused client, a rate limit, an unknown error code and an outage keep the grant, invalid_grant reconnects",
+      "a credential adapter's refusals and outages are classified like the service's own answers: a refused client, a rate limit, an unknown error code and an outage keep the grant, invalid_grant reconnects, and a grant without a refresh token reconnects without asking the adapter",
     targets: {
       "self-host": scheduled,
-      cloud: na(
-        "Restarts a runner-owned self-host with the setting and uses a loopback adapter and issuer.",
-      ),
+      cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
       local: na(
         "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
       ),
@@ -2624,9 +2620,7 @@ export const scenarios = plan({
       "deleting an account under a credential adapter revokes the refresh token the adapter holds",
     targets: {
       "self-host": scheduled,
-      cloud: na(
-        "Restarts a runner-owned self-host with the setting and uses a loopback adapter and issuer.",
-      ),
+      cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
       local: na(
         "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
       ),
