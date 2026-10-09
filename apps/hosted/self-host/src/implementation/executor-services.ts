@@ -44,6 +44,7 @@ import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/
 import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { SqlClient } from "effect/sql";
+import { selfHostDurableDeclarations } from "./durable-declarations.ts";
 
 /** Native resources supplied at the self-host composition boundary. */
 export interface SelfHostPlatform {
@@ -79,6 +80,7 @@ export const selfHostExecutorServices = <E, R>(
           Config.withDefault(hostedExecutorOrigin),
         ),
       );
+      const kept = yield* selfHostDurableDeclarations;
       const executor = yield* createExecutor({
         database: storage,
         secret: key,
@@ -96,7 +98,8 @@ export const selfHostExecutorServices = <E, R>(
           ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
         },
         cache: {
-          memory: makeDeclarationCache(evaluation.limits),
+          memory: kept.forgetting(makeDeclarationCache(evaluation.limits)),
+          durable: kept.durable,
           toolListings: evaluation.toolListings,
         },
         // Stale declarations refresh on the server's own lifetime.
