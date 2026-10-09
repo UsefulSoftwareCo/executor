@@ -204,7 +204,7 @@ function ConnectionCard({
         {shown.map((item) => (
           <li
             key={item.name}
-            className="flex items-center gap-2 text-[13px] [&_.provider-icon]:size-5 [&_.provider-icon]:rounded-[5px] [&_.provider-icon_img]:size-3"
+            className="flex items-center gap-2 text-[13px] [&_.provider-icon]:size-6 [&_.provider-icon]:rounded-[6px]"
           >
             <AppIcon item={item} />
             <span className="min-w-0 flex-1 truncate">{item.name}</span>

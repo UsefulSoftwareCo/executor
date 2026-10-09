@@ -404,7 +404,7 @@ export function AppAccounts({
             }
             className="min-w-0 space-y-2.5"
           >
-            <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
+            <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-xl [&_.provider-icon>svg]:size-8">
               <ProviderIcon
                 name={requirement.definition.name}
                 url={providerDisplayUrl(requirement.definition)}
