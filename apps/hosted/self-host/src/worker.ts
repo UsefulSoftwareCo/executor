@@ -85,6 +85,17 @@ const prepare = (state: DurableObjectState, env: Environment) =>
       Effect.tryPromise(async () => {
         const pg = new PGlite({
           fs,
+          // The product database is small; Postgres' 128 MB shared_buffers default sits
+          // resident in the WASM heap for the life of the process.
+          startParams: [
+            ...PGlite.defaultStartParams,
+            "-c",
+            "shared_buffers=32MB",
+            "-c",
+            "temp_buffers=1MB",
+            "-c",
+            "work_mem=2MB",
+          ],
           pgliteWasmModule,
           initdbWasmModule,
           fsBundle: new Blob([pgliteData]),
