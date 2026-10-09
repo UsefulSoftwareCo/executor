@@ -159,6 +159,26 @@ Deployments retain a Git commit reference, file count, build reference and decla
 account requirements. Source reads load files from Git; SQL stores no source bytes. Public app requirements come from the active deployment. No
 live tool catalog is stored.
 
+A `Credentials` store may also implement `renew` and `revoke`. OAuth renewal
+and the revocation after an account is deleted then run inside the store, and
+the host never reads the refresh token or client secret. Self-host uses such a
+store over HTTP when `EXECUTOR_CREDENTIAL_ADAPTER_URL` is set: it posts JSON to
+`/encrypt`, `/decrypt`, `/renew` and `/revoke` under that URL, with sealed bytes
+in base64. The host sends no credential of its own, so the adapter must
+authenticate it, for example with mTLS or a network policy. An adapter on a
+private or internal host needs its exact HTTP origin in
+`EXECUTOR_URL_ALLOW_HTTP_ORIGINS`, like any internal endpoint the host reaches.
+The host waits 30 seconds for each answer, so `/renew` must give the service a
+shorter deadline of its own.
+`EXECUTOR_ENCRYPTION_KEY` is still read, or generated when unset, but seals
+nothing. The store holds every sealed record, not only OAuth grants, so with the
+setting on every encrypt and decrypt in OAuth, webhooks, workflows, tool
+approvals, events, accounts and credential handles goes to the adapter, and an
+adapter outage stops webhook and workflow secret handling too. The setting is
+not a migration: nothing re-seals existing records, so turn it on before the
+first account is saved, and turning it on or off afterwards leaves every record
+sealed the other way unreadable.
+
 The schema enforces unique app names per owner, account provider references,
 and active deployments from the app's code lineage. Owners may differ across
 related records. Saved account maps preserve missing slots, scalar IDs and

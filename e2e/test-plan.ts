@@ -2587,6 +2587,45 @@ export const scenarios = plan({
       local: na("Exercises the shared SDK account deletion through hosted APIs."),
     },
   },
+  credentialAdapterRenewal: {
+    fixtures: "actors",
+    file: "oauth-credential-adapter.spec.ts",
+    title:
+      "a credential adapter renews and keeps the rotated refresh token, across a host restart and an interrupted save",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
+      local: na(
+        "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
+      ),
+    },
+  },
+  credentialAdapterRefusals: {
+    fixtures: "actors",
+    file: "oauth-credential-adapter.spec.ts",
+    title:
+      "a credential adapter's refusals and outages are classified like the service's own answers, and only invalid_grant or a missing refresh token reconnects",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
+      local: na(
+        "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
+      ),
+    },
+  },
+  credentialAdapterRevocation: {
+    fixtures: "actors",
+    file: "oauth-credential-adapter.spec.ts",
+    title:
+      "deleting an account under a credential adapter revokes the refresh token the adapter holds",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud has no credential adapter setting; only self-host reads it."),
+      local: na(
+        "Local has no credential adapter setting; the shared OAuth lifecycle runs through hosted APIs.",
+      ),
+    },
+  },
   setupDiagnostics: {
     fixtures: "actors",
     file: "setup-diagnostics.spec.ts",

@@ -45,7 +45,8 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
 const maxClockOffset = 40 * 86_400_000;
 /** Operator settings a scenario may turn on between product generations. */
 export const OperatorSettings = Schema.Struct({
-  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.NonEmptyString,
+  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optional(Schema.NonEmptyString),
+  EXECUTOR_CREDENTIAL_ADAPTER_URL: Schema.optional(Schema.NonEmptyString),
 });
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (
