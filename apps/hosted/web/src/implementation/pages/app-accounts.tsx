@@ -156,9 +156,11 @@ export function AppAccounts({
             ? { pending, choose: (slot, value) => void chooser.choose(slot, value) }
             : undefined
         }
-        removeAccountAction={(slot, account, label) => {
+        removeAccountAction={(slot, account, label, bound) => {
           if (!canUse || profile === undefined) return null;
           const saved = accounts.find((item) => item.id === account);
+          // An unselected account offers only its own actions; with none, it has no menu.
+          if (!bound && saved === undefined) return null;
           const requirement = app.requirements.accounts[slot];
           return (
             <AccountBindingMenu
@@ -166,6 +168,7 @@ export function AppAccounts({
               slot={slot}
               account={account}
               label={label}
+              bound={bound}
               update={profileMutations({ organization, app: app.id, profile: profile.id }).update}
               Failure={HostedFailure}
               onRemoved={(removed) => void unused.check(removed)}
