@@ -99,8 +99,9 @@ export interface StorageHost {
 /**
  * A credentials store refused to renew a grant, in the terms of the service's answer. The host
  * classifies it as it classifies its own token request. `subject_changed` ends the grant on its
- * own; `invalid_grant` ends it only with `answer: "error_body"` or the service's `status`, since a
- * refusal that names no answer from the service reads as an incompatible response.
+ * own. `invalid_grant` ends it only with the service's `status`, below 500 and not 429; with a
+ * 2xx status it also needs `answer: "error_body"`. A refusal with no `status` reads as an
+ * incompatible response, as a lost answer to the host's own request would, and keeps the grant.
  */
 export class CredentialsRenewalRefused extends Schema.TaggedError<CredentialsRenewalRefused>()(
   "CredentialsRenewalRefused",
@@ -175,15 +176,17 @@ export interface Credentials {
    * The host seals several records under the same identities and still runs sign-in and the
    * client credentials setup exchange itself. So a store may replace `refreshToken` and
    * `client.client_secret` with placeholders only in the grant: a record under an `acc_` identity
-   * with `server`, `client`, `fields` and `response` keys. The account fields under the same
-   * identity, the sign-in attempt under `oauth_` and the saved client under `client_` (top-level
-   * `client_secret`) must decrypt to their real values. The host reads only whether the
-   * placeholders are present.
+   * with `server`, `client`, `fields` and `response` keys. That shape is part of this contract:
+   * the host keeps it, and seals no other `acc_` record with all four keys. The account fields
+   * under the same identity, the sign-in attempt under `oauth_` and the saved client under
+   * `client_` (top-level `client_secret`) must decrypt to their real values. The host reads only
+   * whether the placeholders are present.
    *
    * Performs the RFC 6749 `refresh_token` or `client_credentials` request, and for a refreshed ID
    * token the OIDC Core §12.2 subject check (reason `subject_changed`). Returns no secret. If the
    * service rotates the token but the answer never reaches the host, the host keeps the old seal,
-   * as it does after a lost answer to its own token request.
+   * as it does after a lost answer to its own token request. So a store's deadline for the
+   * service should be shorter than any deadline it is called under.
    */
   readonly renew?: (
     identity: AccountId,
@@ -193,7 +196,9 @@ export interface Credentials {
    * RFC 7009 revocation of a deleted account's grant with the store's real token: the refresh
    * token when present, otherwise the access token. Outcomes match the host's own revocation.
    * The host calls it once, after deleting the account, whatever the outcome; how long the store
-   * keeps the grant's secrets after that is the store's decision.
+   * keeps the grant's secrets after that is the store's decision. The host does not check the
+   * revocation endpoint against its URL policy first, as its own request does; the endpoint
+   * passed that policy at sign-in, and applying the current policy is the store's choice.
    */
   readonly revoke?: (
     identity: AccountId,

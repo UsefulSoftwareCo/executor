@@ -129,11 +129,14 @@ const retryAfterOf = (reason: string, error: OAuthProtocolFailed) =>
 
 /**
  * The tokens a credentials store's renewal returned. RFC 6749 §5.1 gives `expires_in` as a
- * number; any other shape is a response Executor cannot use. `project` drops host-only members
- * before anything reaches the account.
+ * number, and some services send it as a numeric string, which oauth4webapi accepts on the
+ * host's own request; any other shape is a response Executor cannot use. `project` drops
+ * host-only members before anything reaches the account.
  */
 const RenewedTokens = Schema.StructWithRest(
-  Schema.Struct({ expires_in: Schema.optional(Schema.Number) }),
+  Schema.Struct({
+    expires_in: Schema.optional(Schema.Union([Schema.Number, Schema.FiniteFromString])),
+  }),
   [JsonObject],
 );
 const renewedTokens = (tokens: Redacted.Redacted<JsonObject>) =>
