@@ -26,6 +26,8 @@ type fakeWorkerd struct {
 	dropFirst bool
 	received  atomic.Int32
 	handled   atomic.Int32
+	// forwardedProto is the X-Forwarded-Proto of the last request read.
+	forwardedProto atomic.Value
 }
 
 func (f *fakeWorkerd) serve(t *testing.T, socket string) {
@@ -63,6 +65,7 @@ func (f *fakeWorkerd) connection(conn net.Conn) {
 		if _, err = io.Copy(io.Discard, request.Body); err != nil {
 			return
 		}
+		f.forwardedProto.Store(request.Header.Get("X-Forwarded-Proto"))
 		f.received.Add(1)
 		if f.dropFirst && first {
 			return
@@ -102,7 +105,7 @@ func TestProxyDoesNotReuseConnectionsWorkerdHasTimedOut(t *testing.T) {
 	socket := socketPath(t)
 	upstream := &fakeWorkerd{idleTimeout: 300 * time.Millisecond}
 	upstream.serve(t, socket)
-	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout))
+	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout, false))
 	defer front.Close()
 
 	if status, body := post(t, front.URL); status != 200 {
@@ -121,7 +124,7 @@ func TestProxyDoesNotRetryPostWorkerdMayHaveReceived(t *testing.T) {
 	socket := socketPath(t)
 	upstream := &fakeWorkerd{idleTimeout: time.Minute, dropFirst: true}
 	upstream.serve(t, socket)
-	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout))
+	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout, false))
 	defer front.Close()
 
 	status, body := post(t, front.URL)
@@ -134,11 +137,44 @@ func TestProxyDoesNotRetryPostWorkerdMayHaveReceived(t *testing.T) {
 }
 
 func TestProxyReportsStartingUntilWorkerdListens(t *testing.T) {
-	front := httptest.NewServer(productProxy(socketPath(t), workerdIdleTimeout))
+	front := httptest.NewServer(productProxy(socketPath(t), workerdIdleTimeout, false))
 	defer front.Close()
 
 	if status, body := post(t, front.URL); status != http.StatusServiceUnavailable || body != "Executor is starting" {
 		t.Fatalf("POST before workerd listens: %d %q", status, body)
+	}
+}
+
+// Behind a proxy that ends TLS, the product learns the browser used HTTPS only
+// from the configured origin; a client's own X-Forwarded-Proto never reaches it.
+func TestProxyForwardsTheConfiguredOriginsScheme(t *testing.T) {
+	for _, test := range []struct {
+		publicHTTPS bool
+		sent, want  string
+	}{
+		{publicHTTPS: true, sent: "", want: "https"},
+		{publicHTTPS: false, sent: "https", want: ""},
+	} {
+		socket := socketPath(t)
+		upstream := &fakeWorkerd{idleTimeout: time.Minute}
+		upstream.serve(t, socket)
+		front := httptest.NewServer(productProxy(socket, upstream.idleTimeout, test.publicHTTPS))
+		request, err := http.NewRequest(http.MethodPost, front.URL+"/api/dashboard/batch", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if test.sent != "" {
+			request.Header.Set("X-Forwarded-Proto", test.sent)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		front.Close()
+		if got := upstream.forwardedProto.Load(); response.StatusCode != 200 || got != test.want {
+			t.Fatalf("publicHTTPS %v, client sent %q: status %d, workerd saw %q, want %q", test.publicHTTPS, test.sent, response.StatusCode, got, test.want)
+		}
 	}
 }
 

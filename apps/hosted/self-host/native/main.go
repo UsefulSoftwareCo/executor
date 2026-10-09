@@ -633,7 +633,7 @@ func serve(mode string) error {
 	}, time.Second, 30*time.Second, time.After)
 	defer stopMotel()
 
-	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout)
+	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, strings.HasPrefix(values["BETTER_AUTH_URL"], "https://"))
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
 	if err != nil {
 		command.Process.Kill()
@@ -673,7 +673,12 @@ const workerdIdleTimeout = 5 * time.Second
 // sends a request on a connection workerd is closing. Go replays only requests
 // that are safe to repeat, so losing that race failed POSTs such as workflow runs.
 
-func productProxy(socket string, upstreamIdleTimeout time.Duration) *httputil.ReverseProxy {
+// An HTTPS origin is served through a proxy that ends TLS and reaches this host over
+// HTTP, and Rewrite drops the X-Forwarded-Proto that proxy sent. The product builds
+// a request's URL from that header and serves a dashboard batch only when the
+// browser's Origin matches it, so publicHTTPS, from the configured origin rather
+// than the client, restores it.
+func productProxy(socket string, upstreamIdleTimeout time.Duration, publicHTTPS bool) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(&url.URL{Scheme: "http", Host: "product.internal"})
@@ -683,6 +688,9 @@ func productProxy(socket string, upstreamIdleTimeout time.Duration) *httputil.Re
 				address = request.In.RemoteAddr
 			}
 			request.Out.Header.Set("x-executor-client-ip", address)
+			if publicHTTPS {
+				request.Out.Header.Set("X-Forwarded-Proto", "https")
+			}
 		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
