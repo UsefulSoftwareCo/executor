@@ -1,5 +1,6 @@
 ---
 import Layout from "../layouts/Layout.astro";
+import ThemeSwitch from "./ThemeSwitch.astro";
 
 interface Props {
   title: string;
@@ -61,6 +62,7 @@ const { title, description, lastUpdated } = Astro.props;
         >
           GitHub
         </a>
+        <ThemeSwitch />
       </div>
     </div>
   </footer>

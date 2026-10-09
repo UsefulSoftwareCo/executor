@@ -1,4 +1,5 @@
 @import "../marketing/src/styles/site-frame.css";
+@import "../marketing/src/styles/dark-theme.css";
 
 /* The chrome that joins the marketing rail to Blume's own docs frame.
    Everything here uses the marketing tokens already defined in apps/marketing;

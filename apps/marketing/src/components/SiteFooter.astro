@@ -5,6 +5,8 @@
 //
 // The brand mark resolves against the build's base, so the docs build (mounted
 // at /docs) serves its own copy instead of reaching for the marketing root.
+import ThemeSwitch from "./ThemeSwitch.astro";
+
 const MARK = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/favicon-192.png`;
 
 const GH = "https://github.com/UsefulSoftwareCo/executor";
@@ -13,16 +15,17 @@ const GH = "https://github.com/UsefulSoftwareCo/executor";
 <footer class="border-t border-rule py-10">
   <div class="max-w-[1200px] mx-auto px-6 sm:px-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_[class*='max-w-']&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.hero-inner_&]:ml-0 min-[1024px]:[.page:has(>_.page\_\_rail)_.page\_\_body_.text-center_&]:ml-0">
     <div class="flex items-center gap-2.5">
-      <img src={MARK} alt="" width="16" height="16" class="w-4 h-4 opacity-80" />
+      <img src={MARK} alt="" width="16" height="16" class="logo-mono w-4 h-4 opacity-80" />
       <span class="text-[13px] font-medium text-ink-2">executor</span>
       <span class="text-[12px] text-ink-3 ml-2">© {new Date().getFullYear()}</span>
     </div>
-    <div class="flex items-center gap-6 text-[13px] text-ink-2">
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-4 text-[13px] text-ink-2">
       <a href="/docs" class="hover:text-ink transition-colors">Docs</a>
       <a href="/blog" class="hover:text-ink transition-colors">Blog</a>
       <a href={GH} class="hover:text-ink transition-colors">GitHub</a>
       <a href="/privacy" class="hover:text-ink transition-colors">Privacy</a>
       <a href="/terms" class="hover:text-ink transition-colors">Terms</a>
+      <ThemeSwitch />
     </div>
   </div>
 </footer>
