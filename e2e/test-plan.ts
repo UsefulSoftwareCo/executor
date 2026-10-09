@@ -5170,6 +5170,17 @@ export const scenarios = plan({
       local: na("This scenario uses hosted personal access token and webhook routes."),
     },
   },
+  mcpEventsAppRemoval: {
+    fixtures: "actors",
+    file: "mcp-events-app-removal.spec.ts",
+    title:
+      "removing an app ends its event subscriptions, and a subscription to a new app with the same name binds to the new app",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted personal access token and webhook routes."),
+    },
+  },
   mcpEventGrants: {
     fixtures: "actors",
     file: "mcp-events-grants.spec.ts",

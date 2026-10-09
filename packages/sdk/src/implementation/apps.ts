@@ -653,6 +653,27 @@ export const makeApps = (
             );
 
             yield* query(() => tx.deleteMany("webhooks", { where: (b) => b("app", "=", app.id) }));
+            const subscriptions = yield* query(() =>
+              tx.findMany("eventSubscriptions", {
+                select: ["id"],
+                where: (b) => b("app", "=", app.id),
+              }),
+            );
+            if (subscriptions.length > 0)
+              yield* query(() =>
+                tx.deleteMany("eventDeliveries", {
+                  where: (b) =>
+                    b(
+                      "subscription",
+                      "in",
+                      subscriptions.map((subscription) => subscription.id),
+                    ),
+                }),
+              );
+            yield* query(() =>
+              tx.deleteMany("eventSubscriptions", { where: (b) => b("app", "=", app.id) }),
+            );
+            yield* query(() => tx.deleteMany("events", { where: (b) => b("app", "=", app.id) }));
             yield* query(() =>
               tx.deleteMany("appRecords", { where: (b) => b("app", "=", app.id) }),
             );
