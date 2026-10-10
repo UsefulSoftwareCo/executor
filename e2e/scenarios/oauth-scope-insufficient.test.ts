@@ -12,8 +12,8 @@
 // only `mail.read`. Calling the `files.read` operation dispatches upstream
 // (catalog projection by scope is #1384, tracked separately), which answers
 // with a Google-shaped scope-insufficient 403 — and the failure the sandbox
-// sees carries the new code, while the ordinary revoked-token 403 stays
-// `connection_rejected`.
+// sees carries the new code, while an ordinary permission 403 is reported as
+// `upstream_forbidden` with the upstream's reason.
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 
@@ -302,14 +302,19 @@ scenario(
             "the recovery tells the agent to reconnect with broader access",
           ).toContain("broader access");
 
-          // An ordinary 403 with no scope signal keeps the existing
-          // classification — the new code is additive, not a re-label.
+          // An ordinary 403 with no scope or credential signal is a refusal
+          // of the operation, not of the credential: it reports the
+          // upstream's reason and does not send the agent to re-authenticate.
           const plainForbidden = yield* invoke(addressOf("adminAction"));
           expect(plainForbidden.ok, "the plain-403 call failed").toBe(false);
           expect(
             plainForbidden.error?.code,
-            "a 403 without a scope signal stays connection_rejected",
-          ).toBe("connection_rejected");
+            "a 403 without a scope or credential signal is upstream_forbidden",
+          ).toBe("upstream_forbidden");
+          expect(
+            plainForbidden.error?.message ?? "",
+            "the message carries the upstream's reason",
+          ).toContain("not allowed");
 
           // And the in-scope operation works, proving the connection is fine.
           const inScope = yield* invoke(addressOf("readInbox"));

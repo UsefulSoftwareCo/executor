@@ -529,6 +529,7 @@ export {
   insufficientScopeFromEmbeddedJson,
   type InsufficientScopeDetection,
 } from "./insufficient-scope";
+export { isCredentialRejection, upstreamErrorMessage } from "./credential-rejection";
 
 // Endpoint sanitization for span attributes — plugins stamping a user-supplied
 // endpoint must strip its credential-bearing parts first.

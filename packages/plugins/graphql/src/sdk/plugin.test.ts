@@ -590,8 +590,56 @@ describe("graphqlPlugin real protocol server", () => {
 
       expect(result).toMatchObject({
         ok: false,
-        error: { code: "connection_rejected", status: 401 },
+        error: {
+          code: "connection_rejected",
+          status: 401,
+          message: expect.stringContaining("HTTP 401: Not authenticated. Re-authenticate"),
+        },
       });
+    }),
+  );
+
+  it.effect("reports a plan-gated 403 with the upstream reason, not rejected credentials", () =>
+    Effect.gen(function* () {
+      const server = yield* serveTestHttpApp((request) =>
+        Effect.gen(function* () {
+          const webRequest = yield* HttpServerRequest.toWeb(request);
+          const body = yield* Effect.promise(() => webRequest.text());
+          if (body.includes("__schema")) {
+            return HttpServerResponse.jsonUnsafe({ data: introspectionResult });
+          }
+          return HttpServerResponse.jsonUnsafe(
+            { message: "feature not available on current billing plan" },
+            { status: 403 },
+          );
+        }),
+      );
+      const executor = yield* makeExecutor();
+
+      yield* executor.graphql.addIntegration({
+        endpoint: server.url("/graphql"),
+        slug: "plan_graph",
+      });
+      yield* createOrgConnection(executor, {
+        integration: "plan_graph",
+        name: "main",
+        template: "none",
+      });
+
+      const result = yield* executor.execute(toolAddr("plan_graph", "main", "query.hello"), {
+        name: "Ada",
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_forbidden",
+          status: 403,
+          message: expect.stringContaining("feature not available on current billing plan"),
+        },
+      });
+      const message = (result as { error: { message: string } }).error.message;
+      expect(message).not.toMatch(/re-?authenticate|rejected credentials/i);
     }),
   );
 

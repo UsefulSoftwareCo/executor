@@ -9,6 +9,7 @@ import {
   authToolFailure,
   classifyProbeResponse,
   detectInsufficientScope,
+  isCredentialRejection,
   sortHealthCheckCandidatesByIdentity,
   extractIdentity,
   extractResponseFields,
@@ -810,10 +811,37 @@ export const invokeOpenApiBackedTool = (input: {
             details: result.error,
           });
         }
+        // The upstream's own words, when it sent any (the extractor's
+        // status-only fallback adds nothing to a message that names the status).
+        const extracted = extractOpenApiUpstreamMessage(result.error, result.status);
+        const upstreamMessage =
+          extracted === `Upstream returned HTTP ${result.status}`
+            ? ""
+            : `: ${extracted.replace(/[.\s]+$/, "")}`;
+        // A 403 is also how APIs refuse an operation the credential IS
+        // accepted for (billing plan, resource permissions). Only a 401, or a
+        // 403 whose response names a credential problem, is a rejection;
+        // anything else is reported with the upstream's own message, since
+        // telling the caller to re-authenticate a working connection sends
+        // them after the wrong fix.
+        if (
+          !isCredentialRejection({
+            status: result.status,
+            body: result.error,
+            headers: result.headers,
+          })
+        ) {
+          return ToolResult.fail({
+            code: "upstream_forbidden",
+            status: result.status,
+            message: `Upstream "${integration}" refused this request with HTTP ${result.status} (forbidden)${upstreamMessage}. The connection's credentials were not reported as invalid; check the account's plan, permissions, or the resource itself.`,
+            details: result.error,
+          });
+        }
         return openApiAuthToolFailure({
           code: "connection_rejected",
           status: result.status,
-          message: `Upstream rejected credentials for "${integration}" with HTTP ${result.status}. Re-authenticate or update the connection "${input.credential.connection}" before retrying this tool.`,
+          message: `Upstream rejected credentials for "${integration}" with HTTP ${result.status}${upstreamMessage}. Re-authenticate or update the connection "${input.credential.connection}" before retrying this tool.`,
           owner: input.credential.owner,
           integration,
           connection: String(input.credential.connection),

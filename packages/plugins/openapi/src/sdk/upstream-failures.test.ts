@@ -241,7 +241,9 @@ describe("OpenAPI upstream failure modes", () => {
         error: {
           code: "connection_rejected",
           status: 401,
-          message: expect.stringContaining("Upstream rejected credentials"),
+          message: expect.stringContaining(
+            'Upstream rejected credentials for "f" with HTTP 401: invalid token. Re-authenticate',
+          ),
           details: {
             category: "authentication",
             upstream: {
@@ -384,12 +386,89 @@ describe("OpenAPI upstream failure modes", () => {
     }),
   );
 
-  it.effect("ordinary 403 without a scope signal stays connection_rejected", () =>
+  // A 403 is also how APIs refuse an operation the credential is accepted
+  // for. Without a credential signal it must not tell the caller to
+  // re-authenticate, and the upstream's own reason must be in the message:
+  // MCP text results carry only `code: message`, never `details`.
+  it.effect("plan-gated 403 reports the upstream reason, not rejected credentials", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        body: '{"message":"feature not available on current billing plan"}',
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_forbidden",
+          status: 403,
+          message: expect.stringContaining("feature not available on current billing plan"),
+          details: { message: "feature not available on current billing plan" },
+        },
+      });
+      const message = (result as { error: { message: string } }).error.message;
+      expect(message).toContain("HTTP 403");
+      expect(message).not.toMatch(/re-?authenticate|rejected credentials/i);
+    }),
+  );
+
+  it.effect("permission 403 without a scope or credential signal is upstream_forbidden", () =>
     Effect.gen(function* () {
       const server = yield* startScriptedServer(() => ({
         status: 403,
         headers: { "content-type": "application/json" },
         body: '{"error":{"status":"PERMISSION_DENIED","message":"Caller lacks permission"}}',
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_forbidden",
+          status: 403,
+          message: expect.stringContaining("Caller lacks permission"),
+        },
+      });
+    }),
+  );
+
+  it.effect("403 naming a bad credential stays connection_rejected with the upstream reason", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        body: '{"message":"Invalid API key"}',
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "connection_rejected",
+          status: 403,
+          message: expect.stringMatching(/HTTP 403: Invalid API key\. Re-authenticate/),
+        },
+      });
+    }),
+  );
+
+  it.effect("403 with an authentication challenge stays connection_rejected", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: {
+          "content-type": "application/json",
+          "www-authenticate": 'Bearer realm="api", error="invalid_token"',
+        },
+        body: '{"message":"Forbidden"}',
       }));
       const { executor, address } = yield* buildExecutorForOpenApiServer(server);
 

@@ -5,6 +5,8 @@ import { HttpClient } from "effect/unstable/http";
 import {
   authToolFailure,
   detectInsufficientScope,
+  isCredentialRejection,
+  upstreamErrorMessage,
   AuthTemplateSlug,
   definePlugin,
   IntegrationAlreadyExistsError,
@@ -1457,10 +1459,33 @@ export const graphqlPlugin = definePlugin((options?: GraphqlPluginOptions) => {
               },
             });
           }
+          // The upstream's own words go in the message: structured details
+          // are not shown to every caller (MCP text results carry only the
+          // message).
+          const upstreamText = upstreamErrorMessage(result.body);
+          const upstreamMessage =
+            upstreamText === undefined ? "" : `: ${upstreamText.replace(/[.\s]+$/, "")}`;
+          // A 403 is also how APIs refuse an operation the credential IS
+          // accepted for (billing plan, resource permissions). Only a 401, or
+          // a 403 whose response names a credential problem, is a rejection.
+          if (
+            !isCredentialRejection({
+              status: result.status,
+              body: result.body,
+              headers: result.headers,
+            })
+          ) {
+            return ToolResult.fail({
+              code: "upstream_forbidden",
+              status: result.status,
+              message: `GraphQL integration "${integration}" refused this request with HTTP ${result.status} (forbidden)${upstreamMessage}. The connection's credentials were not reported as invalid; check the account's plan, permissions, or the resource itself.`,
+              details: { status: result.status, body: result.body },
+            });
+          }
           return authToolFailure({
             code: "connection_rejected",
             status: result.status,
-            message: `Upstream rejected credentials for GraphQL integration "${integration}" with HTTP ${result.status}. Re-authenticate or update the connection before retrying this tool.`,
+            message: `Upstream rejected credentials for GraphQL integration "${integration}" with HTTP ${result.status}${upstreamMessage}. Re-authenticate or update the connection before retrying this tool.`,
             integration: { id: integration, scope: credential.owner },
             credential: { kind: "upstream", label: "Upstream authorization" },
             upstream: {
