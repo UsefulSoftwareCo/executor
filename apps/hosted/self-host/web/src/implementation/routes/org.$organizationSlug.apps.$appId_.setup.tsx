@@ -1,11 +1,16 @@
 import { parseSetupSearch } from "@executor-js/hosted-web/contracts/navigation";
-import { createFileRoute } from "@tanstack/react-router";
-import { AccountSelectionPage } from "@executor-js/hosted-web/pages/account-selection";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { parseAppParams } from "@executor-js/hosted-web/route-params";
+
 export const Route = createFileRoute("/org/$organizationSlug/apps/$appId_/setup")({
   params: { parse: parseAppParams },
   validateSearch: parseSetupSearch,
-  component: () => (
-    <AccountSelectionPage appId={Route.useParams().appId} profile={Route.useSearch().profile} />
-  ),
+  beforeLoad: ({ params, search }) => {
+    throw redirect({
+      to: "/org/$organizationSlug/apps/$appId",
+      params: { organizationSlug: params.organizationSlug, appId: params.appId },
+      search: { view: "accounts", profile: search.profile },
+      replace: true,
+    });
+  },
 });
