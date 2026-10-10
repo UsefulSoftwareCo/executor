@@ -294,19 +294,32 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           family: "claude-code",
         });
         // Each refused copy records how long ago rotation replaced it; tokens that were never
-        // revoked carry no age.
+        // revoked carry no age. The database set the rotation time and the app reads its own
+        // clock, so allow them to differ by a minute.
         const ages = [
           [spans.superseded, 2 * 3600],
           [spans.reused, 25 * 3600],
         ] as const;
         for (const [span, seconds] of ages) {
           const age = Number(span.tags["auth.token.refresh_revoked_age_seconds"]);
-          expect(age).toBeGreaterThanOrEqual(seconds);
+          expect(age).toBeGreaterThanOrEqual(seconds - 60);
           expect(age).toBeLessThan(seconds + 600);
           expect(span.tags["auth.token.refresh_rotated"]).toBe("true");
         }
         for (const span of [spans.sibling, spans.current, spans.ended, spans.duplicated])
           expect(span.tags["auth.token.refresh_revoked_age_seconds"]).toBeUndefined();
+        // Every refresh grant names the token it presented by one reference, so retries of one
+        // token can be counted once; other grants name none.
+        const ref = (span: Span) => span.tags["auth.token.refresh_token_ref"];
+        const storedRefs = [spans.sibling, spans.superseded, spans.reused].map(ref);
+        const firstRefs = [spans.current, spans.ended, spans.duplicated, spans.padded].map(ref);
+        expect(storedRefs[0]).toMatch(/^[0-9a-f]{16}$/u);
+        expect(firstRefs[0]).toMatch(/^[0-9a-f]{16}$/u);
+        expect(new Set(storedRefs)).toEqual(new Set([storedRefs[0]]));
+        expect(new Set(firstRefs)).toEqual(new Set([firstRefs[0]]));
+        expect(firstRefs[0]).not.toBe(storedRefs[0]);
+        for (const span of [spans.unsupported, spans.lastUnsupported, spans.uppercase])
+          expect(ref(span)).toBeUndefined();
         expectRecorded(spans.ended, {
           status: 400,
           grant: "refresh_token",

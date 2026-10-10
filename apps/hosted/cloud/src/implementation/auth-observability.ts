@@ -43,6 +43,7 @@ const TokenError = Schema.Literals([
 ]);
 const TokenErrorBody = Schema.fromJsonString(Schema.Struct({ error: Schema.String }));
 const JsonTokenRequest = Schema.fromJsonString(Schema.Struct({ grant_type: Schema.String }));
+const JsonRefreshRequest = Schema.fromJsonString(Schema.Struct({ refresh_token: Schema.String }));
 /** Token requests are a few hundred bytes; a larger body is not read a second time. */
 const tokenBodyLimit = 16_384;
 const formType = "application/x-www-form-urlencoded";
@@ -108,6 +109,38 @@ const grantType = (json: boolean, text: string) => {
   if (trimmed === "") return "unknown";
   return Option.getOrElse(Schema.decodeUnknownOption(GrantType)(trimmed), () => "other" as const);
 };
+
+/** The refresh token the body presents, read the way its grant type is. */
+const presentedRefreshToken = (json: boolean, text: string) => {
+  const value = json
+    ? Option.getOrUndefined(
+        Option.map(
+          Schema.decodeUnknownOption(JsonRefreshRequest)(text),
+          (body) => body.refresh_token,
+        ),
+      )
+    : new URLSearchParams(text).getAll("refresh_token").at(-1);
+  return value === undefined || value === "" ? undefined : value;
+};
+
+/**
+ * A short one-way reference to a presented refresh token, so repeated attempts with the same
+ * token can be told apart from distinct ones. Domain-separated so it never equals the hash
+ * Better Auth stores.
+ */
+const refreshTokenRef = (token: string) =>
+  Effect.promise(() =>
+    crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`executor-telemetry:refresh-token:${token}`),
+    ),
+  ).pipe(
+    Effect.map((digest) =>
+      Array.from(new Uint8Array(digest).slice(0, 8), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join(""),
+    ),
+  );
 
 /** The `error` of the endpoint's own JSON answer when it is a known code; never its description. */
 const tokenError = (response: HttpServerResponse.HttpServerResponse) => {
@@ -259,10 +292,14 @@ export const authObservability = () => {
       const exit = yield* observeClient(handler, observed);
       // A body still arriving when the answer is ready stays unknown.
       let grant: ReturnType<typeof grantType> = "unknown";
+      let presented: string | undefined;
       if (Option.isSome(copy)) {
         const { json, read } = copy.value;
         if (read.text === undefined) read.cancel();
-        else grant = grantType(json, read.text);
+        else {
+          grant = grantType(json, read.text);
+          if (grant === "refresh_token") presented = presentedRefreshToken(json, read.text);
+        }
       }
       const { rejection } = observed;
       const familyRevoked = rejection?.reason === "reused";
@@ -275,6 +312,11 @@ export const authObservability = () => {
         "auth.token.refresh_family_revoked": familyRevoked,
         "auth.token.refresh_rejection": rejection?.reason ?? "none",
       });
+      if (presented !== undefined)
+        yield* Effect.annotateCurrentSpan(
+          "auth.token.refresh_token_ref",
+          yield* refreshTokenRef(presented),
+        );
       // How long ago the presented token stopped being current: reuse within the replay window
       // is a sibling instance, while reuse long after it is a copy kept since then.
       if (rejection?.revokedAt !== undefined)
