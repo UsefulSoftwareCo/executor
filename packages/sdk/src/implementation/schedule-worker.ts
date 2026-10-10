@@ -23,11 +23,18 @@ export const startScheduleWorker = (
         runner: config.runner,
         maxCandidates: config.concurrency,
         authorize,
-        execute: (operation) => pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
+        // Each operation a pass finds is one trace, rooted in a dispatch as a Cloud
+        // coordinator's pass is.
+        execute: (operation) =>
+          pool
+            .withPermitsIfAvailable(1)(
+              operation.pipe(Effect.withSpan("schedule.dispatch"), Effect.withTracerEnabled(true)),
+            )
+            .pipe(Effect.asVoid),
       })
       .pipe(
-        // Each pass is one trace, as a Cloud coordinator's dispatch is.
-        Effect.withSpan("schedule.dispatch"),
+        // A pass runs every second; one that finds nothing to run records nothing.
+        Effect.withTracerEnabled(false),
         Effect.catch(() => Effect.logError("Scheduled dispatch failed")),
         Effect.forkIn(scope),
         Effect.asVoid,

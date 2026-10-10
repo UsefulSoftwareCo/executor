@@ -808,7 +808,11 @@ export const makeEvents = (input: {
           limit: 100,
         }),
       );
-      for (const row of lapsed) yield* stopWith(EventSubscriptionId.make(row.id), "expired");
+      // A host may poll without tracing; the work a pass finds is traced all the same.
+      for (const row of lapsed)
+        yield* stopWith(EventSubscriptionId.make(row.id), "expired").pipe(
+          Effect.withTracerEnabled(true),
+        );
       const due = yield* query(() =>
         db.findMany("eventDeliveries", {
           where: (b) =>
@@ -825,7 +829,11 @@ export const makeEvents = (input: {
         due,
         (row) =>
           claim(row.id).pipe(
-            Effect.flatMap((claimed) => (claimed === null ? Effect.void : attempt(claimed))),
+            Effect.flatMap((claimed) =>
+              claimed === null
+                ? Effect.void
+                : attempt(claimed).pipe(Effect.withTracerEnabled(true)),
+            ),
             Effect.catch(() => Effect.logWarning("Event delivery attempt failed")),
           ),
         { concurrency: 8, discard: true },
