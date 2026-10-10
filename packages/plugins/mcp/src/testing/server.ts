@@ -31,6 +31,7 @@ export type McpTestRequest = {
   readonly method: string;
   readonly url: string;
   readonly authorization: string | undefined;
+  readonly userAgent: string | undefined;
   readonly sessionId: string | undefined;
 };
 
@@ -137,6 +138,7 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
           const authorization = Array.isArray(request.headers.authorization)
             ? request.headers.authorization[0]
             : request.headers.authorization;
+          const userAgent = request.headers["user-agent"];
           const origin = request.headers.host
             ? `http://${request.headers.host}`
             : "http://127.0.0.1";
@@ -147,6 +149,7 @@ export const serveMcpServer = (factory: () => McpServer, options: McpTestServerO
               method: request.method ?? "GET",
               url: requestUrl,
               authorization,
+              userAgent,
               sessionId,
             },
           ]);
