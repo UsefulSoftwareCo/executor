@@ -424,6 +424,8 @@ export const localApi = (
         HttpRouter.add("GET", "/apps/:app/open", web.document),
         HttpRouter.add("GET", "/apps/:app/delete", web.document),
         HttpRouter.add("GET", "/connect", web.document),
+        HttpRouter.add("GET", "/connections", web.document),
+        HttpRouter.add("GET", "/connections/:connection", web.document),
         HttpRouter.add("GET", "/approvals", web.document),
         HttpRouter.add("GET", "/approvals/:run", web.document),
         HttpRouter.add("GET", "/account-connect/:connection", web.document),

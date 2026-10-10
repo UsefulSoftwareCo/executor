@@ -149,6 +149,7 @@ export function ConnectionAppRow({
   onExpandedChange,
   onChange,
   renderTools,
+  renderConnectAccount,
 }: {
   readonly choices: AppChoices;
   readonly selection: ConnectionApp | undefined;
@@ -156,6 +157,8 @@ export function ConnectionAppRow({
   readonly onExpandedChange: (expanded: boolean) => void;
   readonly onChange: (selection: ConnectionApp | undefined) => void;
   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
+  /** A host link to connect an account, shown when the app has none yet. */
+  readonly renderConnectAccount?: (app: App) => ReactNode;
 }) {
   const id = useId();
   const { app } = choices;
@@ -193,17 +196,27 @@ export function ConnectionAppRow({
                 issue === undefined ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400"
               }`}
             >
-              {issue ??
-                (!choices.needsAccount
-                  ? "No account needed"
-                  : choices.options.length === 0
-                    ? "No connected accounts"
-                    : only !== undefined
-                      ? connectionTargetLabel(only.target)
-                      : `${choices.options.length} ways to run`)}
+              {renderConnectAccount !== undefined &&
+              choices.needsAccount &&
+              choices.options.length === 0
+                ? "No connected accounts"
+                : (issue ??
+                  (!choices.needsAccount
+                    ? "No account needed"
+                    : choices.options.length === 0
+                      ? "No connected accounts"
+                      : only !== undefined
+                        ? connectionTargetLabel(only.target)
+                        : `${choices.options.length} ways to run`))}
             </span>
           </span>
         </label>
+        {renderConnectAccount !== undefined &&
+          choices.needsAccount &&
+          choices.options.length === 0 && (
+            // Outside the label so following the link never toggles the app.
+            <span className="shrink-0">{renderConnectAccount(app)}</span>
+          )}
         {selection !== undefined && (
           <div className="flex w-full min-w-0 items-center gap-2 pl-7 sm:w-auto sm:pl-0">
             {choices.needsAccount && (
@@ -375,15 +388,8 @@ function AccountsPicker({
 }) {
   const selected = new Set(selection.targets.map(connectionTargetKey));
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
-  if (only !== undefined && selected.has(connectionTargetKey(only.target)))
-    return (
-      <span
-        className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground sm:w-40 sm:flex-none"
-        title={connectionTargetLabel(only.target)}
-      >
-        {connectionTargetLabel(only.target)}
-      </span>
-    );
+  // The row's subtitle already names the only way to run it.
+  if (only !== undefined && selected.has(connectionTargetKey(only.target))) return null;
   const label =
     selection.targets.length === 0
       ? "Runs as…"

@@ -9,7 +9,7 @@ import {
   UserCircleIcon,
   LaptopIcon,
   PackageIcon,
-  Plug01Icon,
+  ConnectIcon,
   Shield01Icon,
 } from "@hugeicons/core-free-icons";
 import { overviewAtom } from "../contracts/api.ts";
@@ -145,14 +145,14 @@ function Dashboard() {
             Apps{Option.isSome(data) && <span>{data.value.apps.length}</span>}
           </Link>
           <Link
-            to="/connect"
+            to="/connections"
             className={cn(
               section === "connect" &&
                 "active [.sidebar_nav_a&]:bg-accent [.sidebar_nav_a&]:text-foreground",
             )}
           >
-            <HugeiconsIcon icon={Plug01Icon} strokeWidth={2} aria-hidden size={16} />
-            Connect
+            <HugeiconsIcon icon={ConnectIcon} strokeWidth={2} aria-hidden size={16} />
+            Connections
           </Link>
           <Link
             to="/accounts"
