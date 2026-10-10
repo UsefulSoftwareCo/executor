@@ -254,6 +254,30 @@ export const mcpAuthorization = (options: AuthCallOptions) => ({
         },
       },
     ),
+  /** The pending device sign-in a user code names. */
+  deviceRequest: (userCode: string) =>
+    authClient.$fetch<unknown>("/device/request", {
+      ...options,
+      method: "GET",
+      query: { user_code: userCode },
+    }),
+  /** Approve a device sign-in for the chosen organization, or deny it. */
+  decideDevice: (input: {
+    readonly userCode: string;
+    readonly accept: boolean;
+    readonly organization: string | undefined;
+  }) =>
+    authClient.$fetch<unknown>("/device/decide", {
+      ...options,
+      method: "POST",
+      body: { user_code: input.userCode, accept: input.accept },
+      headers: {
+        ...options.headers,
+        ...(input.organization === undefined
+          ? {}
+          : { "x-executor-organization": input.organization }),
+      },
+    }),
 });
 
 /** Discard the previous identity and destination before a full-page session switch. */

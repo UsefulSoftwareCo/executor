@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import {
   HostRequest,
   InvocationDeadline,
-  ResolvedAccounts,
+  HostAccounts,
   TrustedToolApproval,
   WorkflowReplay,
   WorkflowRunId,
@@ -29,7 +29,7 @@ export const WorkerInvocation = Schema.Struct({
   build: Schema.NonEmptyString,
   database: Schema.Boolean,
   command: HostRequest,
-  accounts: ResolvedAccounts,
+  accounts: HostAccounts,
   approval: Schema.optionalKey(TrustedToolApproval),
   replay: Schema.optionalKey(WorkflowReplay),
   deadline: Schema.optionalKey(InvocationDeadline),
@@ -121,6 +121,6 @@ export const PreparedWorkflow = Schema.Union([
   Schema.Struct({
     state: Schema.Literal("execute"),
     seed: WorkflowSeed,
-    accounts: ResolvedAccounts,
+    accounts: HostAccounts,
   }),
 ]);

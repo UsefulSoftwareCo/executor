@@ -55,9 +55,11 @@ export {
 export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
 export * from "./events.ts";
+export * from "./placement.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";
 export {
+  OAuthAuthorizationParams,
   OAuthClientAuth,
   OAuthSecretClientAuth,
   OAuthTokenRequestFormat,
@@ -105,6 +107,7 @@ import {
   SkillLoadFailed,
   SkillSources,
   type InvocationDeadline,
+  ResolvedAccount,
   ResolvedAccounts,
   type SkillCatalogResponse,
   type TrustedToolApproval,
@@ -152,6 +155,25 @@ export {
 /** Raw host inputs; the host boundary parses and redacts these immediately. */
 export type ResolvedAccountsInput = typeof ResolvedAccounts.Encoded;
 
+/**
+ * An account as the host sends it to the runner. `managed` marks a credential issued to the
+ * instance operator's own OAuth client: the runner seals every one of its strings, whatever the
+ * method exposes, so that only the operator's placement can send it. The runner removes the mark;
+ * a bundle reads a `ResolvedAccount`. Not part of any host protocol.
+ */
+export const HostAccount = Schema.Struct({
+  ...ResolvedAccount.fields,
+  managed: Schema.optionalKey(Schema.Literal(true)),
+});
+export type HostAccount = typeof HostAccount.Type;
+
+/** An invocation's selections as the host sends them to the runner; see `HostAccount`. */
+export const HostAccounts = Schema.Record(
+  Schema.NonEmptyString,
+  Schema.Union([HostAccount, Schema.Array(HostAccount)]),
+);
+export type HostAccounts = typeof HostAccounts.Type;
+
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
   /** Trusted host deadline; never accepted in public operation JSON. */
@@ -170,7 +192,8 @@ export interface HostContext {
   readonly approval?: TrustedToolApproval;
   /** The data facet's SQLite storage, for apps that declare `sql`. Never exposed to app code. */
   readonly storage?: AppSqlStorage;
-  readonly accounts: Redacted.Redacted<ResolvedAccounts>;
+  /** The invocation's accounts as the host resolved them; see `HostAccount`. */
+  readonly accounts: Redacted.Redacted<HostAccounts>;
 }
 
 /** Skill commands. Send sources only to builds that declare skillSources. */

@@ -78,7 +78,6 @@ export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>
       "destination_blocked",
       "resource_mismatch",
       "unsupported",
-      "subject_changed",
     ]),
     diagnostics: Schema.optional(OAuthDiagnostics),
     /** The service's own words, for the person connecting. Never part of the message below. */
@@ -502,9 +501,8 @@ const protocolStage =
 
 /**
  * Microsoft identity platform's multi-tenant endpoints (`common`, `organizations`) publish
- * `https://login.microsoftonline.com/{tenantid}/v2.0` as their issuer. Each ID token names the
- * signed-in user's tenant: its `iss` is the template with its own `tid` claim substituted.
- * Only an issuer containing this literal placeholder is treated as a template.
+ * `https://login.microsoftonline.com/{tenantid}/v2.0` as their issuer, a template for each
+ * tenant's own issuer. Only an issuer containing this literal placeholder is treated as one.
  */
 const tenantPlaceholder = "{tenantid}";
 const tenantSegment = /^[A-Za-z0-9._-]+$/;
@@ -528,35 +526,14 @@ const instantiatesTenantTemplate = (template: string, requested: URL) => {
     tenantIssuer(template, tenant) === href
   );
 };
-/**
- * oauth4webapi's hook for an ID token issuer that depends on the token, exported for this
- * Microsoft case but not typed. Without it a template never equals `iss`, so tokens fail closed.
- */
-const expectedIssuer: unknown = Reflect.get(oauth, "_expectedIssuer");
-
 /** Rehydrate mutable protocol arrays from the immutable storage contract. */
 const metadata = (server: OAuthTokenServer): oauth.AuthorizationServer => ({
-  ...(typeof expectedIssuer === "symbol" && server.issuer.includes(tenantPlaceholder)
-    ? {
-        [expectedIssuer]: (result: { readonly claims: { readonly tid?: unknown } }) =>
-          tenantIssuer(server.issuer, result.claims.tid) ?? server.issuer,
-      }
-    : {}),
   issuer: server.issuer,
   ...(server.authorization_endpoint === undefined
     ? {}
     : { authorization_endpoint: server.authorization_endpoint }),
   token_endpoint: server.token_endpoint,
   ...(server.jwks_uri === undefined ? {} : { jwks_uri: server.jwks_uri }),
-  // Unsigned ID tokens are never accepted, even when advertised. Without metadata, oauth4webapi
-  // requires OIDC Registration's RS256 default.
-  ...(server.id_token_signing_alg_values_supported === undefined
-    ? {}
-    : {
-        id_token_signing_alg_values_supported: server.id_token_signing_alg_values_supported.filter(
-          (alg) => alg.toLowerCase() !== "none",
-        ),
-      }),
   ...(server.registration_endpoint === undefined
     ? {}
     : { registration_endpoint: server.registration_endpoint }),
@@ -646,32 +623,6 @@ const registrationBody = (text: string) => {
     : text;
 };
 
-/** Read a copy of a token response to learn whether the service returned an ID token. */
-const hasIdToken = async (response: Response) => {
-  if (!response.ok) return false;
-  try {
-    const body: unknown = await response.clone().json();
-    return typeof body === "object" && body !== null && Reflect.get(body, "id_token") !== undefined;
-  } catch {
-    return false;
-  }
-};
-
-/**
- * An ID token's `iss` cannot be checked against a derived issuer. Executor never reads ID tokens,
- * so drop one it cannot validate instead of rejecting the tokens beside it.
- */
-const withoutIdToken = async (response: Response) => {
-  if (!(await hasIdToken(response))) return response;
-  const body: unknown = await response.json();
-  return new Response(
-    JSON.stringify(
-      Object.fromEntries(Object.entries(body as object).filter(([key]) => key !== "id_token")),
-    ),
-    { status: response.status, headers: response.headers },
-  );
-};
-
 /** Read a copy of a JSON object response body, or undefined when it is not one. */
 const jsonObject = async (response: Response) => {
   try {
@@ -683,13 +634,7 @@ const jsonObject = async (response: Response) => {
 };
 
 /** Token response members some services send as null when they issued none. */
-const optionalTokenMembers = new Set([
-  "token_type",
-  "expires_in",
-  "refresh_token",
-  "scope",
-  "id_token",
-]);
+const optionalTokenMembers = new Set(["token_type", "expires_in", "refresh_token", "scope"]);
 
 /**
  * Normalize a successful token response once, before validation. Null optional members are
@@ -697,10 +642,16 @@ const optionalTokenMembers = new Set([
  * is a granted scope and replaces the previous one on renewal. A scope array becomes RFC 6749's
  * space-delimited string. A missing `token_type` is Bearer: Shopify, ClickUp and Mailchimp omit
  * it, and Executor sends every access token as a Bearer token.
+ *
+ * Any OpenID Connect ID token is dropped. Executor uses only the access token, and services
+ * return ID tokens after `openid` with claims a public client cannot check: Miro omits the
+ * nonce, and Readwise names an issuer its metadata does not and signs with HS256 using a secret
+ * public clients lack. Dropping it here means one can never fail a sign-in or a renewal.
  */
 const normalizedTokens = (body: object) => {
   const tokens: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body)) {
+    if (key === "id_token") continue;
     if (optionalTokenMembers.has(key) && (value === null || (value === "" && key !== "scope")))
       continue;
     tokens[key] =
@@ -818,38 +769,6 @@ const tokenTypes = async (response: Response): Promise<oauth.RecognizedTokenType
   };
 };
 
-/**
- * The validated ID token's subject and the issuer it is unique at, when the token response
- * carried one. A grant saves them together.
- */
-export const idTokenIdentity = (tokens: oauth.TokenEndpointResponse) => {
-  const claims = oauth.getValidatedIdTokenClaims(tokens);
-  return claims === undefined || claims.sub === ""
-    ? {}
-    : { idTokenSubject: claims.sub, idTokenIssuer: claims.iss };
-};
-
-/**
- * OIDC Core §12.2: a refreshed ID token must name the same `iss` and `sub` as the original one.
- * oauth4webapi already checks `iss` against the server's issuer, which is fixed unless it is a
- * `{tenantid}` template. A template grant must therefore have saved its concrete issuer; one that
- * saved a subject without it cannot be checked and is refused. Before `{tenantid}` templates were
- * supported, no template grant could save a subject, so this refuses no existing grant.
- */
-const sameIdentity = (
-  server: OAuthTokenServer,
-  saved: {
-    readonly idTokenSubject?: string | undefined;
-    readonly idTokenIssuer?: string | undefined;
-  },
-  refreshed: oauth.IDToken,
-) => {
-  if (saved.idTokenSubject === undefined) return true;
-  const issuer =
-    saved.idTokenIssuer ?? (server.issuer.includes(tenantPlaceholder) ? undefined : server.issuer);
-  return refreshed.sub === saved.idTokenSubject && refreshed.iss === issuer;
-};
-
 /** Issuer metadata, or the answer that said it is missing there. */
 type IssuerMissing = { readonly missing: OAuthProtocolFailed };
 type IssuerFound = {
@@ -914,13 +833,7 @@ const unusableReason = (failed: OAuthProtocolFailed) =>
     Match.when("destination_blocked", () => "blocked" as const),
     Match.when("resource_mismatch", () => "resource_mismatch" as const),
     Match.when("unsupported", () => "unsupported" as const),
-    Match.whenOr(
-      "invalid_response",
-      "invalid_client",
-      "invalid_grant",
-      "subject_changed",
-      () => "invalid" as const,
-    ),
+    Match.whenOr("invalid_response", "invalid_client", "invalid_grant", () => "invalid" as const),
     Match.exhaustive,
   );
 
@@ -1153,22 +1066,11 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
    * issuer, because every document must name the requested one.
    *
    * Missing metadata is an answer, not a failed request: a caller may fall back to another
-   * issuer location, so the request span records only the status that said so.
-   *
-   * RFC 8414 metadata need not list ID token algorithms; OpenID Connect Discovery requires them.
-   * Miro lists HS256 only in its OpenID metadata. When an `openid` flow finds OAuth metadata
-   * without them, they are read from the same issuer's OpenID locations under the same rules.
-   * Only the algorithm list is adopted: the documents can differ elsewhere, such as in client
-   * authentication methods. Its `issuer` must equal the accepted OAuth metadata's exactly, without
-   * the URL normalization that issuer validation allows. A location that answers with anything but
-   * a valid 200 document for this issuer contributes nothing; OIDC Registration's RS256 default
-   * then applies. A request that fails in transport (a connection failure, timeout or unreadable
-   * body) fails discovery, as at every discovery location, even though OAuth metadata was already
-   * found. An explicit `metadataUrl` is the exact document and is never completed from another.
+   * issuer location, so the request span records only the status that said so. An explicit
+   * `metadataUrl` is the exact document.
    */
   const discoverIssuer = (
     issuer: URL,
-    openid: boolean,
     metadataUrl?: URL,
   ): Effect.Effect<IssuerDiscovery, OAuthProtocolFailed> =>
     request(async (settings): Promise<IssuerAnswer> => {
@@ -1182,24 +1084,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         });
       if (metadataUrl !== undefined)
         return { server: await issuerMetadata(issuer, discoveryResponse(await get(metadataUrl))) };
-      // The first valid OpenID document decides, as in discovery.
-      const openidAlgorithms = async (accepted: string) => {
-        for (const location of metadataLocations(issuer)) {
-          if (location.document !== "openid") continue;
-          const response = await get(location.url);
-          if (response.status !== 200) continue;
-          let server: oauth.AuthorizationServer;
-          try {
-            server = await issuerMetadata(issuer, response);
-          } catch {
-            continue;
-          }
-          if (server.issuer !== accepted) continue;
-          const algorithms: unknown = server.id_token_signing_alg_values_supported;
-          return Schema.is(Schema.Array(Schema.String))(algorithms) ? [...algorithms] : undefined;
-        }
-        return undefined;
-      };
       let unusable: unknown;
       let unavailable: number | undefined;
       let last: { status: number; contentType: OAuthMediaType | undefined } | undefined;
@@ -1218,19 +1102,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           unusable ??= withStatus(failure(error), 200);
           continue;
         }
-        const algorithms =
-          openid &&
-          location.document === "oauth" &&
-          server.id_token_signing_alg_values_supported === undefined
-            ? await openidAlgorithms(server.issuer)
-            : undefined;
-        return {
-          server:
-            algorithms === undefined
-              ? server
-              : { ...server, id_token_signing_alg_values_supported: algorithms },
-          document: location.document,
-        };
+        return { server, document: location.document };
       }
       if (unusable !== undefined) throw unusable;
       if (unavailable !== undefined)
@@ -1381,23 +1253,18 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
    * base; Atlassian publishes metadata only at the origin. Only missing metadata falls back:
    * served metadata that is invalid or names another issuer never selects a different issuer.
    */
-  const resolveIssuer = (
-    issuerUrl: URL,
-    fromResourceMetadata: boolean,
-    openid: boolean,
-    metadataUrl?: URL,
-  ) =>
+  const resolveIssuer = (issuerUrl: URL, fromResourceMetadata: boolean, metadataUrl?: URL) =>
     metadataUrl === undefined && !fromResourceMetadata && issuerUrl.pathname !== "/"
-      ? discoverIssuer(issuerUrl, openid).pipe(
+      ? discoverIssuer(issuerUrl).pipe(
           Effect.flatMap((path) =>
             "missing" in path
               ? Effect.annotateCurrentSpan("oauth.discovery.fallback", "origin").pipe(
-                  Effect.andThen(discoverIssuer(new URL(issuerUrl.origin), openid)),
+                  Effect.andThen(discoverIssuer(new URL(issuerUrl.origin))),
                 )
               : Effect.succeed(path),
           ),
         )
-      : discoverIssuer(issuerUrl, openid, metadataUrl);
+      : discoverIssuer(issuerUrl, metadataUrl);
 
   const discoverResource = (endpoint: URL) =>
     Effect.gen(function* () {
@@ -1456,7 +1323,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       const { server, audienceFromScopes, document } = yield* resolveIssuer(
         issuerUrl,
         found !== undefined,
-        scopes.has("openid"),
         metadataUrl,
       ).pipe(Effect.flatMap(requireIssuer));
       if (
@@ -1726,9 +1592,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       Effect.gen(function* () {
         const state = `${options.statePrefix ?? ""}${yield* Effect.sync(oauth.generateRandomState)}`;
         const verifier = yield* Effect.sync(oauth.generateRandomCodeVerifier);
-        const nonce = input.scopes.includes("openid")
-          ? yield* Effect.sync(oauth.generateRandomNonce)
-          : undefined;
         const challenge = yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
         const url = new URL(input.server.authorization_endpoint);
         // Declared extras go first so the protocol parameters below always win.
@@ -1746,13 +1609,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         if (input.scopes.length > 0)
           url.searchParams.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
         if (input.resource !== undefined) url.searchParams.set("resource", input.resource);
-        if (nonce !== undefined) url.searchParams.set("nonce", nonce);
-        return {
-          state,
-          verifier,
-          authorizationUrl: url.href,
-          ...(nonce === undefined ? {} : { nonce }),
-        };
+        // No `nonce`: Executor ignores ID tokens, and PKCE S256 binds the code to this attempt.
+        return { state, verifier, authorizationUrl: url.href };
       }).pipe(protocolStage("authorize")),
     /**
      * Validate the authorization response before any token request: its state, its RFC 9207
@@ -1790,7 +1648,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         redirectUri: string;
         verifier: string;
         resource?: string | undefined;
-        nonce?: string | undefined;
         tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
         tokenResponse?: OAuthTokenResponse | undefined;
       },
@@ -1799,7 +1656,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       request(
         async (settings) => {
           const server = metadata(input.server);
-          const sent = await tokenResponse(
+          const response = await tokenResponse(
             await oauth.authorizationCodeGrantRequest(
               server,
               input.client,
@@ -1816,14 +1673,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             ),
             input.tokenResponse,
           );
-          const response = input.server.issuer_derived === true ? await withoutIdToken(sent) : sent;
-          // Executor never uses the ID token, so it is optional even after requesting `openid`.
-          // When one is returned, its nonce and claims are still validated.
-          const nonce =
-            input.nonce !== undefined && (await hasIdToken(response)) ? input.nonce : undefined;
           return oauth.processAuthorizationCodeResponse(server, input.client, response, {
             recognizedTokenTypes: await tokenTypes(response),
-            ...(nonce === undefined ? {} : { expectedNonce: nonce, requireIdToken: true }),
           });
         },
         {
@@ -1866,8 +1717,6 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       client: OAuthRegistration;
       refreshToken: string;
       resource?: string | undefined;
-      idTokenSubject?: string | undefined;
-      idTokenIssuer?: string | undefined;
       tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
       tokenResponse?: OAuthTokenResponse | undefined;
     }) =>
@@ -1889,22 +1738,9 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             ),
             input.tokenResponse,
           );
-          const usable =
-            input.server.issuer_derived === true ? await withoutIdToken(response) : response;
-          const tokens = await oauth.processRefreshTokenResponse(server, input.client, usable, {
-            recognizedTokenTypes: await tokenTypes(usable),
+          return oauth.processRefreshTokenResponse(server, input.client, response, {
+            recognizedTokenTypes: await tokenTypes(response),
           });
-          // OIDC Core §12.2: a refreshed ID token must identify the same end user at the same
-          // issuer. For a `{tenantid}` template, `iss` follows each token's own `tid`, so only the
-          // saved issuer stops a refresh from moving the grant to another tenant.
-          const claims = oauth.getValidatedIdTokenClaims(tokens);
-          if (claims !== undefined && !sameIdentity(input.server, input, claims))
-            throw new OAuthProtocolFailed({
-              reason: "subject_changed",
-              code: oauth.JWT_CLAIM_COMPARISON,
-              field: "id_token",
-            });
-          return tokens;
         },
         {
           format: input.tokenRequestFormat,

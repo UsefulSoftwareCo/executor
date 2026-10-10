@@ -58,7 +58,7 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
           </Button>
         </main>
       );
-    return pathname === "/mcp/authorize" ? (
+    return pathname === "/mcp/authorize" || pathname === "/device" ? (
       <McpConsentLoading />
     ) : (
       <div className="min-h-dvh" aria-busy="true" aria-label="Opening Executor" />

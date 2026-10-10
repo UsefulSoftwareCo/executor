@@ -15,7 +15,7 @@ import {
   DeclaredRequirements,
   HostRequirementsError,
   HostResponse,
-  ResolvedAccounts,
+  HostAccounts,
   WorkflowRunId,
   WorkflowFailure,
   WorkflowRpcResult,
@@ -104,6 +104,12 @@ interface HttpService {
 }
 interface Environment {
   readonly AUTH: string;
+  /**
+   * The secret credential handles are sealed with, derived from the instance's encryption key so
+   * it is the same after a restart and never a value anyone else knows. Only this host's runner
+   * and outbound read it; app code never does.
+   */
+  readonly CREDENTIAL_SECRET: string;
   /** Host decision, not an app capability: apps never see or change this binding. */
   readonly APPS_PRIVATE_FETCH: boolean;
   /** workerd network service that refuses private, loopback and link-local destinations. */
@@ -131,7 +137,7 @@ const buildFailed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
 const OutboundProps = Schema.Struct({ app: Schema.NonEmptyString });
 type OutboundProps = typeof OutboundProps.Type;
 /** Handles are sealed with a key derived from the secret only this host and its runner share. */
-const credentials = (env: Environment) => credentialKey(env.AUTH);
+const credentials = (env: Environment) => credentialKey(env.CREDENTIAL_SECRET);
 /**
  * Every app isolate's global `fetch`, bound to its app. It substitutes the credential handles the
  * request carries when its target is allowed; see credential-handles.ts.
@@ -456,7 +462,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
             },
             resolve: () =>
               hostRequest(this.env, { operation: "context", run: seed.runId }).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(ResolvedAccounts)),
+                Effect.flatMap(Schema.decodeUnknownEffect(HostAccounts)),
                 Effect.map(
                   (accounts) => ({ accounts: Redacted.make(accounts) }) satisfies HostContext,
                 ),

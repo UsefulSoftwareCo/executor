@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountRouteImport } from './routes/account'
 import { Route as AppAuthRouteImport } from './routes/app-auth'
 import { Route as CreateRouteImport } from './routes/create'
+import { Route as DeviceRouteImport } from './routes/device'
 import { Route as InviteRouteImport } from './routes/invite'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AccountIndexRouteImport } from './routes/account.index'
@@ -63,6 +64,11 @@ const AppAuthRoute = AppAuthRouteImport.update({
 const CreateRoute = CreateRouteImport.update({
   id: '/create',
   path: '/create',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeviceRoute = DeviceRouteImport.update({
+  id: '/device',
+  path: '/device',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InviteRoute = InviteRouteImport.update({
@@ -244,6 +250,7 @@ export interface FileRoutesByFullPath {
   '/account': typeof AccountRouteWithChildren
   '/app-auth': typeof AppAuthRoute
   '/create': typeof CreateRoute
+  '/device': typeof DeviceRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
   '/account/profile': typeof AccountProfileRoute
@@ -280,6 +287,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/app-auth': typeof AppAuthRoute
   '/create': typeof CreateRoute
+  '/device': typeof DeviceRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
   '/account/profile': typeof AccountProfileRoute
@@ -317,6 +325,7 @@ export interface FileRoutesById {
   '/account': typeof AccountRouteWithChildren
   '/app-auth': typeof AppAuthRoute
   '/create': typeof CreateRoute
+  '/device': typeof DeviceRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
   '/account/profile': typeof AccountProfileRoute
@@ -356,6 +365,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app-auth'
     | '/create'
+    | '/device'
     | '/invite'
     | '/login'
     | '/account/profile'
@@ -392,6 +402,7 @@ export interface FileRouteTypes {
     | '/'
     | '/app-auth'
     | '/create'
+    | '/device'
     | '/invite'
     | '/login'
     | '/account/profile'
@@ -428,6 +439,7 @@ export interface FileRouteTypes {
     | '/account'
     | '/app-auth'
     | '/create'
+    | '/device'
     | '/invite'
     | '/login'
     | '/account/profile'
@@ -466,6 +478,7 @@ export interface RootRouteChildren {
   AccountRoute: typeof AccountRouteWithChildren
   AppAuthRoute: typeof AppAuthRoute
   CreateRoute: typeof CreateRoute
+  DeviceRoute: typeof DeviceRoute
   InviteRoute: typeof InviteRoute
   LoginRoute: typeof LoginRoute
   CreateAgentRoute: typeof CreateAgentRoute
@@ -505,6 +518,13 @@ declare module '@tanstack/react-router' {
       path: '/create'
       fullPath: '/create'
       preLoaderRoute: typeof CreateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/device': {
+      id: '/device'
+      path: '/device'
+      fullPath: '/device'
+      preLoaderRoute: typeof DeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/invite': {
@@ -799,6 +819,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountRoute: AccountRouteWithChildren,
   AppAuthRoute: AppAuthRoute,
   CreateRoute: CreateRoute,
+  DeviceRoute: DeviceRoute,
   InviteRoute: InviteRoute,
   LoginRoute: LoginRoute,
   CreateAgentRoute: CreateAgentRoute,

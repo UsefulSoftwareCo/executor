@@ -1,13 +1,15 @@
 import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
-import { grantedDefinition } from "./provider.ts";
+import { invocationAccount } from "./provider.ts";
+import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
 import { type Crypto, Effect, Match, Option, Redacted, Result, Schema } from "effect";
 import {
   type WorkflowHostControls,
   HostToolApprovalRequired,
   ToolResultObservation,
-  type ResolvedAccounts,
+  type HostAccount,
+  type HostAccounts,
 } from "apps/contracts";
 import { AccountRequired, AppNotFound, AppNotDeployed } from "../contracts/apps.ts";
 import { DeploymentNotFound } from "../contracts/deployment.ts";
@@ -168,7 +170,7 @@ export function resolve(
   lifecycle?: ResourceLifecycle,
 ) {
   return Effect.gen(function* () {
-    const selections = new Map<string, ResolvedAccounts[string]>();
+    const selections = new Map<string, HostAccounts[string]>();
     // An account selected for several slots is resolved once per invocation, in selection
     // order. A token renewed for one slot is the token every slot uses, even when it already
     // falls inside the refresh-ahead window, so one invocation never renews the same grant twice.
@@ -195,15 +197,9 @@ export function resolve(
     for (const { slot, required, accounts } of state.selections) {
       const resolved = yield* Effect.forEach(accounts, (account) =>
         Effect.gen(function* () {
-          const fields = credentials.get(account.id);
-          if (fields === undefined) return yield* new StorageError();
-          return {
-            id: account.id,
-            provider: grantedDefinition(required.definition, account.allowedHosts),
-            method: account.method,
-            generation: account.credentialGeneration,
-            fields: Redacted.value(fields),
-          };
+          const bind = credentials.get(account.id);
+          if (bind === undefined) return yield* new StorageError();
+          return bind(required.definition);
         }),
       );
       if (required.cardinality === "many") selections.set(slot, resolved);
@@ -229,7 +225,7 @@ const accountsOutcome = (outcome: "ready" | "reconnect" | "account_required") =>
 /** One resolved invocation: app, pinned deployment, optional profile and account selection. */
 export type InvocationSnapshot = Effect.Success<ReturnType<typeof snapshot>>;
 type InvocationContext = Effect.Success<ReturnType<typeof resolve>>;
-type SelectedAccount = ResolvedAccounts[string];
+type SelectedAccount = HostAccounts[string];
 const isMany = (
   value: SelectedAccount,
 ): value is Extract<SelectedAccount, ReadonlyArray<unknown>> => Array.isArray(value);
@@ -246,7 +242,8 @@ const sameFields = Schema.toEquivalence(JsonObject);
  * `OAuthReconnectRequired`, as any resolve does.
  */
 const renewRefused = (
-  renewRejected: ReturnType<typeof makeOAuth>["renewRejected"],
+  oauth: Pick<ReturnType<typeof makeOAuth>, "renewRejected">,
+  clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   state: InvocationSnapshot,
   context: InvocationContext,
   error: unknown,
@@ -272,25 +269,31 @@ const renewRefused = (
     if (used === undefined) return undefined;
     // Renewal authorizes the account for the profile's subject, as `resolve` does. A scheduled
     // call has no signed-in caller to fall back on.
-    const renewed = yield* renewRejected(selected.account, selected.definition, used.fields).pipe(
-      Effect.provideService(CurrentProfile, state.profile),
-      Effect.flatMap((fields) =>
-        Schema.decodeUnknownEffect(JsonObject)(Redacted.value(fields)).pipe(
-          Effect.mapError(() => new StorageError()),
-        ),
-      ),
-    );
-    if (sameFields(renewed, used.fields)) return undefined;
+    const usedFields = used.fields;
+    const renewed = yield* oauth
+      .renewRejected(selected.account, selected.definition, usedFields)
+      .pipe(Effect.provideService(CurrentProfile, state.profile));
+    if (sameFields(Redacted.value(renewed.fields), usedFields)) return undefined;
     yield* Effect.annotateCurrentSpan("executor.account.credentials_renewed", accountId);
-    const replace = <A extends { readonly id: AccountId; readonly fields: JsonObject }>(
-      account: A,
-    ): A => (account.id === accountId ? { ...account, fields: renewed } : account);
+    // Rebuilt from the renewed credential itself, so whether it is managed is whatever the
+    // credential now is, even if a reconnect replaced it during this invocation.
+    const definitions = new Map(
+      state.selections.map(({ slot, required }) => [slot, required.definition] as const),
+    );
+    const replace =
+      (slot: string) =>
+      (account: HostAccount): HostAccount => {
+        const definition = definitions.get(slot);
+        return account.id === accountId && definition !== undefined
+          ? invocationAccount(selected.account, definition, renewed, clients)
+          : account;
+      };
     return {
       accounts: Redacted.make(
         Object.fromEntries(
           Object.entries(accounts).map(([slot, value]) => [
             slot,
-            isMany(value) ? value.map(replace) : replace(value),
+            isMany(value) ? value.map(replace(slot)) : replace(slot)(value),
           ]),
         ),
       ),
@@ -406,6 +409,7 @@ const summarizeTool = ({
 export const makeTools = (
   storage: ExecutorDatabase,
   oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+  clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   runtime: Runtime,
   credentials: Credentials,
   crypto: Crypto.Crypto,
@@ -432,7 +436,7 @@ export const makeTools = (
       const result = yield* execute(context);
       if (Result.isSuccess(result)) return result;
       const refused = result.failure;
-      const renewed = yield* renewRefused(oauth.renewRejected, state, context, refused);
+      const renewed = yield* renewRefused(oauth, clients, state, context, refused);
       if (renewed === undefined) return result;
       if (kind === "query") {
         yield* Effect.annotateCurrentSpan("executor.tool.retry", "credentials_renewed");
@@ -467,7 +471,7 @@ export const makeTools = (
         : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, error);
     return inspect(context).pipe(
       Effect.catch((error) =>
-        renewRefused(oauth.renewRejected, state, context, error).pipe(
+        renewRefused(oauth, clients, state, context, error).pipe(
           Effect.flatMap((renewed) =>
             renewed === undefined
               ? Effect.fail(failure(error))
@@ -523,9 +527,10 @@ export const makeTools = (
    * The caller's kind, or the kept listing's for a caller that did not name one, so the call of an
    * app with a database loads only its data facet, not the app's Worker too. Only the first call of
    * an invocation state with no kept listing evaluates it, and an aged listing is not refreshed for
-   * this. A tool the listing does not name, such as one a dynamic source resolves on demand or one
-   * added since the listing was evaluated, is described live; one the catalog does not list either
-   * is called without a kind: the app applies the tool's own kind and storage opens for writing.
+   * this. That evaluation uses the accounts the call resolved, so the call renews a grant once. A
+   * tool the listing does not name, such as one a dynamic source resolves on demand or one added
+   * since the listing was evaluated, is described live; one the catalog does not list either is
+   * called without a kind: the app applies the tool's own kind and storage opens for writing.
    */
   const kindOf = (
     state: InvocationSnapshot,
@@ -534,7 +539,7 @@ export const makeTools = (
     kind: ToolKind | undefined,
   ) =>
     kind === undefined
-      ? listings.read(state, listingOf(state), { refreshStale: false }).pipe(
+      ? listings.read(state, listingOf(state), { refreshStale: false, resolved: context }).pipe(
           Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
           // A listing that did not finish says nothing about the tool.
           Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),

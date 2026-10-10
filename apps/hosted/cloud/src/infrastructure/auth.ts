@@ -6,7 +6,11 @@ import { APIError } from "better-auth/api";
 import { OrganizationId } from "@executor-js/hosted-server";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
-import { recordCloudSignup, recordCloudLogin } from "../implementation/product-analytics.ts";
+import {
+  clearSiteVisitorOnSignOut,
+  recordCloudSignup,
+  recordCloudLogin,
+} from "../implementation/product-analytics.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
 import { Onboarding } from "../contracts/onboarding.ts";
 /** Native Alchemy auth binding for the HTTP Worker; MCP session objects use `mcp-auth.ts`. */
@@ -288,7 +292,12 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     });
     const handler = observation
       .observe(requestHandler)
-      .pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
+      .pipe(
+        Effect.flatMap(
+          clearSiteVisitorOnSignOut(Option.getOrUndefined(settings.hosts.sharedCookieDomain)),
+        ),
+        Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
+      );
     return {
       browserSession: (headers: Headers) =>
         nativeCall((instance) =>

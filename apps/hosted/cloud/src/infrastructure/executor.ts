@@ -2,7 +2,11 @@
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { makeRegistryStorage } from "@executor-js/app-registry";
-import { clientMetadataSetting, hostedOAuthClientName } from "@executor-js/hosted-server";
+import {
+  clientMetadataSetting,
+  firstPartyOAuthClients,
+  hostedOAuthClientName,
+} from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import {
   createExecutor,
@@ -62,6 +66,7 @@ export const cloudExecutor = Effect.fn(function* (
   const egress = yield* cloudEgress;
   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
   const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
+  const firstPartyClients = yield* firstPartyOAuthClients.pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
@@ -115,6 +120,7 @@ export const cloudExecutor = Effect.fn(function* (
             : {}),
           // v1's edge forwards `executor.sh/api/oauth/callback` to v2 by this state prefix.
           statePrefix: accountOAuthStatePrefix,
+          firstPartyClients,
         },
         cache: {
           // One store per isolate, shared by every executor built in it.

@@ -13,7 +13,6 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { appsCli } from "../support/apps-cli.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { McpConsent } from "../support/mcp-consent.ts";
 import { Target } from "../support/platform.ts";
 import { rawRequest, targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
@@ -68,7 +67,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud API host clients", (it) 
         // as where its Git remotes live.
         const tools = yield* appsCli;
         const login = yield* tools.login(hosts.api);
-        expect(login.url.origin + login.url.pathname).toBe(metadata.authorization_endpoint);
+        expect(login.verificationUri).toBe(`${hosts.browser}/device`);
         expect(login.finished.code, login.finished.stderr).toBe(0);
         expect(login.finished.stdout).toContain(`Connected to ${hosts.api} as @`);
 
@@ -127,7 +126,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud API host clients", (it) 
           });
         }
         expect(yield* credential(hosts.browser)).toBeUndefined();
-      }).pipe(Effect.provide(McpConsent.layer)),
+      }),
     ),
   );
 });

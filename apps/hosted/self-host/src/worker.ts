@@ -11,6 +11,7 @@ import { telemetryConfig, telemetryLayer } from "@executor-js/telemetry";
 import { CurrentTelemetryClient } from "@executor-js/telemetry/transport";
 import { urlPolicyConfig } from "@executor-js/utils/url-policy";
 import {
+  Cause,
   Config,
   ConfigProvider,
   Context,
@@ -28,6 +29,7 @@ import {
   HttpServer,
   HttpServerRequest,
 } from "effect/http";
+import { FirstPartyOAuthClientsInvalid } from "@executor-js/hosted-server";
 import { selfHostDatabaseSchema } from "./implementation/database-schema.ts";
 import {
   selfHostExecutorServices,
@@ -217,23 +219,33 @@ export class ExecutorProduct extends DurableObject<Environment> implements Produ
   }
   async #open() {
     const scope = Scope.makeUnsafe();
+    // Invalid operator settings say which setting and field, never a value, so they are reported
+    // as they are; any other failure keeps the storage report.
+    let settings: string | undefined;
     try {
       const config = await Effect.runPromise(configuration(this.#env.NATIVE));
-      const product = await Effect.runPromise(
+      const opened = await Effect.runPromiseExit(
         prepare(this.#state, this.#env).pipe(
           Effect.provideService(Scope.Scope, scope),
           Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))),
           Effect.provide(FetchHttpClient.layer),
         ),
       );
-      await this.#state.storage.setAlarm(Date.now() + 30_000);
-      return product;
+      if (Exit.isSuccess(opened)) {
+        await this.#state.storage.setAlarm(Date.now() + 30_000);
+        return opened.value;
+      }
+      const error = Cause.findErrorOption(opened.cause);
+      if (Option.isSome(error) && Schema.is(FirstPartyOAuthClientsInvalid)(error.value))
+        settings = error.value.message;
     } catch {
-      await Effect.runPromise(Scope.close(scope, Exit.void));
-      throw new Error(
-        "Executor product storage could not open. The original PostgreSQL directory has been preserved.",
-      );
+      // Reported below.
     }
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw new Error(
+      settings ??
+        "Executor product storage could not open. The original PostgreSQL directory has been preserved.",
+    );
   }
   /** Dispatch the existing authenticated product routes. */
   async fetch(request: Request): Promise<Response> {

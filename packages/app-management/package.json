@@ -14,7 +14,6 @@
     "./contracts/source-display": "./src/contracts/source-display.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
     "@executor-js/app-source": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/sdk": "workspace:*",

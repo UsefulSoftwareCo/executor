@@ -75,7 +75,7 @@ index 6e5728dacd87946d9553a497b39688b5d5d9304a..cc89e52fec360a8c1049aafa9a5e88d9
 +export const seedOAuthResources = (ctx, options) =>
 +  seedResourcesForProvisioning(ctx, { ...options, resourceSeedMode: "insertOnly" }, true);
 diff --git a/dist/introspect-njKASm3q.mjs b/dist/introspect-njKASm3q.mjs
-index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..9f888849dba61bfbdc73d76bb90dd116db9edc2b 100644
+index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..21d78930a1564b2d380c4b3a5593892629246aa0 100644
 --- a/dist/introspect-njKASm3q.mjs
 +++ b/dist/introspect-njKASm3q.mjs
 @@ -676,6 +676,8 @@ async function getResource(ctx, opts, identifier) {
@@ -221,11 +221,18 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..9f888849dba61bfbdc73d76bb90dd116
  	if (resources && refreshToken.resources && !resources.every((v) => refreshToken.resources?.includes(v))) throw new APIError("BAD_REQUEST", {
  		error_description: "requested resource invalid",
  		error: "invalid_target"
-@@ -2152,12 +2180,14 @@ async function handleRefreshTokenGrant(ctx, opts) {
+@@ -2152,12 +2180,21 @@ async function handleRefreshTokenGrant(ctx, opts) {
  				resources: resources ?? refreshToken.resources
  			}));
  			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
 +			reportRefreshRejected(ctx, opts, "replay_unavailable", refreshToken);
++			throw new APIError("BAD_REQUEST", {
++				error_description: "invalid refresh token",
++				error: "invalid_grant"
++			});
++		}
++		if (refreshToken.rotatedAt && new Date(refreshToken.rotatedAt).getTime() + (opts.refreshTokenSupersededInterval ?? 0) * 1e3 >= Date.now()) {
++			reportRefreshRejected(ctx, opts, "superseded", refreshToken);
  			throw new APIError("BAD_REQUEST", {
  				error_description: "invalid refresh token",
  				error: "invalid_grant"
@@ -236,7 +243,7 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..9f888849dba61bfbdc73d76bb90dd116
  		throw new APIError("BAD_REQUEST", {
  			error_description: "invalid refresh token",
  			error: "invalid_grant"
-@@ -2238,7 +2268,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
+@@ -2238,7 +2275,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
  	const jwtPlugin = opts.disableJwtPlugin ? void 0 : getJwtPlugin(ctx.context);
  	const jwtPluginOptions = jwtPlugin?.options;
  	const userInfoAud = `${ctx.context.baseURL ?? ""}/oauth2/userinfo`;
@@ -245,7 +252,7 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..9f888849dba61bfbdc73d76bb90dd116
  	let jwtPayload;
  	try {
  		jwtPayload = (await jwtVerify(token, createLocalJWKSet(await getJwks(token, {
-@@ -2360,7 +2390,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
+@@ -2360,7 +2397,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
  		payload: {
  			...accessTokenClaims,
  			active: true,
@@ -254,7 +261,7 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..9f888849dba61bfbdc73d76bb90dd116
  			aud: toAudienceClaim(audienceClaim),
  			client_id: accessToken.clientId,
  			azp: accessToken.clientId,
-@@ -2411,7 +2441,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
+@@ -2411,7 +2448,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
  	return {
  		active: true,
  		client_id: clientId,
@@ -264,7 +271,7 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..9f888849dba61bfbdc73d76bb90dd116
  		sid: sessionId,
  		exp: Math.floor(new Date(refreshToken.expiresAt).getTime() / 1e3),
 diff --git a/dist/oauth-1Ud-hvZY.d.mts b/dist/oauth-1Ud-hvZY.d.mts
-index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..ba359f64959b172418d12852bc1297c4ed3d2aac 100644
+index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..a49e282e0c52c175591a28afe2217103a861dc6c 100644
 --- a/dist/oauth-1Ud-hvZY.d.mts
 +++ b/dist/oauth-1Ud-hvZY.d.mts
 @@ -1131,7 +1131,10 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
@@ -279,17 +286,28 @@ index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..ba359f64959b172418d12852bc1297c4
    /**
     * Opt-in cache membership for resources by `identifier`. Mirrors the
     * {@link OAuthOptions.cachedTrustedClients} pattern.
-@@ -1236,6 +1239,16 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
+@@ -1236,6 +1239,27 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
     * @default 0
     */
    refreshTokenReuseInterval?: number;
 +  /**
++   * Seconds after rotation that presenting the rotated refresh token is refused
++   * without revoking the family. Clients that keep stale copies, such as an
++   * idle instance sharing a grant, would otherwise revoke every sibling. Later
++   * reuse, and reuse of a token revoked other than by rotation, still revokes
++   * the family.
++   *
++   * @default 0
++   */
++  refreshTokenSupersededInterval?: number;
++  /**
 +   * Observes why a refresh grant was refused; a throw is logged and never changes the answer.
 +   * `reused` means reuse detection revoked every refresh token of the client and user.
++   * `superseded` means a rotated token arrived within `refreshTokenSupersededInterval`.
 +   * `revokedAt` is when the presented token was revoked, and `rotated` whether rotation revoked it.
 +   */
 +  onRefreshRejected?: (rejection: {
-+    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "reused" | "rotation_lost";
++    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "superseded" | "reused" | "rotation_lost";
 +    revokedAt?: Date;
 +    rotated: boolean;
 +  }) => void;

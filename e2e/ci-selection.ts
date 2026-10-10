@@ -106,7 +106,7 @@ const jobs = {
     runner: 3,
 
     pattern:
-      "Cloud SSO SAML accepts|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed by its request|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake profile setup",
+      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed by its request|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake profile setup",
   },
   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
   // load kept the team installation's workflow span from arriving within its 30-second wait, so
@@ -115,7 +115,7 @@ const jobs = {
     target: "cloud",
     runner: 3,
     pattern:
-      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template",
+      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template|Cloud links the site's anonymous visitor",
   },
   "cloud-workers": {
     target: "cloud",

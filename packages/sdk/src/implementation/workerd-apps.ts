@@ -25,10 +25,12 @@ import {
   Option,
   Path,
   Queue,
+  Redacted,
   Schema,
   Stream,
   type Scope,
 } from "effect";
+import { Hex } from "effect/encoding";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { WorkflowFailure, WorkflowRunId } from "apps/contracts";
@@ -113,6 +115,30 @@ const selfOriginBinding: BindingHook = Effect.succeed({
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
 
+/**
+ * The credential handle secret for an instance: HMAC-SHA256 of a fixed label under its
+ * encryption key, so it differs from every other use of that key. The packaged self-host host
+ * derives it the same way. Handles sealed by earlier versions, under a per-process secret or the
+ * packaged image's constant, do not open under it and are refused with `credential_app`; apps
+ * get new handles on their next invocation. See notes/provider-authoring.md.
+ */
+const credentialHandleSecret = (encryptionKey: Redacted.Redacted<string>) =>
+  Effect.promise(async () => {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(Redacted.value(encryptionKey)),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const signature = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode("executor credential handles"),
+    );
+    return Hex.encode(new Uint8Array(signature));
+  });
+
 /** App-facing callbacks are scoped to the already-authorized invocation, never looked up by arbitrary IDs. */
 /** Own one workerd process for authored apps and workflows. Agent execute(code) is unrelated. */
 export const workerdApps = (options: {
@@ -134,6 +160,12 @@ export const workerdApps = (options: {
   readonly selfOrigin?: { readonly origin: string; readonly address: string };
   /** The npm registry app builds resolve packages from. Defaults to the public registry. */
   readonly npmRegistry?: string;
+  /**
+   * The instance's encryption key. The apps Worker seals credential handles with a secret derived
+   * from it, so handles keep working across restarts with the same key and the key itself never
+   * reaches workerd. Handles sealed before an instance upgraded to this derivation are refused.
+   */
+  readonly encryptionKey: Redacted.Redacted<string>;
 }): Effect.Effect<
   {
     readonly runtime: ReturnType<typeof runtimeAdapter>;
@@ -203,6 +235,10 @@ export const workerdApps = (options: {
             className: "AppWorkflows",
           }),
           JsonBinding.local("AUTH", secret),
+          JsonBinding.local(
+            "CREDENTIAL_SECRET",
+            yield* credentialHandleSecret(options.encryptionKey),
+          ),
           JsonBinding.local("APPS_PRIVATE_FETCH", privateAppFetch),
           JsonBinding.local("APP_WORKERS", Option.getOrNull(yield* appWorkerLimit)),
           JsonBinding.local(

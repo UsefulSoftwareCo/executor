@@ -8,7 +8,7 @@
 import { Cause, Effect, Redacted, Schema } from "effect";
 import { withRemoteSpan } from "@executor-js/telemetry";
 import {
-  ResolvedAccounts,
+  HostAccounts,
   WorkflowDuration,
   WorkflowFailure,
   WorkflowRpcResult,
@@ -207,7 +207,7 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
             },
             resolve: () =>
               settle(() => workflow.context()).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(ResolvedAccounts)),
+                Effect.flatMap(Schema.decodeUnknownEffect(HostAccounts)),
                 Effect.mapError(engine),
                 Effect.map((accounts) => ({ accounts: Redacted.make(accounts) })),
               ),

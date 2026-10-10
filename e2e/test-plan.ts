@@ -188,6 +188,50 @@ export const scenarios = plan({
       local: na("Local signs the CLI in with an API key, not a saved session."),
     },
   },
+  deviceLoginCli: {
+    fixtures: "actors",
+    file: "device-login.spec.ts",
+    title:
+      "The CLI signs in with a code typed on the device page when no browser opens, and keeps an ordinary session",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("Local signs the CLI in with an API key, not a saved session."),
+    },
+  },
+  deviceLoginNoOsStore: {
+    fixtures: "actors",
+    file: "device-login.spec.ts",
+    title:
+      "Over SSH without an OS credential store, the CLI opens no browser, saves its session in a file only the user can read, and keeps working",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("Local signs the CLI in with an API key, not a saved session."),
+    },
+  },
+  deviceLoginDenied: {
+    fixtures: "actors",
+    file: "device-login.spec.ts",
+    title:
+      "The CLI opens the device page with its code, and a denial there ends the CLI with that reason",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("Local signs the CLI in with an API key, not a saved session."),
+    },
+  },
+  deviceAuthorizationGrant: {
+    fixtures: "actors",
+    file: "device-login.spec.ts",
+    title:
+      "Device authorization polls with RFC 8628 errors and redeems an approved code once for the chosen organization",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("Local has no device verification page; its clients open a browser."),
+    },
+  },
   cloudRoleHostGrants: {
     fixtures: "actors",
     file: "cloud-role-hosts.spec.ts",
@@ -1792,6 +1836,17 @@ export const scenarios = plan({
       ),
     },
   },
+  siteVisitorAttribution: {
+    file: "site-visitor-attribution.spec.ts",
+    title:
+      "Cloud links the site's anonymous visitor to the account they sign up for, then clears it",
+    targets: {
+      // The server's events are read from the managed run's loopback collector.
+      cloud: managedCloud,
+      "self-host": na("Self-host does not serve the marketing site or export product analytics."),
+      local: na("Local does not serve the marketing site or export product analytics."),
+    },
+  },
   productAnalytics: {
     fixtures: "actors",
     file: "product-analytics.spec.ts",
@@ -2109,7 +2164,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-compatibility.spec.ts",
     title:
-      "OAuth accepts compatible registration and token variants, classifies registration failures, and keeps token validation",
+      "OAuth accepts compatible registration and token variants, sends no nonce, ignores ID tokens, and classifies registration failures",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
@@ -2143,7 +2198,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-error-responses.spec.ts",
     title:
-      "OAuth classifies token and callback error responses, accepts ID token algorithms advertised only in OpenID metadata, and rejects unsigned and mismatched ID tokens",
+      "OAuth classifies token and callback error responses, ignores ID tokens it cannot validate on sign-in, and renews when a refreshed ID token names another subject",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
@@ -2326,6 +2381,164 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Uses a loopback service; Cloud app Workers reach only public addresses."),
       local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
+  credentialHostsRestart: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title:
+      "a credential handle app code keeps still opens after a restart with the same encryption key",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Restarts a runner-owned product; Cloud keeps its handle secret across deploys."),
+      local: na("Local derives the handle key the same way through the same workerd runner."),
+    },
+  },
+  credentialPlacementMatched: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title: "placed credentials are substituted only where a request matches their template exactly",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback service; Cloud app Workers reach only public addresses."),
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
+  credentialPlacementDeclared: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title: "a provider's credential placements are checked when it is declared",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Declarations are evaluated by the same framework on every host."),
+      local: na("Declarations are evaluated by the same framework on every host."),
+    },
+  },
+  credentialOutboundOwn: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the outbound never sends a credential with TRACE, and its own errors never quote a substituted value",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback service; Cloud app Workers reach only public addresses."),
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
+  credentialManagedOffered: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client is offered only to providers on its server whose scopes it allows",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedPlaced: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "a token from the operator's OAuth client goes only in the operator's header, to its hosts, and nowhere else in a request",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedKept: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "app updates, a provider's own placements and older builds cannot widen where a token from the operator's OAuth client goes",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedEndpoints: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client signs in, renews and revokes only at the operator's endpoints",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedHostPatterns: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title: "the operator's wildcard hosts admit exactly the provider hosts they match",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedReconnect: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "a reconnect to the operator's client during a renewal is read as managed by calls, checks and retries already running",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedScopes: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client keeps no grant holding a scope outside its allowed scopes, read with the server's granted-scope separator",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedSettingsInvalid: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "invalid operator OAuth client settings stop the product and name each client field and why, never its value",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud reads the same setting with the same parser; a deploy fails on it before any request.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedCloud: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Cloud's operator OAuth client signs in, and its outbound sends the token only in the operator's header",
+    targets: {
+      "self-host": na(
+        "Self-host scenarios above restart the product with the operator's client; this one proves Cloud's own configuration path.",
+      ),
+      cloud: managedCloud,
+      local: na("Local products have no operator OAuth clients."),
     },
   },
   appWorkerSharedContexts: {
@@ -2687,7 +2900,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-diagnostics.spec.ts",
     title:
-      "OAuth failures deliver safe provider, challenge, claim and callback diagnostics, and a successful discovery fallback records no error",
+      "OAuth failures deliver safe provider, challenge and callback diagnostics, and a successful discovery fallback records no error",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer to provoke OAuth failures."),
@@ -3129,7 +3342,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-interop.spec.ts",
     title:
-      "OAuth signs in to Microsoft Entra without a resource indicator and checks each tenant's ID token issuer",
+      "OAuth signs in to Microsoft Entra without a resource indicator or nonce and ignores each tenant's ID token issuer",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer."),
@@ -3140,7 +3353,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-interop.spec.ts",
     title:
-      "OAuth renews a Microsoft Entra multi-tenant grant only while refreshed ID tokens keep the signed-in tenant's issuer",
+      "OAuth renews a Microsoft Entra multi-tenant grant even when a refreshed ID token names another tenant",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer."),
@@ -3221,7 +3434,8 @@ export const scenarios = plan({
   oauthMetadataOverride: {
     fixtures: "actors",
     file: "oauth-metadata-override.spec.ts",
-    title: "OAuth metadata overrides validate ES256 and issuer while MCP challenges select scopes",
+    title:
+      "OAuth metadata overrides validate the issuer, ID tokens never block sign-in, and MCP challenges select scopes",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer."),
@@ -3354,7 +3568,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-declared-endpoints.spec.ts",
     title:
-      "Declared OAuth endpoints accept the service's callback and ID token issuer, refresh, and, like discovered servers open to public and secret clients, leave client authentication to the client",
+      "Declared OAuth endpoints accept the service's callback issuer, ignore ID tokens, refresh, and, like discovered servers open to public and secret clients, leave client authentication to the client",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer."),
@@ -5913,7 +6127,8 @@ export const scenarios = plan({
   mcpLateRefreshReuse: {
     fixtures: "actors",
     file: "mcp-oauth-refresh.spec.ts",
-    title: "A rotated MCP refresh token replayed after the access-token hour ends every copy",
+    title:
+      "A rotated MCP refresh token replayed after the access-token hour is refused alone, and more than a day after its rotation ends every copy",
     targets: {
       "self-host": scheduled,
       cloud: na("Advances the wall clock of a runner-owned product process."),

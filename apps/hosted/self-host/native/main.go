@@ -5,7 +5,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -601,7 +603,11 @@ func serve(mode string) error {
 	configureChild(command)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary}
+	// The apps Worker seals credential handles with a secret derived from the encryption key, so
+	// handles survive a restart and no one else knows it. It reaches workerd only in its
+	// environment, never in the configuration file. Handles sealed under the constant earlier
+	// images used are refused after the upgrade; apps get new ones on their next invocation.
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary, "EXECUTOR_CREDENTIAL_HANDLE_SECRET=" + credentialHandleSecret(values["EXECUTOR_ENCRYPTION_KEY"])}
 	for _, name := range []string{"SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if value := os.Getenv(name); value != "" {
 			command.Env = append(command.Env, name+"="+value)
@@ -690,6 +696,14 @@ func serve(mode string) error {
 		command.Process.Kill()
 		return <-stopped
 	}
+}
+
+// credentialHandleSecret derives the apps Worker's credential handle secret from the instance's
+// encryption key, as the Node host does: HMAC-SHA256 of a fixed label, in hex.
+func credentialHandleSecret(encryptionKey string) string {
+	mac := hmac.New(sha256.New, []byte(encryptionKey))
+	mac.Write([]byte("executor credential handles"))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // workerd serves HTTP with kj's default HttpServerSettings; its pipelineTimeout

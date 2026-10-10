@@ -47,7 +47,7 @@ function ReplaceAfterSignIn({
         <PagePending pathname={pathname} />
       </DashboardEntryPending>
     );
-  if (pathname === "/mcp/authorize") return <McpConsentLoading />;
+  if (pathname === "/mcp/authorize" || pathname === "/device") return <McpConsentLoading />;
   return <SignInPending />;
 }
 

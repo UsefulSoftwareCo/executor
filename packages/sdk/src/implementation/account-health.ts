@@ -17,11 +17,12 @@ import {
   type OwnerId,
 } from "../contracts/shared.ts";
 import { AppNotFound } from "../contracts/apps.ts";
-import { grantedDefinition, validateFields } from "./provider.ts";
+import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
 import { StoredDeployment, type StoredAccount } from "../contracts/storage.ts";
 import { storedAccount } from "./accounts.ts";
 import { query, type Query } from "./database.ts";
 import type { makeOAuth } from "./oauth.ts";
+import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
 
 /**
  * A check answers an interactive request, so the whole check, including credential renewal and
@@ -110,6 +111,7 @@ export const makeAccountHealth = (
   db: Query,
   runtime: Runtime,
   oauth: OAuth,
+  clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   listApps: ListApps,
 ) => {
   /** One account's health from the apps that select it and its recorded checks. */
@@ -226,35 +228,30 @@ export const makeAccountHealth = (
       const startedAt = yield* Clock.currentTimeMillis;
       const deadline = startedAt + checkMillis - reportMillis;
       const definition = target.required.definition;
-      const attempt = (fields: JsonObject) =>
+      // Each attempt binds the credential as resolved, so whether it is managed is read with its
+      // values, even if a reconnect replaced it since this check read the account.
+      const attempt = (credential: AccountCredential) =>
         runtime.checkAccount({
           app: app.id,
           build: deployment.build,
           requirement: target.slot,
           deadline,
           accounts: Redacted.make({
-            [target.slot]: {
-              id: account.id,
-              provider: grantedDefinition(definition, account.allowedHosts),
-              method: account.method,
-              generation: account.credentialGeneration,
-              fields,
-            },
+            [target.slot]: invocationAccount(account, definition, credential, clients),
           }),
         });
       const outcome = yield* Effect.gen(function* () {
-        const fields = yield* decodeFields(yield* oauth.resolve(account, definition));
-        const first = yield* attempt(fields).pipe(Effect.result);
+        const credential = yield* oauth.resolve(account, definition);
+        const first = yield* attempt(credential).pipe(Effect.result);
         if (Result.isSuccess(first)) return first.success;
         const refused = first.failure;
         if (!Schema.is(ProviderError)(refused) || refused.reason !== "unauthorized")
           return yield* Effect.fail(refused);
         // Renew once when the service refused the credentials, as tool calls do. Secrets accounts
         // and grants without a refresh token return the same fields, so there is nothing to retry.
-        const renewed = yield* decodeFields(
-          yield* oauth.renewRejected(account, definition, fields),
-        );
-        if (sameFields(renewed, fields)) return yield* Effect.fail(refused);
+        const fields = Redacted.value(credential.fields);
+        const renewed = yield* oauth.renewRejected(account, definition, fields);
+        if (sameFields(Redacted.value(renewed.fields), fields)) return yield* Effect.fail(refused);
         return yield* attempt(renewed);
       }).pipe(Effect.timeout(checkMillis), Effect.result);
       const late = (yield* Clock.currentTimeMillis) >= deadline;

@@ -43,7 +43,7 @@ import {
   hostedExecutorOrigin,
   type App,
 } from "@executor-js/sdk/core";
-import { AppClientError } from "./client-error.ts";
+import { AppClientError, LoginFailed } from "./client-error.ts";
 import {
   AppAccess,
   AppAccessDenied,
@@ -364,6 +364,22 @@ const readSkills = (args: {
     ).pipe(Effect.flatMap(print(AppSkillDocument)));
   });
 
+/** What each sign-in failure means and what to do next. */
+const loginFailure: Record<LoginFailed["reason"], string> = {
+  host: `Could not read this host's sign-in settings. Check --host, for example --host ${hostedExecutorOrigin}, and your network connection.`,
+  unsupported:
+    "This host does not support signing in from the CLI. Update it to a release with device sign-in.",
+  registration: "The host did not start a sign-in for the CLI. Try again in a moment.",
+  denied: "Sign-in was cancelled or denied in the browser. Run executor apps login to try again.",
+  expired:
+    "Sign-in was not approved in time. Run executor apps login again and approve it within 10 minutes.",
+  token: "The host did not complete the approved sign-in. Run executor apps login to try again.",
+  context:
+    "Signed in, but the host did not return your organization. Check that your account belongs to an organization, then sign in again.",
+  storage:
+    "Signed in, but the session could not be saved in the system credential store or in ~/.local/state/executor/auth. Check that this directory is writable.",
+};
+
 /** Sanitized command diagnostics. Credential values and arbitrary server bodies are never printed. */
 export const appCommandFailure = (error: unknown): string | undefined => {
   if (Schema.is(AppNameTaken)(error))
@@ -381,6 +397,7 @@ export const appCommandFailure = (error: unknown): string | undefined => {
     return error.reason === "conflict"
       ? "That publishing name is used by another app. Choose another name."
       : `Registry operation failed (${error.reason}${error.status === undefined ? "" : ` ${error.status}`}). Check the app name, selected commit, and registry connection.`;
+  if (Schema.is(LoginFailed)(error)) return loginFailure[error.reason];
   if (Schema.is(AppAccessDenied)(error) || Schema.is(AppClientError)(error))
     return error.reason === "authentication"
       ? `Not signed in to this host. For hosted Executor, run executor apps login --host ${hostedExecutorOrigin} and pass the same --host to each command. For a local server (default ${localOrigin}), set EXECUTOR_API_KEY to its API key.`
@@ -401,7 +418,7 @@ export const appsCommand = (platform: string) =>
     Command.withSubcommands([
       Command.make("login", { host }).pipe(
         Command.withDescription(
-          `Sign in to a hosted Executor through the browser, for example --host ${hostedExecutorOrigin}`,
+          `Sign in to a hosted Executor with a code approved in any browser, for example --host ${hostedExecutorOrigin}`,
         ),
         Command.withHandler((args) => registryLogin(args.host, platform)),
       ),

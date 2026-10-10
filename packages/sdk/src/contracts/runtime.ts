@@ -198,6 +198,7 @@ export const RuntimeFailure = Schema.Literals([
   "data",
   "build",
   "unsupported",
+  "managed",
   "unrecognized",
 ]);
 export type RuntimeFailure = typeof RuntimeFailure.Type;
@@ -216,6 +217,8 @@ export const runtimeFailures: Record<RuntimeFailure, string> = {
   data: "The app's data supervisor failed the call",
   build: "The app's build could not be read",
   unsupported: "The app's build speaks a host protocol this host does not run",
+  managed:
+    "The app's build reads account fields as real values, so it cannot receive an account connected through this instance's own OAuth client",
   unrecognized: "The app's Worker failed for a reason the runtime did not recognize",
 };
 /**

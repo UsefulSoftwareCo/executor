@@ -32,6 +32,7 @@ import { FailureDetail, UpstreamError } from "../failure.ts";
 import { AccountCheckResult, OAuth2Config } from "../provider.ts";
 import { ProviderError } from "../provider-error.ts";
 import { RouterIcon } from "../router.ts";
+import { Placements } from "../placement.ts";
 import { OperationSchedule } from "../schedules.ts";
 import { AccountId, JsonObject, JsonValue } from "../schema.ts";
 import { AppSkillName, AppSkills } from "../skills.ts";
@@ -95,12 +96,22 @@ export const CredentialHost = Schema.String.check(
   ),
 );
 
-/** Field names an auth method exposes to app code. Every other string field is secret. */
+/**
+ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
+ * other string field is secret.
+ */
 const exposure = {
   /** Not secret: app code reads the real value and forms show it. */
   plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
   /** Secret, but app code reads the real value, for signing and similar uses. */
   raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  /**
+   * The only places the outbound network substitutes this method's secret fields: whole header
+   * values and query parameters, each an exact template. Part of the provider's identity. In an
+   * invocation, an account's provider carries the placements granted to that account, which can
+   * be narrower than the app's declaration.
+   */
+  request: Schema.optionalKey(Placements),
 };
 
 /** Serializable authentication declarations interpreted by the trusted host. */
@@ -187,7 +198,8 @@ export type DeclaredRequirements = typeof DeclaredRequirements.Type;
 
 /**
  * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
- * declares hosts, its secret string fields are sealed handles, not values.
+ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
+ * the hosts and placements granted to this account.
  */
 export const ResolvedAccount = Schema.Struct({
   id: AccountId,

@@ -1,33 +1,25 @@
 import { homedir } from "node:os";
 import { lock } from "proper-lockfile";
-/** CLI OAuth and OS credential-store adapter. Credentials never enter repositories or config files. */
-import { createServer } from "node:http";
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+/**
+ * CLI device sign-in and credential-store adapter. Sessions live in the OS credential store, or on machines
+ * without one in a file only this user can read. Credentials never enter repositories or config files.
+ */
 import {
+  Clock,
+  Config,
   Console,
-  Context,
-  Deferred,
+  Duration,
   Effect,
   FileSystem,
+  Option,
   Path,
-  Layer,
   Redacted,
   Schema,
 } from "effect";
-import { Base64Url, Hex } from "effect/encoding";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/http";
-import { NetAddress } from "effect/net";
+import { Hex } from "effect/encoding";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { AppClientError } from "../client-error.ts";
+import { AppClientError, LoginFailed } from "../client-error.ts";
 
 /**
  * Credential-bearing traffic is permitted only over TLS or to loopback development hosts,
@@ -69,27 +61,86 @@ const Session = Schema.Struct({
   gitOrigins: Schema.optional(Schema.Array(Schema.String)),
 });
 const authError = () => new AppClientError({ reason: "authentication" });
-// Loaded lazily so a native binding that cannot load fails here instead of at process start.
-const entry = (host: string) =>
+/** Session locks, and sessions on machines without an OS credential store, live here. */
+const authDirectory = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  return path.join(homedir(), ".local", "state", "executor", "auth");
+});
+const digest = (input: string) =>
   Effect.tryPromise({
-    try: async () => {
-      const { AsyncEntry } = await import("@napi-rs/keyring");
-      return new AsyncEntry("Executor Registry", host);
-    },
+    try: async () =>
+      Hex.encode(
+        new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input))),
+      ),
     catch: authError,
   });
+const sessionService = "Executor Registry";
 /**
  * Which signed-in host a Git origin's remotes use. It holds an origin, never a credential, and
  * {@link gitSession} accepts it only when that host's own session names the Git origin.
  */
-const gitEntry = (origin: string) =>
+const gitService = "Executor Registry Git";
+// Loaded lazily so a native binding that cannot load means no OS store instead of a failed start.
+const osEntry = (service: string, account: string) =>
   Effect.tryPromise({
     try: async () => {
       const { AsyncEntry } = await import("@napi-rs/keyring");
-      return new AsyncEntry("Executor Registry Git", origin);
+      return new AsyncEntry(service, account);
     },
     catch: authError,
+  }).pipe(Effect.option);
+const credentialFile = (service: string, account: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* authDirectory;
+    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+    return path.join(directory, `${yield* digest(`${service}\n${account}`)}.json`);
   });
+/** Read from the OS credential store, then from the file used where that store is unavailable. */
+const readCredential = (service: string, account: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const os = yield* osEntry(service, account);
+    if (Option.isSome(os)) {
+      const stored = yield* Effect.tryPromise({
+        try: (signal) => os.value.getPassword(signal),
+        catch: authError,
+      }).pipe(Effect.option);
+      if (Option.isSome(stored) && typeof stored.value === "string") return stored.value;
+    }
+    const file = yield* credentialFile(service, account);
+    return (yield* fs.exists(file)) ? yield* fs.readFileString(file) : undefined;
+  }).pipe(Effect.catchTag("PlatformError", authError));
+/**
+ * Save in the OS credential store when this machine has one, as on a desktop. A Linux server or
+ * container usually has no Secret Service, so there the value goes to a file readable only by
+ * this user. Returns that file, or nothing when the OS store took it.
+ */
+const writeCredential = (service: string, account: string, value: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const file = yield* credentialFile(service, account);
+    const os = yield* osEntry(service, account);
+    const inOsStore = Option.isSome(os)
+      ? yield* Effect.tryPromise({
+          try: (signal) => os.value.setPassword(value, signal),
+          catch: authError,
+        }).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        )
+      : false;
+    if (inOsStore) {
+      // A session saved to a file before the OS store was available must not outlive it.
+      yield* fs.remove(file, { force: true });
+      return Option.none<string>();
+    }
+    const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+    yield* fs.writeFileString(temporary, value, { mode: 0o600 });
+    yield* fs.rename(temporary, file);
+    return Option.some(file);
+  }).pipe(Effect.catchTag("PlatformError", authError));
 /** Read a JSON response from the Executor host; redirects fail rather than carry credentials. */
 const fetchJson = <A>(request: HttpClientRequest.HttpClientRequest, schema: Schema.Decoder<A>) =>
   HttpClient.execute(request).pipe(
@@ -133,27 +184,22 @@ const discover = (host: string) =>
       ),
       Schema.Struct({
         issuer: Schema.String,
-        authorization_endpoint: Endpoint,
         token_endpoint: Endpoint,
         registration_endpoint: Endpoint,
+        // RFC 8628; hosts released before device sign-in do not advertise it.
+        device_authorization_endpoint: Schema.optional(Endpoint),
       }),
     );
     if (metadata.issuer !== issuer) return yield* authError();
     return {
       resource: protectedResource.resource,
-      authorization: metadata.authorization_endpoint,
       token: metadata.token_endpoint,
       registration: metadata.registration_endpoint,
+      device: metadata.device_authorization_endpoint,
     };
   });
 const save = (host: string, session: typeof Session.Type) =>
-  Effect.gen(function* () {
-    const store = yield* entry(host);
-    yield* Effect.tryPromise({
-      try: (signal) => store.setPassword(JSON.stringify(session), signal),
-      catch: authError,
-    });
-  });
+  writeCredential(sessionService, host, JSON.stringify(session));
 
 /** Serialize refresh and replacement across Git helper processes; the lock contains no credentials. */
 const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
@@ -161,15 +207,9 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = path.join(homedir(), ".local", "state", "executor", "auth");
+      const directory = yield* authDirectory;
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
-      const key = yield* Effect.tryPromise({
-        try: async () =>
-          Hex.encode(
-            new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(host))),
-          ),
-        catch: authError,
-      });
+      const key = yield* digest(host);
       yield* Effect.acquireRelease(
         Effect.tryPromise({
           try: () =>
@@ -186,18 +226,14 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
     }),
   ).pipe(Effect.catchTag("PlatformError", authError));
 
-/** Read and refresh one explicitly selected organization grant. The OS store owns refresh-token custody. */
+/** Read and refresh one explicitly selected organization grant. The credential store owns refresh-token custody. */
 export const registrySession = (host: string) =>
   withSessionLock(
     host,
     Effect.gen(function* () {
       yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(authError));
-      const store = yield* entry(host);
-      const raw = yield* Effect.tryPromise({
-        try: (signal) => store.getPassword(signal),
-        catch: authError,
-      });
-      if (raw === null) return yield* authError();
+      const raw = yield* readCredential(sessionService, host);
+      if (raw === undefined) return yield* authError();
       const saved = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Session))(raw).pipe(
         Effect.mapError(authError),
       );
@@ -231,121 +267,142 @@ export const registrySession = (host: string) =>
  */
 export const gitSession = (origin: string) =>
   Effect.gen(function* () {
-    const store = yield* gitEntry(origin);
-    const signedIn = yield* Effect.tryPromise({
-      try: (signal) => store.getPassword(signal),
-      catch: authError,
-    });
-    const host = signedIn ?? origin;
+    const host = (yield* readCredential(gitService, origin)) ?? origin;
     const session = yield* registrySession(host);
     if (host !== origin && !(Redacted.value(session).gitOrigins ?? []).includes(origin))
       return yield* authError();
     return session;
   });
 
-/** Browser authorization-code flow with PKCE, an exact loopback callback, and an unpredictable state. */
+const scope = "executor offline_access";
+const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
+type Endpoints = Effect.Success<ReturnType<typeof discover>>;
+const fail = (reason: LoginFailed["reason"]) => () => new LoginFailed({ reason });
+const TokenError = Schema.Struct({ error: Schema.String });
+
+/**
+ * Whether a browser opened here reaches the person signing in. Over SSH it would open on the
+ * remote machine, and a Linux session without a display has none to open.
+ */
+const browserReachable = (platform: string) =>
+  Effect.gen(function* () {
+    const variable = (name: string) =>
+      Config.String(name).pipe(Config.option, Config.map(Option.isSome));
+    const remote = (yield* variable("SSH_CONNECTION")) || (yield* variable("SSH_TTY"));
+    const display = (yield* variable("DISPLAY")) || (yield* variable("WAYLAND_DISPLAY"));
+    return !remote && (platform !== "linux" || display);
+  }).pipe(Effect.orElseSucceed(() => false));
+
+/** Open the approval page in this machine's browser; the printed code still works if none opens. */
+const openBrowser = (platform: string, url: string) =>
+  Effect.gen(function* () {
+    if (!(yield* browserReachable(platform))) return;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const command =
+      platform === "darwin"
+        ? ChildProcess.make("open", [url])
+        : platform === "win32"
+          ? ChildProcess.make("rundll32", ["url.dll,FileProtocolHandler", url])
+          : ChildProcess.make("xdg-open", [url]);
+    yield* spawner.exitCode(command).pipe(Effect.ignore);
+  });
+
+/**
+ * RFC 8628 device authorization: register a public client, print where to approve and the code,
+ * open that page when a browser can, then poll the token endpoint at the host's interval, slowing
+ * down when asked, until approval, denial or expiry.
+ */
+const deviceLogin = (endpoints: Endpoints, platform: string) =>
+  Effect.gen(function* () {
+    if (endpoints.device === undefined) return yield* new LoginFailed({ reason: "unsupported" });
+    const client = yield* request(
+      endpoints.registration,
+      {
+        client_name: "Executor CLI",
+        token_endpoint_auth_method: "none",
+        grant_types: [deviceGrant, "refresh_token"],
+        response_types: [],
+        scope,
+      },
+      Schema.Struct({ client_id: Schema.NonEmptyString }),
+    ).pipe(Effect.mapError(fail("registration")));
+    const started = yield* request(
+      endpoints.device,
+      new URLSearchParams({ client_id: client.client_id, scope, resource: endpoints.resource }),
+      Schema.Struct({
+        device_code: Schema.NonEmptyString,
+        user_code: Schema.NonEmptyString,
+        verification_uri: Endpoint,
+        verification_uri_complete: Schema.optional(Endpoint),
+        expires_in: Schema.Number,
+        interval: Schema.optional(Schema.Number),
+      }),
+    ).pipe(Effect.mapError(fail("registration")));
+    // One link: with the code in it when the host offers that, so nothing needs typing. The code
+    // is still shown, to compare with the page before approving.
+    yield* Console.error(
+      [
+        "",
+        ...(started.verification_uri_complete === undefined
+          ? [
+              `To sign in, open ${started.verification_uri}`,
+              `and enter the code ${started.user_code}`,
+            ]
+          : [
+              `To sign in, open ${started.verification_uri_complete}`,
+              `and check that it shows the code ${started.user_code}`,
+            ]),
+        "",
+        "Waiting for approval...",
+      ].join("\n"),
+    );
+    yield* openBrowser(platform, started.verification_uri_complete ?? started.verification_uri);
+    const poll = HttpClientRequest.post(endpoints.token).pipe(
+      HttpClientRequest.bodyUrlParams(
+        new URLSearchParams({
+          grant_type: deviceGrant,
+          device_code: started.device_code,
+          client_id: client.client_id,
+        }),
+      ),
+    );
+    const deadline = (yield* Clock.currentTimeMillis) + started.expires_in * 1000;
+    const wait = (interval: number): Effect.Effect<typeof Token.Type, LoginFailed> =>
+      Effect.gen(function* () {
+        yield* Effect.sleep(Duration.seconds(interval));
+        if ((yield* Clock.currentTimeMillis) >= deadline)
+          return yield* new LoginFailed({ reason: "expired" });
+        const response = yield* HttpClient.execute(poll).pipe(
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+          Effect.provide(FetchHttpClient.layer),
+          Effect.mapError(fail("token")),
+        );
+        if (response.status === 200)
+          return yield* response.json.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Token)),
+            Effect.mapError(fail("token")),
+          );
+        const { error } = yield* response.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(TokenError)),
+          Effect.mapError(fail("token")),
+        );
+        if (error === "authorization_pending") return yield* wait(interval);
+        if (error === "slow_down") return yield* wait(interval + 5);
+        return yield* new LoginFailed({
+          reason:
+            error === "access_denied" ? "denied" : error === "expired_token" ? "expired" : "token",
+        });
+      });
+    return { clientId: client.client_id, token: yield* wait(started.interval ?? 5) };
+  });
+
+/** Sign in to a hosted Executor with a code approved on any signed-in browser. */
 export const registryLogin = (host: string, platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(authError));
-      const completed = yield* Deferred.make<string, AppClientError>();
-      const state = crypto.randomUUID();
-      const verifier =
-        crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
-      const challenge = yield* Effect.tryPromise({
-        try: async () =>
-          Base64Url.encode(
-            new Uint8Array(
-              await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-            ),
-          ),
-        catch: authError,
-      });
-      const callback = HttpRouter.add(
-        "GET",
-        "/callback",
-        Effect.gen(function* () {
-          const incoming = yield* HttpServerRequest.HttpServerRequest;
-          const url = new URL(incoming.url, "http://127.0.0.1");
-          if (url.searchParams.get("state") !== state)
-            return HttpServerResponse.text("Invalid sign-in state.", { status: 400 });
-          const code = url.searchParams.get("code");
-          if (code === null || url.searchParams.has("error")) {
-            yield* Deferred.fail(completed, authError());
-            return HttpServerResponse.text("Sign-in was cancelled.", { status: 400 });
-          }
-          yield* Deferred.succeed(completed, code);
-          return HttpServerResponse.text("Executor is connected. You can close this window.", {
-            headers: { "cache-control": "no-store" },
-          });
-        }),
-      );
-      const listener = createServer();
-      const services = yield* Layer.build(
-        HttpRouter.serve(callback, { disableLogger: true, disableListenLog: true }).pipe(
-          Layer.provideMerge(
-            NodeHttpServer.layer(() => listener, {
-              host: "127.0.0.1",
-              port: 0,
-              gracefulShutdownTimeout: 1000,
-            }),
-          ),
-        ),
-      );
-      // Closing the server waits for every connection, and a browser may hold one it opened but
-      // never sent a request on (a raced spare), which Node keeps until its headers timeout, 60
-      // seconds or more. Nothing more is served once sign-in ends, so drop them all first.
-      yield* Effect.addFinalizer(() => Effect.sync(() => listener.closeAllConnections()));
-      const server = Context.get(services, HttpServer.HttpServer);
-      if (!NetAddress.isInetAddress(server.address)) return yield* authError();
-      const redirect = `http://127.0.0.1:${server.address.port}/callback`;
-      const endpoints = yield* discover(host);
-      const client = yield* request(
-        endpoints.registration,
-        {
-          client_name: "Executor CLI",
-          redirect_uris: [redirect],
-          token_endpoint_auth_method: "none",
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          scope: "executor offline_access",
-        },
-        Schema.Struct({ client_id: Schema.NonEmptyString }),
-      );
-      const authorization = new URL(endpoints.authorization);
-      authorization.search = new URLSearchParams({
-        client_id: client.client_id,
-        redirect_uri: redirect,
-        response_type: "code",
-        scope: "executor offline_access",
-        resource: endpoints.resource,
-        code_challenge: challenge,
-        code_challenge_method: "S256",
-        state,
-      }).toString();
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const command =
-        platform === "darwin"
-          ? ChildProcess.make("open", [authorization.href])
-          : platform === "win32"
-            ? ChildProcess.make("rundll32", ["url.dll,FileProtocolHandler", authorization.href])
-            : ChildProcess.make("xdg-open", [authorization.href]);
-      const opened = yield* spawner.exitCode(command);
-      if (Number(opened) !== 0) return yield* authError();
-      yield* Console.error("Finish signing in and select an organization in your browser.");
-      const code = yield* Deferred.await(completed).pipe(Effect.timeout("10 minutes"));
-      const token = yield* request(
-        endpoints.token,
-        new URLSearchParams({
-          grant_type: "authorization_code",
-          client_id: client.client_id,
-          redirect_uri: redirect,
-          code,
-          code_verifier: verifier,
-          resource: endpoints.resource,
-        }),
-        Token,
-      );
+      yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(fail("host")));
+      const endpoints = yield* discover(host).pipe(Effect.mapError(fail("host")));
+      const { clientId, token } = yield* deviceLogin(endpoints, platform);
       const context = yield* fetchJson(
         HttpClientRequest.get(`${host}/api/context`).pipe(
           HttpClientRequest.bearerToken(token.access_token),
@@ -356,13 +413,13 @@ export const registryLogin = (host: string, platform: string) =>
           // Hosts released before this field serve Git only on their own origin.
           gitOrigins: Schema.optional(Schema.Array(RegistryOrigin)),
         }),
-      );
+      ).pipe(Effect.mapError(fail("context")));
       const gitOrigins = (context.gitOrigins ?? []).filter((origin) => origin !== host);
-      yield* withSessionLock(
+      const saved = yield* withSessionLock(
         host,
         Effect.gen(function* () {
-          yield* save(host, {
-            clientId: client.client_id,
+          const file = yield* save(host, {
+            clientId,
             accessToken: token.access_token,
             refreshToken: token.refresh_token,
             expiresAt: Date.now() + token.expires_in * 1000,
@@ -370,15 +427,14 @@ export const registryLogin = (host: string, platform: string) =>
             namespace: context.slug,
             gitOrigins,
           });
-          for (const origin of gitOrigins) {
-            const store = yield* gitEntry(origin);
-            yield* Effect.tryPromise({
-              try: (signal) => store.setPassword(host, signal),
-              catch: authError,
-            });
-          }
+          for (const origin of gitOrigins) yield* writeCredential(gitService, origin, host);
+          return file;
         }),
-      );
+      ).pipe(Effect.mapError(fail("storage")));
+      if (Option.isSome(saved))
+        yield* Console.error(
+          `No system credential store is available, so the session is saved in ${saved.value}, readable only by you.`,
+        );
       yield* Console.log(`Connected to ${host} as @${context.slug}.`);
     }),
-  ).pipe(Effect.mapError(authError));
+  );

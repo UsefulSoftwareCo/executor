@@ -19,6 +19,29 @@ import { createV1Database, startCloudPostgres, v1DatabaseReader } from "./cloud-
 import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 import { roleHost } from "./role-hosts.ts";
+import { freePort } from "./ports.ts";
+import { OperatorOAuthFixture, operatorOAuthFile } from "./operator-oauth.ts";
+
+/** The operator settings for `fixture`: one client whose tokens go only to its own host. */
+const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
+  const origin = `http://127.0.0.1:${fixture.port}`;
+  return JSON.stringify([
+    {
+      id: "synthetic-cloud-mail",
+      label: "Executor for Synthetic Cloud Mail",
+      server: {
+        issuer: origin,
+        authorizationUrl: `${origin}/authorize`,
+        tokenUrl: `${origin}/token`,
+      },
+      clientId: fixture.clientId,
+      clientSecret: fixture.clientSecret,
+      tokenEndpointAuthMethod: "client_secret_basic",
+      defaultScopes: ["mail.read"],
+      placement: { hosts: [`127.0.0.1:${fixture.port}`] },
+    },
+  ]);
+};
 
 class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStartFailed", {
   operation: Schema.String,
@@ -108,6 +131,14 @@ export const startCloudEnvironment = (input: {
     const analyticsPort = yield* startAnalyticsCollector(directory);
     const collector = yield* serveOtlpCollector(directory);
     const databasePassword = randomBytes(24).toString("hex");
+    const operatorOAuth = OperatorOAuthFixture.make({
+      port: yield* freePort,
+      clientId: "first-party-client",
+      clientSecret: randomBytes(16).toString("hex"),
+    });
+    const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
+    yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
+    yield* Effect.addFinalizer(() => fs.remove(operatorOAuthPath).pipe(Effect.orDie));
     const ssoDatabase = `${directory}/sso-database.json`;
     yield* fs.writeFileString(
       ssoDatabase,
@@ -156,6 +187,10 @@ export const startCloudEnvironment = (input: {
       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
       VITE_POSTHOG_PATH: "/api/0123456789abcdef",
       VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
+      // The site's own build reads the same synthetic project, so its pages run PostHog too.
+      PUBLIC_POSTHOG_KEY: "synthetic-ingestion-key",
+      PUBLIC_POSTHOG_PATH: "/api/0123456789abcdef",
+      PUBLIC_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
       VITE_EXECUTOR_ENVIRONMENT: "test-local",
       // Serve the same built assets and routing as a deployed stage. Vite's
       // on-demand source transforms must not compete with timed scenarios.
@@ -176,6 +211,7 @@ export const startCloudEnvironment = (input: {
       CLOUD_BROWSER_ORIGIN: input.browserOrigin,
       EXECUTOR_EMULATED_OAUTH_PROXY_PRODUCTION_URL: oauthProxy.productionUrl,
       EXECUTOR_EMULATED_OAUTH_PROXY_SECRET: Redacted.value(oauthProxy.secret),
+      EXECUTOR_FIRST_PARTY_OAUTH_CLIENTS: operatorOAuthClients(operatorOAuth),
     };
     yield* fs.makeDirectory(env.ALCHEMY_HOME, { recursive: true, mode: 0o700 });
     const dockerHost = (yield* processes.string(

@@ -10,7 +10,7 @@ import {
   sign,
 } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Deferred, Effect, Layer, Schema } from "effect";
+import { Context, Deferred, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { tokenRequestParameters } from "./client-credentials-issuer.ts";
 
@@ -38,8 +38,15 @@ const McpMessage = Schema.Struct({
   method: Schema.String,
 });
 
+/**
+ * The port the next issuer listens on. Zero, the default, lets the system assign one; a Cloud
+ * scenario binds the port its local Cloud's operator settings name. See `oauthSetupIssuerOn`.
+ */
+export const IssuerPort = Context.Reference<number>("e2e/IssuerPort", { defaultValue: () => 0 });
+
 /** Start a loopback issuer with controllable discovery and registration metadata. */
 export const oauthSetupIssuer = Effect.gen(function* () {
+  const port = yield* IssuerPort;
   const address = yield* Deferred.make<string>();
   let registration = true;
   let postChallenge = false;
@@ -79,17 +86,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    * as Miro does. Its client authentication methods disagree with the OAuth metadata's.
    */
   let openidAlgorithms: readonly string[] | undefined;
-  /**
-   * How the OpenID metadata location answers when it has algorithms to serve. The trailing-slash
-   * and uppercase-scheme issuers name the same URL as the OAuth metadata's but not the same string.
-   */
-  let openidMetadata:
-    | "served"
-    | "redirect"
-    | "unavailable"
-    | "another-issuer"
-    | "issuer-trailing-slash"
-    | "issuer-uppercase-scheme" = "served";
   let includeIdToken = false;
   let invalidNonce = false;
   /** The ID token `iss`; Google names its sign-in host rather than the token endpoint origin. */
@@ -177,6 +173,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let rsaKey: KeyObject | undefined;
   /** Refresh tokens issued for each client; unless rotation is configured, refreshes keep them. */
   const refreshGrants = new Map<string, string>();
+  /** Whether each refresh token was issued at a sign-in or by a rotating refresh. */
+  const refreshOrigins = new Map<string, "sign-in" | "refresh">();
+  /** The issuance of each refresh token revocation named, in order: a current or replaced one. */
+  const revokedRefreshTokens: Array<"sign-in" | "refresh"> = [];
   /** Refresh tokens a rotation replaced, with their client. */
   const replacedRefreshGrants = new Map<string, string>();
   const refreshedAccessTokens = new Set<string>();
@@ -189,6 +189,29 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   const expiredAccessTokens = new Set<string>();
   /** Resource requests by method, including refused ones. */
   const resourceRequests = { GET: 0, POST: 0 };
+  /** The `authorization` header of each resource request, in order. */
+  const resourceAuthorizations: Array<string | null> = [];
+  /**
+   * Which tokens the resource accepts: any, or only access tokens this issuer issued, as a real
+   * service does. An unissued token is refused with 401.
+   */
+  let resourceTokens: "any" | "issued" = "any";
+  /**
+   * The `scope` member of token responses; undefined omits it. A grant is given the scope its
+   * authorization request asked for, or `defaults` when it asked for none, as services that
+   * grant a default set do. `exchange` and `refresh` add scopes beyond that to each response.
+   * `separator` joins the reported scopes, a space by default; GitHub reports `repo,gist`.
+   */
+  let scopeGrant:
+    | {
+        readonly defaults: readonly string[];
+        readonly exchange?: readonly string[];
+        readonly refresh?: readonly string[];
+        readonly separator?: string;
+      }
+    | undefined;
+  /** The scope granted with each refresh token, which its renewals repeat. */
+  const refreshScopes = new Map<string, string>();
   const clients = new Map<
     string,
     {
@@ -199,7 +222,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   >();
   const codes = new Map<
     string,
-    { clientId: string; redirect: string; challenge: string; nonce: string | null }
+    {
+      clientId: string;
+      redirect: string;
+      challenge: string;
+      nonce: string | null;
+      scope: string | null;
+    }
   >();
   let discovery:
     | "available"
@@ -360,7 +389,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             : undefined);
         const callback = new URL(redirect);
         if (refusal === undefined) {
-          codes.set(code, { clientId, redirect, challenge, nonce: params.get("nonce") });
+          codes.set(code, {
+            clientId,
+            redirect,
+            challenge,
+            nonce: params.get("nonce"),
+            scope: params.get("scope"),
+          });
           callback.searchParams.set("code", code);
         } else callback.searchParams.set("error", refusal);
         callback.searchParams.set("state", params.get("state") ?? "");
@@ -470,8 +505,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (code !== null) codes.delete(code);
         const origin = yield* Deferred.await(address);
         const now = Math.floor(Date.now() / 1000);
-        // A refreshed ID token carries no nonce (OpenID Connect Core 12.2).
-        const nonce = issued?.nonce ?? null;
+        // A refreshed ID token carries no nonce (OpenID Connect Core 12.2). `invalidNonce`
+        // names one the client never sent, on every ID token.
+        const nonce = invalidNonce ? "wrong-nonce" : (issued?.nonce ?? null);
         const jwt = [
           { alg: idTokenAlgorithm, kid: "synthetic-key", typ: "JWT" },
           {
@@ -480,7 +516,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             sub: refreshing ? refreshSubject : "synthetic-subject",
             iat: now,
             exp: now + 3600,
-            ...(nonce === null ? {} : { nonce: invalidNonce ? "wrong-nonce" : nonce }),
+            ...(nonce === null ? {} : { nonce }),
           },
         ]
           .map((part) => Buffer.from(JSON.stringify(part)).toString("base64url"))
@@ -514,7 +550,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           refreshTokens && (!refreshing || rotateRefreshTokens)
             ? `synthetic-refresh-${randomUUID()}`
             : undefined;
-        if (refreshToken !== undefined) refreshGrants.set(refreshToken, clientId);
+        if (refreshToken !== undefined) {
+          refreshGrants.set(refreshToken, clientId);
+          refreshOrigins.set(refreshToken, refreshing ? "refresh" : "sign-in");
+        }
         if (refreshing && rotateRefreshTokens && presentedRefresh !== null) {
           // The presented token is consumed by this rotation, whether or not its answer arrives.
           if (refreshGrants.delete(presentedRefresh))
@@ -522,6 +561,25 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         }
         if (refreshing) refreshesIssued++;
         const lifetime = refreshing ? (refreshedExpiresIn ?? expiresIn) : expiresIn;
+        // The grant's scope: as authorized, or the defaults when the request named none, then
+        // anything this response adds beyond it.
+        const granted =
+          scopeGrant === undefined
+            ? undefined
+            : ((refreshing && presentedRefresh !== null
+                ? refreshScopes.get(presentedRefresh)
+                : issued?.scope) ?? scopeGrant.defaults.join(" "));
+        const scope =
+          scopeGrant === undefined || granted === undefined
+            ? undefined
+            : [
+                ...new Set([
+                  ...granted.split(" ").filter(Boolean),
+                  ...((refreshing ? scopeGrant.refresh : scopeGrant.exchange) ?? []),
+                ]),
+              ].join(scopeGrant.separator ?? " ");
+        if (refreshToken !== undefined && granted !== undefined)
+          refreshScopes.set(refreshToken, granted);
         if (refreshing && hold === "refresh-issued") yield* heldRequest;
         const tokens: IssuedTokens = {
           access_token: accessToken,
@@ -529,6 +587,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           ...(lifetime === undefined ? {} : { expires_in: lifetime }),
           ...(refreshToken === undefined ? {} : { refresh_token: refreshToken }),
           ...(includeIdToken ? { id_token: `${jwt}.${signature}` } : {}),
+          ...(scope === undefined ? {} : { scope }),
         };
         return yield* HttpServerResponse.json(
           tokenShape === undefined ? tokens : tokenShape(tokens, refreshing),
@@ -544,9 +603,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           const authorization = request.headers.authorization ?? null;
           const token = authorization?.replace(/^Bearer /, "") ?? "";
           resourceRequests[method]++;
+          resourceAuthorizations.push(authorization);
           if (hold === "resource") yield* heldRequest;
           // RFC 6750 §3.1: the request was not performed because its token is no longer valid.
-          if (expiredAccessTokens.has(token))
+          if (
+            expiredAccessTokens.has(token) ||
+            (resourceTokens === "issued" && !issuedAccessTokens.has(token))
+          )
             return yield* HttpServerResponse.json(
               [{ errorCode: "INVALID_SESSION_ID", message: "Session expired or invalid" }],
               {
@@ -659,32 +722,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       Effect.gen(function* () {
         discoveryRequests.push("/.well-known/openid-configuration");
         if (openidAlgorithms === undefined) return HttpServerResponse.empty({ status: 404 });
-        const origin = yield* Deferred.await(address);
-        // The target serves the same algorithms, so only a client that follows redirects uses them.
-        if (openidMetadata === "redirect")
-          return HttpServerResponse.empty({
-            status: 302,
-            headers: { location: `${origin}/redirected/openid-configuration` },
-          });
-        if (openidMetadata === "unavailable") return HttpServerResponse.empty({ status: 503 });
-        return yield* openidDocument(
-          openidMetadata === "another-issuer"
-            ? `${origin}/another-issuer`
-            : openidMetadata === "issuer-trailing-slash"
-              ? `${origin}/`
-              : openidMetadata === "issuer-uppercase-scheme"
-                ? origin.replace(/^http:/, "HTTP:")
-                : origin,
-          openidAlgorithms,
-        );
-      }),
-    ),
-    HttpRouter.add(
-      "GET",
-      "/redirected/openid-configuration",
-      Effect.gen(function* () {
-        discoveryRequests.push("/redirected/openid-configuration");
-        return yield* openidDocument(yield* Deferred.await(address), openidAlgorithms ?? []);
+        return yield* openidDocument(yield* Deferred.await(address), openidAlgorithms);
       }),
     ),
     HttpRouter.add(
@@ -751,6 +789,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         const client =
           typeof presented.clientId === "string" ? clients.get(presented.clientId) : undefined;
         const token = input.get("token");
+        const origin = token === null ? undefined : refreshOrigins.get(token);
+        if (origin !== undefined) revokedRefreshTokens.push(origin);
         revocations.push({
           token:
             token !== null && refreshGrants.has(token)
@@ -846,7 +886,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   const listener = yield* Effect.sync(() => createServer());
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port: 0 })),
+      Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port })),
     ),
   );
   // Scenario work has ended. Release unfinished provider requests before the
@@ -878,7 +918,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly idTokenAlgorithms?: readonly string[] | null;
       /** Serve OpenID Connect Discovery with these ID token algorithms; null serves none. */
       readonly openidAlgorithms?: readonly string[] | null;
-      readonly openidMetadata?: typeof openidMetadata;
       readonly includeIdToken?: boolean;
       readonly idTokenIssuer?: string | null;
       readonly idTokenAlgorithm?: typeof idTokenAlgorithm;
@@ -934,8 +973,15 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly registeredClient?: typeof registeredClient | null;
       /** The token request encoding the service accepts; it refuses the other one. */
       readonly tokenRequestFormat?: typeof tokenRequestFormat;
+      /** Grant scopes in token responses; null omits `scope`. See `scopeGrant`. */
+      readonly scopeGrant?: typeof scopeGrant | null;
+      /** Which access tokens the resource accepts. */
+      readonly resourceTokens?: typeof resourceTokens;
     }) =>
       Effect.sync(() => {
+        if (input.scopeGrant !== undefined)
+          scopeGrant = input.scopeGrant === null ? undefined : input.scopeGrant;
+        if (input.resourceTokens !== undefined) resourceTokens = input.resourceTokens;
         if (input.tokenRequestFormat !== undefined) tokenRequestFormat = input.tokenRequestFormat;
         if (input.mcpStatus !== undefined)
           mcpStatus = input.mcpStatus === null ? undefined : input.mcpStatus;
@@ -947,7 +993,6 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             input.idTokenAlgorithms === null ? undefined : input.idTokenAlgorithms;
         if (input.openidAlgorithms !== undefined)
           openidAlgorithms = input.openidAlgorithms === null ? undefined : input.openidAlgorithms;
-        if (input.openidMetadata !== undefined) openidMetadata = input.openidMetadata;
         if (input.includeIdToken !== undefined) includeIdToken = input.includeIdToken;
         if (input.idTokenIssuer !== undefined)
           idTokenIssuer = input.idTokenIssuer === null ? undefined : input.idTokenIssuer;
@@ -1059,7 +1104,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       lastExchangeAuth,
       nonceRequested,
       revocations: [...revocations],
+      revokedRefreshTokens: [...revokedRefreshTokens],
       resourceRequests: { ...resourceRequests },
+      resourceAuthorizations: [...resourceAuthorizations],
     })),
   };
 });
+
+/** Start an issuer on `port`, such as one an operator's settings already name. */
+export const oauthSetupIssuerOn = (port: number) =>
+  oauthSetupIssuer.pipe(Effect.provideService(IssuerPort, port));

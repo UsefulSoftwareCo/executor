@@ -32,13 +32,14 @@ export const releasedServer = Effect.gen(function* () {
       }),
   );
   const origin = `http://localhost:${port}`;
+  const encryptionKey = randomBytes(32).toString("hex");
   const environment: Record<string, string> = {
     // Release scenarios never send product analytics, even from an image with a baked key.
     DO_NOT_TRACK: "1",
     PORT: "8080",
     BETTER_AUTH_URL: origin,
     BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
-    EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+    EXECUTOR_ENCRYPTION_KEY: encryptionKey,
   };
   yield* Effect.acquireRelease(
     run(
@@ -127,5 +128,5 @@ export const releasedServer = Effect.gen(function* () {
       Effect.andThen(run(["start", id])),
       Effect.andThen(ready),
     );
-  return { json, prefix, deploy, exec, restart, restartAfter };
+  return { json, prefix, deploy, exec, restart, restartAfter, encryptionKey };
 });

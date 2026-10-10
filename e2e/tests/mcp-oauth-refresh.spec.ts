@@ -105,17 +105,28 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           Redacted.value(sibling.tokens).refresh_token ===
           Redacted.value(first.tokens).refresh_token;
         expect(joined).toBe(true);
-        // After that hour the server cannot tell a sibling that slept through the rotation from
-        // someone replaying a copied token, so it treats either as theft and ends the grant for
-        // every holder. A legitimate idle sibling still signs everyone out here.
+        // After that hour a stale copy, such as one an idle sibling kept, is refused alone for a
+        // day after its rotation, and the grant's current token keeps working.
         yield* serverControl("stop");
         yield* serverControl("clock/advance", 200, { milliseconds: 2 * 60_000 });
         yield* serverControl("start");
-        yield* evidence.step(
-          "Replaying the rotated token 61 minutes later ends every copy",
+        const current = yield* evidence.step(
+          "Replaying the rotated token 61 minutes later is refused, and the current token still refreshes",
           Effect.gen(function* () {
             expect(yield* oauth.refreshStatus(stored)).toBe(400);
-            expect(yield* oauth.refreshStatus(first)).toBe(400);
+            return yield* oauth.refresh(first);
+          }),
+        );
+        // More than a day after its rotation the server cannot tell the copy from a stolen one,
+        // so presenting it ends the grant for every holder.
+        yield* serverControl("stop");
+        yield* serverControl("clock/advance", 200, { milliseconds: 24 * 3600_000 });
+        yield* serverControl("start");
+        yield* evidence.step(
+          "Replaying the rotated token more than a day later ends every copy",
+          Effect.gen(function* () {
+            expect(yield* oauth.refreshStatus(stored)).toBe(400);
+            expect(yield* oauth.refreshStatus(current)).toBe(400);
           }),
         );
       }).pipe(Effect.provide(McpOAuth.layer)),

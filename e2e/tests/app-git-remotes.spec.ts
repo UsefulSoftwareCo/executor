@@ -13,7 +13,6 @@ import { Api, body } from "../support/api.ts";
 import { appsCli } from "../support/apps-cli.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { McpConsent } from "../support/mcp-consent.ts";
 import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
@@ -56,6 +55,7 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect(printed.stdout.trim()).toBe(remote);
 
           // The dashboard shows the same remote, not one on its own origin.
+          yield* browser.login(actors.owner);
           yield* browser.use("Open the app's source", (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=source`),
           );
@@ -100,7 +100,7 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           const heads = yield* tools.git(["rev-parse", "FETCH_HEAD", "HEAD"]);
           const [fetched, local] = heads.stdout.trim().split("\n");
           expect(fetched).toBe(local);
-        }).pipe(Effect.provide(McpConsent.layer)),
+        }),
       ),
     // Signs in through the browser, runs the CLI several times, and clones and pushes over HTTP.
     { timeout: 120_000 },

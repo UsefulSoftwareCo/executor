@@ -59,8 +59,11 @@ handle with the real value only on requests to a declared host, in the URL,
 headers, Basic credentials, and JSON, form or text bodies up to 1 MiB. Executor
 refuses a request that sends a handle anywhere else: `ctx.fetch` rejects with
 `NetworkRefused`, naming the host and the provider's allowed hosts, and the
-global `fetch` receives status 421 with the same details. Values the service
-echoes back reach the app as handles.
+global `fetch` receives status 421 with the same details. A request that carries
+a handle is never sent with `TRACE`. Values the service echoes back in headers or
+in JSON, form or text bodies up to 1 MiB reach the app as handles; other
+responses reach it as the service sent them, so the declared hosts are trusted
+not to echo a credential back.
 
 **Adding a host to a provider that already declares hosts means users must
 connect existing accounts again.** Each account keeps the hosts it was connected
@@ -97,7 +100,8 @@ provider, so existing accounts must be connected again.
 
 Basic credentials work with handles. Encode `username:password` with `btoa` as
 usual; Executor decodes a `Basic` `Authorization` header, replaces the handles
-inside it and encodes it again. This [check](#check-an-account) sends a
+inside it and encodes it again. With a `request` (see below), declare
+`basic(username, password)` and send `account.headers()` instead. This [check](#check-an-account) sends a
 `secrets` method's `username` and `password` fields to a declared host:
 
 ```ts
@@ -111,6 +115,95 @@ async health({ account, fetch, signal }) {
   return { accountInfo: { externalId: me.id, email: me.email } };
 },
 ```
+
+## Place credentials exactly
+
+`hosts` limits where a credential goes; `request` also limits where in the
+request it goes. Give a method a `request` and Executor substitutes its handles
+only as the whole value of the declared headers or query parameters, matching
+the template exactly. A handle anywhere else (a body, the URL path, another
+header, or a value with extra text) is refused with `NetworkRefused`
+(`credential_placement`), so a service cannot be made to store the secret and
+hand it back. A provider that declares `request` must declare `hosts`. Placed
+credentials go only over HTTPS; plain HTTP is refused (`credential_transport`),
+except to a loopback address on an instance that lets apps reach private
+addresses, for local development.
+
+`request` receives a reference for each of the method's fields and runs once,
+when the provider is declared. Build values with the tagged template `t`; an
+untagged template literal throws. `header(name, value)` and `query(name, value)`
+choose the location; `base64(value)` encodes; `bearer(token)` and
+`basic(user, password)` are shorthands for the usual `Authorization` values:
+
+```ts
+import {
+  base64,
+  bearer,
+  defineProvider,
+  header,
+  oauth2,
+  object,
+  plain,
+  query,
+  secrets,
+  string,
+  t,
+} from "apps";
+
+const jira = defineProvider({
+  name: "Jira",
+  hosts: ["*.atlassian.net"],
+  auth: {
+    token: secrets({
+      label: "API token",
+      fields: object({ email: plain(string()), token: string() }),
+      request: ({ email, token }) =>
+        header("authorization", t`Basic ${base64(t`${email}:${token}`)}`),
+    }),
+    oauth: oauth2({
+      discover: "https://auth.atlassian.com",
+      scopes: ["read:jira-work"],
+      request: ({ access_token }) => bearer(access_token),
+    }),
+  },
+});
+
+const google = defineProvider({
+  name: "Google API key",
+  hosts: ["www.googleapis.com"],
+  auth: {
+    key: secrets({
+      label: "API key",
+      fields: object({ key: string() }),
+      request: ({ key }) => [header("x-goog-api-key", key), query("key", key)],
+    }),
+  },
+});
+```
+
+Each placement references at least one secret field, never a `raw()` field.
+`plain()` fields in a template are copied as the app sends them. Send the
+credentials with the account's `headers()` and `url()`, which render the
+declared placements with the handles app code holds:
+
+```ts
+const response = await fetch(account.url("https://www.googleapis.com/books/v1/volumes?q=x"), {
+  headers: { ...account.headers(), accept: "application/json" },
+});
+```
+
+A header written by hand also works when it matches the template exactly.
+`request` is part of the provider's identity, like `plain()` and `raw()`:
+adding or changing it means existing accounts must be connected again.
+Bodies over 1 MiB and streamed bodies are not searched; a handle in one is sent
+as the handle, never the value.
+
+Some accounts are connected through an OAuth client the Executor instance
+provides. Their credentials are always handles, `plain()` and `raw()` do not
+apply, and `request` is replaced by the instance's own header: send
+`account.headers()`. The token goes only to the instance's hosts that the
+provider also declares, so a provider without `hosts` sends it nowhere. A handle
+of such an account anywhere but that header is refused.
 
 ## Check an account
 
@@ -262,8 +355,8 @@ oauth2({
 
 The host still checks the document's `issuer` against the issuer discovered from
 `discover`. It applies its network policy and never follows a redirect or falls
-back to another document when the explicit URL fails. Signing algorithms and
-JWKS come from the validated metadata; validation cannot be disabled.
+back to another document when the explicit URL fails. The endpoints come from the
+validated metadata; the issuer check cannot be disabled.
 
 For MCP discovery, explicit `scopes` take precedence over the resource's Bearer
 challenge scope, which takes precedence over its protected-resource metadata

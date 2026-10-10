@@ -40,7 +40,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.13",
+      "version": "2.0.0-beta.14",
     },
     "apps/docs": {
       "name": "@executor-js/docs",
@@ -427,7 +427,6 @@
     "packages/app-management": {
       "name": "@executor-js/app-management",
       "dependencies": {
-        "@effect/platform-node": "4.0.1",
         "@executor-js/app-source": "workspace:*",
         "@executor-js/app-templates": "workspace:*",
         "@executor-js/sdk": "workspace:*",
@@ -478,7 +477,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.65",
+      "version": "0.0.1-beta.69",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",

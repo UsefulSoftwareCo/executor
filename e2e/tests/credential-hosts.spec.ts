@@ -16,6 +16,7 @@ import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, ReceivedRequest } from "../support/credential-upstream.ts";
 import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { Target } from "../support/platform.ts";
+import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({
@@ -117,6 +118,9 @@ export default defineApp({ accounts: { service } }, {
     }),
     send: query({ input: object({ url: string() }) }, async (ctx, { url }) =>
       send(url, { headers: { authorization: "Bearer " + ctx.accounts.service.fields.token } })),
+    // App code may keep a handle beyond its invocation, such as in its own storage.
+    sendKept: query({ input: object({ url: string(), token: string() }) }, async (_, { url, token }) =>
+      send(url, { headers: { authorization: "Bearer " + token } })),
     fetchSend: query({ input: object({ url: string() }) }, async (ctx, { url }) => {
       const response = await ctx.fetch(url, { headers: { authorization: "Bearer " + ctx.accounts.service.fields.token } });
       return { status: response.status, echoed: "", text: await response.text() };
@@ -693,7 +697,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         // Each placement reached the service with the real value.
         const query = at("/query");
         expect(query.authorization).toBe(`Bearer ${values.token}`);
-        expect(query.apiKey).toBe(values.token);
+        expect(query.headers["x-api-key"]).toBe(values.token);
         expect(new URL(query.url, upstream.origin).searchParams.get("key")).toBe(values.token);
         expect(JSON.parse(at("/json").body)).toEqual({ token: values.token });
         expect(new URLSearchParams(at("/form").body).get("token")).toBe(values.token);
@@ -712,6 +716,48 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         expect(
           Schema.decodeUnknownSync(Schema.fromJsonString(ReceivedRequest))(replies[0]!.text),
         ).toMatchObject({ authorization: replies[0]!.echoed });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialHostsRestart.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deploy, connect, call } = yield* scenario;
+        const upstream = yield* credentialUpstream;
+        const name = `Credential restart ${randomUUID().slice(0, 8)}`;
+        const { path } = yield* deploy(
+          name,
+          credentialApp({ name, host: `127.0.0.1:${upstream.port}`, health: null }),
+        );
+        const values = synthetic();
+        const { profile } = yield* connect(path, name, values);
+        const kept = (yield* call(path, Fields, "fields", {}, profile)).token;
+        expect(kept).toMatch(handle);
+        const replay = (pathname: string) =>
+          call(
+            path,
+            Sent,
+            "sendKept",
+            { url: `${upstream.origin}${pathname}`, token: kept },
+            profile,
+          );
+        expect((yield* replay("/before")).status).toBe(200);
+
+        // The handle key comes from the instance's encryption key, which the restart keeps, so the
+        // kept handle still opens and the service receives the real value.
+        yield* serverControl("restart");
+        const after = yield* replay("/after");
+        expect(after.status, after.text).toBe(200);
+        const received = yield* upstream.received;
+        expect(
+          ["/before", "/after"].map(
+            (pathname) =>
+              received.find((entry) => new URL(entry.url, upstream.origin).pathname === pathname)
+                ?.authorization,
+          ),
+        ).toEqual([`Bearer ${values.token}`, `Bearer ${values.token}`]);
       }),
     ),
   );

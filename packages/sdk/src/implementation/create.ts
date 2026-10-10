@@ -78,6 +78,10 @@ export const createExecutor = (
       mutate: (input) => base.mutate(input).pipe(Effect.provideService(AppEventSink, sink)),
       webhook: (input) => base.webhook(input).pipe(Effect.provideService(AppEventSink, sink)),
     };
+    // The operator's own OAuth clients, by ID; their tokens are managed.
+    const firstPartyClients = new Map(
+      (options.oauth?.firstPartyClients ?? []).map((client) => [client.id, client] as const),
+    );
     const oauth = makeOAuth(
       db,
       credentials,
@@ -134,6 +138,7 @@ export const createExecutor = (
     const tools = makeTools(
       options.database,
       oauth,
+      firstPartyClients,
       runtime,
       credentials,
       crypto,
@@ -149,7 +154,13 @@ export const createExecutor = (
       options.hooks,
     );
     const connections = makeAccountConnections(db, credentials, crypto, options.hooks);
-    const { checkCredentials, ...accountHealth } = makeAccountHealth(db, runtime, oauth, apps.list);
+    const { checkCredentials, ...accountHealth } = makeAccountHealth(
+      db,
+      runtime,
+      oauth,
+      firstPartyClients,
+      apps.list,
+    );
     const schedules = makeSchedules(options.database, apps, tools, credentials, crypto);
     const setup = makeProfileSetup(db, crypto, apps.profiles, {
       webhooks: webhooks.webhooks,

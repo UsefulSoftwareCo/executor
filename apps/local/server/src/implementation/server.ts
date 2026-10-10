@@ -115,6 +115,7 @@ export const localApi = (
         // The bundled Executor app calls this process on 127.0.0.1, and local development
         // routinely targets a service on the operator's own machine.
         allowPrivateAppFetch: true,
+        encryptionKey: config.encryptionKey,
         ...Option.match(yield* Config.String("EXECUTOR_NPM_REGISTRY").pipe(Config.option), {
           onNone: () => ({}),
           onSome: (registry) => ({ npmRegistry: registry }),

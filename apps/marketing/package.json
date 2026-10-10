@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./site-origin": "./src/content/site-origin.ts",
+    "./site-visitor": "./src/content/site-visitor.ts",
     "./error-reporting": "./src/error-reporting.ts",
     "./script-assets": "./src/script-assets.ts"
   },

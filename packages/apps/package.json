@@ -1,6 +1,6 @@
 {
   "name": "apps",
-  "version": "0.0.1-beta.68",
+  "version": "0.0.1-beta.69",
   "private": true,
   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
   "type": "module",

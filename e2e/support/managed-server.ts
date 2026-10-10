@@ -48,6 +48,8 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optionalKey(Schema.NonEmptyString),
   /** The build an upgrade installs. */
   EXECUTOR_BUILD_VERSION: Schema.optionalKey(Schema.NonEmptyString),
+  /** The operator's own OAuth clients, as JSON; see notes/oauth.md, "First-party clients". */
+  EXECUTOR_FIRST_PARTY_OAUTH_CLIENTS: Schema.optionalKey(Schema.NonEmptyString),
 });
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (

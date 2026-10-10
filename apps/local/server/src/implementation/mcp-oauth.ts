@@ -87,6 +87,8 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
       issuer: `${origin}/api/auth`,
       scopes: ["mcp", "offline_access"],
       resources: mcpOAuthResources([origin]),
+      // Local has no device verification page; its clients open a browser on the same machine.
+      deviceAuthorization: false,
       selectResource: (_ctx, _userId, required) =>
         required === undefined || required === "local"
           ? Effect.succeed("local")

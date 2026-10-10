@@ -164,12 +164,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(single.completed.status, JSON.stringify(single.completed.body)).toBe(200);
         expect((yield* tenant.metrics).tokenRequests).toEqual([{ resource: null, issued: true }]);
 
-        // Multi-tenant `common`: discovery names a `{tenantid}` issuer template, and the ID
-        // token carries the signed-in user's tenant issuer.
+        // Multi-tenant `common`: discovery names a `{tenantid}` issuer template that the metadata
+        // document's own location instantiates. `openid` is requested without a nonce.
         const common = yield* oauthInteropIssuer("entra-common");
         const multi = yield* app.connect({ discover: `${common.origin}/mcp` }, entraClient);
         expect(multi.authorizationUrl.searchParams.has("resource")).toBe(false);
-        expect(multi.authorizationUrl.searchParams.get("nonce")).not.toBeNull();
+        expect(multi.authorizationUrl.searchParams.get("scope")?.split(" ")).toContain("openid");
+        expect(multi.authorizationUrl.searchParams.has("nonce")).toBe(false);
         expect(multi.completed.status, JSON.stringify(multi.completed.body)).toBe(200);
         expect((yield* common.metrics).discoveryRequests).toEqual([
           "/common/v2.0/.well-known/openid-configuration",
@@ -187,18 +188,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           200,
         );
 
-        // The token's issuer must still be its own tenant's: `iss` for another tenant than `tid`
-        // is rejected, for discovered and declared templates alike.
+        // Executor ignores ID tokens, so one whose `iss` names another tenant than its `tid`, or
+        // than a tenant-specific issuer, never fails the sign-in.
         yield* common.mismatchTenantIssuer(true);
         for (const config of [{ discover: `${common.origin}/mcp` }, declared]) {
           const mismatched = yield* app.connect(config, entraClient);
-          expect(mismatched.completed.status).toBe(400);
-          expect(mismatched.completed.body).toMatchObject({
-            _tag: "OAuthCompletionFailed",
-            reason: "incompatible_response",
-          });
+          expect(mismatched.completed.status, JSON.stringify(mismatched.completed.body)).toBe(200);
         }
-        // A tenant-specific issuer is never widened to other tenants.
         yield* tenant.mismatchTenantIssuer(true);
         const pinned = yield* app.connect(
           {
@@ -209,7 +205,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           },
           entraClient,
         );
-        expect(pinned.completed.status).toBe(400);
+        expect(pinned.completed.status, JSON.stringify(pinned.completed.body)).toBe(200);
       }),
     ),
   );
@@ -232,21 +228,21 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(yield* body(Echo, renewed)).toMatchObject({ refreshed: true });
         expect((yield* common.metrics).refreshes).toEqual([{ tenant: entraTenant, issued: true }]);
 
-        // Subjects are scoped to their issuer (OIDC Core 12.2). A refreshed ID token whose `tid`
-        // and `iss` both name another tenant is a different identity, even with the same `sub`.
+        // Renewals never compare ID tokens: one whose `tid` and `iss` both name another tenant
+        // still renews the grant, and the renewed access token is used from then on.
         yield* common.refreshAsTenant(otherTenant);
         const switched = yield* app.connect(discover, entraClient, `${common.origin}/resource`);
         expect(switched.completed.status, JSON.stringify(switched.completed.body)).toBe(200);
-        const refused = yield* app.read(switched.app, switched.profile);
+        const switchedRead = yield* app.read(switched.app, switched.profile);
         expect((yield* common.metrics).refreshes).toEqual([
           { tenant: entraTenant, issued: true },
           { tenant: otherTenant, issued: true },
         ]);
-        expect(refused.status, JSON.stringify(refused.body)).not.toBe(200);
-        expect(JSON.stringify(refused.body)).toContain("OAuthReconnectRequired");
-        // The grant stays refused; its original access token is not used again.
+        expect(switchedRead.status, JSON.stringify(switchedRead.body)).toBe(200);
+        expect(yield* body(Echo, switchedRead)).toMatchObject({ refreshed: true });
         const again = yield* app.read(switched.app, switched.profile);
-        expect(again.status, JSON.stringify(again.body)).not.toBe(200);
+        expect(again.status, JSON.stringify(again.body)).toBe(200);
+        expect(yield* body(Echo, again)).toMatchObject({ refreshed: true });
         expect((yield* common.metrics).refreshes).toHaveLength(2);
       }),
     ),

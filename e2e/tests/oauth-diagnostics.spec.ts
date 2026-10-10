@@ -70,10 +70,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
         const prefix = `/api/organizations/${actors.organization.id}`;
         const standard = {
           scopes: ["read"],
-          includeIdToken: false,
-          idTokenAlgorithms: ["ES256"],
-          idTokenAlgorithm: "ES256",
-          idTokenIssuer: null,
           tokenError: null,
           authorizeError: null,
           callbackIssuer: null,
@@ -368,24 +364,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
           withoutFreeText(failed, span);
           assertPrivate(failed, started.secrets, span);
           yield* evidence.json(`${rejection.name.toLowerCase().replaceAll(" ", "-")}.json`, failed);
-        }
-
-        // An ID token from another issuer names the claim that failed, never its value.
-        {
-          const started = yield* begin("ID token issuer", {
-            scopes: ["openid", "read"],
-            includeIdToken: true,
-            idTokenIssuer: "https://wrong-issuer.invalid/PRIVATE_ISSUER",
-          });
-          const failed = yield* complete(started.connection, started.callback);
-          expect(tags(failed, "oauth.exchange")).toMatchObject({
-            "oauth.error.code": "OAUTH_JWT_CLAIM_COMPARISON_FAILED",
-            "oauth.error.detail": "jwt_claim_mismatch",
-            "oauth.error.claim": "iss",
-            "oauth.response.content_type": "application/json",
-          });
-          assertPrivate(failed, started.secrets);
-          yield* evidence.json("id-token-issuer.json", failed);
         }
 
         // Each rejected callback records the part of the response that failed.

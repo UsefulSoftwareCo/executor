@@ -13,6 +13,7 @@ import { protocol7 } from "./7.ts";
 import { protocol8 } from "./8.ts";
 import { protocol9 } from "./9.ts";
 import { protocol10 } from "./10.ts";
+import { protocol11 } from "./11.ts";
 
 export const releasedProtocols = [
   protocol1,
@@ -25,4 +26,5 @@ export const releasedProtocols = [
   protocol8,
   protocol9,
   protocol10,
+  protocol11,
 ] as const;

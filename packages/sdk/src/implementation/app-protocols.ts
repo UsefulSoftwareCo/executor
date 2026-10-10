@@ -56,11 +56,11 @@ export interface AppProtocol {
   readonly sealedCredentials: boolean;
 }
 
-/** Protocol 11 is the host's current protocol, so its messages need no conversion. */
-const protocol11: AppProtocol = {
-  version: 11,
+/** Protocol 12 is the host's current protocol, so its messages need no conversion. */
+const protocol12: AppProtocol = {
+  version: 12,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(11),
+  nodeEntry: nodeAppEntry(12),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
@@ -68,6 +68,16 @@ const protocol11: AppProtocol = {
   workflow: (execution) => execution,
   concurrentData: true,
   sealedCredentials: true,
+};
+
+/**
+ * Protocol 11 is protocol 12 without credential placements. Its providers declare none, so the
+ * accounts the host sends it carry none, and every other message and reply is unchanged.
+ */
+const protocol11: AppProtocol = {
+  ...protocol12,
+  version: 11,
+  nodeEntry: nodeAppEntry(11),
 };
 
 /**
@@ -204,6 +214,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol9,
     protocol10,
     protocol11,
+    protocol12,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

@@ -40,6 +40,16 @@ export interface ToolListing {
 export type ListingFailure = AppEvaluationFailed | AppProviderFailed | ToolListingTimedOut;
 type ResolveError = Effect.Error<ReturnType<typeof resolve>>;
 
+/** How an in-process caller reads a listing. */
+interface ListingRead extends ToolListOptions {
+  /**
+   * The accounts the caller already resolved for this invocation state, such as a tool call
+   * reading the tool's kind. An evaluation this read starts uses them instead of resolving the
+   * accounts again, which would renew a grant inside its renewal window a second time.
+   */
+  readonly resolved?: Effect.Success<ReturnType<typeof resolve>>;
+}
+
 /** A kept listing. */
 class Listed {
   readonly listing: ToolListing;
@@ -125,13 +135,15 @@ export const makeListings = (options: {
       evaluate: (
         context: Effect.Success<ReturnType<typeof resolve>>,
       ) => Effect.Effect<ToolListing, AppEvaluationFailed | AppProviderFailed | ResolveError>,
-      read: ToolListOptions = {},
+      read: ListingRead = {},
     ) =>
       Effect.gen(function* () {
         const identity = { app: state.app.id, deployment: state.deployment.id };
-        const evaluated = resolve(state, options.resolveAccount, options.lifecycle).pipe(
-          Effect.flatMap(evaluate),
-        );
+        const evaluated = (
+          read.resolved === undefined
+            ? resolve(state, options.resolveAccount, options.lifecycle)
+            : Effect.succeed(read.resolved)
+        ).pipe(Effect.flatMap(evaluate));
         if (policy.maxStaleMillis <= 0) return yield* evaluated;
         const id = yield* options.declarations.key("tools.list", state);
         const now = yield* Clock.currentTimeMillis;

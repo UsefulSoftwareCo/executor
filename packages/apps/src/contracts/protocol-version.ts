@@ -3,4 +3,4 @@
  * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
  * This file has no imports so the package build script can read it directly.
  */
-export const frameworkProtocol = 11;
+export const frameworkProtocol = 12;

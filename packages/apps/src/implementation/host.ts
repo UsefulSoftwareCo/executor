@@ -53,6 +53,8 @@ import {
   type Provider,
 } from "../contracts/provider.ts";
 import { JsonValue } from "../contracts/schema.ts";
+import { normalizePlacements, type Placement } from "../contracts/placement.ts";
+import { withPlacements } from "./placement.ts";
 import {
   approvalElicitation,
   ElicitationFailed,
@@ -150,6 +152,13 @@ function declaredExposure(exposure: Readonly<Record<string, FieldExposure>> | un
   return { ...(plain.length === 0 ? {} : { plain }), ...(raw.length === 0 ? {} : { raw }) };
 }
 
+/** Placements in a stable order; a method without them declares nothing, keeping its identity. */
+function declaredPlacements(request: readonly Placement[] | undefined) {
+  return request === undefined || request.length === 0
+    ? {}
+    : { request: normalizePlacements(request) };
+}
+
 function providerDeclaration(provider: Provider<AuthMethods>) {
   return declarationSafe(
     () =>
@@ -163,6 +172,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
                 label: method.label,
                 fields: yield* jsonSchemaDocument(method.fields),
                 ...declaredExposure(method.exposure),
+                ...declaredPlacements(method.request),
               });
               break;
             case "oauth2":
@@ -171,6 +181,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
                 ...method.config,
                 response: yield* jsonSchemaDocument(method.response),
                 ...declaredExposure(method.exposure),
+                ...declaredPlacements(method.request),
               });
               break;
           }
@@ -234,11 +245,20 @@ function canonical(value: JsonValue): string {
 }
 
 /**
- * A provider without its hosts. The host sends each account's granted hosts, which can be narrower
- * than the app's declaration, so they are not part of matching an account to its slot.
+ * A provider without its hosts and placements. The host sends each account's granted hosts and
+ * placements, which can differ from the app's declaration, so they are not part of matching an
+ * account to its slot.
  */
-function withoutHosts({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
-  return provider;
+function withoutGrants({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
+  return {
+    ...provider,
+    auth: Object.fromEntries(
+      Object.entries(provider.auth).map(([name, { request: _request, ...method }]) => [
+        name,
+        method,
+      ]),
+    ),
+  };
 }
 
 function bindAccounts(
@@ -272,8 +292,8 @@ function bindAccounts(
             if (ids.has(account.id)) return yield* Effect.fail(new HostAccountsInvalid());
             ids.add(account.id);
             if (
-              canonical(withoutHosts(account.provider)) !==
-                canonical(withoutHosts(requirement.definition)) ||
+              canonical(withoutGrants(account.provider)) !==
+                canonical(withoutGrants(requirement.definition)) ||
               !Object.hasOwn(provider.auth, account.method)
             )
               return yield* Effect.fail(new HostAccountsInvalid());
@@ -282,7 +302,12 @@ function bindAccounts(
             const fields = yield* Schema.decodeUnknownEffect(
               method._tag === "secrets" ? method.fields : method.response,
             )(account.fields);
-            values.push({ id: account.id, method: account.method, fields });
+            const granted = Object.hasOwn(account.provider.auth, account.method)
+              ? account.provider.auth[account.method]?.request
+              : undefined;
+            values.push(
+              withPlacements({ id: account.id, method: account.method, fields }, granted),
+            );
           }
           if (many) bound.set(slot, values);
           else {

@@ -43,6 +43,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           scopes: ["read"],
           includeIdToken: false,
           idTokenAlgorithms: ["ES256"],
+          idTokenAlgorithm: "ES256",
+          idTokenIssuer: null,
           invalidNonce: false,
           setupFailure: undefined,
           completionFailure: undefined,
@@ -59,7 +61,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           readonly malformedRegistration: boolean;
           readonly scopes: readonly string[];
           readonly includeIdToken: boolean;
-          readonly idTokenAlgorithms: readonly string[];
+          /** Advertised ID token algorithms; null omits them from OAuth metadata. */
+          readonly idTokenAlgorithms: readonly string[] | null;
+          readonly idTokenAlgorithm: "ES256" | "RS256" | "HS256";
+          /** The ID token's `iss`; null names this issuer. */
+          readonly idTokenIssuer: string | null;
           readonly invalidNonce: boolean;
           /** The 422 reason when setup must stop before sign-in. */
           readonly setupFailure: string | undefined;
@@ -76,8 +82,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           },
           // Vercel answers a client_secret_basic registration with a public client.
           { ...valid, name: "Public client issued", issuePublicClients: true },
+          // Executor uses only the access token and ignores any ID token, so none of these
+          // can fail a sign-in, and a service may omit the ID token after `openid`.
           { ...valid, name: "ES256 OIDC", scopes: ["openid", "read"], includeIdToken: true },
-          // Executor does not use the ID token, so a service may omit it after `openid`.
           { ...valid, name: "OpenID without ID token", scopes: ["openid", "read"] },
           {
             ...valid,
@@ -85,15 +92,31 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             scopes: ["openid", "read"],
             includeIdToken: true,
             idTokenAlgorithms: ["RS256"],
-            completionFailure: "incompatible_response",
           },
           {
             ...valid,
-            name: "Wrong nonce",
+            name: "Nonce never sent",
             scopes: ["openid", "read"],
             includeIdToken: true,
             invalidNonce: true,
-            completionFailure: "incompatible_response",
+          },
+          // Miro: an HS256 ID token without a nonce, its OAuth metadata listing no algorithms.
+          {
+            ...valid,
+            name: "Miro-like ID token",
+            scopes: ["openid", "read"],
+            includeIdToken: true,
+            idTokenAlgorithms: null,
+            idTokenAlgorithm: "HS256",
+          },
+          // Readwise: an HS256 ID token naming an issuer its metadata does not.
+          {
+            ...valid,
+            name: "Readwise-like ID token",
+            scopes: ["openid", "read"],
+            includeIdToken: true,
+            idTokenAlgorithm: "HS256",
+            idTokenIssuer: "https://readwise.example/",
           },
           {
             ...valid,
@@ -182,11 +205,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           }
           expect(started.status, scenario.name).toBe(200);
           const { authorizationUrl } = yield* body(SignIn, started);
-          if (scenario.scopes.includes("openid"))
-            expect(
-              new URL(authorizationUrl).searchParams.get("nonce"),
-              scenario.name,
-            ).not.toBeNull();
+          // Executor never asks for a nonce, even when it requests `openid`.
+          expect(
+            new URL(authorizationUrl).searchParams.get("scope")?.split(" ").includes("openid"),
+            scenario.name,
+          ).toBe(scenario.scopes.includes("openid"));
+          expect(new URL(authorizationUrl).searchParams.has("nonce"), scenario.name).toBe(false);
           const callbackUrl = yield* Effect.scoped(
             Effect.gen(function* () {
               const consent = yield* HttpClient.withScope(http).get(authorizationUrl);

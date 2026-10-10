@@ -40,3 +40,13 @@ export class ClientMetadataUrlInvalid extends Schema.TaggedError<ClientMetadataU
     message: Schema.String,
   },
 ) {}
+
+/**
+ * `EXECUTOR_FIRST_PARTY_OAUTH_CLIENTS` is not a JSON array of the operator's OAuth clients, or two
+ * of them share an ID. Each problem names a client's position and field, such as
+ * `[1].placement.hosts`, and a fixed reason; never a supplied value, so never a client secret.
+ */
+export class FirstPartyOAuthClientsInvalid extends Schema.TaggedError<FirstPartyOAuthClientsInvalid>()(
+  "FirstPartyOAuthClientsInvalid",
+  { message: Schema.String, problems: Schema.Array(Schema.String) },
+) {}

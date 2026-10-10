@@ -74,6 +74,7 @@ export function hostedPageTitle(
   if (pathname === "/login") return "Sign in";
   if (pathname === "/invite") return "Invitation";
   if (pathname === "/mcp/authorize") return "Authorize client";
+  if (pathname === "/device") return "Connect a device";
   if (pathname === "/oauth/callback") return "Connecting account";
   const [root, section, page, item, action] = pathname.split("/").filter(Boolean);
   if (root === "account")

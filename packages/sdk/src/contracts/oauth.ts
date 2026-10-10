@@ -6,10 +6,13 @@ import { AuthMethodName } from "./provider.ts";
 import { AccountConnectionId } from "./shared.ts";
 import { Schema } from "effect";
 import {
+  CredentialHost,
+  OAuthAuthorizationParams,
   OAuthClientAuth,
   OAuthSecretClientAuth,
   OAuthTokenRequestFormat,
   OAuthTokenResponse,
+  PlacementHeaderName,
 } from "apps/contracts";
 import { Account } from "./account.ts";
 export { OAuthClientAuth } from "apps/contracts";
@@ -38,6 +41,8 @@ export type OAuthStartResult = typeof OAuthStartResult.Type;
 const clientSetup = {
   mode: Schema.Literals(["automatic", "saved", "client-required"]),
   scopes: Schema.Array(Schema.String),
+  /** Signing in uses the instance's own OAuth client, named here; see `FirstPartyOAuthClient`. */
+  firstParty: Schema.optionalKey(Schema.Struct({ label: Schema.NonEmptyString })),
 };
 /** Safe form metadata resolved from provider code and discovery. Never contains saved client IDs or secrets. */
 export const OAuthClientSetup = Schema.Union([
@@ -109,6 +114,7 @@ export const OAuthResponseField = Schema.Literals([
   "token_endpoint",
   "code_challenge_methods_supported",
   "jwt_alg",
+  "scope",
 ]);
 /**
  * Safe protocol evidence for diagnosis. Fixed vocabularies only; never a body, message, or URL.
@@ -303,6 +309,110 @@ export const OAuthClientInput = Schema.Struct({
 });
 export type OAuthClientInput = typeof OAuthClientInput.Type;
 
+/** An RFC 6749 scope token: printable ASCII without spaces, quotes or backslashes. */
+const ScopeToken = Schema.String.check(Schema.isPattern(/^[\x21\x23-\x5B\x5D-\x7E]+$/u));
+
+/**
+ * The authorization server an operator's client signs in with, and how its requests are encoded,
+ * all as the operator configures them. Every request that carries the client's secret or a user's
+ * tokens goes only to these endpoints: provider and app code never choose where. A provider's own
+ * declaration only decides whether the client is offered for it.
+ */
+export const FirstPartyOAuthServer = Schema.Struct({
+  /**
+   * The server's RFC 8414 issuer, checked against the callback's `iss` and ID tokens. Omitted, it
+   * is derived from the token URL and those checks are skipped, as for providers that declare none.
+   */
+  issuer: Schema.optionalKey(HttpUrl),
+  authorizationUrl: HttpUrl,
+  tokenUrl: HttpUrl,
+  /** RFC 7009 endpoint the client's tokens are revoked at when an account is removed. */
+  revocationUrl: Schema.optionalKey(HttpUrl),
+  /** Joins requested scopes on the authorization request. Defaults to a space. */
+  scopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
+  /**
+   * Splits the `scope` a token response reports, besides whitespace, such as `,` for GitHub, which
+   * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
+   */
+  grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
+  /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
+  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
+  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
+  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
+});
+export type FirstPartyOAuthServer = typeof FirstPartyOAuthServer.Type;
+
+/**
+ * Where a credential the operator provides is sent: one header, only to the hosts it pins, only
+ * over HTTPS. The value is `scheme`, a space and the credential, or the credential alone without a
+ * scheme. App and provider code never choose it. Any credential the operator provides is placed
+ * this way; its OAuth clients' access tokens are the only kind so far.
+ */
+export const ManagedPlacement = Schema.Struct({
+  /** The only hosts the credential reaches, within the hosts the provider declares. */
+  hosts: Schema.Array(CredentialHost).check(Schema.isMinLength(1)),
+  /** The header the credential goes in. Defaults to `authorization`. */
+  header: Schema.optionalKey(PlacementHeaderName),
+  /** Defaults to `Bearer` in `authorization` and to none in any other header. */
+  scheme: Schema.optionalKey(Schema.NullOr(Schema.NonEmptyString)),
+});
+export type ManagedPlacement = typeof ManagedPlacement.Type;
+
+/** The operator's name for a credential it provides, such as one of its OAuth clients. */
+export const FirstPartyOAuthClientId = Schema.String.check(
+  Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u),
+).pipe(Schema.brand("FirstPartyOAuthClientId"));
+export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
+
+/**
+ * An OAuth client the instance's operator provides, such as one-click Google sign-in. It is offered
+ * for a provider method only when the method's authorization and token endpoints are exactly the
+ * client's and the scopes it asks for are among `allowedScopes`. Signing in, renewal and
+ * revocation then use only the operator's server configuration, and the access token it issues
+ * is managed: it reaches app code sealed, goes only as `placement` says, and a token response
+ * reporting a scope outside `allowedScopes` is refused. Its secret never leaves the host: grants
+ * keep only its ID, so rotating or removing it applies to every account.
+ */
+export const FirstPartyOAuthClient = Schema.Struct({
+  id: FirstPartyOAuthClientId,
+  /** Shown when signing in, such as "Executor for Google". */
+  label: Schema.NonEmptyString,
+  server: FirstPartyOAuthServer,
+  clientId: Schema.NonEmptyString,
+  clientSecret: Schema.optionalKey(Schema.RedactedFromValue(Schema.NonEmptyString)),
+  tokenEndpointAuthMethod: OAuthClientAuth,
+  /** Requested for a provider method that asks for no scopes. */
+  defaultScopes: Schema.Array(ScopeToken),
+  /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
+  allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
+  placement: ManagedPlacement,
+}).check(
+  Schema.makeFilter(
+    (client) => (client.tokenEndpointAuthMethod === "none") === (client.clientSecret === undefined),
+    {
+      message: "A client that authenticates at the token endpoint needs its secret, and only then.",
+    },
+  ),
+  Schema.makeFilter(
+    (client) =>
+      [...client.defaultScopes, ...(client.allowedScopes ?? [])].every(
+        (scope) => !scope.includes(client.server.scopeSeparator ?? " "),
+      ),
+    { message: "A scope cannot contain the server's scope separator." },
+  ),
+  Schema.makeFilter(
+    (client) =>
+      client.allowedScopes === undefined ||
+      client.defaultScopes.every((scope) => client.allowedScopes?.includes(scope) === true),
+    { message: "Every default scope must be allowed." },
+  ),
+);
+export type FirstPartyOAuthClient = typeof FirstPartyOAuthClient.Type;
+
+/** The scopes a client allows: `allowedScopes`, or its defaults when it lists none. */
+export const allowedScopes = (client: FirstPartyOAuthClient) =>
+  client.allowedScopes ?? client.defaultScopes;
+
 /** Network transport and client identity belong to the product hosting this SDK. */
 export interface OAuthOptions {
   readonly httpClient: HttpClient.HttpClient;
@@ -322,6 +432,8 @@ export interface OAuthOptions {
    * URL can tell this host's callbacks apart without a lookup. The random part is unchanged.
    */
   readonly statePrefix?: string;
+  /** The operator's own OAuth clients, offered after supplied and saved clients. */
+  readonly firstPartyClients?: readonly FirstPartyOAuthClient[];
 }
 
 /**
@@ -559,6 +671,8 @@ export const OAuthCompletionReason = Schema.Literals([
   "incompatible_response",
   "unsupported",
   "oauth_unavailable",
+  // The operator's client was granted scopes it does not allow.
+  "scope_exceeded",
 ]);
 export type OAuthCompletionReason = typeof OAuthCompletionReason.Type;
 
@@ -766,6 +880,19 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
             agentFixable: false,
           },
+          // Revocation runs beside the answer and the service may refuse or not support it, so the
+          // text does not say it happened.
+          scope_exceeded: {
+            title: "The service granted more access than allowed",
+            description:
+              "The service granted this sign-in access beyond what this Executor instance allows for its own OAuth client. Executor rejected the sign-in and saved nothing. When the instance’s client supports revocation, Executor also asks the service to revoke that access.",
+            recovery: {
+              action: "Ask the instance administrator to check the OAuth client’s scopes.",
+              instructions:
+                "The token response reported scopes outside the operator client's allowedScopes. Compare the provider's scopes, the operator's allowedScopes and what the service grants. Revocation is best effort: check the oauth.revokeRefused span for its outcome. Do not widen allowedScopes unless the operator intends to allow that access.",
+            },
+            agentFixable: false,
+          },
         } satisfies Record<OAuthCompletionReason, ErrorPresentation>
       )[reason],
       cause,
@@ -809,6 +936,7 @@ export const oauthCompletionRecovery = {
   incompatible_response: "configuration",
   unsupported: "configuration",
   oauth_unavailable: "configuration",
+  scope_exceeded: "configuration",
 } as const satisfies Record<OAuthCompletionReason, OAuthCompletionRecovery>;
 /** Parsed OAuthCompletionFailed failure. */
 export type OAuthCompletionFailed = typeof OAuthCompletionFailed.Type;
@@ -825,9 +953,11 @@ export const OAuthReconnectRequired = UserFacingError.define({
     /**
      * `renewal_interrupted`: an earlier renewal stopped with its process before saving a result,
      * and the service refused the saved refresh token when it was retried, most likely because
-     * the lost renewal had already replaced it.
+     * the lost renewal had already replaced it. `scope_exceeded`: renewing a grant to the
+     * operator's client reported scopes the client does not allow, so Executor stopped using it
+     * and attempted to revoke the renewal's tokens.
      */
-    reason: Schema.optional(Schema.Literals(["renewal_interrupted"])),
+    reason: Schema.optional(Schema.Literals(["renewal_interrupted", "scope_exceeded"])),
     cause: Schema.optional(OAuthFailureCause),
   },
   recorded: ({ reason, cause }) => oauthRecorded("An account needs to reconnect", reason, cause),
@@ -838,7 +968,9 @@ export const OAuthReconnectRequired = UserFacingError.define({
         description:
           reason === "renewal_interrupted"
             ? "Executor stopped while renewing this account’s access, before it could save the result. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
-            : "The saved sign-in can no longer be used for this account.",
+            : reason === "scope_exceeded"
+              ? "Renewing this account’s access returned more access than this Executor instance allows for its own OAuth client, so Executor stopped using this sign-in. When the instance’s client supports revocation, Executor also asks the service to revoke that access."
+              : "The saved sign-in can no longer be used for this account.",
         recovery: {
           action:
             "Open the app’s Accounts tab and reconnect the affected account, then return to Tools.",
@@ -949,10 +1081,7 @@ export type OAuthAttemptId = typeof OAuthAttemptId.Type;
 
 /** Validated subset of authorization-server metadata used for saved grants. */
 export const OAuthTokenServer = Schema.Struct({
-  /**
-   * Microsoft identity platform's multi-tenant metadata publishes a `{tenantid}` template here;
-   * each ID token's `iss` is that template with the token's own `tid` claim substituted.
-   */
+  /** Microsoft identity platform's multi-tenant metadata publishes a `{tenantid}` template here. */
   issuer: HttpUrl,
   /**
    * The provider declared endpoints without an issuer. Executor derives `issuer` from the token
@@ -965,7 +1094,6 @@ export const OAuthTokenServer = Schema.Struct({
   /** RFC 7009 endpoint. Optional so grants saved before it was retained still decode. */
   revocation_endpoint: Schema.optional(HttpUrl),
   jwks_uri: Schema.optional(HttpUrl),
-  id_token_signing_alg_values_supported: Schema.optional(Schema.Array(Schema.String)),
   authorization_response_iss_parameter_supported: Schema.optional(Schema.Boolean),
   client_id_metadata_document_supported: Schema.optional(Schema.Boolean),
   code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),
@@ -1092,8 +1220,8 @@ export const OAuthSavedClientRef = Schema.Struct({
   /** Registered by this attempt's own start, rather than reused from an earlier one. */
   fresh: Schema.Boolean,
 });
-/** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
-export const OAuthAttempt = Schema.Struct({
+/** What every sign-in attempt keeps, whichever client it uses. */
+const attemptFields = {
   connection: AccountConnectionId,
   account: AccountId,
   owner: OwnerId,
@@ -1105,7 +1233,11 @@ export const OAuthAttempt = Schema.Struct({
   redirectUri: HttpUrl,
   state: Schema.NonEmptyString,
   verifier: Schema.NonEmptyString,
-  nonce: Schema.optional(Schema.NonEmptyString),
+  response: JsonObject,
+};
+/** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
+export const OAuthAttempt = Schema.Struct({
+  ...attemptFields,
   server: OAuthServer,
   client: OAuthRegistration,
   /** User-entered clients become reusable only when this attempt completes successfully. */
@@ -1116,8 +1248,24 @@ export const OAuthAttempt = Schema.Struct({
   /** Token request encoding and nested grant location, as the provider declared them. */
   tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
   tokenResponse: Schema.optional(OAuthTokenResponse),
-  response: JsonObject,
 });
+/**
+ * An attempt that signs in with the operator's client named by `firstParty`. It keeps no server or
+ * client: the exchange reads both from the operator's current configuration, and fails if the
+ * client is gone. Without them, a server that knows no operator clients cannot decode the attempt,
+ * so it can never complete one as a credential the user brought.
+ */
+export const OAuthFirstPartyAttempt = Schema.Struct({
+  ...attemptFields,
+  firstParty: FirstPartyOAuthClientId,
+});
+export type OAuthFirstPartyAttempt = typeof OAuthFirstPartyAttempt.Type;
+/** A stored sign-in attempt. */
+export const OAuthAttemptRecord = Schema.Union([OAuthAttempt, OAuthFirstPartyAttempt]);
+/** Whether an attempt signs in with the operator's client. */
+export const isFirstPartyAttempt = (
+  attempt: typeof OAuthAttemptRecord.Type,
+): attempt is OAuthFirstPartyAttempt => "firstParty" in attempt;
 export type OAuthAttempt = typeof OAuthAttempt.Type;
 /** Private refresh context. Access-token projections are stored separately on the account. */
 const grantFields = {
@@ -1131,6 +1279,13 @@ const grantFields = {
   expiresAt: Schema.optional(Schema.Number),
   fields: JsonObject,
 };
+/**
+ * The account's credential generation the grant belongs to. The grant is read with its fields, so
+ * an invocation that reads them uses this generation even if a reconnect replaced the account's
+ * credential since it was selected. Grants saved before it was retained belong to the account's
+ * current generation, since every sign-in since then records it.
+ */
+const grantGeneration = Schema.optional(Schema.Int);
 /** Private renewal context; machine grants retain scopes and exchange client credentials again. */
 export const OAuthGrant = Schema.Union([
   Schema.Struct({
@@ -1139,17 +1294,9 @@ export const OAuthGrant = Schema.Union([
     server: OAuthServer,
     client: OAuthRegistration,
     refreshToken: Schema.optional(Schema.NonEmptyString),
-    /** The first validated ID token's `sub`. A refreshed ID token must keep it (OIDC Core §12.2). */
-    idTokenSubject: Schema.optional(Schema.NonEmptyString),
-    /**
-     * The first validated ID token's `iss`, saved with its `sub` because a subject is only unique
-     * at its issuer. A refreshed ID token must keep it too. It differs from `server.issuer` only
-     * for a Microsoft `{tenantid}` template, where each token names its own tenant. Grants saved
-     * before this field keep a fixed server issuer, which every ID token must already match.
-     */
-    idTokenIssuer: Schema.optional(Schema.NonEmptyString),
     /** Nested grant location frozen at sign-in; renewals read the same member. */
     tokenResponse: Schema.optional(OAuthTokenResponse),
+    generation: grantGeneration,
   }),
   Schema.Struct({
     ...grantFields,
@@ -1159,6 +1306,30 @@ export const OAuthGrant = Schema.Union([
     scopes: Schema.Array(Schema.String),
     /** Joins `scopes` on each exchange. Grants saved before it was retained use a space. */
     scopeSeparator: Schema.optional(Schema.NonEmptyString),
+    generation: grantGeneration,
+  }),
+  /**
+   * A grant issued to the operator's client named by `firstParty`; its access token is managed. It
+   * keeps no server or client; renewal and revocation read both from the operator's current
+   * configuration. Without them, a server that knows no operator clients cannot decode the grant,
+   * so it can never release these tokens as a credential the user brought.
+   */
+  Schema.Struct({
+    grant: Schema.Literal("authorization_code"),
+    firstParty: FirstPartyOAuthClientId,
+    response: JsonObject,
+    expiresAt: Schema.optional(Schema.Number),
+    fields: JsonObject,
+    refreshToken: Schema.optional(Schema.NonEmptyString),
+    generation: Schema.Int,
   }),
 ]);
 export type OAuthGrant = typeof OAuthGrant.Type;
+/** A grant issued to the operator's client. */
+export type OAuthFirstPartyGrant = Extract<
+  OAuthGrant,
+  { readonly firstParty: FirstPartyOAuthClientId }
+>;
+/** Whether a grant was issued to the operator's client. */
+export const isFirstPartyGrant = (grant: OAuthGrant): grant is OAuthFirstPartyGrant =>
+  "firstParty" in grant;

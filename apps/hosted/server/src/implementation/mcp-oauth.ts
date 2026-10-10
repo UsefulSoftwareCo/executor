@@ -80,6 +80,8 @@ const hostedGrantOAuth = ({
     issuer,
     onRefreshRejected,
     scopes: ["mcp", "executor", "offline_access"],
+    // The CLI signs in on machines without a browser, approving on the dashboard's device page.
+    deviceAuthorization: true,
     resources: [
       ...mcpOAuthResources(resourceOrigins.mcp),
       ...resourceOrigins.api.map((resourceOrigin) => ({

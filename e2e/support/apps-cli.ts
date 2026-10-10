@@ -1,27 +1,25 @@
 /**
- * The real `executor apps` CLI and Git, signed in through the product's browser flow. Each use has
- * its own home. The OS credential store is a stand-in kept in a file, so scenarios run without a
- * Secret Service and never touch the real store, and the browser opener records the sign-in URL
- * the CLI asks for instead of opening a browser.
+ * The real `executor apps` CLI and Git, signed in with a device code. Each use has its own home.
+ * The OS credential store is a stand-in kept in a file, so scenarios run without a Secret Service
+ * and never touch the real store; it can also be made unavailable, as on a server without one. The
+ * browser opener records the approval page the CLI opens instead of opening a browser.
  */
 import {
   Config,
+  Deferred,
   Effect,
   Fiber,
   FileSystem,
   Option,
   Path,
-  Redacted,
   Schedule,
+  Schema,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { connect, type Socket } from "node:net";
+import { Actors } from "./actors.ts";
+import { Api, body } from "./api.ts";
 import { Evidence } from "./evidence.ts";
-import { McpConsent } from "./mcp-consent.ts";
-
-/** The name the CLI registers its OAuth client with, which the consent page shows. */
-const cliClient = "Executor CLI";
 
 /** A finished process: its exit code and complete output. */
 export interface Finished {
@@ -30,13 +28,32 @@ export interface Finished {
   readonly stderr: string;
 }
 
+/** Where the CLI told the person to approve its sign-in, and the code it showed. */
+export interface DeviceCode {
+  readonly verificationUri: string;
+  readonly verificationUriComplete: string;
+  readonly userCode: string;
+}
+/** Read the instructions `executor apps login` prints once it has a code: one link carrying it. */
+const printedCode = (stderr: string): DeviceCode | undefined => {
+  const printed = stderr.match(/open (\S+)\nand check that it shows the code ([A-Z]{4}-[A-Z]{4})/u);
+  if (printed?.[1] === undefined || printed[2] === undefined) return undefined;
+  const link = new URL(printed[1]);
+  return {
+    verificationUri: link.origin + link.pathname,
+    verificationUriComplete: link.href,
+    userCode: printed[2],
+  };
+};
+
 /** Start the CLI and Git with one home and credential store, removed with the caller's scope. */
 export const appsCli = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path,
     processes = yield* ChildProcessSpawner.ChildProcessSpawner,
     evidence = yield* Evidence,
-    consent = yield* McpConsent;
+    api = yield* Api,
+    actors = yield* Actors;
   const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
     Config.option,
   );
@@ -47,10 +64,13 @@ export const appsCli = Effect.gen(function* () {
   const home = path.join(root, "home");
   const bin = path.join(root, "bin");
   const opened = path.join(root, "opened-url");
+  /** Openers that find no browser, as on a desktop without one configured. */
+  const noBrowser = path.join(root, "no-browser");
   /** The Git working copy every `git` command runs in. */
   const checkout = path.join(root, "checkout");
   yield* fs.makeDirectory(home);
   yield* fs.makeDirectory(bin);
+  yield* fs.makeDirectory(noBrowser);
   yield* fs.makeDirectory(checkout);
   yield* fs.writeFileString(
     path.join(root, "keyring.mjs"),
@@ -58,14 +78,19 @@ export const appsCli = Effect.gen(function* () {
       'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
       "const file = process.env.EXECUTOR_E2E_STAND_IN_FILE;",
       'const read = () => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});',
+      "// As on a Linux server without a Secret Service: every call is refused.",
+      'const absent = () => Promise.reject(new Error("no OS credential store"));',
+      'const unavailable = process.env.EXECUTOR_E2E_NO_OS_STORE === "1";',
       "export class AsyncEntry {",
       "  constructor(service, username) {",
       "    this.key = `${service}\\n${username}`;",
       "  }",
       "  getPassword() {",
+      "    if (unavailable) return absent();",
       "    return Promise.resolve(read()[this.key] ?? null);",
       "  }",
       "  setPassword(password) {",
+      "    if (unavailable) return absent();",
       "    writeFileSync(file, JSON.stringify({ ...read(), [this.key]: password }));",
       "    return Promise.resolve();",
       "  }",
@@ -93,8 +118,14 @@ export const appsCli = Effect.gen(function* () {
       `#!/bin/sh\nprintf '%s' "$1" > '${opened}'\n`,
       { mode: 0o755 },
     );
-  const env = {
+  for (const opener of ["open", "xdg-open"])
+    yield* fs.writeFileString(path.join(noBrowser, opener), "#!/bin/sh\nexit 3\n", {
+      mode: 0o755,
+    });
+  const env: Record<string, string> = {
     PATH: `${bin}:${process.env.PATH ?? ""}`,
+    // The stand-in openers are a desktop's; without a display the CLI signs in with a code.
+    DISPLAY: ":0",
     HOME: home,
     DO_NOT_TRACK: "1",
     EXECUTOR_E2E_STAND_IN_FILE: path.join(root, "store.json"),
@@ -165,30 +196,127 @@ export const appsCli = Effect.gen(function* () {
       },
     });
   /**
-   * `executor apps login --host <host>`, approved in the browser as the synthetic owner for the
-   * test organization. The consent's grant is revoked with the caller's scope.
+   * `executor apps login --host <host>`: with an opener that records the page it opens
+   * (`browser: "opens"`), one that finds no browser (`"fails"`), or a working opener over SSH
+   * (`"remote"`). Returns where the CLI said to approve and the code, as soon as it prints them,
+   * and the fiber that ends with the CLI.
+   */
+  const deviceLogin = (host: string, browser: "opens" | "fails" | "remote") =>
+    Effect.gen(function* () {
+      const args = ["login", "--host", host];
+      const shown = yield* Deferred.make<DeviceCode>();
+      const running = yield* Effect.forkScoped(
+        evidence.step(
+          `executor apps ${args.join(" ")}`,
+          Effect.scoped(
+            Effect.gen(function* () {
+              const child = yield* processes.spawn(
+                ChildProcess.make("node", ["--import", register, entry, "apps", ...args], {
+                  cwd: checkout,
+                  extendEnv: false,
+                  env:
+                    browser === "fails"
+                      ? { ...env, PATH: `${noBrowser}:${process.env.PATH ?? ""}` }
+                      : browser === "remote"
+                        ? { ...env, SSH_CONNECTION: "192.0.2.1 50000 192.0.2.2 22" }
+                        : env,
+                  stdin: "ignore",
+                  stdout: "pipe",
+                  stderr: "pipe",
+                  forceKillAfter: "3 seconds",
+                }),
+              );
+              let stderr = "";
+              const [code, stdout] = yield* Effect.all(
+                [
+                  child.exitCode,
+                  child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+                  child.stderr.pipe(
+                    Stream.decodeText(),
+                    Stream.runForEach((chunk) => {
+                      stderr += chunk;
+                      const printed = printedCode(stderr);
+                      return printed === undefined
+                        ? Effect.void
+                        : Deferred.succeed(shown, printed).pipe(Effect.asVoid);
+                    }),
+                  ),
+                ],
+                { concurrency: 3 },
+              ).pipe(Effect.timeout("90 seconds"));
+              return { code: Number(code), stdout, stderr } satisfies Finished;
+            }),
+          ),
+        ),
+      );
+      const printed = yield* Deferred.await(shown).pipe(Effect.timeout("30 seconds"));
+      return { ...printed, finished: running };
+    });
+  /**
+   * `executor apps login --host <host>`, approved for the test organization by the synthetic
+   * owner. The grant is revoked with the caller's scope.
    */
   const login = (host: string) =>
     Effect.gen(function* () {
-      const running = yield* Effect.forkScoped(cli(["login", "--host", host]));
-      const url = yield* fs
-        .readFileString(opened)
-        .pipe(Effect.retry(Schedule.spaced("200 millis")), Effect.timeout("30 seconds"));
-      const clientId = new URL(url).searchParams.get("client_id") ?? "";
-      // Browsers race a spare connection when connecting is slow and may leave it open without
-      // sending a request. Hold one to the CLI's callback, so sign-in must finish regardless.
-      const callback = new URL(new URL(url).searchParams.get("redirect_uri") ?? "");
-      yield* Effect.acquireRelease(
-        Effect.callback<Socket>((resume) => {
-          const socket = connect(Number(callback.port), callback.hostname, () =>
-            resume(Effect.succeed(socket)),
-          );
-          socket.once("error", (cause) => resume(Effect.die(cause)));
-        }),
-        (socket) => Effect.sync(() => socket.destroy()),
+      const started = yield* deviceLogin(host, "opens");
+      const lookup = yield* api.request(
+        actors.owner,
+        "GET",
+        `/api/auth/device/request?user_code=${encodeURIComponent(started.userCode)}`,
       );
-      yield* consent.approve({ url: Redacted.make(url), clientId, client: cliClient });
-      return { url: new URL(url), finished: yield* Fiber.join(running) };
+      const { clientId } = yield* body(Schema.Struct({ clientId: Schema.String }), lookup);
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          const grants = yield* body(
+            Schema.Array(Schema.Struct({ id: Schema.String, clientId: Schema.String })),
+            yield* api.request(actors.owner, "GET", "/api/auth/oauth2/get-consents"),
+          );
+          for (const grant of grants.filter((item) => item.clientId === clientId))
+            yield* api.request(actors.owner, "POST", "/api/auth/oauth2/delete-consent", {
+              id: grant.id,
+            });
+        }).pipe(Effect.orDie),
+      );
+      const decided = yield* api.request(
+        actors.owner,
+        "POST",
+        "/api/auth/device/decide",
+        { user_code: started.userCode, accept: true },
+        { "x-executor-organization": actors.organization.id },
+      );
+      if (decided.status !== 200) return yield* Effect.die(`device decision ${decided.status}`);
+      return { ...started, finished: yield* Fiber.join(started.finished) };
     });
-  return { cli, git, login, checkout, fs, path };
+  /** The page the CLI opened in the browser, if any. Read once the CLI has exited. */
+  const browserOpened = fs
+    .exists(opened)
+    .pipe(
+      Effect.flatMap((exists) =>
+        exists ? fs.readFileString(opened).pipe(Effect.map(Option.some)) : Effect.succeedNone,
+      ),
+    );
+  /** The page the CLI opens once it has printed its code. */
+  const openedPage = fs
+    .readFileString(opened)
+    .pipe(Effect.retry(Schedule.spaced("100 millis")), Effect.timeout("10 seconds"));
+  /** Make the OS credential store unavailable to every later command. */
+  const withoutOsStore = Effect.sync(() => {
+    env.EXECUTOR_E2E_NO_OS_STORE = "1";
+  });
+  /** Whether anything reached the OS credential store stand-in. */
+  const osStoreUsed = fs.exists(path.join(root, "store.json"));
+  return {
+    cli,
+    git,
+    login,
+    deviceLogin,
+    browserOpened,
+    openedPage,
+    withoutOsStore,
+    osStoreUsed,
+    home,
+    checkout,
+    fs,
+    path,
+  };
 });

@@ -7,8 +7,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
  * Published apps versions, exactly as npm serves them. beta.0 and beta.1 speak host protocol 1,
- * beta.4 protocol 2, beta.5 protocol 3, beta.14 protocol 5, beta.22 protocol 7 and beta.33
- * protocol 8.
+ * beta.4 protocol 2, beta.5 protocol 3, beta.14 protocol 5, beta.22 protocol 7, beta.33
+ * protocol 8 and beta.59 protocol 11.
  */
 const releases = {
   "0.0.1-beta.0":
@@ -25,6 +25,8 @@ const releases = {
     "sha512-ptX6B7GOCCWTKzQ6iL0P0OcTo8ejUcOSYtUCKq6ASBSoifLgkuxdHmEatIYrBNj0eJignKKa/cPKsltzAdJ3mQ==",
   "0.0.1-beta.33":
     "sha512-XFWhs832DsJ6Y1bdDqgGaFteEejPs9B8RE3OHoVPE4Lt3ODuM6qR9rbiNCqRVvWwZWG2rRlDaq+g/MrN/ReoYw==",
+  "0.0.1-beta.59":
+    "sha512-KpF9FQGLTsfNq55M9D/13gnWqa/3SeSdJ7cSnNl9nDm7WY35EQEaNiSQNXCmzdq0EB4+hlY2EyyBCp7bVzRvcg==",
 } as const;
 /** A published `apps` release this suite serves. */
 export type Release = keyof typeof releases;

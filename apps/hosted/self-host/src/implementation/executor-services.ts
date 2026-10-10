@@ -31,6 +31,7 @@ import {
   noOrganizationRemovals,
   lazyHostedApiDocument,
   clientMetadataSetting,
+  firstPartyOAuthClients,
   hostedOAuthClientName,
   withDeploySetupWake,
   withExecutorAnalytics,
@@ -73,6 +74,7 @@ export const selfHostExecutorServices = <E, R>(
       const key = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY");
       const origin = yield* Config.String("BETTER_AUTH_URL");
       const clientMetadata = yield* clientMetadataSetting(origin);
+      const firstPartyClients = yield* firstPartyOAuthClients;
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
@@ -100,6 +102,7 @@ export const selfHostExecutorServices = <E, R>(
           clientName: hostedOAuthClientName,
           urlPolicy: egress.policy,
           ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
+          firstPartyClients,
         },
         cache: {
           memory: makeDeclarationCache(evaluation.limits),

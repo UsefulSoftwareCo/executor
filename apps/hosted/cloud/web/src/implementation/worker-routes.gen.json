@@ -13,6 +13,8 @@
   "/create/",
   "/create/agent",
   "/create/agent/",
+  "/device",
+  "/device/",
   "/email/unsubscribe",
   "/email/unsubscribe/",
   "/invite",

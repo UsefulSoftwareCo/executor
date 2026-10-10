@@ -1,4 +1,5 @@
 /** Cloud sign-in policy; self-hosted deployments do not need these OAuth credentials. */
+import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { authOptions, type RefreshRejection } from "@executor-js/hosted-server";
@@ -289,8 +290,21 @@ export const cloudAuthOptions = (
       },
       session: {
         create: {
-          after: async (session) => {
+          // Consume the site visitor identity on every successful sign-in, including returning
+          // users. It must never be linked to a second account later.
+          after: async (session, context) => {
             if (onLogin !== undefined) await onLogin(session.userId);
+            if (!context) return;
+            context.setCookie(siteVisitorCookie, "", {
+              path: "/",
+              maxAge: 0,
+              sameSite: "lax",
+              secure: new URL(settings.url).protocol === "https:",
+              ...Option.match(settings.hosts.sharedCookieDomain, {
+                onNone: () => ({}),
+                onSome: (domain) => ({ domain }),
+              }),
+            });
           },
           before: async (session, context) => {
             if (!context) throw new APIError("UNAUTHORIZED");
