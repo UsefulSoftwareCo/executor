@@ -102,7 +102,7 @@ func TestProxyDoesNotReuseConnectionsWorkerdHasTimedOut(t *testing.T) {
 	socket := socketPath(t)
 	upstream := &fakeWorkerd{idleTimeout: 300 * time.Millisecond}
 	upstream.serve(t, socket)
-	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout))
+	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout, false))
 	defer front.Close()
 
 	if status, body := post(t, front.URL); status != 200 {
@@ -121,7 +121,7 @@ func TestProxyDoesNotRetryPostWorkerdMayHaveReceived(t *testing.T) {
 	socket := socketPath(t)
 	upstream := &fakeWorkerd{idleTimeout: time.Minute, dropFirst: true}
 	upstream.serve(t, socket)
-	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout))
+	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout, false))
 	defer front.Close()
 
 	status, body := post(t, front.URL)
@@ -134,11 +134,50 @@ func TestProxyDoesNotRetryPostWorkerdMayHaveReceived(t *testing.T) {
 }
 
 func TestProxyReportsStartingUntilWorkerdListens(t *testing.T) {
-	front := httptest.NewServer(productProxy(socketPath(t), workerdIdleTimeout))
+	front := httptest.NewServer(productProxy(socketPath(t), workerdIdleTimeout, false))
 	defer front.Close()
 
 	if status, body := post(t, front.URL); status != http.StatusServiceUnavailable || body != "Executor is starting" {
 		t.Fatalf("POST before workerd listens: %d %q", status, body)
+	}
+}
+
+// Behind a proxy that ends TLS, the product derives its origin from Host and X-Forwarded-Proto.
+// The scheme workerd sees comes from the configured origin, whatever the client sent.
+func TestProxyForwardsTheSchemeOfTheConfiguredOrigin(t *testing.T) {
+	for _, publicHTTPS := range []bool{true, false} {
+		socket := socketPath(t)
+		listener, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := make(chan string, 1)
+		upstream := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen <- r.Host + " " + r.Header.Get("X-Forwarded-Proto")
+		})}
+		go upstream.Serve(listener)
+		t.Cleanup(func() { upstream.Close() })
+		front := httptest.NewServer(productProxy(socket, workerdIdleTimeout, publicHTTPS))
+		t.Cleanup(front.Close)
+
+		request, err := http.NewRequest("POST", front.URL+"/api/dashboard/batch", strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = "executor.example:4788"
+		claimed, want := "https", "executor.example:4788 "
+		if publicHTTPS {
+			claimed, want = "http", want+"https"
+		}
+		request.Header.Set("X-Forwarded-Proto", claimed)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if got := <-seen; got != want {
+			t.Fatalf("publicHTTPS %v, client sent %q: workerd saw %q, want %q", publicHTTPS, claimed, got, want)
+		}
 	}
 }
 
