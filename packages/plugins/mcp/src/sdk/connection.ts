@@ -72,6 +72,17 @@ const buildEndpointUrl = (endpoint: string, queryParams: Record<string, string>)
   return url;
 };
 
+// Some upstreams (Cloudflare bot rules among them) reject requests without a
+// User-Agent, and Workers' fetch adds none. Both remote SDK transports apply
+// `requestInit.headers` to every request they send, including OAuth metadata
+// discovery, so the default goes there. A configured User-Agent wins.
+const DEFAULT_USER_AGENT = "executor";
+
+const withDefaultUserAgent = (headers: Record<string, string>): Record<string, string> =>
+  Object.keys(headers).some((name) => name.toLowerCase() === "user-agent")
+    ? headers
+    : { "User-Agent": DEFAULT_USER_AGENT, ...headers };
+
 type HttpMethod = Parameters<typeof HttpClientRequest.make>[0];
 const HTTP_METHODS = new Set<HttpMethod>([
   "DELETE",
@@ -626,9 +637,9 @@ export const createMcpConnector = (input: ConnectorInput): McpConnector => {
   }
 
   // Remote transport
-  const headers = input.headers ?? {};
+  const headers = withDefaultUserAgent(input.headers ?? {});
   const remoteTransport = input.remoteTransport ?? "auto";
-  const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
+  const requestInit = { headers };
   const fetch = input.httpClientLayer
     ? fetchFromHttpClientLayer(input.httpClientLayer, input.staticOAuthBearer === true)
     : undefined;
