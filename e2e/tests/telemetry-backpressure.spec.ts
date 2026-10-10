@@ -1,8 +1,11 @@
 /** Browser and app crash reports survive a collector that sheds load, within the relay's budget. */
 import { expect, layer } from "@effect/vitest";
-import { Clock, Effect, Layer, Schedule } from "effect";
+import { Clock, Effect, Layer, Schedule, Schema } from "effect";
 import { randomBytes } from "node:crypto";
-import { Api, SessionClients } from "../support/api.ts";
+import { Api, body, SessionClients } from "../support/api.ts";
+import { provisionSelfHostActors } from "../support/actors.ts";
+import { appsManifest } from "../support/apps-release.ts";
+import { createProfile } from "../support/profiles.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { startFreshSelfHost } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
@@ -11,6 +14,8 @@ import { scenarios } from "../test-plan.ts";
 
 /** Node timers may fire up to a millisecond early; both clocks are this machine's. */
 const early = 5;
+/** More app calls than the relay could once hold while an export waited. */
+const burstCalls = 40;
 
 layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) => {
   it.effect(scenarios.telemetryBackpressure.title, (context) =>
@@ -118,6 +123,87 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
         const rejected = yield* report([{ status: 400 }]);
         expect(rejected.status).toBe(502);
         expect(rejected.arrivals.map(({ status }) => status)).toEqual([400]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.appTelemetryBurst.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target;
+        const collector = yield* throttlingCollector;
+        const origin = yield* startFreshSelfHost(target, {
+          OTEL_EXPORTER_OTLP_ENDPOINT: collector.endpoint,
+        });
+        const scoped = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.provide(Layer.fresh(Api.layer)),
+            Effect.provide(Layer.fresh(SessionClients.layer)),
+            Effect.provideService(Target, { ...target, metadata: { ...target.metadata, origin } }),
+          );
+        const api = yield* scoped(Api);
+        const actors = yield* scoped(provisionSelfHostActors);
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: "Telemetry burst",
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, query, object, router } from "apps";
+export default defineApp({ accounts: {} }, {
+  tools: router({ ping: query({ input: object({}) }, async () => true) }),
+});`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);
+        const path = `${prefix}/apps/${app.id}`;
+        const profile = yield* scoped(createProfile(actors.owner, path));
+        const call = api
+          .request(actors.owner, "POST", `${path}/tools/call`, {
+            profile: profile.id,
+            tool: "ping",
+            input: {},
+          })
+          .pipe(
+            Effect.tap((response) =>
+              Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
+            ),
+          );
+        // Each call is its own trace. Wait until setup's app telemetry has arrived, then count
+        // only the traces the burst adds.
+        yield* call;
+        const before = yield* collector.appTraces(app.id).pipe(
+          Effect.filterOrFail(
+            (traces) => traces.size > 0,
+            () => new Error("No app telemetry reached the collector"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+        );
+
+        // The collector sheds the next export of this app's telemetry for two seconds, which
+        // holds the relay's export while a burst of calls finishes behind it.
+        yield* collector.refuse(app.id, [{ status: 503, retryAfter: () => "2" }]);
+        yield* Effect.forEach(Array.from({ length: burstCalls }), () => call, {
+          concurrency: burstCalls,
+          discard: true,
+        });
+        const added = yield* collector.appTraces(app.id).pipe(
+          Effect.map((traces) => [...traces].filter((trace) => !before.has(trace)).length),
+          Effect.repeat({
+            until: (count) => count >= burstCalls,
+            schedule: Schedule.spaced("250 millis"),
+            times: 60,
+          }),
+        );
+        expect(added, "every call's app telemetry reached the collector").toBeGreaterThanOrEqual(
+          burstCalls,
+        );
+        const held = yield* collector.arrivals(app.id);
+        expect(held[0]?.status, "the collector shed the first export").toBe(503);
       }),
     ),
   );

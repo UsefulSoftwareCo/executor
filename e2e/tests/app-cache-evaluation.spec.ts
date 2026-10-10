@@ -63,7 +63,7 @@ export default defineApp({ accounts: {} }, async (ctx) => {
           source: "storage",
           errorName: "CacheError",
           code: "capacity",
-          message: "A cache key, value or batch exceeded the app cache's size limits.",
+          message: "A cache key exceeded the app cache's limit of 8,192 bytes per key.",
         });
         const traceId = (yield* evidence.requests).at(-1)?.traceId;
         if (traceId === undefined) return yield* Effect.die("The request trace was not recorded");

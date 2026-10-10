@@ -158,9 +158,11 @@ export function AppAccounts({
           pending: chooser.pending,
           choose: (slot, value) => void chooser.choose(slot, value),
         }}
-        removeAccountAction={(slot, account, label) => {
+        removeAccountAction={(slot, account, label, bound) => {
           if (profile === undefined) return null;
           const saved = accounts.find((item) => item.id === account);
+          // An unselected account offers only its own actions; with none, it has no menu.
+          if (!bound && saved === undefined) return null;
           const requirement = app.requirements.accounts[slot];
           return (
             <AccountBindingMenu
@@ -168,13 +170,16 @@ export function AppAccounts({
               slot={slot}
               account={account}
               label={label}
+              bound={bound}
               update={profileMutations({ app: app.id, profile: profile.id }).update}
               Failure={Failure}
               onRemoved={(removed) => void unused.check(removed)}
             >
               {saved && (
                 <>
-                  <DropdownMenuItem onSelect={() => setRenaming(saved.id)}>Rename</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setRenaming(saved.id)}>
+                    Edit details
+                  </DropdownMenuItem>
                   {requirement !== undefined && (
                     <DropdownMenuItem onSelect={() => replace(slot, saved.id)}>
                       {requirement.definition.auth[saved.method]?.type === "oauth2"

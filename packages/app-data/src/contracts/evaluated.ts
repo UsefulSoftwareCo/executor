@@ -3,7 +3,7 @@ import { Schema } from "effect";
 
 const Key = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 const Time = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
-const Body = Schema.declare((value): value is Uint8Array => value instanceof Uint8Array);
+const Body = Schema.Uint8Array;
 
 /** Bounds of one app's store. Bodies are compressed by the caller before they are written. */
 export const evaluatedLimits = {
@@ -59,3 +59,9 @@ export const EvaluatedWritten = Schema.Struct({
   supervisor: EvaluatedSupervisor,
 });
 export type EvaluatedWritten = typeof EvaluatedWritten.Type;
+
+/** A command or reply as JSON text, with bodies in base64, for a host that sends it over HTTP. */
+export const EvaluatedCommandJson = Schema.fromJsonString(Schema.toCodecJson(EvaluatedCommand));
+export const EvaluatedReplyJson = Schema.fromJsonString(
+  Schema.toCodecJson(Schema.Union([EvaluatedEntry, EvaluatedWritten])),
+);

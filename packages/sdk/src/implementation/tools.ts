@@ -520,9 +520,12 @@ export const makeTools = (
       ),
     );
   /**
-   * The caller's kind, or the catalog's for a caller that did not name one. A tool the catalog
-   * does not list, such as one a dynamic source resolves on demand, is called without a kind:
-   * the app applies the tool's own kind and storage opens for writing.
+   * The caller's kind, or the kept listing's for a caller that did not name one, so the call of an
+   * app with a database loads only its data facet, not the app's Worker too. Only the first call of
+   * an invocation state with no kept listing evaluates it, and an aged listing is not refreshed for
+   * this. A tool the listing does not name, such as one a dynamic source resolves on demand or one
+   * added since the listing was evaluated, is described live; one the catalog does not list either
+   * is called without a kind: the app applies the tool's own kind and storage opens for writing.
    */
   const kindOf = (
     state: InvocationSnapshot,
@@ -531,7 +534,13 @@ export const makeTools = (
     kind: ToolKind | undefined,
   ) =>
     kind === undefined
-      ? describe(state, context, name).pipe(
+      ? listings.read(state, listingOf(state), { refreshStale: false }).pipe(
+          Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
+          // A listing that did not finish says nothing about the tool.
+          Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
+          Effect.flatMap((listed) =>
+            listed === undefined ? describe(state, context, name) : Effect.succeed(listed),
+          ),
           Effect.map((tool): ToolKind | undefined =>
             tool.readOnly === true ? "query" : "mutation",
           ),

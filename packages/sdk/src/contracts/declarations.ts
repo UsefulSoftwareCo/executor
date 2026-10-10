@@ -55,6 +55,24 @@ export const defaultToolListingPolicy: ToolListingPolicy = {
 };
 
 /**
+ * How an in-process caller reads a kept catalog, such as a tool listing or skill catalog. Not an
+ * HTTP input.
+ */
+export interface CatalogReadOptions {
+  /**
+   * Whether a kept result past its freshness starts a background evaluation that replaces it.
+   * Defaults to true. A read across every app, such as MCP search or the skills index, passes
+   * false: refreshing every aged result would load every app's Worker, so it serves a kept result
+   * of any age below its `maxStaleMillis` as it is, and waits for the whole durable read rather
+   * than evaluating beside a slow one. A result is still evaluated when none is kept,
+   * and a deployment, profile revision, account selection, stored credential or app cache
+   * invalidation is another result or forgets the kept one, so only inputs nothing tracks, such as
+   * a factory that fetches without the app cache, can be older than they would be otherwise.
+   */
+  readonly refreshStale?: boolean;
+}
+
+/**
  * Memory bounds for one host process or isolate, in UTF-16 string bytes of each result's JSON
  * text. A host creates one store per process or isolate and shares it with every executor there.
  * A larger result is never retained. These defaults fit a 128 MB Cloud isolate; a server process
@@ -145,7 +163,7 @@ export interface DeclarationCache {
 
 /**
  * How long a read that missed this process's store waits for the durable copy before it also
- * starts evaluating. A warm durable store answers well inside it, so a hit never evaluates; a slow
+ * starts evaluating, unless it passes `refreshStale: false`. A warm durable store answers well inside it, so a hit never evaluates; a slow
  * one, such as a Durable Object waking up, delays a miss by at most this much.
  */
 export const durableHeadStartMillis = 100;

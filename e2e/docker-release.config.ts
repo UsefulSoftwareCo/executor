@@ -3,6 +3,7 @@ export default defineConfig({
   test: {
     include: [
       "e2e/tests/docker-release.spec.ts",
+      "e2e/tests/docker-release-app-memory.spec.ts",
       "e2e/tests/docker-release-workflow-memory.spec.ts",
       "e2e/tests/docker-release-workflow-restart.spec.ts",
       "e2e/tests/docker-release-workflow-stopped.spec.ts",

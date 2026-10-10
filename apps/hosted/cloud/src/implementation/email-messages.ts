@@ -14,9 +14,11 @@ const purposes = {
     heading: "Your sign-up code",
     instruction: "Copy and paste this code into Executor to create your account.",
   },
+  /** Sent to the current address; an email change needs this code before the new address gets one. */
   "email-verification": {
-    heading: "Verify your email address",
-    instruction: "Copy and paste this code into Executor to verify your email address.",
+    heading: "Approve your email change",
+    instruction:
+      "Someone asked to change the email address of your Executor account. Copy and paste this code into Executor to approve the change.",
   },
   "forget-password": {
     heading: "Your password reset code",

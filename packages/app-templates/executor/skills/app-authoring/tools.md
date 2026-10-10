@@ -273,6 +273,21 @@ request. Pass `stale: "revalidate"` to await the load past `freshFor` instead of
 serving the old value; the loader can `read(key, schema)` the old value to confirm
 it cheaply. Errors are not cached. `invalidate(key)` also fences pending loaders.
 
+The cache keeps an entry at most 7 days. A longer `freshFor` plus `staleFor`,
+or a longer `write` retention, is shortened to 7 days, taking `staleFor` first.
+A call that exceeds another limit fails with `CacheError` and code `capacity`,
+and the message names the limit:
+
+| Limit                     | Value                                 |
+| ------------------------- | ------------------------------------- |
+| Key, as canonical JSON    | 8,192 bytes                           |
+| Value, as JSON            | 2,000,000 bytes                       |
+| One `readMany` or `write` | 128 entries and 8,000,000 bytes       |
+| The app's whole cache     | 100,000 entries and 128,000,000 bytes |
+
+A `load` has 90 seconds. A caller waits at most 10 seconds for another caller's
+load of the same key, then loads for itself without storing the result.
+
 Use `dynamicRouter({ list, resolve })` for large or remote catalogs. List tool
 metadata separately from resolving one query or mutation. `accountRouter`
 preserves lazy resolution. Resolving a tool does not require listing all tools.

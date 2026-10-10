@@ -1,0 +1,58 @@
+/* The dark palette, shared by the marketing build (styles/global.css) and the
+   documentation (apps/docs/styles.css). Blume's theme script and the site's
+   own head script set data-theme on <html> from the system setting. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-surface: #0a0a0a;
+  --color-surface-2: #111111;
+  --color-ink: #ededed;
+  --color-ink-2: #a1a1a1;
+  --color-ink-3: #878787;
+  --color-rule: #232323;
+  --color-rule-strong: #3a3a3a;
+  --color-accent: #ededed;
+  --color-accent-hover: #cccccc;
+  --color-ink-hover: #d4d4d4;
+
+  --color-tone-100: #0a0a0a;
+  --color-tone-99: #0d0d0d;
+  --color-tone-98: #111111;
+  --color-tone-97: #161616;
+  --color-tone-94: #1a1a1a;
+  --color-tone-93: #1f1f1f;
+  --color-tone-91: #262626;
+  --color-tone-90: #292929;
+  --color-tone-89: #2e2e2e;
+  --color-tone-87: #333333;
+  --color-tone-80: #444444;
+  --color-tone-77: #4a4a4a;
+  --color-tone-73: #555555;
+  --color-tone-67: #666666;
+  --color-tone-60: #7a7a7a;
+  --color-tone-53: #8f8f8f;
+  --color-tone-47: #9a9a9a;
+  --color-tone-40: #a1a1a1;
+  --color-tone-33: #b4b4b4;
+  --color-tone-27: #c4c4c4;
+  --color-tone-20: #d4d4d4;
+  --color-tone-13: #e5e5e5;
+  --color-tone-9: #ededed;
+
+  --color-sage-wash: #1a1f1a;
+  --color-sage-hover: #171a17;
+  --color-sage-bar: #2a2d29;
+  --color-sage-mark: #93a28e;
+  --color-sage: #86a690;
+  --color-sage-text: #8fae98;
+  --color-sage-bar-strong: #93a592;
+  --color-file-ts: #77a5d4;
+  --color-file-tsx: #74b3b9;
+  --color-glyph-md: #a6a69a;
+  --color-glyph-json: #93a6ac;
+}
+
+/* Single-colour black logos and the brand mark. */
+:root[data-theme="dark"] .logo-mono {
+  filter: invert(1);
+}

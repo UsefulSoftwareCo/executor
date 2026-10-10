@@ -15,6 +15,10 @@ import { DurableWorkflow } from "./workflow-durable";
 
 type ClockProps = { readonly clock: MotionValue<number> };
 
+// Motion can't interpolate theme variables, so blend two tones by progress.
+const mixTones = (rest: string, active: string) => (amount: number) =>
+  `color-mix(in oklab, var(${active}) ${amount * 100}%, var(${rest}))`;
+
 // A short move followed by a reading pause. The count never rewinds.
 function useStep(clock: MotionValue<number>, period: number) {
   return useTransform(clock, (time) => {
@@ -34,15 +38,15 @@ function AppPiece({
   readonly children: ReactNode;
 }) {
   return (
-    <div className="app-piece @container min-w-0 overflow-hidden rounded-[12.5px] border border-rule bg-white">
-      <div className="piece-picture relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-[#eee] bg-[#fafafa] text-ink">
+    <div className="app-piece @container min-w-0 overflow-hidden rounded-[12.5px] border border-rule bg-tone-100">
+      <div className="piece-picture relative flex h-40 w-full items-center justify-center overflow-hidden border-b border-tone-93 bg-tone-98 text-ink">
         <div className="flex h-32 w-full shrink-0 items-center justify-center @min-[330px]:w-4/5 @min-[330px]:scale-125">
           {children}
         </div>
       </div>
       <div className="px-[25px] pt-5 pb-[22.5px]">
         <h3 className="text-[17.5px] font-semibold max-[639px]:text-xl">{part.title}</h3>
-        <p className="mt-1.25 text-[15px] leading-[1.5] text-[#777] max-[639px]:text-[17.5px] max-[639px]:leading-relaxed">
+        <p className="mt-1.25 text-[15px] leading-[1.5] text-tone-47 max-[639px]:text-[17.5px] max-[639px]:leading-relaxed">
           {part.body}
         </p>
       </div>
@@ -72,7 +76,7 @@ function ToolLine({
   );
   return (
     <motion.i
-      className="h-0.75 origin-left bg-[#888]"
+      className="h-0.75 origin-left bg-tone-53"
       style={{ width: `${width}%`, scaleX, opacity }}
     />
   );
@@ -81,14 +85,12 @@ function ToolLine({
 function ToolPicture({ clock }: ClockProps) {
   const phase = useTransform(clock, (time) => (time % 4.8) / 4.8);
   const backgroundColor = useTransform(
-    phase,
-    [0, 0.1, 0.22, 0.38, 0.5, 1],
-    ["#fff", "#fff", "#ededed", "#ededed", "#fff", "#fff"],
+    useTransform(phase, [0, 0.1, 0.22, 0.38, 0.5, 1], [0, 0, 1, 1, 0, 0]),
+    mixTones("--color-tone-100", "--color-tone-93"),
   );
   const borderColor = useTransform(
-    phase,
-    [0, 0.1, 0.22, 0.4, 0.55, 1],
-    ["#ddd", "#ddd", "#888", "#888", "#ddd", "#ddd"],
+    useTransform(phase, [0, 0.1, 0.22, 0.4, 0.55, 1], [0, 0, 1, 1, 0, 0]),
+    mixTones("--color-tone-87", "--color-tone-53"),
   );
   const arrowX = useTransform(phase, [0, 0.2, 0.35, 0.5, 1], [0, 0, 3, 0, 0]);
   const doneOpacity = useTransform(phase, [0, 0.52, 0.62, 0.84, 1], [0, 0, 1, 1, 0]);
@@ -96,22 +98,22 @@ function ToolPicture({ clock }: ClockProps) {
     <div aria-hidden="true" className="flex items-center gap-4">
       <div className="relative">
         <motion.span
-          className="block rounded-[6px] border border-[#ddd] bg-white p-3 font-mono text-[11px]"
+          className="block rounded-[6px] border border-tone-87 bg-tone-100 p-3 font-mono text-[11px]"
           style={{ backgroundColor, borderColor }}
         >
           query_logs()
         </motion.span>
         <motion.small
-          className="absolute inset-x-0 top-full mt-2 text-center font-mono text-[8px] text-[#888]"
+          className="absolute inset-x-0 top-full mt-2 text-center font-mono text-[8px] text-tone-53"
           style={{ opacity: doneOpacity }}
         >
           ✓ Done
         </motion.small>
       </div>
-      <motion.span className="text-[#aaa]" style={{ x: arrowX }}>
+      <motion.span className="text-tone-67" style={{ x: arrowX }}>
         →
       </motion.span>
-      <span className="grid w-14.5 gap-1.75 rounded-[6px] border border-[#ddd] bg-white p-3">
+      <span className="grid w-14.5 gap-1.75 rounded-[6px] border border-tone-87 bg-tone-100 p-3">
         {[100, 70, 100].map((width, index) => (
           <ToolLine key={index} phase={phase} index={index} width={width} />
         ))}
@@ -147,15 +149,15 @@ function SkillDocument({
   const zIndex = useTransform(depth, (value) => (value > 2.65 ? 4 : 3 - Math.round(value)));
   return (
     <motion.div
-      className="absolute inset-0 grid content-center gap-2 rounded-[6px] border border-[#ddd] bg-white px-4.5 py-3 shadow-[0_2px_8px_#00000005]"
+      className="absolute inset-0 grid content-center gap-2 rounded-[6px] border border-tone-87 bg-tone-100 px-4.5 py-3 shadow-[0_2px_8px_#00000005]"
       style={{ x, y, rotate, scale, opacity, zIndex }}
     >
-      <span className="flex items-center justify-between font-mono text-[8px] text-[#aaa]">
+      <span className="flex items-center justify-between font-mono text-[8px] text-tone-67">
         <span>SKILL.md</span>
         <span>{index + 1} / 3</span>
       </span>
       <strong className="text-left font-mono text-[10px] font-normal"># {skill.title}</strong>
-      <small className="text-left font-mono text-[9px] leading-[1.8] text-[#888]">
+      <small className="text-left font-mono text-[9px] leading-[1.8] text-tone-53">
         1. {skill.steps[0]}
         <br />
         2. {skill.steps[1]}
@@ -184,7 +186,7 @@ function SkillsPicture({ clock }: ClockProps) {
       aria-label="Shuffle skills"
       onHoverStart={next}
       onClick={next}
-      className="flex h-full w-full cursor-pointer items-center justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#777]"
+      className="flex h-full w-full cursor-pointer items-center justify-center outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-tone-47"
     >
       <div aria-hidden="true" className="relative h-25 w-51.25 translate-y-2">
         {skills.map((skill, index) => (
@@ -212,7 +214,7 @@ function ChartBar({
   );
   return (
     <motion.i
-      className="flex-1 origin-bottom rounded-t-[1px] bg-[#777] last:bg-[#222]"
+      className="flex-1 origin-bottom rounded-t-[1px] bg-tone-47 last:bg-tone-13"
       style={{ height: `${height}%`, scaleY }}
     />
   );
@@ -227,18 +229,18 @@ function UiPicture({ clock }: ClockProps) {
   return (
     <div
       aria-hidden="true"
-      className="w-52.5 translate-y-2 overflow-hidden rounded-[6px] border border-[#ddd] bg-white"
+      className="w-52.5 translate-y-2 overflow-hidden rounded-[6px] border border-tone-87 bg-tone-100"
     >
-      <div className="flex items-center gap-0.75 border-b border-[#eee] p-1.75">
+      <div className="flex items-center gap-0.75 border-b border-tone-93 p-1.75">
         {[0, 1, 2].map((dot) => (
-          <i key={dot} className="h-0.75 w-0.75 rounded-full bg-[#ccc]" />
+          <i key={dot} className="h-0.75 w-0.75 rounded-full bg-tone-80" />
         ))}
-        <span className="pl-1.25 font-mono text-[6px] text-[#aaa]">
+        <span className="pl-1.25 font-mono text-[6px] text-tone-67">
           app.demo-org.executor.website
         </span>
       </div>
       <div className="grid gap-1.25 p-3 text-left">
-        <span className="text-[7px] text-[#999]">Active users</span>
+        <span className="text-[7px] text-tone-60">Active users</span>
         <motion.strong className="h-6 font-mono text-[16px] font-medium tabular-nums">
           {text}
         </motion.strong>
@@ -276,7 +278,7 @@ function StorageRow({
   );
   return (
     <motion.div
-      className="absolute inset-x-0 top-0 grid h-1/2 grid-cols-2 items-center border-b border-[#eee] bg-white px-2.5 text-[#666]"
+      className="absolute inset-x-0 top-0 grid h-1/2 grid-cols-2 items-center border-b border-tone-93 bg-tone-100 px-2.5 text-tone-40"
       style={{ y }}
     >
       <span>{row.key}</span>
@@ -290,9 +292,9 @@ function StoragePicture({ clock }: ClockProps) {
   return (
     <div
       aria-hidden="true"
-      className="w-50 overflow-hidden rounded-[6px] border border-[#ddd] bg-white text-left font-mono text-[9px]"
+      className="w-50 overflow-hidden rounded-[6px] border border-tone-87 bg-tone-100 text-left font-mono text-[9px]"
     >
-      <div className="grid h-6.5 grid-cols-2 items-center border-b border-[#eee] bg-[#fcfcfc] px-2.5 text-[8px] text-[#aaa]">
+      <div className="grid h-6.5 grid-cols-2 items-center border-b border-tone-93 bg-tone-99 px-2.5 text-[8px] text-tone-67">
         <span>key</span>
         <span>value</span>
       </div>
@@ -301,7 +303,7 @@ function StoragePicture({ clock }: ClockProps) {
           <StorageRow key={row.key} row={row} index={index} step={step} />
         ))}
       </div>
-      <div className="flex h-6.5 items-center px-2.5 text-[8px] text-[#888]">
+      <div className="flex h-6.5 items-center px-2.5 text-[8px] text-tone-53">
         ✓ Saved between runs
       </div>
     </div>
@@ -322,19 +324,12 @@ function TriggerSource({
   readonly label: string;
 }) {
   const local = useTriggerPhase(phase, index);
-  const backgroundColor = useTransform(
-    local,
-    [0, 0.08, 0.18, 0.35, 0.52, 2],
-    ["#fff", "#fff", "#ededed", "#ededed", "#fff", "#fff"],
-  );
-  const borderColor = useTransform(
-    local,
-    [0, 0.08, 0.18, 0.35, 0.52, 2],
-    ["#ddd", "#ddd", "#999", "#999", "#ddd", "#ddd"],
-  );
+  const active = useTransform(local, [0, 0.08, 0.18, 0.35, 0.52, 2], [0, 0, 1, 1, 0, 0]);
+  const backgroundColor = useTransform(active, mixTones("--color-tone-100", "--color-tone-93"));
+  const borderColor = useTransform(active, mixTones("--color-tone-87", "--color-tone-60"));
   return (
     <motion.span
-      className="rounded-md border border-[#ddd] bg-white px-3 py-1.5"
+      className="rounded-md border border-tone-87 bg-tone-100 px-3 py-1.5"
       style={{ backgroundColor, borderColor }}
     >
       {label}
@@ -367,7 +362,7 @@ function TriggerPulse({
     index === 0 ? triggerPoint(value).y : 70 - triggerPoint(value).y,
   );
   const opacity = useTransform(local, [0, 0.12, 0.17, 0.54, 0.62, 2], [0, 0, 1, 1, 0, 0]);
-  return <motion.circle r="2.5" cx={cx} cy={cy} fill="#333" style={{ opacity }} />;
+  return <motion.circle r="2.5" cx={cx} cy={cy} className="fill-tone-20" style={{ opacity }} />;
 }
 
 function TriggersPicture({ clock }: ClockProps) {
@@ -382,24 +377,27 @@ function TriggersPicture({ clock }: ClockProps) {
         <TriggerSource phase={phase} index={1} label="◷ Schedule" />
       </div>
       <svg viewBox="0 0 64 70" className="h-17.5 w-full overflow-visible" fill="none">
-        <path d="M0 17H16C32 17 24 35 40 35H64M0 53H16C32 53 24 35 40 35" stroke="#bbb" />
+        <path
+          d="M0 17H16C32 17 24 35 40 35H64M0 53H16C32 53 24 35 40 35"
+          className="stroke-tone-73"
+        />
         <TriggerPulse phase={phase} index={0} />
         <TriggerPulse phase={phase} index={1} />
       </svg>
       <div className="relative">
         <motion.span
-          className="grid size-11 place-items-center rounded-[10px] bg-[#222] font-mono text-xl text-white"
+          className="grid size-11 place-items-center rounded-[10px] bg-tone-13 font-mono text-xl text-tone-100"
           style={{ scale }}
         >
           ƒ
         </motion.span>
         <motion.span
-          className="absolute -top-1.5 -right-1.5 grid size-4 place-items-center rounded-full border border-[#ddd] bg-white text-[9px] text-[#555]"
+          className="absolute -top-1.5 -right-1.5 grid size-4 place-items-center rounded-full border border-tone-87 bg-tone-100 text-[9px] text-tone-33"
           style={{ opacity }}
         >
           ✓
         </motion.span>
-        <small className="absolute -inset-x-2 top-full mt-2 text-center font-mono text-[9px] text-[#888]">
+        <small className="absolute -inset-x-2 top-full mt-2 text-center font-mono text-[9px] text-tone-53">
           Your app
         </small>
       </div>

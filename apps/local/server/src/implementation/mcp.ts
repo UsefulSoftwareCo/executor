@@ -35,7 +35,7 @@ export const localMcpBackend = (executor: Executor, principal: string) =>
     subscribeEvent: ({ key, ...input }) =>
       executor.events.subscribe({ ...input, key: { ...key, principal }, subject: principal }),
     unsubscribeEvent: ({ key }) => executor.events.unsubscribe({ ...key, principal }),
-    listSkills: (input) => executor.skills.list(input),
+    listSkills: (input, options) => executor.skills.list(input, options),
     readSkill: (input) => executor.skills.read(input),
     authorizeElicitation: () => Effect.void,
     listApps: (input = {}) => executor.apps.list(input),
@@ -98,7 +98,8 @@ export const localMcp = (
           }),
       },
       backend: {
-        listSkills: (input) => Effect.flatMap(RequestBackend, (b) => b.listSkills(input)),
+        listSkills: (input, options) =>
+          Effect.flatMap(RequestBackend, (b) => b.listSkills(input, options)),
         readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
         listApps: (input) => Effect.flatMap(RequestBackend, (b) => b.listApps(input)),
         listTargets: (input) => Effect.flatMap(RequestBackend, (b) => b.listTargets(input)),

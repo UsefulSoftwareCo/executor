@@ -1,5 +1,5 @@
 import { Match, Option, Predicate, Redacted, Schema } from "effect";
-import { CacheError } from "@executor-js/app-cache/contracts";
+import { CacheError, cacheLimits } from "@executor-js/app-cache/contracts";
 import { OpenapiError } from "../contracts/openapi.ts";
 import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
 import { FetchOptionUnsupported, NetworkRefused } from "../contracts/network.ts";
@@ -42,6 +42,17 @@ const cacheMessages = {
   storage: "The app cache failed to complete the operation.",
   timeout: "The app cache did not respond in time.",
 } satisfies Record<CacheError["reason"], string>;
+
+const count = (value: number) => value.toLocaleString("en-US");
+/** Fixed text per exceeded limit, with the limit's value. */
+const cacheLimitMessages = {
+  keyBytes: `A cache key exceeded the app cache's limit of ${count(cacheLimits.keyBytes)} bytes per key.`,
+  entryBytes: `A cache value exceeded the app cache's limit of ${count(cacheLimits.entryBytes)} bytes per entry.`,
+  batchBytes: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchBytes)} bytes per batch.`,
+  batchEntries: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchEntries)} entries per batch.`,
+  totalBytes: `The app cache is full: it holds at most ${count(cacheLimits.totalBytes)} bytes.`,
+  totalEntries: `The app cache is full: it holds at most ${count(cacheLimits.totalEntries)} entries.`,
+} satisfies Record<NonNullable<CacheError["limit"]>, string>;
 
 /** What the client was doing when an MCP server failed. */
 const mcpStages = {
@@ -302,7 +313,8 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       source: "storage",
       errorName: "CacheError",
       code: error.reason,
-      message: cacheMessages[error.reason],
+      message:
+        error.limit === undefined ? cacheMessages[error.reason] : cacheLimitMessages[error.limit],
     };
   if (Schema.is(OpenapiError)(error))
     return {

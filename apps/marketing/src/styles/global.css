@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./site-frame.css";
+@import "./dark-theme.css";
 
 @source "../**/*.astro";
 
@@ -21,6 +22,52 @@
 
   --color-accent: #0a0a0a;
   --color-accent-hover: #333333;
+  --color-ink-hover: #1f1f24;
+
+  /* Neutral ramp for illustrations, named by lightness in the light theme.
+     Dark mode remaps each step, so a tone keeps its place in the hierarchy. */
+  --color-tone-100: #ffffff;
+  --color-tone-99: #fdfdfd;
+  --color-tone-98: #fafafa;
+  --color-tone-97: #f7f7f7;
+  --color-tone-94: #f0f0f0;
+  --color-tone-93: #ededed;
+  --color-tone-91: #e8e8e8;
+  --color-tone-90: #e5e5e5;
+  --color-tone-89: #e3e3e3;
+  --color-tone-87: #dddddd;
+  --color-tone-80: #cccccc;
+  --color-tone-77: #c4c4c4;
+  --color-tone-73: #bbbbbb;
+  --color-tone-67: #aaaaaa;
+  --color-tone-60: #999999;
+  --color-tone-53: #888888;
+  --color-tone-47: #777777;
+  --color-tone-40: #666666;
+  --color-tone-33: #555555;
+  --color-tone-27: #444444;
+  --color-tone-20: #333333;
+  --color-tone-13: #222222;
+  --color-tone-9: #171717;
+
+  /* Sage accents for "deployed" and report states. */
+  --color-sage-wash: #eef0ec;
+  --color-sage-hover: #f0f0ee;
+  --color-sage-bar: #deded9;
+  --color-sage-mark: #7d8978;
+  --color-sage: #78917f;
+  --color-sage-text: #6f8978;
+  --color-sage-bar-strong: #818d80;
+  --color-file-ts: #5987b3;
+  --color-file-tsx: #5c989e;
+  --color-glyph-md: #a3a398;
+  --color-glyph-json: #8b9ba0;
+}
+
+/* Astro's <Code> emits both themes; switch to the dark one. */
+:root[data-theme="dark"] .astro-code,
+:root[data-theme="dark"] .astro-code span {
+  color: var(--shiki-dark) !important;
 }
 
 @layer base {

@@ -51,21 +51,22 @@ directory. `bun run with:local …` loads 1Password values instead; see
 
 ## Configuration
 
-| Variable                                | Meaning                                                                                                                                                                                  |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `EXECUTOR_DATA_DIR`                     | Directory containing `executor.pglite/`, `browser-auth.pglite/`, and `builds/`; defaults to `.local/executor`.                                                                           |
-| `EXECUTOR_PORT`                         | Loopback listener port; defaults to `4312`.                                                                                                                                              |
-| `EXECUTOR_API_KEY`                      | Optional supplied bearer token; set with the encryption key. At least 32 characters.                                                                                                     |
-| `EXECUTOR_ENCRYPTION_KEY`               | Optional supplied AES key; set with the API key. Exactly 64 hexadecimal characters.                                                                                                      |
-| `EXECUTOR_KEY_STORAGE`                  | Optional key storage for a new directory: `file` for `keys.json`, `os` for the OS credential store without the key file fallback. See [Key storage](#key-storage).                       |
-| `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `300000`.                                                                                                                            |
-| `EXECUTOR_MCP_MAX_TOOL_CALLS`           | Admitted calls per execute, including search; defaults to `100`.                                                                                                                         |
-| `EXECUTOR_MCP_MAX_OUTPUT_BYTES`         | Result value/log truncation budget; defaults to `65536`. Protocol metadata and truncation markers add overhead.                                                                          |
-| `EXECUTOR_TOOL_LISTING_FRESH_SECONDS`   | Reuse an app's evaluated tool list this long before refreshing it in the background; defaults to `30`.                                                                                   |
-| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `60`.                                                                                          |
-| `EXECUTOR_TOOL_LISTING_LOAD_SECONDS`    | Stop evaluating an app's tool list after this long when no request is waiting for it; defaults to `45`.                                                                                  |
-| `EXECUTOR_EVALUATION_MEMORY_MB`         | Memory for kept tool lists and app declarations; defaults to `256`.                                                                                                                      |
-| `EXECUTOR_APP_WORKERS`                  | Most app Workers kept loaded; defaults to `32`. Idle ones above it unload and reload on their next call. Each app with a database also keeps one data Worker, which this does not count. |
+| Variable                                | Meaning                                                                                                                                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EXECUTOR_DATA_DIR`                     | Directory containing `executor.pglite/`, `browser-auth.pglite/`, and `builds/`; defaults to `.local/executor`.                                                                              |
+| `EXECUTOR_PORT`                         | Loopback listener port; defaults to `4312`.                                                                                                                                                 |
+| `EXECUTOR_API_KEY`                      | Optional supplied bearer token; set with the encryption key. At least 32 characters.                                                                                                        |
+| `EXECUTOR_ENCRYPTION_KEY`               | Optional supplied AES key; set with the API key. Exactly 64 hexadecimal characters.                                                                                                         |
+| `EXECUTOR_KEY_STORAGE`                  | Optional key storage for a new directory: `file` for `keys.json`, `os` for the OS credential store without the key file fallback. See [Key storage](#key-storage).                          |
+| `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `300000`.                                                                                                                               |
+| `EXECUTOR_MCP_MAX_TOOL_CALLS`           | Admitted calls per execute, including search; defaults to `100`.                                                                                                                            |
+| `EXECUTOR_MCP_MAX_OUTPUT_BYTES`         | Result value/log truncation budget; defaults to `65536`. Protocol metadata and truncation markers add overhead.                                                                             |
+| `EXECUTOR_TOOL_LISTING_FRESH_SECONDS`   | Reuse an app's evaluated tool list this long before refreshing it in the background; defaults to `30`.                                                                                      |
+| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `60`.                                                                                             |
+| `EXECUTOR_TOOL_LISTING_LOAD_SECONDS`    | Stop evaluating an app's tool list after this long when no request is waiting for it; defaults to `45`.                                                                                     |
+| `EXECUTOR_EVALUATION_MEMORY_MB`         | Memory for kept tool lists and app declarations; defaults to `256`.                                                                                                                         |
+| `EXECUTOR_APP_WORKERS`                  | Most app and data Workers kept loaded; defaults to `64`. Idle ones above it unload and reload on their next call. An app with a database runs its calls in a data Worker, which counts too. |
+| `EXECUTOR_APP_WORKER_IDLE_SECONDS`      | Unload an app or data Worker not called for this long, even below `EXECUTOR_APP_WORKERS`; `0` turns this off. Defaults to `300`.                                                            |
 
 ### Key storage
 

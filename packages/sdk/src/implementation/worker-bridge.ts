@@ -68,6 +68,16 @@ const networkImport = `import "./${appNetworkModuleName}";`;
 const dispatchTiming = `const dispatched = (clock, started, value) => clock === undefined || typeof value !== "object" || value === null || Array.isArray(value) ? value : { ...value, dispatch: { elapsedMs: Number(clock() - started) / 1000000 } };`;
 
 /**
+ * Collect this isolate's garbage once a call is over, at most every ten seconds. workerd runs a
+ * major collection only when an isolate's own JavaScript heap grows, but each call also leaves
+ * runtime objects outside that heap, held by small wrappers that only such a collection frees.
+ * An isolate whose heap stays small therefore keeps every call's objects. Hosts that run their
+ * own workerd expose `gc`; elsewhere this does nothing.
+ */
+const collectGarbage = `let collected = 0;
+const collect = () => { const gc = globalThis.gc; if (typeof gc !== "function" || Date.now() - collected < 10000) return; collected = Date.now(); gc(); };`;
+
+/**
  * Runtime-owned RPC entrypoint. Retained fetch bridges continue to work and only new bridges use
  * the callback.
  *
@@ -100,6 +110,7 @@ const loadApp = () => import(${JSON.stringify(`./${module}`)}).then((loaded) => 
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
 import * as workers from "cloudflare:workers";
 ${dispatchTiming}
+${collectGarbage}
 class Invocation extends RpcTarget {
   #controller = new AbortController();
   #dispatch;
@@ -127,7 +138,7 @@ class Invocation extends RpcTarget {
   }
   #release() { for (const stub of this.#stubs) stub?.[Symbol.dispose](); this.#stubs = []; }
   async result() { this.#result ??= this.#dispatch(); const result = await this.#result; if (!result.ok) throw result.error; return result.value; }
-  async drain() { await this.#result; await this.#cache?.drain(); this.#cacheCallback?.[Symbol.dispose](); this.#cacheCallback = null; }
+  async drain() { await this.#result; await this.#cache?.drain(); this.#cacheCallback?.[Symbol.dispose](); this.#cacheCallback = null; collect(); }
   async cancel() { this.#controller.abort(); await this.#cache?.cancel(); await this.drain(); }
   [Symbol.dispose]() { this.#controller.abort(); if (this.#result === undefined) this.#release(); }
 }
@@ -148,6 +159,7 @@ import { DurableObject } from "cloudflare:workers";
 import * as workers from "cloudflare:workers";
 import { facetStorage } from "apps/storage/facet";
 ${dispatchTiming}
+${collectGarbage}
 /** Only the data supervisor reaches this entrypoint, to unload a facet it replaced. */
 export default class extends workers.WorkerEntrypoint {
   ${retireMethod}
@@ -171,6 +183,6 @@ export class ExecutorAppData extends DurableObject {
       return dispatched(clock, started, await response.json());
     } finally { this.#calls.delete(id); }
   }
-  async finish(id) { try { await this.#caches.get(id)?.drain(); } finally { this.#caches.delete(id); } }
-  async cancel(id) { this.#calls.get(id)?.abort(); await this.#caches.get(id)?.cancel(); this.#caches.delete(id); }
+  async finish(id) { try { await this.#caches.get(id)?.drain(); } finally { this.#caches.delete(id); collect(); } }
+  async cancel(id) { this.#calls.get(id)?.abort(); await this.#caches.get(id)?.cancel(); this.#caches.delete(id); collect(); }
 }`;

@@ -112,11 +112,12 @@ export default defineConfig({
         },
       }),
   deployment: { output: "static", site: siteOrigin, base: "/docs" },
-  // The marketing site is light-only and sets the same faces, so both halves of
-  // the public origin read as one product.
+  // The marketing site uses the same faces and the same colours in both modes,
+  // following the system setting, so both halves of the public origin read as
+  // one product.
   theme: {
-    accent: "#111111",
-    mode: "light",
+    accent: { light: "#111111", dark: "#ededed" },
+    mode: "system",
     radius: "md",
     fonts: { display: "geist", body: "geist", mono: "geist-mono" },
   },

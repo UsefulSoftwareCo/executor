@@ -12,6 +12,9 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { batchedReads, batchPath } from "../support/read-batches.ts";
+import { Evidence } from "../support/evidence.ts";
+import { Target } from "../support/platform.ts";
+import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Viewer = Schema.Struct({ userId: Schema.String });
@@ -307,6 +310,111 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         );
         expect(unanswered).toBeGreaterThan(0);
         expect(failures).toContain("BrowserTransportFailed");
+      }),
+    ),
+  );
+
+  it.effect(scenarios.dashboardBuildChange.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors;
+        const browser = yield* Browser;
+        const target = yield* Target;
+        const evidence = yield* Evidence;
+        const app = yield* deploy("Upgraded reads", "");
+        const upgrade = `${target.metadata.commit}-next`;
+        const servedBuild = () =>
+          browser.use("Read the build that served the page", (page) =>
+            page.evaluate(
+              () =>
+                performance
+                  .getEntriesByType("navigation")
+                  .flatMap((entry) =>
+                    entry instanceof PerformanceNavigationTiming ? entry.serverTiming : [],
+                  )
+                  .find((metric) => metric.name === "executor-build")?.description,
+            ),
+          );
+        const updated = "Executor was updated. Reload this page to use the new version.";
+
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open the organization's apps", (page) =>
+          page.goto(`/org/${actors.organization.slug}`),
+        );
+        expect(yield* servedBuild()).toBe(target.metadata.commit);
+
+        // The operator upgrades the server while the tab stays open.
+        yield* serverControl("stop");
+        yield* serverControl("environment", 200, { EXECUTOR_BUILD_VERSION: upgrade });
+        yield* serverControl("start");
+
+        // The tab's batches name endpoints the new server no longer has, so it refuses them.
+        yield* browser.use("Send the previous build's batches", (page) =>
+          page.route(
+            (url) => url.pathname === batchPath,
+            (route) =>
+              route.continue({
+                postData: JSON.stringify({
+                  reads: batchedReads(route.request().postData()).map((read) => ({
+                    ...read,
+                    endpoint: `${read.endpoint}FromPreviousBuild`,
+                  })),
+                }),
+              }),
+          ),
+        );
+        yield* openInApp("Open the app", `/org/${actors.organization.slug}/apps/${app.id}`);
+        yield* browser.use("Wait for the reload notice", (page) =>
+          page
+            .getByRole("status")
+            .filter({ hasText: "Executor was updated" })
+            .getByRole("button", { name: "Reload" })
+            .waitFor(),
+        );
+        // A refused read explains the update instead of reporting an unreachable server.
+        yield* browser.use("Wait for the refused read's explanation", (page) =>
+          page.getByText(updated).first().waitFor(),
+        );
+        expect(
+          yield* browser.use("Count unreachable-server messages", (page) =>
+            page.getByText("Could not reach the server").count(),
+          ),
+        ).toBe(0);
+        yield* evidence.attach(
+          "build-change.png",
+          "image/png",
+          yield* browser.use("Capture the reload notice", (page) => page.screenshot()),
+        );
+
+        // Reloading loads the new build, which reads normally.
+        yield* browser.use("Reload from the notice", (page) =>
+          page
+            .unroute((url) => url.pathname === batchPath)
+            .then(() =>
+              Promise.all([
+                page.waitForEvent("load"),
+                page
+                  .getByRole("status")
+                  .filter({ hasText: "Executor was updated" })
+                  .getByRole("button", { name: "Reload" })
+                  .click(),
+              ]),
+            ),
+        );
+        expect(yield* servedBuild()).toBe(upgrade);
+        yield* openInApp("Open the organization's apps", `/org/${actors.organization.slug}`);
+        yield* openInApp("Open the app again", `/org/${actors.organization.slug}/apps/${app.id}`);
+        yield* browser.use("Wait for the app's reads", (page) =>
+          page.waitForLoadState("networkidle"),
+        );
+        const after = yield* browser.use("Count update messages after the reload", (page) =>
+          Promise.all([
+            page.getByText("Executor was updated").count(),
+            page.getByText("Unable to complete this request").count(),
+          ]),
+        );
+        expect(after).toEqual([0, 0]);
       }),
     ),
   );

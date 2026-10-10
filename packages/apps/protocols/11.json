@@ -1951,6 +1951,56 @@
           "isOptional": true
         }
       ]
+    },
+    "cacheReply": {
+      "_tag": "Union",
+      "types": [
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "ok",
+              "type": {
+                "_tag": "Literal",
+                "literal": true
+              },
+              "isOptional": false
+            },
+            {
+              "name": "value",
+              "type": {
+                "_tag": "Declaration",
+                "representation": {
+                  "id": "effect/schema/Json",
+                  "payload": null
+                }
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "ok",
+              "type": {
+                "_tag": "Literal",
+                "literal": false
+              },
+              "isOptional": false
+            },
+            {
+              "name": "error",
+              "type": {
+                "_tag": "Reference",
+                "$ref": "CacheErrorEncoded"
+              },
+              "isOptional": false
+            }
+          ]
+        }
+      ]
     }
   },
   "unchanged": [
@@ -1965,7 +2015,6 @@
     "workflowStepReply",
     "workflowControl",
     "cacheCommand",
-    "cacheReply",
     "accountCheck",
     "accounts",
     "migrate"
@@ -3854,6 +3903,84 @@
       ],
       "annotations": {
         "~identifier": "HostKindMismatch"
+      }
+    },
+    "CacheErrorEncoded": {
+      "_tag": "Objects",
+      "propertySignatures": [
+        {
+          "name": "_tag",
+          "type": {
+            "_tag": "Literal",
+            "literal": "CacheError"
+          },
+          "isOptional": false
+        },
+        {
+          "name": "reason",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "unavailable"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "storage"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "invalid"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "capacity"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "timeout"
+              }
+            ]
+          },
+          "isOptional": false
+        },
+        {
+          "name": "limit",
+          "type": {
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": "keyBytes"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "entryBytes"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "batchBytes"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "batchEntries"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "totalBytes"
+              },
+              {
+                "_tag": "Literal",
+                "literal": "totalEntries"
+              }
+            ]
+          },
+          "isOptional": true
+        }
+      ],
+      "annotations": {
+        "~identifier": "CacheError"
       }
     }
   },

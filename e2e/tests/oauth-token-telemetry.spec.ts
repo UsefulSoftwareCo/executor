@@ -1,8 +1,9 @@
 /**
  * Cloud's OAuth token endpoint answers MCP clients with RFC 6749 errors that are theirs to act on,
  * so these never reach Sentry. Its request span records what was asked and answered instead, from
- * closed vocabularies: the grant type, the OAuth error, rate limiting, whether refresh-token
- * reuse detection ended a whole grant, and the family of MCP client the registration names.
+ * closed vocabularies: the grant type, the OAuth error, rate limiting, why a refresh was refused,
+ * whether refresh-token reuse detection ended a whole grant, how long ago a refused token was
+ * replaced, and the family of MCP client the registration names.
  * Authorization and consent spans name that family too, so re-logins can be counted per client.
  */
 import { randomBytes } from "node:crypto";
@@ -144,6 +145,7 @@ const expectRecorded = (
     readonly grant: string;
     readonly error: string;
     readonly revoked: boolean;
+    readonly rejection: string;
     readonly family: string;
   },
 ) => {
@@ -154,6 +156,7 @@ const expectRecorded = (
     "auth.token.error": expected.error,
     "auth.token.rate_limited": "false",
     "auth.token.refresh_family_revoked": String(expected.revoked),
+    "auth.token.refresh_rejection": expected.rejection,
     "auth.token.client_family": expected.family,
   });
   expect(span.events.filter(({ name }) => name === revokedEvent)).toHaveLength(
@@ -186,6 +189,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "authorization_code",
           error: "none",
           revoked: false,
+          rejection: "none",
           family: "claude-code",
         });
 
@@ -197,11 +201,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         });
         expect(unsupported.status).toBe(400);
 
-        // End the rotation's replay window without waiting an hour: the stored token now
-        // reads as rotated long ago. Only this client's rows change.
+        // End the rotation's replay window without waiting: the stored token now reads as
+        // rotated two hours ago. Only this client's rows change.
         const locks = yield* cloudLocks;
         yield* locks.run({
-          sql: `update "oauthRefreshToken" set "rotationReplayExpiresAt" = now() - interval '1 minute'
+          sql: `update "oauthRefreshToken" set "rotationReplayExpiresAt" = now() - interval '1 minute',
+            "revoked" = now() - interval '2 hours', "rotatedAt" = now() - interval '2 hours'
             where "clientId" = $1 and "rotatedAt" is not null`,
           params: [stored.clientId],
         });
@@ -241,6 +246,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "refresh_token",
           error: "none",
           revoked: false,
+          rejection: "none",
           family: "claude-code",
         });
         expectRecorded(spans.unsupported, {
@@ -248,6 +254,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "other",
           error: "unsupported_grant_type",
           revoked: false,
+          rejection: "none",
           family: "claude-code",
         });
         expectRecorded(spans.reused, {
@@ -255,13 +262,23 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "refresh_token",
           error: "invalid_grant",
           revoked: true,
+          rejection: "reused",
           family: "claude-code",
         });
+        // The reused token was replaced two hours before it came back, by rotation; tokens
+        // that were never revoked carry no age.
+        const age = Number(spans.reused.tags["auth.token.refresh_revoked_age_seconds"]);
+        expect(age).toBeGreaterThanOrEqual(7200);
+        expect(age).toBeLessThan(7200 + 600);
+        expect(spans.reused.tags["auth.token.refresh_rotated"]).toBe("true");
+        for (const span of [spans.sibling, spans.ended, spans.duplicated])
+          expect(span.tags["auth.token.refresh_revoked_age_seconds"]).toBeUndefined();
         expectRecorded(spans.ended, {
           status: 400,
           grant: "refresh_token",
           error: "invalid_grant",
           revoked: false,
+          rejection: "unknown_token",
           family: "claude-code",
         });
         for (const span of [spans.duplicated, spans.padded])
@@ -270,6 +287,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             grant: "refresh_token",
             error: "invalid_grant",
             revoked: false,
+            rejection: "unknown_token",
             family: "claude-code",
           });
         for (const span of [spans.lastUnsupported, spans.uppercase])
@@ -278,6 +296,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             grant: "other",
             error: "unsupported_grant_type",
             revoked: false,
+            rejection: "none",
             family: "claude-code",
           });
 

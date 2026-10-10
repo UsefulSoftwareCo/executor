@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @source "../components";
 @source "../../../../devtools/src";
+@source "../../../../dashboard-start/src/implementation/build-change-notice.tsx";
 
 /* Executor's product tokens and bundled Geist faces. */
 @font-face {

@@ -776,6 +776,28 @@ http.createServer((request, response) => {
               200,
             );
             yield* spansOf(afterRestart);
+            // The image runs Executor's workerd build pinned in workerd.json, configured to
+            // collect idle isolates, pace pressure collections and release TCMalloc memory. App
+            // Worker unloading stays with the runner's residency, and the bridges keep `gc`.
+            const pinFile = yield* (yield* Path.Path).fromFileUrl(
+              new URL("../../apps/hosted/self-host/workerd.json", import.meta.url),
+            );
+            const pin = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(Schema.Struct({ release: Schema.String })),
+            )(yield* (yield* FileSystem.FileSystem).readFileString(pinFile));
+            expect(
+              (yield* run(["exec", id, "cat", "/app/runtime-packages.txt"])).split("\n"),
+            ).toContain(`workerd@${pin.release}`);
+            const workerdConfig = yield* run(["exec", id, "cat", "/app/workerd.capnp"]);
+            for (const setting of [
+              "idleIsolateGcDelayMs=10000",
+              "pressureGcBudgetMs=100",
+              "tcmallocBackgroundReleaseBytesPerSecond=8388608",
+              "releaseMemoryAfterGc=true",
+              'v8Flags=["--expose-gc","--no-flush-liftoff-code"]',
+            ])
+              expect(workerdConfig).toContain(setting);
+            expect(workerdConfig).not.toContain("workerLoaderIdleTtlMs");
             expect(
               yield* processes.exitCode(
                 ChildProcess.make("docker", [
@@ -1847,7 +1869,7 @@ type Probe = Effect.Effect<{ readonly isolate: string; readonly calls: number },
 /**
  * The released image reads `EXECUTOR_APP_WORKERS` through its Go host into the apps Worker's
  * workerd binding. A positive value bounds the app Workers kept loaded, an unset value applies the
- * default of 32 and an invalid value stops the server before it starts. Each probe app reports an
+ * default of 64 and an invalid value stops the server before it starts. Each probe app reports an
  * identifier from its module state, so a Worker that was unloaded and loaded again reports a new
  * identifier and no earlier calls. The limit also counts the built-in Executor app's Worker, so
  * the probes start only after its background setup has finished.
@@ -2108,10 +2130,10 @@ export default defineApp({ accounts: {} }, async () => ({
           }),
         );
 
-        // No limit set: the default keeps 32 Workers loaded and unloads the 33rd most recent.
+        // No limit set: the default keeps 64 Workers loaded and unloads the 65th most recent.
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const probes = yield* serve(undefined, 33);
+            const probes = yield* serve(undefined, 65);
             const first: Array<{ isolate: string; calls: number }> = [];
             for (const probe of probes) first.push(yield* probe);
             // Newest first, so each call reuses a loaded Worker and unloads none.

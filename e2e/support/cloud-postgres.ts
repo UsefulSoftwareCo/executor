@@ -248,3 +248,57 @@ export const startCloudPostgres = (input: {
         Effect.retry({ schedule: Schedule.spaced("1 second"), times: 90 }),
       );
   });
+
+/**
+ * The read-only login the Worker uses for v1's database. Production's role inherits
+ * `pg_read_all_data`; this one may select only the tables the check reads, so a scenario fails
+ * if the check starts reading another.
+ */
+export const v1DatabaseReader = "executor_v2_reader";
+
+/**
+ * Create an emulated Executor v1 database beside Cloud's own: v1's data tables with only the
+ * columns the v1 sign-in check reads, and a login that may only select them. Scenarios write
+ * rows as the owner through `cloud-rows-fixture.ts`.
+ */
+export const createV1Database = (input: {
+  readonly container: string;
+  readonly dockerEnv: DockerEnv;
+  readonly readerPassword: string;
+}) =>
+  Effect.gen(function* () {
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const tables = ["integration", "connection", "oauth_client", "tool_policy", "artifact"];
+    const statements = [
+      ...tables.map((table) => `create table ${table} (tenant varchar(255) not null)`),
+      "create table plugin_storage (tenant varchar(255) not null, plugin_id varchar(255) not null)",
+      `create role ${v1DatabaseReader} login password '${input.readerPassword}'`,
+      `grant select on ${[...tables, "plugin_storage"].join(", ")} to ${v1DatabaseReader}`,
+    ];
+    const psql = (database: string, sql: string) =>
+      processes.exitCode(
+        ChildProcess.make(
+          "docker",
+          [
+            "exec",
+            input.container,
+            "psql",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            "executor",
+            "-d",
+            database,
+            "-c",
+            sql,
+          ],
+          { env: input.dockerEnv, extendEnv: false, stdout: "ignore", stderr: "ignore" },
+        ),
+      );
+    const created = yield* psql("executor", "create database executor_v1");
+    if (created !== 0)
+      return yield* new CloudPostgresFailed({ operation: "Create the emulated v1 database" });
+    for (const statement of statements)
+      if ((yield* psql("executor_v1", statement)) !== 0)
+        return yield* new CloudPostgresFailed({ operation: "Create the emulated v1 tables" });
+  });

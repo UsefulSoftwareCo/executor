@@ -49,7 +49,7 @@ import { appNetworkModule } from "./app-network.ts";
 import { sealAccounts } from "./credential-handles.ts";
 import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
 import { invocationWorkflow } from "./worker-workflow-rpc.ts";
-import type { AppWorkerResidency } from "./app-worker-residency.ts";
+import { type AppWorkerResidency, namedWorker } from "./app-worker-residency.ts";
 
 type Callback = (input: unknown) => Promise<unknown>;
 
@@ -83,6 +83,11 @@ export interface AppRunnerHost {
    * Shared by every runner in the process.
    */
   readonly residency?: AppWorkerResidency;
+  /**
+   * Unload an app's facet Worker for one execution context when it is idle, so facet Workers count
+   * against the residency's limit. True once it is unloaded. Supplied with a residency.
+   */
+  readonly unloadFacet?: (app: string, identity: string) => Effect.Effect<boolean, unknown>;
 }
 
 /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
@@ -431,8 +436,9 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         const unhold =
           name === null || residency === undefined
             ? Effect.void
-            : yield* Effect.acquireRelease(residency.hold(host.loader, name), (unhold) =>
-                held ? Effect.void : unhold,
+            : yield* Effect.acquireRelease(
+                residency.hold(name, namedWorker(host.loader, name), host.waitUntil),
+                (unhold) => (held ? Effect.void : unhold),
               );
         const services = yield* Effect.context<never>();
         const load = async () => {
@@ -696,14 +702,34 @@ export const makeAppRunner = (host: AppRunnerHost) => {
             : { workflowRun: capabilities.workflow.runId }),
         });
         if (mode === "facet")
-          return yield* facet(
-            invocation,
-            identity,
-            capabilities,
-            protocol,
-            load,
-            body,
-            timing.waiting,
+          return yield* Effect.scoped(
+            Effect.gen(function* () {
+              // The facet Worker counts against the same limit as app Workers while it is loaded.
+              const unloadFacet = host.unloadFacet;
+              if (host.residency !== undefined && unloadFacet !== undefined) {
+                const hold = host.residency.hold(
+                  `data:${name}`,
+                  {
+                    run: unloadFacet(invocation.app, identity).pipe(
+                      Effect.orElseSucceed(() => false),
+                    ),
+                    // The supervisor replaces a facet Worker whose unload does not settle.
+                    abandon: () => undefined,
+                  },
+                  host.waitUntil,
+                );
+                yield* Effect.acquireRelease(hold, (unhold) => unhold).pipe(Effect.asVoid);
+              }
+              return yield* facet(
+                invocation,
+                identity,
+                capabilities,
+                protocol,
+                load,
+                body,
+                timing.waiting,
+              );
+            }),
           );
         const data = host.data(invocation.app);
         const services = yield* Effect.context<never>();

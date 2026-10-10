@@ -8,6 +8,7 @@ import type {
   ToolPage,
   ToolInvocationOptions,
   ToolListOptions,
+  CatalogReadOptions,
   ElicitationFailed,
   AppSkillCatalog,
   AppSkillDocument,
@@ -48,6 +49,7 @@ export interface McpBackend<E extends Error> {
   /** Authorize app and profile access before evaluating skill metadata. */
   readonly listSkills: (
     input: Parameters<Executor["skills"]["list"]>[0],
+    options?: CatalogReadOptions,
   ) => Effect.Effect<AppSkillCatalog, E>;
   /** Reauthorize each document/reference read, including previous deployments. */
   readonly readSkill: (

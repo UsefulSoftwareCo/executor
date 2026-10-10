@@ -121,8 +121,6 @@ const deployConfiguration = {
   OAUTH_PROXY_SECRET: "0".repeat(32),
   OAUTH_PROXY_PRODUCTION_URL: "https://executor.sh",
   CONTEXT_DEV_API_KEY: "unused",
-  V1_WORKOS_API_KEY: "unused",
-  V1_MEMBERSHIP_CHECK_SINCE: "2026-01-01T00:00:00Z",
   POSTHOG_PERSONAL_API_KEY: "unused",
   SENTRY_AUTH_TOKEN: "unused",
   AUTH_EMAIL_DOMAIN: "executor.sh",
@@ -141,6 +139,10 @@ const production: Target = {
   stage: productionStage,
   configuration: {
     ...deployConfiguration,
+    // The v1 sign-in check runs only on production; previews receive none of its settings.
+    V1_WORKOS_API_KEY: "unused",
+    V1_MEMBERSHIP_CHECK_SINCE: "2026-01-01T00:00:00Z",
+    V1_PLANETSCALE_DATABASE_NAME: "unused",
     SENTRY_ENABLED: "true",
     POSTHOG_ENABLED: "true",
     SENTRY_URL: "https://sentry.io",

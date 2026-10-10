@@ -27,6 +27,7 @@ import type {
 import type { BlobStorage } from "./blobs.ts";
 import { RepositoryHost, type RepositoryBackend } from "./source.ts";
 import type { RegistryOptions } from "./registry.ts";
+import type { CatalogReadOptions } from "./declarations.ts";
 
 /** The connection being completed, with what the product needs to recheck without reading SDK tables. */
 export interface AccountConnectionCompletion {
@@ -171,8 +172,8 @@ type Groups<Api> = Api extends HttpApi.HttpApi<infer _Id, infer G> ? G : never;
 type WithInvocationOptions<M> = M extends (input: infer Input) => infer Output
   ? (input: Input, options?: ToolInvocationOptions) => Output
   : M;
-type WithListOptions<M> = M extends (input: infer Input) => infer Output
-  ? (input: Input, options?: ToolListOptions) => Output
+type WithListOptions<M, Options> = M extends (input: infer Input) => infer Output
+  ? (input: Input, options?: Options) => Output
   : M;
 
 /**
@@ -189,9 +190,13 @@ type FlatExecutor = {
       ? HttpApiEndpoint.Identifier<E> extends "call" | "resume"
         ? WithInvocationOptions<Method<E>>
         : HttpApiEndpoint.Identifier<E> extends "list"
-          ? WithListOptions<Method<E>>
+          ? WithListOptions<Method<E>, ToolListOptions>
           : Method<E>
-      : Method<E>;
+      : HttpApiGroup.Identifier<G> extends "skills"
+        ? HttpApiEndpoint.Identifier<E> extends "list"
+          ? WithListOptions<Method<E>, CatalogReadOptions>
+          : Method<E>
+        : Method<E>;
   };
 };
 

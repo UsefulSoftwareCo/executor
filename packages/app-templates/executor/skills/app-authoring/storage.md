@@ -127,8 +127,12 @@ that it happened:
 ```ts
 const won =
   ctx.sql.exec("UPDATE requests SET status = 'cancelled' WHERE id = ? AND status = 'pending'", id)
-    .rowsWritten === 1;
+    .rowsWritten > 0;
 ```
+
+Compare `rowsWritten` with `0`, not `1`. As in Cloudflare's billing count, it
+includes every index row the statement wrote, so updating an indexed column of
+one row reports `2`.
 
 Read-then-write logic belongs in one `transaction`, which no other call can
 interleave with.
@@ -149,6 +153,8 @@ Applied migrations cannot change. The host records each one's name and a hash
 of its contents; a deploy whose `migrations/` renames, edits or removes an
 applied file fails and says which. To change the schema, add a new migration.
 
+Comments can go anywhere in a migration, including after its last statement.
+
 ## Executor's tables
 
 Tables named `_executor_*` belong to Executor: applied migrations, workflow step
@@ -161,9 +167,39 @@ your own tables.
 
 ## Limits
 
-There is no row budget, but a call must finish within the host's call deadline,
-and while one statement runs every other call to the app waits for the
-database. Add an index or a `LIMIT` to keep statements short, and split large
+App SQL is Cloudflare's Durable Object SQLite on every host, local included,
+with its limits:
+
+- A statement binds at most 100 values. Bind a long list as one JSON array and
+  read it with `json_each`:
+
+  ```ts
+  ctx.sql
+    .exec<Message>(
+      "SELECT id, subject FROM messages WHERE id IN (SELECT value FROM json_each(?))",
+      JSON.stringify(ids),
+    )
+    .toArray();
+  ```
+
+- A statement is at most 100 KB; a string, BLOB or row at most 2 MB; a table
+  has at most 100 columns.
+- A compound `SELECT` has at most 5 terms (`UNION`, `UNION ALL`, `INTERSECT`,
+  `EXCEPT`), and a `LIKE` or `GLOB` pattern is at most 50 bytes.
+
+There is no row budget. Every other call to the app waits while one statement
+runs, so add an index or a `LIMIT` to keep statements short, and split large
 work into batches: a workflow loop calling a mutation that handles one batch per
 step (see [workflows.md](workflows.md)). Inside `transaction`, any statement that
 fails rolls the whole transaction back, even if you catch its error.
+
+A call has no deadline of its own; the caller's deadline bounds it:
+
+- An MCP `execute` program has 5 minutes, shared by every call it makes. Time
+  waiting for an approval or an answer does not count. Local's
+  `EXECUTOR_MCP_TIMEOUT_MS` changes it.
+- A workflow step has its `timeout`, 10 minutes by default.
+- A webhook handler has 45 seconds, and an account check 15 seconds.
+
+The app cache has its own limits; see "Cache and lazy operation sources" in
+[tools.md](tools.md).

@@ -154,6 +154,10 @@ const redirectIdentity = (value: string) => {
 };
 
 /** Hosts select and authorize their own resource (an organization for hosted, an instance for local). */
+/** Why Better Auth refused a refresh grant, and when the presented token was revoked. */
+export type RefreshRejection = Parameters<
+  NonNullable<OAuthOptions<Scope[]>["onRefreshRejected"]>
+>[0];
 export interface GrantOAuthOptions {
   /** The browser origin that serves sign-in and consent; same-origin checks compare against it. */
   readonly origin: string;
@@ -181,8 +185,8 @@ export interface GrantOAuthOptions {
   ) => Effect.Effect<void, APIError>;
   readonly resources: NonNullable<OAuthOptions<Scope[]>["resources"]>;
   readonly scopes: Scope[];
-  /** Observe reuse detection revoking every refresh token of a client and user. */
-  readonly onRefreshFamilyRevoked?: (() => void) | undefined;
+  /** Observe why a refresh grant was refused, including reuse detection revoking its family. */
+  readonly onRefreshRejected?: ((rejection: RefreshRejection) => void) | undefined;
 }
 const accessTokenSeconds = 3600;
 /** Better Auth's default refresh token lifetime, stated because idle grant expiry follows it. */
@@ -234,9 +238,9 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     // live receives the same response instead of revoking every token for the client and user.
     // Later reuse still revokes the family.
     refreshTokenReuseInterval: accessTokenSeconds,
-    ...(settings.onRefreshFamilyRevoked === undefined
+    ...(settings.onRefreshRejected === undefined
       ? {}
-      : { onRefreshFamilyRevoked: settings.onRefreshFamilyRevoked }),
+      : { onRefreshRejected: settings.onRefreshRejected }),
     loginPage: "/mcp/authorize",
     consentPage: "/mcp/authorize",
     clientPrivileges: () => false,

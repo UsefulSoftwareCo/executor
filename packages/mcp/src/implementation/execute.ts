@@ -195,7 +195,8 @@ function listTools<E extends Error>(
     do {
       const page = yield* backend.listTools(
         { app, ...selection, deployment, cursor, limit: 2_000 },
-        { reportRunningAfterMillis: waitMs },
+        // Discovery reads every app's listing; refreshing aged ones would load each app's Worker.
+        { reportRunningAfterMillis: waitMs, refreshStale: false },
       );
       yield* paged;
       deployment = page.deployment;

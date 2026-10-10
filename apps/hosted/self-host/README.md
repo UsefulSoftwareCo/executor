@@ -69,6 +69,13 @@ thread; the two still share the container's CPU, memory and disk. Neither Bun no
 Node ships in the runtime image. Build tools
 and the workspace dependency tree stay in the build stage.
 
+The image runs Executor's build of workerd from
+[UsefulSoftwareCo/workerd](https://github.com/UsefulSoftwareCo/workerd), pinned by
+release and SHA-256 in `workerd.json`; packaging downloads it and fails on any other
+digest. It adds idle-isolate and memory-pressure garbage collection and TCMalloc
+memory release, set by `memory` in the generated `workerd.capnp`. Cloud and local
+development keep upstream workerd.
+
 The runtime uses Debian 12 distroless with Git's native commands and HTTP backend,
 their shared libraries, and the small set of tools used to prepare data volumes.
 Perl, package managers, Git's optional scripts, and their dependencies stay in a

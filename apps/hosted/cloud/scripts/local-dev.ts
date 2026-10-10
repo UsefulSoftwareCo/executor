@@ -174,7 +174,8 @@ const main = Effect.scoped(
       CLOUD_DEV_APP_UI_PORT: String(appUiPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appUiPort}`,
       EXECUTOR_EMULATORS: JSON.stringify(emulators.services),
-      // Accounts from earlier sessions skip the emulated v1 check; new sign-ups get it.
+      // The emulated v1 check runs only with a v1 database (V1_DATABASE_URL), which local
+      // development does not start. When one is set, accounts from earlier sessions skip it.
       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
     });
 

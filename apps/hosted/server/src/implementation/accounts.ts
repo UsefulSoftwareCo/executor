@@ -307,10 +307,6 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
       .handle("startOAuth", ({ params, payload }) =>
         Effect.flatMap(currentOwner, (owner) =>
           startOAuth(owner, { connection: params.connection, ...payload, redirectUri }),
-        ).pipe(
-          Effect.map((result) =>
-            result.status === "redirect" ? { ...result, redirectUri } : result,
-          ),
         ),
       )
       .handle("completeOAuth", ({ params, payload }) =>
@@ -332,7 +328,6 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const auth = yield* Authentication;
-      const redirectUri = accountOAuthRedirectUri(auth);
       return handlers.handle("resolve", ({ payload }) =>
         Effect.gen(function* () {
           const principal = yield* CurrentPrincipal;
@@ -357,7 +352,8 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
             connection: connection.id,
             app: connection.target?.app ?? null,
             profile: connection.target?.profile,
-            redirectUri,
+            // The callback this sign-in sent, which a saved client may have kept from before.
+            redirectUri: connection.redirectUri,
             reconnect: connection.reconnectAccount !== null,
           };
         }),

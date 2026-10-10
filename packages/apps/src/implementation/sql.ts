@@ -10,6 +10,7 @@ import { Effect, Schema } from "effect";
 import {
   migrationsDirectory,
   reservedTablePrefix,
+  sqlBindingsLimit,
   type AppSqlStorage,
   type Sql,
   type SqlCursor,
@@ -174,6 +175,12 @@ export const authorSql = (
     mode: "read" | "write",
   ): SqlCursor<Row> => {
     live();
+    if (bindings.length > sqlBindingsLimit)
+      throw refuse(
+        new Error(
+          `A statement can bind at most ${sqlBindingsLimit} values, but this one binds ${bindings.length}. Pass a long list as one JSON array and read it with json_each(?), or split the work into batches.`,
+        ),
+      );
     if (mode === "write") {
       const statement = () => {
         const cursor = materialize<Row>(storage.sql.exec(query, ...bindings));
@@ -383,6 +390,55 @@ const sha256 = (text: string) =>
     ),
   );
 
+/**
+ * A script up to the end of its last statement. Durable Object SQLite refuses a script whose last
+ * statement is followed by a comment ("SQL code did not contain a statement"), so the comments and
+ * whitespace after it are not run. Quoted text and identifiers may contain `--` and `/*`.
+ */
+const statementsOf = (script: string) => {
+  let end = 0;
+  let index = 0;
+  while (index < script.length) {
+    const char = script[index];
+    const next = script[index + 1];
+    if (char === "-" && next === "-") {
+      const newline = script.indexOf("\n", index);
+      index = newline === -1 ? script.length : newline + 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const close = script.indexOf("*/", index + 2);
+      index = close === -1 ? script.length : close + 2;
+      continue;
+    }
+    const closing =
+      char === "'" || char === '"' || char === "`" ? char : char === "[" ? "]" : undefined;
+    if (closing !== undefined) {
+      // A doubled quote is an escaped quote; an unterminated one runs to the end, as SQLite reads it.
+      let after = index + 1;
+      while (true) {
+        const found = script.indexOf(closing, after);
+        if (found === -1) {
+          after = script.length;
+          break;
+        }
+        if (closing !== "]" && script[found + 1] === closing) {
+          after = found + 2;
+          continue;
+        }
+        after = found + 1;
+        break;
+      }
+      index = after;
+      end = index;
+      continue;
+    }
+    index += 1;
+    if (char !== undefined && !/\s/u.test(char)) end = index;
+  }
+  return script.slice(0, end);
+};
+
 /** Whether a build's files give the app a database: any `.sql` file in `migrations/`. */
 export const hasMigrations = (files: readonly { readonly path: string }[]) =>
   files.some(
@@ -475,8 +531,11 @@ export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
         const pending = migrations.slice(history.length);
         const appliedAt = new Date().toISOString();
         for (const [offset, migration] of pending.entries()) {
+          // The hash covers the whole file; only the statements run. A file of only comments
+          // runs nothing.
+          const statements = statementsOf(migration.content);
           try {
-            storage.sql.exec(migration.content);
+            if (statements !== "") storage.sql.exec(statements);
           } catch (error) {
             // Throwing rolls back every migration of this run.
             throw new MigrationFailed({

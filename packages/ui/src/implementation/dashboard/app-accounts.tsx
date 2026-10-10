@@ -78,6 +78,8 @@ type AccountBindingProps<E> = {
   readonly slot: string;
   readonly account: AccountId;
   readonly label: string;
+  /** Whether this profile selects the account; only a selected account can be removed from it. */
+  readonly bound: boolean;
   readonly update: Atom.AtomResultFn<
     Omit<typeof ProfileInputs.update.Type, "app" | "profile">,
     Profile,
@@ -122,12 +124,9 @@ function useRemoveAccountBinding<E>({
   };
 }
 
-const bindingActionClass =
-  "shrink-0 text-muted-foreground [@media(hover:hover)]:opacity-0 group-hover/account:opacity-100 group-focus-within/account:opacity-100 focus-visible:opacity-100 data-loading:opacity-100";
-
 /**
- * A selected account's actions in this app: the host's items, then removal from the profile.
- * Removal keeps the reusable account and every other provider selection.
+ * An account's actions in this app: the host's items, then removal from the profile when the
+ * profile selects it. Removal keeps the reusable account and every other provider selection.
  */
 export function AccountBindingMenu<E>({
   children,
@@ -143,7 +142,7 @@ export function AccountBindingMenu<E>({
             variant="ghost"
             size="icon-xs"
             aria-label={`Manage ${props.label}`}
-            className={`${bindingActionClass} hover:text-foreground data-[state=open]:opacity-100`}
+            className="shrink-0 text-muted-foreground hover:text-foreground"
             loading={removal.pending}
           >
             <HugeiconsIcon icon={MoreHorizontalIcon} size={14} strokeWidth={2} aria-hidden />
@@ -151,14 +150,16 @@ export function AccountBindingMenu<E>({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-44">
           {children}
-          {children && <DropdownMenuSeparator />}
-          <DropdownMenuItem
-            variant="destructive"
-            disabled={removal.disabled}
-            onSelect={() => void removal.remove()}
-          >
-            Remove
-          </DropdownMenuItem>
+          {children && props.bound && <DropdownMenuSeparator />}
+          {props.bound && (
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={removal.disabled}
+              onSelect={() => void removal.remove()}
+            >
+              Remove
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
       {removal.error && (
@@ -362,7 +363,12 @@ export function AppAccounts({
   readonly chooseAction?: ReactNode;
   readonly reconnectAction?: (account: AccountSummary) => ReactNode;
   readonly accountActions?: (slot: string, requirement: AccountRequirement) => ReactNode;
-  readonly removeAccountAction?: (slot: string, account: AccountId, label: string) => ReactNode;
+  readonly removeAccountAction?: (
+    slot: string,
+    account: AccountId,
+    label: string,
+    bound: boolean,
+  ) => ReactNode;
   readonly onCreateProfile?: (() => void) | undefined;
   /** Check one account again; its result reaches `accounts` through the host's queries. */
   readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
@@ -501,8 +507,7 @@ export function AppAccounts({
                           )}
                           {status}
                           {/* Unchecking only unselects; removal is its own action and may offer deletion. */}
-                          {bound &&
-                            removeAccountAction?.(slot, id, label ?? "Account disconnected")}
+                          {removeAccountAction?.(slot, id, label ?? "Account disconnected", bound)}
                         </li>
                       );
                     })}

@@ -30,6 +30,22 @@ import (
 	"time"
 )
 
+// memoryPressureMiB is where workerd starts collecting garbage in every isolate: 60% of the
+// container's cgroup v2 memory limit, leaving room below the limit for a collection to take
+// effect before the kernel reclaims or kills. Zero, which turns the check off, when the limit
+// file is missing or says "max".
+func memoryPressureMiB(limitFile string) uint64 {
+	limit, err := os.ReadFile(limitFile)
+	if err != nil {
+		return 0
+	}
+	limitBytes, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return limitBytes / 1024 / 1024 * 60 / 100
+}
+
 func setting(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
@@ -514,6 +530,17 @@ func serve(mode string) error {
 		appWorkers = strconv.Itoa(number)
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APP_WORKERS@@"), []byte(appWorkers))
+	// Seconds an idle app Worker stays loaded; zero turns idle unloading off, null keeps the default.
+	appWorkerIdle := "null"
+	if value := values["EXECUTOR_APP_WORKER_IDLE_SECONDS"]; value != "" {
+		number, err := strconv.Atoi(value)
+		if err != nil || number < 0 {
+			return errors.New("EXECUTOR_APP_WORKER_IDLE_SECONDS must be a non-negative integer")
+		}
+		appWorkerIdle = strconv.Itoa(number)
+	}
+	config = bytes.ReplaceAll(config, []byte("@@APP_WORKER_IDLE_SECONDS@@"), []byte(appWorkerIdle))
+	config = bytes.ReplaceAll(config, []byte("@@MEMORY_PRESSURE_MB@@"), []byte(strconv.FormatUint(memoryPressureMiB("/sys/fs/cgroup/memory.max"), 10)))
 	config = bytes.ReplaceAll(config, []byte("@@SELF_ORIGIN@@"), []byte(strconv.Quote(values["BETTER_AUTH_URL"])))
 	// App builds install packages from this registry; empty selects the public registry.
 	registry := values["EXECUTOR_NPM_REGISTRY"]

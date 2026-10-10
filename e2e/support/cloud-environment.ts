@@ -15,7 +15,7 @@ import { startAnalyticsCollector } from "./analytics-collector.ts";
 import { serveOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, EmulatorFixture, emulatorRequest } from "./emulators.ts";
-import { startCloudPostgres } from "./cloud-postgres.ts";
+import { createV1Database, startCloudPostgres, v1DatabaseReader } from "./cloud-postgres.ts";
 import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 import { roleHost } from "./role-hosts.ts";
@@ -117,6 +117,17 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(ssoDatabase).pipe(Effect.orDie));
+    // The emulated v1 database: the Worker reads it as v1's read-only login, scenarios write it.
+    const v1ReaderPassword = randomBytes(24).toString("hex");
+    const v1Database = `${directory}/v1-database.json`;
+    yield* fs.writeFileString(
+      v1Database,
+      JSON.stringify({
+        database: `postgresql://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
+      }),
+      { mode: 0o600 },
+    );
+    yield* Effect.addFinalizer(() => fs.remove(v1Database).pipe(Effect.orDie));
     const env = {
       PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
         process.platform === "win32" ? ";" : ":",
@@ -159,6 +170,7 @@ export const startCloudEnvironment = (input: {
       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
       // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
+      V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
       // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
       EXECUTOR_ROLE_HOSTS_DOMAIN: new URL(input.origin).hostname,
       CLOUD_BROWSER_ORIGIN: input.browserOrigin,
@@ -259,6 +271,7 @@ export const startCloudEnvironment = (input: {
       dockerEnv,
       log: `${directory}/postgres.log`,
     });
+    yield* createV1Database({ container, dockerEnv, readerPassword: v1ReaderPassword });
     const built =
       input.prebuilt === true
         ? 0

@@ -1,6 +1,7 @@
 import { owned } from "@executor-js/telemetry";
 import { loadSwaggerClient } from "./swagger-client.ts";
-import { httpProviderError, accountProviderError } from "./provider-error.ts";
+import { httpProviderError, accountProviderError, providerErrorDetail } from "./provider-error.ts";
+import { bodyUpstreamError } from "./upstream-error.ts";
 import { NetworkRefused } from "../contracts/network.ts";
 import { failOnNetworkRefusal } from "./network.ts";
 import { ProviderError } from "../contracts/provider-error.ts";
@@ -54,15 +55,10 @@ const responseShape = (response: HttpClientResponse.HttpClientResponse) => {
 // Recovery is optional for arbitrary APIs: a missing or malformed value keeps the declared error.
 const bodyRecovery = Schema.decodeUnknownOption(Schema.Struct({ recovery: ApiErrorRecovery }));
 
-// Read once with byte/time bounds. Unsupported or invalid responses retain the generic failure.
-function responseError(
-  response: HttpClientResponse.HttpClientResponse,
-  errors: readonly DeclaredError[],
-) {
+// Read a JSON error body once with byte/time bounds. Anything else reads as no body.
+function errorBody(response: HttpClientResponse.HttpClientResponse) {
   return Effect.gen(function* () {
-    const candidates = errors.filter((error) => error.status === response.status);
     if (
-      candidates.length === 0 ||
       !/^application\/(?:[\w.-]+\+)?json$/i.test(
         response.headers["content-type"]?.split(";")[0]?.trim() ?? "",
       )
@@ -70,7 +66,7 @@ function responseError(
       return;
     const length = response.headers["content-length"];
     if (length !== undefined && Number(length) > defaultOpenapiErrorLimits.maxBodyBytes) return;
-    const json = yield* response.stream.pipe(
+    return yield* response.stream.pipe(
       Stream.mapError(() => new OpenapiError({ reason: "request", status: response.status })),
       Stream.limitBytes(defaultOpenapiErrorLimits.maxBodyBytes, () =>
         Stream.fail(new OpenapiError({ reason: "request", status: response.status })),
@@ -80,6 +76,13 @@ function responseError(
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))),
       Effect.timeout(defaultOpenapiErrorLimits.readTimeoutMs),
     );
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+}
+
+// Unsupported or invalid responses retain the generic failure.
+function responseError(status: number, json: Schema.Json, errors: readonly DeclaredError[]) {
+  return Effect.gen(function* () {
+    const candidates = errors.filter((error) => error.status === status);
     for (const candidate of candidates) {
       const parsed = yield* Schema.decodeUnknownEffect(candidate.decoder)(json).pipe(Effect.option);
       if (Option.isSome(parsed)) {
@@ -93,7 +96,7 @@ function responseError(
         const recovery = bodyRecovery(parsed.value);
         return new OpenapiResponseError({
           code: candidate.code,
-          status: response.status,
+          status,
           message: message.value.message,
           ...(Option.isSome(recovery) ? { recovery: recovery.value.recovery } : {}),
         });
@@ -386,13 +389,22 @@ export function createRequest(config: {
         yield* failOnNetworkRefusal(response);
         if (response.status < 200 || response.status >= 300) {
           // Status and header evidence (401, 429, 5xx, rate-limit or scope headers) keeps its
-          // account recovery. A bare 403 proves nothing, so a declared error body explains it.
+          // account recovery. A bare 403 proves nothing: a declared error body explains it, or
+          // the error the service stated in its body goes with the rejection.
           const provider = httpProviderError(response.status, response.headers);
           if (provider !== undefined && provider.reason !== "rejected") return yield* provider;
-          const declared = yield* responseError(response, errors);
+          const json =
+            provider !== undefined || errors.some((error) => error.status === response.status)
+              ? yield* errorBody(response)
+              : undefined;
+          const declared =
+            json === undefined ? undefined : yield* responseError(response.status, json, errors);
+          const upstream = json === undefined ? undefined : bodyUpstreamError(json);
           return yield* (
             declared ??
-              provider ??
+              (provider === undefined || upstream === undefined
+                ? provider
+                : providerErrorDetail(provider, { upstream })) ??
               new OpenapiError({ reason: "request", operation, ...responseShape(response) })
           );
         }

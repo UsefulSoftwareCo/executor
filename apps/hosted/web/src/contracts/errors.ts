@@ -3,6 +3,7 @@ import type { HostedApi } from "@executor-js/hosted-server/contracts";
 import { Cause, Match, Option, type Schema } from "effect";
 import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { HttpClientError } from "effect/http";
+import { outdatedPageMessage, pageOutdated } from "@executor-js/dashboard-start/build-change";
 
 type Groups = (typeof HostedApi.groups)[keyof typeof HostedApi.groups];
 /** The hosted API owns its error algebra, including membership and authentication failures. */
@@ -172,13 +173,20 @@ const errorMessage = Match.type<HostedError>().pipe(
     CatalogUnavailable: () => "integrations.sh could not be reached. Try again.",
     FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
     FeedbackDisabled: ({ message }) => message,
-    HttpClientError: () => "Could not reach the server. Check your connection and try again.",
-    SchemaError: () => "The server returned an unexpected response. Reload and try again.",
+    HttpClientError: () =>
+      pageOutdated()
+        ? outdatedPageMessage
+        : "Could not reach the server. Check your connection and try again.",
+    SchemaError: () =>
+      pageOutdated()
+        ? outdatedPageMessage
+        : "The server returned an unexpected response. Reload and try again.",
   }),
 );
 /** Safe copy for all expected failures. Defects never render their raw cause. */
 export const appError = (cause: Cause.Cause<HostedError>): string =>
   Option.match(Cause.findErrorOption(cause), {
     onSome: errorMessage,
-    onNone: () => "Unable to complete this request. Try again.",
+    onNone: () =>
+      pageOutdated() ? outdatedPageMessage : "Unable to complete this request. Try again.",
   });

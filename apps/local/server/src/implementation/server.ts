@@ -78,6 +78,7 @@ import { AccountConnectApi } from "../contracts/account-connections.ts";
 import { browserTelemetry } from "./telemetry.ts";
 import { webFiles } from "./web.ts";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
+import { layerBuildHeader } from "@executor-js/dashboard-start/build-header";
 import { localManagementDocument } from "../contracts/management.ts";
 import { nativeRepositories } from "@executor-js/app-source/node";
 import { feedbackDisabled } from "@executor-js/telemetry/product-analytics";
@@ -103,7 +104,7 @@ export const localApi = (
       const egress: HostEgress = { policy: config.urlPolicy, client: httpClient };
       const blobs = filesystemBlobStore({ directory: path.join(directory, "builds") });
       const ready = yield* Deferred.make<Executor>();
-      const { runtime, workflows } = yield* workerdApps({
+      const { runtime, workflows, declarations } = yield* workerdApps({
         directory: path.join(directory, "workerd"),
         blobs,
         executor: Deferred.await(ready),
@@ -140,6 +141,8 @@ export const localApi = (
         registry,
         cache: {
           memory: makeDeclarationCache(evaluation.limits),
+          // Kept in each app's supervisor too, so a restart does not evaluate every app again.
+          durable: declarations,
           toolListings: evaluation.toolListings,
         },
         // Stale declarations refresh on the server's own lifetime.
@@ -361,6 +364,8 @@ export const localApi = (
         publicSkills,
       );
       const productRoutes = Layer.mergeAll(
+        // Dashboard pages compare this with their own build to notice an upgrade.
+        layerBuildHeader,
         publishedSkillRoutes(Effect.succeed(publicSkills)),
         HttpApiBuilder.layer(LocalWebhookSetupApi).pipe(
           Layer.provide(localWebhookSetupHandlers(executor, config, auth)),

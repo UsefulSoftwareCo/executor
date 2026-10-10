@@ -16,6 +16,7 @@ import {
   hostedExecutorOrigin,
   remoteRegistry,
   httpEventSender,
+  type DurableDeclarations,
   type Executor,
   type RepositoryBackend,
 } from "@executor-js/sdk/core";
@@ -52,6 +53,8 @@ export interface SelfHostPlatform {
   readonly repositories: RepositoryBackend;
   readonly runtime: AppRuntime;
   readonly workflows: WorkflowRuntime;
+  /** Evaluated results kept in each app's data supervisor. */
+  readonly declarations: DurableDeclarations;
 }
 
 /** Private callback surface for app workflows, exposed only through a service binding. */
@@ -74,7 +77,9 @@ export const selfHostExecutorServices = <E, R>(
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
       const ready = yield* Deferred.make<Executor>();
-      const { runtime, workflows, blobs, repositories } = yield* acquire(Deferred.await(ready));
+      const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
+        Deferred.await(ready),
+      );
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
           Config.withDefault(hostedExecutorOrigin),
@@ -98,6 +103,8 @@ export const selfHostExecutorServices = <E, R>(
         },
         cache: {
           memory: makeDeclarationCache(evaluation.limits),
+          // Kept in each app's supervisor too, so a restart does not evaluate every app again.
+          durable: declarations,
           toolListings: evaluation.toolListings,
         },
         // Stale declarations refresh on the server's own lifetime.

@@ -42,6 +42,14 @@ export default defineApp({ accounts: {} }, {
       sql.exec("CREATE TABLE sneaky (id TEXT); SELECT 1 AS n").one().n),
     tableExists: query({ input: object({ name: string() }) }, async ({ sql }, { name }) =>
       sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE name = ?", name).one().n),
+    // A statement binds at most 100 values on every host.
+    bindings: query({ input: object({ count: number() }) }, async ({ sql }, { count }) =>
+      sql.exec("SELECT 1 IN (" + Array.from({ length: count }, () => "?").join(", ") + ") AS n",
+        ...Array.from({ length: count }, () => 1)).one().n),
+    // A long list travels as one JSON array.
+    listed: query({ input: object({ count: number() }) }, async ({ sql }, { count }) =>
+      sql.exec("SELECT count(*) AS n FROM json_each(?)",
+        JSON.stringify(Array.from({ length: count }, (_, index) => index))).one().n),
     // Connection settings survive rollback, so app code cannot change them.
     loosen: query({ input: object({}) }, async ({ sql }) =>
       sql.exec("PRAGMA ignore_check_constraints = ON").toArray()),
@@ -130,6 +138,8 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
           hiddenWrite: "query",
           hiddenTable: "query",
           tableExists: "query",
+          bindings: "query",
+          listed: "query",
           loosen: "query",
           violate: "mutation",
           defer: "query",
@@ -148,9 +158,13 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
             kind: kinds[tool],
             input,
           });
-        const failure = (tool: keyof typeof kinds, id = app.id) =>
+        const failure = (
+          tool: keyof typeof kinds,
+          id = app.id,
+          input: Record<string, number | string> = {},
+        ) =>
           Effect.gen(function* () {
-            const response = yield* call(tool, {}, id);
+            const response = yield* call(tool, input, id);
             expect(response.status, JSON.stringify(response.body)).toBe(502);
             return (yield* body(CallFailed, response)).reason;
           });
@@ -247,6 +261,14 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         expect(yield* failure("escaped")).toContain("transaction has ended");
         expect(yield* body(Schema.Number, yield* call("count"))).toBe(20_400);
 
+        // A statement binds at most 100 values, and the error names the limit; a longer list
+        // binds once as a JSON array.
+        expect(yield* body(Schema.Number, yield* call("bindings", { count: 100 }))).toBe(1);
+        expect(yield* failure("bindings", app.id, { count: 101 })).toContain(
+          "A statement can bind at most 100 values, but this one binds 101.",
+        );
+        expect(yield* body(Schema.Number, yield* call("listed", { count: 500 }))).toBe(500);
+
         // Without migrations an app has no database, and its SQL says how to add one.
         const plain = yield* deployNew("No database", withoutDatabase);
         expect(yield* failure("count", plain.id)).toContain("This app has no database");
@@ -275,6 +297,23 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         expect(dropped.status, JSON.stringify(dropped.body)).toBe(422);
         expect((yield* body(BuildFailed, dropped)).reason).toContain(
           "this app's database has applied migrations, but the build has no migrations/",
+        );
+
+        // Comments after a migration's last statement are not a statement, and the file's hash
+        // still covers them, so deploying it again changes nothing.
+        const commented = {
+          path: "migrations/0002_commented.sql",
+          content:
+            "-- Notes for the next migration.\nCREATE TABLE commented (note TEXT DEFAULT '-- kept');\n-- A trailing comment.\n/* And a block. */\n",
+        };
+        for (const attempt of [1, 2]) {
+          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/${app.id}/deploy`, {
+            files: [...files, commented],
+          });
+          expect(deployed.status, `${attempt}: ${JSON.stringify(deployed.body)}`).toBe(200);
+        }
+        expect(yield* body(Schema.Number, yield* call("tableExists", { name: "commented" }))).toBe(
+          1,
         );
       }),
     ),

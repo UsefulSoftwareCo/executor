@@ -12,6 +12,7 @@ import {
   runAuth,
   type GrantAccess,
   type GrantOAuthOptions,
+  type RefreshRejection,
   type OAuthResourceSeedContext,
 } from "@executor-js/mcp-auth/oauth";
 import { AuthenticationUnavailable } from "../contracts/auth.ts";
@@ -62,21 +63,22 @@ const membership = (
  */
 export type HostedOAuthOrigins = Pick<GrantOAuthOptions, "origin" | "resourceOrigins" | "issuer">;
 
-/** The hosted grant's origins plus the observer told when a refresh token's family is revoked. */
-export type HostedOAuthOptions = HostedOAuthOrigins &
-  Pick<GrantOAuthOptions, "onRefreshFamilyRevoked">;
+export type { RefreshRejection };
+
+/** The hosted grant's origins plus the observer told why a refresh grant was refused. */
+export type HostedOAuthOptions = HostedOAuthOrigins & Pick<GrantOAuthOptions, "onRefreshRejected">;
 
 const hostedGrantOAuth = ({
   origin,
   resourceOrigins,
   issuer,
-  onRefreshFamilyRevoked,
+  onRefreshRejected,
 }: HostedOAuthOptions) =>
   grantOAuthPlugins({
     origin,
     resourceOrigins,
     issuer,
-    onRefreshFamilyRevoked,
+    onRefreshRejected,
     scopes: ["mcp", "executor", "offline_access"],
     resources: [
       ...mcpOAuthResources(resourceOrigins.mcp),

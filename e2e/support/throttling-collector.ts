@@ -30,6 +30,35 @@ export interface Arrival {
   readonly status: number;
 }
 
+/** The parts of an OTLP JSON trace export that name its apps and traces. */
+const AppTraceExport = Schema.fromJsonString(
+  Schema.Struct({
+    resourceSpans: Schema.Array(
+      Schema.Struct({
+        resource: Schema.optional(
+          Schema.Struct({
+            attributes: Schema.optional(
+              Schema.Array(
+                Schema.Struct({
+                  key: Schema.String,
+                  value: Schema.Struct({ stringValue: Schema.optional(Schema.String) }),
+                }),
+              ),
+            ),
+          }),
+        ),
+        scopeSpans: Schema.optional(
+          Schema.Array(
+            Schema.Struct({
+              spans: Schema.optional(Schema.Array(Schema.Struct({ traceId: Schema.String }))),
+            }),
+          ),
+        ),
+      }),
+    ),
+  }),
+);
+
 /** Start both in the caller's scope, which stops them. */
 export const throttlingCollector = Effect.gen(function* () {
   const target = yield* Target,
@@ -42,6 +71,25 @@ export const throttlingCollector = Effect.gen(function* () {
   const motel = yield* serveOtlpCollector(directory);
   const plans = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<Refusal>>>(new Map());
   const arrivals = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<Arrival>>>(new Map());
+  const appTraces = yield* Ref.make<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  /** Record the traces of app isolate spans that reached Motel, by the app they came from. */
+  const recordAppTraces = (text: string) =>
+    Ref.update(appTraces, (all) => {
+      const decoded = Schema.decodeUnknownOption(AppTraceExport)(text);
+      if (decoded._tag === "None") return all;
+      const next = new Map(all);
+      for (const { resource, scopeSpans } of decoded.value.resourceSpans) {
+        const attribute = (key: string) =>
+          resource?.attributes?.find((entry) => entry.key === key)?.value.stringValue;
+        const app = attribute("executor.app.id");
+        if (attribute("service.name") !== "executor-app" || app === undefined) continue;
+        const traces = new Set(next.get(app) ?? []);
+        for (const scope of scopeSpans ?? [])
+          for (const span of scope.spans ?? []) traces.add(span.traceId);
+        next.set(app, traces);
+      }
+      return next;
+    });
   const forward = (path: string, bytes: Uint8Array, contentType: string | undefined) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -61,14 +109,20 @@ export const throttlingCollector = Effect.gen(function* () {
     const text = new TextDecoder().decode(bytes);
     const marker = [...(yield* Ref.get(plans)).keys()].find((key) => text.includes(key));
     const contentType = request.headers["content-type"];
-    if (marker === undefined) return yield* forward(request.url, bytes, contentType);
+    const forwarded = (path: string) =>
+      forward(path, bytes, contentType).pipe(
+        Effect.tap((response) =>
+          response.status === 200 && path === "/v1/traces" ? recordAppTraces(text) : Effect.void,
+        ),
+      );
+    if (marker === undefined) return yield* forwarded(request.url);
     const refusal = yield* Ref.modify(plans, (all) => {
       const [next, ...rest] = all.get(marker) ?? [];
       return [next, new Map(all).set(marker, rest)];
     });
     const response =
       refusal === undefined
-        ? yield* forward(request.url, bytes, contentType)
+        ? yield* forwarded(request.url)
         : HttpServerResponse.empty({
             status: refusal.status,
             headers:
@@ -96,6 +150,9 @@ export const throttlingCollector = Effect.gen(function* () {
     /** Every export containing `marker` that reached the proxy. */
     arrivals: (marker: string) =>
       Ref.get(arrivals).pipe(Effect.map((all) => all.get(marker) ?? [])),
+    /** The traces whose app isolate spans for `app` reached Motel. */
+    appTraces: (app: string) =>
+      Ref.get(appTraces).pipe(Effect.map((all) => all.get(app) ?? new Set<string>())),
     /** The spans of one trace that Motel stored. */
     query: (traceId: string) =>
       Effect.scoped(

@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { DisplayFormatSync } from "@executor-js/ui/hooks/display-format";
 import type {} from "../contracts/build.ts";
 import { documentBuild } from "./document-build.ts";
+import { BuildChangeNotice } from "./build-change-notice.tsx";
 
 /**
  * A form rendered on the server has no submit handler until React hydrates it, and the browser
@@ -60,6 +61,7 @@ export function DashboardDocument({ children }: { readonly children: ReactNode }
       <body>
         {children}
         <DisplayFormatSync />
+        <BuildChangeNotice />
         <Scripts />
       </body>
     </html>

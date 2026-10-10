@@ -241,6 +241,24 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
         yield* assertFailure(yield* call(), reason, status);
       }
     }
+    if (kind === "openapi") {
+      // A bare 403 does not say why the service refused. When its body states an error in a
+      // nested error object, that error goes with the rejection, the account's credential replaced.
+      for (const [code, message] of [
+        [403, "User-rate limit exceeded. Token synthetic-personal"],
+        ["Authorization_RequestDenied", "Insufficient privileges for synthetic-personal"],
+      ] as const) {
+        yield* upstream.configure({
+          status: 403,
+          body: { error: { code, message, errors: [{ reason: "detail" }] } },
+          phase: "call",
+        });
+        const failure = yield* assertFailure(yield* call(), "rejected", 403, "call");
+        const redacted = message.replace("synthetic-personal", "[redacted]");
+        expect(failure.upstream).toEqual({ code, message: redacted });
+        expect(failure.message).toContain(`${code}: "${redacted}"`);
+      }
+    }
     if (kind === "custom") {
       yield* upstream.configure({ status: 402 });
       // This factory fetches its upstream without the app cache, so nothing tells Executor

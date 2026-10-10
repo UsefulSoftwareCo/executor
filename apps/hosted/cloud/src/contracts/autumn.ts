@@ -65,6 +65,8 @@ export const AutumnRequests = {
     ...customer,
     autoEnablePlanId: Schema.optionalKey(Schema.String),
   }).pipe(Schema.encodeKeys({ ...customerKeys, autoEnablePlanId: "auto_enable_plan_id" })),
+  /** Read only: unlike `getOrCreateCustomer`, an unknown customer is not created. */
+  getCustomer: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
   listPlans: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
   updateBalance: Schema.Struct({
     ...customer,
@@ -86,16 +88,20 @@ export const AutumnRequests = {
   }).pipe(Schema.encodeKeys({ ...customerKeys, planId: "plan_id", cancelAction: "cancel_action" })),
 };
 
+const subscriptions = Schema.Array(
+  Schema.Struct({ planId: Schema.String, status: Schema.String }).pipe(
+    Schema.encodeKeys({ planId: "plan_id" }),
+  ),
+);
+
 /** Decode provider responses into the fields billing reads; unrelated provider fields are ignored. */
 export const AutumnResponses = {
   getOrCreateCustomer: Schema.Struct({
     balances: Schema.Record(Schema.String, balance),
-    subscriptions: Schema.Array(
-      Schema.Struct({ planId: Schema.String, status: Schema.String }).pipe(
-        Schema.encodeKeys({ planId: "plan_id" }),
-      ),
-    ),
+    subscriptions,
   }),
+  /** Null when Autumn has no customer with this id. */
+  getCustomer: Schema.NullOr(Schema.Struct({ subscriptions })),
   listPlans: Schema.Struct({
     list: Schema.Array(
       Schema.Struct({
@@ -125,6 +131,7 @@ export class AutumnRequestFailed extends Schema.TaggedError<AutumnRequestFailed>
   {
     operation: Schema.Literals([
       "getOrCreateCustomer",
+      "getCustomer",
       "listPlans",
       "updateBalance",
       "attach",

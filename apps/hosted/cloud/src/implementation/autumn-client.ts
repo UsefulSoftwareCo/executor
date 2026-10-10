@@ -1,5 +1,5 @@
 /** Small Effect HTTP adapter for the cloud product's Autumn operations. */
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Effect, Layer, Option, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import {
   AutumnClient,
@@ -10,6 +10,9 @@ import {
   autumnTimeout,
   type AutumnOptions,
 } from "../contracts/autumn.ts";
+
+/** Autumn's error body; only its stable code is read. */
+const NotFound = Schema.Struct({ code: Schema.String });
 
 /** Use the injected HTTP client. Every call owns its response scope and obeys caller cancellation. */
 export const autumnLive = (options: AutumnOptions) =>
@@ -26,6 +29,8 @@ export const autumnLive = (options: AutumnOptions) =>
           path: string,
           input: Schema.Codec<I, unknown>,
           output: Schema.ConstraintDecoder<A>,
+          /** A 404 with this error code is an answer, decoded as `null`, not a failure. */
+          notFound?: string,
         ) =>
         (payload: I) => {
           const failed = (reason: AutumnRequestFailed["reason"], cause: unknown, status?: number) =>
@@ -58,11 +63,19 @@ export const autumnLive = (options: AutumnOptions) =>
                   .pipe(Effect.mapError((cause) => failed("transport", cause)));
                 yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
                 // Require confirmed provider responses, never queued or fail-open answers.
-                if (response.status !== 200) return { status: response.status } as const;
+                const missing = notFound !== undefined && response.status === 404;
+                if (response.status !== 200 && !missing)
+                  return { status: response.status, answered: false } as const;
                 const json = yield* response.json.pipe(
                   Effect.mapError((cause) => failed("response", cause, response.status)),
                 );
-                return { status: 200, json } as const;
+                if (!missing) return { status: 200, answered: true, json } as const;
+                // Only the named code answers; any other 404, such as an unknown route, fails.
+                const named = Option.exists(
+                  Schema.decodeUnknownOption(NotFound)(json),
+                  (body) => body.code === notFound,
+                );
+                return { status: 404, answered: named, json: null } as const;
               }).pipe(
                 Effect.withSpan("autumn.http", {
                   kind: "client",
@@ -75,7 +88,7 @@ export const autumnLive = (options: AutumnOptions) =>
                 }),
               );
               yield* Effect.annotateCurrentSpan("http.response.status_code", exchange.status);
-              if (exchange.status !== 200)
+              if (!exchange.answered)
                 return yield* new AutumnRequestFailed({
                   operation,
                   reason: "status",
@@ -100,6 +113,13 @@ export const autumnLive = (options: AutumnOptions) =>
           "customers.get_or_create",
           AutumnRequests.getOrCreateCustomer,
           AutumnResponses.getOrCreateCustomer,
+        ),
+        getCustomer: post(
+          "getCustomer",
+          "customers.get",
+          AutumnRequests.getCustomer,
+          AutumnResponses.getCustomer,
+          "customer_not_found",
         ),
         listPlans: post(
           "listPlans",

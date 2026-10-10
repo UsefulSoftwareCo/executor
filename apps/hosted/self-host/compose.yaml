@@ -21,9 +21,11 @@ services:
       EXECUTOR_URL_ALLOW_LOOPBACK_HTTP:
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
       EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
-      # Most app Workers kept loaded. Idle ones above it unload and reload on their next call.
-      # Each app with a database also keeps one data Worker, which this does not count.
+      # Most app and data Workers kept loaded (default 64). Idle ones above it unload and reload
+      # on their next call. An app with a database runs its calls in a data Worker, which counts.
       EXECUTOR_APP_WORKERS:
+      # Seconds a Worker stays loaded without a call (default 300); 0 keeps idle ones until the limit.
+      EXECUTOR_APP_WORKER_IDLE_SECONDS:
       EXECUTOR_OAUTH_CALLBACK_URL:
       # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
       # document there, which authorization servers must be able to fetch over public HTTPS.

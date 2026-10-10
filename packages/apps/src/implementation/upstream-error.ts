@@ -1,6 +1,6 @@
 /**
- * The error a service stated in its own documented error format: a JSON-RPC error, an OAuth error
- * body, or a Bearer challenge. Undocumented bodies, such as a bare `message`, are never read.
+ * The error a service stated in its own documented error format: a nested error object (JSON-RPC
+ * and many REST APIs), an OAuth error body, or a Bearer challenge. Undocumented bodies, such as a bare `message`, are never read.
  */
 import { Option, Schema } from "effect";
 import { maxUpstreamMessageLength, UpstreamError } from "../contracts/failure.ts";
@@ -8,9 +8,13 @@ import { maxUpstreamMessageLength, UpstreamError } from "../contracts/failure.ts
 /** An OAuth or Bearer error code: a short token such as `invalid_token`, never prose. */
 const ErrorToken = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9._-]{1,128}$/u));
 
-/** A JSON-RPC 2.0 error response, as an MCP server answers a request it refuses. */
-const JsonRpcError = Schema.Struct({
-  error: Schema.Struct({ code: Schema.Int, message: Schema.String }),
+/**
+ * A nested `error` object with a code and a message: a JSON-RPC 2.0 error response, as an MCP
+ * server answers a request it refuses, or the same shape many REST APIs answer with, whose code
+ * may be a token.
+ */
+const NestedError = Schema.Struct({
+  error: Schema.Struct({ code: Schema.Union([Schema.Int, ErrorToken]), message: Schema.String }),
 });
 /** An OAuth 2.0 error response body (RFC 6749, section 5.2). */
 const OAuthError = Schema.Struct({
@@ -37,10 +41,10 @@ const stated = (code: number | string, message: string | undefined): UpstreamErr
   ...(message === undefined || message === "" ? {} : { message: bounded(message) }),
 });
 
-/** The error a JSON error body states, if it uses JSON-RPC's or OAuth's error format. */
+/** The error a JSON error body states, if it uses a nested error object or OAuth's format. */
 export const bodyUpstreamError = (json: unknown): UpstreamError | undefined => {
-  const rpc = Schema.decodeUnknownOption(JsonRpcError)(json);
-  if (Option.isSome(rpc)) return stated(rpc.value.error.code, rpc.value.error.message);
+  const nested = Schema.decodeUnknownOption(NestedError)(json);
+  if (Option.isSome(nested)) return stated(nested.value.error.code, nested.value.error.message);
   const oauth = Schema.decodeUnknownOption(OAuthError)(json);
   if (Option.isSome(oauth)) return stated(oauth.value.error, oauth.value.error_description);
   return undefined;

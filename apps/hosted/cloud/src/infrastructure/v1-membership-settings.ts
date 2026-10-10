@@ -1,7 +1,8 @@
 /**
- * The v1 sign-in check's two deployment settings (`notes/hosted-auth.md`), shared by the CI stack
- * that stores them for production and the Worker that reads them. Production (`v2`) requires
- * both; other stages may leave both unset, which turns the check off there.
+ * The v1 sign-in check's three deployment settings (`notes/hosted-auth.md`), shared by the CI
+ * stack that stores them for production and the Worker that reads them. Production (`v2`)
+ * requires all three. Only production reaches v1's database, so the check is off on other
+ * deployed stages.
  */
 import { Schema, SchemaTransformation } from "effect";
 
@@ -27,3 +28,9 @@ export const missingV1MembershipCheckSince =
   "V1_MEMBERSHIP_CHECK_SINCE is required on the production stage (v2): set it in .env.ci.op to " +
   "the ISO 8601 UTC instant the v1 sign-in check ships, the deploy time of the merge that turns " +
   `it on (for example \`V1_MEMBERSHIP_CHECK_SINCE=2026-10-09T17:00:00Z\`), ${storedBy}.`;
+
+/** What to set when production does not name v1's database. */
+export const missingV1PlanetscaleDatabase =
+  "V1_PLANETSCALE_DATABASE_NAME is required on the production stage (v2): set it in .env.ci.op " +
+  "to v1's PlanetScale database (`V1_PLANETSCALE_DATABASE_NAME=executor`), on which the deploy " +
+  `creates a role that inherits only \`pg_read_all_data\`, ${storedBy}.`;

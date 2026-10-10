@@ -53,12 +53,16 @@ export const skills = <E extends Error>(
                 targets,
                 (target) =>
                   backend
-                    .listSkills({
-                      app: app.id,
-                      ...(target.kind === "app"
-                        ? {}
-                        : { profile: target.id, expectedProfileRevision: target.revision }),
-                    })
+                    .listSkills(
+                      {
+                        app: app.id,
+                        ...(target.kind === "app"
+                          ? {}
+                          : { profile: target.id, expectedProfileRevision: target.revision }),
+                      },
+                      // An index of every app's skills must not load each app to refresh it.
+                      { refreshStale: false },
+                    )
                     .pipe(
                       Effect.map((catalog) => ({ skills: summaries(catalog), unavailable: [] })),
                       Effect.catch((error) =>

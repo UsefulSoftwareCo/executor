@@ -24,6 +24,7 @@ export {
   SecurityPending,
   SessionsPending,
   accountSettingClass,
+  readOnlyInputClass,
   profileDescription,
   profileTitle,
   securityDescription,

@@ -15,6 +15,7 @@ import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-sett
 import { BrowserOrigin, browserOriginSetting } from "./src/infrastructure/stage.ts";
 import {
   CheckSince,
+  missingV1PlanetscaleDatabase,
   missingV1MembershipCheckSince,
   missingV1WorkosKey,
 } from "./src/infrastructure/v1-membership-settings.ts";
@@ -268,10 +269,11 @@ export default Alchemy.Stack(
     }).pipe(retain());
 
     /**
-     * The v1 sign-in check: v1's WorkOS API key, and the instant the check shipped. Accounts
-     * created before that instant skip it. Production requires both, so this stack refuses to
-     * apply without them and says what to set: the key's Agents vault reference, and the cutoff,
-     * set in `.env.ci.op` at the merge that ships the check.
+     * The v1 sign-in check: v1's WorkOS API key, the name of v1's PlanetScale database (the
+     * deploy creates a read-only role on it), and the instant the check shipped. Accounts created
+     * before that instant skip it. Production requires all three, so this stack refuses to apply
+     * without them and says what to set: the key's Agents vault reference, the database name,
+     * and the cutoff, set in `.env.ci.op` at the merge that ships the check.
      */
     const v1Key = yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(
       Config.option,
@@ -285,6 +287,12 @@ export default Alchemy.Stack(
       ),
     );
     if (Option.isNone(v1Since)) return yield* Effect.die(new Error(missingV1MembershipCheckSince));
+    const v1Database = yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
+      Config.option,
+      Effect.map(Option.filter((value) => value !== "")),
+    );
+    if (Option.isNone(v1Database))
+      return yield* Effect.die(new Error(missingV1PlanetscaleDatabase));
     yield* GitHub.Secret("production-V1_WORKOS_API_KEY", {
       ...target,
       name: "V1_WORKOS_API_KEY",
@@ -295,6 +303,12 @@ export default Alchemy.Stack(
       ...target,
       name: "V1_MEMBERSHIP_CHECK_SINCE",
       value: v1Since.value,
+      environment: production,
+    }).pipe(retain());
+    yield* GitHub.Variable("production-V1_PLANETSCALE_DATABASE_NAME", {
+      ...target,
+      name: "V1_PLANETSCALE_DATABASE_NAME",
+      value: v1Database.value,
       environment: production,
     }).pipe(retain());
 

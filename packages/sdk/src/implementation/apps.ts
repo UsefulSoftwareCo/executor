@@ -653,6 +653,30 @@ export const makeApps = (
             );
 
             yield* query(() => tx.deleteMany("webhooks", { where: (b) => b("app", "=", app.id) }));
+            const subscriptions = yield* query(() =>
+              tx.findMany("eventSubscriptions", {
+                select: ["id"],
+                where: (b) => b("app", "=", app.id),
+              }),
+            );
+            // A subscription's ID omits the app, so one left behind would pin its event name
+            // to this app after another app takes the name.
+            if (subscriptions.length > 0) {
+              yield* query(() =>
+                tx.deleteMany("eventDeliveries", {
+                  where: (b) =>
+                    b(
+                      "subscription",
+                      "in",
+                      subscriptions.map((subscription) => subscription.id),
+                    ),
+                }),
+              );
+              yield* query(() =>
+                tx.deleteMany("eventSubscriptions", { where: (b) => b("app", "=", app.id) }),
+              );
+            }
+            yield* query(() => tx.deleteMany("events", { where: (b) => b("app", "=", app.id) }));
             yield* query(() =>
               tx.deleteMany("appRecords", { where: (b) => b("app", "=", app.id) }),
             );

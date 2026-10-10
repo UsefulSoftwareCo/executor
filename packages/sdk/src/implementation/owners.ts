@@ -123,7 +123,30 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
         yield* query(() => tx.deleteMany("schedules", { where: (b) => b("owner", "=", owner) }));
         // Profiles run as the app owner; delete by owner for the same reason as schedules.
         yield* query(() => tx.deleteMany("profiles", { where: (b) => b("owner", "=", owner) }));
+        // Event subscriptions too, so a subscription whose app row already went stays reachable.
+        const subscriptions = yield* query(() =>
+          tx.findMany("eventSubscriptions", {
+            select: ["id"],
+            where: (b) => b("owner", "=", owner),
+          }),
+        );
+        if (subscriptions.length > 0) {
+          yield* query(() =>
+            tx.deleteMany("eventDeliveries", {
+              where: (b) =>
+                b(
+                  "subscription",
+                  "in",
+                  subscriptions.map((subscription) => subscription.id),
+                ),
+            }),
+          );
+          yield* query(() =>
+            tx.deleteMany("eventSubscriptions", { where: (b) => b("owner", "=", owner) }),
+          );
+        }
         if (appIds.length > 0) {
+          yield* query(() => tx.deleteMany("events", { where: (b) => b("app", "in", appIds) }));
           yield* query(() => tx.deleteMany("appRecords", { where: (b) => b("app", "in", appIds) }));
           yield* query(() =>
             tx.deleteMany("accountChecks", { where: (b) => b("app", "in", appIds) }),

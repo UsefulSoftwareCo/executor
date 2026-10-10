@@ -16,10 +16,14 @@ export { OAuthClientAuth } from "apps/contracts";
 import type { HttpClient } from "effect/http";
 import { AccountId, HttpUrl, JsonObject, OwnerId, ProviderId } from "./shared.ts";
 
-/** A sign-in URL and its expiry. No account exists until completion succeeds. */
+/**
+ * A sign-in URL, its expiry and the callback it sent as `redirect_uri`, which a saved client may
+ * have kept from before the host's current one. No account exists until completion succeeds.
+ */
 export const OAuthSignIn = Schema.Struct({
   authorizationUrl: HttpUrl,
   expiresAt: Schema.Date,
+  redirectUri: HttpUrl,
 });
 
 export type OAuthSignIn = typeof OAuthSignIn.Type;
@@ -306,6 +310,13 @@ export interface OAuthOptions {
   /** Host transport policy for callbacks, discovery and every token request. */
   readonly urlPolicy: UrlPolicy;
   readonly clientMetadataUrl?: string;
+  /**
+   * Callbacks this host sent as `redirect_uri` before its current one. A saved client someone
+   * entered at one of them keeps signing in there, as does one for a server that neither registers
+   * clients nor reads a metadata document. Executor registers every other client again at the
+   * current callback.
+   */
+  readonly previousRedirectUris?: readonly string[];
   /**
    * A fixed prefix for every sign-in's OAuth `state`, so a proxy in front of a shared callback
    * URL can tell this host's callbacks apart without a lookup. The random part is unchanged.

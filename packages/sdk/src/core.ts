@@ -4,6 +4,7 @@ export { createExecutor, createRemoteExecutor } from "./implementation/create.ts
 export { httpEventSender } from "./implementation/event-sender.ts";
 export { makeDeclarationCache } from "./implementation/declarations.ts";
 export { declarationConfig } from "./implementation/declaration-config.ts";
+export { evaluatedDeclarations } from "./implementation/evaluated-declarations.ts";
 export { executorHandlers } from "./implementation/handlers.ts";
 export { probeOAuthChallenge } from "./implementation/oauth-probe.ts";
 export { discoverResourceOAuth } from "./implementation/oauth-protocol.ts";

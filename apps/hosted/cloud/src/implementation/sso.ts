@@ -1,7 +1,7 @@
 import { sso } from "@better-auth/sso";
 import type { AuthContext, BetterAuthPlugin, GenericEndpointContext } from "better-auth";
 import { getCurrentAdapter } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 import { Option, Schema } from "effect";
 import type { CloudBillingHooks } from "./auth-options.ts";
@@ -232,6 +232,23 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
     hooks: {
       before: [
         ...(lifecycle.hooks?.before ?? []),
+        {
+          // The identity provider owns an SSO user's address, and SSO refuses a linked user
+          // whose email has left the connection's domain.
+          matcher: (context: { path?: string }) =>
+            context.path === "/email-otp/request-email-change" ||
+            context.path === "/email-otp/change-email",
+          handler: createAuthMiddleware(async (context) => {
+            const session = await getSessionFromCtx(context);
+            if (session === null) return;
+            const accounts = await context.context.internalAdapter.findAccounts(session.user.id);
+            if (accounts.some((account) => Schema.is(ProviderId)(account.providerId)))
+              throw new APIError("FORBIDDEN", {
+                code: "SSO_MANAGED_EMAIL",
+                message: "Your organization's SSO connection manages your email.",
+              });
+          }),
+        },
         {
           matcher: (context: { path?: string }) => context.path === "/sign-in/sso",
           handler: createAuthMiddleware(async (context) => {

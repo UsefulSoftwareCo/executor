@@ -75,7 +75,7 @@ index 6e5728dacd87946d9553a497b39688b5d5d9304a..cc89e52fec360a8c1049aafa9a5e88d9
 +export const seedOAuthResources = (ctx, options) =>
 +  seedResourcesForProvisioning(ctx, { ...options, resourceSeedMode: "insertOnly" }, true);
 diff --git a/dist/introspect-njKASm3q.mjs b/dist/introspect-njKASm3q.mjs
-index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..43ea6ab8f2283dd007fe361eedc029bee8e69681 100644
+index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..9f888849dba61bfbdc73d76bb90dd116db9edc2b 100644
 --- a/dist/introspect-njKASm3q.mjs
 +++ b/dist/introspect-njKASm3q.mjs
 @@ -676,6 +676,8 @@ async function getResource(ctx, opts, identifier) {
@@ -145,19 +145,98 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..43ea6ab8f2283dd007fe361eedc029be
  		sub: resolvedSub,
  		aud: client.clientId,
  		nonce,
-@@ -2158,6 +2163,11 @@ async function handleRefreshTokenGrant(ctx, opts) {
+@@ -1588,10 +1593,13 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
+ 		}],
+ 		increment: {},
+ 		set: rotationUpdate
+-	})) throw new APIError("BAD_REQUEST", {
+-		error_description: "invalid refresh token",
+-		error: "invalid_grant"
+-	});
++	})) {
++		reportRefreshRejected(ctx, opts, "rotation_lost");
++		throw new APIError("BAD_REQUEST", {
++			error_description: "invalid refresh token",
++			error: "invalid_grant"
++		});
++	}
+ 	return {
+ 		id: (await ctx.context.adapter.create({
+ 			model: "oauthRefreshToken",
+@@ -2097,6 +2105,17 @@ async function handleClientCredentialsGrant(ctx, opts) {
+ * Refresh tokens will only allow the same or lesser scopes as the initial authorize request.
+ * To add scopes, you must restart the authorize process again.
+ */
++function reportRefreshRejected(ctx, opts, reason, refreshToken) {
++	try {
++		opts.onRefreshRejected?.({
++			reason,
++			revokedAt: refreshToken?.revoked ? new Date(refreshToken.revoked) : void 0,
++			rotated: !!refreshToken?.rotatedAt
++		});
++	} catch {
++		ctx.context.logger.error("oauth-provider: onRefreshRejected failed");
++	}
++}
+ async function handleRefreshTokenGrant(ctx, opts) {
+ 	const { clientId: client_id, clientSecret: client_secret, preVerified, authMethod } = destructureCredentials(await extractClientCredentials(ctx, opts, `${ctx.context.baseURL}/oauth2/token`));
+ 	const { refresh_token, scope, resource } = ctx.body;
+@@ -2117,18 +2136,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
+ 			value: await getStoredToken(opts.storeTokens, decodedRefresh.token, "refresh_token")
+ 		}]
+ 	});
+-	if (!refreshToken) throw new APIError("BAD_REQUEST", {
+-		error_description: "session not found",
+-		error: "invalid_grant"
+-	});
+-	if (refreshToken.clientId !== client_id) throw new APIError("BAD_REQUEST", {
+-		error_description: "invalid refresh token",
+-		error: "invalid_grant"
+-	});
+-	if (refreshToken.expiresAt < /* @__PURE__ */ new Date()) throw new APIError("BAD_REQUEST", {
+-		error_description: "invalid refresh token",
+-		error: "invalid_grant"
+-	});
++	if (!refreshToken) {
++		reportRefreshRejected(ctx, opts, "unknown_token");
++		throw new APIError("BAD_REQUEST", {
++			error_description: "session not found",
++			error: "invalid_grant"
++		});
++	}
++	if (refreshToken.clientId !== client_id) {
++		reportRefreshRejected(ctx, opts, "other_client", refreshToken);
++		throw new APIError("BAD_REQUEST", {
++			error_description: "invalid refresh token",
++			error: "invalid_grant"
++		});
++	}
++	if (refreshToken.expiresAt < /* @__PURE__ */ new Date()) {
++		reportRefreshRejected(ctx, opts, "expired", refreshToken);
++		throw new APIError("BAD_REQUEST", {
++			error_description: "invalid refresh token",
++			error: "invalid_grant"
++		});
++	}
+ 	if (resources && refreshToken.resources && !resources.every((v) => refreshToken.resources?.includes(v))) throw new APIError("BAD_REQUEST", {
+ 		error_description: "requested resource invalid",
+ 		error: "invalid_target"
+@@ -2152,12 +2180,14 @@ async function handleRefreshTokenGrant(ctx, opts) {
+ 				resources: resources ?? refreshToken.resources
+ 			}));
+ 			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
++			reportRefreshRejected(ctx, opts, "replay_unavailable", refreshToken);
+ 			throw new APIError("BAD_REQUEST", {
+ 				error_description: "invalid refresh token",
+ 				error: "invalid_grant"
  			});
  		}
  		await invalidateRefreshFamily(ctx, client_id, refreshToken.userId);
-+		try {
-+			opts.onRefreshFamilyRevoked?.();
-+		} catch {
-+			ctx.context.logger.error("oauth-provider: onRefreshFamilyRevoked failed");
-+		}
++		reportRefreshRejected(ctx, opts, "reused", refreshToken);
  		throw new APIError("BAD_REQUEST", {
  			error_description: "invalid refresh token",
  			error: "invalid_grant"
-@@ -2238,7 +2248,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
+@@ -2238,7 +2268,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
  	const jwtPlugin = opts.disableJwtPlugin ? void 0 : getJwtPlugin(ctx.context);
  	const jwtPluginOptions = jwtPlugin?.options;
  	const userInfoAud = `${ctx.context.baseURL ?? ""}/oauth2/userinfo`;
@@ -166,7 +245,7 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..43ea6ab8f2283dd007fe361eedc029be
  	let jwtPayload;
  	try {
  		jwtPayload = (await jwtVerify(token, createLocalJWKSet(await getJwks(token, {
-@@ -2360,7 +2370,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
+@@ -2360,7 +2390,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
  		payload: {
  			...accessTokenClaims,
  			active: true,
@@ -175,7 +254,7 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..43ea6ab8f2283dd007fe361eedc029be
  			aud: toAudienceClaim(audienceClaim),
  			client_id: accessToken.clientId,
  			azp: accessToken.clientId,
-@@ -2411,7 +2421,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
+@@ -2411,7 +2441,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
  	return {
  		active: true,
  		client_id: clientId,
@@ -185,7 +264,7 @@ index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..43ea6ab8f2283dd007fe361eedc029be
  		sid: sessionId,
  		exp: Math.floor(new Date(refreshToken.expiresAt).getTime() / 1e3),
 diff --git a/dist/oauth-1Ud-hvZY.d.mts b/dist/oauth-1Ud-hvZY.d.mts
-index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..d7f30b873a930637bcec0d8a1e9c4328d935abe6 100644
+index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..ba359f64959b172418d12852bc1297c4ed3d2aac 100644
 --- a/dist/oauth-1Ud-hvZY.d.mts
 +++ b/dist/oauth-1Ud-hvZY.d.mts
 @@ -1131,7 +1131,10 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
@@ -200,12 +279,20 @@ index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..d7f30b873a930637bcec0d8a1e9c4328
    /**
     * Opt-in cache membership for resources by `identifier`. Mirrors the
     * {@link OAuthOptions.cachedTrustedClients} pattern.
-@@ -1236,6 +1239,8 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
+@@ -1236,6 +1239,16 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
     * @default 0
     */
    refreshTokenReuseInterval?: number;
-+  /** Observes a refresh grant's reuse detection revoking every refresh token of its client and user; a throw is logged and never changes the answer. */
-+  onRefreshFamilyRevoked?: () => void;
++  /**
++   * Observes why a refresh grant was refused; a throw is logged and never changes the answer.
++   * `reused` means reuse detection revoked every refresh token of the client and user.
++   * `revokedAt` is when the presented token was revoked, and `rotated` whether rotation revoked it.
++   */
++  onRefreshRejected?: (rejection: {
++    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "reused" | "rotation_lost";
++    revokedAt?: Date;
++    rotated: boolean;
++  }) => void;
    /**
     * The amount of time in seconds that the authorization code is valid for.
     *

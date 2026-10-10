@@ -343,7 +343,7 @@ export const makeExecutions = (
           );
         });
       return {
-        listSkills: (input) => exchange((backend) => backend.listSkills(input)),
+        listSkills: (input, options) => exchange((backend) => backend.listSkills(input, options)),
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
         listTargets: (input) => exchange((backend) => backend.listTargets(input)),

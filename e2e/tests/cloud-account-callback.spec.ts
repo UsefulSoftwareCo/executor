@@ -1,8 +1,8 @@
 /**
- * Connected-account sign-ins return to the deployment origin's callback (`v2.executor.sh`), which
- * every registered OAuth client names, and finish on the browser origin's callback page. The
- * edge's callback (standing in for `executor.sh`), which v1 forwards only for v2's state prefix,
- * is ready for the later move.
+ * New connected-account sign-ins return to the edge's callback (standing in for `executor.sh`),
+ * which v1 forwards only for v2's state prefix, and finish on the browser origin's callback page.
+ * The deployment origin's callback (`v2.executor.sh`), which OAuth clients saved before the move
+ * name, finishes there too.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -32,12 +32,13 @@ layer(HostedLive, { excludeTestServices: true })("Cloud account callback", (it) 
           Schema.Struct({ accountSetup: Schema.Struct({ redirectUri: Schema.String }) }),
           inventory,
         );
-        // Providers, the client metadata document and dynamic registration are all given this
-        // one callback, on the deployment origin, for every new sign-in.
+        // Providers, the client metadata document and dynamic registration are all given the
+        // edge's callback for every new client.
         expect(hosts.browser).not.toBe(hosts.deployment);
-        expect(accountSetup.redirectUri).toBe(`${hosts.deployment}/api/oauth/callback`);
+        expect(accountSetup.redirectUri).toBe(`${hosts.edge}/api/oauth/callback`);
 
-        // A new sign-in's return, query intact, opens the browser origin's callback page.
+        // A saved client's return to the deployment origin, query intact, opens the browser
+        // origin's callback page.
         const query = "?state=x2.synthetic-state&code=single-use";
         const finished = yield* rawRequest(`${hosts.deployment}/api/oauth/callback${query}`);
         expect(finished.status).toBe(302);
@@ -48,7 +49,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud account callback", (it) 
         expect(kept.status).toBe(302);
         expect(kept.location).toBe(`${hosts.browser}/oauth/callback${old}`);
 
-        // The edge sends v2's callbacks the same way, ready for the move to `executor.sh`.
+        // The edge sends v2's callbacks the same way.
         const bounced = yield* rawRequest(`${hosts.edge}/api/oauth/callback${query}`);
         expect(bounced.status).toBe(302);
         expect(bounced.location).toBe(`${hosts.browser}/oauth/callback${query}`);

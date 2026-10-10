@@ -29,7 +29,7 @@ export const cacheKey = (key: unknown) =>
     );
     const bytes = new TextEncoder().encode(canonical(parsed));
     if (bytes.byteLength > cacheLimits.keyBytes)
-      return yield* new CacheError({ reason: "capacity" });
+      return yield* new CacheError({ reason: "capacity", limit: "keyBytes" });
     // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
     const hash = yield* Effect.tryPromise({
       try: () => crypto.subtle.digest("SHA-256", bytes),
@@ -76,18 +76,22 @@ export const makeCache = (
     );
   const durations = (freshFor: Duration.Input, staleFor: Duration.Input = 0) =>
     Effect.try({
-      try: () => {
-        const fresh = Duration.toMillis(Duration.fromInputUnsafe(freshFor));
-        const stale = Duration.toMillis(Duration.fromInputUnsafe(staleFor));
-        if (
-          ![fresh, stale].every((value) => Number.isFinite(value) && value >= 0) ||
-          fresh + stale > cacheLimits.retentionMs
-        )
-          throw new CacheError({ reason: "invalid" });
-        return { fresh, stale };
-      },
+      try: () => ({
+        fresh: Duration.toMillis(Duration.fromInputUnsafe(freshFor)),
+        stale: Duration.toMillis(Duration.fromInputUnsafe(staleFor)),
+      }),
       catch: () => new CacheError({ reason: "invalid" }),
-    });
+    }).pipe(
+      Effect.flatMap(({ fresh, stale }) =>
+        ![fresh, stale].every((value) => Number.isFinite(value) && value >= 0)
+          ? Effect.fail(new CacheError({ reason: "invalid" }))
+          : // The cache keeps nothing past its retention: a longer lifetime loses staleness first.
+            Effect.succeed({
+              fresh: Math.min(fresh, cacheLimits.retentionMs),
+              stale: Math.max(0, Math.min(stale, cacheLimits.retentionMs - fresh)),
+            }),
+      ),
+    );
   const get = <A>(options: CacheGet<A>, refresh: boolean) =>
     Effect.gen(function* () {
       const key = yield* keyOf(options.key);

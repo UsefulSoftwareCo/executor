@@ -7,7 +7,7 @@ import {
 } from "../contracts/product-analytics.ts";
 import { RequireOrganization } from "../contracts/organization.ts";
 import { explicitOrganizationAuth } from "./organization-auth.ts";
-import { mcpOAuthPlugins } from "./mcp-oauth.ts";
+import { mcpOAuthPlugins, type RefreshRejection } from "./mcp-oauth.ts";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
 import type { BetterAuthOptions } from "better-auth";
 import { admin } from "better-auth/plugins/admin";
@@ -80,7 +80,7 @@ export const authOptions = (
     readonly issuer: string;
   },
   ipAddressHeaders: string[],
-  onRefreshFamilyRevoked?: () => void,
+  onRefreshRejected?: (rejection: RefreshRejection) => void,
 ) =>
   ({
     appName: "Executor",
@@ -98,7 +98,7 @@ export const authOptions = (
         origin: settings.url,
         resourceOrigins: settings.resourceOrigins,
         issuer: settings.issuer,
-        onRefreshFamilyRevoked,
+        onRefreshRejected,
       }),
     ],
     hooks: { before: apiKeyManagement },

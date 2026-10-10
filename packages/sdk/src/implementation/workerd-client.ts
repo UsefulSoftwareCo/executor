@@ -37,6 +37,8 @@ import { appWorker } from "./app-runner.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
 import { loadWorkerBuild, retainWorkerBuild, workerBuildAsset } from "./worker-build-storage.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
+import type { EvaluatedCommand } from "@executor-js/app-data/evaluated";
+import { evaluatedDeclarations } from "./evaluated-declarations.ts";
 
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
@@ -180,6 +182,11 @@ export interface WorkerdTransport {
     work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | RuntimeProtocolFailed>;
   readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
+  /** One command to the app's store of evaluated results, answered with its reply. */
+  readonly evaluated: (
+    app: string,
+    command: EvaluatedCommand,
+  ) => Effect.Effect<unknown, RuntimeProtocolFailed>;
   readonly backend: (
     operation: "start" | "status" | "terminate",
     run: WorkflowRunId,
@@ -286,5 +293,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
         status: (run: WorkflowRunId) => transport.backend("status", run),
         terminate: (run: WorkflowRunId) => transport.backend("terminate", run).pipe(Effect.asVoid),
       } satisfies WorkflowRuntime,
+      /** Evaluated results kept in each app's supervisor, so they outlive this process. */
+      declarations: evaluatedDeclarations(transport.evaluated),
     };
   });

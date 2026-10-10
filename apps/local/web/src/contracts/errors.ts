@@ -7,6 +7,7 @@ import type { AccountId } from "@executor-js/sdk";
 import { Cause, Match, Option, type Schema } from "effect";
 import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { HttpClientError } from "effect/http";
+import { pageOutdated } from "@executor-js/dashboard-start/build-change";
 import type { Sse } from "effect/encoding";
 import type { LiveConnectionLost } from "./api.ts";
 import type { ToolCatalogChanged } from "@executor-js/local-server/contracts";
@@ -33,8 +34,12 @@ export interface FailureMessage {
   readonly account?: AccountId;
 }
 const message = (title: string, description: string): FailureMessage => ({ title, description });
+/** A page from a previous build fails against the upgraded server; reloading is the fix. */
+const outdated = () => message("Executor was updated", "Reload this page to use the new version.");
 const unavailable = () =>
-  message("Could not reach Executor", "Check that the local server is running, then retry.");
+  pageOutdated()
+    ? outdated()
+    : message("Could not reach Executor", "Check that the local server is running, then retry.");
 const errorMessage = Match.type<DashboardError>().pipe(
   Match.tagsExhaustive({
     SkillRevisionChanged: () => ({
@@ -265,10 +270,12 @@ const errorMessage = Match.type<DashboardError>().pipe(
     CatalogImportFailed: (error) => message("App could not be imported", error.reason),
     HttpClientError: unavailable,
     SchemaError: () =>
-      message(
-        "Unexpected server response",
-        "Check that the dashboard and server use the same version, then retry.",
-      ),
+      pageOutdated()
+        ? outdated()
+        : message(
+            "Unexpected server response",
+            "Check that the dashboard and server use the same version, then retry.",
+          ),
     LiveConnectionLost: unavailable,
     NoSuchElementError: unavailable,
     Retry: unavailable,

@@ -1,5 +1,6 @@
 import { dashboardHttpClient, hydrated, requestKey } from "@executor-js/ui/contracts/http";
 import { observeBrowserTransport, observeBrowserResponse } from "@executor-js/telemetry/browser";
+import { observeBuild } from "@executor-js/dashboard-start/build-change";
 import { BrowserAtoms, DashboardRuntime } from "./telemetry.ts";
 import { toolRunApproval } from "@executor-js/ui/contracts/browser-approval";
 import { LocalAppManagementApi } from "@executor-js/local-server/app-management";
@@ -28,7 +29,7 @@ export class DashboardClient extends AtomHttpApi.Service<DashboardClient>()("Das
   api: DashboardApi.addHttpApi(LocalAppManagementApi),
   httpClient: dashboardHttpClient,
   runtime: DashboardRuntime,
-  transformClient: observeBrowserTransport,
+  transformClient: (client) => observeBrowserTransport(observeBuild(client)),
   transformResponse: observeBrowserResponse,
 }) {}
 

@@ -45,7 +45,9 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
 const maxClockOffset = 40 * 86_400_000;
 /** Operator settings a scenario may turn on between product generations. */
 export const OperatorSettings = Schema.Struct({
-  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.NonEmptyString,
+  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optionalKey(Schema.NonEmptyString),
+  /** The build an upgrade installs. */
+  EXECUTOR_BUILD_VERSION: Schema.optionalKey(Schema.NonEmptyString),
 });
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (
@@ -120,15 +122,15 @@ export const startManagedServer = (
       EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
       ...environment,
     };
-    // On Windows every signal terminates at once, so the scope's tree kill stays the only stop.
-    const stopRequests = process.platform !== "win32";
     // Ask the product alone to stop, as the self-host image's supervisor does, so its own shutdown
     // flushes its telemetry before it stops the collector it started. A signal to its whole
     // process group stopped the collector first, and the product then spent its 3-second export
-    // budget retrying. Releasing the process scope afterwards ends anything it left behind.
+    // budget retrying. On Windows the scope's tree kill awaits only the product, so a collector still
+    // terminating held the data directory open when the scenario removed it. Releasing the process
+    // scope afterwards ends anything it left behind.
     const shutdown = Effect.suspend(() => {
       const child = running;
-      if (child === undefined || !stopRequests) return Effect.void;
+      if (child === undefined) return Effect.void;
       // The request goes through a pipe only the product holds (see stop-request.mjs), not to its
       // PID: once the product is reaped, its PID can name another process before its handle
       // reports the exit. A write to a product that already exited never completes, so the
@@ -172,9 +174,8 @@ export const startManagedServer = (
               // Bun accepts Node's --import preload, so self-host can advance wall time too.
               "--import",
               new URL("./wall-clock.mjs", import.meta.url).href,
-              ...(stopRequests
-                ? ["--import", new URL("./stop-request.mjs", import.meta.url).href]
-                : []),
+              "--import",
+              new URL("./stop-request.mjs", import.meta.url).href,
               ...entry.command,
             ],
             {
@@ -183,7 +184,7 @@ export const startManagedServer = (
               env,
               stdout: "pipe",
               stderr: "pipe",
-              ...(stopRequests ? { additionalFds: { fd3: { type: "input" } } } : {}),
+              additionalFds: { fd3: { type: "input" } },
               killSignal: "SIGTERM",
               forceKillAfter: "15 seconds",
             },

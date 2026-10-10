@@ -230,6 +230,10 @@ export const makeFacetSupervisor = (
      * another waiting until it pauses.
      */
     const admission = { running: 0, identity: "", alone: false };
+    /** Successful calls whose release still runs in the facet after their reply, and when they end. */
+    let finishing = 0;
+    let finished = Promise.resolve();
+    let settle = () => {};
     let wake = yield* Deferred.make<void>();
     /** Enter now when allowed, or return the signal to wait on. Synchronous, so it cannot interleave. */
     const tryEnter = (identity: string, concurrent: boolean) => {
@@ -508,11 +512,18 @@ export const makeFacetSupervisor = (
                     state.facets.abort("data", "App invocation cancelled");
                   }
                   if (Exit.isSuccess(exit) && entrypoint.finish !== undefined) {
+                    if (finishing++ === 0)
+                      finished = new Promise<void>((resolve) => {
+                        settle = resolve;
+                      });
                     state.waitUntil(
                       entrypoint
                         .finish(id)
                         .catch(() => undefined)
-                        .then(closeLeases),
+                        .then(closeLeases)
+                        .finally(() => {
+                          if (--finishing === 0) settle();
+                        }),
                     );
                     return;
                   }
@@ -636,6 +647,36 @@ export const makeFacetSupervisor = (
           ),
         ),
       recover: enter(recover),
+      /**
+       * Unload the facet Worker of one execution context, for a host that bounds the Workers its
+       * process keeps loaded. Its database stays. Releases still running after their replies
+       * finish first. A facet another call entered meanwhile is left loaded, as is one this
+       * supervisor no longer has loaded. True once the Worker is unloaded; the next call loads it
+       * again.
+       */
+      unload: (identity: string) =>
+        enter(
+          Effect.gen(function* () {
+            if (!unloadReplacedFacets) return false;
+            while (finishing > 0) {
+              const current = finished;
+              yield* Effect.promise(() => current);
+            }
+            if (admission.running > 0) return false;
+            const supervisor = state.id.toString();
+            const name = `${supervisor}:${identity}`;
+            const loaded = workerName(name);
+            const recorded = loadedFacets.get(supervisor)?.loaded === loaded;
+            if (active !== loaded && !recorded) return false;
+            if (active === loaded) {
+              state.facets.abort("data", "Unloaded by the app Worker limit");
+              active = undefined;
+            }
+            if (recorded) loadedFacets.delete(supervisor);
+            yield* unloadReplaced({ name, loaded });
+            return true;
+          }),
+        ),
     };
   });
 

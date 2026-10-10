@@ -2,20 +2,23 @@ import { authorizeTarget } from "./authorization.ts";
 /** Product authority is checked for every read; profile and account checks precede factory evaluation. */
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
-import type { AppSkillInputs } from "@executor-js/sdk/core";
+import type { AppSkillInputs, CatalogReadOptions } from "@executor-js/sdk/core";
 import { annotateSkillRead } from "@executor-js/app-templates/executor";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { currentOwner, selectedApp } from "./access.ts";
 
 /** Read metadata under the request's explicit organization, using the selected account profile. */
-export const listAppSkills = (input: Omit<typeof AppSkillInputs.list.Type, "owner">) =>
+export const listAppSkills = (
+  input: Omit<typeof AppSkillInputs.list.Type, "owner">,
+  options?: CatalogReadOptions,
+) =>
   Effect.gen(function* () {
     yield* authorizeTarget(input.app, input.profile);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* selectedApp(executor, owner, input.app, input.profile);
-    return yield* executor.skills.list({ ...input, owner });
+    return yield* executor.skills.list({ ...input, owner }, options);
   });
 /** Historical reads still require current access to the configured app and its code lineage. */
 export const readAppSkill = (input: Omit<typeof AppSkillInputs.read.Type, "owner">) =>

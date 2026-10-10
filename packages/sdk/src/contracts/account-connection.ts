@@ -115,6 +115,15 @@ export const FindConnectionOAuth = Schema.Struct({
   owner: Schema.optional(OwnerId),
   callbackUrl: Schema.RedactedFromValue(HttpUrl),
 });
+/**
+ * The pending connection and the callback its sign-in sent as `redirect_uri`. A host that relays
+ * the callback elsewhere rebuilds it on this URL before completing the sign-in.
+ */
+export const FoundConnectionOAuth = Schema.Struct({
+  ...AccountConnection.fields,
+  redirectUri: HttpUrl,
+});
+export type FoundConnectionOAuth = typeof FoundConnectionOAuth.Type;
 /** Unknown IDs and mismatched owners have the same result. */
 export const AccountConnectionNotFound = UserFacingError.define({
   tag: "AccountConnectionNotFound",
@@ -261,7 +270,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
   .add(
     HttpApiEndpoint.post("findOAuth", "/v1/account-connections/oauth/find", {
       payload: FindConnectionOAuth,
-      success: AccountConnection,
+      success: FoundConnectionOAuth,
       error: [...errors, AccountConnectionTargetChanged, CredentialsError, OAuthCompletionFailed],
     }).annotate(
       OpenApi.Description,

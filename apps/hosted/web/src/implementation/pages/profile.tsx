@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Option } from "effect";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
 import {
@@ -22,6 +22,7 @@ import { organizationsAtom } from "../../contracts/organization.ts";
 import {
   AccountSettingPending,
   accountSettingClass,
+  readOnlyInputClass,
   profileDescription,
   profileTitle,
 } from "../components/account-pending.tsx";
@@ -36,8 +37,14 @@ const actionClass =
 const inputClass =
   "w-[min(100%,_520px)] h-9 rounded-[6px] bg-transparent shadow-none max-[640px]:h-10 max-[640px]:text-[16px]";
 
-/** The signed-in person's identity; it belongs to them, not to any organization. */
-export function ProfilePage() {
+/** Email-code sign-ups have no name; the address's local part is the likeliest one. */
+const suggestedName = (email: string) => email.split("@")[0] ?? "";
+
+/**
+ * The signed-in person's identity; it belongs to them, not to any organization. A host that can
+ * verify a new address renders its own email setting; otherwise the email is read-only.
+ */
+export function ProfilePage({ email }: { readonly email?: (current: string) => ReactNode }) {
   useDocumentTitle(productTitle(profileTitle));
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   return (
@@ -56,23 +63,31 @@ export function ProfilePage() {
           </>
         ) : (
           <>
-            <DisplayName key={session.user.id} current={session.user.name} />
-            <Card className={accountSettingClass}>
-              <CardHeader>
-                <CardTitle>
-                  <h2>Email</h2>
-                </CardTitle>
-                <CardDescription>Used for sign-in and invitations.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Input
-                  aria-label="Email"
-                  className={inputClass}
-                  value={session.user.email}
-                  readOnly
-                />
-              </CardContent>
-            </Card>
+            <DisplayName
+              key={session.user.id}
+              current={session.user.name}
+              email={session.user.email}
+            />
+            {email === undefined ? (
+              <Card className={accountSettingClass}>
+                <CardHeader>
+                  <CardTitle>
+                    <h2>Email</h2>
+                  </CardTitle>
+                  <CardDescription>Used for sign-in and invitations.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Input
+                    aria-label="Email"
+                    className={readOnlyInputClass}
+                    value={session.user.email}
+                    readOnly
+                  />
+                </CardContent>
+              </Card>
+            ) : (
+              email(session.user.email)
+            )}
           </>
         )}
         <Memberships />
@@ -81,10 +96,11 @@ export function ProfilePage() {
   );
 }
 
-function DisplayName({ current }: { readonly current: string }) {
+function DisplayName({ current, email }: { readonly current: string; readonly email: string }) {
   const rename = useAtomSet(renameUserAtom, { mode: "promiseExit" });
   const state = useAtomValue(renameUserAtom);
-  const [draft, setDraft] = useState<string>();
+  // A blank name starts as an unsaved suggestion, so the empty field never looks broken.
+  const [draft, setDraft] = useState(current.trim() ? undefined : suggestedName(email));
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
   const name = draft ?? current;
@@ -132,7 +148,9 @@ function DisplayName({ current }: { readonly current: string }) {
           )}
         </CardContent>
         <CardFooter>
-          <p id="profile-name-hint">Up to 120 characters</p>
+          <p id="profile-name-hint">
+            {current.trim() ? "Up to 120 characters" : "Suggested from your email. Save to use it."}
+          </p>
           <div className={actionClass}>
             {saved && <span role="status">Saved</span>}
             <Button

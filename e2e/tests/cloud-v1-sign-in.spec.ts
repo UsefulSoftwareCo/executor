@@ -1,7 +1,8 @@
 /**
- * New Cloud accounts whose email belongs to an Executor v1 organization stay on v1. The check
- * reads the emulated v1 WorkOS through the same two list calls production makes, and only for
- * accounts that have not already used v2.
+ * New Cloud accounts whose email belongs to an Executor v1 organization with data or a paid plan
+ * stay on v1. The check reads the emulated v1 WorkOS through the same two list calls production
+ * makes, the managed Cloud's emulated v1 database as v1's read-only login, and the emulated
+ * Autumn account, only for accounts that have not already used v2.
  */
 import { randomBytes } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
@@ -24,6 +25,46 @@ const Refused = Schema.Struct({
 });
 
 const services = Layer.mergeAll(Onboarding.layer, Emulators.layer);
+
+/**
+ * Apply statements in one transaction to a managed Cloud database: Cloud's own
+ * (`sso-database.json`) or the emulated v1 database (`v1-database.json`).
+ */
+const writeRows = (
+  database: "sso-database.json" | "v1-database.json",
+  statements: ReadonlyArray<{ readonly sql: string; readonly params?: ReadonlyArray<string> }>,
+) =>
+  Effect.gen(function* () {
+    const target = yield* Target,
+      fs = yield* FileSystem.FileSystem,
+      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const file = `${target.directory}/v1-rows-${randomBytes(6).toString("hex")}.json`;
+    yield* fs.writeFileString(file, JSON.stringify(statements), { mode: 0o600 });
+    const output = yield* processes
+      .string(
+        ChildProcess.make(
+          "node",
+          [
+            "apps/hosted/testing/cloud-rows-fixture.ts",
+            "--configuration",
+            `${target.directory}/${database}`,
+            "--statements",
+            file,
+          ],
+          { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
+        ),
+      )
+      .pipe(Effect.ensuring(fs.remove(file).pipe(Effect.ignore)));
+    return yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Array(Schema.Array(Schema.Unknown))),
+    )(output);
+  });
+
+/** Give a v1 organization a row in one of the v1 tables that hold its data. */
+const v1Data = (organizationId: string, table: "connection" | "artifact") =>
+  writeRows("v1-database.json", [
+    { sql: `insert into ${table} (tenant) values ($1)`, params: [organizationId] },
+  ]);
 const Invited = Schema.Struct({
   status: Schema.Literal(200),
   body: Schema.Struct({ id: Schema.String }),
@@ -62,14 +103,14 @@ const googleSignIn = (email: string, step: string) =>
     yield* browser.use(step, (page) => page.getByRole("button").filter({ hasText: email }).click());
   });
 
-/** Seed a fresh Google identity that is also a v1 member, and sign in with it. */
+/** Seed a fresh Google identity that is also a member of a v1 organization with data, and sign in with it. */
 const v1GoogleSignIn = (options: { readonly workosFailsOnce: boolean }) =>
   Effect.gen(function* () {
     const onboarding = yield* Onboarding,
       emulators = yield* Emulators,
       browser = yield* Browser;
     const identity = yield* emulators.identity("google");
-    yield* emulators.v1Member(identity.email);
+    yield* v1Data(yield* emulators.v1Member(identity.email), "connection");
     if (options.workosFailsOnce) yield* emulators.failNextV1MembershipRead;
     yield* browser.use("Open Cloud sign-in", (page) => page.goto("/login"));
     yield* onboarding.chooseSocial("google");
@@ -78,6 +119,21 @@ const v1GoogleSignIn = (options: { readonly workosFailsOnce: boolean }) =>
     );
     return identity;
   });
+
+/** Sign out, then sign in with a seeded Google identity. */
+const switchTo = (email: string) =>
+  Effect.gen(function* () {
+    const browser = yield* Browser;
+    yield* browser.use("Sign the previous account out", (page) => page.context().clearCookies());
+    yield* googleSignIn(email, "Choose the v1 member on the Google emulator");
+  });
+
+const teamSetup = Effect.gen(function* () {
+  const browser = yield* Browser;
+  yield* browser.use("Team setup opens instead of the v1 page", (page) =>
+    page.getByLabel("Team name", { exact: true }).waitFor({ state: "visible" }),
+  );
+});
 
 const stopPage = Effect.gen(function* () {
   const browser = yield* Browser;
@@ -167,45 +223,15 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 sign-in", (it) => {
       Effect.gen(function* () {
         const onboarding = yield* Onboarding,
           browser = yield* Browser,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem,
-          processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+          target = yield* Target;
         /** Set this scenario's own account creation time in the managed Cloud's database. */
         const created = (email: string, at: string) =>
-          Effect.gen(function* () {
-            const file = `${target.directory}/v1-rows-${randomBytes(6).toString("hex")}.json`;
-            yield* fs.writeFileString(
-              file,
-              JSON.stringify([
-                {
-                  sql: `update "user" set "createdAt" = $2::timestamptz where email = $1 returning id`,
-                  params: [email, at],
-                },
-              ]),
-              { mode: 0o600 },
-            );
-            const output = yield* processes
-              .string(
-                ChildProcess.make(
-                  "node",
-                  [
-                    "apps/hosted/testing/cloud-rows-fixture.ts",
-                    "--configuration",
-                    `${target.directory}/sso-database.json`,
-                    "--statements",
-                    file,
-                  ],
-                  { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
-                ),
-              )
-              .pipe(Effect.ensuring(fs.remove(file).pipe(Effect.ignore)));
-            const rows = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(
-                Schema.Array(Schema.Array(Schema.Struct({ id: Schema.String }))),
-              ),
-            )(output);
-            expect(rows[0]).toHaveLength(1);
-          });
+          writeRows("sso-database.json", [
+            {
+              sql: `update "user" set "createdAt" = $2::timestamptz where email = $1 returning id`,
+              params: [email, at],
+            },
+          ]).pipe(Effect.map((rows) => expect(rows[0]).toHaveLength(1)));
         const identity = yield* v1GoogleSignIn({ workosFailsOnce: false });
         yield* stopPage;
         // An account from before the check shipped already used v2 and is never stopped.
@@ -251,7 +277,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 sign-in", (it) => {
         const [team] = yield* onboarding.organizations;
         if (team === undefined) return yield* Effect.die("The owner's team was not created");
         const member = yield* emulators.identity("google");
-        yield* emulators.v1Member(member.email);
+        yield* v1Data(yield* emulators.v1Member(member.email), "artifact");
         const invitation = yield* browser
           .use("Invite the v1 member", (page) =>
             page.evaluate(
@@ -297,6 +323,77 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 sign-in", (it) => {
         );
         expect(unavailable.status).toBe(503);
         expect((yield* onboarding.organizations).map((joined) => joined.id)).toEqual([team.id]);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+  it.effect(scenarios.v1SignInEmpty.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          browser = yield* Browser;
+        const member = () =>
+          emulators.identity("google").pipe(Effect.map((identity) => identity.email));
+
+        // Only empty organizations: one never billed, one on v1's free plan. A plugin's storage
+        // other than toolkits is not data.
+        const free = yield* member();
+        const unbilled = yield* emulators.v1Member(free);
+        yield* writeRows("v1-database.json", [
+          {
+            sql: `insert into plugin_storage (tenant, plugin_id) values ($1, 'other')`,
+            params: [unbilled],
+          },
+        ]);
+        yield* emulators.v1Plan(yield* emulators.v1Member(free), "free");
+        yield* googleSignIn(free, "Choose the member of empty free v1 organizations");
+        yield* teamSetup;
+        yield* browser.checkpoint("empty free v1 organizations continue to v2");
+
+        // An empty organization on a paid plan keeps its member on v1.
+        const paying = yield* member();
+        yield* emulators.v1Plan(yield* emulators.v1Member(paying), "team");
+        yield* switchTo(paying);
+        yield* stopPage;
+
+        // Toolkits in plugin storage are data; one such organization outweighs an empty one.
+        const mixed = yield* member();
+        yield* emulators.v1Member(mixed);
+        yield* writeRows("v1-database.json", [
+          {
+            sql: `insert into plugin_storage (tenant, plugin_id) values ($1, 'toolkits')`,
+            params: [yield* emulators.v1Member(mixed)],
+          },
+        ]);
+        yield* switchTo(mixed);
+        yield* stopPage;
+
+        // Without an answer from v1's database the check fails closed, then answers on retry.
+        const unanswered = yield* member();
+        yield* emulators.v1Member(unanswered);
+        const hide = writeRows("v1-database.json", [
+          { sql: "alter table artifact rename to artifact_hidden" },
+        ]);
+        const restore = writeRows("v1-database.json", [
+          { sql: "alter table artifact_hidden rename to artifact" },
+        ]).pipe(Effect.orDie);
+        yield* hide.pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              yield* switchTo(unanswered);
+              yield* browser.use("v1's database failure fails closed with a retry", (page) =>
+                page
+                  .getByRole("heading", { name: "Unable to open Executor", exact: true })
+                  .waitFor({ state: "visible" }),
+              );
+            }),
+          ),
+          Effect.ensuring(restore),
+        );
+        yield* browser.use("Retry entry", (page) =>
+          page.getByRole("link", { name: "Try again", exact: true }).click(),
+        );
+        yield* teamSetup;
       }).pipe(Effect.provide(services)),
     ),
   );

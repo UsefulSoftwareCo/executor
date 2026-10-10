@@ -142,8 +142,10 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         ),
         Effect.andThen(() => backend.unsubscribeEvent(input)),
       ),
-    listSkills: (input) =>
-      checkApp(input.app, input.profile).pipe(Effect.andThen(() => backend.listSkills(input))),
+    listSkills: (input, options) =>
+      checkApp(input.app, input.profile).pipe(
+        Effect.andThen(() => backend.listSkills(input, options)),
+      ),
     readSkill: (input) =>
       checkApp(input.app, input.profile).pipe(Effect.andThen(() => backend.readSkill(input))),
     listApps: (input) =>

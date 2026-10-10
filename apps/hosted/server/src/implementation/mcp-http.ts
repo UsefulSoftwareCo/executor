@@ -71,7 +71,8 @@ const RequestApprovalUrl = Context.Reference<
   ((address: import("@executor-js/mcp/browser").BrowserApprovalAddress) => string) | undefined
 >("hosted/McpApprovalUrl", { defaultValue: () => undefined });
 const requestBackend: McpBackend<RequestError> = {
-  listSkills: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listSkills(input)),
+  listSkills: (input, options) =>
+    Effect.flatMap(RequestBackend, (backend) => backend.listSkills(input, options)),
   readSkill: (input) => Effect.flatMap(RequestBackend, (backend) => backend.readSkill(input)),
   authorizeElicitation: (input) =>
     Effect.flatMap(RequestBackend, (backend) => backend.authorizeElicitation(input)),
@@ -179,7 +180,8 @@ export const dispatchHostedMcp = <E, R>(
     );
     const authorized: McpBackend<RequestError> = {
       ...backend,
-      listSkills: (input) => current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input))),
+      listSkills: (input, options) =>
+        current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input, options))),
       readSkill: (input) => current.pipe(Effect.flatMap((fresh) => fresh.readSkill(input))),
 
       authorizeElicitation: (input) =>

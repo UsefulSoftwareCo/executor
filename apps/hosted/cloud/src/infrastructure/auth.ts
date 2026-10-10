@@ -127,7 +127,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             ),
           ),
         ),
-      observation.refreshFamilyRevoked,
+      observation.refreshRejected,
     );
     const database = yield* AuthDatabase;
     const makeInstance = (secret: string) =>

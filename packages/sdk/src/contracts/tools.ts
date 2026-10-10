@@ -30,6 +30,7 @@ import {
   type ElicitationHandler,
 } from "apps/contracts";
 import { StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
+import type { CatalogReadOptions } from "./declarations.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
   AccountId,
@@ -72,7 +73,7 @@ export interface ToolInvocationOptions {
   readonly issuer?: ToolApprovalIssuer;
 }
 /** How an in-process caller with its own wait bound reads a tool listing. Not an HTTP input. */
-export interface ToolListOptions {
+export interface ToolListOptions extends CatalogReadOptions {
   /**
    * Report a listing that another request started at least this long ago, and that is still
    * running, as `ToolListingTimedOut` at once instead of waiting for it. A caller that gives up

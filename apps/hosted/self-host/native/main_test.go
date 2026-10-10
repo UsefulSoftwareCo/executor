@@ -203,3 +203,28 @@ func TestSuperviseStopsARunningProcess(t *testing.T) {
 		t.Fatalf("the process was not sent SIGTERM: %v", err)
 	}
 }
+
+func TestMemoryPressureIsSixtyPercentOfTheCgroupLimit(t *testing.T) {
+	directory := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(directory, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cases := []struct {
+		name string
+		file string
+		want uint64
+	}{
+		{"4 GiB limit", write("limited", "4294967296\n"), 2457},
+		{"no limit", write("unlimited", "max\n"), 0},
+		{"no cgroup v2", filepath.Join(directory, "missing"), 0},
+	}
+	for _, c := range cases {
+		if got := memoryPressureMiB(c.file); got != c.want {
+			t.Errorf("%s: memoryPressureMiB = %d, want %d", c.name, got, c.want)
+		}
+	}
+}

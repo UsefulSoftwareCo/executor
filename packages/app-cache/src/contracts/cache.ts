@@ -4,6 +4,17 @@ import { Option, Schema, type Effect } from "effect";
 /** Expected cache failures never include keys, values or upstream exception text. */
 export class CacheError extends Schema.TaggedError<CacheError>()("CacheError", {
   reason: Schema.Literals(["unavailable", "storage", "invalid", "capacity", "timeout"]),
+  /** Which of `cacheLimits` the request exceeded, when one did. */
+  limit: Schema.optionalKey(
+    Schema.Literals([
+      "keyBytes",
+      "entryBytes",
+      "batchBytes",
+      "batchEntries",
+      "totalBytes",
+      "totalEntries",
+    ]),
+  ),
 }) {}
 
 /** Bounded defaults shared by loaders and persistent adapters. */

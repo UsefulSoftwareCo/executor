@@ -21,6 +21,10 @@ export const securityDescription = "How you sign in, and where you are signed in
 /** Account forms share the organization settings geometry. */
 export const accountSettingClass = organizationSettingClass;
 
+/** A locked value must not look like a field waiting for input. */
+export const readOnlyInputClass =
+  "w-[min(100%,_520px)] h-9 rounded-[6px] border-dashed bg-transparent text-muted-foreground shadow-none cursor-default focus-visible:ring-0 max-[640px]:h-10 max-[640px]:text-[16px]";
+
 /** A settings card whose copy is known; only the stored value is a placeholder. */
 export function AccountSettingPending({
   title,

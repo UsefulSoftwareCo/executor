@@ -27,7 +27,8 @@ These settings override the defaults:
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
-| `EXECUTOR_APP_WORKERS` | no | Most app Workers kept loaded at once, besides one data Worker per app with a database. The default is `32`. See below. |
+| `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
+| `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
 | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
 | `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | no     | Reuse an app's evaluated tool list this long before refreshing it in the background. The default is `30`. |
@@ -56,10 +57,15 @@ call to a loaded Worker. A Worker that is still handling a call is never
 unloaded. Raise the limit if many apps are used at the same time and the
 server has memory to spare; lower it on a small machine.
 
-Apps with a database also keep one data Worker loaded each, for the accounts
-they were last called with. These are not counted against
-`EXECUTOR_APP_WORKERS`, so add one Worker per app with a database when you size
-memory.
+A Worker that has not been called for `EXECUTOR_APP_WORKER_IDLE_SECONDS`
+(five minutes by default) is unloaded even below the limit, so an app called
+once does not keep its memory. Raise it if apps are called every few minutes
+and the slower first call matters more than memory. Set it to `0` to keep idle
+Workers loaded until the limit unloads them.
+
+Apps with a database also run their calls in a data Worker, for the accounts
+they were last called with. Data Workers count against `EXECUTOR_APP_WORKERS`
+too, so a call of such an app can keep two Workers loaded.
 
 `BETTER_AUTH_URL` must match the scheme, host and port you actually use. If it
 does not, browser sign-in is rejected as an invalid origin. Railway detection uses `RAILWAY_PUBLIC_DOMAIN`. Origins are never inferred

@@ -134,7 +134,6 @@ export const startDeployment = ({
       {
         CI: "true",
         EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
-        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
         TEST_STAGE_FIXTURE_CONTROL: fixtureControlEnvironment(fixtures),
         EXECUTOR_APP_UI_BASE_URL: appUiBaseUrl,
       },

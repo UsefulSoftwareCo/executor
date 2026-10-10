@@ -623,6 +623,27 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         const user = yield* browserSession;
         expect(user.user.email).toBe(email);
         expect(user.user.emailVerified).toBe(true);
+        // The identity provider owns this address; leaving the domain would also break SSO.
+        for (const path of ["request-email-change", "change-email"])
+          expect(
+            yield* browser.use(`An SSO user cannot ${path.replaceAll("-", " ")}`, (page) =>
+              page.evaluate(
+                (path) =>
+                  fetch(`/api/auth/email-otp/${path}`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ newEmail: "personal@example.test", otp: "000000" }),
+                  }).then((response) =>
+                    response.json().then((body: { code?: string }) => ({
+                      status: response.status,
+                      code: body.code,
+                    })),
+                  ),
+                path,
+              ),
+            ),
+          ).toEqual({ status: 403, code: "SSO_MANAGED_EMAIL" });
+        expect((yield* browserSession).user.email).toBe(email);
         const members = yield* api.request(
           actors.owner,
           "GET",

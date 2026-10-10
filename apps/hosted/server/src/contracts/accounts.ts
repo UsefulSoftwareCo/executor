@@ -89,7 +89,6 @@ export type HostedAccountConnection = typeof HostedAccountConnection.Type;
 export const HostedOAuthSignIn = Schema.Struct({
   status: Schema.Literal("redirect"),
   ...OAuthSignIn.fields,
-  redirectUri: HttpUrl,
 });
 export type HostedOAuthSignIn = typeof HostedOAuthSignIn.Type;
 /** Immediate account completion needs no browser return context. */

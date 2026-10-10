@@ -390,14 +390,32 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
         ).toBe(0);
         expect(yield* bindings).toEqual({ mailboxes: [accounts[0], third] });
         expect(
-          yield* browser.use("Only selected mailboxes offer removal", () =>
+          yield* browser.use("Every mailbox has a menu", () =>
             Promise.all(
               ["First account", "Second account", "Third account"].map((label) =>
                 mailboxes.getByRole("button", { name: `Manage ${label}`, exact: true }).count(),
               ),
             ),
           ),
-        ).toEqual([1, 0, 1]);
+        ).toEqual([1, 1, 1]);
+        const removals: number[] = [];
+        for (const label of ["First account", "Second account", "Third account"])
+          removals.push(
+            yield* browser.use(`Open the ${label} menu`, (page) =>
+              mailboxes
+                .getByRole("button", { name: `Manage ${label}`, exact: true })
+                .click()
+                .then(() => page.getByRole("menu").waitFor({ state: "visible" }))
+                .then(() => page.getByRole("menuitem", { name: "Remove", exact: true }).count())
+                .then((count) =>
+                  page.keyboard
+                    .press("Escape")
+                    .then(() => page.getByRole("menu").waitFor({ state: "hidden" }))
+                    .then(() => count),
+                ),
+            ),
+          );
+        expect(removals, "Only selected mailboxes offer removal").toEqual([1, 0, 1]);
         yield* Effect.gen(function* () {
           yield* browser.use("Remove the mailbox from its row", () =>
             mailboxes.getByRole("checkbox", { name: "Third account", exact: true }).hover(),
