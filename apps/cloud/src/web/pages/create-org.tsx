@@ -79,7 +79,7 @@ export const CreateOrgPage = () => {
   const form = useCreateOrganizationForm({
     defaultName: suggestedName,
     onSuccess: () => {
-      void navigate({ to: "/setup-mcp" });
+      void navigate({ to: "/setup-app" });
     },
   });
 
@@ -102,7 +102,7 @@ export const CreateOrgPage = () => {
       <div className="mx-auto flex w-full max-w-sm flex-col gap-6">
         <header className="flex flex-col gap-2">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Step 1 of 2
+            Step 1 of 3
           </p>
           <h1 className="font-sans text-3xl font-semibold">
             {count > 0 ? "You've been invited" : "Create your organization"}

@@ -16,6 +16,10 @@ describe("analytics seam", () => {
     expect(() => trackEvent("integration_browse_opened", { via: "header" })).not.toThrow();
   });
 
+  it("accepts the onboarding integration entry point", () => {
+    expect(() => trackEvent("integration_browse_opened", { via: "onboarding" })).not.toThrow();
+  });
+
   it("forwards name and properties to the mounted client", () => {
     const seen: Array<{ name: AnalyticsEventName; properties: unknown }> = [];
     setAnalyticsClient((name, properties) => {

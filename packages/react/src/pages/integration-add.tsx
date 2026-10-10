@@ -29,10 +29,20 @@ function AddIntegrationContent(props: {
   authHeader?: string;
   authNote?: string;
   authKind?: string;
+  onboarding?: boolean;
   specOverrides?: string;
 }) {
-  const { pluginKey, url, preset, namespace, authHeader, authNote, authKind, specOverrides } =
-    props;
+  const {
+    pluginKey,
+    url,
+    preset,
+    namespace,
+    authHeader,
+    authNote,
+    authKind,
+    onboarding,
+    specOverrides,
+  } = props;
   const navigate = useNavigate();
   const integrationPlugins = useIntegrationPlugins();
   const refreshIntegrations = useAtomRefresh(integrationsOptimisticAtom);
@@ -82,6 +92,13 @@ function AddIntegrationContent(props: {
                 ...(slug ? { integration_slug: slug } : {}),
               });
               refreshIntegrations();
+              if (onboarding) {
+                void navigate({
+                  to: "/{-$orgSlug}/integrations/browse",
+                  search: { onboarding: 1 },
+                });
+                return;
+              }
               void navigate(
                 slug
                   ? {
@@ -94,7 +111,11 @@ function AddIntegrationContent(props: {
             }}
             onCancel={() => {
               trackEvent("integration_add_cancelled", { plugin_key: pluginKey });
-              void navigate({ to: "/{-$orgSlug}" });
+              void navigate(
+                onboarding
+                  ? { to: "/{-$orgSlug}/integrations/browse", search: { onboarding: 1 } }
+                  : { to: "/{-$orgSlug}" },
+              );
             }}
           />
         </Suspense>

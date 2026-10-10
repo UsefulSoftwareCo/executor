@@ -32,11 +32,11 @@ scenario(
         await page.getByPlaceholder("Northwind Labs").fill(ORG_1);
         await page.getByRole("button", { name: "Create organization" }).click();
         // Onboarding step 2 — proves the first org was created.
-        await page.getByText("Connect your MCP client").waitFor();
+        await page.getByText("Choose your first app").waitFor();
       });
 
-      await step("Continue into the app", async () => {
-        await page.getByRole("button", { name: "Continue to app" }).click();
+      await step("Skip app setup and open the app", async () => {
+        await page.getByRole("button", { name: "Skip to workspace" }).click();
         await page.getByText("Integrations").first().waitFor();
         // Let the router navigation fully settle before opening menus — a late
         // remount closes them mid-interaction. The console canonicalizes onto

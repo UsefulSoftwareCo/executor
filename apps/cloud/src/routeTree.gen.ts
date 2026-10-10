@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as CreateOrgRouteImport } from './routes/bare/create-org'
 import { Route as LoginRouteImport } from './routes/bare/login'
+import { Route as SetupAppRouteImport } from './routes/bare/setup-app'
 import { Route as SetupMcpRouteImport } from './routes/bare/setup-mcp'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRouteImport } from './../../../packages/react/src/routes/index'
 import { Route as ApiKeysRouteImport } from './routes/app/api-keys'
@@ -39,6 +40,11 @@ const CreateOrgRoute = CreateOrgRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SetupAppRoute = SetupAppRouteImport.update({
+  id: '/setup-app',
+  path: '/setup-app',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SetupMcpRoute = SetupMcpRouteImport.update({
@@ -166,6 +172,7 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginK
 export interface FileRoutesByFullPath {
   '/create-org': typeof CreateOrgRoute
   '/login': typeof LoginRoute
+  '/setup-app': typeof SetupAppRoute
   '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
@@ -189,6 +196,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/create-org': typeof CreateOrgRoute
   '/login': typeof LoginRoute
+  '/setup-app': typeof SetupAppRoute
   '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
@@ -213,6 +221,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/create-org': typeof CreateOrgRoute
   '/login': typeof LoginRoute
+  '/setup-app': typeof SetupAppRoute
   '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
@@ -238,6 +247,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/create-org'
     | '/login'
+    | '/setup-app'
     | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
@@ -261,6 +271,7 @@ export interface FileRouteTypes {
   to:
     | '/create-org'
     | '/login'
+    | '/setup-app'
     | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
@@ -284,6 +295,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/create-org'
     | '/login'
+    | '/setup-app'
     | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
@@ -308,6 +320,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   CreateOrgRoute: typeof CreateOrgRoute
   LoginRoute: typeof LoginRoute
+  SetupAppRoute: typeof SetupAppRoute
   SetupMcpRoute: typeof SetupMcpRoute
   ApiKeysRoute: typeof ApiKeysRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
@@ -341,6 +354,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/setup-app': {
+      id: '/setup-app'
+      path: '/setup-app'
+      fullPath: '/setup-app'
+      preLoaderRoute: typeof SetupAppRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/setup-mcp': {
@@ -512,6 +532,7 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   CreateOrgRoute: CreateOrgRoute,
   LoginRoute: LoginRoute,
+  SetupAppRoute: SetupAppRoute,
   SetupMcpRoute: SetupMcpRoute,
   ApiKeysRoute: ApiKeysRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute:

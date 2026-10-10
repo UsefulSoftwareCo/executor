@@ -26,10 +26,11 @@ scenario(
         },
       );
 
-      await step("Create an organization to advance to the MCP setup step", async () => {
+      await step("Create an organization, then open the MCP setup step", async () => {
         await page.getByPlaceholder("Northwind Labs").fill("Test Org");
         await page.getByRole("button", { name: "Create organization" }).click();
-        // Successful creation navigates to the 'Connect your MCP client' step.
+        await page.getByText("Choose your first app").waitFor();
+        await visit(page, "/setup-mcp");
         await page.getByText("Connect your MCP client").waitFor();
       });
 

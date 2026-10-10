@@ -7,4 +7,4 @@
 export const PUBLIC_PATHS = new Set(["/login"]);
 
 /** Pages an authenticated-but-org-less user is FOR (everything else redirects to onboarding). */
-export const ONBOARDING_PATHS = new Set(["/create-org", "/setup-mcp"]);
+export const ONBOARDING_PATHS = new Set(["/create-org", "/setup-app", "/setup-mcp"]);

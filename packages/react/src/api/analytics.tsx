@@ -34,7 +34,7 @@ export interface AnalyticsEvents {
   /** The full-page picker was opened. Replaces the connect dialog, whose
    *  `integration_connect_dialog_opened` this supersedes — keep both readable
    *  in dashboards spanning the change. */
-  integration_browse_opened: { via: "header" | "empty-state" | "sidebar" };
+  integration_browse_opened: { via: "header" | "empty-state" | "sidebar" | "onboarding" };
   integration_detect_submitted: {
     success: boolean;
     detected_kind?: string;
@@ -189,6 +189,12 @@ export interface AnalyticsEvents {
   org_invitation_accepted: { success: boolean };
   setup_mcp_completed: {};
   setup_mcp_skipped: {};
+  onboarding_practice_prompt_copied: {
+    step: "build_app" | "create_workflow" | "create_skill" | "store_notes";
+  };
+  onboarding_practice_step_completed: {
+    step: "build_app" | "create_workflow" | "create_skill" | "store_notes";
+  };
 
   // ── Cloud: billing & support ─────────────────────────────────────────────
   billing_plan_selected: {
