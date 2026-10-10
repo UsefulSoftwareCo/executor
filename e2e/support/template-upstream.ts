@@ -75,14 +75,29 @@ const makeTemplateUpstream = Effect.fn(function* (access: "bearer" | "public") {
           annotations: { readOnlyHint: true },
           inputSchema: {
             type: "object",
-            properties: { value: { $ref: "#/$defs/Value" } },
-            $defs: { Value: { type: "string", const: account } },
+            properties: {
+              value: { $ref: "#/$defs/Value" },
+              tree: { $ref: "#/$defs/Tree" },
+            },
+            $defs: {
+              Value: { $ref: "#/$defs/Value~1~0label%20%25" },
+              "Value/~label %": { type: "string", const: account },
+              Tree: {
+                type: "object",
+                properties: { name: { type: "string" }, child: { $ref: "#/$defs/Tree" } },
+                required: ["name"],
+                additionalProperties: false,
+              },
+            },
             required: ["value"],
           },
           outputSchema: {
             ...output,
             properties: { account: { $ref: "#/$defs/Account" } },
-            $defs: { Account: { type: "string" } },
+            $defs: {
+              Account: { $ref: "#/$defs/Account~1~0label%20%25" },
+              "Account/~label %": { type: "string" },
+            },
           },
         };
         const result =

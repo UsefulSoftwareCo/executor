@@ -362,14 +362,21 @@ return { items: found.items, results };`,
             )?.signature;
             if (signature === undefined)
               return yield* Effect.die(`Missing described MCP tool: ${JSON.stringify(items)}`);
+            // Identically named definitions stay account-specific after their relocation. URI
+            // escapes resolve, and recursion loses only the recursive child, not its named fields.
+            expect(signature).toContain('value: "work"');
+            expect(signature).toContain('value: "personal"');
+            expect(signature).toContain("tree?: {");
+            expect(signature).toContain("name: string");
+            expect(signature).not.toContain("value: unknown");
+            expect(signature).not.toContain("Promise<unknown>");
             expect(results).toHaveLength(2);
             for (const result of results)
               expect(
                 outputContractProblems(
                   signature,
                   result,
-                  // Each account's schema is nested, so the account's type renders as unknown.
-                  "const account: unknown = value.isError ? undefined : value.structuredContent.account;",
+                  "const account: string | undefined = value.isError ? undefined : value.structuredContent.account;",
                 ),
                 signature,
               ).toEqual([]);
