@@ -11,8 +11,9 @@ import apps from "apps/package.json" with { type: "json" };
 export const appsVersion = apps.version;
 
 /** Optional peers of `apps` at the exact versions this release is built and checked with. */
-export const appsPeerVersion = (name: "@modelcontextprotocol/sdk" | "graphql") =>
-  apps.devDependencies[name];
+export const appsPeerVersion = (
+  name: "@modelcontextprotocol/client" | "@modelcontextprotocol/core" | "graphql",
+) => apps.devDependencies[name];
 
 /** Parse generated file paths and content before handing them to a host deployment API. */
 export const sourceFiles = (

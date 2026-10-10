@@ -35,14 +35,16 @@ NodeRuntime.runMain(
       return yield* new ExecutorIntroInvalid({
         reason: "skills/executor/SKILL.md needs YAML frontmatter followed by a body.",
       });
-    const sdk = apps.devDependencies["@modelcontextprotocol/sdk"];
     const integrations = yield* fs.readFileString(
       path.join(root, "executor/skills/app-authoring/integrations.md"),
     );
-    if (/`@modelcontextprotocol\/sdk` \(currently\s+`([^`]+)`\)/.exec(integrations)?.[1] !== sdk)
-      return yield* new ExecutorIntroInvalid({
-        reason: `skills/app-authoring/integrations.md must name @modelcontextprotocol/sdk as (currently \`${sdk}\`), the version apps is built with.`,
-      });
+    for (const name of ["@modelcontextprotocol/client", "@modelcontextprotocol/core"] as const) {
+      const version = apps.devDependencies[name];
+      if (!integrations.includes(`\`${name}\` (currently \`${version}\`)`))
+        return yield* new ExecutorIntroInvalid({
+          reason: `skills/app-authoring/integrations.md must name ${name} as (currently \`${version}\`), the version apps is built with.`,
+        });
+    }
     // The same files the hosts publish, keyed as a skill document names them.
     const digests = yield* Effect.forEach(
       // Code-point order, so the output does not depend on the machine's locale.

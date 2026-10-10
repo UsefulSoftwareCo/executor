@@ -109,7 +109,8 @@ export const provider = defineProvider({
             ]
           : []),
         packageFile(name, {
-          "@modelcontextprotocol/sdk": appsPeerVersion("@modelcontextprotocol/sdk"),
+          "@modelcontextprotocol/client": appsPeerVersion("@modelcontextprotocol/client"),
+          "@modelcontextprotocol/core": appsPeerVersion("@modelcontextprotocol/core"),
         }),
       ]),
     };

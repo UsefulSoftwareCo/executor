@@ -13,7 +13,7 @@ import {
   accountCheckUpstream,
   type AccountCheckAnswer,
 } from "../support/account-check-upstream.ts";
-import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
+import { withApps, mcpDependencies } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({
@@ -79,7 +79,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+                dependencies: withApps(mcpDependencies),
               }),
             },
           ],
@@ -202,14 +202,16 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
           message: "The MCP server answered HTTP 404 while connecting.",
         });
         // A web page at the URL is not an HTTP failure, whether it answers the MCP request or only
-        // the legacy SSE stream Executor falls back to.
+        // the legacy SSE stream Executor falls back to. A failed fallback retains the primary HTTP refusal.
         for (const page of [{ kind: "page" }, { kind: "page", post: 405 }] as const) {
           yield* upstream.answer(page);
           expect(yield* check(acceptedToken), JSON.stringify(page)).toEqual({
             status: "check_failed",
             info: null,
             message:
-              "The MCP server returned a response Executor could not use while connecting, such as an unreadable message or an address on another origin.",
+              "post" in page && page.post === 405
+                ? "The MCP server answered HTTP 405 while connecting."
+                : "The MCP server returned a response Executor could not use while connecting, such as an unreadable message or an address on another origin.",
           });
         }
         // A JSON-RPC error is the server's answer, not a server Executor could not reach.

@@ -13,7 +13,7 @@ import { mcpOutcomeFixture } from "../support/mcp-outcome-fixture.ts";
 import { WorkflowRun } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
-import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
+import { withApps, mcpDependencies } from "../support/apps-release.ts";
 
 const Analytics = Schema.fromJsonString(
   Schema.Struct({
@@ -46,7 +46,7 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+                dependencies: withApps(mcpDependencies),
               }),
             },
             {

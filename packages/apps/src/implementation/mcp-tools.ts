@@ -118,7 +118,7 @@ export const adaptMcpTool = (client: McpClient, tool: McpToolMetadata) =>
           yield* output.compile.pipe(
             Effect.mapError(() => new McpError({ phase: "schema", reason: "invalid_response" })),
           );
-          const result = yield* client.call(tool.name, arguments_, context);
+          const result = yield* client.call(tool, arguments_, context);
           if (result.isError === true) {
             (yield* ToolResultObservation).failed();
             yield* Effect.annotateCurrentSpan({

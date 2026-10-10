@@ -1,8 +1,8 @@
 /** Local process transport; isolated from the HTTP subpath so cloud apps never load process dependencies. */
 import { owned } from "@executor-js/telemetry";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { ErrorCode, McpError as ProtocolError } from "@modelcontextprotocol/sdk/types.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client, SdkError, SdkErrorCode } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+
 import { Effect, Schema } from "effect";
 import { McpError, ProcessConfig } from "../contracts/mcp.ts";
 import { answeredError, mcpClient, mcpJsonSchemaValidator } from "./mcp-client.ts";
@@ -38,7 +38,7 @@ const failure = (phase: McpError["phase"], error: unknown) => {
   return new McpError({
     phase,
     reason:
-      error instanceof ProtocolError && error.code === ErrorCode.RequestTimeout
+      error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout
         ? "timeout"
         : "request",
     ...(upstream === undefined ? {} : { upstream }),
@@ -58,6 +58,7 @@ function withClient<A, E>(
             { name: "executor-app", version: "1" },
             {
               jsonSchemaValidator: mcpJsonSchemaValidator,
+              versionNegotiation: { mode: "legacy" },
               capabilities: mode === "call" ? { elicitation: { form: {} } } : {},
             },
           ),

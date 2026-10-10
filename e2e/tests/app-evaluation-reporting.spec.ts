@@ -21,7 +21,7 @@ import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, sentryEvents, traceExceptionTypes } from "../support/sentry-events.ts";
 import { freePort } from "../support/ports.ts";
-import { appsManifest, withApps, mcpSdkVersion } from "../support/apps-release.ts";
+import { appsManifest, withApps, mcpDependencies } from "../support/apps-release.ts";
 
 const JsonRpcRequest = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
@@ -89,7 +89,7 @@ const failingMcpServer = Effect.gen(function* () {
 const mcpManifest = {
   path: "package.json",
   content: JSON.stringify({
-    dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+    dependencies: withApps(mcpDependencies),
   }),
 };
 

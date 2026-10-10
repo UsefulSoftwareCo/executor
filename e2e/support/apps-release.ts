@@ -3,13 +3,20 @@
  * hosts ship, which the suite's loopback registry serves; see npm-registry.ts.
  */
 import { Option, Schema } from "effect";
+import rootPackage from "../../package.json" with { type: "json" };
 import appsPackage from "../../packages/apps/package.json" with { type: "json" };
 
 /** The version in `packages/apps/package.json`, imported as data from the checkout the suite runs in. */
 export const appsVersion: string = appsPackage.version;
 
-/** The `@modelcontextprotocol/sdk` version that `apps` is built with, which quick add pins. */
-export const mcpSdkVersion: string = appsPackage.devDependencies["@modelcontextprotocol/sdk"];
+/** The standalone legacy SDK dependency used by fixtures that import that SDK directly. */
+export const mcpSdkVersion = rootPackage.devDependencies["@modelcontextprotocol/sdk"];
+
+/** Optional MCP peers at the exact versions this apps release builds and quick add pins. */
+export const mcpDependencies = {
+  "@modelcontextprotocol/client": appsPackage.devDependencies["@modelcontextprotocol/client"],
+  "@modelcontextprotocol/core": appsPackage.devDependencies["@modelcontextprotocol/core"],
+};
 
 /** A `package.json` that declares only the host's `apps` release. */
 export const appsManifest = {
