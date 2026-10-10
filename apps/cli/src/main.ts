@@ -184,6 +184,7 @@ import {
   sanitizeCliOutputText,
   shellQuoteArg,
 } from "./tooling";
+import { generatePowerShellCompletions } from "./powershell-completions";
 
 // Embedded web UI — baked into compiled binaries via `with { type: "file" }`
 import embeddedWebUI from "./embedded-web-ui.gen";
@@ -3350,6 +3351,16 @@ const root = Command.make("executor").pipe(
 const runCli = Command.run(root, {
   version: CLI_VERSION,
 });
+
+const isPowerShellCompletionRequest = (): boolean => {
+  const index = process.argv.indexOf("--completions");
+  return index >= 0 && process.argv[index + 1] === "pwsh";
+};
+
+if (isPowerShellCompletionRequest()) {
+  console.log(generatePowerShellCompletions());
+  process.exit(0);
+}
 
 if (process.argv.includes("-v")) {
   console.log(CLI_VERSION);
