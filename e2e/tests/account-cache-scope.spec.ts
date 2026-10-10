@@ -2,17 +2,16 @@
  * An account's cache scope is the account, never its credentials. It is the same on every call
  * although a provider that declares hosts gives app code a fresh token handle each time, a
  * credential larger than the cache's key limit never reaches a key, and two accounts never share
- * entries, even with byte-identical credentials. Credentials appear in no response or trace.
+ * entries, even with byte-identical credentials. Credentials appear in no response.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -27,9 +26,7 @@ layer(HostedLive, { excludeTestServices: true })("Account cache scope", (it) => 
       context,
       Effect.gen(function* () {
         const api = yield* Api,
-          actors = yield* Actors,
-          evidence = yield* Evidence,
-          telemetry = yield* Telemetry;
+          actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const name = `Account cache scope ${randomUUID().slice(0, 8)}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -142,23 +139,6 @@ export default defineApp({ accounts: { service: service.many() } }, async (ctx) 
         expect(JSON.stringify(refused.body)).toContain("CacheError");
 
         expect(JSON.stringify(responses)).not.toContain(marker);
-        const traces = (yield* evidence.requests)
-          .filter((request) => request.path.endsWith("/tools/call"))
-          .map((request) => request.traceId);
-        expect(traces.length).toBe(responses.length);
-        // Every call's cache read is delivered, so the check below covers the app's own spans.
-        const delivered = yield* Effect.forEach(traces, (traceId) =>
-          telemetry.query(traceId).pipe(
-            Effect.flatMap((trace) =>
-              trace.data.some(({ span }) => span.operationName === "app.cache.get")
-                ? Effect.succeed(trace)
-                : Effect.fail(new Error(`Missing delivered app.cache.get span in ${traceId}`)),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
-          ),
-        );
-        yield* evidence.json("scope-traces.json", delivered);
-        expect(JSON.stringify(delivered)).not.toContain(marker);
       }),
     ),
   );

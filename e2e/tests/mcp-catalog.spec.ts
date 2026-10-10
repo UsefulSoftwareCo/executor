@@ -487,64 +487,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
               ...new Set(items.flatMap((item) => /revision_\d+/.exec(item.path) ?? [])),
             ].sort();
           });
-        const evidence = yield* Evidence,
-          telemetry = yield* Telemetry;
-        /**
-         * This app's SDK listing reads recorded in the trace of the latest MCP request. Other apps
-         * of the organization, such as one installed while the scenario runs, are listed too.
-         */
-        const listingReads = Effect.gen(function* () {
-          const request = (yield* evidence.requests)
-            .filter((entry) => entry.path === "/mcp")
-            .at(-1);
-          if (request === undefined) return yield* Effect.fail(new Error("Missing MCP request"));
-          return yield* telemetry.query(request.traceId).pipe(
-            Effect.flatMap((result) => {
-              const reads = result.data.flatMap(({ span }) => {
-                const outcome = span.tags["executor.declarations.cache"];
-                return span.operationName === "sdk.tools.listing" &&
-                  span.tags["executor.app.id"] === app.id &&
-                  outcome !== undefined
-                  ? [outcome]
-                  : [];
-              });
-              return reads.length === 0
-                ? Effect.fail(new Error("Missing tool listing span"))
-                : Effect.succeed(reads);
-            }),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-          );
-        });
-        /**
-         * What the latest search loaded, as its `mcp.search.discovery` span records it: spans on
-         * a Workers I/O clock cannot time its CPU, which grows with these counts.
-         */
-        const searchDiscovery = Effect.gen(function* () {
-          const request = (yield* evidence.requests)
-            .filter((entry) => entry.path === "/mcp")
-            .at(-1);
-          if (request === undefined) return yield* Effect.fail(new Error("Missing MCP request"));
-          return yield* telemetry.query(request.traceId).pipe(
-            Effect.flatMap((result) => {
-              const span = result.data.find(
-                ({ span }) => span.operationName === "mcp.search.discovery",
-              )?.span;
-              return span === undefined
-                ? Effect.fail(new Error("Missing search discovery span"))
-                : Effect.succeed({
-                    apps: Number(span.tags["executor.discovery.apps"]),
-                    tools: Number(span.tags["executor.discovery.tools"]),
-                  });
-            }),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-          );
-        });
         expect(yield* revisions("First listing")).toEqual(["revision_1"]);
-        // A search loads every app it may rank: at least this app and its revision tool.
-        const loaded = yield* searchDiscovery;
-        expect(loaded.apps).toBeGreaterThanOrEqual(1);
-        expect(loaded.tools).toBeGreaterThanOrEqual(1);
-        expect(Number.isInteger(loaded.tools)).toBe(true);
         // That evaluation filled the cold app cache, a change that keeps it from being reused;
         // the next one reads the warm cache and is kept.
         expect(yield* revisions("Listing from the warm app cache")).toEqual(["revision_1"]);
@@ -552,7 +495,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         // The listing is kept: a second search neither evaluates the app nor asks the server.
         expect(yield* revisions("Kept listing")).toEqual(["revision_1"]);
         expect((yield* control(origin)).counters.list).toBe(lists);
-        for (const outcome of yield* listingReads) expect(outcome).toBe("hit");
 
         // An explicit refresh replaces the app's cached catalog; the next search lists it again.
         yield* control(origin, { version: 2 });

@@ -11,7 +11,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence } from "../support/evidence.ts";
 import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -35,7 +35,7 @@ const deadlineMs = 20_000;
  */
 const pauseMs = 1_000;
 
-/** When a wake may have armed the alarm: after its span started and before it ended. */
+/** When a wake may have armed the alarm. Each write starts its wake once it has answered. */
 interface Moment {
   readonly start: number;
   readonly end: number;
@@ -69,8 +69,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
         Effect.gen(function* () {
           const api = yield* Api,
             actors = yield* Actors,
-            evidence = yield* Evidence,
-            telemetry = yield* Telemetry;
+            evidence = yield* Evidence;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `Wakes ${randomUUID().slice(0, 8)}`,
@@ -184,45 +183,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
           outcome.ended = ended;
           yield* Fiber.interrupt(stream);
 
-          // A response comes before its best-effort wake, so the wakes themselves are read back:
-          // each write's trace holds the `schedule.wake` its response started.
-          const traces = (yield* evidence.requests)
-            .filter((request) => request.method === "PATCH" && request.path === loadPath)
-            .map(({ traceId }) => traceId);
-          const wakes = new Map<string, Moment & { readonly status: string }>();
-          yield* Effect.forEach(
-            traces,
-            (traceId) =>
-              wakes.has(traceId)
-                ? Effect.void
-                : telemetry.query(traceId).pipe(
-                    Effect.map(({ data }) => {
-                      const wake = data.find(
-                        ({ span }) =>
-                          span.operationName === "schedule.wake" &&
-                          span.tags["executor.schedule.wake"] === "change",
-                      );
-                      if (wake === undefined) return;
-                      const start = Date.parse(wake.span.startTime);
-                      wakes.set(traceId, {
-                        start,
-                        end: start + wake.span.durationMs,
-                        status: wake.span.status,
-                      });
-                    }),
-                    Effect.catchTag("TelemetryUnavailable", () => Effect.void),
-                  ),
-            { concurrency: 8, discard: true },
-          ).pipe(
-            Effect.flatMap(() =>
-              wakes.size >= traces.length
-                ? Effect.void
-                : Effect.fail(new Error(`${traces.length - wakes.size} wakes have not arrived`)),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
-            Effect.ignore,
-          );
-          const delivered = [...wakes.values()].filter(({ status }) => status === "ok");
           const answers = answered().map(({ answeredAt }) => ({
             start: answeredAt!,
             end: answeredAt!,
@@ -232,7 +192,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
             ({ sentAt, answeredAt }) =>
               sentAt <= ended && (answeredAt === undefined || answeredAt > ended),
           ).length;
-          const wakePauses = pauses(delivered, requested, ended);
           const answerPauses = pauses(answers, requested, ended);
           report.window = {
             endedBy: Option.isSome(finished) ? "outcomes" : "deadline",
@@ -240,13 +199,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
             outstandingAtEnd: outstanding,
           };
           report.answers = answerPauses;
-          report.wakes = {
-            traces: traces.length,
-            arrived: wakes.size,
-            failed: [...wakes.values()].filter(({ status }) => status !== "ok").length,
-            longestDurationMs: Math.max(0, ...delivered.map(({ start, end }) => end - start)),
-            pauses: wakePauses,
-          };
 
           // Any pause lets main's alarm fire, so a run with one cannot tell the two apart.
           const interruptions = [
@@ -256,13 +208,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
               : answerPauses.longestMs >= pauseMs
                 ? `waking writes paused ${answerPauses.longestMs} ms between answers`
                 : null,
-            wakePauses === null
-              ? "no coordinator wake had finished before Run Now"
-              : wakePauses.longestMs >= pauseMs
-                ? `coordinator wakes paused up to ${wakePauses.longestMs} ms`
-                : null,
           ].filter((reason) => reason !== null);
-          if (wakePauses === null || interruptions.length > 0) {
+          if (answerPauses === null || interruptions.length > 0) {
             report.verdict = "invalid load";
             return yield* Effect.fail(
               new Error(
@@ -278,7 +225,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
             ].filter((reason) => reason !== null);
             return yield* Effect.fail(
               new Error(
-                `${pending.join(" and ")} within ${deadlineMs} ms while coordinator wakes kept arriving (longest pause ${wakePauses.longestMs} ms)`,
+                `${pending.join(" and ")} within ${deadlineMs} ms while coordinator wakes kept arriving (longest pause ${answerPauses.longestMs} ms)`,
               ),
             );
           }

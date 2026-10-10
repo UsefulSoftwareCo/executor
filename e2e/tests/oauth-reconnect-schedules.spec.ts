@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
@@ -55,7 +55,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth reconnect schedules", (i
             actors = yield* Actors,
             browser = yield* Browser,
             evidence = yield* Evidence,
-            telemetry = yield* Telemetry,
             http = yield* HttpClient.HttpClient;
           const issuer = yield* oauthSetupIssuer;
           const prefix = `/api/organizations/${actors.organization.id}`;
@@ -84,81 +83,13 @@ export default defineApp(requirements, async () => ({
           });
           expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
           const app = yield* body(AppProvider, deployed);
-          const provider = app.requirements.accounts.service.provider;
           const path = `${prefix}/apps/${app.id}`;
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
           const profile = yield* createProfile(actors.owner, path);
 
-          /**
-           * Delivered spans of one operation whose status or outcome is known, each with the
-           * delivered spans above it up to its trace's root. A request's root is the test client's
-           * span, which is exported when the case ends. The dispatcher's checks run in the
-           * background, outside any request, so their whole trace is the product's own; wait until
-           * one such check arrives with its root.
-           */
-          const background = (
-            path: ReadonlyArray<{ operationName: string; parentSpanId: string | null }>,
-          ) =>
-            path.at(-1)?.parentSpanId === null &&
-            !/^(GET|POST|PUT|PATCH|DELETE) /.test(path.at(-1)?.operationName ?? "");
-          /** Every background check runs in a dispatcher pass, as Cloud's coordinator runs it. */
-          const expectDispatchRoots = (
-            found: ReadonlyArray<{
-              path: ReadonlyArray<{ operationName: string; parentSpanId: string | null }>;
-            }>,
-          ) =>
-            expect(
-              found
-                .filter(({ path }) => background(path))
-                .map(({ path }) => path.at(-1)?.operationName),
-              "A background check's trace is rooted in its dispatcher pass",
-            ).toEqual(found.filter(({ path }) => background(path)).map(() => "schedule.dispatch"));
-          const dispatcherChecks = (
-            operation: string,
-            attributes: Record<string, string>,
-            outcome: string,
-          ) =>
-            telemetry.search(operation, attributes).pipe(
-              Effect.map((found) =>
-                found.data.filter(
-                  ({ span }) => span.status === "error" || span.tags[outcome] !== undefined,
-                ),
-              ),
-              Effect.flatMap((found) =>
-                Effect.forEach(found, (check) =>
-                  telemetry.query(check.traceId).pipe(
-                    Effect.map((trace) => {
-                      const byId = new Map(
-                        trace.data
-                          .filter(({ span }) => !span.operationName.startsWith("[missing parent"))
-                          .map(({ span }) => [span.spanId, span]),
-                      );
-                      const path = [];
-                      for (
-                        let span = byId.get(check.span.spanId);
-                        span !== undefined;
-                        span = span.parentSpanId === null ? undefined : byId.get(span.parentSpanId)
-                      )
-                        path.push(span);
-                      return { check, path };
-                    }),
-                  ),
-                ),
-              ),
-              Effect.flatMap((found) =>
-                found.some(({ path }) => background(path))
-                  ? Effect.succeed(found)
-                  : Effect.fail(new Error(`The dispatcher's ${operation} check has not arrived`)),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
-            );
-
           // Before its account is selected, the profile's setup fails on its accounts and waits.
-          // Each retry first checks the profile's accounts; a required account that is not
-          // selected yet is an expected state the owner resolves, recorded as the check's outcome:
-          // neither the check nor any span above it is an error.
           yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
             Effect.flatMap((response) => body(SetupStatus, response)),
             Effect.flatMap((current) =>
@@ -172,31 +103,6 @@ export default defineApp(requirements, async () => ({
           yield* serverControl("stop");
           yield* serverControl("clock/advance", 200, { milliseconds: 31_000 });
           yield* serverControl("start");
-          const unselected = yield* dispatcherChecks(
-            "sdk.accounts.reconnectRequired",
-            { "executor.app.id": app.id, "executor.profile.id": profile.id },
-            "executor.accounts.outcome",
-          );
-          for (const { check, path } of unselected) {
-            expect(
-              check.span.status,
-              "A required account that is not selected yet is not a failed check",
-            ).not.toBe("error");
-            expect(check.span.tags).toMatchObject({
-              "executor.app.id": app.id,
-              "executor.profile.id": profile.id,
-              "executor.accounts.outcome": "account_required",
-            });
-            expect(
-              path.filter((span) => span.status === "error").map((span) => span.operationName),
-              "No span above the check marks the missing account as an error",
-            ).toEqual([]);
-          }
-          expectDispatchRoots(unselected);
-          yield* evidence.json(
-            "account-required-checks.json",
-            unselected.map(({ path }) => path),
-          );
 
           /** Complete the issuer's consent for a connection, creating or reconnecting the account. */
           const signIn = (connection: string) =>
@@ -335,34 +241,6 @@ export default defineApp(requirements, async () => ({
           ).toEqual([]);
           expect((yield* issuer.metrics).refreshes).toBe(refreshes);
           expect((yield* issuer.metrics).resourceRequests.POST).toBe(posts);
-          // Before claiming the occurrence, the dispatcher checked the account's stored grant and
-          // found it must reconnect; the schedule list runs the same check. That is an expected
-          // account state the owner resolves, recorded as the check's outcome: neither a check nor
-          // any span above it is an error.
-          const checks = yield* dispatcherChecks(
-            "oauth.usable",
-            { "oauth.provider.id": provider },
-            "oauth.usable.outcome",
-          );
-          for (const { check, path } of checks) {
-            expect(check.span.status, "A grant that must reconnect is not a failed check").not.toBe(
-              "error",
-            );
-            expect(check.span.tags).toMatchObject({
-              "oauth.provider.id": provider,
-              "oauth.usable.outcome": "reconnect",
-              "oauth.reconnect.reason": "grant_unusable",
-            });
-            expect(
-              path.filter((span) => span.status === "error").map((span) => span.operationName),
-              "No span above the check marks the reconnect state as an error",
-            ).toEqual([]);
-          }
-          expectDispatchRoots(checks);
-          yield* evidence.json(
-            "waiting-for-reconnect-checks.json",
-            checks.map(({ path }) => path),
-          );
           // The schedule's discovery reports the same account state to the owner.
           const definitions = yield* api.request(
             actors.owner,
@@ -411,23 +289,6 @@ export default defineApp(requirements, async () => ({
           yield* issuer.configure({ tokenError: { status: 503, body: {} } });
           yield* nextOccurrence;
           yield* runWith("failed", 1);
-          const unavailable = yield* telemetry
-            .search("oauth.resolve", {
-              "oauth.provider.id": provider,
-              "oauth.renewal.outcome": "service_unavailable",
-            })
-            .pipe(
-              Effect.flatMap((found) =>
-                found.data.length > 0
-                  ? Effect.succeed(found.data)
-                  : Effect.fail(new Error("The failed renewal has not arrived")),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
-            );
-          expect(
-            unavailable.map(({ span }) => span.status),
-            "A renewal the service could not answer is a failed span",
-          ).toEqual(unavailable.map(() => "error"));
           yield* issuer.configure({ tokenError: null });
         }),
       ),

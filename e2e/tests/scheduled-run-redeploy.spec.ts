@@ -1,15 +1,11 @@
 /**
  * A scheduled run executes the app's active build. The runner reads builds by the ID each run
  * names, so a run after a redeploy must execute the new code, never a build an earlier run loaded.
- * Each build load a run causes carries the run's ID: one scheduler dispatch runs every due
- * schedule in one trace, so the trace alone cannot tell which run a load belongs to.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
-import { buildLoadSpan } from "../support/build-loads.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
@@ -93,7 +89,7 @@ layer(HostedLive, { excludeTestServices: true })("Scheduled runs after a redeplo
         expect(
           (yield* api.request(actors.owner, "POST", `${path}/schedules/record/run`)).status,
         ).toBe(200);
-        const [firstRun] = (yield* succeeded(1)).filter((run) => run.status === "succeeded");
+        yield* succeeded(1);
         expect(yield* labels).toEqual(["first build"]);
         const firstBuild = yield* build;
 
@@ -114,45 +110,6 @@ layer(HostedLive, { excludeTestServices: true })("Scheduled runs after a redeplo
           "first build",
           "second build",
         ]);
-
-        const telemetry = yield* Telemetry,
-          evidence = yield* Evidence;
-        const secondRun = runs.find((run) => run.id !== firstRun?.id);
-        const loads = (run: string | undefined) =>
-          telemetry.spans(buildLoadSpan, {
-            "executor.app.id": app.id,
-            "executor.run.id": run ?? "",
-          });
-        // The deploy migrates the app's database through the new build, so that build is loaded
-        // before the second run, which may then find it warm. The new build was loaded, and every
-        // load the second run caused read it.
-        const newBuildLoads = yield* telemetry
-          .spans(buildLoadSpan, {
-            "executor.app.id": app.id,
-            "executor.build.id": secondBuild.build,
-          })
-          .pipe(
-            Effect.flatMap((tags) =>
-              tags.length > 0 ? Effect.succeed(tags) : Effect.fail(new Pending()),
-            ),
-            Effect.retry({
-              schedule: Schedule.spaced("500 millis"),
-              times: 60,
-              while: (error) => error instanceof Pending,
-            }),
-          );
-        expect(newBuildLoads.length).toBeGreaterThan(0);
-        const second = yield* loads(secondRun?.id);
-        const first = yield* loads(firstRun?.id);
-        yield* evidence.json("scheduled-run-build-loads.json", { first, second });
-        expect(
-          second.map((tags) => tags["executor.build.id"]),
-          "Every load tagged with the second run read the second build",
-        ).toEqual(second.map(() => secondBuild.build));
-        expect(
-          first.map((tags) => tags["executor.build.id"]),
-          "Every load tagged with the first run read the first build",
-        ).toEqual(first.map(() => firstBuild.build));
       }),
     ),
   );

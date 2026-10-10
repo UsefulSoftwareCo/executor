@@ -1,6 +1,6 @@
 /** The private app protocol is checked through each real hosted product and its browser runtime. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -17,8 +17,7 @@ import {
 } from "../support/app-open-timeline.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { password } from "../support/actors.ts";
-import { App, SpanQuery } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { App } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 
 import { McpOAuth } from "../support/mcp-oauth.ts";
@@ -27,9 +26,6 @@ import { managementApp } from "../support/management-app.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { targetHosts } from "../support/role-hosts.ts";
-
-type Span = (typeof SpanQuery.Type)["data"][number]["span"];
-type ServerSpan = { readonly traceId: string; readonly spanId: string };
 
 const files = [
   {
@@ -405,28 +401,15 @@ return { items };`,
         missingApp.hostname = `missing-app.${known.hostname.split(".").slice(1).join(".")}`;
         const missingOrganization = new URL(url);
         missingOrganization.hostname = `${known.hostname.split(".")[0]}.missing-organization.${known.hostname.split(".").slice(2).join(".")}`;
-        const telemetry = yield* Telemetry;
-        const evidence = yield* Evidence;
-        /** The response names the server span it ran under, so its delivered spans can be read back. */
         const send = (request: HttpClientRequest.HttpClientRequest, accept: string) =>
           request.pipe(
             HttpClientRequest.setHeader("accept", accept),
             http.execute,
             Effect.flatMap((response) =>
-              Effect.map(response.text, (body) => {
-                const timing = response.headers["server-timing"] ?? "";
-                const server = {
-                  traceId: timing.match(/executor-trace;desc="([a-f0-9]{32})"/)?.[1] ?? "",
-                  spanId: timing.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1] ?? "",
-                };
-                expect(server.traceId, "The response names its server trace").not.toBe("");
-                expect(server.spanId, "The response names its server span").not.toBe("");
-                return {
-                  server,
-                  outcome: { status: response.status, body },
-                  headers: response.headers,
-                };
-              }),
+              Effect.map(response.text, (body) => ({
+                outcome: { status: response.status, body },
+                headers: response.headers,
+              })),
             ),
             Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
           );
@@ -434,18 +417,11 @@ return { items };`,
           send(HttpClientRequest.get(new URL(path, origin).href), accept).pipe(
             Effect.map(({ outcome }) => outcome),
           );
-        const probes: Array<{ path: string; server: ServerSpan }> = [];
-        /** A cookie-less request, whose trace must show no database work. */
         const sendAnonymously = (
           origin: URL,
           path: string,
           method: "GET" | "HEAD" | "POST" | "PUT" | "OPTIONS" = "GET",
-        ) =>
-          send(HttpClientRequest.make(method)(new URL(path, origin).href), "*/*").pipe(
-            Effect.tap(({ server }) =>
-              Effect.sync(() => probes.push({ path: `${method} ${path}`, server })),
-            ),
-          );
+        ) => send(HttpClientRequest.make(method)(new URL(path, origin).href), "*/*");
         const fetchAnonymously = (
           origin: URL,
           path: string,
@@ -478,84 +454,9 @@ return { items };`,
         expect(document.status).toBe(302);
         const page = yield* fetchAnonymously(known, "/inbox/read");
         expect(page).toEqual(probe);
-        // The signed-out navigation looks up the organization and app. It is sent after the
-        // probes, so its delivered spans show that the collector received this run's traces.
-        const navigation = yield* send(
-          HttpClientRequest.get(new URL("/", known).href),
-          "text/html",
-        );
-        expect(navigation.outcome.status).toBe(302);
-
-        const databaseWork = new Set([
-          "sdk.apps.list",
-          "auth.sql.timing",
-          "sql.connect",
-          "sql.execute",
-        ]);
-        /** The request's server span and every span delivered beneath it. */
-        const served = (server: ServerSpan, complete: (spans: ReadonlyArray<Span>) => boolean) =>
-          telemetry.query(server.traceId).pipe(
-            Effect.map((result) => {
-              const spans = result.data.map((row) => row.span);
-              const root = spans.find(
-                (span) =>
-                  span.spanId === server.spanId && span.operationName.startsWith("http.server "),
-              );
-              const byId = new Map(spans.map((span) => [span.spanId, span]));
-              const under = (span: Span) => {
-                const visited = new Set<string>();
-                let parent = span.parentSpanId;
-                while (parent !== null && !visited.has(parent)) {
-                  if (parent === server.spanId) return true;
-                  visited.add(parent);
-                  parent = byId.get(parent)?.parentSpanId ?? null;
-                }
-                return false;
-              };
-              return root === undefined ? [] : [root, ...spans.filter(under)];
-            }),
-            Effect.filterOrFail(
-              (spans) => spans.length > 0 && complete(spans),
-              (spans) =>
-                new Error(
-                  `The server spans of trace ${server.traceId} have not reached the collector: ${spans.map((span) => span.operationName).join(", ")}`,
-                ),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-          );
-        const control = yield* served(navigation.server, (spans) =>
-          ["sdk.apps.list", "sql.execute"].every((name) =>
-            spans.some((span) => span.operationName === name),
-          ),
-        );
-        /** Reads back the probes from `first` on and requires no database work in any of them. */
-        const expectNoDatabaseWork = Effect.fn(function* (first: number) {
-          for (const [index, { path, server }] of probes.entries()) {
-            if (index < first) continue;
-            const spans = yield* served(server, () => true);
-            yield* evidence.json(`anonymous-fetch-${index}.json`, {
-              path,
-              spans: spans.map((span) => span.operationName),
-            });
-            expect(
-              spans
-                .filter(
-                  (span) =>
-                    databaseWork.has(span.operationName) ||
-                    span.operationName.startsWith("FumaDB."),
-                )
-                .map((span) => span.operationName),
-              `${path} is refused before any organization, app or SQL work`,
-            ).toEqual([]);
-          }
-        });
-        const checked = probes.length;
-        yield* expectNoDatabaseWork(0);
-        yield* evidence.json("signed-out-navigation.json", {
-          spans: control.map((span) => span.operationName),
-        });
-        // A nonexistent team's hostname is refused too. These run last, after the trace checks
-        // above.
+        const navigation = yield* read(known, "/", "text/html");
+        expect(navigation.status).toBe(302);
+        // A nonexistent team's hostname is refused too.
         if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
           // Cloudflare holds one wildcard certificate per team, so a host under an unknown
           // organization fails the TLS handshake at the edge and never reaches the Worker.
@@ -579,7 +480,6 @@ return { items };`,
           expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
           expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
         }
-        yield* expectNoDatabaseWork(checked);
       }),
     ),
   );

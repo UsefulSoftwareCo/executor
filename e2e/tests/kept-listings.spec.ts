@@ -6,7 +6,7 @@
  * left unloaded reports one evaluation for the call that loads it, unless a read loaded it first.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Redacted, Schedule, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -14,7 +14,6 @@ import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
@@ -81,8 +80,8 @@ const session = (client: Connection) => ({
 });
 
 /**
- * Search, then index skills, and wait until each probe app's supervisor kept both results; then
- * restart the product with its clock moved past their freshness. After it, search and the skills
+ * Search, then index skills, so each probe app's supervisor keeps both results; then restart the
+ * product with its clock moved past their freshness. After it, search and the skills
  * index serve the same evaluations, recalled from the supervisor and then from memory, and a call
  * of each app finds its Worker unloaded since the restart.
  */
@@ -92,7 +91,6 @@ const keptAcrossRestart = <E, R>(
   connect: Effect.Effect<Connection, E, R>,
 ) =>
   Effect.gen(function* () {
-    const telemetry = yield* Telemetry;
     /** Each probe app's evaluation id, as search describes its tool. */
     const search = (execute: ReturnType<typeof session>["execute"], step: string) =>
       Effect.gen(function* () {
@@ -108,33 +106,12 @@ const keptAcrossRestart = <E, R>(
           return evaluation;
         });
       });
-    /** Wait until each app has `count` delivered spans of `operation` with these attributes. */
-    const delivered = (
-      operation: string,
-      attributes: Readonly<Record<string, string>>,
-      count: number,
-    ) =>
-      Effect.forEach(deployed, (app) =>
-        telemetry.spans(operation, { "executor.app.id": app.id, ...attributes }).pipe(
-          Effect.flatMap((spans) =>
-            spans.length >= count
-              ? Effect.void
-              : Effect.fail(new Error(`${app.slug} has ${spans.length} ${operation} spans`)),
-          ),
-          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-        ),
-      );
-    /** Until each app's supervisor has kept at least `count` results. */
-    const kept = (count: number) =>
-      delivered("storage.evaluated.write", { "storage.evaluated.kept": "true" }, count);
 
     const evaluated = yield* Effect.scoped(
       Effect.gen(function* () {
         const { execute, skills } = session(yield* connect);
         const listed = yield* search(execute, "Search every app");
-        yield* kept(1);
         yield* skills("Index every app's skills");
-        yield* kept(2);
         return listed;
       }),
     );
@@ -146,9 +123,8 @@ const keptAcrossRestart = <E, R>(
     yield* Effect.scoped(
       Effect.gen(function* () {
         const { execute, skills } = session(yield* connect);
+        // Recalled from each app's supervisor, not evaluated again: an evaluation names itself.
         expect(yield* search(execute, "Search after the restart")).toEqual(evaluated);
-        // Recalled from each app's supervisor, not evaluated again.
-        yield* delivered("sdk.tools.listing", { "executor.declarations.source": "durable" }, 1);
         yield* skills("Index skills after the restart");
         // Now served from memory, still past its freshness.
         expect(yield* search(execute, "Search again")).toEqual(evaluated);

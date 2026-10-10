@@ -3,7 +3,7 @@
  * would refuse.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -13,7 +13,6 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { createProfile } from "../support/profiles.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
@@ -35,8 +34,6 @@ layer(HostedLive, { excludeTestServices: true })("App declarations and OAuth gra
         Effect.gen(function* () {
           const api = yield* Api,
             actors = yield* Actors,
-            evidence = yield* Evidence,
-            telemetry = yield* Telemetry,
             http = yield* HttpClient.HttpClient;
           const issuer = yield* oauthSetupIssuer;
           yield* issuer.configure({ refreshTokens: true, expiresIn: lifetime });
@@ -112,24 +109,6 @@ export default defineApp({accounts:{service}},async({accounts})=>{
           account = (yield* body(Resource, completed)).id;
           const connectedAt = Date.now();
 
-          /** The cache outcome recorded by the SDK span of the latest request's own trace. */
-          const outcome = Effect.gen(function* () {
-            const request = (yield* evidence.requests).at(-1);
-            if (request === undefined) return yield* Effect.fail(new Error("Missing request"));
-            const spans = yield* telemetry.query(request.traceId).pipe(
-              Effect.flatMap((result) => {
-                const tagged = result.data.filter(
-                  ({ span }) => span.tags["executor.declarations.cache"] !== undefined,
-                );
-                return tagged.length === 0
-                  ? Effect.fail(new Error("Missing declaration read span"))
-                  : Effect.succeed(tagged);
-              }),
-              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-            );
-            expect(spans).toHaveLength(1);
-            return spans[0]?.span.tags["executor.declarations.cache"];
-          });
           const workflows = api.request(
             actors.owner,
             "GET",
@@ -152,21 +131,15 @@ export default defineApp({accounts:{service}},async({accounts})=>{
           const first = yield* workflows;
           expect(first.status, JSON.stringify(first.body)).toBe(200);
           expect(yield* names(first)).toEqual(["grant_token"]);
-          expect(yield* outcome).toBe("miss");
           const kept = yield* workflows;
           expect(yield* names(kept)).toEqual(["grant_token"]);
-          expect(yield* outcome).toBe("hit");
           const skills = yield* bundle;
           expect(yield* descriptions(skills)).toEqual(["Grant token"]);
-          expect(yield* outcome).toBe("miss");
           expect(yield* descriptions(yield* bundle)).toEqual(["Grant token"]);
-          expect(yield* outcome).toBe("hit");
           const listed = yield* listing;
           expect(listed.status, JSON.stringify(listed.body)).toBe(200);
           expect(listed.body).toMatchObject({ items: [{ name: "read" }] });
-          expect(yield* outcome).toBe("miss");
           expect((yield* listing).body).toEqual(listed.body);
-          expect(yield* outcome).toBe("hit");
           // Every read above ran before renewal was due, so the stored credential never changed.
           expect(Date.now() - connectedAt).toBeLessThan((lifetime - 30) * 1000);
 

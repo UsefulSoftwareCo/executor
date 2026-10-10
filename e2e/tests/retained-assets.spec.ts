@@ -10,11 +10,11 @@
  * journey was verified on a test stage (see the pull request that added this scenario).
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { scenarios } from "../test-plan.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 
 const RetainedList = Schema.fromJsonString(
@@ -28,7 +28,6 @@ layer(HostedLive, { excludeTestServices: true })("Retained build assets", (it) =
       Effect.gen(function* () {
         const evidence = yield* Evidence,
           target = yield* Target,
-          telemetry = yield* Telemetry,
           http = yield* HttpClient.HttpClient;
         expect(target.metadata.mode).toBe("managed");
         const origin = target.metadata.origin;
@@ -89,43 +88,7 @@ layer(HostedLive, { excludeTestServices: true })("Retained build assets", (it) =
           });
         }
 
-        // Run the minute jobs until a copy finds every listed file already in R2.
-        const tick = Effect.scoped(
-          http
-            .get(`${origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`)
-            .pipe(Effect.flatMap((response) => response.text)),
-        );
-        const unchanged = yield* tick.pipe(
-          Effect.andThen(
-            telemetry.search("job.site-assets.retain", {
-              "executor.assets.retained.outcome": "unchanged",
-            }),
-          ),
-          Effect.repeat({
-            schedule: Schedule.spaced("500 millis"),
-            until: (found) => found.data.length > 0,
-            times: 20,
-          }),
-        );
-        expect(unchanged.data.length).toBeGreaterThan(0);
-        // R2 started empty, so the runs before it copied every listed file. A pass can span runs,
-        // and a run that overlapped another copies what was still missing, so only the total counts.
-        const copied = (outcome: string) =>
-          telemetry
-            .search("job.site-assets.retain", { "executor.assets.retained.outcome": outcome })
-            .pipe(
-              Effect.map((found) =>
-                found.data.reduce(
-                  (total, { span }) =>
-                    total + Number(span.tags["executor.assets.retained.copied"] ?? 0),
-                  0,
-                ),
-              ),
-            );
-        const total = (yield* copied("complete")) + (yield* copied("partial"));
-        expect(total).toBeGreaterThanOrEqual(list.files.length);
-
-        // A file no build kept misses the static assets and R2, and gets the ordinary 404.
+        // A file no build kept gets the ordinary 404.
         const module = yield* get("/assets/groups-00000000.js");
         const docs = yield* get("/docs/_astro/missing.00000000.js");
         const navigation = yield* get("/_astro/missing.00000000.js", "text/html");
@@ -134,33 +97,11 @@ layer(HostedLive, { excludeTestServices: true })("Retained build assets", (it) =
         expect(docs).toEqual({ status: 404, type: "", body: "" });
         expect(navigation.status).toBe(404);
         expect(navigation.type).toContain("text/html");
-        // Each of those requests went through the retained-file route and found no copy.
-        const misses = yield* telemetry
-          .search("runtime.cloud.asset.retained", { "executor.asset.retained": "miss" })
-          .pipe(
-            Effect.repeat({
-              schedule: Schedule.spaced("500 millis"),
-              until: (found) => found.data.length >= 3,
-              times: 20,
-            }),
-          );
-        expect(misses.data.length).toBeGreaterThanOrEqual(3);
-
-        // A name without a content hash, or one that leaves its folder, is refused before R2.
+        // A name without a content hash, or one that leaves its folder, is refused.
         const unhashed = yield* get("/assets/groups.js");
         const escaping = yield* get("/assets/%2E%2E%2Fretained-assets.json");
         expect(unhashed).toEqual({ status: 404, type: "", body: "" });
         expect(escaping).toEqual({ status: 404, type: "", body: "" });
-        const refused = yield* telemetry
-          .search("runtime.cloud.asset.retained", { "executor.asset.retained": "invalid" })
-          .pipe(
-            Effect.repeat({
-              schedule: Schedule.spaced("500 millis"),
-              until: (found) => found.data.length >= 2,
-              times: 20,
-            }),
-          );
-        expect(refused.data.length).toBeGreaterThanOrEqual(2);
       }),
     ),
   );

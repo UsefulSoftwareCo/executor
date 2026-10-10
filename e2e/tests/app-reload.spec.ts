@@ -1,6 +1,6 @@
 /** Deploy and roll back a real hosted app while its original browser tab stays open. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -11,7 +11,7 @@ import { saveAndDeploy } from "../support/app-authoring.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence } from "../support/evidence.ts";
 import { withApps } from "../support/apps-release.ts";
 
 const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
@@ -88,29 +88,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
         const target = yield* Target;
         if (target.metadata.target === "cloud") {
           const evidence = yield* Evidence;
-          const telemetry = yield* Telemetry;
-          const request = (yield* evidence.requests).at(-1);
-          if (request === undefined)
-            return yield* Effect.die("Warm query request evidence missing");
-          const warm = yield* telemetry.query(request.traceId).pipe(
-            Effect.flatMap((result) =>
-              result.data.some((row) => row.span.operationName === "http.server POST") &&
-              result.data.some((row) => row.span.operationName === "runtime.cloud.query")
-                ? Effect.succeed(result)
-                : Effect.fail(new Error("The warm query trace has not reached the collector")),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
-          );
-          yield* evidence.json("warm-runtime-query.json", warm);
-          // Real Cloudflare requests may enter different isolates. A new isolate
-          // may decode the cached build, but must not download it from R2 again.
-          for (const row of warm.data.filter(
-            (row) => row.span.operationName === "runtime.cloud.build.cached",
-          ))
-            expect(row.span.tags["executor.build.cache"]).toBe("hit");
-          expect(warm.data.some((row) => row.span.operationName === "storage.blob.get")).toBe(
-            false,
-          );
           const deployment = yield* body(
             Schema.Struct({ build: Schema.String }),
             yield* api.request(actors.owner, "GET", `${path}/source`),

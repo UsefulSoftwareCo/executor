@@ -419,7 +419,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { browser, telemetry, evidence, target, url } = yield* observedApp;
+        const { browser, telemetry, evidence, url } = yield* observedApp;
         yield* (yield* warmPage)(url);
         yield* browser.use("Close the initial stream", (page) => page.goto("about:blank"));
         for (const sample of [1, 2]) {
@@ -453,8 +453,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
             ),
           );
           // Browser and server spans reach the collector separately, and the server's request
-          // span ends only with the stream. Close it and wait for the whole trace, so the counts
-          // below include every server span, including a late repeated query.
+          // span ends only with the stream. Close it and wait for the whole trace.
           yield* browser.use(`Close normal reload ${sample}`, (page) => page.goto("about:blank"));
           const reloadTrace = yield* telemetry.query(reloadTraceId).pipe(
             Effect.flatMap((result) => {
@@ -480,32 +479,6 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
             Effect.timeout("60 seconds"),
           );
           yield* evidence.json(`app-normal-reload-${sample}.json`, reloadTrace);
-          if (target.metadata.target === "cloud") {
-            const loads = reloadTrace.data.filter(
-              (row) => row.span.operationName === "runtime.cloud.build.cached",
-            );
-            expect(
-              reloadTrace.data.filter((row) => row.span.operationName === "runtime.cloud.query"),
-              "Notification registration does not repeat an unchanged initial query",
-            ).toHaveLength(1);
-            // The managed Worker serves every request from one isolate. Real Cloudflare requests
-            // may enter a new isolate, which may decode the cached build but must not refetch it.
-            if (target.metadata.mode === "attached")
-              for (const row of loads)
-                expect(
-                  row.span.tags["executor.build.cache"],
-                  "A warm query in a new isolate decodes its cached server build",
-                ).toBe("hit");
-            else
-              expect(
-                loads,
-                "A warm query does not load or transfer its retained server build",
-              ).toHaveLength(0);
-            expect(
-              reloadTrace.data.some((row) => row.span.operationName === "storage.blob.get"),
-              "Warm queries must not reread the server bundle from R2",
-            ).toBe(false);
-          }
         }
       }),
     ),

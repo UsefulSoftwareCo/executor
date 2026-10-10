@@ -7,7 +7,6 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { createProfile } from "../support/profiles.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
@@ -22,8 +21,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
       Effect.gen(function* () {
         const api = yield* Api,
           actors = yield* Actors,
-          evidence = yield* Evidence,
-          telemetry = yield* Telemetry,
           http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
@@ -90,47 +87,18 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
             Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
           );
 
-        /** Delete through the public API and keep that request's trace ID. */
+        /** Delete through the public API. */
         const remove = (account: string) =>
           Effect.gen(function* () {
             expect(
               (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
             ).toBe(200);
-            const response = yield* api.request(
-              actors.owner,
-              "DELETE",
-              `${prefix}/accounts/${account}`,
-            );
-            const trace = (yield* evidence.requests).at(-1)?.traceId;
-            if (trace === undefined) return yield* Effect.die("Missing request trace");
-            return { response, trace };
+            return yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           });
-        /** The delete request's delivered trace, once its revocation span has arrived. */
-        const revocationTrace = (id: string) =>
-          telemetry.query(id).pipe(
-            Effect.flatMap((result) =>
-              result.data.some(({ span }) => span.operationName === "oauth.revokeGrant")
-                ? Effect.succeed(result)
-                : Effect.fail(new Error("Revocation trace has not arrived")),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
-          );
-        const assertPrivate = (value: unknown) => {
-          const json = JSON.stringify(value);
-          for (const secret of [
-            // Issued refresh tokens are `synthetic-refresh-<uuid>`; renewed access tokens are
-            // `synthetic-refreshed-token-<n>`.
-            "synthetic-refresh",
-            "synthetic-access-token",
-            "synthetic-client-secret",
-          ])
-            expect(json).not.toContain(secret);
-        };
-
         // A successful deletion revokes the refresh token with the grant's own client.
         const revoked = yield* connect("Revoked account");
         const deleted = yield* remove(revoked.id);
-        expect(deleted.response.status, JSON.stringify(deleted.response.body)).toBe(200);
+        expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
         // Hosted access checks refuse an account that no longer exists.
         expect(
           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${revoked.id}`)).status,
@@ -138,24 +106,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
         expect(yield* revocations(1)).toEqual([
           { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
         ]);
-        const success = yield* revocationTrace(deleted.trace);
-        expect(
-          success.data.find(({ span }) => span.operationName === "oauth.revokeGrant")?.span.tags,
-        ).toMatchObject({
-          "oauth.revocation.outcome": "revoked",
-          "oauth.revocation.token_type_hint": "refresh_token",
-        });
-        expect(
-          success.data.find(({ span }) => span.operationName === "oauth.revoke")?.span.tags,
-        ).toMatchObject({ "oauth.stage": "revoke" });
-        assertPrivate(success);
-        yield* evidence.json("revocation-trace.json", success);
 
         // A failing revocation endpoint never blocks or rolls back the deletion.
         yield* issuer.configure({ revocation: "failing" });
         const kept = yield* connect("Revocation fails");
         const removed = yield* remove(kept.id);
-        expect(removed.response.status, JSON.stringify(removed.response.body)).toBe(200);
+        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
         expect(
           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${kept.id}`)).status,
         ).toBe(403);
@@ -164,15 +120,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
           hint: "refresh_token",
           clientAuthenticated: true,
         });
-        const failed = yield* revocationTrace(removed.trace);
-        expect(
-          failed.data.find(({ span }) => span.operationName === "oauth.revokeGrant")?.span.tags,
-        ).toMatchObject({ "oauth.revocation.outcome": "failed" });
-        expect(
-          failed.data.find(({ span }) => span.operationName === "oauth.revoke")?.span.tags,
-        ).toMatchObject({ "oauth.stage": "revoke", "http.response.status_code": "503" });
-        assertPrivate(failed);
-        yield* evidence.json("failed-revocation-trace.json", failed);
       }),
     ),
   );

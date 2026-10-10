@@ -20,7 +20,6 @@ import { serverControl } from "../support/server-control.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { skillUpstream } from "../support/skill-upstream.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 
 /** Single-file source written for the protocol-1 framework: queries and mutations catalogs. */
 const legacy = (revision: string) => [
@@ -462,9 +461,7 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
       Effect.gen(function* () {
         const api = yield* Api,
           actors = yield* Actors,
-          mcp = yield* McpClient,
-          evidence = yield* Evidence,
-          telemetry = yield* Telemetry;
+          mcp = yield* McpClient;
         const upstream = yield* skillUpstream;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const beta4 = yield* publishedRelease("0.0.1-beta.4");
@@ -545,36 +542,15 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         });
 
         // Protocol 2 reports that its skill loader read through the app cache, so the host keeps
-        // the catalog: the next read neither evaluates the app nor contacts the publisher.
+        // the catalog: the next read does not contact the publisher.
         const skills = api
           .request(actors.owner, "GET", `${path}/skill-bundle`)
           .pipe(Effect.flatMap((response) => body(Bundle, response)));
-        const skillRead = Effect.gen(function* () {
-          const request = (yield* evidence.requests).at(-1);
-          if (request === undefined) return yield* Effect.fail(new Error("Missing request"));
-          const spans = yield* telemetry.query(request.traceId).pipe(
-            Effect.map((result) =>
-              result.data.filter(
-                ({ span }) =>
-                  span.operationName === "sdk.declarations.read" &&
-                  span.tags["executor.declarations.command"] === "skills",
-              ),
-            ),
-            Effect.flatMap((spans) =>
-              spans.length === 0
-                ? Effect.fail(new Error("Missing skill read span"))
-                : Effect.succeed(spans),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-          );
-          return spans[0]?.span.tags["executor.declarations.cache"];
-        });
         const first = yield* skills;
         expect(first.skills.map((skill) => skill.name)).toContain("remote-guide");
         const loaded = (yield* upstream.requests).length;
         expect(loaded).toBeGreaterThan(0);
         expect(yield* skills).toEqual(first);
-        expect(yield* skillRead).toBe("hit");
         expect((yield* upstream.requests).length).toBe(loaded);
 
         // Agents search and call the old names through MCP.

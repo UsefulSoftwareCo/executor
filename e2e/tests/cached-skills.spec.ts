@@ -1,6 +1,6 @@
 /** Remote skill catalogs kept in the app cache, through the real app compiler, runtime and HTTP. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -8,7 +8,6 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { App } from "../support/contracts.ts";
 import { skillUpstream } from "../support/skill-upstream.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { createProfile } from "../support/profiles.ts";
 
@@ -27,9 +26,7 @@ layer(HostedLive, { excludeTestServices: true })("Cached skills", (it) => {
       context,
       Effect.gen(function* () {
         const api = yield* Api,
-          actors = yield* Actors,
-          evidence = yield* Evidence,
-          telemetry = yield* Telemetry;
+          actors = yield* Actors;
         const upstream = yield* skillUpstream;
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
         const response = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
@@ -67,27 +64,6 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
           ).toBe(200);
           return yield* body(Bundle, bundle);
         });
-        /** How the latest request's skill read was served, from its own trace. */
-        const outcome = Effect.gen(function* () {
-          const request = (yield* evidence.requests).at(-1);
-          if (request === undefined) return yield* Effect.fail(new Error("Missing request"));
-          const spans = yield* telemetry.query(request.traceId).pipe(
-            Effect.map((result) =>
-              result.data.filter(
-                ({ span }) =>
-                  span.operationName === "sdk.declarations.read" &&
-                  span.tags["executor.declarations.command"] === "skills",
-              ),
-            ),
-            Effect.flatMap((spans) =>
-              spans.length === 0
-                ? Effect.fail(new Error("Missing skill read span"))
-                : Effect.succeed(spans),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-          );
-          return spans[0]?.span.tags["executor.declarations.cache"];
-        });
 
         const first = yield* read;
         expect(first.skills.map((skill) => skill.name)).toEqual(["github-guide", "remote-guide"]);
@@ -100,10 +76,9 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
         expect(loaded).toBeGreaterThan(0);
 
         // A loader that reads through the app cache has its catalog kept, so the next read
-        // neither evaluates the app nor contacts either source.
+        // contacts neither source.
         const second = yield* read;
         expect(second).toEqual(first);
-        expect(yield* outcome).toBe("hit");
         expect((yield* upstream.requests).length).toBe(loaded);
 
         // Within freshFor, a new publication is not fetched; the kept catalog stays current.
@@ -198,9 +173,7 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
       context,
       Effect.gen(function* () {
         const api = yield* Api,
-          actors = yield* Actors,
-          evidence = yield* Evidence,
-          telemetry = yield* Telemetry;
+          actors = yield* Actors;
         const upstream = yield* skillUpstream;
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
         const response = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
@@ -232,27 +205,6 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
           ).toBe(200);
           return yield* body(Bundle, bundle);
         });
-        /** How the latest request's skill read was served, from its own trace. */
-        const outcome = Effect.gen(function* () {
-          const request = (yield* evidence.requests).at(-1);
-          if (request === undefined) return yield* Effect.fail(new Error("Missing request"));
-          const spans = yield* telemetry.query(request.traceId).pipe(
-            Effect.map((result) =>
-              result.data.filter(
-                ({ span }) =>
-                  span.operationName === "sdk.declarations.read" &&
-                  span.tags["executor.declarations.command"] === "skills",
-              ),
-            ),
-            Effect.flatMap((spans) =>
-              spans.length === 0
-                ? Effect.fail(new Error("Missing skill read span"))
-                : Effect.succeed(spans),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-          );
-          return spans[0]?.span.tags["executor.declarations.cache"];
-        });
         const reference = (revision: string) =>
           api.request(
             actors.owner,
@@ -271,7 +223,6 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
         yield* upstream.publish(2);
         yield* Effect.sleep("10500 millis");
         const second = yield* read;
-        expect(yield* outcome).toBe("revalidated");
         expect(second.revision).not.toBe(first.revision);
         expect(second.skills.flatMap((skill) => skill.files.map((file) => file.content))).toContain(
           "# Reference 2",

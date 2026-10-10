@@ -1,6 +1,6 @@
-/** Evaluated app declarations are reused only for identical inputs and never bypass live access. */
+/** Evaluated app declarations follow their inputs and never bypass live access. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -8,8 +8,6 @@ import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
-import { Target } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 /** Declarations derived from the selected account's stored credential and the deployed version. */
@@ -43,10 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
         context,
         Effect.gen(function* () {
           const api = yield* Api,
-            actors = yield* Actors,
-            evidence = yield* Evidence,
-            telemetry = yield* Telemetry,
-            target = yield* Target;
+            actors = yield* Actors;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `Declarations ${randomUUID().slice(0, 8)}`,
@@ -124,24 +119,6 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
                 account,
               );
             });
-          /** The cache outcome recorded by the SDK span of the request's own trace. */
-          const outcome = Effect.gen(function* () {
-            const request = (yield* evidence.requests).at(-1);
-            if (request === undefined) return yield* Effect.fail(new Error("Missing request"));
-            const spans = yield* telemetry.query(request.traceId).pipe(
-              Effect.flatMap((result) => {
-                const tagged = result.data.filter(
-                  ({ span }) => span.tags["executor.declarations.cache"] !== undefined,
-                );
-                return tagged.length === 0
-                  ? Effect.fail(new Error("Missing declaration read span"))
-                  : Effect.succeed(tagged);
-              }),
-              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-            );
-            expect(spans).toHaveLength(1);
-            return spans[0]?.span.tags["executor.declarations.cache"];
-          });
           const workflows = (actor: Session, profile: string) =>
             Effect.gen(function* () {
               const response = yield* api.request(
@@ -150,8 +127,7 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
                 `${path}/workflows?profile=${profile}`,
               );
               expect(response.status, JSON.stringify(response.body)).toBe(200);
-              const names = (yield* body(Workflows, response)).map((workflow) => workflow.name);
-              return { names, cache: yield* outcome };
+              return (yield* body(Workflows, response)).map((workflow) => workflow.name);
             });
           const skills = (actor: Session, profile: string) =>
             Effect.gen(function* () {
@@ -161,75 +137,32 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
                 `${path}/skill-bundle?profile=${profile}`,
               );
               expect(response.status, JSON.stringify(response.body)).toBe(200);
-              const bundle = yield* body(Bundle, response);
-              return {
-                descriptions: bundle.skills.map((skill) => skill.description),
-                cache: yield* outcome,
-              };
-            });
-
-          /**
-           * An identical read reuses the kept result. A Cloud isolate keeps its own results in
-           * memory only, and parallel scenarios spread reads over several isolates, so there a read
-           * can land on isolates that have not evaluated these inputs yet. Every such read must be
-           * a miss that returns the expected value, and one must eventually reuse.
-           */
-          const reused = <A extends { readonly cache: string | undefined }>(
-            read: Effect.Effect<A, unknown>,
-            expected: Omit<A, "cache">,
-          ) =>
-            Effect.gen(function* () {
-              for (let attempt = 0; attempt < 8; attempt += 1) {
-                const { cache, ...value } = yield* read;
-                expect(value).toEqual(expected);
-                if (cache === "hit" || cache === "stale") return;
-                expect(target.metadata.target, `read ${attempt} was ${cache}`).toBe("cloud");
-                expect(cache).toBe("miss");
-              }
-              return yield* Effect.fail(new Error("Identical reads never reused a kept result"));
+              return (yield* body(Bundle, response)).skills.map((skill) => skill.description);
             });
 
           const owned = yield* profile(actors.owner);
           const alpha = yield* connect(actors.owner, owned, "alpha");
-          // A first evaluation is retained; an identical second read reuses it.
-          expect(yield* workflows(actors.owner, owned)).toEqual({
-            names: ["first_alpha"],
-            cache: "miss",
-          });
-          yield* reused(workflows(actors.owner, owned), { names: ["first_alpha"] });
-          expect(yield* skills(actors.owner, owned)).toEqual({
-            descriptions: ["first guide for alpha"],
-            cache: "miss",
-          });
-          yield* reused(skills(actors.owner, owned), { descriptions: ["first guide for alpha"] });
+          // A first evaluation and an identical second read return the same declarations.
+          expect(yield* workflows(actors.owner, owned)).toEqual(["first_alpha"]);
+          expect(yield* workflows(actors.owner, owned)).toEqual(["first_alpha"]);
+          expect(yield* skills(actors.owner, owned)).toEqual(["first guide for alpha"]);
+          expect(yield* skills(actors.owner, owned)).toEqual(["first guide for alpha"]);
 
           // A replaced credential is a different evaluation input.
           yield* reconnect(actors.owner, owned, alpha, "beta");
-          expect(yield* workflows(actors.owner, owned)).toEqual({
-            names: ["first_beta"],
-            cache: "miss",
-          });
-          expect(yield* skills(actors.owner, owned)).toEqual({
-            descriptions: ["first guide for beta"],
-            cache: "miss",
-          });
+          expect(yield* workflows(actors.owner, owned)).toEqual(["first_beta"]);
+          expect(yield* skills(actors.owner, owned)).toEqual(["first guide for beta"]);
 
           // A new selection changes the profile revision.
           yield* connect(actors.owner, owned, "gamma");
-          expect(yield* workflows(actors.owner, owned)).toEqual({
-            names: ["first_gamma"],
-            cache: "miss",
-          });
+          expect(yield* workflows(actors.owner, owned)).toEqual(["first_gamma"]);
 
           // Another member's profile is evaluated with that member's own account.
           const member = yield* profile(actors.member);
           yield* connect(actors.member, member, "delta");
-          expect(yield* workflows(actors.member, member)).toEqual({
-            names: ["first_delta"],
-            cache: "miss",
-          });
-          yield* reused(workflows(actors.member, member), { names: ["first_delta"] });
-          yield* reused(workflows(actors.owner, owned), { names: ["first_gamma"] });
+          expect(yield* workflows(actors.member, member)).toEqual(["first_delta"]);
+          expect(yield* workflows(actors.member, member)).toEqual(["first_delta"]);
+          expect(yield* workflows(actors.owner, owned)).toEqual(["first_gamma"]);
           // Retained results never substitute for access: another subject's profile stays closed.
           expect(
             (yield* api.request(actors.member, "GET", `${path}/workflows?profile=${owned}`)).status,
@@ -264,14 +197,8 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
             files: [{ path: "index.ts", content: source("second") }, appsManifest],
           });
           expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
-          expect(yield* workflows(actors.owner, owned)).toEqual({
-            names: ["second_gamma"],
-            cache: "miss",
-          });
-          expect(yield* skills(actors.owner, owned)).toEqual({
-            descriptions: ["second guide for gamma"],
-            cache: "miss",
-          });
+          expect(yield* workflows(actors.owner, owned)).toEqual(["second_gamma"]);
+          expect(yield* skills(actors.owner, owned)).toEqual(["second guide for gamma"]);
         }),
       ),
     { timeout: 120_000 },

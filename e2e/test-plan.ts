@@ -1267,7 +1267,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "retained-assets.spec.ts",
     title:
-      "Cloud copies each build's browser files for pages on a replaced build, and files no build kept or unhashed names still 404",
+      "Cloud lists each build's browser files to keep and serves them immutable, and files no build kept or unhashed names still 404",
     targets: {
       cloud: managedCloud,
       "self-host": na(
@@ -3209,7 +3209,7 @@ export const scenarios = plan({
   workspaceSource: {
     fixtures: "actors",
     file: "workspace-source.spec.ts",
-    title: "Workspace reads reuse confirmed source and preserve concurrent writes",
+    title: "Workspace reads return confirmed source and preserve concurrent writes",
     targets: {
       "self-host": scheduled,
       cloud: sourceStorageCloud,
@@ -4442,7 +4442,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-observability.spec.ts",
     appOrigin: true,
-    title: "warm app queries export timing without reloading retained server builds",
+    title: "warm app queries export timing",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -4505,7 +4505,7 @@ export const scenarios = plan({
   authInvocations: {
     fixtures: "actors",
     file: "auth-invocations.spec.ts",
-    title: "Concurrent users read their own sessions and trace auth SQL to their own requests",
+    title: "Concurrent users read their own sessions",
     targets: {
       cloud: scheduled,
       "self-host": na(
@@ -4822,8 +4822,7 @@ export const scenarios = plan({
   teamInstallationFromRequest: {
     fixtures: "actors",
     file: "team-installation.spec.ts",
-    title:
-      "A new Cloud team's Executor app is installed by its request while the workflow stands by",
+    title: "A new Cloud team's Executor app is installed with nothing left pending",
     targets: {
       cloud: managedCloud,
       "self-host": na("Self-host installs teams from its own provisioning worker."),

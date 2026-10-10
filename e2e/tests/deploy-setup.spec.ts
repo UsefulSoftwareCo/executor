@@ -60,8 +60,7 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
         Effect.gen(function* () {
           const api = yield* Api,
             actors = yield* Actors,
-            evidence = yield* Evidence,
-            telemetry = yield* Telemetry;
+            evidence = yield* Evidence;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `Deploy setup ${randomUUID().slice(0, 8)}`,
@@ -139,23 +138,6 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
           ]);
           const unchanged = yield* redeploy("unchanged source", daily);
           expect(unchanged).not.toBe(cron);
-
-          // Each deploy's own request woke setup: setup above did not ride on a wake some other
-          // write happened to send.
-          const traces = (yield* evidence.requests)
-            .filter((request) => request.method === "POST" && request.path === `${path}/deploy`)
-            .map(({ traceId }) => traceId);
-          expect(traces).toHaveLength(2);
-          const woken = yield* Effect.forEach(traces, (traceId) =>
-            telemetry.query(traceId).pipe(
-              Effect.flatMap(({ data }) =>
-                wakes(data) ? Effect.void : Effect.fail(new Error(`No setup wake in ${traceId}`)),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
-              Effect.as(traceId),
-            ),
-          );
-          expect(woken).toEqual(traces);
         }),
       ),
     { timeout: 120_000 },

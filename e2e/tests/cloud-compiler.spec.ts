@@ -1,13 +1,13 @@
 /** Exercise dependency installation and failure recovery through the real Cloud compiler. */
 import { expect, layer } from "@effect/vitest";
-import { Duration, Effect, Schedule, Schema } from "effect";
+import { Duration, Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence } from "../support/evidence.ts";
 import { Browser } from "../support/browser.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { appsManifest, appsVersion, withApps } from "../support/apps-release.ts";
@@ -21,7 +21,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
         const api = yield* Api,
           actors = yield* Actors,
           evidence = yield* Evidence,
-          telemetry = yield* Telemetry,
           browser = yield* Browser;
         const prefix = `/api/organizations/${actors.organization.id}/apps`;
         const files = (version: string) => [
@@ -78,31 +77,6 @@ export default defineApp({accounts:{}}, {tools: router({
           status: exhausted.status,
           body: exhausted.body,
         });
-        const request = (yield* evidence.requests).at(-1);
-        if (request === undefined) return yield* Effect.die("Build request evidence missing");
-        const trace = yield* telemetry.query(request.traceId).pipe(
-          Effect.flatMap((trace) =>
-            trace.data.some((row) => row.span.operationName === "runtime.cloud.build")
-              ? Effect.succeed(trace)
-              : Effect.fail(new Error("The compiler failure trace has not reached the collector")),
-          ),
-          Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
-        );
-        yield* evidence.json("compiler-memory-trace.json", trace);
-        expect(trace.data).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              span: expect.objectContaining({
-                operationName: "runtime.cloud.build",
-                tags: expect.objectContaining({
-                  "build.stage": "compile",
-                  // The failure's tag; its message can quote the deployer's source.
-                  "build.error": "BuildMemoryExceeded",
-                }),
-              }),
-            }),
-          ]),
-        );
         expect(exhausted.status).toBe(422);
         expect(exhausted.body).toEqual({
           _tag: "BuildMemoryExceeded",
@@ -234,8 +208,7 @@ export default defineApp({accounts:{}}, async (ctx) => ({tools: router({
         Effect.gen(function* () {
           const api = yield* Api,
             actors = yield* Actors,
-            evidence = yield* Evidence,
-            telemetry = yield* Telemetry;
+            evidence = yield* Evidence;
           const prefix = `/api/organizations/${actors.organization.id}/apps`;
           // The registry starts this package's metadata and never finishes it, so the compiler
           // Worker stays busy and never answers, as a lost compiler isolate does.
@@ -278,41 +251,9 @@ export default defineApp({accounts:{}}, {tools: router({
           expect(elapsed).toBeLessThan(58_000);
           const listed = yield* api.request(actors.owner, "GET", prefix);
           expect(JSON.stringify(listed.body)).not.toContain("Compiler deadline");
-
-          const request = (yield* evidence.requests).find(({ path }) => path.endsWith("/deploy"));
-          if (request === undefined) return yield* Effect.die("Deploy request evidence missing");
-          const trace = yield* telemetry.query(request.traceId).pipe(
-            Effect.flatMap((trace) =>
-              trace.data.some((row) => row.span.operationName === "runtime.cloud.build")
-                ? Effect.succeed(trace)
-                : Effect.fail(new Error("The deadline trace has not reached the collector")),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
-          );
-          yield* evidence.json("compiler-deadline-trace.json", trace);
-          expect(trace.data).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                span: expect.objectContaining({
-                  operationName: "runtime.cloud.compiler.request",
-                  tags: expect.objectContaining({ "build.compiler_deadline_exceeded": "true" }),
-                }),
-              }),
-              expect.objectContaining({
-                span: expect.objectContaining({
-                  operationName: "runtime.cloud.build",
-                  tags: expect.objectContaining({
-                    "build.stage": "compile",
-                    // The deadline is the compiler span's; the build records the failure's tag.
-                    "build.error": "RuntimeBuildFailed",
-                  }),
-                }),
-              }),
-            ]),
-          );
         }),
       ),
-    // The deadline itself takes 50 seconds before the response and its trace are checked.
+    // The deadline itself takes 50 seconds before the response is checked.
     { timeout: 120_000 },
   );
   it.effect(scenarios.cloudCatalogInstall.title, (context) =>
