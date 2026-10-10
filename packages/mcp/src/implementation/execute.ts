@@ -17,6 +17,7 @@ import {
 } from "@executor-js/sdk/core";
 import { Clock, Deferred, Duration, Effect, JsonPointer, Option, Schema, Semaphore } from "effect";
 import { diagnostic, executionDiagnostic } from "./diagnostics.ts";
+import { signatureSchema } from "./signature-schema.ts";
 import type { McpTarget } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import {
@@ -224,8 +225,11 @@ const renderSchemas = (tool: AppTool) =>
     if (known !== undefined) return known;
     const input = yield* Schema.decodeUnknownEffect(JsonObject)(tool.inputSchema);
     const rendered = {
-      input: renderableSchema(input),
-      output: tool.outputSchema === undefined ? undefined : renderableSchema(tool.outputSchema),
+      input: renderableSchema(signatureSchema(input)),
+      output:
+        tool.outputSchema === undefined
+          ? undefined
+          : renderableSchema(signatureSchema(tool.outputSchema)),
     };
     renderedSchemas.set(tool, rendered);
     return rendered;
