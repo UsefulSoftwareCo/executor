@@ -14,6 +14,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { batchedReads, batchPath } from "../support/read-batches.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -231,6 +232,29 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
           { origin: "https://attacker.example" },
         );
         expect(crossSite.status).toBe(403);
+
+        // Behind a proxy that ends TLS, a server that gets no `X-Forwarded-Proto`, as on self-host,
+        // sees `http://`, and an `https://` page's `Origin` never matches it. The browser's
+        // `Sec-Fetch-Site` admits the page's own batch, and any other value is refused even when
+        // the request names this origin.
+        const own = new URL(targetHosts(yield* Target).browser);
+        const attested = (site: string, origin: string) =>
+          api.request(
+            actors.member,
+            "POST",
+            batchPath,
+            { reads: [read("viewer", "get")] },
+            { origin, "sec-fetch-site": site },
+          );
+        const proxied = yield* attested("same-origin", `https://${own.host}`);
+        expect(proxied.status).toBe(200);
+        expect(proxied.body).toMatchObject({
+          id: 0,
+          status: 200,
+          text: expect.stringContaining(member.userId),
+        });
+        for (const site of ["same-site", "cross-site", "none"])
+          expect((yield* attested(site, own.origin)).status, site).toBe(403);
 
         // A slow read does not hold back the others: each answer streams as it finishes.
         yield* browser.login(actors.owner);
