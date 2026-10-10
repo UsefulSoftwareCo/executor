@@ -78,10 +78,18 @@ const indexTargets = <Id extends string, Groups extends HttpApiGroup.Constraint>
 
 /**
  * Only this dashboard's own pages may send a batch. The body is JSON, which another site cannot
- * send without a preflight, and the browser names the page's origin on every `POST`.
+ * send without a preflight. The browser compares the page's origin with the URL it sends the batch
+ * to and reports the result in `Sec-Fetch-Site`, which no page can set, so when it is present it
+ * decides. The URL this server sees is not enough on its own: behind a proxy that ends TLS it is
+ * `http://` while the page is `https://`, unless `X-Forwarded-Proto` reaches this server, which the
+ * self-host image's host never forwards. Browsers send no `Sec-Fetch-Site` to plain `http://` hosts
+ * other than loopback, and older browsers never send it; then the page's origin, which the browser
+ * names on every `POST`, must be the URL's.
  */
 const sameOrigin = (request: HttpServerRequest.HttpServerRequest, url: URL) =>
-  request.headers.origin === url.origin &&
+  (request.headers["sec-fetch-site"] === undefined
+    ? request.headers.origin === url.origin
+    : request.headers["sec-fetch-site"] === "same-origin") &&
   request.headers["content-type"]?.split(";")[0]?.trim() === "application/json";
 
 /**
