@@ -7,7 +7,7 @@ import { AsyncResult } from "effect/reactivity";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useState, type ReactNode } from "react";
 import { Option } from "effect";
-import type { DeployedApp } from "@executor-js/sdk";
+import type { App, DeployedApp } from "@executor-js/sdk";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { quickAdd, type CatalogEntry } from "@executor-js/catalog/contracts";
@@ -188,6 +188,49 @@ export function CatalogPage<E, P>({
           )}
         </>
       )}
+    </div>
+  );
+}
+/** Name a new app, then the product creates it the way an agent does and opens its source. */
+export function BlankAppSetup<E, A extends App>({
+  mutation,
+  Failure,
+  onCreated,
+  onBack,
+}: MutationProps<{ readonly name: string }, A, E> & {
+  readonly onCreated: (app: A) => void | Promise<void>;
+  readonly onBack: () => void;
+}) {
+  const result = useAtomValue(mutation);
+  return (
+    <div className="page setup-page w-full shrink-0 [padding:24px_24px_48px] my-0 mx-auto max-w-212.5 max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="back-link h-auto rounded-none p-0 font-normal hover:bg-transparent inline-flex gap-1.5 items-center text-[12px] text-muted-foreground mb-4.25 hover:text-foreground max-[740px]:min-h-11 max-[740px]:inline-flex max-[740px]:items-center max-[740px]:-mt-2 max-[740px]:mb-3"
+        onClick={onBack}
+        disabled={result.waiting}
+      >
+        <HugeiconsIcon icon={ArrowLeft02Icon} strokeWidth={2} aria-hidden size={14} />
+        All apps
+      </Button>
+      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
+            Create blank app
+          </h1>
+          <p>Start from an empty app and build with your agent.</p>
+        </div>
+      </div>
+      <AppCreateForm
+        mutation={mutation}
+        Failure={Failure}
+        initialName=""
+        input={(name) => ({ name })}
+        onCreated={onCreated}
+        onCancel={onBack}
+        label="Create app"
+      />
     </div>
   );
 }
