@@ -15,7 +15,11 @@ export class CacheError extends Schema.TaggedError<CacheError>()("CacheError", {
       "totalEntries",
     ]),
   ),
-}) {}
+}) {
+  override get message() {
+    return `CacheError: ${this.reason}`;
+  }
+}
 
 /** Bounded defaults shared by loaders and persistent adapters. */
 export const cacheLimits = {

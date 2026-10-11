@@ -1,5 +1,6 @@
 /** Revisioned catalog storage shared by remote protocols. Executables are never persisted. */
 import { CacheError } from "@executor-js/app-cache";
+import { cacheLimits } from "@executor-js/app-cache/contracts";
 import { Deferred, Duration, Effect, Exit, Schema } from "effect";
 import type { AccountCredential, AppCache, CacheLoadContext } from "../contracts/cache.ts";
 import { JsonObject, type JsonValue } from "../contracts/schema.ts";
@@ -52,6 +53,12 @@ export const catalogScope = <E>(
   });
 };
 
+/** A disposable part disappeared; transport and decoding failures are not cache misses. */
+class MissingCatalogPart extends Schema.TaggedError<MissingCatalogPart>()(
+  "MissingCatalogPart",
+  {},
+) {}
+
 const schema = <A>(decoder: Schema.Decoder<A>) => wrap(decoder, false);
 
 /**
@@ -78,6 +85,8 @@ const Manifest = Schema.Struct({
   revision: Schema.String,
   pages: Schema.Int,
   summaries: Schema.Int,
+  /** Names distinguish an evicted tool part from an unknown name without another read. */
+  names: Schema.optionalKey(Schema.Array(Schema.String)),
   header: Schema.optionalKey(JsonObject),
 });
 
@@ -149,7 +158,7 @@ export const catalogCache = <A extends { readonly name: string }, S>(
         );
         const values: B[] = [];
         for (const page of batches.flat()) {
-          if (page === undefined) return yield* new CacheError({ reason: "unavailable" });
+          if (page === undefined) return yield* new MissingCatalogPart();
           values.push(...page);
         }
         return values;
@@ -157,13 +166,14 @@ export const catalogCache = <A extends { readonly name: string }, S>(
     /** The catalog a refresh replaces, from the scope that refresh writes. */
     const kept = (cache: AppCache) =>
       fromPromise(method(cache, "read"), "cache")(key, schema(Manifest)).pipe(
-        Effect.map((manifest) =>
+        Effect.flatMap((manifest) =>
           manifest === undefined
-            ? undefined
-            : {
-                header: manifest.header,
-                tools: pages(cache, manifest.revision, "page", manifest.pages, options.schema),
-              },
+            ? Effect.succeed(undefined)
+            : pages(cache, manifest.revision, "page", manifest.pages, options.schema).pipe(
+                Effect.map((tools) => ({ header: manifest.header, tools: Effect.succeed(tools) })),
+                // A source must not confirm an incomplete cached revision as unchanged.
+                Effect.catchIf(Schema.is(MissingCatalogPart), () => Effect.succeed(undefined)),
+              ),
         ),
       );
     const refresh = (context: CacheLoadContext) =>
@@ -249,13 +259,21 @@ export const catalogCache = <A extends { readonly name: string }, S>(
         yield* pageOut();
         yield* summaryOut();
         yield* flush();
-        // The cache publishes this manifest only after all parts, under its fenced loader lease.
-        return {
+        const names = tools.map(({ name }) => name);
+        const manifest = {
           revision,
           pages,
           summaries,
           ...(header === undefined ? {} : { header: yield* json(header) }),
         };
+        const candidate = { ...manifest, names };
+        // Optional names must fit both their own cap and the complete manifest's entry bound.
+        // Catalogs without names still resolve missing parts through their retained pages.
+        const named =
+          new TextEncoder().encode(JSON.stringify(names)).byteLength <= 500_000 &&
+          new TextEncoder().encode(JSON.stringify(candidate)).byteLength <= cacheLimits.entryBytes;
+        // The cache publishes this manifest only after all parts, under its fenced loader lease.
+        return named ? candidate : manifest;
       });
     const getOptions = {
       key,
@@ -331,11 +349,25 @@ export const catalogCache = <A extends { readonly name: string }, S>(
       if (cache === undefined) yield* local;
       else yield* fromPromise(method(cache, "revalidate"), "cache")(getOptions);
     }
+    // One uncached load completes this invocation. Invalidate the incomplete manifest so the
+    // next invocation rebuilds it and hosts forget declarations evaluated from its missing parts.
+    const recover = () =>
+      local.pipe(
+        Effect.tap(() =>
+          cache === undefined
+            ? Effect.void
+            : fromPromise(method(cache, "invalidate"), "cache")(key),
+        ),
+      );
     const metadata = () =>
       Effect.gen(function* () {
         if (cache === undefined) return (yield* local).tools;
         const manifest = yield* current();
-        return yield* pages(cache, manifest.revision, "page", manifest.pages, options.schema);
+        return yield* pages(cache, manifest.revision, "page", manifest.pages, options.schema).pipe(
+          Effect.catchIf(Schema.is(MissingCatalogPart), () =>
+            recover().pipe(Effect.map(({ tools }) => tools)),
+          ),
+        );
       });
 
     return {
@@ -356,6 +388,12 @@ export const catalogCache = <A extends { readonly name: string }, S>(
             "summary",
             manifest.summaries,
             options.summary.schema,
+          ).pipe(
+            Effect.catchIf(Schema.is(MissingCatalogPart), () =>
+              recover().pipe(
+                Effect.map(({ tools }) => tools.map((tool) => options.summary.of(tool))),
+              ),
+            ),
           );
         }),
       resolve: (name: string) =>
@@ -367,12 +405,26 @@ export const catalogCache = <A extends { readonly name: string }, S>(
                   part(manifest.revision, "tool", name),
                   schema(options.schema),
                 );
-                if (found === undefined) return separately;
-                if (found.value === undefined) return Effect.succeed(undefined);
-                // A part this schema cannot read is read again on its own, as without the hint,
-                // and fails there if it is still unreadable.
-                return Schema.decodeUnknownEffect(options.schema)(found.value).pipe(
-                  Effect.catch(() => separately),
+                if (manifest.names !== undefined && !manifest.names.includes(name))
+                  return Effect.succeed(undefined);
+                const tool =
+                  found === undefined
+                    ? separately
+                    : found.value === undefined
+                      ? Effect.succeed(undefined)
+                      : // An unreadable hinted part is read separately, and fails there if still unreadable.
+                        Schema.decodeUnknownEffect(options.schema)(found.value).pipe(
+                          Effect.catch(() => separately),
+                        );
+                return tool.pipe(
+                  Effect.flatMap((value) =>
+                    value === undefined
+                      ? // Retained pages distinguish an evicted part from an unknown name.
+                        metadata().pipe(
+                          Effect.map((tools) => tools.find((tool) => tool.name === name)),
+                        )
+                      : Effect.succeed(value),
+                  ),
                 );
               }),
             ),
