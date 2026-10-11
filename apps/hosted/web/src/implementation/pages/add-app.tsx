@@ -5,7 +5,11 @@ import { useAtomMount } from "@effect/atom-react";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
-import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboard/catalog";
+import {
+  BlankAppSetup,
+  CatalogPage as Catalog,
+  CatalogInstall,
+} from "@executor-js/ui/dashboard/catalog";
 import { InstallPublication } from "@executor-js/ui/dashboard/install-publication";
 import { type AppAcknowledgement } from "@executor-js/ui/contracts/app-management";
 import type { CatalogEntry } from "@executor-js/catalog/contracts";
@@ -19,7 +23,9 @@ import { acknowledgeApp } from "../../contracts/apps.ts";
 
 type Selection =
   | { readonly kind: "catalog"; readonly entry: CatalogEntry }
-  | { readonly kind: "publication"; readonly publication: typeof Publication.Type };
+  | { readonly kind: "publication"; readonly publication: typeof Publication.Type }
+  | { readonly kind: "blank" };
+
 /** Public publications and integration templates share Add app and the same organization-owned app records. */
 export function AddAppPage() {
   const mcpOrigin = useMcpOrigin();
@@ -64,6 +70,24 @@ export function AddAppPage() {
         onInstalled={installed}
       />
     );
+  if (selection?.kind === "blank")
+    return (
+      <BlankAppSetup
+        mutation={atoms.createBlank}
+        Failure={HostedFailure}
+        onBack={() => {
+          reportBrowserUsage({ area: "apps", action: "blank_app", outcome: "cancelled" });
+          setSelection(undefined);
+        }}
+        onCreated={(app) =>
+          navigate({
+            to: "/org/$organizationSlug/apps/$appId",
+            search: { view: "source" },
+            params: { organizationSlug, appId: app.id },
+          })
+        }
+      />
+    );
   return (
     <Catalog
       query={atoms.catalog}
@@ -90,6 +114,17 @@ export function AddAppPage() {
       }
       action={
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            data-product-area="apps"
+            data-product-action="blank_app"
+            onClick={() => {
+              reportBrowserUsage({ area: "apps", action: "blank_app", outcome: "started" });
+              setSelection({ kind: "blank" });
+            }}
+          >
+            Create blank app
+          </Button>
           <Button variant="outline" asChild>
             <Link
               data-product-area="apps"

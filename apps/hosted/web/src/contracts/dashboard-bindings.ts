@@ -5,6 +5,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import type { AppId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { providerDisplayUrl, type InstallApp } from "@executor-js/ui/contracts/dashboard";
+import { blankAppFiles } from "@executor-js/ui/contracts/blank-app";
 import { HostedClient, catalogAtom } from "./api.ts";
 import { inventoryAtom } from "./organization.ts";
 import { acknowledgeApp, toolsAtom } from "./apps.ts";
@@ -52,5 +53,21 @@ export const dashboardAtoms = Atom.family((organization: OrganizationReference) 
     Effect.flatMap(HostedClient, (client) =>
       client.apps.importCustom({ params: { organization }, payload: { source: input } }),
     ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, organization, saved)))),
+  ),
+  /**
+   * Hosted `apps.deploy` creates the named app, builds it, and stores the working source.
+   * `package.json` pins the release `framework.release` reports, which the build requires.
+   */
+  createBlank: HostedClient.runtime.fn((input: { name: string }, get) =>
+    Effect.gen(function* () {
+      const client = yield* HostedClient;
+      const { version } = yield* client.framework.release({ params: { organization } });
+      const saved = yield* client.apps.deploy({
+        params: { organization },
+        payload: { name: input.name, files: blankAppFiles(input.name, version) },
+      });
+      yield* Effect.sync(() => acknowledgeApp(get, organization, saved));
+      return saved;
+    }),
   ),
 }));
