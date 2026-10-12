@@ -125,6 +125,11 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         account = (yield* Schema.decodeUnknownEffect(Resource)(committed)).id;
         expect(created).toBe(1);
         expect(
+          yield* browser.use("A retry keeps its recorded account audience", (page) =>
+            page.getByRole("combobox", { name: "Who can use this account?" }).isDisabled(),
+          ),
+        ).toBe(true);
+        expect(
           yield* browser.use("The credential survives the failed response", (page) =>
             page.getByRole("dialog").getByLabel("Token", { exact: true }).inputValue(),
           ),

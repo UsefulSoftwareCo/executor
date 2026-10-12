@@ -1,5 +1,4 @@
 /** Sharing drafts and revision conflicts are checked through real hosted forms. */
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -7,7 +6,7 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App, Resource } from "../support/contracts.ts";
+import { App } from "../support/contracts.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -29,12 +28,24 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
         const prefix = `/api/organizations/${actors.organization.id}`;
         const suffix = randomUUID().slice(0, 8);
         const groupName = `Sharing ${suffix}`;
+        const owner = yield* body(
+          Schema.Struct({ userId: Schema.String }),
+          yield* api.request(actors.owner, "GET", "/api/viewer"),
+        );
+        const members = yield* body(
+          Schema.Struct({
+            members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
+          }),
+          yield* api.request(actors.owner, "GET", `${prefix}/groups`),
+        );
+        const ownerMember = members.members.find((member) => member.userId === owner.userId);
+        if (!ownerMember) throw new Error("Expected the synthetic owner membership");
         const group = yield* body(
           Group,
           yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
             name: groupName,
             description: "",
-            memberIds: [],
+            memberIds: [ownerMember.id],
           }),
         );
         const app = yield* body(
@@ -138,29 +149,52 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
             ),
           ).toBe(true);
         }
-        for (const kind of ["personal", "shared"] as const) {
+        for (const kind of ["personal", "shared", "groups"] as const) {
           const label = `${kind} ${suffix}`;
-          if (kind === "personal") {
-            yield* browser.use("Open account selections", (page) =>
-              page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+          yield* browser.use("Set account connection viewport", (page) =>
+            page.setViewportSize({ width: kind === "groups" ? 390 : 1280, height: 850 }),
+          );
+          yield* browser.use("Open account selections", (page) =>
+            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+          );
+          yield* browser.use("Add an account through the UI", (page) =>
+            page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+          );
+          yield* browser.use("New accounts default to personal access", (page) =>
+            page
+              .getByRole("combobox", { name: "Who can use this account?" })
+              .getByText("Only me", { exact: true })
+              .waitFor(),
+          );
+          if (kind !== "personal") {
+            yield* browser.use("Choose the new account audience", (page) =>
+              page
+                .getByRole("combobox", { name: "Who can use this account?" })
+                .click()
+                .then(() =>
+                  page
+                    .getByRole("option", {
+                      name: kind === "shared" ? "Everyone in the organization" : "Selected groups",
+                      exact: true,
+                    })
+                    .click(),
+                ),
             );
-            yield* browser.use("Add a personal account", (page) =>
-              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
-            );
-          } else {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
-            const connection = yield* body(
-              Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                profile: profile.id,
-                requirement: "service",
-                destination: { kind: "shared", audience: { kind: "everyone" } },
-              }),
-            );
-            yield* browser.use("Open the shared connection handoff", (page) =>
-              page.goto(`/org/${actors.organization.slug}/connections/${connection.id}`),
-            );
+            if (kind === "groups") {
+              yield* browser.use("Empty groups show an actionable error", (page) =>
+                page.getByRole("alert").filter({ hasText: "Choose at least one group." }).waitFor(),
+              );
+              expect(
+                yield* browser.use("Empty groups cannot authenticate", (page) =>
+                  page.getByRole("button", { name: "Connect account", exact: true }).isDisabled(),
+                ),
+              ).toBe(true);
+              yield* browser.use("Choose the account's group", (page) =>
+                page.getByRole("checkbox", { name: groupName, exact: true }).check(),
+              );
+            }
           }
+          yield* browser.checkpoint(`New ${kind} account audience`);
           yield* browser.use("Enter a synthetic token", (page) =>
             page.getByLabel("Token", { exact: true }).fill("synthetic"),
           );
@@ -174,6 +208,30 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           yield* browser.use("See the connected account", (page) =>
             page.getByRole("checkbox", { name: label, exact: true, checked: true }).waitFor(),
           );
+          if (kind === "groups") {
+            yield* browser.use("Reconnect the group-shared account", (page) =>
+              page
+                .getByRole("button", { name: `Manage ${label}`, exact: true })
+                .click()
+                .then(() =>
+                  page.getByRole("menuitem", { name: "Update credentials", exact: true }).click(),
+                ),
+            );
+            expect(
+              yield* browser.use("Reconnecting does not offer to change ownership", (page) =>
+                page.getByRole("combobox", { name: "Who can use this account?" }).count(),
+              ),
+            ).toBe(0);
+            yield* browser.use("Enter replacement credentials", (page) =>
+              page.getByLabel("Token", { exact: true }).fill("synthetic-replacement"),
+            );
+            yield* browser.use("Save replacement credentials", (page) =>
+              page
+                .getByRole("button", { name: "Save credentials", exact: true })
+                .click()
+                .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
+            );
+          }
           const profile = yield* Schema.decodeUnknownEffect(Schema.String)(
             yield* browser.use("Read the selected profile", (page) =>
               page.evaluate(() => new URL(location.href).searchParams.get("profile")),
@@ -185,7 +243,37 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           );
           for (const id of binding.accounts.service)
             if (!connected.includes(id)) connected.push(id);
-          expect(connected).toHaveLength(kind === "personal" ? 1 : 2);
+          expect(connected).toHaveLength(kind === "personal" ? 1 : kind === "shared" ? 2 : 3);
+          const account = connected.at(-1);
+          const access = yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/accounts/${account}/access`,
+          );
+          expect(access.status).toBe(200);
+          expect(access.body).toMatchObject({
+            ownership:
+              kind === "personal"
+                ? { kind: "personal" }
+                : {
+                    kind: "shared",
+                    audience:
+                      kind === "shared"
+                        ? { kind: "everyone" }
+                        : { kind: "groups", groups: [group.id] },
+                  },
+          });
+          const available = yield* body(
+            Schema.Struct({
+              accounts: Schema.Array(
+                Schema.Struct({ account: Schema.Struct({ id: Schema.String }) }),
+              ),
+            }),
+            yield* api.request(actors.member, "GET", `${prefix}/resources`),
+          );
+          expect(available.accounts.some((entry) => entry.account.id === account)).toBe(
+            kind === "shared",
+          );
         }
         yield* browser.use("Open the unified account list", (page) =>
           page.goto(`/org/${actors.organization.slug}/accounts`),

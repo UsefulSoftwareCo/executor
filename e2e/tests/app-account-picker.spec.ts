@@ -630,10 +630,14 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             .waitFor({ state: "visible" }),
         );
         let created = 0;
+        let connectionInput: unknown;
         let connectionReads = 0;
         yield* browser.use("Observe connection creation and metadata reads", (page) =>
           page.route(/\/connections(?:\/[^/]+)?$/, (route) => {
-            if (route.request().method() === "POST") created++;
+            if (route.request().method() === "POST") {
+              created++;
+              connectionInput = route.request().postDataJSON();
+            }
             if (route.request().method() === "GET") connectionReads++;
             return route.continue();
           }),
@@ -660,6 +664,16 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           page
             .getByRole("status", { name: "Preparing connection", exact: true })
             .waitFor({ state: "hidden" }),
+        );
+        yield* browser.use("Share the OAuth account with the organization", (page) =>
+          page
+            .getByRole("combobox", { name: "Who can use this account?" })
+            .click()
+            .then(() =>
+              page
+                .getByRole("option", { name: "Everyone in the organization", exact: true })
+                .click(),
+            ),
         );
         expect(
           yield* browser.use("OAuth does not ask for an account name before sign-in", (page) =>
@@ -694,7 +708,8 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             dialog.getByRole("combobox").count(),
             dialog.getByRole("button", { name: "Copy redirect URL" }).count(),
           ]).then((counts) => {
-            expect(counts).toEqual([0, 0, 1]);
+            // The account audience is the only selector; client protocol stays implicit.
+            expect(counts).toEqual([0, 1, 1]);
           });
         });
         expect(
@@ -771,6 +786,9 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             .waitFor({ state: "visible" }),
         );
         expect(created).toBe(1);
+        expect(connectionInput).toMatchObject({
+          destination: { kind: "shared", audience: { kind: "everyone" } },
+        });
         expect(connectionReads).toBe(0);
         yield* browser.checkpoint("Cancelled sign-in returns to this app");
         yield* browser.use("Return directly to the same app", (page) =>
