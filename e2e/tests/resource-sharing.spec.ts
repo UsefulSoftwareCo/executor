@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
+import { holdQuery } from "../support/query-transition.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
@@ -74,6 +75,64 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           }).pipe(Effect.orDie),
         );
         yield* browser.login(actors.owner);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const groupsRead = yield* holdQuery(
+              [actors.organization.id, actors.organization.slug].map(
+                (organization) => `/api/organizations/${organization}/groups`,
+              ),
+              "fail",
+            );
+            yield* browser.use("Open account setup before groups are cached", (page) =>
+              page
+                .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`)
+                .then(() =>
+                  page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+                ),
+            );
+            yield* groupsRead.requested;
+            yield* browser.use("Group loading has a compact labelled placeholder", (page) =>
+              page
+                .getByRole("dialog")
+                .getByRole("status", { name: "Loading groups", exact: true })
+                .waitFor(),
+            );
+            expect(
+              yield* browser.use("Credentials wait for account access choices", (page) =>
+                page.getByLabel("Token", { exact: true }).isDisabled(),
+              ),
+            ).toBe(true);
+            yield* groupsRead.release;
+            yield* browser.use("A failed group read offers recovery", (page) =>
+              page
+                .getByRole("dialog")
+                .getByRole("button", { name: "Retry", exact: true })
+                .waitFor(),
+            );
+            expect(
+              yield* browser.use("A failed group read keeps credentials disabled", (page) =>
+                page.getByLabel("Token", { exact: true }).isDisabled(),
+              ),
+            ).toBe(true);
+            yield* browser.use("Retry group discovery", (page) =>
+              page.getByRole("dialog").getByRole("button", { name: "Retry", exact: true }).click(),
+            );
+            yield* browser.use("Recovery retains the personal default", (page) =>
+              page
+                .getByRole("combobox", { name: "Who can use this account?" })
+                .getByText("Only me", { exact: true })
+                .waitFor(),
+            );
+            expect(
+              yield* browser.use("Recovery enables credential entry", (page) =>
+                page.getByLabel("Token", { exact: true }).isEnabled(),
+              ),
+            ).toBe(true);
+            yield* browser.use("Close the recovered account setup", (page) =>
+              page.keyboard.press("Escape"),
+            );
+          }),
+        );
         for (const width of [1280, 390]) {
           yield* browser.use("Set sharing viewport", (page) =>
             page.setViewportSize({ width, height: 850 }),

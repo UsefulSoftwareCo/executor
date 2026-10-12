@@ -705,11 +705,10 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           const dialog = page.getByRole("dialog");
           return Promise.all([
             dialog.getByLabel("Client secret", { exact: true }).count(),
-            dialog.getByRole("combobox").count(),
+            dialog.getByRole("combobox", { name: "Sign-in method", exact: true }).count(),
             dialog.getByRole("button", { name: "Copy redirect URL" }).count(),
           ]).then((counts) => {
-            // The account audience is the only selector; client protocol stays implicit.
-            expect(counts).toEqual([0, 1, 1]);
+            expect(counts).toEqual([0, 0, 1]);
           });
         });
         expect(
