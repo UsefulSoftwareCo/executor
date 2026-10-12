@@ -4,6 +4,7 @@ import { Add01Icon } from "@hugeicons/core-free-icons";
 import { RegistryContext, useAtomSet, useAtomMount, useAtomValue } from "@effect/atom-react";
 import { Option, Exit, Effect, type Cause } from "effect";
 import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
+import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import { groupsAtom } from "../../contracts/groups.ts";
 import { AudienceInput, audienceError } from "../components/sharing.tsx";
 import { appAccessAtom } from "../../contracts/resource-access.ts";
@@ -242,6 +243,7 @@ export function AppAccounts({
             profile={profile?.id}
             onSelected={onSelected}
             account={connection.account}
+            pending={connecting}
             onPendingChange={setConnecting}
             onSaved={() => setConnection(undefined)}
           />
@@ -311,6 +313,7 @@ type ConnectionDialog = {
 
 /** Keep one provider snapshot and draft from the first dialog through submission. */
 function AppConnectionDialogContent({
+  pending,
   app,
   selection,
   slot,
@@ -324,6 +327,7 @@ function AppConnectionDialogContent({
   onPendingChange,
   onSaved,
 }: {
+  readonly pending: boolean;
   readonly app: App;
   readonly account?: AccountSummary | undefined;
   readonly selection: SelectedAccounts;
@@ -359,6 +363,7 @@ function AppConnectionDialogContent({
         }
       />
       <AppConnectionFields
+        pending={pending}
         app={app.id}
         account={account}
         accounts={selection}
@@ -376,6 +381,7 @@ function AppConnectionDialogContent({
 
 /** This form renders the page's cached provider and host metadata without a connection read. */
 function AppConnectionFields({
+  pending,
   app,
   slot,
   form,
@@ -387,6 +393,7 @@ function AppConnectionFields({
   checks,
   account,
 }: {
+  readonly pending: boolean;
   /** Set when replacing this account's credentials rather than adding an account. */
   readonly account?: AccountSummary | undefined;
   readonly accounts: SelectedAccounts;
@@ -420,7 +427,6 @@ function AppConnectionFields({
   const setDestination = useAtomSet(atoms.destination);
   const request = useAtomValue(atoms.request);
   const groups = useQuery(groupsAtom(organization));
-  const [pending, setPending] = useState(false);
   const audience =
     destination.kind === "personal" ? ({ kind: "private" } as const) : destination.audience;
   const error = audienceError(audience);
@@ -435,10 +441,15 @@ function AppConnectionFields({
       disabled={!account && (Option.isNone(groups.data) || error !== undefined)}
       header={
         !account && (
-          <QueryResult result={groups.result} retry={groups.refresh} Failure={HostedFailure}>
+          <QueryResult
+            result={groups.result}
+            retry={groups.refresh}
+            Failure={HostedFailure}
+            pending={<DetailSkeleton label="Loading groups" />}
+          >
             {(data) => (
               <AudienceInput
-                mode="connection"
+                mode="app"
                 subject="this account"
                 allowPrivate
                 privateLabel="Only me"
@@ -483,10 +494,7 @@ function AppConnectionFields({
           }),
         )
       }
-      onPendingChange={(value) => {
-        setPending(value);
-        onPendingChange(value);
-      }}
+      onPendingChange={onPendingChange}
       onSaved={onSaved}
       onAuthorized={(value) =>
         openAccountOAuth(

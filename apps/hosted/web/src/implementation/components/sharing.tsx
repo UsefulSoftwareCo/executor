@@ -35,7 +35,7 @@ type AudienceInputProps = {
   readonly onBlur?: (() => void) | undefined;
 } & (
   | {
-      readonly mode: "app" | "connection";
+      readonly mode: "app";
       readonly value: typeof AppAudience.Type;
       readonly allowPrivate: boolean;
       readonly privateLabel: string;
@@ -71,7 +71,7 @@ export function AudienceInput(props: AudienceInputProps) {
         value={value.kind}
         disabled={props.disabled === true || props.disabledReason !== undefined}
         onValueChange={(kind) => {
-          if (kind === "private" && props.mode !== "account" && props.allowPrivate)
+          if (kind === "private" && props.mode === "app" && props.allowPrivate)
             props.onChange({ kind: "private" });
           else if (kind === "groups")
             props.onChange({ kind: "groups", groups: value.kind === "groups" ? value.groups : [] });
@@ -84,7 +84,7 @@ export function AudienceInput(props: AudienceInputProps) {
           </SelectTrigger>
         </DisabledTooltip>
         <SelectContent>
-          {props.mode !== "account" && (
+          {props.mode === "app" && (
             <SelectItem value="private" disabled={!props.allowPrivate}>
               {props.privateLabel}
             </SelectItem>

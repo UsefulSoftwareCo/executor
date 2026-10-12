@@ -1,5 +1,5 @@
 ---
-"@executor-js/hosted-self-host": patch
+"@executor-js/hosted-web": patch
 "@executor-js/ui": patch
 ---
 

@@ -235,8 +235,9 @@ export function appConnectionAtoms(key: {
           payload: {
             requirement: key.requirement,
             profile: selected,
-            ...(key.account === undefined ? {} : { account: key.account }),
-            ...(key.account === undefined ? { destination: get(destination) } : {}),
+            ...(key.account === undefined
+              ? { destination: get(destination) }
+              : { account: key.account }),
           },
         }));
       if (current === undefined) get.set(request, saved);
