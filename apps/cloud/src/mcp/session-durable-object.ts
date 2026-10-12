@@ -66,6 +66,11 @@ import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
 import { resolveSessionMetaForToken } from "./session-meta";
 import {
+  V2_MOVED_RECHECK_MS,
+  mustReinitializeForV2Move,
+  v2MovedMcpInstructions,
+} from "./v2-moved-instructions";
+import {
   DbService,
   combinedSchema,
   resolveConnectionString,
@@ -100,6 +105,9 @@ export type {
 const LONG_LIVED_DB_IDLE_TIMEOUT_SECONDS = 5;
 const LONG_LIVED_DB_MAX_LIFETIME_SECONDS = 120;
 const TELEMETRY_FLUSH_TIMEOUT_MS = 1_000;
+/** The v2-move notice this session's client got in its `initialize` result;
+ *  absent when it got none. */
+const V2_MOVE_NOTICE_AT_INITIALIZE_KEY = "v2-move-notice-at-initialize";
 
 const positiveMilliseconds = (raw: string | undefined): number | undefined => {
   if (!raw) return undefined;
@@ -196,6 +204,85 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
   // `mcp.isolate.*` residency — see the comment at the `parseIntegrationInventory`
   // call site below for why this is free to compute.
   private lastSessionFootprint: Record<string, number> = {};
+
+  /** The org's v2-move notice as last read: the one this runtime's server
+   *  sends at `initialize`, or a fresher re-read. `null` before a build. */
+  private v2MoveNotice: {
+    readonly organizationId: string;
+    readonly text: string | undefined;
+    readonly readAtMs: number;
+  } | null = null;
+
+  /** What this session's client got at `initialize`, once known. */
+  private deliveredV2MoveNotice: { readonly text: string | undefined } | null = null;
+
+  protected override onClientInitialize(): Effect.Effect<void> {
+    const text = this.v2MoveNotice?.text;
+    this.deliveredV2MoveNotice = { text };
+    const storage = this.ctx.storage;
+    return Effect.tryPromise({
+      try: () =>
+        text === undefined
+          ? storage.delete(V2_MOVE_NOTICE_AT_INITIALIZE_KEY).then(() => undefined)
+          : storage.put(V2_MOVE_NOTICE_AT_INITIALIZE_KEY, text),
+      catch: (cause: unknown) => cause,
+    }).pipe(
+      // A lost write only costs one extra reconnect: a later restore reads "no
+      // notice" and, if the org has moved, ends the session.
+      Effect.ignore,
+      Effect.withSpan("McpSessionDOSqlite.recordV2MoveNoticeAtInitialize"),
+    );
+  }
+
+  /**
+   * A session whose client initialized without the org's current v2-move
+   * notice (it connected before the move) must re-initialize to receive it.
+   * Uses the read the runtime build made; re-reads WorkOS only when that read
+   * is older than `V2_MOVED_RECHECK_MS`, so a request never waits on WorkOS
+   * more than once per window.
+   */
+  protected override clientMustReinitialize(): Effect.Effect<boolean> {
+    const self = this;
+    return Effect.gen(function* () {
+      const current = yield* self.currentV2MoveNotice();
+      if (current === undefined) return false;
+      const delivered = yield* self.loadDeliveredV2MoveNotice();
+      return mustReinitializeForV2Move(delivered, current);
+    }).pipe(Effect.withSpan("McpSessionDOSqlite.clientMustReinitialize"));
+  }
+
+  private v2MovedRecheckMs(): number {
+    return positiveMilliseconds(env.MCP_V2_MOVED_RECHECK_MS) ?? V2_MOVED_RECHECK_MS;
+  }
+
+  private currentV2MoveNotice(): Effect.Effect<string | undefined> {
+    const self = this;
+    return Effect.gen(function* () {
+      const known = self.v2MoveNotice;
+      if (known === null) return undefined;
+      if (Date.now() - known.readAtMs < self.v2MovedRecheckMs()) return known.text;
+      const text = yield* v2MovedMcpInstructions(env, known.organizationId).pipe(
+        Effect.provide(CoreSharedServices),
+        // A WorkOS client that cannot be configured answers "not moved", like
+        // every other failed read.
+        Effect.orElseSucceed(() => undefined),
+      );
+      self.v2MoveNotice = { organizationId: known.organizationId, text, readAtMs: Date.now() };
+      return text;
+    });
+  }
+
+  private loadDeliveredV2MoveNotice(): Effect.Effect<string | undefined> {
+    const self = this;
+    return Effect.gen(function* () {
+      if (self.deliveredV2MoveNotice) return self.deliveredV2MoveNotice.text;
+      const text = yield* Effect.promise(() =>
+        self.ctx.storage.get<string>(V2_MOVE_NOTICE_AT_INITIALIZE_KEY),
+      );
+      self.deliveredV2MoveNotice = { text };
+      return text;
+    });
+  }
 
   protected override sessionFootprintAttributes(): Record<string, number> {
     return this.lastSessionFootprint;
@@ -344,24 +431,41 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
           >,
       );
 
-      const { executor, engine } = yield* makeExecutionStack(
-        sessionMeta.userId,
-        sessionMeta.organizationId,
-        sessionMeta.organizationName,
-        {
-          mcpResource: sessionMeta.resource,
-          orgWrites: "request",
-        },
-      ).pipe(
-        // The metered stack tracks each execution to Autumn. It requires
-        // `AutumnService | DbService`; `AutumnService.Default` is provided here
-        // (it only reads `env`, no further deps), and `DbService` flows from the
-        // outer `makeSessionServices`. When `AUTUMN_SECRET_KEY` is unset the
-        // billing service degrades to a no-op tracker, so this stays inert in
-        // cloud dev/preview environments that run without a billing backend.
-        Effect.provide(CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default))),
-        Effect.withSpan("McpSessionDOSqlite.makeExecutionStack"),
+      // The org's move to v2, read beside the stack build so it adds no
+      // latency: a moved org's sessions tell the agent where to reconnect,
+      // and a session whose client was not told is ended (see
+      // `clientMustReinitialize`).
+      const [{ executor, engine }, hostInstructions] = yield* Effect.all(
+        [
+          makeExecutionStack(
+            sessionMeta.userId,
+            sessionMeta.organizationId,
+            sessionMeta.organizationName,
+            {
+              mcpResource: sessionMeta.resource,
+              orgWrites: "request",
+            },
+          ).pipe(
+            // The metered stack tracks each execution to Autumn. It requires
+            // `AutumnService | DbService`; `AutumnService.Default` is provided here
+            // (it only reads `env`, no further deps), and `DbService` flows from the
+            // outer `makeSessionServices`. When `AUTUMN_SECRET_KEY` is unset the
+            // billing service degrades to a no-op tracker, so this stays inert in
+            // cloud dev/preview environments that run without a billing backend.
+            Effect.provide(
+              CloudMeteredExecutionStackLayer.pipe(Layer.provide(AutumnService.Default)),
+            ),
+            Effect.withSpan("McpSessionDOSqlite.makeExecutionStack"),
+          ),
+          v2MovedMcpInstructions(env, sessionMeta.organizationId),
+        ],
+        { concurrency: 2 },
       );
+      self.v2MoveNotice = {
+        organizationId: sessionMeta.organizationId,
+        text: hostInstructions,
+        readAtMs: Date.now(),
+      };
       // Build the description here so `executor.connections.list()` stays under
       // the DO startup span and the MCP SDK receives a concrete string instead
       // of invoking `engine.getDescription` across its async boundary.
@@ -401,6 +505,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         // the negotiated apps support comes back from storage instead.
         restoredAppsEnabled: sessionMeta.appsEnabled ?? false,
         onAppsEnabledChange: (appsEnabled) => self.persistAppsEnabled(appsEnabled),
+        hostInstructions,
         loadAppShellHtml,
         smokeRenderArtifact: smokeRenderArtifactAfterQuickJsPreload,
         artifactUrl: artifactUrlFor(

@@ -287,6 +287,13 @@ type SharedMcpServerConfig = {
    * restore. Best-effort: failures are swallowed and never affect the session.
    */
   readonly onAppsEnabledChange?: (appsEnabled: boolean) => Effect.Effect<void>;
+  /**
+   * Host guidance for the connected agent, sent in the `initialize` result's
+   * `instructions` ahead of any mode guidance. Hosts use it for facts about
+   * this connection the agent should relay to the user (for example that the
+   * organization's MCP server has moved). It changes no tool behaviour.
+   */
+  readonly hostInstructions?: string;
 };
 
 /**
@@ -329,6 +336,17 @@ export type McpToolsPort = Pick<Executor["tools"], "list" | "schema">;
 export class McpPassthroughUnavailableError extends Data.TaggedError(
   "McpPassthroughUnavailableError",
 )<{ readonly reason: string }> {}
+
+/** The `initialize` instructions: the host's guidance, then passthrough's. */
+const serverInstructions = (
+  hostInstructions: string | undefined,
+  passthrough: boolean,
+): { readonly instructions?: string } => {
+  const parts = [hostInstructions, passthrough ? passthroughInstructions() : undefined].filter(
+    (part): part is string => part !== undefined && part !== "",
+  );
+  return parts.length === 0 ? {} : { instructions: parts.join("\n\n") };
+};
 
 export type ExecutorMcpServerConfig<E extends Cause.YieldableError = Cause.YieldableError> =
   | (ExecutionEngineConfig<E> & SharedMcpServerConfig)
@@ -1653,11 +1671,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
             // per host.
             capabilities: { resources: {}, tools: {} },
             jsonSchemaValidator: new CfWorkerJsonSchemaValidator(),
-            ...(passthrough
-              ? {
-                  instructions: passthroughInstructions(),
-                }
-              : {}),
+            ...serverInstructions(config.hostInstructions, passthrough),
           },
         ),
     ).pipe(Effect.withSpan("mcp.host.create_server"));

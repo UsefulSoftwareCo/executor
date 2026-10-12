@@ -41,10 +41,15 @@ const AuthOrganizationsResponse = Schema.Struct({
 // `moved` is set instead when the org has already been imported (v2 records
 // the move on the WorkOS organization): where it lives in v2 and when it
 // moved. It drives a notice only; the org keeps working in v1.
+//
+// `v2McpUrl` is v2's MCP server, for the org's agents to reconnect to; they
+// choose the org (`v2Slug`) when signing in. It is omitted where v1 is not
+// configured with v2's MCP origin.
 const V2MovedResponse = Schema.Struct({
   v2Url: Schema.String,
   v2Slug: Schema.String,
   movedAt: Schema.String,
+  v2McpUrl: Schema.optionalKey(Schema.String),
 });
 
 const V2ImportResponse = Schema.Struct({

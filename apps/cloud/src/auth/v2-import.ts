@@ -32,6 +32,29 @@ export const v2AppOrigin = (env: V2EdgeEnv): URL | null => {
   return new URL(edge.signUpUrl.origin);
 };
 
+/** v1's settings for where an organization lives in v2: the edge's, plus
+ *  v2's MCP origin. */
+export interface V2MovedEnv extends V2EdgeEnv {
+  /** v2's MCP origin (production: `https://mcp.executor.sh`). */
+  readonly V2_MCP_ORIGIN?: string;
+}
+
+/**
+ * v2's MCP origin, or `null` when `V2_MCP_ORIGIN` is unset or is not a bare
+ * http(s) origin. A moved org's MCP URL is shown only from this setting, never
+ * guessed from another host.
+ */
+export const v2McpOrigin = (env: V2MovedEnv): URL | null => {
+  const raw = env.V2_MCP_ORIGIN;
+  if (raw === undefined) return null;
+  const parsed = URL.parse(raw);
+  if (parsed === null || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
+    return null;
+  }
+  if (parsed.href !== `${parsed.origin}/`) return null;
+  return new URL(parsed.origin);
+};
+
 /** The absolute URL of v2's import page, or `null` where v1 has no v2 host. */
 export const v2ImportUrl = (env: V2EdgeEnv): URL | null => {
   const origin = v2AppOrigin(env);
@@ -123,7 +146,7 @@ export interface V2ImportAnswer {
  * its eligibility is never read. Never fails.
  */
 export const v2ImportAnswer = <RImport, RMoved>(input: {
-  readonly env: V2EdgeEnv;
+  readonly env: V2MovedEnv;
   readonly importSource: Effect.Effect<V2ImportSource, never, RImport>;
   readonly movedSource: Effect.Effect<V2MovedSource, never, RMoved>;
   readonly userId: string;
@@ -133,7 +156,12 @@ export const v2ImportAnswer = <RImport, RMoved>(input: {
     const v2Origin = v2AppOrigin(input.env);
     const importUrl = v2ImportUrl(input.env);
     if (v2Origin === null || importUrl === null) return { url: null, moved: null };
-    const moved = yield* v2Moved(yield* input.movedSource, input.organizationId, v2Origin);
+    const moved = yield* v2Moved(
+      yield* input.movedSource,
+      input.organizationId,
+      v2Origin,
+      v2McpOrigin(input.env),
+    );
     if (moved !== null) return { url: null, moved };
     const eligible = yield* v2ImportEligible(
       yield* input.importSource,

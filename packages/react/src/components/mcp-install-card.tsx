@@ -6,6 +6,7 @@ import ClaudeIcon from "@lobehub/icons/es/Claude/components/Color";
 import OpenCodeIcon from "@lobehub/icons/es/OpenCode/components/Mono";
 import { ChevronDown } from "lucide-react";
 import { CodeBlock } from "./code-block";
+import { CopyButton } from "./copy-button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./tabs";
 import { CardStack, CardStackHeader, CardStackContent } from "./card-stack";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./collapsible";
@@ -13,6 +14,7 @@ import { NativeSelect, NativeSelectOption } from "./native-select";
 import { Switch } from "./switch";
 import { cn } from "../lib/utils";
 import { useOrganizationSlug } from "../api/organization-context";
+import { useMcpServerMove, type McpServerMove } from "../api/mcp-server-move";
 import {
   getExecutorServerAuthorizationHeader,
   useExecutorServerConnection,
@@ -160,6 +162,10 @@ export const buildMcpHttpEndpoint = (input: {
   return url.toString();
 };
 
+/** The plain `npx add-mcp` command for a remote MCP server URL. */
+export const buildMcpUrlInstallCommand = (url: string): string =>
+  `npx add-mcp ${shellQuoteWord(url)} --transport http --name executor`;
+
 export const buildMcpInstallCommand = (input: {
   readonly mode: TransportMode;
   readonly isDev: boolean;
@@ -190,10 +196,7 @@ export const buildMcpInstallCommand = (input: {
     if (input.authorizationHeader) {
       headerFlags.push(`--header ${shellQuoteWord(`Authorization: ${input.authorizationHeader}`)}`);
     }
-    const parts = [
-      `npx add-mcp ${shellQuoteWord(endpoint)} --transport http --name executor`,
-      ...headerFlags,
-    ];
+    const parts = [buildMcpUrlInstallCommand(endpoint), ...headerFlags];
     return parts.join(" ");
   }
 
@@ -220,14 +223,92 @@ export const buildMcpInstallCommand = (input: {
   return `npx add-mcp ${shellQuoteWord(innerArgs.map(shellQuoteWord).join(" "))} --name executor`;
 };
 
+/** An MCP server URL on one line of mono, wrapped rather than cut, with a copy button. */
+export function McpServerUrl(props: {
+  readonly url: string;
+  readonly muted?: boolean;
+  readonly onCopy?: () => void;
+  readonly className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-2 rounded-md border border-border bg-card/60 px-3 py-1.5",
+        props.className,
+      )}
+    >
+      <span
+        data-testid="mcp-server-url"
+        className={cn(
+          "min-w-0 flex-1 font-mono text-xs break-all",
+          props.muted ? "text-muted-foreground" : "text-foreground/90",
+        )}
+      >
+        {props.url}
+      </span>
+      <CopyButton value={props.url} onCopy={props.onCopy} />
+    </div>
+  );
+}
+
+/**
+ * The connect body for an organization whose MCP server moved: the new URL and
+ * command first, with the organization to choose at sign-in, then this
+ * server's URL, labelled as the old one.
+ */
+export function McpServerMovedConnect(props: {
+  readonly move: McpServerMove;
+  /** This server's MCP URL for the organization. */
+  readonly oldUrl: string;
+  readonly onCopy?: () => void;
+}) {
+  const { move } = props;
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <section aria-label="New MCP server" className="flex min-w-0 flex-col gap-1.5">
+        <span className="font-mono text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+          {move.destination} MCP server
+        </span>
+        <McpServerUrl url={move.url} onCopy={props.onCopy} />
+        <CodeBlock
+          code={buildMcpUrlInstallCommand(move.url)}
+          lang="bash"
+          onCopy={props.onCopy}
+          className="mt-1.5"
+        />
+        {/* The organization is a slug of up to 45 characters with no break opportunity. */}
+        <span className="min-w-0 text-xs wrap-anywhere text-muted-foreground">
+          Choose {move.organization} when you sign in.
+        </span>
+      </section>
+      <section
+        aria-label="Old MCP server URL"
+        className="flex min-w-0 flex-col gap-1.5 border-t border-border pt-3"
+      >
+        <span className="font-mono text-[11px] font-medium tracking-[0.08em] text-muted-foreground uppercase">
+          Old {move.previous} URL
+        </span>
+        <McpServerUrl url={props.oldUrl} muted />
+        <span className="text-xs text-muted-foreground">
+          Won't receive changes made in {move.destination}.
+        </span>
+      </section>
+    </div>
+  );
+}
+
 export function McpInstallCard(props: { className?: string }) {
   const organizationSlug = useOrganizationSlug();
+  const move = useMcpServerMove();
   const serverConnection = useExecutorServerConnection();
   // Desktop hosts ship Electron without putting an `executor` binary on
   // PATH, and the bundled sidecar is locked to the running app. Force the
   // HTTP path there; it routes through the active sidecar connection.
   const showStdio =
-    isLocal && serverConnection.kind !== "desktop-sidecar" && !hasDesktopConnectionBridge();
+    move === null &&
+    isLocal &&
+    serverConnection.kind !== "desktop-sidecar" &&
+    !hasDesktopConnectionBridge();
   const storageKey = mcpInstallPreferencesStorageKey(organizationSlug);
   const [preferences, setPreferences] = useState<McpInstallPreferences>(() =>
     readMcpInstallPreferences(storageKey),
@@ -292,11 +373,13 @@ export function McpInstallCard(props: { className?: string }) {
   });
 
   const subtitle =
-    mode === "stdio"
-      ? isDev
-        ? "Uses the repo-local dev CLI from any agent working directory."
-        : "Requires the executor CLI on your PATH."
-      : "Paste this into Claude Code, Cursor, or any MCP client, and your agent gets every tool you connect here.";
+    move !== null
+      ? `This organization moved to ${move.destination}. Connect your agents there instead:`
+      : mode === "stdio"
+        ? isDev
+          ? "Uses the repo-local dev CLI from any agent working directory."
+          : "Requires the executor CLI on your PATH."
+        : "Paste this into Claude Code, Cursor, or any MCP client, and your agent gets every tool you connect here.";
 
   const advancedControls = (
     <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
@@ -444,20 +527,35 @@ export function McpInstallCard(props: { className?: string }) {
 
   const body = (
     <CardStackContent>
-      <div className="px-4 pt-3 pb-3">
-        <CodeBlock
-          code={command}
-          lang="bash"
-          onCopy={() =>
-            trackEvent("mcp_install_command_copied", {
-              transport: mode,
-              elicitation_mode: elicitationMode,
-              surface: "integrations",
-            })
-          }
-        />
-        {advancedControls && <div className="mt-3">{advancedControls}</div>}
-      </div>
+      {move !== null ? (
+        <div className="px-4 pt-3 pb-3">
+          <McpServerMovedConnect
+            move={move}
+            oldUrl={buildMcpHttpEndpoint({ origin: serverConnection.origin, organizationSlug })}
+            onCopy={() =>
+              trackEvent("mcp_install_command_copied", {
+                transport: "http",
+                surface: "integrations",
+              })
+            }
+          />
+        </div>
+      ) : (
+        <div className="px-4 pt-3 pb-3">
+          <CodeBlock
+            code={command}
+            lang="bash"
+            onCopy={() =>
+              trackEvent("mcp_install_command_copied", {
+                transport: mode,
+                elicitation_mode: elicitationMode,
+                surface: "integrations",
+              })
+            }
+          />
+          {advancedControls && <div className="mt-3">{advancedControls}</div>}
+        </div>
+      )}
       <div className="flex items-center px-4 py-3">{agentLogos}</div>
     </CardStackContent>
   );

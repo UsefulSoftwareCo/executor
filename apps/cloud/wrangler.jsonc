@@ -148,6 +148,11 @@
     "VITE_PUBLIC_SITE_URL": "https://executor.sh",
     // Where /sign-up and /signup redirect: v2's sign-up page on its app host.
     "V2_SIGN_UP_URL": "https://app.executor.sh/login?mode=signup",
+    // v2's MCP origin. A moved org's dashboard and its v1 MCP sessions point
+    // agents at `<origin>/mcp` and name the v2 org to choose when they sign
+    // in through OAuth. Dashboard only: the front
+    // Worker (wrangler.edge.jsonc) does not need it.
+    "V2_MCP_ORIGIN": "https://mcp.executor.sh",
     // v2 starts every connected-account OAuth `state` with this prefix, and
     // /api/oauth/callback requests carrying it go to v2. It must equal the
     // prefix v2 mints.

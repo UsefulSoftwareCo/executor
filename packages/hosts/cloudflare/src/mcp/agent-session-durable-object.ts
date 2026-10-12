@@ -3,6 +3,7 @@ import type * as Tracer from "effect/Tracer";
 import type { Connection, ConnectionContext } from "agents";
 import { McpAgent } from "agents/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import { RequestOrgSlug, RequestWebOrigin } from "@executor-js/api/server";
 import {
@@ -1598,6 +1599,70 @@ export abstract class McpAgentSessionDOBase<
     );
   }
 
+  /**
+   * A client's live `initialize` reached this session. The agents SDK stores
+   * the request here only for a real `initialize` POST, and the session's
+   * runtime is already built by then (`setName` starts it), so the server
+   * answering this `initialize` is the one in memory now. A cold restore
+   * replays the stored request straight into the transport and never calls
+   * this, which is what makes it the record of what the client was told.
+   */
+  override async setInitializeRequest(initializeRequest: JSONRPCMessage): Promise<void> {
+    await super.setInitializeRequest(initializeRequest);
+    await Effect.runPromise(this.onClientInitialize());
+  }
+
+  /** Hook for {@link setInitializeRequest}: record what this `initialize`
+   *  tells the client. Must not fail. */
+  protected onClientInitialize(): Effect.Effect<void> {
+    return Effect.void;
+  }
+
+  /**
+   * Whether the client must start a new session because something its
+   * `initialize` result said is now out of date. Asked on every request for an
+   * existing session, after its runtime is restored, so a host must keep it
+   * cheap (no per-request remote read). Must not fail. Never, by default.
+   */
+  protected clientMustReinitialize(): Effect.Effect<boolean> {
+    return Effect.succeed(false);
+  }
+
+  /**
+   * End this session so its client re-initializes, when
+   * {@link clientMustReinitialize} says so. Ending is how MCP's Streamable HTTP
+   * transport tells a client to start over: a request for an ended session
+   * gets HTTP 404, and the client must send a new `initialize`.
+   *
+   * It waits while the session holds work a new session cannot pick up: a
+   * paused execution (an approval or elicitation still open) or a request
+   * still running. Those finish in this session, and a later request ends it.
+   * The end itself is the DELETE path's `_cf_scheduleDestroy`.
+   */
+  private endForReinitialize(): Effect.Effect<boolean> {
+    const self = this;
+    return Effect.gen(function* () {
+      if (!(yield* self.clientMustReinitialize())) return false;
+      const [pausedExecutionCount, runningExecutionCount] = yield* Effect.promise(() =>
+        Promise.all([self.pausedExecutionCount(), self.runningExecutionCount()]),
+      );
+      const busy = pausedExecutionCount > 0 || runningExecutionCount > 0;
+      yield* Effect.annotateCurrentSpan({
+        "mcp.session.reinitialize_required": true,
+        "mcp.session.reinitialize_deferred": busy,
+      });
+      if (busy) return false;
+      console.info(
+        JSON.stringify({
+          event: "mcp_session_ended_for_reinitialize",
+          sessionId: self.sessionIdForTelemetry(),
+        }),
+      );
+      yield* Effect.promise(() => self._cf_scheduleDestroy());
+      return true;
+    }).pipe(Effect.withSpan("McpSessionDO.endForReinitialize"));
+  }
+
   async validateMcpSessionOwner(
     identity: McpApprovalOwner,
     resource: McpResource,
@@ -1633,7 +1698,10 @@ export abstract class McpAgentSessionDOBase<
           identity.accountId === sessionMeta.userId &&
           identity.organizationId === sessionMeta.organizationId;
         const resourceMatches = mcpResourceKey(resource) === mcpResourceKey(sessionMeta.resource);
-        return ownerMatches && resourceMatches ? ("ok" as const) : ("forbidden" as const);
+        if (!ownerMatches || !resourceMatches) return "forbidden" as const;
+        // Only the session's own owner can end it this way.
+        if (yield* self.endForReinitialize()) return "terminated" as const;
+        return "ok" as const;
       }).pipe(
         Effect.withSpan("McpSessionDO.validateMcpSessionOwner"),
         // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: DO RPC exposes Promise results

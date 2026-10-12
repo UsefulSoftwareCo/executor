@@ -31,6 +31,12 @@ export interface V2Moved {
   readonly v2Slug: string;
   /** When the import finished, normalized to `Date#toISOString`. */
   readonly movedAt: string;
+  /** v2's MCP server, `<v2 MCP origin>/mcp`, for the moved org's agents. Not
+   *  the org-pinned `/org/<slug>/mcp`: that path only accepts personal access
+   *  tokens, since v2's OAuth resource is `/mcp` and the organization is chosen
+   *  on its consent screen (as `v2Slug`). Absent where v1 does not know v2's
+   *  MCP origin (`V2_MCP_ORIGIN` unset). */
+  readonly v2McpUrl?: string;
 }
 
 /** The move recorded in an organization's metadata, or `null` when there is
@@ -38,6 +44,7 @@ export interface V2Moved {
 export const parseV2Moved = (
   metadata: Readonly<Record<string, unknown>>,
   v2Origin: URL,
+  v2McpOrigin: URL | null,
 ): V2Moved | null => {
   const slug = metadata[V2_MOVED_SLUG_KEY];
   const movedAt = metadata[V2_MOVED_AT_KEY];
@@ -51,6 +58,7 @@ export const parseV2Moved = (
     v2Url: new URL(`/org/${slug}`, v2Origin).href,
     v2Slug: slug,
     movedAt: new Date(time).toISOString(),
+    ...(v2McpOrigin === null ? {} : { v2McpUrl: new URL("/mcp", v2McpOrigin).href }),
   };
 };
 
@@ -67,9 +75,10 @@ export const v2Moved = (
   source: V2MovedSource,
   organizationId: string,
   v2Origin: URL,
+  v2McpOrigin: URL | null,
 ): Effect.Effect<V2Moved | null> =>
   source.organizationMetadata(organizationId).pipe(
-    Effect.map((metadata) => parseV2Moved(metadata, v2Origin)),
+    Effect.map((metadata) => parseV2Moved(metadata, v2Origin, v2McpOrigin)),
     Effect.orElseSucceed(() => null),
     Effect.withSpan("v2Moved.read"),
   );

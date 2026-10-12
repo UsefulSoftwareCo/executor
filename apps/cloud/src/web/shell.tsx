@@ -3,11 +3,13 @@ import type React from "react";
 import { Shell as SharedShell, defaultShellNavItems } from "@executor-js/react/multiplayer/shell";
 import { useAdminNavItems } from "@executor-js/react/multiplayer/use-admin-nav";
 import { trackEvent } from "@executor-js/react/api/analytics";
+import { McpServerMoveProvider } from "@executor-js/react/api/mcp-server-move";
 import { AUTH_PATHS } from "../auth/api";
 import { OrgMenuSlot } from "./components/org-menu-slot";
 import { SupportSlot } from "./components/support-slot";
 import { V2ImportLink } from "./components/v2-import-link";
 import { V2MovedNotice } from "./components/v2-moved-notice";
+import { useV2McpMove } from "./v2-mcp-move";
 
 // ---------------------------------------------------------------------------
 // Cloud shell — the SHARED multiplayer shell, identical to self-host, with
@@ -15,6 +17,7 @@ import { V2MovedNotice } from "./components/v2-moved-notice";
 //   - sign-out          navigate through cloud's WorkOS logout, land home
 //   - nav items         defaults + Organization + Billing (cloud-only sections)
 //   - org menu slot     multi-org switcher + create-org dialog (cloud-only)
+//   - MCP server move  a moved org's connect card leads with its v2 MCP URL
 //   - support slot      the "Move to Executor v2" link, shown only to users
 //                       v2 would let import this org ("Open in Executor v2"
 //                       once it has moved, with the moved notice), and the
@@ -52,19 +55,22 @@ const signOut = () => {
 
 export function Shell(props: { readonly content?: React.ReactNode }) {
   const items = useAdminNavItems(navItems, adminNavItems);
+  const mcpMove = useV2McpMove();
   return (
-    <SharedShell
-      onSignOut={signOut}
-      navItems={items}
-      orgMenuSlot={<OrgMenuSlot />}
-      supportSlot={
-        <>
-          <V2ImportLink />
-          <V2MovedNotice />
-          <SupportSlot />
-        </>
-      }
-      content={props.content}
-    />
+    <McpServerMoveProvider move={mcpMove}>
+      <SharedShell
+        onSignOut={signOut}
+        navItems={items}
+        orgMenuSlot={<OrgMenuSlot />}
+        supportSlot={
+          <>
+            <V2ImportLink />
+            <V2MovedNotice />
+            <SupportSlot />
+          </>
+        }
+        content={props.content}
+      />
+    </McpServerMoveProvider>
   );
 }

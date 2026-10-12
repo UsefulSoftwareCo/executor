@@ -135,6 +135,9 @@ declare global {
       /** Test-only override for the isolate-wide resident-runtime soft cap
        *  (see `RESIDENT_RUNTIME_SOFT_CAP`). Unset in production. */
       MCP_RESIDENT_RUNTIME_SOFT_CAP?: string;
+      /** Test-only override for how often a resident MCP session re-reads its
+       *  org's move to v2 (see `V2_MOVED_RECHECK_MS`). Unset in production. */
+      MCP_V2_MOVED_RECHECK_MS?: string;
       NODE_ENV?: string;
 
       // v2 on executor.sh (wrangler.jsonc `services` + `vars`). Optional so
@@ -143,6 +146,9 @@ declare global {
       V2?: Fetcher;
       /** Absolute URL `/sign-up` and `/signup` redirect to. */
       V2_SIGN_UP_URL?: string;
+      /** v2's MCP origin; a moved org's MCP URL is `<origin>/mcp`, and its
+       *  agents choose the org when they sign in through OAuth. */
+      V2_MCP_ORIGIN?: string;
       /** Prefix of v2's connected-account OAuth `state`; `/api/oauth/callback`
        *  requests whose state starts with it go to v2. */
       V2_OAUTH_STATE_PREFIX?: string;
