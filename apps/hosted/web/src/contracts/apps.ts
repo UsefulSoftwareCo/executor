@@ -41,6 +41,7 @@ import {
 } from "@executor-js/ui/contracts/mutations";
 import { inventoryAtom } from "./organization.ts";
 import { accountAtom, acknowledgeAccount } from "./accounts.ts";
+import type { ConnectionDestination } from "@executor-js/hosted-server/resource-access";
 import { selectedIds, type ToolCatalog } from "@executor-js/ui/contracts/dashboard";
 
 /** App data is never reused between organizations. */
@@ -215,6 +216,7 @@ export function appConnectionAtoms(key: {
   const requestKey = crypto.randomUUID();
   const profile = Atom.make<ProfileId | undefined>(key.profile);
   const request = Atom.make<AccountConnection | undefined>(undefined);
+  const destination = Atom.make<typeof ConnectionDestination.Type>({ kind: "personal" });
   const connection = (get: Atom.FnContext) =>
     Effect.gen(function* () {
       const current = get(request);
@@ -234,6 +236,7 @@ export function appConnectionAtoms(key: {
             requirement: key.requirement,
             profile: selected,
             ...(key.account === undefined ? {} : { account: key.account }),
+            ...(key.account === undefined ? { destination: get(destination) } : {}),
           },
         }));
       if (current === undefined) get.set(request, saved);
@@ -251,6 +254,7 @@ export function appConnectionAtoms(key: {
   return {
     request,
     profile,
+    destination,
     submit: HostedClient.runtime.fn(
       (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
         Effect.gen(function* () {

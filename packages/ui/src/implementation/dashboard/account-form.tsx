@@ -192,8 +192,8 @@ export function AccountForm<A, E>({
             <Button
               type="submit"
               className="w-full"
-              loading={pending || verdict.state === "checking"}
-              disabled={!credentialsComplete(fields, values)}
+              loading={submitting || verdict.state === "checking"}
+              disabled={pending || !credentialsComplete(fields, values)}
             >
               {!validates || auth?.type !== "secrets"
                 ? submitLabel

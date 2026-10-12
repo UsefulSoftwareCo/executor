@@ -15,7 +15,7 @@ import type {
   HostedOAuthStartResult,
 } from "@executor-js/hosted-server";
 import { Link } from "@tanstack/react-router";
-import { useContext, useState } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import { Cause, Match, Option, Exit, Schema } from "effect";
 import { Button } from "@executor-js/ui/components/button";
 import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
@@ -107,6 +107,8 @@ export function ConnectionFields({
 
 /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
 export function HostedAccountForm<A extends HostedOAuthSignIn>({
+  header,
+  disabled = false,
   provider,
   account,
   redirectUri,
@@ -119,6 +121,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   onPendingChange,
   app,
 }: {
+  readonly header?: ReactNode;
+  readonly disabled?: boolean | undefined;
   readonly provider: Provider;
   /** The app that will use the account; its check confirms entered credentials. */
   readonly app?: AppId | null | undefined;
@@ -173,6 +177,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
     );
   return (
     <AccountForm
+      header={header}
+      disabled={disabled}
       provider={provider}
       {...(account ? { account } : {})}
       initialMethod={method}

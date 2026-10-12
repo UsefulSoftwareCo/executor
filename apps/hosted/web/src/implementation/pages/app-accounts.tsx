@@ -1,9 +1,11 @@
 import { useContext, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Add01Icon } from "@hugeicons/core-free-icons";
-import { RegistryContext, useAtomSet, useAtomMount } from "@effect/atom-react";
+import { RegistryContext, useAtomSet, useAtomMount, useAtomValue } from "@effect/atom-react";
 import { Option, Exit, Effect, type Cause } from "effect";
-import { useQuery } from "@executor-js/ui/dashboard/context";
+import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
+import { groupsAtom } from "../../contracts/groups.ts";
+import { AudienceInput, audienceError } from "../components/sharing.tsx";
 import { appAccessAtom } from "../../contracts/resource-access.ts";
 import type {
   Provider,
@@ -414,6 +416,14 @@ function AppConnectionFields({
   useAtomMount(atoms.profile);
   const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
+  const destination = useAtomValue(atoms.destination);
+  const setDestination = useAtomSet(atoms.destination);
+  const request = useAtomValue(atoms.request);
+  const groups = useQuery(groupsAtom(organization));
+  const [pending, setPending] = useState(false);
+  const audience =
+    destination.kind === "personal" ? ({ kind: "private" } as const) : destination.audience;
+  const error = audienceError(audience);
   return (
     <HostedAccountForm<
       HostedOAuthSignIn & {
@@ -422,6 +432,37 @@ function AppConnectionFields({
       }
     >
       provider={form.provider}
+      disabled={!account && (Option.isNone(groups.data) || error !== undefined)}
+      header={
+        !account && (
+          <QueryResult result={groups.result} retry={groups.refresh} Failure={HostedFailure}>
+            {(data) => (
+              <AudienceInput
+                mode="connection"
+                subject="this account"
+                allowPrivate
+                privateLabel="Only me"
+                groups={data.groups}
+                value={audience}
+                error={error}
+                disabled={pending}
+                disabledReason={
+                  request
+                    ? "Account access is fixed for this connection. Close and reconnect to choose different access."
+                    : undefined
+                }
+                onChange={(value) =>
+                  setDestination(
+                    value.kind === "private"
+                      ? { kind: "personal" }
+                      : { kind: "shared", audience: value },
+                  )
+                }
+              />
+            )}
+          </QueryResult>
+        )
+      }
       app={checks ? app : undefined}
       {...(account ? { account } : {})}
       redirectUri={form.redirectUri}
@@ -442,7 +483,10 @@ function AppConnectionFields({
           }),
         )
       }
-      onPendingChange={onPendingChange}
+      onPendingChange={(value) => {
+        setPending(value);
+        onPendingChange(value);
+      }}
       onSaved={onSaved}
       onAuthorized={(value) =>
         openAccountOAuth(
