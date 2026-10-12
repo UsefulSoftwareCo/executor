@@ -381,6 +381,127 @@ it("keeps the chosen approval lifetime when reading a stored decision", async ()
 // in the rebuilt server's memory. These pin the storage round-trip that lets a
 // cold-restored session rebuild with it instead of silently downgrading every
 // artifact to a deep link.
+// A host can need a session's client to start over: something the client was
+// told at `initialize` is now out of date, and `initialize` is the only place
+// it is told. The session ends (the DELETE path's deferred destroy), and every
+// request for it then answers "terminated", which the worker sends as HTTP 404.
+describe("McpAgentSessionDOBase ending a session for re-initialize", () => {
+  type ReinitializeSession = HarnessSession & {
+    clientMustReinitialize: () => Effect.Effect<boolean>;
+    onClientInitialize: () => Effect.Effect<void>;
+    setInitializeRequest: (request: JSONRPCMessage) => Promise<void>;
+    _cf_scheduleDestroy: () => Promise<void>;
+  };
+
+  const owner = { accountId: "user-1", organizationId: "org-1" };
+
+  const makeReinitializeSession = async (mustReinitialize: boolean) => {
+    const session = (await makeHarnessSession()) as ReinitializeSession;
+    let destroyCalls = 0;
+    session.clientMustReinitialize = () => Effect.succeed(mustReinitialize);
+    // The agents SDK's deferred destroy: the durable marker it writes is what
+    // makes later requests answer "terminated".
+    session._cf_scheduleDestroy = async () => {
+      destroyCalls += 1;
+      await session.ctx.storage.put("cf_agents_destroy_pending", true);
+    };
+    return { session, destroyCalls: () => destroyCalls };
+  };
+
+  it("leaves a session alone by default", async () => {
+    const session = (await makeHarnessSession()) as ReinitializeSession;
+    await expect(session.validateMcpSessionOwner(owner, defaultMcpResource)).resolves.toBe("ok");
+  });
+
+  it("ends a session whose client must re-initialize, and stays ended", async () => {
+    const { session, destroyCalls } = await makeReinitializeSession(true);
+
+    await expect(session.validateMcpSessionOwner(owner, defaultMcpResource)).resolves.toBe(
+      "terminated",
+    );
+    expect(destroyCalls()).toBe(1);
+    await expect(session.validateMcpSessionOwner(owner, defaultMcpResource)).resolves.toBe(
+      "terminated",
+    );
+    expect(destroyCalls(), "an ended session is not ended twice").toBe(1);
+  });
+
+  it("ends a session whose runtime had to be restored", async () => {
+    const { session, destroyCalls } = await makeReinitializeSession(true);
+    await session.alarm();
+    expect(session.initialized, "the idle alarm released the runtime").toBe(false);
+
+    await expect(session.validateMcpSessionOwner(owner, defaultMcpResource)).resolves.toBe(
+      "terminated",
+    );
+    expect(destroyCalls()).toBe(1);
+  });
+
+  it("keeps a session with a paused execution until it settles", async () => {
+    const { session, destroyCalls } = await makeReinitializeSession(true);
+    let paused = 1;
+    session.engine = {
+      ...makeEngine().engine,
+      pausedExecutionCount: () => Effect.sync(() => paused),
+    };
+
+    await expect(session.validateMcpSessionOwner(owner, defaultMcpResource)).resolves.toBe("ok");
+    expect(destroyCalls(), "an open approval stays answerable").toBe(0);
+
+    paused = 0;
+    await expect(session.validateMcpSessionOwner(owner, defaultMcpResource)).resolves.toBe(
+      "terminated",
+    );
+    expect(destroyCalls()).toBe(1);
+  });
+
+  it("keeps a session with a request still running", async () => {
+    const { session, destroyCalls } = await makeReinitializeSession(true);
+    await session.setStreamRequestIds("stream-running", ["tools-call-1"]);
+
+    await expect(session.validateMcpSessionOwner(owner, defaultMcpResource)).resolves.toBe("ok");
+    expect(destroyCalls(), "the running request still gets its response").toBe(0);
+  });
+
+  it("never ends a session for a caller that does not own it", async () => {
+    const { session, destroyCalls } = await makeReinitializeSession(true);
+
+    await expect(
+      session.validateMcpSessionOwner(
+        { accountId: "user-2", organizationId: "org-1" },
+        defaultMcpResource,
+      ),
+    ).resolves.toBe("forbidden");
+    expect(destroyCalls()).toBe(0);
+  });
+
+  it("tells the host when a client's live initialize arrives", async () => {
+    const session = (await makeHarnessSession()) as ReinitializeSession;
+    let initializes = 0;
+    session.onClientInitialize = () =>
+      Effect.sync(() => {
+        initializes += 1;
+      });
+    const initialize = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "example-client", version: "1.0.0" },
+      },
+    } satisfies JSONRPCMessage;
+
+    await session.setInitializeRequest(initialize);
+
+    expect(initializes).toBe(1);
+    expect(await session.ctx.storage.get("initializeRequest"), "the SDK still stores it").toEqual(
+      initialize,
+    );
+  });
+});
+
 describe("McpAgentSessionDOBase apps capability persistence", () => {
   type CapabilitySession = HarnessSession & {
     persistAppsEnabled: (appsEnabled: boolean) => Effect.Effect<void>;

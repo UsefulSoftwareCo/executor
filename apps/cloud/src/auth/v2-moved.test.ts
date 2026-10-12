@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 
-import { v2ImportAnswer, type V2ImportSource } from "./v2-import";
+import { v2ImportAnswer, v2McpOrigin, type V2ImportSource } from "./v2-import";
 import {
   liveV2MovedSource,
   parseV2Moved,
@@ -16,6 +16,7 @@ import { WorkOSError } from "./errors";
 const USER = "user_signed_in";
 const ORG = "org_example";
 const V2_ORIGIN = new URL("https://app.example.test");
+const V2_MCP_ORIGIN = new URL("https://mcp.example.test");
 const MOVED_AT = "2026-10-09T17:30:00.000Z";
 
 const movedMetadata = (overrides: Record<string, unknown> = {}) => ({
@@ -26,30 +27,39 @@ const movedMetadata = (overrides: Record<string, unknown> = {}) => ({
 
 describe("v2 moved metadata", () => {
   it("reads the v2 slug and move time into the org's v2 page", () => {
-    expect(parseV2Moved(movedMetadata(), V2_ORIGIN)).toEqual({
+    expect(parseV2Moved(movedMetadata(), V2_ORIGIN, null)).toEqual({
       v2Url: "https://app.example.test/org/example-team",
       v2Slug: "example-team",
       movedAt: MOVED_AT,
     });
   });
 
+  it("adds v2's OAuth MCP server, not the org-pinned path, when v2's MCP origin is known", () => {
+    expect(parseV2Moved(movedMetadata(), V2_ORIGIN, V2_MCP_ORIGIN)?.v2McpUrl).toBe(
+      "https://mcp.example.test/mcp",
+    );
+  });
+
   it("ignores unrelated metadata keys", () => {
-    expect(parseV2Moved(movedMetadata({ plan_note: "anything" }), V2_ORIGIN)?.v2Slug).toBe(
+    expect(parseV2Moved(movedMetadata({ plan_note: "anything" }), V2_ORIGIN, null)?.v2Slug).toBe(
       "example-team",
     );
   });
 
   it("normalizes a timestamp with an offset to UTC", () => {
     expect(
-      parseV2Moved(movedMetadata({ [V2_MOVED_AT_KEY]: "2026-10-09T10:30:00-07:00" }), V2_ORIGIN)
-        ?.movedAt,
+      parseV2Moved(
+        movedMetadata({ [V2_MOVED_AT_KEY]: "2026-10-09T10:30:00-07:00" }),
+        V2_ORIGIN,
+        null,
+      )?.movedAt,
     ).toBe(MOVED_AT);
   });
 
   it("is not moved without both keys", () => {
-    expect(parseV2Moved({}, V2_ORIGIN)).toBeNull();
-    expect(parseV2Moved({ [V2_MOVED_SLUG_KEY]: "example-team" }, V2_ORIGIN)).toBeNull();
-    expect(parseV2Moved({ [V2_MOVED_AT_KEY]: MOVED_AT }, V2_ORIGIN)).toBeNull();
+    expect(parseV2Moved({}, V2_ORIGIN, null)).toBeNull();
+    expect(parseV2Moved({ [V2_MOVED_SLUG_KEY]: "example-team" }, V2_ORIGIN, null)).toBeNull();
+    expect(parseV2Moved({ [V2_MOVED_AT_KEY]: MOVED_AT }, V2_ORIGIN, null)).toBeNull();
   });
 
   it("is not moved when the slug is not a v2 slug", () => {
@@ -68,12 +78,12 @@ describe("v2 moved metadata", () => {
       null,
     ]) {
       expect(
-        parseV2Moved(movedMetadata({ [V2_MOVED_SLUG_KEY]: slug }), V2_ORIGIN),
+        parseV2Moved(movedMetadata({ [V2_MOVED_SLUG_KEY]: slug }), V2_ORIGIN, null),
         String(slug),
       ).toBeNull();
     }
     expect(
-      parseV2Moved(movedMetadata({ [V2_MOVED_SLUG_KEY]: "a".repeat(45) }), V2_ORIGIN),
+      parseV2Moved(movedMetadata({ [V2_MOVED_SLUG_KEY]: "a".repeat(45) }), V2_ORIGIN, null),
       "45 characters is v2's longest slug",
     ).not.toBeNull();
   });
@@ -90,7 +100,7 @@ describe("v2 moved metadata", () => {
       null,
     ]) {
       expect(
-        parseV2Moved(movedMetadata({ [V2_MOVED_AT_KEY]: movedAt }), V2_ORIGIN),
+        parseV2Moved(movedMetadata({ [V2_MOVED_AT_KEY]: movedAt }), V2_ORIGIN, null),
         String(movedAt),
       ).toBeNull();
     }
@@ -125,7 +135,7 @@ describe("v2 moved read", () => {
   it.effect("reads the selected org's metadata", () =>
     Effect.gen(function* () {
       const { source, reads } = movedSourceOf(movedMetadata());
-      expect((yield* v2Moved(source, ORG, V2_ORIGIN))?.v2Slug).toBe("example-team");
+      expect((yield* v2Moved(source, ORG, V2_ORIGIN, null))?.v2Slug).toBe("example-team");
       expect(reads).toEqual([ORG]);
     }),
   );
@@ -133,7 +143,7 @@ describe("v2 moved read", () => {
   it.effect("is not moved when the read fails", () =>
     Effect.gen(function* () {
       const { source } = movedSourceOf("unavailable");
-      expect(yield* v2Moved(source, ORG, V2_ORIGIN)).toBeNull();
+      expect(yield* v2Moved(source, ORG, V2_ORIGIN, null)).toBeNull();
     }),
   );
 });
@@ -165,7 +175,7 @@ describe("v2 moved live read", () => {
 
   const movedLive = (layer: Layer.Layer<WorkOSClient>) =>
     Effect.gen(function* () {
-      return yield* v2Moved(yield* liveV2MovedSource, ORG, V2_ORIGIN);
+      return yield* v2Moved(yield* liveV2MovedSource, ORG, V2_ORIGIN, null);
     }).pipe(Effect.provide(layer));
 
   it.effect("reads the move from the WorkOS organization's metadata", () =>
@@ -205,7 +215,10 @@ describe("v2 import answer", () => {
   };
 
   const answer = (
-    env: typeof configured | Record<string, never>,
+    env:
+      | typeof configured
+      | (typeof configured & { V2_MCP_ORIGIN: string })
+      | Record<string, never>,
     moved: ReturnType<typeof movedSourceOf>,
     importing: ReturnType<typeof importSourceOf>,
   ) =>
@@ -230,6 +243,17 @@ describe("v2 import answer", () => {
         },
       });
       expect(importing.reads, "a moved org's eligibility is never read").toEqual([]);
+    }),
+  );
+
+  it.effect("adds v2's MCP server when V2_MCP_ORIGIN is set", () =>
+    Effect.gen(function* () {
+      const result = yield* answer(
+        { ...configured, V2_MCP_ORIGIN: "https://mcp.example.test" },
+        movedSourceOf(movedMetadata()),
+        importSourceOf(true),
+      );
+      expect(result.moved?.v2McpUrl).toBe("https://mcp.example.test/mcp");
     }),
   );
 
@@ -270,4 +294,29 @@ describe("v2 import answer", () => {
       expect(importing.reads).toEqual([]);
     }),
   );
+});
+
+describe("v2 MCP origin", () => {
+  it("reads a bare http(s) origin", () => {
+    expect(v2McpOrigin({ V2_MCP_ORIGIN: "https://mcp.example.test" })?.href).toBe(
+      "https://mcp.example.test/",
+    );
+    expect(v2McpOrigin({ V2_MCP_ORIGIN: "https://mcp.example.test/" })?.href).toBe(
+      "https://mcp.example.test/",
+    );
+  });
+
+  it("is unknown when unset or not a bare origin", () => {
+    for (const value of [
+      undefined,
+      "",
+      "mcp.example.test",
+      "/mcp",
+      "javascript:alert(1)",
+      "https://mcp.example.test/mcp",
+      "https://mcp.example.test/?x=1",
+    ]) {
+      expect(v2McpOrigin({ V2_MCP_ORIGIN: value }), String(value)).toBeNull();
+    }
+  });
 });

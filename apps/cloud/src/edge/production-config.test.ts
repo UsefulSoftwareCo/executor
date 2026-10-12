@@ -6,6 +6,7 @@ import { Schema } from "effect";
 import { unstable_readConfig } from "wrangler";
 
 import { frontResponse } from "./front";
+import { v2McpOrigin } from "../auth/v2-import";
 import { parseV2Edge, v2EdgeResponse, type V2EdgeEnv, type V2Service } from "./marketing";
 
 // The deployed edge reads its v2 settings from wrangler.jsonc. These tests read
@@ -93,6 +94,12 @@ describe("production v2 edge settings", () => {
     expect(edge.errorTunnelPath).toBe("/api/fd6fab1fbb4883e1/submit");
   });
 
+  it("points moved orgs' agents at v2's MCP host", () => {
+    expect(v2McpOrigin({ V2_MCP_ORIGIN: stringVar("V2_MCP_ORIGIN") })?.href).toBe(
+      "https://mcp.executor.sh/",
+    );
+  });
+
   it("keeps the MARKETING binding for v1's terms", () => {
     expect(config.services.filter((service) => service.binding === "MARKETING")).toHaveLength(1);
   });
@@ -110,16 +117,24 @@ describe("the executor.sh front Worker's settings", () => {
     expect(edgeConfig.placement).toBeUndefined();
   });
 
-  it("ships the same v2 settings as executor-cloud", () => {
-    const v2Vars = (vars: Readonly<Record<string, unknown>>) =>
-      Object.fromEntries(Object.entries(vars).filter(([name]) => name.startsWith("V2_")));
-    expect(Object.keys(v2Vars(edgeConfig.vars)).toSorted()).toEqual([
+  // The edge's v2 settings only: `V2_MCP_ORIGIN` is read by v1's dashboard and
+  // MCP sessions, which the front Worker does not serve.
+  it("ships the same v2 edge settings as executor-cloud", () => {
+    const edgeKeys = [
       "V2_ANALYTICS_PROXY_PATH",
       "V2_ERROR_TUNNEL_PATH",
       "V2_OAUTH_STATE_PREFIX",
       "V2_SIGN_UP_URL",
-    ]);
-    expect(v2Vars(edgeConfig.vars)).toEqual(v2Vars(config.vars));
+    ];
+    const v2Vars = (vars: Readonly<Record<string, unknown>>) =>
+      Object.fromEntries(Object.entries(vars).filter(([name]) => name.startsWith("V2_")));
+    expect(Object.keys(v2Vars(edgeConfig.vars)).toSorted()).toEqual(edgeKeys);
+    expect(v2Vars(edgeConfig.vars)).toEqual(
+      Object.fromEntries(edgeKeys.map((name) => [name, config.vars[name]])),
+    );
+    expect(Object.keys(v2Vars(config.vars)).toSorted()).toEqual(
+      [...edgeKeys, "V2_MCP_ORIGIN"].toSorted(),
+    );
   });
 
   it("binds the same v2 and marketing Workers as executor-cloud", () => {
