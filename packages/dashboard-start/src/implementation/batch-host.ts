@@ -79,10 +79,19 @@ const indexTargets = <Id extends string, Groups extends HttpApiGroup.Constraint>
 /**
  * Only this dashboard's own pages may send a batch. The body is JSON, which another site cannot
  * send without a preflight, and the browser names the page's origin on every `POST`.
+ *
+ * Behind a TLS-terminating proxy the container sees `http://` while the browser sends
+ * `Origin: https://…`. When the proxy reports `https` in `X-Forwarded-Proto` (first value), the
+ * scheme is taken from it; the host check stays strict.
  */
-const sameOrigin = (request: HttpServerRequest.HttpServerRequest, url: URL) =>
-  request.headers.origin === url.origin &&
-  request.headers["content-type"]?.split(";")[0]?.trim() === "application/json";
+const sameOrigin = (request: HttpServerRequest.HttpServerRequest, url: URL) => {
+  if (request.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") return false;
+  const origin = request.headers.origin;
+  if (!origin) return false;
+  const forwardedProto = request.headers["x-forwarded-proto"]?.split(",")[0]?.trim().toLowerCase();
+  const expected = forwardedProto === "https" ? `https://${url.host}` : url.origin;
+  return origin === expected;
+};
 
 /**
  * The read as a `GET` of its own URL with the batch request's headers and client address, for
