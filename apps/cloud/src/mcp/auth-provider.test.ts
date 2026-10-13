@@ -25,7 +25,7 @@ import { Data, Effect, Layer, Predicate } from "effect";
 import { McpAuthProvider, orgWriteAccessForPrincipal } from "@executor-js/host-mcp";
 
 import { WorkOSError } from "../auth/errors";
-import { cloudMcpAuthProviderLayer } from "./auth-provider";
+import { cloudMcpAuthProviderLayer, type CloudPrincipal } from "./auth-provider";
 import {
   MCP_ORGANIZATION_HEADER,
   McpAuth,
@@ -172,6 +172,31 @@ describe("cloud MCP org-authorization classification", () => {
           )
         : null;
       expect(legacyAccess).toBe("denied");
+    }),
+  );
+
+  it.effect("a moved org's mark rides on the principal; an unmoved org carries none", () =>
+    Effect.gen(function* () {
+      const moved = yield* authenticateWith(
+        Layer.succeed(McpOrganizationAuth)({
+          authorize: () =>
+            Effect.succeed({
+              id: ORG_ID,
+              name: "Stub Org",
+              memberRole: "member",
+              movedToV2: { v2OrganizationId: "v2-org" },
+            }),
+        }),
+      );
+      const unmoved = yield* authenticateWith(stubOrgAuthActive);
+      const movedMark = Predicate.isTagged(moved, "Authenticated")
+        ? (moved.principal as CloudPrincipal).movedToV2
+        : "not authenticated";
+      const unmovedMark = Predicate.isTagged(unmoved, "Authenticated")
+        ? (unmoved.principal as CloudPrincipal).movedToV2
+        : "not authenticated";
+      expect(movedMark).toEqual({ v2OrganizationId: "v2-org" });
+      expect(unmovedMark).toBeUndefined();
     }),
   );
 

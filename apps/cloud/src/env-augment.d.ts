@@ -141,6 +141,16 @@ declare global {
       // local dev and test workers without them serve everything from v1.
       /** Service binding to v2's API Worker; `edge/marketing.ts` forwards to it. */
       V2?: Fetcher;
+      /** Service binding to v2's MCP Worker; `mcp/v2-forward.ts` forwards the
+       *  MCP requests of organizations that have moved to v2. */
+      V2_MCP?: Fetcher;
+      /** Origin of v2's MCP endpoint (`<origin>/mcp`). */
+      V2_MCP_ORIGIN?: string;
+      /** Shared secret that signs the credential on forwarded MCP requests.
+       *  Set with `wrangler secret put V2_MCP_FORWARD_SECRET`; while unset or
+       *  without the binding, a moved organization's MCP requests answer a
+       *  retryable 503 and are never served from v1. */
+      V2_MCP_FORWARD_SECRET?: string;
       /** Absolute URL `/sign-up` and `/signup` redirect to. */
       V2_SIGN_UP_URL?: string;
       /** Prefix of v2's connected-account OAuth `state`; `/api/oauth/callback`

@@ -148,6 +148,13 @@
       "when": 1789575639971,
       "tag": "0020_workos_sync_drained_at",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791910002100,
+      "tag": "0021_org_moved_to_v2",
+      "breakpoints": true
     }
   ]
 }

@@ -21,6 +21,7 @@ import { makeMemberDirectoryLayer } from "../auth/member-directory";
 import { makeWorkOsMirrorLayer } from "../auth/workos-mirror";
 import { CoreSharedServices } from "../auth/workos";
 import { makeDbLayer } from "../db/db";
+import { readMovedToV2, type MovedToV2 } from "./moved-to-v2";
 import { bearerChallenge } from "./responses";
 import { McpJwtVerificationError, verifyWorkOSMcpAccessToken, type VerifiedToken } from "./jwt";
 
@@ -174,6 +175,8 @@ export type AuthorizedMcpOrganization = {
   readonly name: string;
   readonly slug?: string;
   readonly memberRole: "admin" | "member";
+  /** Set when the org's MCP traffic is forwarded to Executor v2. */
+  readonly movedToV2?: MovedToV2;
 };
 
 export class McpOrganizationAuth extends Context.Service<
@@ -234,24 +237,32 @@ const resolveOrgSelector = (selector: string) =>
         return org?.id ?? null;
       });
 
+// The moved-to-v2 flag is read in the same step as the membership check, as a
+// second query issued alongside it on the same connection, so it adds no
+// sequential round trip. A failed read fails the whole authorization, which the
+// provider renders as the retryable "unavailable" outcome: an org that might be
+// moved is never served from v1 on a guess.
+const authorizeWithMovedFlag = (accountId: string, organizationId: string) =>
+  Effect.gen(function* () {
+    const [org, movedToV2] = yield* Effect.all(
+      [authorizeOrganization(accountId, organizationId), readMovedToV2(organizationId)],
+      { concurrency: "unbounded" },
+    );
+    if (!org) return null;
+    return {
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      memberRole: org.memberRole,
+      ...(movedToV2 ? { movedToV2 } : {}),
+    } satisfies AuthorizedMcpOrganization;
+  });
+
 export const McpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
   authorize: (accountId, organizationSelector) =>
     resolveOrgSelector(organizationSelector).pipe(
       Effect.flatMap((organizationId) =>
-        organizationId
-          ? authorizeOrganization(accountId, organizationId).pipe(
-              Effect.map((org) =>
-                org
-                  ? ({
-                      id: org.id,
-                      name: org.name,
-                      slug: org.slug,
-                      memberRole: org.memberRole,
-                    } as const)
-                  : null,
-              ),
-            )
-          : Effect.succeed(null),
+        organizationId ? authorizeWithMovedFlag(accountId, organizationId) : Effect.succeed(null),
       ),
       Effect.provide(makeMcpOrganizationAuthServices()),
     ),

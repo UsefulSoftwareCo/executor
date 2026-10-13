@@ -62,6 +62,7 @@ import {
   type McpAuthResult,
   type VerifiedToken,
 } from "./auth";
+import type { MovedToV2 } from "./moved-to-v2";
 import { annotateMcpRequest } from "./telemetry";
 import {
   authorizationServerMetadataResponse,
@@ -93,6 +94,12 @@ const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
   "Organization authorization temporarily unavailable - please retry";
 
 /**
+ * The principal cloud's auth hands the MCP handler: the shared shape plus the
+ * org's moved-to-v2 mark, which only the cloud handler reads.
+ */
+export type CloudPrincipal = Principal & { readonly movedToV2?: MovedToV2 };
+
+/**
  * Enrich a cloud {@link VerifiedToken} (which carries only accountId +
  * organizationId) into the full {@link Principal} the seam validates.
  *
@@ -107,7 +114,7 @@ const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
 const principalFromToken = (
   token: VerifiedToken,
   organization: AuthorizedMcpOrganization,
-): Principal => ({
+): CloudPrincipal => ({
   accountId: token.accountId,
   organizationId: organization.id,
   organizationName: organization.name,
@@ -118,6 +125,7 @@ const principalFromToken = (
   name: null,
   avatarUrl: null,
   roles: [],
+  ...(organization.movedToV2 ? { movedToV2: organization.movedToV2 } : {}),
 });
 
 export const cloudMcpAuthProviderLayer: Layer.Layer<

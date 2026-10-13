@@ -93,6 +93,13 @@ describe("production v2 edge settings", () => {
     expect(edge.errorTunnelPath).toBe("/api/fd6fab1fbb4883e1/submit");
   });
 
+  it("binds V2_MCP to v2's MCP Worker and names its origin", () => {
+    const bindings = config.services.filter((service) => service.binding === "V2_MCP");
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.service).toBe("executor-next-hosted-api-v2-qs32brgjwvt7ytx4");
+    expect(stringVar("V2_MCP_ORIGIN")).toBe("https://mcp.executor.sh");
+  });
+
   it("keeps the MARKETING binding for v1's terms", () => {
     expect(config.services.filter((service) => service.binding === "MARKETING")).toHaveLength(1);
   });
@@ -111,8 +118,14 @@ describe("the executor.sh front Worker's settings", () => {
   });
 
   it("ships the same v2 settings as executor-cloud", () => {
+    // The MCP forwarding settings (`V2_MCP_*`) belong to executor-cloud alone:
+    // the edge never serves MCP.
     const v2Vars = (vars: Readonly<Record<string, unknown>>) =>
-      Object.fromEntries(Object.entries(vars).filter(([name]) => name.startsWith("V2_")));
+      Object.fromEntries(
+        Object.entries(vars).filter(
+          ([name]) => name.startsWith("V2_") && !name.startsWith("V2_MCP_"),
+        ),
+      );
     expect(Object.keys(v2Vars(edgeConfig.vars)).toSorted()).toEqual([
       "V2_ANALYTICS_PROXY_PATH",
       "V2_ERROR_TUNNEL_PATH",

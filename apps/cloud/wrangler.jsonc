@@ -108,6 +108,14 @@
       // this binding; this is the only place v1 names it.
       "service": "executor-next-marketing-v2",
     },
+    // v2's MCP Worker. The MCP requests of an organization that has moved to
+    // v2 are forwarded to it (src/mcp/v2-forward.ts) with a credential signed
+    // by the V2_MCP_FORWARD_SECRET secret, which v2 shares. Like the binding
+    // above, the name must equal the one v2's deployment pins.
+    {
+      "binding": "V2_MCP",
+      "service": "executor-next-hosted-api-v2-qs32brgjwvt7ytx4",
+    },
   ],
   "hyperdrive": [
     {
@@ -152,6 +160,10 @@
     // /api/oauth/callback requests carrying it go to v2. It must equal the
     // prefix v2 mints.
     "V2_OAUTH_STATE_PREFIX": "x2.",
+    // Origin of v2's MCP endpoint; moved organizations' requests go to
+    // `<origin>/mcp` through the V2_MCP binding. The signing secret,
+    // V2_MCP_FORWARD_SECRET, is a Worker secret (`wrangler secret put`).
+    "V2_MCP_ORIGIN": "https://mcp.executor.sh",
     // v2's browser telemetry on executor.sh. Both values are outputs of v2's
     // production infrastructure (stage `v2`; random and retained, so they do
     // not change between deploys). v2 pins them in its edge contract and

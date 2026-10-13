@@ -25,7 +25,15 @@
 // clobbering a newer one.
 
 import { sql } from "drizzle-orm";
-import { index, pgTable, primaryKey, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import {
+  check,
+  index,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 
 /**
  * Login identity + mirrored WorkOS profile. The `id` is the WorkOS user ID.
@@ -112,6 +120,30 @@ export const organizations = pgTable(
   },
   (t) => ({
     slugUnique: uniqueIndex("organizations_slug_unique").on(t.slug),
+  }),
+);
+
+/**
+ * Whether an organization's MCP traffic has moved to Executor v2. v2 writes
+ * this table (a separate database role that may only INSERT/UPDATE it); v1
+ * only reads it, on the MCP auth path.
+ *
+ * `moving` changes nothing for MCP requests. `moved` with a `v2_org_id` means
+ * the organization's MCP URLs are forwarded to v2. No row means not moved.
+ * `v2_org_id` stays null until the v2 organization exists.
+ */
+export const orgMovedToV2 = pgTable(
+  "org_moved_to_v2",
+  {
+    orgId: text("org_id")
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    state: text("state").notNull(),
+    v2OrgId: text("v2_org_id"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    stateCheck: check("org_moved_to_v2_state_check", sql`${t.state} in ('moving', 'moved')`),
   }),
 );
 

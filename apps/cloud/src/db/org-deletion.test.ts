@@ -205,6 +205,7 @@ const NOT_ORG_OWNED: Record<string, string> = {
   membership_tombstones: "deleted by organization id",
   accounts: "shared across orgs — deliberately survives",
   workos_sync: "the WorkOS Events API cursor, instance-wide and not org-scoped",
+  org_moved_to_v2: "written by v2, keyed by the organization row that is kept as a tombstone",
 };
 
 const countTenantRows = async (db: DrizzleDb, tenant: string): Promise<number> => {
