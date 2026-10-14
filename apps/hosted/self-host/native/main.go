@@ -720,6 +720,13 @@ func serve(mode string) error {
 	defer stopMotel()
 
 	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout)
+	rewrite := proxy.Rewrite
+	proxy.Rewrite = func(request *httputil.ProxyRequest) {
+		rewrite(request)
+		if proto := request.In.Header.Get("X-Forwarded-Proto"); proto == "https" || proto == "http" {
+			request.Out.Header.Set("X-Forwarded-Proto", proto)
+		}
+	}
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
 	if err != nil {
 		command.Process.Kill()
