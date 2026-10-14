@@ -6,7 +6,7 @@ import { Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
 import { accountAtom } from "./accounts.ts";
-import { selectedIds } from "@executor-js/ui/contracts/dashboard";
+import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
 
 /** Catalog metadata is loaded independently of installed apps. */
 /**
@@ -28,12 +28,9 @@ export const deleteAppAtom = Atom.family((app: AppId) =>
           acknowledge(get, overviewAtom, (data) => ({
             ...data,
             apps: data.apps.filter((current) => current.id !== app),
-            profiles: data.profiles.filter((profile) => profile.app !== app),
           }));
           if (Option.isSome(current))
-            for (const account of current.value.profiles
-              .filter((profile) => profile.app === app)
-              .flatMap((profile) => selectedIds(profile.accounts)))
+            for (const account of linkedAccountIds(current.value.links, app))
               acknowledge(get, accountAtom(account), (data) => ({
                 ...data,
                 apps: data.apps.filter((current) => current.id !== app),

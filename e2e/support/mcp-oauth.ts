@@ -123,8 +123,20 @@ export const oauthCallback = (state: string) =>
     };
   });
 
-/** Authorize the official MCP client through a signed-in browser, without an API key. */
-export const authorizeBrowserMcp = (page: Page, origin: string) =>
+/**
+ * Authorize the official MCP client through a signed-in browser, without an API key. The client
+ * registers and signs in on `origin`; `resource` is the MCP URL it was given, which Cloud serves
+ * on its own host. An Executor HTTP API client passes the API resource with the `executor` scope.
+ */
+export const authorizeBrowserMcp = (
+  page: Page,
+  origin: string,
+  {
+    resource = `${origin}/mcp`,
+    client = "Release verification",
+    scope = "mcp offline_access",
+  } = {},
+) =>
   Effect.gen(function* () {
     const state = randomBytes(24).toString("hex");
     const verifier = randomBytes(32).toString("base64url");
@@ -134,7 +146,7 @@ export const authorizeBrowserMcp = (page: Page, origin: string) =>
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          client_name: "Release verification",
+          client_name: client,
           redirect_uris: [receiver.url],
           token_endpoint_auth_method: "none",
           grant_types: ["authorization_code", "refresh_token"],
@@ -154,7 +166,6 @@ export const authorizeBrowserMcp = (page: Page, origin: string) =>
         Schema.decodeUnknownEffect(Schema.Struct({ client_id: Schema.NonEmptyString })),
       ),
     );
-    const resource = `${origin}/mcp`;
     const authorization = new URL(`${origin}/api/auth/oauth2/authorize`);
     authorization.search = new URLSearchParams({
       response_type: "code",
@@ -162,13 +173,13 @@ export const authorizeBrowserMcp = (page: Page, origin: string) =>
       redirect_uri: receiver.url,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"),
       code_challenge_method: "S256",
-      scope: "mcp offline_access",
+      scope,
       resource,
       state,
     }).toString();
     yield* driver("open release MCP consent", () => page.goto(authorization.href));
     yield* driver("verify the requesting MCP client", () =>
-      page.getByText("Release verification", { exact: true }).waitFor({ state: "visible" }),
+      page.getByText(client, { exact: true }).waitFor({ state: "visible" }),
     );
     yield* driver("approve release MCP connection", () =>
       page.getByRole("button", { name: "Connect", exact: true }).click(),

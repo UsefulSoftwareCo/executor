@@ -1,6 +1,8 @@
 /**
  * Divide a tool invocation's time, on its own isolate's clock, by who the work belonged to:
- * Executor, the app's authored code, upstream providers, or a person answering an elicitation.
+ * Executor, the app's authored code, upstream providers, a person answering an elicitation, or
+ * another call loading a cache entry this one waits for. Background work no caller waits on runs
+ * beside the division and is reported apart.
  * Each boundary declares its owner where the work starts (see `owned`); the invocation's own span is
  * Executor's. The host adds the other isolates' parts.
  */
@@ -34,10 +36,14 @@ export const timedInvocation =
                 upstreamMs: spent.upstream,
                 elicitationMs: spent.person,
                 authoredMs: spent.app,
+                leaseMs: spent.lease,
+                backgroundMs: spent.background,
               });
               span.attribute("executor.upstream.wait_ms", spent.upstream);
               span.attribute("executor.elicitation.wait_ms", spent.person);
               span.attribute("executor.authored_ms", spent.app);
+              span.attribute("executor.lease.wait_ms", spent.lease);
+              span.attribute("executor.background_ms", spent.background);
               span.attribute("executor.overhead_ms", spent.executor);
             },
           };

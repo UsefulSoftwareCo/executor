@@ -1,9 +1,8 @@
-import type { AccountId, AppId, ProfileId } from "@executor-js/sdk";
+import type { AccountId, AppId } from "@executor-js/sdk";
 import type {
   ConnectionApp as StoredConnectionApp,
   ConnectionId,
   ConnectionInput,
-  ConnectionTargetInput,
   ConnectionView,
 } from "@executor-js/mcp-auth/connections";
 import type { Atom } from "effect/reactivity";
@@ -21,13 +20,12 @@ export type ConnectionTools = StoredConnectionApp["tools"];
  */
 export type ConnectionEvents = NonNullable<StoredConnectionApp["events"]>;
 
-/** Accounts and saved profiles remain distinct selections, even when they use the same account. */
+/** An app runs without an account, or as accounts the user can use with it. */
 export type ConnectionTarget =
   | { readonly kind: "app" }
-  | { readonly kind: "account"; readonly id: AccountId; readonly label: string }
-  | { readonly kind: "profile"; readonly id: ProfileId; readonly label: string };
+  | { readonly kind: "account"; readonly id: AccountId; readonly label: string };
 
-/** Stable UI identity never conflates an account with a profile or its app. */
+/** Stable UI identity never conflates an account with its app. */
 export const connectionTargetKey = (target: ConnectionTarget): string =>
   target.kind === "app" ? "app" : `${target.kind}:${target.id}`;
 
@@ -68,12 +66,10 @@ export interface ConnectionDraft {
   readonly apps: readonly ConnectionApp[];
 }
 
-const targetInput = (target: ConnectionTarget): ConnectionTargetInput =>
-  target.kind === "app"
-    ? target
-    : target.kind === "profile"
-      ? { kind: "profile", id: target.id }
-      : { kind: "account", id: target.id };
+const targetInput = (
+  target: ConnectionTarget,
+): ConnectionInput["apps"][number]["runsAs"][number] =>
+  target.kind === "app" ? target : { kind: "account", id: target.id };
 
 /** The request for a complete draft. Undefined while any included app has no way to run. */
 export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undefined => {

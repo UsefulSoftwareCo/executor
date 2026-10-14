@@ -7,6 +7,7 @@ import { Effect, Option, Schema } from "effect";
 import {
   JsonObject,
   sourceFilesEqual,
+  sourceText,
   SourceFiles,
   type App,
   type Deployment,
@@ -29,8 +30,7 @@ type Manifest =
 
 const Dependencies = Schema.Record(Schema.String, Schema.String);
 
-const manifestOf = (files: SourceFiles) =>
-  files.find((file) => file.path === "package.json")?.content;
+const manifestOf = (files: SourceFiles) => sourceText(files, "package.json");
 
 /** Add `dependencies.apps`, keeping every other field, its order and the file's indentation. */
 const pinManifest = (content: string | undefined, apps: string): Manifest => {
@@ -108,10 +108,7 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
   if (sourceFilesEqual(workspace, running)) return true;
   const content = manifestOf(workspace);
   const rest = (files: SourceFiles) => files.filter((file) => file.path !== "package.json");
-  const saved = new Map(rest(running).map((file) => [file.path, file.content]));
-  const unchanged =
-    rest(workspace).length === saved.size &&
-    rest(workspace).every((file) => saved.get(file.path) === file.content);
+  const unchanged = sourceFilesEqual(rest(workspace), rest(running));
   return (
     unchanged &&
     [frameworkPinRelease, frameworkPinCatchUpRelease].some((release) => {
@@ -146,12 +143,7 @@ const canonical = (value: unknown): unknown =>
  */
 export const pinnedBeforeDeploy = (workspace: SourceFiles, deployed: SourceFiles): boolean => {
   const rest = (files: SourceFiles) => files.filter((file) => file.path !== "package.json");
-  const kept = new Map(rest(deployed).map((file) => [file.path, file.content]));
-  if (
-    rest(workspace).length !== kept.size ||
-    !rest(workspace).every((file) => kept.get(file.path) === file.content)
-  )
-    return false;
+  if (!sourceFilesEqual(rest(workspace), rest(deployed))) return false;
   // A source without a manifest gets the one the pin writes from nothing, byte for byte.
   if (manifestOf(deployed) === undefined)
     return [frameworkPinRelease, frameworkPinCatchUpRelease].some((release) => {

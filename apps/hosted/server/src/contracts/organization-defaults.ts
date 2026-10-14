@@ -1,7 +1,5 @@
 import { Context, Schema, type Effect } from "effect";
 import {
-  ProfileNotFound,
-  ProfileConflict,
   AccountNotFound,
   AccountFieldsInvalid,
   AuthMethodInvalid,
@@ -19,6 +17,8 @@ import {
   SkillDefinitionInvalid,
   StorageError,
   SourceError,
+  SourcePathConflict,
+  SourcePathNotUnicode,
 } from "@executor-js/sdk/core";
 import { TemplateError } from "@executor-js/app-templates/contracts";
 import type { OrganizationId } from "./organization.ts";
@@ -35,6 +35,8 @@ export const OrganizationDefaultsError = Schema.Union([
   OrganizationDefaultsPending,
   StorageError,
   SourceError,
+  SourcePathConflict,
+  SourcePathNotUnicode,
   TemplateError.annotate({ httpApiStatus: 422 }),
   DeploymentBuildFailed,
   BuildMemoryExceeded,
@@ -45,8 +47,6 @@ export const OrganizationDefaultsError = Schema.Union([
   AppNotFound,
   AppNotDeployed,
   AppDeploymentChanged,
-  ProfileNotFound,
-  ProfileConflict,
   AccountNotFound,
   AccountFieldsInvalid,
   AuthMethodInvalid,
@@ -62,7 +62,8 @@ export interface ExecutorUserAccount {
 
 /**
  * One-time product setup; installed apps retain their ordinary lifecycle afterward. Setup that
- * saves profile intent wakes profile setup through the caller's {@link ScheduleWakeup}.
+ * saves webhook source intent, an upgrade or a new link, wakes source reconciliation through the
+ * caller's {@link ScheduleWakeup}.
  */
 export class OrganizationDefaults extends Context.Service<
   OrganizationDefaults,

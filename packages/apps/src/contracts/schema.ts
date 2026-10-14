@@ -29,6 +29,30 @@ export const HttpUrl = Schema.String.check(
   }),
 );
 
+/** One problem with a declaration: where in it, and what is wrong there. */
+export const DeclarationIssue = Schema.Struct({
+  path: Schema.Array(Schema.String),
+  message: Schema.String,
+});
+export type DeclarationIssue = typeof DeclarationIssue.Type;
+
+/**
+ * An author's declaration, such as the options of `oauth2()`, did not match its schema. Unlike
+ * {@link ValidationError} it names each failing path and problem, because the value is the
+ * author's own source. Messages never include supplied values.
+ */
+export class DeclarationInvalid extends Schema.TaggedError<DeclarationInvalid>()(
+  "DeclarationInvalid",
+  { declaration: Schema.String, issues: Schema.Array(DeclarationIssue) },
+) {
+  override get message() {
+    const problems = this.issues.map((issue) =>
+      issue.path.length === 0 ? issue.message : `${issue.path.join(".")}: ${issue.message}`,
+    );
+    return `The ${this.declaration} declaration is invalid. ${problems.join("; ")}`;
+  }
+}
+
 /** Invalid input. Never includes supplied values, credentials or response bodies. */
 export class ValidationError extends Schema.TaggedError<ValidationError>()("ValidationError", {}) {
   override get message() {

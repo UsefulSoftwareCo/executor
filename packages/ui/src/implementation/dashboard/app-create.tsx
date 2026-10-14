@@ -18,7 +18,6 @@ export function AppCreateForm<Input, E, A extends App = App>({
   onCancel,
   label,
   children,
-  beforeName,
 }: MutationProps<Input, A, E> & {
   readonly initialName: string;
   readonly input: (name: string) => Input;
@@ -26,7 +25,6 @@ export function AppCreateForm<Input, E, A extends App = App>({
   readonly onCancel?: (() => void) | undefined;
   readonly label: string;
   readonly children?: ((pending: boolean) => ReactNode) | undefined;
-  readonly beforeName?: ReactNode;
 }) {
   const result = useAtomValue(mutation);
   const create = useAtomSet(mutation, { mode: "promiseExit" });
@@ -57,7 +55,6 @@ export function AppCreateForm<Input, E, A extends App = App>({
         }
       }}
     >
-      {beforeName}
       <label className="flex flex-col gap-2 text-[13px] font-medium">
         App name
         <Input

@@ -15,6 +15,7 @@ import {
 } from "../contracts/organization.ts";
 import { Authentication, ApiAuthentication, Unauthorized } from "../contracts/auth.ts";
 import { currentOwner, selectedApp } from "./access.ts";
+import { stillLinked } from "./app-accounts.ts";
 
 /** Recheck both login and membership on long-lived streams; initial middleware is not a saved grant. */
 const currentAccess = (headers: Headers, organization: OrganizationId, app: AppDataInput["app"]) =>
@@ -36,7 +37,7 @@ const currentAccess = (headers: Headers, organization: OrganizationId, app: AppD
     const membership = yield* auth.membership(principal, organization);
     return { organization, owner: organizationOwner(organization), role: membership.role };
   });
-/** Check app ownership and selected accounts before invoking author code. */
+/** Check the app and resolve the caller's accounts before invoking author code. */
 export const executeAppData = (kind: "query" | "mutate", input: AppDataInput) =>
   Effect.gen(function* () {
     const policy = yield* CurrentAuthorization;
@@ -44,8 +45,8 @@ export const executeAppData = (kind: "query" | "mutate", input: AppDataInput) =>
       return yield* new OrganizationForbidden();
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app, input.profile);
-    return yield* executor.appData[kind](input);
+    const { accounts } = yield* selectedApp(executor, owner, input.app);
+    return yield* executor.appData[kind]({ ...input, accounts });
   });
 /** Shared routes; the host supplies request-owned SDK and authentication services. */
 export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", (handlers) =>
@@ -65,7 +66,7 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
           const headers = new Headers(request.headers);
           const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
-          yield* selectedApp(executor, owner, params.app, payload.profile);
+          const { accounts } = yield* selectedApp(executor, owner, params.app);
           const access = currentAccess(
             headers,
             (yield* CurrentOrganization).organization,
@@ -73,13 +74,24 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
           ).pipe(
             Effect.provideService(Authentication, auth),
             Effect.provideService(ApiAuthentication, api),
+            // Each recheck must still resolve the accounts the stream runs with.
             Effect.tap((access) =>
-              selectedApp(executor, access.owner, params.app, payload.profile),
+              selectedApp(executor, access.owner, params.app).pipe(
+                Effect.flatMap((current) =>
+                  stillLinked(accounts, current.accounts)
+                    ? Effect.void
+                    : Effect.fail(new OrganizationForbidden()),
+                ),
+              ),
             ),
           );
           const context = yield* Effect.context<Effect.Services<typeof access>>();
           const authorized = access.pipe(Effect.provideContext(context));
-          const source = yield* executor.appData.subscribe({ app: params.app, ...payload });
+          const source = yield* executor.appData.subscribe({
+            app: params.app,
+            ...payload,
+            accounts,
+          });
           return Stream.merge(
             // The first result belongs to this request, which was just authorized.
             source.pipe(

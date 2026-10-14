@@ -37,12 +37,12 @@ const accounts = { vercel };
  * supplied token; the host owns that credential and supplies it per call.
  */
 export default defineApp(
-  { accounts },
+  { user: { accounts } },
   {
     tools: router({
       listProjects: query(
         { description: "List the account's Vercel projects.", input: object({}) },
-        async ({ accounts, fetch }) => {
+        async ({ user: { accounts }, fetch }) => {
           const response = await fetch("https://api.vercel.com/v9/projects?limit=10", {
             headers: { Authorization: `Bearer ${accounts.vercel.fields.token}` },
           });

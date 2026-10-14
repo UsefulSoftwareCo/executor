@@ -94,13 +94,11 @@ export function ConnectPage() {
           token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={mcpOrigin} />}
         />
       }
-      renderTools={({ app, profile, names, onChange }) => (
+      renderTools={({ app, names, onChange }) => (
         <ConnectionToolPicker
           query={connectionToolListAtom({
             organization,
             app: app.id,
-            profile: profile?.id,
-            expectedProfileRevision: profile?.revision,
             deployment: app.activeDeployment ?? undefined,
           })}
           Failure={HostedFailure}

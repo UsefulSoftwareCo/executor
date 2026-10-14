@@ -7,12 +7,12 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 /** Execute's default output budget; a search page may use a quarter of it. */
-const outputBytes = 65_536;
+const outputBytes = 100_000;
 const records = 100;
 const kinds = 300;
 
@@ -43,7 +43,7 @@ tools.wide = query({
   description: "Filter synthetic concise records by kind.",
   input: jsonSchema({ type: "object", properties: { kind: { enum: Array.from({ length: ${kinds} }, (_, n) => "kind-value-" + n) } }, required: ["kind"] }),
 }, async () => []);
-export default defineApp({ accounts: { service } }, async () => ({ tools: router(tools) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router(tools) }));
 `;
 
 const Deployed = Schema.Struct({
@@ -55,13 +55,11 @@ const Deployed = Schema.Struct({
     }),
   }),
 });
-const Account = Schema.Struct({ id: Schema.String });
 const Item = Schema.Struct({
   path: Schema.String,
   description: Schema.String,
   input: Schema.String,
   inputTruncated: Schema.optional(Schema.Literal(true)),
-  alsoAt: Schema.optional(Schema.Array(Schema.String)),
 });
 const Page = Schema.Struct({
   items: Schema.Array(Item),
@@ -69,7 +67,6 @@ const Page = Schema.Struct({
     Schema.Struct({
       path: Schema.String,
       app: Schema.String,
-      profile: Schema.optional(Schema.String),
       accounts: Schema.optional(Schema.String),
     }),
   ),
@@ -134,40 +131,33 @@ layer(TestLive, { excludeTestServices: true })("MCP search concise", (it) => {
               expect((yield* agent.send("DELETE", `/v1/accounts/${account}`)).status).toBe(200);
           }).pipe(Effect.orDie),
         );
-        // Two profiles of the same app, one with a described account.
-        const profiles: string[] = [];
+        // Two accounts connected from the app for its one plain requirement, the newer with a
+        // description. Connecting from the app links the account in place of the one linked before,
+        // which stays saved.
         for (const [label, description] of [
-          ["Work key", "Reads only."],
           ["Sandbox key", null],
+          ["Work key", "Reads only."],
         ] as const) {
-          const account = yield* body(
-            Account,
-            yield* agent.send("POST", "/v1/accounts", {
-              owner: "local",
-              provider: app.requirements.accounts.service.provider,
+          const account = yield* connectLocalAccount(
+            agent,
+            {
+              app: app.id,
+              requirement: "service",
               method: "key",
               label,
-              ...(description === null ? {} : { description }),
               fields: { token: `synthetic-${randomUUID()}` },
-            }),
+            },
+            headers,
           );
           accounts.push(account.id);
-          const profile = yield* createProfile(
-            agent,
-            `/v1/apps/${app.id}`,
-            { owner: "local", subject: "local" },
-            headers,
-          );
-          const selected = yield* selectProfileAccounts(
-            agent,
-            `/v1/apps/${app.id}`,
-            profile.id,
-            { service: account.id },
-            headers,
-          );
-          expect(selected.status).toBe(200);
-          profiles.push(profile.id);
+          if (description !== null)
+            expect(
+              (yield* agent.send("PATCH", `/v1/accounts/${account.id}`, { description })).status,
+            ).toBe(200);
         }
+        const [sandbox, work] = accounts;
+        if (work === undefined || sandbox === undefined)
+          return yield* Effect.die("Account fixtures missing");
 
         const client = yield* mcp.connect(target.apiKey, "mcp-search-concise");
         const execute = <A, I>(step: string, code: string, value: Schema.Codec<A, I>) =>
@@ -205,21 +195,26 @@ layer(TestLive, { excludeTestServices: true })("MCP search concise", (it) => {
         expect(text).not.toContain("outputOnlyField");
         expect(text).not.toContain("Upstream instructions");
         expect(text).not.toContain('"signature"');
+        // Calls never choose accounts: the input is the tool's own, without `$accounts`.
         const record = page.items.find((item) => item.path.endsWith(".record0"));
         expect(record).toMatchObject({
           description: "Read synthetic concise record 0.",
           input: "{ id: string }",
         });
-        // Both profiles expose the same tools, so each is one item that names the other path, and
-        // each profile and its accounts are listed once.
-        for (const item of page.items) expect(item.alsoAt).toHaveLength(1);
-        expect(page.namespaces.map((entry) => entry.profile).sort()).toEqual([
-          "Sandbox key",
-          "Work key",
+        expect(text).not.toContain("$accounts");
+        // Each tool is one item at the app's path, and the app is listed once with the account
+        // each requirement uses: the plain requirement's one linked account, not the replaced one.
+        expect(page.namespaces).toEqual([
+          {
+            path: `tools[${namespace}]`,
+            app: expect.any(String),
+            accounts: `service: ${work} (Work key: Reads only.)`,
+          },
         ]);
+        expect(text).not.toContain(sandbox);
         expect(text.split("Work key: Reads only.").length - 1).toBe(1);
 
-        // Following `next` lists every tool exactly once, under both profiles.
+        // Following `next` lists every tool exactly once.
         const all = yield* execute(
           "Page through every match",
           `const items = [];
@@ -230,11 +225,9 @@ for (let page = await tools.search({ namespace: ${namespace}, limit: 100 }); ; p
 return { items, namespaces: [], remaining: 0, next: null };`,
           Page,
         );
-        const paths = all.value.items.flatMap((item) => [item.path, ...(item.alsoAt ?? [])]);
+        const paths = all.value.items.map((item) => item.path);
         expect(all.value.items).toHaveLength(tools);
-        expect(new Set(paths).size).toBe(tools * 2);
-        for (const profile of profiles)
-          expect(paths.filter((path) => path.includes(profile))).toHaveLength(tools);
+        expect(new Set(paths).size).toBe(tools);
         const wide = all.value.items.find((item) => item.path.endsWith(".wide"));
         expect(wide?.inputTruncated).toBe(true);
         expect(wide?.input).not.toContain(`kind-value-${kinds - 1}`);

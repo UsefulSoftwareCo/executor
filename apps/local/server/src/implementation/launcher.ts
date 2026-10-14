@@ -1,12 +1,10 @@
 /** Local launcher behavior. Runtime process APIs are supplied only at entry points. */
-import { Console, Effect, Redacted } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
-import { HttpApiClient } from "effect/http-api";
+import { Config, Console, Effect, Option, Redacted } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { LocalAuthApi } from "../contracts/auth.ts";
 import { localConfiguration } from "./bootstrap.ts";
 import { StartupFailed, type LaunchMode } from "../contracts/startup.ts";
 import { readDesktopBootstrap, startLocalServer } from "../node.ts";
+import { recordServer } from "./server-record.ts";
 import { updateNotice } from "./update-notice.ts";
 
 const openBrowser = (url: Redacted.Redacted<string>, platform: string) =>
@@ -23,23 +21,12 @@ const openBrowser = (url: Redacted.Redacted<string>, platform: string) =>
   }).pipe(Effect.mapError(() => new StartupFailed({ stage: "browser" })));
 
 /**
- * Start headless/browser/desktop using one server; pairing an existing server never opens storage.
- * `installation` is the running CLI's own file, which tells the update notice how it was installed.
+ * Start headless/browser/desktop using one server. Pairing with a running server is `pair.ts`.
+ * `entry` is the script Node started, which tells the update notice how the CLI was installed.
  */
-export const launch = (mode: LaunchMode, platform: string, installation?: string) =>
+export const launch = (mode: LaunchMode, platform: string, entry?: string) =>
   Effect.gen(function* () {
     const settings = yield* localConfiguration(platform);
-    if (mode === "pair") {
-      const client = yield* HttpApiClient.make(LocalAuthApi, {
-        baseUrl: `http://127.0.0.1:${settings.port}`,
-        transformClient: (client) =>
-          client.pipe(HttpClient.mapRequest(HttpClientRequest.bearerToken(settings.apiKey))),
-      }).pipe(Effect.provide(FetchHttpClient.layer));
-      const link = yield* client.auth
-        .pair()
-        .pipe(Effect.mapError(() => new StartupFailed({ stage: "pair" })));
-      return yield* Console.log(Redacted.value(link.url));
-    }
     const bootstrap = mode === "desktop" ? yield* readDesktopBootstrap : undefined;
     const server = yield* startLocalServer(settings, bootstrap, {
       product: mode === "desktop" ? "desktop" : "cli",
@@ -58,7 +45,17 @@ export const launch = (mode: LaunchMode, platform: string, installation?: string
         yield* openBrowser(link.url, platform).pipe(
           Effect.catch(() => Console.log("Open the connection link above in your browser.")),
         );
-      yield* Effect.forkScoped(updateNotice(settings.directory, installation));
+      // `executor upgrade` reads this record to say that this server needs restarting.
+      yield* recordServer(settings.directory, {
+        pid: process.pid,
+        // What `executor --version` prints; development builds have none.
+        version: Option.getOrUndefined(
+          yield* Config.String("EXECUTOR_BUILD_VERSION").pipe(Config.option),
+        ),
+        url: origin,
+        command: mode === "browser" ? "executor" : "executor serve",
+      });
+      yield* Effect.forkScoped(updateNotice(settings.directory, entry));
     }
     return yield* Effect.never;
   });

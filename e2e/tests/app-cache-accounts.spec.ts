@@ -5,13 +5,14 @@ import { Effect } from "effect";
 import { body } from "../support/api.ts";
 import { Resource } from "../support/contracts.ts";
 import { cacheApp } from "../support/cache-app.ts";
+import { connectionsPath, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
 
 layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
   it.effect(scenarios.appCacheAccounts.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, path, first, second, request, call } = yield* cacheApp;
+        const { api, actors, path, request, call } = yield* cacheApp;
         const accountIds: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.forEach(accountIds, (id) =>
@@ -34,10 +35,7 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         for (const token of ["synthetic-cache-a", "synthetic-cache-b", largeToken]) {
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: first.id,
-            }),
+            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
           );
           const account = yield* body(Resource, yield* submit(connection.id, token));
           accountIds.push(account.id);
@@ -53,17 +51,19 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         expect(yield* call("private", { id: two })).not.toBe(privateValue);
         const reconnect = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: first.id,
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
             account: one,
           }),
         );
         expect((yield* submit(reconnect.id, "synthetic-rotated")).status).toBe(200);
-        expect(yield* call("private", { id: one })).not.toBe(privateValue);
-        expect((yield* request("private", { id: two }, second.id)).status).toBeGreaterThanOrEqual(
-          400,
-        );
+        const rotated = yield* call("private", { id: one });
+        expect(rotated).not.toBe(privateValue);
+        // A call cannot reach the scope of an account it does not use: once unlinked, the
+        // account's scope is out of reach, though the account stays saved.
+        yield* unlinkAccount(actors.owner, path, "service", two);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([one, large]);
+        expect((yield* request("private", { id: two })).status).toBeGreaterThanOrEqual(400);
+        expect(yield* call("private", { id: one })).toBe(rotated);
       }),
     ),
   );

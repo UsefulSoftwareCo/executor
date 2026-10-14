@@ -1,12 +1,40 @@
 ## Webhook subscriptions
 
-Apps may return a `webhooks` catalog. Define an `account` slot, `config` and
-`state` schemas, and async `register`, `handle`, and `unregister` callbacks.
-Keep these callbacks together. The host supplies a stable `subscriptionId`,
-`callbackUrl`, signing `secret`, and the selected source `account`; other saved
-accounts are available in context. Use `WebhookContext<typeof requirements>` for
-external lifecycle handlers. It exposes writable `ctx.sql` when the app declares
-`sql`, and excludes `elicit` in both the type and runtime object. No handler runs
+Apps may return a `webhooks` catalog. Define the `account` requirement whose
+accounts are its source, `config` and `state` schemas, and async `register`,
+`handle`, and `unregister` callbacks. Keep these callbacks together. The host
+supplies a stable `subscriptionId`, `callbackUrl`, signing `secret`, and the
+source `account`; the other accounts are available in context.
+
+`account` names the requirement with its scope. `account: { user: "github" }`
+registers the webhook for each account a member links, which runs as that
+member: its context has `ctx.user.accounts` and `ctx.app.accounts`.
+`account: { app: "datadog" }` registers it for the account linked to the app
+for everyone, without a caller: its context has only `ctx.app.accounts`. Linking
+the account registers it and unlinking removes it. Use `WebhookContext<typeof requirements>`
+or `WebhookContext<typeof requirements, "app">` for external lifecycle handlers.
+A webhook written inline in `defineApp` cannot infer its scope from `account`, so
+state it to type the handlers:
+
+```ts
+const empty = object({});
+const alerts = {
+  account: { app: "datadog" },
+  config: empty,
+  state: empty,
+  register: async (ctx) => ({}),
+  unregister: async () => {},
+  handle: async (ctx, { request }) => new Response(null, { status: 204 }),
+} satisfies Webhook<WebhookContext<typeof requirements, "app">, typeof empty, typeof empty>;
+```
+
+An account has one webhook source per app. The same account may be linked for
+everyone and by members; it then serves only as the app's account, for the
+`app` webhooks of the requirements it is linked to. When its last app link is
+removed, a member who links it becomes the source.
+
+Webhook contexts expose writable `ctx.sql` when the app declares `sql`, and
+exclude `elicit` in both the type and runtime object. No handler runs
 inside a transaction, so `register` can wait on a provider that verifies the
 callback URL by calling `handle` before it answers. Registration and cleanup must
 be idempotent. A callback must verify the provider signature over raw bytes

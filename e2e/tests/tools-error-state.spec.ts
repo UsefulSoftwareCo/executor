@@ -35,7 +35,7 @@ layer(HostedLive, { excludeTestServices: true })("Tools errors", (it) => {
             {
               path: "index.ts",
               content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new Error("SYNTHETIC_FACTORY_FAILURE");
 });`,
             },
@@ -141,7 +141,7 @@ export default defineApp({ accounts: {} }, async () => {
               {
                 path: "index.ts",
                 content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     status: query({ description: "Service status", input: object({}) }, async () => "ready"),
   })

@@ -19,6 +19,7 @@ import {
 } from "../contracts/organization-defaults.ts";
 import { organizationOwner } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
+import { addLink } from "./app-accounts.ts";
 
 /** Only a new or changed installation generates the Executor app, so its OpenAPI compiler loads then. */
 const executorApp = Effect.promise(() => import("./executor-app.ts"));
@@ -32,8 +33,8 @@ const State = Schema.Struct({
 const Accounts = Schema.Struct({ accounts: Schema.Record(Schema.String, AccountId) });
 
 /**
- * Install once, then create missing user accounts or repair automatic selections. Completed setup
- * is read-only. The Executor app calls this installation's API at its resource origin.
+ * Install once, then create missing user accounts or repair their links. Completed setup is
+ * read-only. The Executor app calls this installation's API at its resource origin.
  */
 export const organizationDefaults = (
   executor: Executor,
@@ -44,8 +45,8 @@ export const organizationDefaults = (
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return OrganizationDefaults.of((organization, user) => {
-      // Upgrading the installed app makes its profiles pending, and member setup saves a
-      // profile. Either is saved setup intent, which must wake profile setup once it commits.
+      // Upgrading the installed app makes its webhook sources pending, and member setup links an
+      // account. Either is saved intent, which must wake source reconciliation once it commits.
       let intent = false;
       return Effect.gen(function* () {
         const rows = yield* sql`select
@@ -166,13 +167,6 @@ export const organizationDefaults = (
                 .get({ owner, account: id })
                 .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)));
         };
-        const existingProfile =
-          (yield* executor.apps.profiles.list({
-            app: app.id,
-            owner,
-            subject: user.userId,
-            idempotencyKey: "executor-default",
-          }))[0] ?? null;
         const saved = yield* savedAccount(state.accounts);
         // A recorded account that was deliberately deleted is not a new-user setup.
         // Keep that intent: inventory reads must not recreate credentials or choose a replacement.
@@ -182,14 +176,10 @@ export const organizationDefaults = (
           (saved.provider !== requirement.provider || saved.method !== "apiKey")
         )
           return yield* new StorageError();
-        // Existing saved accounts keep their credential; setup does not mint replacement keys.
-        // Read current SQL metadata on every call; this is not an isolate-local result cache.
-        if (
-          state.deployment === current.activeDeployment &&
-          saved !== undefined &&
-          existingProfile !== null
-        )
-          return;
+        // Existing saved accounts keep their credential and links; setup does not mint replacement
+        // keys or link them again, so a member's unlink stays. Read current SQL metadata on every
+        // call; this is not an isolate-local result cache.
+        if (state.deployment === current.activeDeployment && saved !== undefined) return;
         // Build/network work finished above. Only account creation or selection repair needs the lock.
         yield* executor[StorageHost]
           .transaction(
@@ -228,36 +218,41 @@ export const organizationDefaults = (
                 and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
                 for share of member, "user"`.pipe(Effect.mapError(() => new StorageError()));
               if (eligible.length === 0) return;
-              const token =
-                saved === undefined
-                  ? yield* managedAccountKey(organization, user.userId).pipe(
-                      Effect.provideService(SqlClient.SqlClient, sql),
-                    )
-                  : undefined;
               const account =
-                saved !== undefined
-                  ? saved
-                  : token !== undefined
-                    ? yield* executor.accounts
-                        .add({
-                          owner,
-                          provider: requirement.provider,
-                          method: "apiKey",
-                          // Email sign-ups have no name; say whose access this is instead.
-                          label: "Your Executor access",
-                          fields: Redacted.make({ token: Redacted.value(token), organization }),
-                        })
-                        .pipe(personalAccountCreation(user.userId))
-                    : yield* new StorageError();
-              // One durable personal profile follows the common Executor deployment.
-              yield* executor.apps.profiles.create({
-                app: app.id,
-                owner,
-                subject: user.userId,
-                idempotencyKey: "executor-default",
-                accounts: { service: account.id },
-              });
-              intent = true;
+                saved ??
+                (yield* Effect.gen(function* () {
+                  const token = yield* managedAccountKey(organization, user.userId).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  );
+                  const created = yield* executor.managedAccounts
+                    .add({
+                      owner,
+                      provider: requirement.provider,
+                      method: "apiKey",
+                      // Email sign-ups have no name; say whose access this is instead.
+                      label: "Your Executor access",
+                      fields: Redacted.make({ token: Redacted.value(token), organization }),
+                    })
+                    .pipe(personalAccountCreation(user.userId));
+                  // A new managed key is linked to the common Executor app once, when it is
+                  // created. A member who unlinks it later keeps that choice.
+                  if (
+                    yield* addLink(sql, executor.webhooks, {
+                      app: app.id,
+                      requirement: "service",
+                      account: created.id,
+                      subject: user.userId,
+                      linkedBy: user.userId,
+                    }).pipe(
+                      Effect.catchTags({
+                        RequirementMismatch: () => new StorageError(),
+                        AccountNotFound: () => new StorageError(),
+                      }),
+                    )
+                  )
+                    intent = true;
+                  return created;
+                }));
               const accounts = JSON.stringify({ ...state.accounts, [user.userId]: account.id });
               yield* sql`update "organization" set metadata = jsonb_set(jsonb_set(
             coalesce(metadata::jsonb, '{}'::jsonb), '{executorKeyAccounts}', ${accounts}::jsonb),

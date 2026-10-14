@@ -1,4 +1,4 @@
-import { createProfile, Profile } from "../support/profiles.ts";
+import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { holdOrganizationEntry } from "../support/organization-entry.ts";
 import { scenarios } from "../test-plan.ts";
 import { expect, layer } from "@effect/vitest";
@@ -18,7 +18,7 @@ const files = [
     content: `
 import { mutation, defineApp, defineProvider, secrets, object, string, router } from "apps";
 const service=defineProvider({name:"Evidence service",auth:{key:secrets({label:"API key",fields:object({token:string()})})}});
-export default defineApp({accounts:{service:service.many()}},async()=>({tools: router({
+export default defineApp({user: { accounts:{service:service.many()} }},async()=>({tools: router({
   echo:mutation({description:"Return input",input:object({message:string()})},async(_,input)=>({message:input.message})),
 })}));
 `,
@@ -116,16 +116,11 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
               (row) =>
                 Effect.gen(function* () {
                   const actor = row % 2 === 0 ? actors.owner : actors.admin;
-                  const profile = yield* createProfile(actor, `${prefix}/apps/${app.id}`);
                   const connection = yield* api.request(
                     actor,
                     "POST",
-                    `${prefix}/apps/${app.id}/connections`,
-                    {
-                      requirement: "service",
-                      profile: profile.id,
-                      destination: { kind: "shared", audience: { kind: "everyone" } },
-                    },
+                    connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                    { destination: { kind: "shared", audience: { kind: "everyone" } } },
                   );
                   expect(connection.status).toBe(200);
                   const { id } = yield* body(Resource, connection);
@@ -140,17 +135,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                     },
                   );
                   expect(saved.status).toBe(200);
-                  const account = (yield* body(Resource, saved)).id;
-                  const selected = yield* body(
-                    Profile,
-                    yield* api.request(
-                      actor,
-                      "GET",
-                      `${prefix}/apps/${app.id}/profiles/${profile.id}`,
-                    ),
-                  );
-                  expect(selected.accounts.service).toEqual([account]);
-                  return account;
+                  return (yield* body(Resource, saved)).id;
                 }),
               { concurrency: 4 },
             ),
@@ -174,6 +159,19 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                 (yield* Clock.currentTimeMillis) - start,
                 "inventory read budget",
               ).toBeLessThan(5000);
+              // Connecting from the app links each account to the app for the writer only.
+              const [owner, admin] = yield* Effect.all(
+                [actors.owner, actors.admin].map((actor) =>
+                  linkedAccountIds(actor, `${prefix}/apps/${app.id}`),
+                ),
+                { concurrency: 2 },
+              );
+              expect([...(owner ?? [])].sort()).toEqual(
+                ids.filter((_, row) => row % 2 === 0).sort(),
+              );
+              expect([...(admin ?? [])].sort()).toEqual(
+                ids.filter((_, row) => row % 2 === 1).sort(),
+              );
             }),
           );
           yield* browser.use("Reload the large inventory", (page) => page.reload());

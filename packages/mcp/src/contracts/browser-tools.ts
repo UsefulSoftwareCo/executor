@@ -3,7 +3,14 @@ import { Schema } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { Tool as McpTool } from "effect/ai";
 import { ToolPending } from "@executor-js/sdk/core";
-import { ExecuteInput, ExecutionOutcome, ExecutionRejected } from "./execute.ts";
+import {
+  callDescription,
+  CallInput,
+  ExecuteInput,
+  ExecutionOutcome,
+  ExecutionRejected,
+  ExecutionResultMeta,
+} from "./execute.ts";
 import { ElicitationResponseInvalid, InteractionId, ToolInputPending } from "./interactions.ts";
 
 /** Browser pending results retain the standard interaction and add its authenticated review link. */
@@ -19,12 +26,20 @@ export const BrowserResumeInput = Schema.Struct({ requestId: InteractionId });
 /** Execute with browser-based delivery of every pending interaction. */
 export const BrowserExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps; find their tools with tools.search inside it and full signatures with tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show the user approvalUrl and call resume with requestId only; the user answers in their browser. Never submit the decision yourself or rerun the program to continue it. Earlier effects are not rolled back. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
+    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show the user approvalUrl and call resume with requestId only; the user answers in their browser. Never submit the decision yourself or rerun the program to continue it. Earlier effects are not rolled back. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: ExecuteInput,
   success: BrowserExecutionResult,
   failure: ExecutionRejected,
-});
+}).annotate(McpTool.Meta, ExecutionResultMeta);
+/** Direct calls with browser-based delivery of every pending interaction. */
+export const BrowserCallTool = McpTool.make("call", {
+  description: `${callDescription} If approval-required or input-required is returned, show the user approvalUrl and call resume with requestId only; the user answers in their browser. Never submit the decision yourself or repeat the call to continue it.`,
+  dependencies: [HttpServerRequest.HttpServerRequest],
+  parameters: CallInput,
+  success: BrowserExecutionResult,
+  failure: ExecutionRejected,
+}).annotate(McpTool.Meta, ExecutionResultMeta);
 /** Wait for a browser-submitted decision, then continue through the common execution manager. */
 export const BrowserResumeTool = McpTool.make("resume", {
   description:
@@ -33,4 +48,4 @@ export const BrowserResumeTool = McpTool.make("resume", {
   parameters: BrowserResumeInput,
   success: BrowserExecutionResult,
   failure: ElicitationResponseInvalid,
-});
+}).annotate(McpTool.Meta, ExecutionResultMeta);

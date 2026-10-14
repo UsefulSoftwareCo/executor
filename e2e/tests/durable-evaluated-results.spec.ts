@@ -21,7 +21,7 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
  * The revision tool is named after a value kept in the app cache, so an invalidation renames it.
  */
 const source = `import { defineApp, query, object, router, string } from "apps";
-export default defineApp({ accounts: {} }, async (ctx) => {
+export default defineApp({}, async (ctx) => {
   const revision = await ctx.cache.get({
     key: "revision",
     schema: string(),
@@ -79,7 +79,7 @@ const tools = Array.from({ length: ${tools} }, (_, index) => ({
   },
   readOnly: true,
 }));
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
@@ -105,7 +105,7 @@ const tools = Array.from({ length: 12000 }, (_, index) => {
     readOnly: true,
   };
 });
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
@@ -130,7 +130,7 @@ const tools = Array.from({ length: 1000 }, (_, index) => {
     readOnly: true,
   };
 });
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
@@ -267,8 +267,10 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           // background evaluation replaces it. The refresh finishes after the response, so it
           // must still keep its result in the supervisor.
           yield* Effect.sleep("31 seconds");
-          const stale = yield* read("stale-listing", (names) =>
-            names.includes("sdk.tools.listing.evaluate"),
+          // The refresh's spans can arrive before the request's own, which say where it was served.
+          const stale = yield* read(
+            "stale-listing",
+            (names) => evaluates(names) && names.includes("storage.evaluated.write"),
           );
           expect(stale.source).toBe("durable");
           expect(stale.cache).toBe("stale");

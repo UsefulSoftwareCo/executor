@@ -30,9 +30,18 @@ only by the person who connected it.
 
 Managing does not grant use. An admin or owner can see, edit, deploy, share and
 delete another person's private app, but cannot call its tools unless it is
-shared with them. Each call also runs with the caller's own profile, so nobody
-runs with another person's account choices. A [scoped connection](/mcp) can
+shared with them. Each call also uses only the caller's own linked accounts, so
+nobody runs with another person's accounts. A [scoped connection](/mcp) can
 narrow an agent's access further.
+
+The exception is an app's own accounts. An app can require accounts that belong
+to the app, such as a team's service key. People who can edit the app link
+them for everyone, and only accounts they can use themselves. Everyone who can
+use the app then uses the linked account through the app's code, for their calls
+and the app's background work, without access to the account itself. Editing
+the app does not let anyone link somebody else's account. Unlinking stops the
+app using it at once.
+See [Providers and accounts](/concepts/providers-and-accounts#app-accounts).
 
 People join by invitation. On hosted you can also be admitted by your identity
 provider when one is configured.

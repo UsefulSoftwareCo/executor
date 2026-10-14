@@ -54,9 +54,9 @@ try {
 import { defineApp, object, query, router, string } from "apps";
 import { createAppHandler, hostContext } from "apps/host";
 const greet = query({ input: object({ name: string() }) }, async (_ctx, input) => ({ message: "Hello " + input.name }));
-const app = defineApp({ accounts: {} }, { tools: router({ greet }) });
+const app = defineApp({}, { tools: router({ greet }) });
 const handler = createAppHandler(app);
-const response = await handler(new Request("https://fixture.test", { method: "POST", body: JSON.stringify({ operation: "call", tool: "greet", kind: "query", input: { name: "Ada" } }) }), hostContext({}));
+const response = await handler(new Request("https://fixture.test", { method: "POST", body: JSON.stringify({ operation: "call", tool: "greet", kind: "query", input: { name: "Ada" } }) }), hostContext({ app: {}, user: {} }));
 assert.equal(response.status, 200);
 assert.deepEqual(await response.json(), { ok: true, value: { message: "Hello Ada" } });
 `;
@@ -103,7 +103,7 @@ assert.deepEqual(await response.json(), { ok: true, value: { message: "Hello Ada
   await writeFile(
     join(consumer, "example.ts"),
     `import { defineApp, object, query, router, string, type QueryContext } from "apps";
-const requirements = { accounts: {} };
+const requirements = {};
 const greet = query({ input: object({ name: string() }) }, async (ctx: QueryContext<typeof requirements>, input) => {
   const rows: number = ctx.sql.exec<{ n: number }>("SELECT 1 AS n").one().n;
   // @ts-expect-error Queries receive read-only SQL, which has no transactions.

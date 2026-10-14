@@ -32,10 +32,18 @@ export const ServerConfig = Schema.Struct({
 /** Parsed configuration, with secrets redacted at ingress. */
 export type ServerConfig = typeof ServerConfig.Type;
 
+/** The port a local server listens on when EXECUTOR_PORT is unset. */
+const defaultPort = 4312;
+
+/** The data directory, before it is resolved. The npm launcher defaults it to ~/.executor/v2/cli. */
+export const dataDirectoryConfig = Config.String("EXECUTOR_DATA_DIR").pipe(
+  Config.withDefault(".local/executor"),
+);
+
 /** Read the environment at process startup. Local defaults only apply to directory and port. */
 export const config = Config.all({
-  directory: Config.String("EXECUTOR_DATA_DIR").pipe(Config.withDefault(".local/executor")),
-  port: Config.Number("EXECUTOR_PORT").pipe(Config.withDefault(4312)),
+  directory: dataDirectoryConfig,
+  port: Config.Number("EXECUTOR_PORT").pipe(Config.withDefault(defaultPort)),
   apiKey: Config.Redacted("EXECUTOR_API_KEY"),
   encryptionKey: Config.Redacted("EXECUTOR_ENCRYPTION_KEY"),
   urlPolicy: urlPolicyConfig,
@@ -63,6 +71,9 @@ export const config = Config.all({
     ),
   }),
 }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.toType(ServerConfig))));
+
+/** The port of the running server a client such as `executor pair` connects to. */
+export const serverPortConfig = Config.Port("EXECUTOR_PORT").pipe(Config.withDefault(defaultPort));
 
 /**
  * Key storage for a new data directory. Unset uses the OS credential store and falls back to

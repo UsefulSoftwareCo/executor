@@ -15,6 +15,7 @@ const steps = [
   "e2e:apps",
   "hosted:self-host:web:build",
   "web:build",
+  "e2e:npm",
 ] as const;
 
 const outputs: Record<(typeof steps)[number], string> = {
@@ -24,16 +25,22 @@ const outputs: Record<(typeof steps)[number], string> = {
   "e2e:apps": ".local/test-runtime/apps.tgz",
   "hosted:self-host:web:build": "apps/hosted/self-host/web/dist/index.html",
   "web:build": "apps/local/web/dist/index.html",
+  "e2e:npm": ".local/test-runtime/npm/package.tgz",
+};
+
+/** Further outputs a step declares, which the fake build writes beside the first. */
+const moreOutputs: Partial<Record<(typeof steps)[number], ReadonlyArray<string>>> = {
+  "e2e:runtime": [".local/test-runtime/host.json.map"],
 };
 
 /**
- * Appends the step to `$FAKE_STATE/ran` and writes its output with a build number, so a restored
+ * Appends the step to `$FAKE_STATE/ran` and writes its outputs with a build number, so a restored
  * output shows which build made it. `FAKE_FAIL` names a step that exits 3 without output.
  */
 const build = `import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const [step, output] = process.argv.slice(2);
+const [step, ...outputs] = process.argv.slice(2);
 const state = process.env.FAKE_STATE;
 if (process.env.FAKE_FAIL === step) process.exit(3);
 let ran = [];
@@ -41,8 +48,10 @@ try {
   ran = readFileSync(\`\${state}/ran\`, "utf8").split("\\n").filter(Boolean);
 } catch {}
 appendFileSync(\`\${state}/ran\`, \`\${step}\\n\`);
-mkdirSync(dirname(output), { recursive: true });
-writeFileSync(output, \`\${step} build \${ran.length + 1}\\n\`);
+for (const output of outputs) {
+  mkdirSync(dirname(output), { recursive: true });
+  writeFileSync(output, \`\${step} build \${ran.length + 1}\\n\`);
+}
 `;
 
 const workspace = (name: string, dependencies: ReadonlyArray<string> = []) =>
@@ -61,7 +70,12 @@ const files: Record<string, string> = {
     workspaces: ["packages/*", "apps/local/web", "apps/hosted/self-host/web"],
     scripts: {
       "e2e:prepare": "node scripts/e2e-prepare.ts",
-      ...Object.fromEntries(steps.map((step) => [step, `node build.mjs ${step} ${outputs[step]}`])),
+      ...Object.fromEntries(
+        steps.map((step) => [
+          step,
+          ["node build.mjs", step, outputs[step], ...(moreOutputs[step] ?? [])].join(" "),
+        ]),
+      ),
     },
   }),
   "bun.lock": "{}\n",
@@ -83,6 +97,8 @@ const files: Record<string, string> = {
   "playground/demo-apps/live-inbox/index.ts": "\n",
   "scripts/build-test-runtime.ts": "\n",
   "scripts/pack-test-apps.ts": "\n",
+  "scripts/e2e-npm-packages.ts": "\n",
+  "e2e/npm-packages.json": "{}\n",
   "apps/hosted/self-host/package.json": workspace("@fake/self-host"),
   "apps/hosted/self-host/web/package.json": workspace("@fake/self-host-web", ["@fake/ui"]),
   "apps/hosted/self-host/web/index.ts": "\n",
@@ -197,6 +213,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
         ["playground/demo-apps/live-inbox/index.ts", ["apps:build", "e2e:apps"]],
         ["apps/hosted/self-host/package.json", ["hosted:self-host:web:build"]],
         ["scripts/pack-test-apps.ts", ["e2e:apps"]],
+        ["e2e/npm-packages.json", ["e2e:npm"]],
         // A new untracked file in a package is an input.
         ["packages/sdk/new.ts", ["e2e:runtime", "web:build"]],
         ["bun.lock", steps],
@@ -255,6 +272,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
         "e2e:apps",
         "hosted:self-host:web:build",
         "web:build",
+        "e2e:npm",
       ]);
     }).pipe(Effect.scoped),
   );

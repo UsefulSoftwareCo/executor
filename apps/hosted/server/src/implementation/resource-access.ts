@@ -9,7 +9,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { StorageError, type AppId, type Provider, type ProviderId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+import { CurrentOrganization } from "../contracts/organization.ts";
 import {
   AccessConflict,
   type AppAudience,
@@ -17,23 +17,17 @@ import {
   type AccessRevision,
 } from "../contracts/resource-access.ts";
 import { requireGroupSharing } from "./group-sharing.ts";
+import { callerLinkedAccounts } from "./app-accounts.ts";
 import {
   policyDatabase,
   currentResourceAuthority,
+  lockCurrentActor as lockActor,
   applicationAccesses,
   accountAccesses,
   requireAppAccess,
   requireAccountAccess,
 } from "./resource-policy.ts";
 
-const lockActor = Effect.gen(function* () {
-  const actor = yield* currentResourceAuthority;
-  const sql = yield* policyDatabase;
-  const rows =
-    yield* sql`select id from member where id = ${actor.member} and "userId" = ${actor.user} for share`;
-  if (rows.length !== 1) return yield* new OrganizationForbidden();
-  return actor;
-});
 /** Shared resource listing for the normal app/account lists and an explicit management view. */
 export const resourceDirectory = (view: "available" | "managed" = "available") =>
   Effect.gen(function* () {
@@ -55,33 +49,28 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         : [];
     });
     const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
-    const profiles = yield* executor.apps.profiles.listMany({
-      apps: usableApps,
-      owner,
-      subject: actor.user,
-    });
+    const links = yield* callerLinkedAccounts(usableApps);
     const appEntries = listedApps.map(({ app, access }) => ({
       app,
       access,
-      profiles: access.canUse ? profiles.filter((profile) => profile.app === app.id) : [],
+      linkedAccounts: [
+        ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
+      ],
     }));
-    const selected = new Set(
-      profiles.flatMap((profile) =>
-        Object.values(profile.accounts).flatMap((value) =>
-          typeof value === "string" ? [value] : value,
-        ),
-      ),
-    );
+    const linked = new Set(links.map((link) => link.id));
     const accounts = (yield* executor.accounts.list({ owner })).filter(
-      (account) => policy.tools.kind === "all" || selected.has(account.id),
+      (account) => policy.tools.kind === "all" || linked.has(account.id),
     );
     const providers = new Map<ProviderId, Provider>();
-    const listed = new Set(appEntries.map(({ app }) => app.id));
+    // Checks are reported for the apps the caller linked each account to.
     const health = new Map(
-      (accounts.length === 0 ? [] : yield* executor.accounts.listHealth({ owner })).map((entry) => [
-        entry.account,
-        { ...entry, apps: entry.apps.filter((check) => listed.has(check.app)) },
-      ]),
+      (accounts.length === 0
+        ? []
+        : yield* executor.accounts.listHealth({
+            owner,
+            links: links.map((link) => ({ account: link.id, app: link.app })),
+          })
+      ).map((entry) => [entry.account, entry]),
     );
     const accountPolicies = new Map(
       (yield* accountAccesses(

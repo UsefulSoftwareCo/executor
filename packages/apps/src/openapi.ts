@@ -29,6 +29,11 @@ export const openapiRouter = (options: OpenapiToolsOptions, kinds: OperationKind
 export type { OperationKinds } from "./implementation/protocol-operations.ts";
 
 export * from "./contracts/openapi-compile.ts";
+/**
+ * The names `liveOpenapiRouter` gives a document's operations, from each operation's
+ * operationId, first tag, method and path alone. It reads no document and compiles nothing.
+ */
+export { planOperationNames, type OperationNameInput } from "./implementation/openapi-names.ts";
 export {
   liveOpenapiRouter,
   openapiToolNames,

@@ -3,7 +3,7 @@ import {
   RuntimeBuildFailed,
   RuntimeProtocolUnsupported,
   RuntimeAppsDependencyMissing,
-  type SourceFiles,
+  type CodeFiles,
 } from "@executor-js/sdk/core";
 import {
   RetainedWorkerBuild,
@@ -62,7 +62,8 @@ export const CloudCompileResult = Schema.Union([
 /** Compiler binding calls fail only with Alchemy transport failures; build failures are results. */
 export type CloudCompiler = {
   readonly compile: (
-    files: SourceFiles,
+    files: CodeFiles,
+    publicPaths: ReadonlyArray<string>,
     headers: Readonly<Record<string, string>>,
   ) => Effect.Effect<typeof CloudCompileResult.Encoded, RpcCallError>;
 };

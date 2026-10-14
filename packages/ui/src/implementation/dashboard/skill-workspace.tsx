@@ -1,6 +1,6 @@
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { useAtomSet } from "@effect/atom-react";
-import type { App, AppSkillBundle } from "@executor-js/sdk";
+import { isTextFile, type App, type AppSkillBundle } from "@executor-js/sdk";
 import type { AppSourceView } from "@executor-js/app-management/contracts";
 import { Exit, type Cause } from "effect";
 import { stringify } from "yaml";
@@ -62,7 +62,7 @@ export function SkillWorkspace<E>({
   const owned: Skill[] = source.files.flatMap((file) => {
     const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(file.path);
     const name = match?.[1];
-    if (name === undefined) return [];
+    if (name === undefined || !isTextFile(file)) return [];
     const prefix = `skills/${name}/`;
     return [
       {
@@ -70,6 +70,7 @@ export function SkillWorkspace<E>({
         description: skillDescription(splitSkillDocument(file.content).frontmatter),
         files: source.files
           .filter((file) => file.path.startsWith(prefix))
+          .filter(isTextFile)
           .map((file) => ({
             path: file.path.slice(prefix.length),
             content: file.content,

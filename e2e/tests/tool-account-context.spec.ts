@@ -1,4 +1,9 @@
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import {
+  connectionsPath,
+  linkAccount,
+  linkedAccountIds,
+  unlinkAccount,
+} from "../support/app-accounts.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -26,7 +31,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(App, deployed);
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
+        const appPath = `${prefix}/apps/${app.id}`;
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -39,10 +44,12 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "workspaces",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(appPath, "user", "workspaces"),
+                {},
+              ),
             );
             const response = yield* api.request(
               actors.owner,
@@ -57,18 +64,30 @@ layer(HostedLive, { excludeTestServices: true })("Tool account context", (it) =>
           });
         const work = yield* add("Work GitHub", "work"),
           personal = yield* add("Personal GitHub", "personal");
+        // Connecting from the app for the many() requirement links each new account to it.
+        expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([work, personal]);
         yield* browser.login(actors.owner);
         yield* checkToolAccountContext({
-          url: `/org/${actors.organization.slug}/apps/${app.id}?profile=${profile.id}`,
+          url: `/org/${actors.organization.slug}/apps/${app.id}`,
           work,
           personal,
           catalogs: [actors.organization.id, actors.organization.slug].map(
             (reference) => `/api/organizations/${reference}/apps/${app.id}/tools/index`,
           ),
+          // The many() requirement uses every linked account, so choosing is linking exactly these.
           select: (ids) =>
-            selectProfileAccounts(actors.owner, `${prefix}/apps/${app.id}`, profile.id, {
-              workspaces: ids,
-            }).pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
+            Effect.gen(function* () {
+              const linked = yield* linkedAccountIds(actors.owner, appPath);
+              for (const id of linked)
+                if (!ids.includes(id))
+                  yield* unlinkAccount(actors.owner, appPath, "workspaces", id);
+              for (const id of ids)
+                if (!linked.includes(id))
+                  yield* linkAccount(actors.owner, appPath, "workspaces", id);
+              expect([...(yield* linkedAccountIds(actors.owner, appPath))].sort()).toEqual(
+                [...ids].sort(),
+              );
+            }),
         });
       }),
     ),

@@ -13,6 +13,14 @@ import { Schema } from "effect";
  *   the destination host.
  * - `credential_app`: the request carries a credential handle that is not valid for this app.
  * - `credential_expired`: the request carries an expired credential handle.
+ * - `credential_placement`: the request carries a credential handle somewhere its method does not
+ *   place it, such as a body, the URL path or another header, or in a value that does not match
+ *   the method's template exactly.
+ * - `credential_transport`: the request would send a placed credential over plain HTTP. Placed
+ *   credentials go only over HTTPS, except to a loopback address on an instance whose operator
+ *   lets apps reach private addresses, for local development.
+ * - `credential_method`: the request carries a credential handle and uses a method that asks the
+ *   service to echo the request back, such as `TRACE`.
  */
 export const NetworkRefusal = Schema.Union([
   Schema.Struct({ reason: Schema.Literal("private_address") }),
@@ -28,6 +36,23 @@ export const NetworkRefusal = Schema.Union([
     reason: Schema.Literal("credential_expired"),
     /** The provider of the expired credential handle. */
     provider: Schema.String,
+  }),
+  Schema.Struct({
+    reason: Schema.Literal("credential_placement"),
+    /** The provider of the misplaced credential handle. */
+    provider: Schema.String,
+    /** Where the handle was found, such as `body` or `header x-note`. */
+    location: Schema.String,
+  }),
+  Schema.Struct({
+    reason: Schema.Literal("credential_transport"),
+    /** The provider of the credential handle the request carried. */
+    provider: Schema.String,
+  }),
+  Schema.Struct({
+    reason: Schema.Literal("credential_method"),
+    /** The refused HTTP method. */
+    method: Schema.String,
   }),
 ]);
 export type NetworkRefusal = typeof NetworkRefusal.Type;
@@ -51,6 +76,12 @@ export class NetworkRefused extends Schema.TaggedError<NetworkRefused>()("Networ
         return "Executor refused this request: it carries a credential handle that is not valid for this app. Use the account fields this invocation received.";
       case "credential_expired":
         return `Executor refused this request: it carries an expired ${refusal.provider} credential handle. Use the account fields this invocation received.`;
+      case "credential_placement":
+        return `Executor refused this request: it carries a ${refusal.provider} credential handle in the ${refusal.location}, where the provider does not place it. Send credentials only as the provider's request declares, for example with the account's headers() and url().`;
+      case "credential_transport":
+        return `Executor refused this request: ${refusal.provider} credentials are sent only over HTTPS, and ${this.host} was requested over plain HTTP.`;
+      case "credential_method":
+        return `Executor refused this request: credential handles are never sent with ${refusal.method}, which asks the service to echo the request back.`;
     }
   }
 }

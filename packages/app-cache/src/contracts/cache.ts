@@ -4,6 +4,17 @@ import { Option, Schema, type Effect } from "effect";
 /** Expected cache failures never include keys, values or upstream exception text. */
 export class CacheError extends Schema.TaggedError<CacheError>()("CacheError", {
   reason: Schema.Literals(["unavailable", "storage", "invalid", "capacity", "timeout"]),
+  /** Which of `cacheLimits` the request exceeded, when one did. */
+  limit: Schema.optionalKey(
+    Schema.Literals([
+      "keyBytes",
+      "entryBytes",
+      "batchBytes",
+      "batchEntries",
+      "totalBytes",
+      "totalEntries",
+    ]),
+  ),
 }) {}
 
 /** Bounded defaults shared by loaders and persistent adapters. */
@@ -44,6 +55,12 @@ export type CacheEntry = typeof CacheEntry.Type;
 export const CacheAcquired = Schema.Struct({
   entry: Schema.NullOr(CacheEntry),
   lease: Schema.NullOr(Schema.String),
+  /**
+   * The entries of the command's `reads`, in order, read in the same transaction as `entry`.
+   * Absent when the store did not read them: a store that predates them, or reads past the
+   * batch byte bound. The caller then reads them with a separate `read`.
+   */
+  reads: Schema.optionalKey(Schema.Array(Schema.NullOr(CacheEntry))),
 });
 
 /**
@@ -60,6 +77,11 @@ export const CacheCommand = Schema.Union([
     refresh: Schema.Boolean,
     /** Claim only while the entry still has this version. Absent accepts the current one. */
     version: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    /**
+     * Other keys to read in the same transaction, as `read` would, so a caller that needs them
+     * beside the entry makes one round trip. Reading them claims and changes nothing.
+     */
+    reads: Schema.optionalKey(Schema.Array(Key)),
   }),
   Schema.Struct({
     operation: Schema.Literal("claim"),

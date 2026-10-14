@@ -35,7 +35,7 @@ import { defineProvider, secrets, object, string,
 const service = defineProvider({ name: "Workflow fixture", auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
-export const requirements = { accounts: { service } };
+export const requirements = { user: { accounts: { service } } };
 export type QueryCtx = QueryContext<typeof requirements>;
 export type MutationCtx = MutationContext<typeof requirements>;
 export type WorkflowCtx = WorkflowContext<typeof requirements>;
@@ -58,7 +58,7 @@ export const rows = query({ input: object({}) }, async (ctx: QueryCtx) =>
 export const save = mutation({ input: object({ label: string() }) }, async (ctx: MutationCtx, input) => {
   await new Promise((resolve) => setTimeout(resolve, 10));
   const row = ctx.sql.transaction((tx) =>
-    tx.exec(insertEvent, crypto.randomUUID(), input.label, ctx.accounts.service.fields.token).one());
+    tx.exec(insertEvent, crypto.randomUUID(), input.label, ctx.user.accounts.service.fields.token).one());
   await new Promise((resolve) => setTimeout(resolve, 10));
   return row;
 });
@@ -96,7 +96,7 @@ export const history = query({ input: object({}) }, async (ctx: QueryCtx) => ctx
 import { rows, save, released, denied, approval, interactive, timeoutWrite, explode } from "./operations.ts";
 import type { WorkflowCtx } from "./context.ts";
 export const process = workflow({ input: object({ label: string() }) }, async (ctx: WorkflowCtx, input) => {
-  if ("sql" in ctx || "accounts" in ctx || "elicit" in ctx) throw new NonRetryableError("Invalid body context");
+  if ("sql" in ctx || "app" in ctx || "user" in ctx || "elicit" in ctx) throw new NonRetryableError("Invalid body context");
   let attempts = 0;
   let key;
   const first = await ctx.step.do("credential", { retries: { limit: 1, delay: 10 } }, async (step) => {
@@ -104,13 +104,13 @@ export const process = workflow({ input: object({ label: string() }) }, async (c
     if (key !== undefined && key !== step.idempotencyKey) throw new NonRetryableError("Unstable key");
     key = step.idempotencyKey;
     if (++attempts === 1) throw new Error("Synthetic retry");
-    return { source: step.accounts.service.fields.token, attempts, key };
+    return { source: step.user.accounts.service.fields.token, attempts, key };
   });
   await ctx.step.runMutation("save", save, { label: input.label + ":before" });
   while (!(await ctx.step.runQuery("released", released, { label: input.label }))) {
     await ctx.step.sleep("hold", "100 milliseconds");
   }
-  const after = await ctx.step.do("credential", async (step) => step.accounts.service.fields.token);
+  const after = await ctx.step.do("credential", async (step) => step.user.accounts.service.fields.token);
   await Promise.all(["left", "right"].map((name) => ctx.step.runMutation("save", save, { label: input.label + ":" + name })));
   const stored = await ctx.step.runQuery("read", rows, {});
   const deadline = await ctx.step.do("deadline", async () => Date.now() + 200);
@@ -130,7 +130,7 @@ export const interactiveRun = workflow({ input: object({}) }, async (ctx: Workfl
 export const timeoutRun = workflow({ input: object({}) }, async (ctx: WorkflowCtx) => ctx.step.runMutation("timeout", timeoutWrite, {}, { timeout: 100, retries: { limit: 0, delay: 0 } }));
 export const leak = workflow({ input: object({}) }, async (ctx: WorkflowCtx) =>
   ctx.step.do("leak", { retries: { limit: 0, delay: 0 } }, async (step) => {
-    throw new NonRetryableError("Rejected token " + step.accounts.service.fields.token);
+    throw new NonRetryableError("Rejected token " + step.user.accounts.service.fields.token);
   }));
 export const explodeRun = workflow({ input: object({}) }, async (ctx: WorkflowCtx) =>
   ctx.step.runMutation("explode", explode, {}, { retries: { limit: 0, delay: 0 } }));

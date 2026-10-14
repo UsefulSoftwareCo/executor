@@ -3,7 +3,7 @@ import { dashboardHttpClient, hydratedResult, requestKey } from "./http.ts";
 import {
   BrowserApprovalAcknowledgement,
   BrowserApprovalView,
-  BrowserToolRunAnswer,
+  BrowserToolRunAnswerReceived,
   ToolRunApprovalRefused,
   type ElicitationResponse,
 } from "@executor-js/mcp/browser";
@@ -11,7 +11,10 @@ import { Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Atom, type AsyncResult } from "effect/reactivity";
 
-/** Safe HTTP outcomes shared by the local and hosted browser approval endpoints. */
+/**
+ * Safe HTTP outcomes shared by the local and hosted browser approval endpoints. `reply-unreadable`:
+ * Executor accepted an answer, which may have resumed the call, but its reply did not decode here.
+ */
 export class BrowserApprovalFailed extends Schema.TaggedError<BrowserApprovalFailed>()(
   "BrowserApprovalFailed",
   {
@@ -21,6 +24,7 @@ export class BrowserApprovalFailed extends Schema.TaggedError<BrowserApprovalFai
       "invalid-answer",
       "unavailable",
       "network",
+      "reply-unreadable",
     ]),
   },
 ) {}
@@ -79,8 +83,14 @@ const request = <A, E = never>(
                   ? "unavailable"
                   : "network",
       });
+    // Reading again is safe. An accepted answer is not: the request may already be used.
     return yield* Schema.decodeUnknownEffect(schema)(body).pipe(
-      Effect.mapError(() => new BrowserApprovalFailed({ reason: "network" })),
+      Effect.mapError(
+        () =>
+          new BrowserApprovalFailed({
+            reason: options.answer === undefined ? "network" : "reply-unreadable",
+          }),
+      ),
     );
   });
 
@@ -118,7 +128,10 @@ export const toolRunApproval = (runtime: Atom.AtomRuntime<never>, endpoint: stri
       }),
     ),
   answer: runtime.fn((response: ElicitationResponse) =>
-    request(endpoint, BrowserToolRunAnswer, { answer: response, refused: ToolRunApprovalRefused }),
+    request(endpoint, BrowserToolRunAnswerReceived, {
+      answer: response,
+      refused: ToolRunApprovalRefused,
+    }),
   ),
 });
 /** Bindings for a dashboard run's review. */

@@ -56,7 +56,7 @@ layer(TestLive, { excludeTestServices: true })("Local pairing", (it) => {
                 content: `
             import { defineApp, query, object, string, router } from "apps";
             import isNumber from "is-number";
-            export default defineApp({ accounts: {} }, {
+            export default defineApp({}, {
               tools: router({
                 echo: query({ input: object({ value: string() }) }, async (_ctx, input) => ({ value: input.value, numeric: isNumber("2") })),
               }),

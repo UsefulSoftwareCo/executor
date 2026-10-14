@@ -1,4 +1,3 @@
-import type { ResourceLifecycle } from "../contracts/executor.ts";
 /** Configured-app data dispatch. Platform storage never holds authored rows. */
 import { Effect, Result, Schema, Stream } from "effect";
 import type { WorkflowHostControls } from "apps/contracts";
@@ -12,13 +11,12 @@ import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
-/** Bind data calls to fresh saved app/deployment/account selections. */
+/** Bind data calls to the current app deployment and the named accounts. */
 export const makeAppData = (
   storage: ExecutorDatabase,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   runtime: Runtime,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
-  lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const execute = (
@@ -29,7 +27,7 @@ export const makeAppData = (
   ) =>
     Effect.gen(function* () {
       const state = yield* read;
-      const accounts = yield* resolve(state, resolveAccount, lifecycle);
+      const accounts = yield* resolve(state, resolveAccount);
       return yield* runtime[kind]({
         build: state.deployment.build,
         database: ownsDatabase(state.deployment.requirements),
@@ -61,7 +59,7 @@ export const makeAppData = (
                   Stream.changesWith((a, b) => a.deployment.id === b.deployment.id),
                   Stream.switchMap((state) => {
                     // The deployment's first query uses the selections just read for it.
-                    // Later executions reread them, so they see account and profile changes.
+                    // Later executions reread them, so they see account changes.
                     let fresh: InvocationSnapshot | undefined = state;
                     const current = Effect.suspend(() => {
                       const known = fresh;

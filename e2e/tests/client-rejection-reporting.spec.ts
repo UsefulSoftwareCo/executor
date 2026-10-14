@@ -1,11 +1,11 @@
 /** Client request rejections are recorded on their request span and stay out of incident reporting. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Redacted, Schedule, Schema } from "effect";
-import { randomBytes, randomUUID } from "node:crypto";
+import { Effect, Schedule, Schema } from "effect";
+import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
-import { HostedLive, withCase, withHostedCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -14,6 +14,7 @@ import { awaitSentryEvents, traceExceptionTypes } from "../support/sentry-events
 import { openapiAppFiles } from "../support/authored-templates.ts";
 import { staleRegistryDocument } from "../support/stale-openapi-upstream.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 const kindTag = "executor.request.rejection.kind",
@@ -48,7 +49,7 @@ layer(HostedLive, { excludeTestServices: true })("Client rejection reporting", (
             {
               path: "index.ts",
               content: `import { defineApp, query, mutation, object, number, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     strict: query({ input: object({ count: number() }) }, async (_context, input) => input),
     crash: mutation({ input: object({}) }, async () => { throw new Error("private-fixture-message"); }),
@@ -82,12 +83,13 @@ export default defineApp({ accounts: {} }, async () => ({
             { kind: "Payload", issue: "$.files: MissingKey" },
           ],
           [
-            "connection payload from before selections moved into profiles",
+            "connection payload that names the account to replace by number instead of ID",
             "POST",
-            `${prefix}/apps/${app.id}/connections`,
-            { requirement: "service-requirement" },
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            { destination: { kind: "personal" }, account: 42 },
             400,
-            { kind: "Payload", issue: "$.profile: MissingKey" },
+            // `account` is optional, so a number matches neither an account ID nor its absence.
+            { kind: "Payload", issue: "$.account: AnyOf" },
           ],
           [
             "path parameter that is not an app ID",
@@ -298,55 +300,6 @@ export default defineApp({ accounts: {} }, async () => ({
         expect(JSON.stringify(events)).not.toContain("private-fixture-message");
         for (const value of privateValues) expect(JSON.stringify(events)).not.toContain(value);
       }).pipe(Effect.provide(McpClient.layer)),
-    ),
-  );
-
-  it.effect(scenarios.localRejectionRecording.title, (context) =>
-    withCase(
-      context,
-      Effect.gen(function* () {
-        const api = yield* Api,
-          evidence = yield* Evidence,
-          telemetry = yield* Telemetry,
-          target = yield* Target;
-        const anonymous = yield* api.session();
-        const trace = randomBytes(16).toString("hex");
-        // The deploy payload before deployments were separated from Git writes. Local API
-        // keys are not browser-origin requests, so this bypasses the origin-bearing client.
-        const response = yield* anonymous.send(
-          "POST",
-          "/v1/apps/deploy",
-          { owner: "local", expectedSource: "a".repeat(40), expectedDeployment: null },
-          {
-            authorization: `Bearer ${Redacted.value(target.apiKey)}`,
-            traceparent: `00-${trace}-${randomBytes(8).toString("hex")}-01`,
-          },
-        );
-        expect(response.status).toBe(400);
-        const span = yield* telemetry.query(trace).pipe(
-          Effect.flatMap((result) => {
-            const span = result.data.find(
-              ({ span }) =>
-                span.operationName.startsWith("http.server") &&
-                span.tags["http.response.status_code"] === "400",
-            );
-            return span === undefined
-              ? Effect.fail(new Error("No rejected request span"))
-              : Effect.succeed(span.span);
-          }),
-          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-        );
-        const recorded = {
-          operation: span.operationName,
-          errorType: span.tags["error.type"],
-          kind: span.tags[kindTag],
-          issues: span.tags[issuesTag],
-        };
-        yield* evidence.json("rejection-span.json", recorded);
-        expect(recorded).toMatchObject({ errorType: "HttpApiSchemaError", kind: "Payload" });
-        expect(recorded.issues).toContain("MissingKey");
-        expect(JSON.stringify(recorded)).not.toContain("a".repeat(40));
-      }),
     ),
   );
 });

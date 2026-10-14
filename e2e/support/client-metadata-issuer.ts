@@ -28,6 +28,7 @@ export type ClientRefusal =
   | "shared_secret"
   | "unknown_client"
   | "redirect_uri"
+  | "redirect_uri_origin"
   | "pkce";
 
 /** The members a public server reads from a document; anything else passes through. */
@@ -50,6 +51,11 @@ export const clientMetadataIssuer = (options: {
    * The product listens on loopback but names a public origin in its client ID.
    */
   readonly publicOrigins: Readonly<Record<string, string>>;
+  /**
+   * Accept a document client's redirect URIs only on the document's own origin, a restriction
+   * section 6 of the draft lets a server add and some services enforce.
+   */
+  readonly documentOriginRedirects?: boolean;
 }) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
@@ -156,7 +162,10 @@ export const clientMetadataIssuer = (options: {
       Effect.sync(() => refusals.push(reason)).pipe(
         Effect.andThen(
           HttpServerResponse.json(
-            { error: reason === "redirect_uri" ? "invalid_request" : "invalid_client", reason },
+            {
+              error: reason.startsWith("redirect_uri") ? "invalid_request" : "invalid_client",
+              reason,
+            },
             { status: 400 },
           ),
         ),
@@ -253,6 +262,12 @@ export const clientMetadataIssuer = (options: {
           if ("refused" in client) return yield* refuse(client.refused);
           // RFC 9700: the redirect URI must match a registered one exactly.
           if (!client.redirects.includes(redirect)) return yield* refuse("redirect_uri");
+          if (
+            kind === "document" &&
+            options.documentOriginRedirects === true &&
+            URL.parse(redirect)?.origin !== new URL(clientId).origin
+          )
+            return yield* refuse("redirect_uri_origin");
           if (challenge === null || params.get("code_challenge_method") !== "S256")
             return yield* refuse("pkce");
           authorizations.push({ clientId, redirectUri: redirect, client: kind });

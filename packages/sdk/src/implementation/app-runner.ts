@@ -2,20 +2,25 @@
  * The one app Worker runner. It runs beside the Worker Loader on every host: in the Cloud API
  * Worker, and in the trusted apps Worker of self-host and local. It names each Worker, loads it,
  * wraps the authored modules and delivers each call's accounts, run, approval, replay and deadline.
- * Secret fields of providers that declare hosts leave the runner only as sealed handles.
+ * Secret fields of providers that declare hosts, and every string of a managed account, leave the
+ * runner only as sealed handles: `bundleAccounts` is the one path from the host's accounts to the
+ * accounts a bundle reads.
  * A host supplies only its bindings and, per invocation, a build loader that the runner calls from
  * the Worker Loader's cold-start callback, so a warm call reads and transfers no code. Every
  * request and reply passes through the adapter of the protocol the build's framework speaks.
  */
 import type { Fetcher, WorkerLoader } from "@cloudflare/workers-types";
-import { Clock, Effect, Exit, Option, Redacted, Result, Schema, Semaphore } from "effect";
+import { Clock, Context, Effect, Exit, Option, Redacted, Result, Schema, Semaphore } from "effect";
 import {
   ElicitationReply,
   type HostRequest,
+  type HostAccounts,
+  scopedSlots,
   type InvocationDeadline,
   type ResolvedAccounts,
   type TrustedToolApproval,
   type WorkflowExecution,
+  WorkflowFailure,
   type WorkflowReplay,
 } from "apps/contracts";
 import { AppDatabaseError } from "@executor-js/app-data/contracts";
@@ -43,10 +48,11 @@ import {
   type RuntimeFailure,
 } from "../contracts/runtime.ts";
 import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
+import type { StartedPart } from "../contracts/runtime.ts";
 import { appProtocol, type AppProtocol } from "./app-protocols.ts";
 import { appFacetBridge, appNetworkModuleName, appRpcBridge } from "./worker-bridge.ts";
 import { appNetworkModule } from "./app-network.ts";
-import { sealAccounts } from "./credential-handles.ts";
+import { sealAccounts, unsealedAccounts } from "./credential-handles.ts";
 import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
 import { invocationWorkflow } from "./worker-workflow-rpc.ts";
 import { type AppWorkerResidency, namedWorker } from "./app-worker-residency.ts";
@@ -63,7 +69,21 @@ export interface AppDataHost {
   ) => Effect.Effect<unknown, unknown>;
   readonly cancel: (id: string) => Effect.Effect<void, unknown>;
   readonly cache: (namespace: string, command: unknown) => Effect.Effect<unknown, unknown>;
+  /**
+   * Activate the supervisor ahead of a cold call's first command, so an idle supervisor's isolate
+   * starts while the app Worker loads instead of after it. The runner sends it in the background,
+   * at most once per call, and ignores its outcome: the call's own commands reach the supervisor
+   * either way. `reason` is how the runner knew the call was cold. A host whose supervisors have no
+   * isolate of their own to start leaves it out.
+   */
+  readonly wake?: (reason: SupervisorWakeReason) => Effect.Effect<unknown, unknown>;
 }
+
+/**
+ * How the runner knew a call was cold: it read the build, which this isolate has not run, or the
+ * Worker Loader started the app's Worker (`app`, as in `StartedPart`).
+ */
+export type SupervisorWakeReason = "build" | "app";
 
 /** Host bindings. None of them reaches authored code except the outbound network. */
 export interface AppRunnerHost {
@@ -75,6 +95,10 @@ export interface AppRunnerHost {
   readonly outbound: (app: string) => Fetcher;
   /** Seals the secret fields of providers that declare hosts. App code never holds it. */
   readonly credentialKey: Effect.Effect<CryptoKey>;
+  /**
+   * The app's data supervisor for one invocation: the runner asks once per invocation, so a host
+   * can tell that invocation's wake and commands apart from others of the same trace.
+   */
   readonly data: (app: string) => AppDataHost;
   /** Keep a successful call's release, including its cache refreshes, alive after it returns. */
   readonly waitUntil: (task: Promise<unknown>) => void;
@@ -88,6 +112,14 @@ export interface AppRunnerHost {
    * against the residency's limit. True once it is unloaded. Supplied with a residency.
    */
   readonly unloadFacet?: (app: string, identity: string) => Effect.Effect<boolean, unknown>;
+  /**
+   * Set when this runner runs inside an app's data supervisor, which Cloud calls directly for a call
+   * that uses the app's database (see `runsInFacet`). `serves` says whether that supervisor is the
+   * one named for an app, from its own object ID. Such a runner serves only that app's database
+   * calls and refuses anything else before it reads a build, seals an account or loads code. It has
+   * no isolate of its own to start, and its caller's hop to it carries the supervisor's start.
+   */
+  readonly within?: { readonly supervisor: { readonly serves: (app: string) => boolean } };
 }
 
 /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
@@ -96,7 +128,7 @@ export interface AppInvocation {
   readonly build: string;
   readonly database: boolean;
   readonly command: HostRequest;
-  readonly accounts: typeof ResolvedAccounts.Type;
+  readonly accounts: HostAccounts;
   readonly approval?: typeof TrustedToolApproval.Type;
   readonly replay?: typeof WorkflowReplay.Type;
   readonly deadline?: typeof InvocationDeadline.Type;
@@ -243,8 +275,9 @@ const protocols = new Map<string, AppProtocol>();
 const protocolLimit = 4096;
 /**
  * First reads of builds whose protocol is not known yet, by build, with the read build once it
- * arrives. Concurrent first calls of a build, such as a tool call and the profile setup that an
- * account selection started, share one read, so the Worker they both reach loads its build once.
+ * arrives. Concurrent first calls of a build, such as a tool call and the webhook registration
+ * that linking an account started, share one read, so the Worker they both reach loads its build
+ * once.
  * Only plain data is shared: a call never awaits another call's promise. On Cloud, a call resumed
  * by another request's promise continues in that request's I/O context, and its own capabilities
  * then fail with "Cannot perform I/O on behalf of a different request". A waiting call therefore
@@ -283,6 +316,8 @@ const protocolOf = (
   build: string,
   load: () => Promise<LoadedWorkerBuild>,
   waitUntil: (task: Promise<unknown>) => void,
+  /** Called when this call reads the build itself: this isolate has not learned its protocol. */
+  reading: () => void,
 ) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
@@ -308,6 +343,7 @@ const protocolOf = (
             if (reads.get(build) === entry) reads.delete(build);
           }),
       );
+    reading();
     // A loader that throws before returning its promise still fails through `attempt`.
     const read = (async () => load())();
     // Keep this request alive until the read settles, so the calls waiting on it are released.
@@ -334,37 +370,54 @@ class ColdStartFailed extends Schema.TaggedError<ColdStartFailed>()("ColdStartFa
 export const appWorker = (
   invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts">,
 ) =>
-  facetIdentity(invocation.build, invocation.accounts).pipe(
+  // Requirement names are unique across scopes, so one record names the account set.
+  facetIdentity(invocation.build, Object.fromEntries(scopedSlots(invocation.accounts))).pipe(
     Effect.map((identity) => ({
       identity,
-      mode:
-        invocation.database && dataOperations.has(invocation.command.operation)
-          ? ("facet" as const)
-          : ("worker" as const),
+      mode: runsInFacet(invocation) ? ("facet" as const) : ("worker" as const),
       name: `${invocation.app}:${identity}`,
     })),
   );
 
+/** Whether a call runs in the app's data facet, under its data supervisor, rather than its Worker. */
+export const runsInFacet = (invocation: Pick<AppInvocation, "database" | "command">) =>
+  invocation.database && dataOperations.has(invocation.command.operation);
+
 /**
- * A workflow whose steps read their accounts as this app's invocations do: secret fields of
- * providers with hosts are sealed. The host resolves current credentials for each step.
+ * The accounts a bundle of this protocol reads. A bundle that reads sealed handles gets the
+ * secret fields of providers with hosts, and every string of a managed account, sealed. An
+ * earlier bundle reads every field as a real value, so it gets accounts as they are, and an
+ * invocation of it with a managed account fails without reaching it.
  */
-const sealedWorkflow = (
-  execution: WorkflowExecution,
+const bundleAccounts = (
+  protocol: AppProtocol,
   app: string,
   key: Effect.Effect<CryptoKey>,
+  accounts: HostAccounts,
+): Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed> => {
+  if (protocol.sealedCredentials) return sealAccounts(accounts, { app, key });
+  const unsealed = unsealedAccounts(accounts);
+  return unsealed === undefined ? failed("managed") : Effect.succeed(unsealed);
+};
+
+/**
+ * A workflow whose steps read their accounts as this app's invocations do, through
+ * `bundleAccounts`. The host resolves current credentials for each step.
+ */
+const boundWorkflow = (
+  execution: WorkflowExecution,
+  accounts: (resolved: HostAccounts) => Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed>,
 ): WorkflowExecution => ({
   ...execution,
   resolve: () =>
-    execution
-      .resolve()
-      .pipe(
-        Effect.flatMap((context) =>
-          sealAccounts(Redacted.value(context.accounts), { app, key }).pipe(
-            Effect.map((accounts) => ({ ...context, accounts: Redacted.make(accounts) })),
-          ),
+    execution.resolve().pipe(
+      Effect.flatMap((context) =>
+        accounts(Redacted.value(context.accounts)).pipe(
+          Effect.mapError(() => new WorkflowFailure({ reason: "credentials", retryable: false })),
+          Effect.map((accounts) => ({ ...context, accounts: Redacted.make(accounts) })),
         ),
       ),
+    ),
 });
 
 /** Times one step of an invocation on the runner's clock. */
@@ -372,14 +425,49 @@ type Timed = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 const notTimed: Timed = (effect) => effect;
 
 /**
+ * Told when a part the runner reaches for a call started for it: the app's Worker on a Worker
+ * Loader cold start, or its data supervisor on a cache command. `unknown` when a part answered
+ * without saying whether it started, such as a supervisor that predates it. Telemetry only.
+ */
+export const IsolateStarted = Context.Reference<(part: StartedPart | "unknown") => void>(
+  "executor/IsolateStarted",
+  { defaultValue: () => () => undefined },
+);
+
+// oxlint-disable-next-line executor/no-module-level-mutable-state -- whether this isolate has received a call; it carries no request data
+let runnerReceived = false;
+
+/**
+ * Where a call entered the runner's isolate: when, on its clock, and whether it was the first call
+ * the isolate received, so its start-up ran in the caller's wait. Taken once, where the call
+ * arrives, before anything it waits on, so concurrent first calls cannot both claim the start.
+ */
+export const runnerIngress = Effect.map(Clock.currentTimeNanos, (receivedAt) => {
+  const first = !runnerReceived;
+  runnerReceived = true;
+  return { receivedAt, first };
+});
+
+/**
+ * The call's ingress, when the host that serves the runner took the call before `invoke`, for
+ * instance to decode it. The runner's part starts there.
+ */
+export const RunnerIngress = Context.Reference<
+  { readonly receivedAt: bigint; readonly first: boolean } | undefined
+>("executor/RunnerIngress", { defaultValue: () => undefined });
+
+/**
  * The runner's own part of one invocation, on its own clock: how long it took, and how much of that
  * it waited on the isolate running the app. Starting the call there, cold starts included, is the
  * runner's own time: the app runs only once the runner waits for its result. A caller in another
  * isolate cannot measure any of it, since Workers clocks advance only on I/O and are not comparable
- * across isolates.
+ * across isolates. It also tells what started for this call: the runner's isolate, and what the
+ * runner reached (see `IsolateStarted`).
  */
-const runnerTiming = () => {
+const runnerTiming = (within: AppRunnerHost["within"]) => {
   let waitMs = 0;
+  const startedParts = new Set<StartedPart>();
+  let startsKnown = true;
   const waiting: Timed = (effect) =>
     Effect.flatMap(Clock.currentTimeNanos, (from) =>
       effect.pipe(
@@ -395,11 +483,30 @@ const runnerTiming = () => {
   /** Add the timing to an object reply: an additive field, like `cacheChanged`. */
   const report = <E, R>(invoke: Effect.Effect<unknown, E, R>) =>
     Effect.gen(function* () {
-      const started = yield* Clock.currentTimeNanos;
-      const result = yield* invoke;
+      const ingress = (yield* RunnerIngress) ?? (yield* runnerIngress);
+      // Inside the supervisor, the start before this clock began is the supervisor's, which it
+      // reports itself.
+      if (ingress.first && within === undefined) startedParts.add("runner");
+      const started = ingress.receivedAt;
+      const result = yield* invoke.pipe(
+        Effect.provideService(IsolateStarted, (part) => {
+          if (part === "unknown") startsKnown = false;
+          else startedParts.add(part);
+        }),
+      );
       const elapsedMs = Number((yield* Clock.currentTimeNanos) - started) / 1_000_000;
       return typeof result === "object" && result !== null && !Array.isArray(result)
-        ? { ...result, runner: { elapsedMs, waitMs } }
+        ? {
+            ...result,
+            // `started` is sent whenever it is known, so a warm call is told apart from a runner
+            // that predates it or a part that did not say.
+            runner: {
+              elapsedMs,
+              waitMs,
+              ...(startsKnown ? { started: [...startedParts] } : {}),
+              ...(within === undefined ? {} : { host: "supervisor" as const }),
+            },
+          }
         : result;
     });
   return { waiting, report };
@@ -437,11 +544,12 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           name === null || residency === undefined
             ? Effect.void
             : yield* Effect.acquireRelease(
-                residency.hold(name, namedWorker(host.loader, name)),
+                residency.hold(name, namedWorker(host.loader, name), host.waitUntil),
                 (unhold) => (held ? Effect.void : unhold),
               );
         const services = yield* Effect.context<never>();
         const load = async () => {
+          Context.get(services, IsolateStarted)("app");
           // Recorded when the Worker Loader runs its cold-start callback, inside runtime.app.rpc.start.
           const read = await Effect.runPromiseWith(services)(
             Effect.tryPromise({ try: code, catch: (cause) => cause }).pipe(
@@ -595,6 +703,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
 
   /** Run one call through its data supervisor, which loads the facet only on a cold start. */
   const facet = (
+    target: AppDataHost,
     invocation: AppInvocation,
     identity: string,
     capabilities: AppCapabilities,
@@ -604,7 +713,6 @@ export const makeAppRunner = (host: AppRunnerHost) => {
     waiting: Timed,
   ) =>
     Effect.gen(function* () {
-      const target = host.data(invocation.app);
       const id = crypto.randomUUID();
       const { command } = invocation;
       const result = yield* target
@@ -665,8 +773,23 @@ export const makeAppRunner = (host: AppRunnerHost) => {
      * selection, so renewed credentials, other runs and other calls of the same selection reuse it.
      */
     invoke: (invocation: AppInvocation, capabilities: AppCapabilities) => {
-      const timing = runnerTiming();
+      const timing = runnerTiming(host.within);
       return Effect.gen(function* () {
+        // A supervisor's runner serves only its own app's database calls: it never loads an app
+        // Worker into the supervisor's isolate, and never pairs one app's code or accounts with
+        // another app's storage, whatever a caller of the supervisor sends.
+        // A refusal never happens in normal traffic, so the span says which rule refused it.
+        if (host.within !== undefined) {
+          const refused = !host.within.supervisor.serves(invocation.app)
+            ? "other-app"
+            : !runsInFacet(invocation)
+              ? "not-database"
+              : undefined;
+          if (refused !== undefined) {
+            yield* Effect.annotateCurrentSpan("executor.runner.refused", refused);
+            return yield* failed("internal");
+          }
+        }
         const { identity, mode, name } = yield* appWorker(invocation).pipe(
           Effect.catch(() => failed("internal")),
         );
@@ -674,23 +797,42 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           "executor.runtime.mode": mode,
           "executor.worker.identity": name,
         });
+        const data = host.data(invocation.app);
+        const services = yield* Effect.context<never>();
+        // A cold call's supervisor is usually idle too, and its isolate takes about as long to start
+        // as the app Worker's. A Worker call wakes it once, in the background, as soon as the call
+        // is known to be cold, so the two starts overlap; a warm call sends nothing extra. A facet
+        // call's first message to the supervisor is its invocation, so a wake would gain nothing.
+        const wake = data.wake;
+        let woken = mode === "facet" || wake === undefined;
+        const wakeSupervisor = (reason: SupervisorWakeReason) => {
+          if (woken || wake === undefined) return;
+          woken = true;
+          // Never fails the call: it also runs inside the Worker Loader's cold-start callback.
+          try {
+            host.waitUntil(
+              Effect.runPromiseWith(services)(
+                wake(reason).pipe(Effect.catchCause(() => Effect.void)),
+              ),
+            );
+          } catch {
+            // The call's own commands reach the supervisor either way.
+          }
+        };
         // The build's protocol adapter owns this boundary: requests leave, and replies return, in
         // the host's current model whichever protocol the retained bundle speaks.
         const { protocol, load } = yield* protocolOf(
           invocation.build,
           capabilities.load,
           host.waitUntil,
+          () => wakeSupervisor("build"),
         );
         // A command this protocol's bundles would not run as asked fails without reaching them.
         const refused = protocol.refuse(invocation.command);
         if (refused !== undefined) return { ok: false, error: refused };
-        // A bundle from before credential hosts reads every field as a real value.
-        const accounts = protocol.sealedCredentials
-          ? yield* sealAccounts(invocation.accounts, {
-              app: invocation.app,
-              key: host.credentialKey,
-            })
-          : invocation.accounts;
+        const accountsFor = (resolved: HostAccounts) =>
+          bundleAccounts(protocol, invocation.app, host.credentialKey, resolved);
+        const accounts = yield* accountsFor(invocation.accounts);
         const body = protocol.invocation({
           command: invocation.command,
           accounts,
@@ -707,16 +849,21 @@ export const makeAppRunner = (host: AppRunnerHost) => {
               // The facet Worker counts against the same limit as app Workers while it is loaded.
               const unloadFacet = host.unloadFacet;
               if (host.residency !== undefined && unloadFacet !== undefined) {
-                const hold = host.residency.hold(`data:${name}`, {
-                  run: unloadFacet(invocation.app, identity).pipe(
-                    Effect.orElseSucceed(() => false),
-                  ),
-                  // The supervisor replaces a facet Worker whose unload does not settle.
-                  abandon: () => undefined,
-                });
+                const hold = host.residency.hold(
+                  `data:${name}`,
+                  {
+                    run: unloadFacet(invocation.app, identity).pipe(
+                      Effect.orElseSucceed(() => false),
+                    ),
+                    // The supervisor replaces a facet Worker whose unload does not settle.
+                    abandon: () => undefined,
+                  },
+                  host.waitUntil,
+                );
                 yield* Effect.acquireRelease(hold, (unhold) => unhold).pipe(Effect.asVoid);
               }
               return yield* facet(
+                data,
                 invocation,
                 identity,
                 capabilities,
@@ -727,8 +874,6 @@ export const makeAppRunner = (host: AppRunnerHost) => {
               );
             }),
           );
-        const data = host.data(invocation.app);
-        const services = yield* Effect.context<never>();
         // Cache writes after the result (background refreshes) are not reported to the host.
         let cacheChanged = false;
         const store =
@@ -768,6 +913,9 @@ export const makeAppRunner = (host: AppRunnerHost) => {
             close: leases.close,
           })),
         );
+        // The Worker Loader starting the app's Worker, as the call's start-up reports it, is the
+        // other sign the call is cold.
+        const started = yield* IsolateStarted;
         const reply = yield* start(name, load, {
           body,
           headers: invocation.headers,
@@ -777,16 +925,17 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           ...(capabilities.workflow === undefined
             ? {}
             : {
-                workflow: protocol.workflow(
-                  protocol.sealedCredentials
-                    ? sealedWorkflow(capabilities.workflow, invocation.app, host.credentialKey)
-                    : capabilities.workflow,
-                ),
+                workflow: protocol.workflow(boundWorkflow(capabilities.workflow, accountsFor)),
               }),
           cache,
           explain: false,
           waiting: timing.waiting,
-        });
+        }).pipe(
+          Effect.provideService(IsolateStarted, (part) => {
+            started(part);
+            if (part === "app") wakeSupervisor("app");
+          }),
+        );
         const result = yield* protocol.response(invocation.command, reply);
         return cacheChanged &&
           typeof result === "object" &&
@@ -807,7 +956,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         );
         const command = { operation: "requirements" } as const;
         const reply = yield* start(null, async () => bundle, {
-          body: protocol.invocation({ command, accounts: {} }),
+          body: protocol.invocation({ command, accounts: { app: {} } }),
           headers,
           globalOutbound: null,
           elicit: null,

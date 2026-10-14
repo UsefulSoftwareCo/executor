@@ -106,7 +106,7 @@ export function CustomAppForm<E>({
       <AgentSetupPrompt
         title="Any other service"
         description="For OpenAPI, GraphQL, API keys, local tools, or anything else, send this prompt to your agent. It reads the service’s documentation and asks how you sign in."
-        prompt={agentSetupPrompt(undefined, endpoint)}
+        prompt={agentSetupPrompt(endpoint)}
       />
     </div>
   );

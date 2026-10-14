@@ -179,5 +179,8 @@ Normal main pushes continue exporting to public `v2` through
 `scripts/export-public.sh`. Release snapshots use `v2-releases` so a release
 cannot race or replace a newer main export. Both use
 `scripts/export-public.exclude`; private history and internal notes stay private.
+A main export also merges the public pull requests that main ports, named by
+`Public-PR` lines in its commit messages; a release export merges none, because
+no pull request targets `v2-releases`.
 Public release notes come from the product README, not private PR titles or
 GitHub's generated changelog.

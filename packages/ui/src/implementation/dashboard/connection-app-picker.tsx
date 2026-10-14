@@ -1,6 +1,6 @@
 import { useId, type ReactNode } from "react";
-import type { AccountId, App, Profile } from "@executor-js/sdk";
-import { providerDisplayUrl, selectedIds, type AccountSummary } from "../../contracts/dashboard.ts";
+import type { AccountId, App, ProviderId } from "@executor-js/sdk";
+import type { AccountSummary } from "../../contracts/dashboard.ts";
 import {
   connectionTargetKey,
   connectionTargetLabel,
@@ -10,6 +10,7 @@ import {
   type ConnectionTarget,
   type ConnectionTools,
 } from "../../contracts/scoped-connections.ts";
+import type { AppAccountLink } from "../../contracts/app-accounts.ts";
 import { Checkbox } from "../components/checkbox.tsx";
 import { Button } from "../components/button.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
@@ -22,73 +23,52 @@ import {
 } from "../components/select.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
-import { ProviderIcon } from "./common.tsx";
-import { accountContexts } from "./account-group.tsx";
+import { AppIcon } from "./common.tsx";
 import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
 
-/** One way an app can run: a saved profile, or an account with the app's default setup. */
+/** One way an app can run: as one account the user can use with it. */
 export interface Choice {
   readonly target: ConnectionTarget;
   readonly description: string;
   /** Underlying accounts, used to apply one account across many apps at once. */
   readonly accounts: readonly AccountId[];
+  readonly provider: ProviderId;
 }
 
 /** Everything an app offers a connection, computed once per inventory rather than per render. */
 export interface AppChoices {
   readonly app: App;
-  /** Profiles first, then accounts that no single-account profile already covers. */
+  /** Linked accounts first, then other usable accounts of a required provider. */
   readonly options: readonly Choice[];
   readonly needsAccount: boolean;
-  readonly catalogProfiles: readonly Profile[];
 }
 
+/**
+ * Saving a connection links any chosen account that is not linked to the app yet. Only user
+ * requirements are chosen for: the app's own requirements use the accounts linked for everyone, which app
+ * access authorizes, so an app with only those runs as the app.
+ */
 export function appChoices(
   app: App,
-  profiles: readonly Profile[],
+  links: readonly AppAccountLink[],
   accounts: readonly AccountSummary[],
 ): AppChoices {
-  const contexts = accountContexts(app, profiles);
-  const requirements = Object.values(app.requirements.accounts);
-  const accountLabel = (id: AccountId) => {
-    const account = accounts.find((account) => account.id === id);
-    return account === undefined ? "Account unavailable" : account.label || "Unnamed account";
-  };
-  const profileChoices: readonly Choice[] = contexts.flatMap((context) => {
-    if (context.profile === undefined) return [];
-    const ids = selectedIds(context.accounts);
-    const names = ids.map(accountLabel).join(", ") || "No accounts";
-    return [
-      {
-        target: { kind: "profile", id: context.profile.id, label: `${context.label} · ${names}` },
-        description: "Saved profile",
-        accounts: ids,
-      },
-    ];
-  });
-  // A profile that uses exactly one account already stands for that account.
-  const covered = new Set(
-    profileChoices.flatMap((choice) => (choice.accounts.length === 1 ? choice.accounts : [])),
+  const requirements = Object.values(app.requirements.accounts).filter(
+    (requirement) => requirement.scope === "user",
   );
-  const accountChoices: readonly Choice[] = accounts
-    .filter(
-      (account) =>
-        !covered.has(account.id) &&
-        requirements.some((requirement) => requirement.provider === account.provider),
+  const linked = new Set(links.flatMap((link) => (link.app === app.id ? [link.account] : [])));
+  const options = accounts
+    .filter((account) =>
+      requirements.some((requirement) => requirement.provider === account.provider),
     )
-    .map((account) => ({
+    .toSorted((a, b) => Number(linked.has(b.id)) - Number(linked.has(a.id)))
+    .map((account): Choice => ({
       target: { kind: "account", id: account.id, label: account.label || "Unnamed account" },
-      description: "Default setup",
+      description: linked.has(account.id) ? "Linked to this app" : "Links when saved",
       accounts: [account.id],
+      provider: account.provider,
     }));
-  return {
-    app,
-    options: [...profileChoices, ...accountChoices],
-    needsAccount: requirements.length > 0,
-    catalogProfiles: contexts.flatMap((context) =>
-      context.profile === undefined ? [] : [context.profile],
-    ),
-  };
+  return { app, options, needsAccount: requirements.length > 0 };
 }
 
 /** The events an app's active deployment declares, by name. */
@@ -109,7 +89,7 @@ export function initialSelection(choices: AppChoices): ConnectionApp {
   };
 }
 
-/** The way to run an app as one account alone; a saved profile wins over the default setup. */
+/** The way to run an app as one account alone. */
 export const accountOption = (choices: AppChoices, account: AccountId): Choice | undefined =>
   choices.options.find((choice) => choice.accounts.length === 1 && choice.accounts[0] === account);
 
@@ -130,17 +110,6 @@ export function selectionIssue(choices: AppChoices, selection: ConnectionApp): s
   return undefined;
 }
 
-/** Prefer a selected profile's catalog, then any saved profile, then the app's own catalog. */
-function catalogProfile(choices: AppChoices, selection: ConnectionApp): Profile | undefined {
-  const selected = selection.targets.flatMap((target) =>
-    target.kind === "profile" ? [target.id] : [],
-  );
-  return (
-    choices.catalogProfiles.find((profile) => selected.includes(profile.id)) ??
-    choices.catalogProfiles[0]
-  );
-}
-
 /** One dense row per app. Controls appear only once the app is included. */
 export function ConnectionAppRow({
   choices,
@@ -159,7 +128,6 @@ export function ConnectionAppRow({
 }) {
   const id = useId();
   const { app } = choices;
-  const provider = Object.values(app.requirements.accounts)[0]?.definition;
   const issue = selection === undefined ? undefined : selectionIssue(choices, selection);
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
   const setTools = (tools: ConnectionTools) => {
@@ -183,7 +151,7 @@ export function ConnectionAppRow({
               if (checked !== true) onExpandedChange(false);
             }}
           />
-          <ProviderIcon name={provider?.name ?? app.name} url={providerDisplayUrl(provider)} />
+          <AppIcon app={app} />
           <span className="min-w-0">
             <span className="block truncate text-[13px] font-medium" title={app.name}>
               {app.name}
@@ -283,7 +251,6 @@ export function ConnectionAppRow({
           ) : (
             renderTools({
               app,
-              profile: catalogProfile(choices, selection),
               names: selection.tools.names,
               onChange: (names) => setTools({ kind: "selected", names }),
             })
@@ -389,7 +356,7 @@ function AccountsPicker({
       ? "Runs as…"
       : selection.targets.length === 1 && selection.targets[0] !== undefined
         ? connectionTargetLabel(selection.targets[0])
-        : `${selection.targets.length} setups`;
+        : `${selection.targets.length} accounts`;
   const toggle = (target: ConnectionTarget, checked: boolean) => {
     const key = connectionTargetKey(target);
     onChange(

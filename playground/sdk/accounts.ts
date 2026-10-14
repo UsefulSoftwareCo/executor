@@ -1,8 +1,8 @@
-/** Selecting existing accounts never copies their credentials or transfers ownership. */
+/** Choosing existing accounts never copies their credentials or transfers ownership. */
 import {
+  ToolName,
   type AccountId,
   type AppId,
-  type Profile,
   type Executor,
   type OwnerId,
 } from "@executor-js/sdk";
@@ -15,38 +15,31 @@ export async function listAxiomAccounts(executor: Executor, appId: AppId, owner:
   return executor.accounts.list({ owner, provider: axiom.provider });
 }
 
-/** After product authorization, two apps can select the exact same saved account. */
+/** After product authorization, two apps can run with the exact same saved account. */
 export async function reuseAxiomAccount(
   executor: Executor,
-  firstProfile: Profile,
-  secondProfile: Profile,
+  first: AppId,
+  second: AppId,
   selectedAccount: AccountId,
 ) {
-  await executor.apps.profiles.update({
-    app: firstProfile.app,
-    profile: firstProfile.id,
-    expectedRevision: firstProfile.revision,
-    accounts: { axiom: selectedAccount },
-  });
-  await executor.apps.profiles.update({
-    app: secondProfile.app,
-    profile: secondProfile.id,
-    expectedRevision: secondProfile.revision,
-    accounts: { axiom: selectedAccount },
-  });
+  // Each app's tools are discovered live from Axiom with that account.
+  const tools = (app: AppId) =>
+    executor.tools.list({ app, accounts: { app: {}, user: { axiom: [selectedAccount] } } });
+  return { first: await tools(first), second: await tools(second) };
 }
 
-/** One configured Mail app selects several accounts for its gmail.many() requirement. */
-export async function selectMailboxes(
+/** One call to the Mail app runs with several accounts for its gmail.many() requirement. */
+export async function listInboxes(
   executor: Executor,
-  profile: Profile,
+  mail: AppId,
   work: AccountId,
   personal: AccountId,
 ) {
-  return executor.apps.profiles.update({
-    app: profile.app,
-    profile: profile.id,
-    expectedRevision: profile.revision,
-    accounts: { mailboxes: [work, personal] },
+  return executor.tools.call({
+    app: mail,
+    accounts: { app: {}, user: { mailboxes: [work, personal] } },
+    tool: ToolName.make("listInbox"),
+    kind: "query",
+    input: {},
   });
 }

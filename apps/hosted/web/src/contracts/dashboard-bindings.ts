@@ -43,10 +43,13 @@ export const dashboardAtoms = Atom.family((organization: OrganizationReference) 
       AsyncResult.map((page) => page.items),
     ),
   ),
-  install: HostedClient.runtime.fn((input: InstallApp, get) =>
-    Effect.flatMap(HostedClient, (client) =>
-      client.apps.install({ params: { organization }, payload: input }),
-    ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, organization, saved)))),
+  /** One install per catalog entry, so rows add independently and each gets its own result. */
+  install: Atom.family((_entry: string) =>
+    HostedClient.runtime.fn((input: InstallApp, get) =>
+      Effect.flatMap(HostedClient, (client) =>
+        client.apps.install({ params: { organization }, payload: input }),
+      ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, organization, saved)))),
+    ),
   ),
   importCustom: HostedClient.runtime.fn((input: CustomAppInput, get) =>
     Effect.flatMap(HostedClient, (client) =>

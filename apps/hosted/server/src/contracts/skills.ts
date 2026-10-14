@@ -16,7 +16,7 @@ import {
 import { OrganizationReference, RequireOrganization } from "./organization.ts";
 
 const app = { organization: OrganizationReference, app: AppId };
-const version = SkillSelection;
+const version = { deployment: SkillSelection.deployment, revision: SkillSelection.revision };
 const prefix = "/api/organizations/:organization/apps/:app/skills";
 /** App and account permissions authorize dynamic skill discovery. */
 export const HostedSkills = HttpApiGroup.make("skills")

@@ -171,8 +171,8 @@ export const operationDescription = (
   );
 
 /**
- * A dynamic router over operations already discovered, such as an eager OpenAPI document or a
- * stdio server. Upstream names can contain dots, which static router keys cannot.
+ * A dynamic router over operations already discovered, such as an eager OpenAPI document.
+ * Upstream names can contain dots, which static router keys cannot.
  */
 export const fixedRouter = (
   operations: Readonly<Record<string, AppOperation>>,

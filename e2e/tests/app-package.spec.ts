@@ -11,6 +11,7 @@ import { App } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { appPackageFixture } from "../support/app-package.ts";
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 const files = (dependency: string, direct: string, unused: string) => [
   {
     path: "package.json",
@@ -146,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
         expect(rejected.body).toMatchObject({
           _tag: "DeploymentBuildFailed",
           reason:
-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11. Declare a supported apps version.",
+            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13. Declare a supported apps version.",
         });
         expect((yield* call("queries.version")).body).toEqual(Published);
         expect(

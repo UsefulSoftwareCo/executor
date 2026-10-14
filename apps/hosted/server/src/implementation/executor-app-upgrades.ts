@@ -25,7 +25,7 @@ export const queueExecutorAppUpgrades = Effect.gen(function* () {
  * After a data step redeploys an organization's default Executor app, record the new deployment
  * where the replaced one was recorded. Member setup trusts only the recorded deployment as
  * Executor's own; a copy recorded under another deployment, or none, stays as it was. The host
- * names how the step wakes profile setup, which the new deployment leaves pending.
+ * names how the step wakes webhook source reconciliation, which the new deployment leaves pending.
  */
 export const executorDefaultRedeployed =
   (wake: Effect.Effect<void>) => (app: App, replaced: DeploymentId, deployment: DeploymentId) =>

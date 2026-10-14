@@ -38,7 +38,7 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
               path: "index.ts",
               // The key alone exceeds the cache's key limit, as a large credential once did.
               content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async (ctx) => {
+export default defineApp({}, async (ctx) => {
   await ctx.cache.write([{ key: ${JSON.stringify(privateMarker)} + "x".repeat(9000), value: true }], "1 minute");
   return { tools: router({ never: query({ input: object({}) }, async () => true) }) };
 });`,
@@ -63,7 +63,7 @@ export default defineApp({ accounts: {} }, async (ctx) => {
           source: "storage",
           errorName: "CacheError",
           code: "capacity",
-          message: "A cache key, value or batch exceeded the app cache's size limits.",
+          message: "A cache key exceeded the app cache's limit of 8,192 bytes per key.",
         });
         const traceId = (yield* evidence.requests).at(-1)?.traceId;
         if (traceId === undefined) return yield* Effect.die("The request trace was not recorded");

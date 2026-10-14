@@ -74,5 +74,12 @@ export const cloudLocks = Effect.gen(function* () {
       ),
     /** Resume a backend process `stop` stopped; any other process is left alone. */
     resume,
+    /**
+     * Refuse new connections to the database until the caller's scope closes; open ones stay.
+     * The fixture also allows them again when it exits.
+     */
+    refuseConnections: Effect.acquireRelease(Effect.asVoid(send({ connections: false })), () =>
+      Effect.asVoid(send({ connections: true })),
+    ),
   };
 });

@@ -4,14 +4,14 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
 import { Data, Effect } from "effect";
 import { Atom, AsyncResult } from "effect/reactivity";
-import type { Account, AccountId, AppId, Profile } from "@executor-js/sdk";
+import type { Account, AccountId, AppId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import type {
   AppAudience,
   SharedAudience,
   AccessRevision,
 } from "@executor-js/hosted-server/resource-access";
-import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
+import { acknowledge } from "@executor-js/ui/contracts/mutations";
 import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { HostedClient } from "./api.ts";
 import { protectedQuery } from "./protected-query.ts";
@@ -103,28 +103,6 @@ export const acknowledgeResourceAccount = (
     }));
   get.refresh(inventoryAtom(organization));
 };
-/** Keep app cards in sync with a confirmed personal profile change before navigation. */
-export const acknowledgeResourceProfile = (
-  get: Atom.FnContext,
-  organization: OrganizationReference,
-  saved: Profile,
-) => {
-  for (const view of ["available", "managed"] as const)
-    acknowledge(get, resourceDirectoryAtom(organization, view), (data) => ({
-      ...data,
-      apps: data.apps.map((entry) =>
-        entry.app.id === saved.app && entry.access.canUse
-          ? {
-              ...entry,
-              profiles:
-                saved.status === "removed"
-                  ? entry.profiles.filter((profile) => profile.id !== saved.id)
-                  : upsert(entry.profiles, saved),
-            }
-          : entry,
-      ),
-    }));
-};
 const shareApp = Atom.family((key: AppKey) =>
   HostedClient.runtime.fn(
     (payload: { audience: typeof AppAudience.Type; revision: typeof AccessRevision.Type }, get) =>
@@ -199,16 +177,18 @@ const inventory = Atom.family((key: ListKey) =>
                   access.audience.groups.some((id) => id === key.group))),
         )
         .map(({ app }) => app);
-      const profiles = data.apps
+      const links = data.apps
         .filter(({ app }) => apps.some((item) => item.id === app.id))
-        .flatMap(({ profiles }) => profiles);
+        .flatMap(({ app, linkedAccounts }) =>
+          linkedAccounts.map((account) => ({ app: app.id, account })),
+        );
       const accounts = data.accounts.map(({ account, provider, health }) => ({
         ...account,
         providerName: provider.definition.name,
         providerUrl: providerDisplayUrl(provider.definition),
         ...(health === undefined ? {} : { health }),
       }));
-      return { apps, accounts, profiles, pendingApp: key.group !== "private" && data.pendingApp };
+      return { apps, accounts, links, pendingApp: key.group !== "private" && data.pendingApp };
     }),
   ),
 );

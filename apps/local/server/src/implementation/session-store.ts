@@ -1,5 +1,5 @@
 /** Local product sessions survive host restarts without entering the SDK schema. */
-import { pgliteLayer } from "fumadb-effect/pglite";
+import { localDatabase } from "./storage.ts";
 import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
@@ -28,7 +28,7 @@ export const openBrowserSessions = (directory: string) =>
     const location = path.join(directory, "browser-auth.pglite");
     yield* fs.makeDirectory(location, { recursive: true, mode: 0o700 });
     yield* fs.chmod(location, 0o700);
-    const context = yield* Layer.build(pgliteLayer({ dataDir: location }));
+    const context = yield* Layer.build(localDatabase(location));
     const sql = Context.get(context, SqlClient.SqlClient);
     const storage = database.client(sqlAdapter({ provider: "postgresql" }));
     const query = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>

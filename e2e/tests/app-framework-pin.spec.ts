@@ -38,6 +38,7 @@ const catchUpStep = "2_app_framework_pin_catch_up";
 /** The last release before routers, which the catch-up step pins. */
 const catchUpRelease = "0.0.1-beta.5";
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /**
  * Source written for the protocol-1 framework every app ran before routers. It reports which
  * framework its build runs: beta.1 added `dynamicTools` to beta.0, and routers replaced both. Later

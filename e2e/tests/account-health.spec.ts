@@ -5,7 +5,7 @@ import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { acceptedToken, accountCheckUpstream } from "../support/account-check-upstream.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
@@ -67,7 +67,7 @@ const source = (health: string) => `import {
 } from "apps";
 const User = object({ id: string(), name: string(), login: string(), avatar: string() });
 ${provider(health)}
-export default defineApp({ accounts: { service } }, {
+export default defineApp({ user: { accounts: { service } } }, {
   tools: router({ ping: query({ input: object({}) }, async () => ({ ok: true })) }),
 });`;
 
@@ -118,18 +118,10 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         const [identityPath, plainPath, uncheckedPath] = paths;
         if (identityPath === undefined || plainPath === undefined || uncheckedPath === undefined)
           return yield* Effect.die("Missing app paths");
-        const profiles = yield* Effect.forEach(paths, (path) => createProfile(actors.owner, path));
-        const [identityProfile] = profiles;
-        if (identityProfile === undefined) return yield* Effect.die("Missing profile");
         let account: string | undefined;
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            for (const [index, path] of paths.entries()) {
-              const profile = profiles[index];
-              if (profile !== undefined)
-                yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile.id}`);
-              yield* api.request(actors.owner, "DELETE", path);
-            }
+            for (const path of paths) yield* api.request(actors.owner, "DELETE", path);
             if (account !== undefined)
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
@@ -143,10 +135,12 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
 
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${identityPath}/connections`, {
-            requirement: "service",
-            profile: identityProfile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(identityPath, "user", "service"),
+            {},
+          ),
         );
         const saved = yield* api.request(
           actors.owner,
@@ -157,14 +151,9 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         const accountId = (yield* body(Resource, saved)).id;
         account = accountId;
-        for (const [index, path] of paths.entries()) {
-          const profile = profiles[index];
-          if (index === 0 || profile === undefined) continue;
-          const selected = yield* selectProfileAccounts(actors.owner, path, profile.id, {
-            service: accountId,
-          });
-          expect(selected.status, JSON.stringify(selected.body)).toBe(200);
-        }
+        // Connecting from the identity app linked the account to it; link it to the other two.
+        for (const path of [plainPath, uncheckedPath])
+          yield* linkAccount(actors.owner, path, "service", accountId);
 
         const accountPath = `${prefix}/accounts/${accountId}`;
         const read = () =>
@@ -277,11 +266,14 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         yield* upstream.answer({ kind: "user" });
         const reconnect = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${identityPath}/connections`, {
-            requirement: "service",
-            profile: identityProfile.id,
-            account: accountId,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(identityPath, "user", "service"),
+            {
+              account: accountId,
+            },
+          ),
         );
         const replaced = yield* api.request(
           actors.owner,
@@ -304,11 +296,14 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         // Recovery replaces the failure, and a redeploy makes the result outdated again.
         const restore = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${identityPath}/connections`, {
-            requirement: "service",
-            profile: identityProfile.id,
-            account: accountId,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(identityPath, "user", "service"),
+            {
+              account: accountId,
+            },
+          ),
         );
         expect(
           (yield* api.request(actors.owner, "POST", `${prefix}/connections/${restore.id}/submit`, {
@@ -397,9 +392,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
 
         // The app's accounts show each account with its reported photo.
         yield* browser.use("Open the app's accounts", (page) =>
-          page.goto(
-            `/org/${actors.organization.slug}/apps/${identity.id}?view=accounts&profile=${identityProfile.id}`,
-          ),
+          page.goto(`/org/${actors.organization.slug}/apps/${identity.id}?view=accounts`),
         );
         expect(
           yield* browser.use("The account row shows the reported photo", (page) => {

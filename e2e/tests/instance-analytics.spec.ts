@@ -132,14 +132,14 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         expect(created.status, JSON.stringify(created.body)).toBe(200);
 
         // An agent sends feedback through the Executor app's feedback.submit tool.
-        const { app, profile } = yield* managementApp(actors.owner);
+        // The Executor app's one linked account is the owner's managed key, so no choice is needed.
+        const { app, account } = yield* managementApp(actors.owner);
         const ownerMessage = "Owner feedback through the Executor app tool";
         const called = yield* api.request(
           actors.owner,
           "POST",
           `${root}/apps/${app.id}/tools/call`,
           {
-            profile: profile.id,
             tool: "feedback.submit",
             kind: "mutation",
             input: { body: { message: ownerMessage } },
@@ -199,7 +199,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
           "example.test",
           organization.id,
           app.id,
-          profile.id,
+          account,
           "feedback.submit",
           group,
           "Quokka canary",
@@ -226,13 +226,12 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         expect(refused.status).toBe(409);
         expect(refused.body).toEqual(disabled);
         // The agent sees the same explanation through the Executor app.
-        const { app, profile } = yield* managementApp(actors.owner);
+        const { app } = yield* managementApp(actors.owner);
         const called = yield* api.request(
           actors.owner,
           "POST",
           `${root}/apps/${app.id}/tools/call`,
           {
-            profile: profile.id,
             tool: "feedback.submit",
             kind: "mutation",
             input: { body: { message: "Agent feedback while analytics are off" } },
@@ -302,15 +301,22 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
           yield* api.request(agent, "GET", "/v1/apps?owner=executor-local&name=Executor"),
         );
         const app = executor[0]?.id ?? "";
-        const profiles = yield* body(
+        // The host's managed account is the Executor app's one linked account.
+        const owned = yield* body(
           Schema.Array(Schema.Struct({ id: Schema.String })),
-          yield* api.request(agent, "GET", `/v1/apps/${app}/profiles?owner=executor-local`),
+          yield* api.request(agent, "GET", "/v1/accounts?owner=executor-local"),
         );
-        const profile = profiles[0]?.id ?? "";
+        expect(owned).toHaveLength(1);
+        const account = owned[0]?.id ?? "";
         const message = "Local feedback through the Executor app tool";
+        // The agent API calls the app with its linked account.
+        const linked = yield* body(
+          Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
+          yield* api.request(agent, "GET", `/dashboard/api/apps/${app}/accounts/user`),
+        );
+        expect(linked.map((item) => item.account.id)).toEqual([account]);
         const called = yield* api.request(agent, "POST", "/v1/tools/call", {
           app,
-          profile,
           tool: "feedback.submit",
           kind: "mutation",
           input: { body: { message } },
@@ -323,7 +329,6 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         const canary = "zebra-canary-tool";
         const missing = yield* api.request(agent, "POST", "/v1/tools/call", {
           app,
-          profile,
           tool: canary,
           kind: "query",
           input: { note: "Quokka canary input" },
@@ -348,7 +353,7 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         );
         for (const secret of [
           app,
-          profile,
+          account,
           canary,
           "Quokka canary",
           "feedback.submit",

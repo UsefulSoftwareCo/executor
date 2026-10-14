@@ -7,6 +7,7 @@ import {
   type App,
   type PublicationIssue,
   type PublicationReadiness,
+  sourceText,
 } from "@executor-js/sdk";
 import type { AppSourceDisplay } from "@executor-js/app-management/contracts";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -22,7 +23,7 @@ import { Button } from "../components/button.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
 import { CopyButton } from "./code.tsx";
-import { ProviderIcon } from "./common.tsx";
+import { AppIcon } from "./common.tsx";
 import { QueryView, useQuery } from "./context.tsx";
 import { cn } from "../lib/utils.ts";
 
@@ -34,7 +35,7 @@ const scopeOf = (name: string) => name.slice(0, name.indexOf("/"));
 
 const nameTask = (reason: PublicationIssue["reason"], suggestedName: string | null) =>
   suggestedName === null
-    ? 'Set "name" in package.json to a public name of the form @handle/app-name, using this organization’s publishing handle.'
+    ? 'Set "name" in package.json to a public name of the form @scope/app-name, using this organization’s publishing scope.'
     : reason === "missing-manifest"
       ? `Add a package.json file whose "name" is "${suggestedName}".`
       : `Set "name" in package.json to "${suggestedName}" and leave the other fields unchanged.`;
@@ -63,25 +64,25 @@ function publicationRepair(issue: PublicationIssue, suggestedName: string | null
       };
     case "unscoped-name":
       return {
-        title: "Add your publishing handle",
-        detail: "This package has a name, but public names also need your organization’s handle.",
+        title: "Add your publishing scope",
+        detail: "This package has a name, but public names also need your organization’s scope.",
         rename: true,
         task: nameTask(issue.reason, suggestedName),
       };
     case "invalid-name":
       return {
         title: "Use a valid public name",
-        detail: "Public names use @handle/app-name with lowercase letters, numbers, and hyphens.",
+        detail: "Public names use @scope/app-name with lowercase letters, numbers, and hyphens.",
         rename: true,
         task: nameTask(issue.reason, suggestedName),
       };
     case "forbidden-scope":
       return {
-        title: "This name uses another publishing handle",
+        title: "Update the publishing scope",
         detail:
           issue.name !== null && suggestedName !== null
-            ? `Apps from this organization are published under ${scopeOf(suggestedName)}. The name in package.json starts with ${scopeOf(issue.name)}, which this organization cannot publish under.`
-            : "The name in package.json starts with a handle this organization cannot publish under.",
+            ? `Apps from this organization are published under ${scopeOf(suggestedName)}. The name in package.json starts with ${scopeOf(issue.name)}.`
+            : "The name in package.json does not start with this organization’s current publishing scope.",
         rename: true,
         task: nameTask(issue.reason, suggestedName),
       };
@@ -104,14 +105,7 @@ function publicationRepair(issue: PublicationIssue, suggestedName: string | null
         title: "Check the package details",
         detail: "The name is valid, but other package details are not.",
         rename: false,
-        task: "Check the description and executor fields in package.json and fix any that are invalid. The description can be at most 2,000 characters.",
-      };
-    case "unsupported-dependencies":
-      return {
-        title: "Include the required app code",
-        detail: "App-to-app package dependencies are not supported.",
-        rename: false,
-        task: "Remove executor.dependencies from package.json and include the code the app needs directly in its source.",
+        task: "Check the description in package.json and fix it if it is invalid. The description can be at most 2,000 characters.",
       };
     case "invalid-source":
       return {
@@ -119,7 +113,7 @@ function publicationRepair(issue: PublicationIssue, suggestedName: string | null
         detail:
           "The source includes files that cannot be published, such as .env, .npmrc, or node_modules.",
         rename: false,
-        task: "Remove files that cannot be published (.env files, .npmrc, node_modules, .git, .executor, executor.lock.json) from the saved app source.",
+        task: "Remove files that cannot be published (.env files, .npmrc, node_modules, .git, .executor) from the saved app source.",
       };
     case "limit":
       return {
@@ -159,7 +153,7 @@ function PublicationProblem({
           aria-hidden
         />
         <div className="min-w-0">
-          <p className="text-sm font-medium">This app can’t be shared publicly yet</p>
+          <p className="text-sm font-medium">This app can’t be published yet</p>
           <p className="mt-1 text-sm">{repair.title}</p>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">{repair.detail}</p>
         </div>
@@ -195,7 +189,7 @@ function PublicationProblem({
             app or its connected accounts. You can also copy a prompt and have your agent do it.
           </>
         ) : (
-          "Copy a prompt and have your agent fix this, then open Share publicly again."
+          "Copy a prompt and have your agent fix this, then open Publish again."
         )}
       </p>
     </div>
@@ -239,8 +233,7 @@ function RenameAndContinue<E>({
   const loaded = AsyncResult.isSuccess(workspace);
   const rename = async () => {
     if (!AsyncResult.isSuccess(workspace)) return;
-    const base =
-      workspace.value.files.find((file) => file.path === "package.json")?.content ?? null;
+    const base = sourceText(workspace.value.files, "package.json") ?? null;
     setSaving(true);
     setError(undefined);
     setChanged(false);
@@ -305,11 +298,8 @@ export function PublishApp<E>({
         metadata.canPublish ? (
           <PublishAction app={app} atoms={atoms} Failure={Failure} />
         ) : (
-          <Button
-            variant="outline"
-            disabledReason="Public sharing is not available on this server."
-          >
-            Share publicly
+          <Button variant="outline" disabledReason="Publishing is not available on this server.">
+            Publish
           </Button>
         )
       }
@@ -333,7 +323,7 @@ function PublishAction<E>({
     <>
       <Button variant="outline" onClick={() => setOpen(true)}>
         <HugeiconsIcon icon={Globe02Icon} size={16} strokeWidth={1.8} aria-hidden />
-        Share publicly
+        Publish
       </Button>
       <Dialog
         open={open}
@@ -347,11 +337,15 @@ function PublishAction<E>({
           <DialogContent className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-xl">
             <div className="px-7 pb-6 pt-7 max-[740px]:px-5">
               <DialogTitle className="pr-5 text-2xl leading-tight tracking-tight">
-                Share {app.name} publicly
+                Publish {app.name}
               </DialogTitle>
               <DialogDescription className="mt-2 leading-6">
-                List your app in Add app so anyone can find it and make their own copy.
+                Anyone can find it in Add app and make their own copy.
               </DialogDescription>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                For now, apps can only be published under executor.community. Claiming your own
+                domain is coming soon.
+              </p>
             </div>
             <QueryView
               query={atoms.source(app.id)}
@@ -385,7 +379,7 @@ function PublishAction<E>({
                     onRenamed={setRenamed}
                   />
                 ) : (
-                  <p className="px-7 pb-6 text-sm">Public sharing is not available for this app.</p>
+                  <p className="px-7 pb-6 text-sm">Publishing is not available for this app.</p>
                 )
               }
             </QueryView>
@@ -430,7 +424,7 @@ function PublishDialog<E>({
                 publication.manifest.description ? "items-start" : "items-center",
               )}
             >
-              <ProviderIcon name={publication.manifest.name} large />
+              <AppIcon app={app} large />
               <div className={cn("min-w-0", publication.manifest.description && "py-0.5")}>
                 <p className="break-words text-base font-semibold tracking-tight">
                   {publication.manifest.name}
@@ -555,21 +549,21 @@ function PublicationActions<E>({
           <HugeiconsIcon icon={Tick02Icon} size={18} className="mt-0.5 shrink-0" aria-hidden />
           <div>
             <p className="font-medium">
-              {completed === "unpublished" ? "Stopped sharing" : "Your app is listed publicly"}
+              {completed === "unpublished" ? "Unpublished" : "Your app is published"}
             </p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               {completed === "unpublished"
                 ? "It no longer appears in Add app. Existing copies keep working."
                 : completed === "published"
                   ? "People can find it in Add app and make their own copy."
-                  : "Your latest saved changes are already shared."}
+                  : "Your latest saved changes are already published."}
             </p>
           </div>
         </div>
       )}
       {publishedCommit !== undefined && !current && completed === null && (
         <p className="border-t px-7 py-4 text-sm leading-6 text-muted-foreground max-[740px]:px-5">
-          Share your latest saved changes as the new public version. Existing copies stay as they
+          Publish your latest saved changes as the new public version. Existing copies stay as they
           are.
         </p>
       )}
@@ -599,7 +593,7 @@ function PublicationActions<E>({
                 if (Exit.isSuccess(result)) setCompleted("unpublished");
               }}
             >
-              Stop sharing
+              Unpublish
             </Button>
           )}
         </div>
@@ -624,10 +618,10 @@ function PublicationActions<E>({
                 }}
               >
                 {publishing.waiting
-                  ? "Sharing…"
+                  ? "Publishing…"
                   : publishedCommit === undefined
-                    ? "List publicly"
-                    : "Update public listing"}
+                    ? "Publish"
+                    : "Publish update"}
               </Button>
             </>
           )}

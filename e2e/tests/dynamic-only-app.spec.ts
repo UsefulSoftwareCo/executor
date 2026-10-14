@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { App } from "../support/contracts.ts";
-import { createProfile } from "../support/profiles.ts";
 import { withApps } from "../support/apps-release.ts";
 import { strictTypeProblems } from "../support/apps-package.ts";
 
@@ -16,7 +15,7 @@ const files = [
     path: "index.ts",
     content: `
 import { defineApp, dynamicRouter, query, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: dynamicRouter({
     list: async () => [{ name: "ping", description: "Return pong", inputSchema: { type: "object", properties: {} }, readOnly: true }],
     resolve: async name => name === "ping" ? query({ input: object({}) }, async () => "pong") : undefined,
@@ -40,8 +39,8 @@ const rejectedFiles = (operation: string) => [
     content: `import { defineApp, defineProvider, dynamicRouter, object, query, router, secrets, string, type QueryContext } from "apps";
 const github = defineProvider({ name: "GitHub", auth: { token: secrets({ label: "Token", fields: object({ token: string() }) }) } });
 const ping = query({ input: object({}) }, async () => "pong");
-const repo = query({ input: object({}) }, async (ctx: QueryContext<{ accounts: { github: typeof github } }>) => ctx.accounts.github.id);
-export default defineApp({ accounts: {} }, {
+const repo = query({ input: object({}) }, async (ctx: QueryContext<{ user: { accounts: { github: typeof github } } }>) => ctx.user.accounts.github.id);
+export default defineApp({}, {
   tools: dynamicRouter({ list: async () => [], resolve: async () => ${operation} }),
 });
 `,
@@ -68,7 +67,7 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
             line: 5,
             code: 2741,
             message: expect.stringMatching(
-              /^Property 'github' is missing in type '\{\}' but required/,
+              /^Property 'user' is missing in type '\{\}' but required/,
             ),
           },
         ]);
@@ -93,13 +92,11 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", dynamicPath).pipe(Effect.orDie),
         );
-        const dynamicProfile = yield* createProfile(actors.owner, dynamicPath);
         const dynamicResult = yield* api.request(
           actors.owner,
           "POST",
           `${dynamicPath}/tools/call`,
           {
-            profile: dynamicProfile.id,
             tool: "ping",
             kind: "query",
             input: {},

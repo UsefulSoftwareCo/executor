@@ -2,8 +2,8 @@
 import { Clock, Console, Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { App, Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { App, Inventory, Resource } from "../support/contracts.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Evidence } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -17,23 +17,18 @@ for (let page = await tools.search({ limit: 2000 }); ; page = await tools.search
 return { matches };`;
 const source = `import {defineApp,defineProvider,secrets,query,mutation,object,string,array, router} from "apps";
 const service=defineProvider({name:"Synthetic discovery",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-export default defineApp({accounts:{service},sql:true},{tools: router({
-  ${Array.from({ length: 32 }, (_, i) => `tool${String(i).padStart(2, "0")}:query({description:"Synthetic discovery tool ${i}",input:object({})},async ctx=>({account:ctx.accounts.service.id,value:${i}}))`).join(",\n")},
+export default defineApp({user: { accounts:{service} },sql:true},{tools: router({
+  ${Array.from({ length: 32 }, (_, i) => `tool${String(i).padStart(2, "0")}:query({description:"Synthetic discovery tool ${i}",input:object({})},async ctx=>({account:ctx.user.accounts.service.id,value:${i}}))`).join(",\n")},
 count:query({input:object({})},async ctx=>({count:ctx.sql.exec("SELECT count(*) AS n FROM records").one().n})),
   seed:mutation({input:object({records:array(object({key:string(),value:string()}))})},async(ctx,input)=>ctx.sql.transaction(tx=>{for(const row of input.records)tx.exec("INSERT INTO records (key, value) VALUES (?, ?)",row.key,row.value);return {inserted:input.records.length};})),
 })});`;
-const Inventory = Schema.Struct({
-  apps: Schema.Array(Resource),
-  accounts: Schema.Array(Resource),
-  profiles: Schema.Array(Resource),
-});
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown) }),
   unavailableApps: Schema.Array(Schema.Struct({ reason: Schema.String })),
 });
 
-/** Seed 24 apps, 16 accounts, 24 profiles and 1000 records; sample the 1/8/24-app steps. */
+/** Seed 24 apps, 16 accounts, one linked account per app and 1000 records; sample 1/8/24 apps. */
 export const discoveryBenchmark = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors,
@@ -54,14 +49,14 @@ export const discoveryBenchmark = Effect.gen(function* () {
   const client = yield* mcp.connect(key.key, "discovery-benchmark", {
     organization: actors.organization.id,
   });
-  const apps: { id: string; slug: string; profile: string }[] = [];
+  const apps: { id: string; slug: string; account: string }[] = [];
   const accounts: string[] = [];
   const samples: {
     apps: number;
     trial: string;
     durationMs: number;
     inventoryMs: number;
-    inventory: { apps: number; accounts: number; profiles: number };
+    inventory: { apps: number; accounts: number; links: number };
     ok: boolean;
     unavailable: number;
     value: unknown;
@@ -109,7 +104,7 @@ export const discoveryBenchmark = Effect.gen(function* () {
         inventory: {
           apps: inventory.apps.length,
           accounts: inventory.accounts.length,
-          profiles: inventory.profiles.length,
+          links: inventory.links.length,
         },
         ok: completed.execution.ok,
         unavailable: completed.unavailableApps.length,
@@ -118,7 +113,7 @@ export const discoveryBenchmark = Effect.gen(function* () {
       };
       samples.push(sample);
       yield* evidence.json("discovery-benchmark.json", {
-        shape: { apps: 24, accounts: 16, profiles: 24, records: 1000, toolsPerApp: 34 },
+        shape: { apps: 24, accounts: 16, links: 24, records: 1000, toolsPerApp: 34 },
         samples,
       });
       yield* Console.log(JSON.stringify(sample));
@@ -138,14 +133,12 @@ export const discoveryBenchmark = Effect.gen(function* () {
     yield* requireOk(response.status);
     const app = yield* body(App, response);
     const appPath = `${root}/apps/${app.id}`;
-    const profile = yield* createProfile(actors.owner, appPath);
     if (index === 0) {
+      // Connecting from the first app links each new account in turn, replacing the one before.
       for (let account = 0; account < 16; account++) {
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${appPath}/connections`, {
-            profile: profile.id,
-            requirement: "service",
+          yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {
             destination: { kind: "shared", audience: { kind: "everyone" } },
           }),
         );
@@ -162,14 +155,12 @@ export const discoveryBenchmark = Effect.gen(function* () {
     }
     const selected = accounts[index % accounts.length];
     if (selected === undefined) return yield* Effect.fail(new Error("Benchmark account missing"));
-    yield* selectProfileAccounts(actors.owner, appPath, profile.id, { service: selected }).pipe(
-      Effect.flatMap((response) => requireOk(response.status)),
-    );
-    apps.push({ id: app.id, slug: app.slug, profile: profile.id });
+    // Every app, the first included, links its selected account; a link replaces the one before.
+    yield* linkAccount(actors.owner, appPath, "service", selected);
+    apps.push({ id: app.id, slug: app.slug, account: selected });
     if (index === 0) {
       for (let offset = 0; offset < 1000; offset += 100) {
         const seeded = yield* api.request(actors.owner, "POST", `${appPath}/tools/call`, {
-          profile: profile.id,
           tool: "seed",
           kind: "mutation",
           input: {
@@ -186,7 +177,6 @@ export const discoveryBenchmark = Effect.gen(function* () {
       const count = yield* body(
         Schema.Struct({ count: Schema.Number }),
         yield* api.request(actors.owner, "POST", `${appPath}/tools/call`, {
-          profile: profile.id,
           tool: "count",
           kind: "query",
           input: {},

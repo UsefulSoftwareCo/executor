@@ -14,10 +14,13 @@ import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
-import { createProfile } from "../support/profiles.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { enterClientDetails } from "../support/oauth-client-entry.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
+import { linkedChoice, linkedLabels } from "../support/account-choices.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
 const Redirect = Schema.Struct({
@@ -57,7 +60,7 @@ const service=defineProvider({name:"Declared issuer",auth:{oauth:oauth2(${JSON.s
                 issuer: signInOrigin,
                 scopes: ["read"],
               })})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
             },
             appsManifest,
           ],
@@ -69,13 +72,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         );
         yield* issuer.configure({ callbackIssuer: signInOrigin });
         const connect = Effect.gen(function* () {
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           return (yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            ),
           )).id;
         });
         const start = (connection: string) =>
@@ -215,6 +219,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           return page
             .getByRole("button", { name: "Connect new account", exact: true })
             .click()
+            .then(() => enterClientDetails(page))
             .then(() => dialog.getByLabel("Client ID", { exact: true }).fill(client.clientId))
             .then(() => dialog.getByLabel(/^Client secret/).fill(client.clientSecret))
             .then(() =>
@@ -282,10 +287,18 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             );
             yield* connectInDialog(registeredApp, label);
           });
-        const accounts = (count: string) =>
-          browser.use(`Wait for ${count}`, (page) =>
-            page.getByText(count, { exact: true }).waitFor({ state: "visible" }),
-          );
+        /** Wait until exactly `labels` are linked to the app's requirement. */
+        const linked = (registeredApp: { readonly name: string }, labels: readonly string[]) =>
+          Effect.gen(function* () {
+            const shown = yield* browser.use(`Wait for ${labels.join(" and ")} linked`, (page) =>
+              Promise.all(
+                labels.map((label) =>
+                  linkedChoice(page, registeredApp.name, label).waitFor({ state: "visible" }),
+                ),
+              ).then(() => linkedLabels(page, registeredApp.name)),
+            );
+            expect([...shown].sort()).toEqual([...labels].sort());
+          });
         const recoveryActions = (step: string, text: string) =>
           browser.use(step, (page) =>
             Promise.all([
@@ -300,7 +313,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         const reusedApp = yield* deployRegistered;
         yield* addAccount(reusedApp, "First");
         yield* nameAccount("First");
-        yield* accounts("1 account");
+        yield* linked(reusedApp, ["First"]);
         // The next sign-in reuses the saved registration, which the service now refuses.
         yield* issuer.configure({ tokenError: { status: 401, body: { error: "invalid_client" } } });
         const registrations = (yield* issuer.metrics).registrations;
@@ -322,11 +335,13 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         );
         yield* connectInDialog(reusedApp, "Second");
         yield* nameAccount("Second");
-        yield* accounts("2 accounts");
+        yield* linked(reusedApp, ["First", "Second"]);
         // The rejected registration was discarded, so the retry registered a new client.
         expect((yield* issuer.metrics).registrations).toBe(registrations + 1);
 
-        // A client rejected moments after its registration will not work on a retry either.
+        // A client rejected moments after its registration will not work on a retry either. The
+        // retry's client would serve another app of this server, so it is removed first.
+        yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
         const freshApp = yield* deployRegistered;
         yield* issuer.configure({ tokenError: { status: 401, body: { error: "invalid_client" } } });
         yield* addAccount(freshApp, "Fresh");

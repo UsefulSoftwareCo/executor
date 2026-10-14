@@ -1,6 +1,6 @@
 /**
  * A token endpoint's invalid_client discards only a client Executor registered, and only the
- * saved version the failed sign-in used. Clients the user entered are never discarded.
+ * saved version the failed sign-in used. Clients an administrator registered are never discarded.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -12,8 +12,8 @@ import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Redirect = Schema.Struct({
   status: Schema.Literal("redirect"),
@@ -25,6 +25,13 @@ const Failure = Schema.Struct({
   reason: Schema.optional(Schema.String),
 });
 const rejected = { status: 401, body: { error: "invalid_client" } } as const;
+const DeployedApp = Schema.Struct({
+  id: Schema.String,
+  requirements: Schema.Struct({
+    accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
+  }),
+});
+const Registered = Schema.Struct({ client: Schema.Struct({ id: Schema.String }) });
 
 layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection", (it) => {
   it.effect(scenarios.oauthSavedClientRejection.title, (context) =>
@@ -43,36 +50,45 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
             files: oauthMcpAppFiles(name, `${issuer.origin}/mcp`),
           });
           expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-          const app = yield* body(Resource, deployed);
+          const app = yield* body(DeployedApp, deployed);
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
-          return app.id;
+          return app;
         });
-        /** Open a connection and start its sign-in, optionally with a client the user entered. */
+        /** Open a connection and start its sign-in, optionally with a registered client. */
         const start = (
           app: string,
-          client?: { readonly clientId: string; readonly clientSecret: string },
+          client?: {
+            readonly id: string;
+            readonly clientId: string;
+            readonly clientSecret: string;
+          },
         ) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app}`);
             const connection = (yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+                {},
+              ),
             )).id;
             if (client !== undefined) {
-              // The service knows the entered client before the user reaches it.
+              // The service knows the registered client before the user reaches it.
               const setup = yield* api.request(
                 actors.owner,
                 "POST",
                 `${prefix}/connections/${connection}/oauth/start`,
-                { method: "oauth", label: "Saved client", client },
+                { method: "oauth", label: "Saved client", client: { id: client.id } },
               );
               const redirect = yield* body(Redirect, setup);
-              yield* issuer.allowClient({ ...client, redirect: redirect.redirectUri });
+              yield* issuer.allowClient({
+                clientId: client.clientId,
+                clientSecret: client.clientSecret,
+                redirect: redirect.redirectUri,
+              });
               return { connection, authorizationUrl: redirect.authorizationUrl };
             }
             const response = yield* api.request(
@@ -111,15 +127,15 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
             expect(response.status, JSON.stringify(response.body)).toBe(400);
             return (yield* body(Failure, response)).reason;
           });
-        const signIn = (app: string) =>
+        const signIn = (app: string, client?: Parameters<typeof start>[1]) =>
           Effect.gen(function* () {
-            const started = yield* start(app);
+            const started = yield* start(app, client);
             return { ...started, callback: yield* consent(started.authorizationUrl) };
           });
         const registrations = issuer.metrics.pipe(Effect.map((metrics) => metrics.registrations));
 
         yield* issuer.configure({ registration: true, tokenError: null });
-        const app = yield* deploy;
+        const app = (yield* deploy).id;
         // The first sign-in registers a client and saves it.
         expect(yield* complete(yield* signIn(app))).toBe("connected");
         const registered = yield* registrations;
@@ -134,25 +150,32 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
         yield* issuer.configure({ tokenError: null });
         yield* signIn(app);
         expect(yield* registrations).toBe(registered + 1);
-        // The older sign-in used the discarded version; its rejection keeps the replacement.
-        yield* issuer.configure({ tokenError: rejected });
+        // The older sign-in used the discarded version. The service already refused it, so the
+        // sign-in reports that without exchanging its code, even though the service would accept
+        // it now, and the replacement stays.
+        const exchanges = (yield* issuer.metrics).tokenExchanges;
         expect(yield* complete(older)).toBe("registered_client_rejected");
-        yield* issuer.configure({ tokenError: null });
+        expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges);
         expect(yield* complete(yield* signIn(app))).toBe("connected");
         expect(yield* registrations).toBe(registered + 1);
 
-        // A client the user entered is saved after it connects and is never discarded.
+        // A client an administrator registered is never discarded when the service rejects it.
         yield* issuer.configure({ registration: false });
         const manualApp = yield* deploy;
-        const client = { clientId: "entered-client", clientSecret: "synthetic-entered-secret" };
-        const manual = yield* start(manualApp, client);
-        expect(
-          yield* complete({ ...manual, callback: yield* consent(manual.authorizationUrl) }),
-        ).toBe("connected");
+        const entered = { clientId: "entered-client", clientSecret: "synthetic-entered-secret" };
+        const registeredClient = yield* body(
+          Registered,
+          yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
+            issuer: issuer.origin,
+            ...entered,
+          }),
+        );
+        const client = { ...entered, id: registeredClient.client.id };
+        expect(yield* complete(yield* signIn(manualApp.id, client))).toBe("connected");
         yield* issuer.configure({ tokenError: rejected });
-        expect(yield* complete(yield* signIn(manualApp))).toBe("invalid_client");
+        expect(yield* complete(yield* signIn(manualApp.id, client))).toBe("invalid_client");
         yield* issuer.configure({ tokenError: null });
-        expect(yield* complete(yield* signIn(manualApp))).toBe("connected");
+        expect(yield* complete(yield* signIn(manualApp.id, client))).toBe("connected");
         expect(yield* registrations).toBe(registered + 1);
       }),
     ),

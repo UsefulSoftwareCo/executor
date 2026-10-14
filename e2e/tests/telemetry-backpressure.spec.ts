@@ -5,7 +5,6 @@ import { randomBytes } from "node:crypto";
 import { Api, body, SessionClients } from "../support/api.ts";
 import { provisionSelfHostActors } from "../support/actors.ts";
 import { appsManifest } from "../support/apps-release.ts";
-import { createProfile } from "../support/profiles.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { startFreshSelfHost } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
@@ -151,7 +150,7 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
             {
               path: "index.ts",
               content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ ping: query({ input: object({}) }, async () => true) }),
 });`,
             },
@@ -161,10 +160,8 @@ export default defineApp({ accounts: {} }, {
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);
         const path = `${prefix}/apps/${app.id}`;
-        const profile = yield* scoped(createProfile(actors.owner, path));
         const call = api
           .request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "ping",
             input: {},
           })
@@ -173,8 +170,8 @@ export default defineApp({ accounts: {} }, {
               Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
             ),
           );
-        // Each call is its own trace. Wait until setup's app telemetry has arrived, then count
-        // only the traces the burst adds.
+        // Each call is its own trace. Wait until the first call's app telemetry has arrived, then
+        // count only the traces the burst adds.
         yield* call;
         const before = yield* collector.appTraces(app.id).pipe(
           Effect.filterOrFail(

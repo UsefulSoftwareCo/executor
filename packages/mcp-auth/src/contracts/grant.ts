@@ -5,10 +5,11 @@ import {
   selectedAuthority,
   type AuthorizationPolicy,
   permitsApp,
+  permittedTargets,
   eventAccess,
 } from "@executor-js/authorization";
 export { AppPermission } from "@executor-js/authorization";
-import { AppId, ProfileId, ToolName } from "@executor-js/sdk/core";
+import { AccountId, AppId, ToolName, type LinkedAccounts } from "@executor-js/sdk/core";
 import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
 import { Match, Schema } from "effect";
 
@@ -61,11 +62,14 @@ export const GrantRefusal = Schema.Union([
   Schema.Struct({ reason: Schema.Literal("approval"), mode: ApprovalMode }),
   /** The grant includes none of this app's tools. */
   Schema.Struct({ reason: Schema.Literal("app"), app: AppId }),
-  /** The grant includes the app, but not running it as this profile, or without one. */
+  /**
+   * The grant includes the app, but no entry permits running it with these accounts, or without
+   * an account when none is listed.
+   */
   Schema.Struct({
     reason: Schema.Literal("target"),
     app: AppId,
-    profile: Schema.optionalKey(ProfileId),
+    accounts: Schema.optionalKey(Schema.NonEmptyArray(AccountId)),
   }),
   /** The grant includes the app and how it runs, but not this tool. */
   Schema.Struct({ reason: Schema.Literal("tool"), app: AppId, tool: ToolName }),
@@ -100,6 +104,51 @@ export const approvalRefusal = (
   target.mode !== "browser"
     ? { reason: "approval", mode: target.mode }
     : undefined;
+/**
+ * The caller's linked accounts for each of the app's user requirements that this authority may run
+ * the app with: the accounts its entries target, or every one when an entry targets none.
+ */
+export const targetedLinks = <A extends LinkedAccounts[string]["accounts"][number]>(
+  authority: AuthorizationPolicy,
+  app: AppId,
+  linked: LinkedAccounts<A>,
+): LinkedAccounts<A> => {
+  const targets = permittedTargets(authority.tools, app);
+  if (targets === undefined) return linked;
+  return Object.fromEntries(
+    Object.entries(linked).map(([requirement, linked]) => [
+      requirement,
+      {
+        ...linked,
+        accounts: linked.accounts.filter((account) => targets.accounts.has(account.id)),
+      },
+    ]),
+  );
+};
+/**
+ * Why this authority refuses the caller's links before they are narrowed: a plain user requirement
+ * the caller linked accounts for, none of which its entries target. Narrowed, the requirement
+ * would have no account and read as unlinked; it is the grant that does not allow the account the
+ * requirement uses, its newest link.
+ */
+export const untargetedLinkRefusal = (
+  authority: AuthorizationPolicy,
+  app: AppId,
+  linked: LinkedAccounts,
+): GrantRefusal | undefined => {
+  const targets = permittedTargets(authority.tools, app);
+  if (targets === undefined) return undefined;
+  for (const requirement of Object.values(linked)) {
+    const used = requirement.accounts.at(-1);
+    if (
+      requirement.cardinality === "one" &&
+      used !== undefined &&
+      !requirement.accounts.some((account) => targets.accounts.has(account.id))
+    )
+      return { reason: "target", app, accounts: [used.id] };
+  }
+  return undefined;
+};
 /**
  * Where one of an app's events may reach a grant with this policy, or undefined when it no
  * longer may. See `eventAccess`.
@@ -190,13 +239,13 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
           instructions: `An MCP grant, or the connection it was issued through, lists the apps its client may discover and run. Check whether this app should be available to the client. If so, add it to the connection, or connect again and include it when approving access, then verify that the app's tools are listed. ${notBypassed}`,
         },
       }),
-      target: ({ app, profile }) => ({
+      target: ({ app, accounts }) => ({
         title: "Runs-as target not included",
-        description: `This credential’s grant includes the app ${app}, but not running it ${profile === undefined ? "without a profile" : `as the profile ${profile}`}.`,
+        description: `This credential’s grant includes the app ${app}, but not running it ${accounts === undefined ? "without an account" : `with the account${accounts.length === 1 ? "" : "s"} ${accounts.join(", ")}`}.`,
         recovery: {
           action:
-            "Run the app as the grant allows, or add this target to its connection, then retry.",
-          instructions: `For each app, an MCP grant or its connection lists how the app may run: as specific profiles, or without a profile. Check the runs-as choices for this app. Use one the grant includes, or add this one to the connection, then verify that the call succeeds. ${notBypassed}`,
+            "Run the app with accounts the grant allows, or add this target to its connection, then retry.",
+          instructions: `For each app, an MCP grant or its connection lists how the app may run: with specific accounts, or without an account. One entry must permit every account a call uses. Check the runs-as choices for this app. Choose accounts the grant includes, or add these to the connection, then verify that the call succeeds. ${notBypassed}`,
         },
       }),
       tool: ({ app, tool }) => ({

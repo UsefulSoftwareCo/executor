@@ -1,5 +1,5 @@
 /** Sharing drafts and revision conflicts are checked through real hosted forms. */
-import { createProfile } from "../support/profiles.ts";
+import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -16,7 +16,7 @@ const Access = Schema.Struct({ revision: Schema.String });
 const Group = Schema.Struct({ id: Schema.String, revision: Schema.String });
 const source = `import {defineApp, defineProvider, secrets, query, object, string, router} from "apps";
 const service=defineProvider({name:"Sharing fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-export default defineApp({accounts:{service:service.many()}},{name:"Sharing fixture",tools: router({ identity:query({input:object({})},async()=>"allowed") })});`;
+export default defineApp({user: { accounts:{service:service.many()} }},{name:"Sharing fixture",tools: router({ identity:query({input:object({})},async()=>"allowed") })});`;
 
 layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
   it.effect(scenarios.resourceSharing.title, (context) =>
@@ -148,14 +148,14 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
               page.getByRole("button", { name: "Connect new account", exact: true }).click(),
             );
           } else {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                profile: profile.id,
-                requirement: "service",
-                destination: { kind: "shared", audience: { kind: "everyone" } },
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                { destination: { kind: "shared", audience: { kind: "everyone" } } },
+              ),
             );
             yield* browser.use("Open the shared connection handoff", (page) =>
               page.goto(`/org/${actors.organization.slug}/connections/${connection.id}`),
@@ -171,19 +171,18 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
           yield* browser.use("Wait for account setup to finish", (page) =>
             page.getByRole("dialog").waitFor({ state: "hidden" }),
           );
-          yield* browser.use("See the connected account", (page) =>
-            page.getByRole("checkbox", { name: label, exact: true, checked: true }).waitFor(),
+          // Connecting from the app links the new account to the requirement: its many()
+          // checkbox is checked.
+          yield* browser.use("Open the app's linked accounts", (page) =>
+            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
           );
-          const profile = yield* Schema.decodeUnknownEffect(Schema.String)(
-            yield* browser.use("Read the selected profile", (page) =>
-              page.evaluate(() => new URL(location.href).searchParams.get("profile")),
-            ),
+          yield* browser.use("See the connected account linked", (page) =>
+            page
+              .getByRole("list", { name: "Sharing fixture accounts", exact: true })
+              .getByRole("checkbox", { name: label, exact: true, checked: true })
+              .waitFor(),
           );
-          const binding = yield* body(
-            Schema.Struct({ accounts: Schema.Struct({ service: Schema.Array(Schema.String) }) }),
-            yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
-          );
-          for (const id of binding.accounts.service)
+          for (const id of yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`))
             if (!connected.includes(id)) connected.push(id);
           expect(connected).toHaveLength(kind === "personal" ? 1 : 2);
         }

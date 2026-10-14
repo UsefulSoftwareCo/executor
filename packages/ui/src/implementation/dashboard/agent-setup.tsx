@@ -1,33 +1,12 @@
-import type { CatalogEntry } from "@executor-js/catalog/contracts";
 import { CopyButton } from "./code.tsx";
-
-const source = (entry: CatalogEntry) => {
-  if (entry.connectUrl === undefined) return [];
-  switch (entry.kind) {
-    case "openapi":
-      return [`OpenAPI definition: ${entry.connectUrl}`];
-    case "graphql":
-      return [`GraphQL endpoint: ${entry.connectUrl}`];
-    case "mcp":
-      return [`MCP server: ${entry.connectUrl}`];
-    case "app":
-    case "cli":
-      return [];
-  }
-};
 
 /**
  * Services Executor cannot add without guessing are set up by the user's agent, which can read the
  * service's documentation and ask the user how they sign in.
  */
-export const agentSetupPrompt = (entry: CatalogEntry | undefined, endpoint?: string) =>
+export const agentSetupPrompt = (endpoint?: string) =>
   [
-    entry === undefined
-      ? "Help me add a service to Executor as an app. Ask me which service I want to connect."
-      : `Help me add ${entry.name} to Executor as an app.`,
-    ...(entry === undefined
-      ? []
-      : ["", `Service: ${entry.name} (${entry.domain})`, ...source(entry)]),
+    "Help me add a service to Executor as an app. Ask me which service I want to connect.",
     "",
     "Start with the Executor app's executor skill, then follow its app-authoring skill. Read the service's API and authentication documentation, ask me how I sign in and anything else you need, then write and deploy the app and help me connect my account.",
     ...(endpoint === undefined

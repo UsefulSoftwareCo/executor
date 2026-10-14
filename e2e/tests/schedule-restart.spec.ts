@@ -12,11 +12,11 @@ const Runs = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, status: Schema.String }),
 );
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
-const source = `import { defineApp, mutation, interval, object, router } from "apps";
+const source = `import { defineApp, mutation, userInterval, object, router } from "apps";
 import { always } from "apps/operations/approval";
 const tick = mutation({ input: object({}) }, async () => ({ done: true }));
 const review = mutation({ input: object({}), approval: always() }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({  tools: router({ tick, review }), schedules: { tick: interval({ minutes: 1 }, tick, {}), review: interval({ minutes: 1 }, review, {}) } }));`;
+export default defineApp({}, async () => ({  tools: router({ tick, review }), schedules: { tick: userInterval({ minutes: 1 }, tick, {}), review: userInterval({ minutes: 1 }, review, {}) } }));`;
 layer(TestLive, { excludeTestServices: true })("Schedule persistence", (it) => {
   it.effect(scenarios.scheduleRestart.title, (context) =>
     withCase(
@@ -53,14 +53,14 @@ layer(TestLive, { excludeTestServices: true })("Schedule persistence", (it) => {
           approvalMode: "automatic" | "browser" = "automatic",
         ) =>
           Effect.gen(function* () {
-            expect(
-              (yield* session.send(
-                "PATCH",
-                `/v1/apps/${app.id}/schedules/${name}`,
-                { actor: "local", enabled, approvalMode },
-                headers,
-              )).status,
-            ).toBe(200);
+            const response = yield* session.send(
+              "PATCH",
+              `/v1/apps/${app.id}/schedules/${name}`,
+              { actor: "local", enabled, approvalMode },
+              headers,
+            );
+            expect(response.status).toBe(200);
+            return (yield* body(Schema.Struct({ id: Schema.String }), response)).id;
           });
         const runs = session
           .send("GET", `/v1/scheduled-runs?app=${app.id}`, undefined, headers)
@@ -87,10 +87,14 @@ layer(TestLive, { excludeTestServices: true })("Schedule persistence", (it) => {
         yield* configure("tick", false);
         expect((yield* runs).filter((run) => run.name === "tick")).toHaveLength(1);
 
-        yield* configure("review", true, "browser");
+        const review = yield* configure("review", true, "browser");
         expect(
-          (yield* session.send("POST", `/v1/apps/${app.id}/schedules/review/run`, {}, headers))
-            .status,
+          (yield* session.send(
+            "POST",
+            `/v1/apps/${app.id}/schedules/review/copies/${review}/run`,
+            {},
+            headers,
+          )).status,
         ).toBe(200);
         const pending = yield* waitFor("review", "awaiting-approval");
         yield* configure("review", false, "browser");

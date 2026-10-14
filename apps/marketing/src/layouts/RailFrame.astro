@@ -11,8 +11,10 @@ interface Props {
   current?: "home" | "pricing" | "blog" | "docs" | "apps";
   /** Content layouts keep the frame in the viewport; the page owns its scroll region. */
   scroll?: "page" | "content";
+  /** Full-height tools, such as the Apps directory, end at their content. */
+  footer?: boolean;
 }
-const { current = "home", scroll = "page" } = Astro.props;
+const { current = "home", scroll = "page", footer = true } = Astro.props;
 
 const stars = await getStars();
 ---
@@ -28,7 +30,7 @@ const stars = await getStars();
     <div class:list={[scroll === "content" && "flex h-full min-h-0 flex-col overflow-hidden [&>footer]:shrink-0"]} class="page__body min-[1024px]:[.page:has(>_.page\_\_rail)_&]:min-w-0 min-[1024px]:[.page:has(>_.page\_\_rail)_&]:[padding-inline:var(--site-content-gutter)]">
       <slot />
 
-      <SiteFooter />
+      {footer && <SiteFooter />}
     </div>
   </div>
 </main>

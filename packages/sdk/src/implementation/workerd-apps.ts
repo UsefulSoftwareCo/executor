@@ -25,24 +25,32 @@ import {
   Option,
   Path,
   Queue,
+  Redacted,
   Schema,
   Stream,
   type Scope,
 } from "effect";
+import { Hex } from "effect/encoding";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { WorkflowFailure, WorkflowRunId } from "apps/contracts";
 import { WorkflowBackendState, type WorkflowRuntime } from "../contracts/workflow-runtime.ts";
 import { type WorkerdAppApi } from "../contracts/workerd-host.ts";
 import { type BlobStorage } from "../contracts/blobs.ts";
+import {
+  EvaluatedCommandJson,
+  EvaluatedReplyJson,
+  type EvaluatedCommand,
+} from "@executor-js/app-data/evaluated";
 
 import { RuntimeBuildFailed, RuntimeProtocolFailed } from "../contracts/runtime.ts";
 import type { Executor } from "../contracts/executor.ts";
+import type { DurableDeclarations } from "../contracts/declarations.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
 import { connectedWorkerdApps, workerdHostHandler } from "./workerd-client.ts";
 import { workerdHostModules } from "./workerd-bundle.ts";
-import { appWorkerLimit } from "./app-worker-residency.ts";
+import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 
 /** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
 export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
@@ -107,6 +115,30 @@ const selfOriginBinding: BindingHook = Effect.succeed({
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
 
+/**
+ * The credential handle secret for an instance: HMAC-SHA256 of a fixed label under its
+ * encryption key, so it differs from every other use of that key. The packaged self-host host
+ * derives it the same way. Handles sealed by earlier versions, under a per-process secret or the
+ * packaged image's constant, do not open under it and are refused with `credential_app`; apps
+ * get new handles on their next invocation. See notes/provider-authoring.md.
+ */
+const credentialHandleSecret = (encryptionKey: Redacted.Redacted<string>) =>
+  Effect.promise(async () => {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(Redacted.value(encryptionKey)),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const signature = await crypto.subtle.sign(
+      "HMAC",
+      key,
+      new TextEncoder().encode("executor credential handles"),
+    );
+    return Hex.encode(new Uint8Array(signature));
+  });
+
 /** App-facing callbacks are scoped to the already-authorized invocation, never looked up by arbitrary IDs. */
 /** Own one workerd process for authored apps and workflows. Agent execute(code) is unrelated. */
 export const workerdApps = (options: {
@@ -128,8 +160,18 @@ export const workerdApps = (options: {
   readonly selfOrigin?: { readonly origin: string; readonly address: string };
   /** The npm registry app builds resolve packages from. Defaults to the public registry. */
   readonly npmRegistry?: string;
+  /**
+   * The instance's encryption key. The apps Worker seals credential handles with a secret derived
+   * from it, so handles keep working across restarts with the same key and the key itself never
+   * reaches workerd. Handles sealed before an instance upgraded to this derivation are refused.
+   */
+  readonly encryptionKey: Redacted.Redacted<string>;
 }): Effect.Effect<
-  { readonly runtime: ReturnType<typeof runtimeAdapter>; readonly workflows: WorkflowRuntime },
+  {
+    readonly runtime: ReturnType<typeof runtimeAdapter>;
+    readonly workflows: WorkflowRuntime;
+    readonly declarations: DurableDeclarations;
+  },
   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
   Scope.Scope
 > =>
@@ -143,10 +185,14 @@ export const workerdApps = (options: {
     }
     const handler = yield* workerdHostHandler(options);
     // The runtime reads extra V8 flags for the workerd it starts from this variable. `gc` lets each
-    // app bridge collect its isolate's garbage after a call; see worker-bridge.ts.
-    const flags = process.env.ALCHEMY_WORKERD_V8_FLAGS ?? "";
-    if (!flags.split(/\s+/).includes("--expose-gc"))
-      process.env.ALCHEMY_WORKERD_V8_FLAGS = `${flags} --expose-gc`.trim();
+    // app bridge collect its isolate's garbage after a call; see worker-bridge.ts. Without
+    // `--no-flush-liftoff-code`, each new isolate drops and recompiles the build's WebAssembly code
+    // and the process keeps the dropped pages; see the self-host runtime config.
+    const flags = (process.env.ALCHEMY_WORKERD_V8_FLAGS ?? "").split(/\s+/).filter(Boolean);
+    process.env.ALCHEMY_WORKERD_V8_FLAGS = [
+      ...flags,
+      ...["--expose-gc", "--no-flush-liftoff-code"].filter((flag) => !flags.includes(flag)),
+    ].join(" ");
     const runtimeContext = yield* Layer.build(
       layerLocalRuntime({ directory: options.directory }).pipe(
         // Registered as runtime plugins so their services reach the generated workerd config.
@@ -189,8 +235,16 @@ export const workerdApps = (options: {
             className: "AppWorkflows",
           }),
           JsonBinding.local("AUTH", secret),
+          JsonBinding.local(
+            "CREDENTIAL_SECRET",
+            yield* credentialHandleSecret(options.encryptionKey),
+          ),
           JsonBinding.local("APPS_PRIVATE_FETCH", privateAppFetch),
           JsonBinding.local("APP_WORKERS", Option.getOrNull(yield* appWorkerLimit)),
+          JsonBinding.local(
+            "APP_WORKER_IDLE_SECONDS",
+            Option.getOrNull(yield* appWorkerIdleSeconds),
+          ),
           publicEgressBinding,
           JsonBinding.local("SELF_ORIGIN", options.selfOrigin?.origin ?? ""),
           JsonBinding.local("NPM_REGISTRY", options.npmRegistry ?? ""),
@@ -298,7 +352,28 @@ export const workerdApps = (options: {
           );
         }),
       ).pipe(Effect.mapError(engineFailure));
-    return yield* connectedWorkerdApps(options.blobs, { rpc, changes, backend });
+    // Each command uses its own connection, like workflow requests above.
+    const evaluated = (app: string, command: EvaluatedCommand) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const url = new URL("/evaluated", origin);
+          url.searchParams.set("app", app);
+          const request = HttpClientRequest.post(url, {
+            headers: { ...headers, connection: "close" },
+          }).pipe(
+            HttpClientRequest.bodyText(
+              yield* Schema.encodeEffect(EvaluatedCommandJson)(command),
+              "application/json",
+            ),
+          );
+          const response = yield* http.execute(request);
+          if (response.status !== 200) return yield* protocolFailure();
+          return yield* response.text.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(EvaluatedReplyJson)),
+          );
+        }),
+      ).pipe(Effect.mapError(protocolFailure));
+    return yield* connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend });
   }).pipe(
     Effect.provide(NodeServices.layer),
     Effect.provide(FetchHttpClient.layer),

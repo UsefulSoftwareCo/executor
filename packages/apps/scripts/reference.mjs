@@ -15,7 +15,6 @@ const modules = {
   "./react": "ui.md",
   "./operations/approval": "tools.md",
   "./mcp": "integrations.md",
-  "./mcp/stdio": "integrations.md",
   "./graphql": "integrations.md",
   "./openapi": "integrations.md",
   "./skills": "tools.md",

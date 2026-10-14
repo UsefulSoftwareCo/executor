@@ -7,9 +7,37 @@ import { AccountConnectApi } from "./account-connections.ts";
 import { LocalWebhookSetupApi } from "./webhook-setup.ts";
 import { LocalFeedbackApi } from "./feedback.ts";
 
+/**
+ * The SDK routes local serves: every group but the owner lifecycle. Local's owners are fixed,
+ * `local` for the user's records and `executor-local` for the server's own Executor app, so
+ * removing an owner would only ever delete all of the user's data or that app. Hosted removes an
+ * organization's owner in process, never through these routes.
+ */
+export const LocalExecutorApi = HttpApi.make("executor").add(
+  ExecutorApi.groups.accounts,
+  ExecutorApi.groups.accountConnections,
+  ExecutorApi.groups.oauthClients,
+  ExecutorApi.groups.apps,
+  ExecutorApi.groups.skills,
+  ExecutorApi.groups.tools,
+  ExecutorApi.groups.schedules,
+  ExecutorApi.groups.appData,
+  ExecutorApi.groups.webhooks,
+  ExecutorApi.groups.appWorkflows,
+  ExecutorApi.groups.appWorkflowRuns,
+  ExecutorApi.groups.publications,
+  ExecutorApi.groups.registry,
+);
+
+const dashboard = DashboardApi.groups.dashboard.endpoints;
+const connect = AccountConnectApi.groups.accountConnect.endpoints;
+/**
+ * Each app's account links, named `appAccounts.<scope>.<action>` for tools as on hosted: `app`
+ * routes link for every call, `user` routes for the local user. `connect` returns a browser link
+ * whose completion links the new account to the requirement.
+ */
 const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.apps)
-  .add(ExecutorApi.groups.appProfiles)
   .add(ExecutorApi.groups.skills)
   .add(ExecutorApi.groups.accounts)
   .add(ExecutorApi.groups.webhooks)
@@ -32,8 +60,17 @@ const api = HttpApi.make("local-management")
     ),
   )
   .add(
-    HttpApiGroup.make("accountConnect").add(
-      AccountConnectApi.groups.accountConnect.endpoints.issue,
+    HttpApiGroup.make("appAccounts").add(
+      dashboard.appList,
+      dashboard.appGet,
+      dashboard.appLink,
+      dashboard.appUnlink,
+      connect.appConnect,
+      dashboard.userList,
+      dashboard.userGet,
+      dashboard.userLink,
+      dashboard.userUnlink,
+      connect.userConnect,
     ),
   )
   .add(LocalWebhookSetupApi.groups.webhookLinks)

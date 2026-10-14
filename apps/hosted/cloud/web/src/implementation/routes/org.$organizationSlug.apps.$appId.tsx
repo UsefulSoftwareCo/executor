@@ -13,7 +13,7 @@ export const Route = createFileRoute("/org/$organizationSlug/apps/$appId")({
 });
 function AppPage() {
   const { appId } = Route.useParams();
-  const { view, tool, profile, connection, client } = Route.useSearch();
+  const { view, tool, connection, client } = Route.useSearch();
   const navigate = Route.useNavigate();
   return (
     <>
@@ -21,14 +21,13 @@ function AppPage() {
         appId={appId}
         view={view}
         tool={tool}
-        profile={profile}
-        openApp={(app, selected) => <OpenAppAction app={app} profile={selected?.id} />}
+        openApp={(app) => <OpenAppAction app={app} />}
       />
       <AccountConnectionDialog
         connectionId={connection}
         client={client}
         onClose={() => {
-          void navigate({ search: { view, tool, profile }, replace: true });
+          void navigate({ search: { view, tool }, replace: true });
         }}
       />
     </>

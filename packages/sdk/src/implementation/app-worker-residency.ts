@@ -8,7 +8,9 @@
  * with a call in flight, including an unfinished release, a paused elicitation or a running
  * workflow, is never unloaded, so no work is lost (a release that outlives its limit keeps its
  * hold until it settles); while every loaded Worker is busy the limit is
- * exceeded until calls finish. The next call of an unloaded Worker cold-starts it from its build.
+ * exceeded until calls finish. Below the limit, a Worker left idle for the configured idle time is
+ * unloaded too, so an app called once does not keep its isolate for the life of the process. The
+ * next call of an unloaded Worker cold-starts it from its build.
  *
  * The state lives in the runner's own isolate, which workerd keeps for the life of the process.
  * Cloud has no residency: Cloudflare unloads its Workers itself.
@@ -29,6 +31,17 @@ export const defaultAppWorkerLimit = 64;
 export const appWorkerLimit = Config.schema(
   Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   "EXECUTOR_APP_WORKERS",
+).pipe(Config.option);
+/** Seconds an idle Worker stays loaded when no idle time is configured. */
+export const defaultAppWorkerIdleSeconds = 300;
+/**
+ * The operator's idle time, `EXECUTOR_APP_WORKER_IDLE_SECONDS`: a Worker with no call in flight
+ * that has not been called for this long is unloaded even below the limit. Zero keeps idle Workers
+ * loaded until the limit unloads them.
+ */
+export const appWorkerIdleSeconds = Config.schema(
+  Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  "EXECUTOR_APP_WORKER_IDLE_SECONDS",
 ).pipe(Config.option);
 /** An unload that has not settled by then is abandoned; its name then loads fresh code. */
 const unloadLimit = "10 seconds";
@@ -58,14 +71,34 @@ export interface AppWorkerResidency {
   /**
    * Hold a named Worker for one call. Waits while the name is being unloaded, and unloads idle
    * Workers above the limit before the call loads its own. Returns the call's release.
+   * `waitUntil` keeps the idle sweep the call may start alive after the call's request ends.
    */
-  readonly hold: (name: string, unload: Unload) => Effect.Effect<Effect.Effect<void>>;
+  readonly hold: (
+    name: string,
+    unload: Unload,
+    waitUntil: (task: Promise<unknown>) => void,
+  ) => Effect.Effect<Effect.Effect<void>>;
 }
 
-export const makeAppWorkerResidency = (limit: number): AppWorkerResidency => {
+export interface AppWorkerResidencyOptions {
+  /** Most Workers kept loaded while some are idle. */
+  readonly limit: number;
+  /** Seconds an idle Worker stays loaded below the limit; zero never unloads it for idling. */
+  readonly idleSeconds: number;
+}
+
+export const makeAppWorkerResidency = ({
+  limit,
+  idleSeconds,
+}: AppWorkerResidencyOptions): AppWorkerResidency => {
   if (!Number.isSafeInteger(limit) || limit < 1)
     throw new RangeError("The app Worker limit must be a positive integer");
+  if (!Number.isSafeInteger(idleSeconds) || idleSeconds < 0)
+    throw new RangeError("The app Worker idle time must be a non-negative integer");
+  const idleMillis = idleSeconds * 1000;
   const residents = new Map<string, Resident>();
+  /** When the armed idle sweep runs, or undefined when none is armed. */
+  let sweepAt: number | undefined;
 
   const unload = (name: string, resident: Resident) =>
     resident.unload.run.pipe(
@@ -115,7 +148,70 @@ export const makeAppWorkerResidency = (limit: number): AppWorkerResidency => {
       return unloads.length === 0 ? Effect.void : Effect.promise(() => Promise.all(unloads));
     });
 
-  const hold = (name: string, unload: Unload) =>
+  /** Claim and unload every idle Worker unused for the idle time. */
+  const expire = (now: number) =>
+    Effect.contextWith((services: Context.Context<never>) => {
+      const unloads: Array<Promise<void>> = [];
+      for (const [name, resident] of residents) {
+        if (resident.unloading !== undefined || resident.active > 0) continue;
+        if (now - resident.lastUsed < idleMillis) continue;
+        // Claimed synchronously, as in `trim`, so a call of this name waits for the unload.
+        const unloading = Effect.runPromiseWith(services)(unload(name, resident));
+        resident.unloading = unloading;
+        unloads.push(unloading);
+      }
+      return unloads.length === 0 ? Effect.void : Effect.promise(() => Promise.all(unloads));
+    });
+
+  /** When the next idle Worker expires, or undefined when no loaded Worker is idle. */
+  const nextExpiry = () => {
+    let next: number | undefined;
+    for (const resident of residents.values()) {
+      if (resident.unloading !== undefined || resident.active > 0) continue;
+      const expiry = resident.lastUsed + idleMillis;
+      if (next === undefined || expiry < next) next = expiry;
+    }
+    return next;
+  };
+
+  /**
+   * Sleep until the next idle Worker expires, unload the expired ones and repeat while any loaded
+   * Worker is idle. Timers in workerd belong to a request, so the sweep runs under the `waitUntil`
+   * of the call that armed it and outlives that call's response. A Worker's expiry only moves
+   * later, so one sweep, armed for the earliest one, covers every Worker that becomes idle after
+   * it. A sweep whose time has passed is presumed lost with its request and is armed again.
+   */
+  const arm = (now: number, waitUntil: (task: Promise<unknown>) => void) =>
+    Effect.gen(function* () {
+      if (idleMillis === 0 || (sweepAt !== undefined && sweepAt >= now)) return;
+      const first = nextExpiry();
+      if (first === undefined) return;
+      const sweep = (at: number): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          sweepAt = at;
+          yield* Effect.sleep(Math.max(0, at - (yield* Clock.currentTimeMillis)));
+          if (sweepAt !== at) return;
+          yield* expire(yield* Clock.currentTimeMillis);
+          if (sweepAt !== at) return;
+          sweepAt = undefined;
+          const next = nextExpiry();
+          if (next !== undefined) yield* sweep(next);
+        });
+      // Set before the sweep starts, so a release in between does not arm a second one.
+      sweepAt = first;
+      const services = yield* Effect.context<never>();
+      waitUntil(
+        Effect.runPromiseWith(services)(
+          sweep(first).pipe(
+            // Its own trace: it outlives the call that armed it by the idle time.
+            Effect.withSpan("runtime.app.worker.idle_sweep", { root: true }),
+            Effect.catchCause(() => Effect.void),
+          ),
+        ),
+      );
+    });
+
+  const hold = (name: string, unload: Unload, waitUntil: (task: Promise<unknown>) => void) =>
     Effect.gen(function* () {
       let resident: Resident | undefined;
       while (resident === undefined) {
@@ -147,7 +243,7 @@ export const makeAppWorkerResidency = (limit: number): AppWorkerResidency => {
             released = true;
             held.active--;
             held.lastUsed = now;
-            return trim();
+            return trim().pipe(Effect.andThen(arm(now, waitUntil)));
           }),
         ),
       );

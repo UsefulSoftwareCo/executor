@@ -24,9 +24,9 @@ const migration = {
   path: "migrations/0001_events.sql",
   content: "CREATE TABLE events (seq INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL);\n",
 };
-const source = `import { defineApp, string, object, query, mutation, interval, type MutationContext, type QueryContext, router } from "apps";
+const source = `import { defineApp, string, object, query, mutation, userInterval, type MutationContext, type QueryContext, router } from "apps";
 import { always } from "apps/operations/approval";
-const requirements = { accounts: {} };
+const requirements = {};
 const record = mutation({ input: object({ message: string() }), approval: always() }, async (ctx: MutationContext<typeof requirements>, input) =>
   ctx.sql.exec("INSERT INTO events (message) VALUES (?) RETURNING seq, message", input.message).one());
 const blocked = mutation({ input: object({}), approval: () => "denied" }, async () => { throw new Error("Denied body ran"); });
@@ -40,11 +40,11 @@ export default defineApp(requirements, async () => ({
      events: query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => ctx.sql.exec("SELECT seq, message FROM events ORDER BY seq LIMIT 100").toArray()),
      record, blocked, input, slow,
    }), schedules: {
-    automatic: interval({ minutes: 1 }, record, { message: "automatic" }),
-    review: interval({ minutes: 1 }, record, { message: "review" }),
-    blocked: interval({ minutes: 1 }, blocked, {}),
-    input: interval({ minutes: 1 }, input, {}),
-    slow: interval({ minutes: 1 }, slow, {}),
+    automatic: userInterval({ minutes: 1 }, record, { message: "automatic" }),
+    review: userInterval({ minutes: 1 }, record, { message: "review" }),
+    blocked: userInterval({ minutes: 1 }, blocked, {}),
+    input: userInterval({ minutes: 1 }, input, {}),
+    slow: userInterval({ minutes: 1 }, slow, {}),
   },
 }));`;
 layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
@@ -77,6 +77,8 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         yield* Effect.addFinalizer(() =>
           session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers).pipe(Effect.orDie),
         );
+        /** Each schedule's one copy, from configuring it. */
+        const copies = new Map<string, string>();
         const configure = (
           name: string,
           enabled: boolean,
@@ -90,6 +92,7 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
               headers,
             );
             expect(response.status).toBe(200);
+            copies.set(name, (yield* body(Schema.Struct({ id: Schema.String }), response)).id);
           });
         const runs = session
           .send("GET", `/v1/scheduled-runs?app=${app.id}`, undefined, headers)
@@ -125,7 +128,12 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
           );
         // Intervals are floored at one minute, so each check asks for its run now.
         const runNow = (name: string) =>
-          session.send("POST", `/v1/apps/${app.id}/schedules/${name}/run`, {}, headers);
+          session.send(
+            "POST",
+            `/v1/apps/${app.id}/schedules/${name}/copies/${copies.get(name)}/run`,
+            {},
+            headers,
+          );
         const dispatch = (name: string) =>
           Effect.gen(function* () {
             expect((yield* runNow(name)).status).toBe(200);
@@ -224,7 +232,7 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         const without = (names: readonly string[]) =>
           source
             .split("\n")
-            .filter((line) => !names.some((name) => line.startsWith(`    ${name}: interval(`)))
+            .filter((line) => !names.some((name) => line.startsWith(`    ${name}: `)))
             .join("\n");
         const activate = (deployment: string, expectedDeployment: string) =>
           Effect.gen(function* () {

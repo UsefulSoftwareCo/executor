@@ -1,7 +1,7 @@
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 import { requireAppAccess } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
-import { CatalogImportFailed, type CustomAppInput } from "@executor-js/catalog";
+import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executor-js/catalog";
 import {
   scopeGeneratedPackage,
   type AppId,
@@ -17,12 +17,29 @@ import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { appManagerOwner, currentOwner } from "./access.ts";
 
-/** Prepare ordinary source and create an app without replacing an existing name. */
+/** Install a catalog entry as a new app without replacing an existing name. */
 export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const catalog = yield* HostedCatalog;
     const generated = yield* catalog.prepare(input);
+    // An official app keeps its own package name, as an installed published app does.
+    if (generated.origin !== undefined)
+      return yield* executor.apps
+        .copy({
+          from: { files: generated.files, origin: generated.origin, activation: "deploy" },
+          owner,
+          name: input.name,
+        })
+        .pipe(
+          // A snapshot reads no registry or earlier app; those failures belong to other copy sources.
+          Effect.catchTags({
+            RegistryError: Effect.die,
+            DeploymentNotFound: Effect.die,
+            AppNotDeployed: Effect.die,
+          }),
+          Effect.flatMap(deployedCopy),
+        );
     const namespace = yield* Effect.flatten(CurrentOrganizationNamespace);
     const files = yield* scopeGeneratedPackage(generated.files, namespace, input.name).pipe(
       Effect.mapError(

@@ -13,10 +13,10 @@ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
-const source = `import { defineApp, mutation, object, interval, router } from "apps";
+const source = `import { defineApp, mutation, object, userInterval, router } from "apps";
 import { always } from "apps/operations/approval";
 const send = mutation({ input: object({}), approval: always() }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({  tools: router({ send }), schedules: { digest: interval({ hours: 1 }, send, {}) } }));`;
+export default defineApp({}, async () => ({  tools: router({ send }), schedules: { digest: userInterval({ hours: 1 }, send, {}) } }));`;
 layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (it) => {
   it.effect(scenarios.scheduleLoading.title, (context) =>
     withHostedCase(
@@ -121,7 +121,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
               const introduction = yield* browser.use("Measure the schedule introduction", (page) =>
                 page
                   .getByText(
-                    "Schedules run with this app’s selected accounts. New schedules start paused.",
+                    "Your schedules run as you, with the accounts you linked to this app. Change them in the app’s Accounts tab.",
                     { exact: true },
                   )
                   .boundingBox(),
@@ -142,7 +142,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
                 yield* browser.use("The introduction stays in place", (page) =>
                   page
                     .getByText(
-                      "Schedules run with this app’s selected accounts. New schedules start paused.",
+                      "Your schedules run as you, with the accounts you linked to this app. Change them in the app’s Accounts tab.",
                       { exact: true },
                     )
                     .boundingBox(),
@@ -270,7 +270,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
             {
               path: "index.ts",
               content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({  }));`,
+export default defineApp({}, async () => ({  }));`,
             },
             appsManifest,
           ],
@@ -317,7 +317,7 @@ export default defineApp({ accounts: {} }, async () => ({  }));`,
 const service = defineProvider({ name: "Schedule fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({  }));`,
+export default defineApp({ user: { accounts: { service } } }, async () => ({  }));`,
             },
             appsManifest,
           ],
@@ -341,7 +341,9 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
         );
         yield* browser.use("Account setup explains the blocked discovery", (page) =>
           page
-            .getByText("Choose accounts in Accounts to start using this app.", { exact: true })
+            .getByText("This app needs a linked account before its schedules can load.", {
+              exact: true,
+            })
             .waitFor(),
         );
         expect(
@@ -356,7 +358,7 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
         ).toBe(0);
         yield* browser.checkpoint("Schedules need account setup");
         yield* browser.use("Open account recovery", (page) =>
-          page.getByRole("button", { name: "Go to Accounts", exact: true }).click(),
+          page.getByRole("link", { name: "View accounts", exact: true }).click(),
         );
         yield* browser.use("The account selection action is available", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
@@ -376,9 +378,9 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
         const files = (definition: string) => [
           {
             path: "index.ts",
-            content: `import { defineApp, mutation, object, interval, cron, router } from "apps";
+            content: `import { defineApp, mutation, object, userInterval, userCron, router } from "apps";
 const send = mutation({ input: object({}) }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, ${definition});`,
+export default defineApp({}, ${definition});`,
           },
           appsManifest,
         ];
@@ -386,13 +388,13 @@ export default defineApp({ accounts: {} }, ${definition});`,
           files(
             `async () => ({ tools: router({ send }), schedules: { ${schedules.join(", ")} } })`,
           );
-        const everyThreeHours = `everyThreeHours: interval({ hours: 3 }, send, {})`;
+        const everyThreeHours = `everyThreeHours: userInterval({ hours: 3 }, send, {})`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Schedule removal ${randomUUID().slice(0, 8)}`,
           files: declaring(
             everyThreeHours,
-            `morning: cron({ expression: "0 9 * * *", timezone: "UTC" }, send, {})`,
-            `evening: cron({ expression: "0 18 * * *", timezone: "UTC" }, send, {})`,
+            `morning: userCron({ expression: "0 9 * * *", timezone: "UTC" }, send, {})`,
+            `evening: userCron({ expression: "0 18 * * *", timezone: "UTC" }, send, {})`,
           ),
         });
         expect(deployed.status).toBe(200);
@@ -505,7 +507,7 @@ export default defineApp({ accounts: {} }, ${definition});`,
               page.waitForResponse(
                 (response) =>
                   response.request().method() === "POST" &&
-                  new URL(response.url()).pathname.endsWith("/schedules/digest/run"),
+                  /\/schedules\/digest\/copies\/[^/]+\/run$/.test(new URL(response.url()).pathname),
               ),
               page.getByRole("button", { name: "Run now", exact: true }).click(),
             ]).then(([response]) => response.status()),

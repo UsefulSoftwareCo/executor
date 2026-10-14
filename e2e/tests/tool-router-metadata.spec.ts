@@ -17,7 +17,7 @@ const source = {
   path: "index.ts",
   content: `import { defineApp, query, object, router } from "apps";
 const tool = (description: string) => query({ description, input: object({}) }, async () => description);
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     billing: router(
       {

@@ -1,9 +1,10 @@
 import { makeRegistryStorage } from "@executor-js/app-registry";
+import { organizationPublishers } from "./publishers.ts";
 /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
 import { PgClient, PgTypes } from "@effect/sql-pg";
 import {
-  HostedMigrationFailed,
   migrateHostedDatabase,
+  migrationFailed,
   migrateProductSteps,
 } from "@executor-js/hosted-server/migrations";
 import { Effect } from "effect";
@@ -51,7 +52,7 @@ export const migrateOnboarding = Effect.gen(function* () {
       for each row execute function cloud_mark_organization_edit('logo')`;
     }),
   );
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
  * Queue future account creations in the same transaction as Better Auth's user insert.
@@ -88,7 +89,7 @@ export const migrateWelcomeEmails = Effect.gen(function* () {
         for each row execute function cloud_queue_welcome_email()`;
     }),
   );
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
  * The seat count last confirmed in Autumn, so membership jobs skip unchanged
@@ -103,7 +104,7 @@ export const migrateBillingSeats = Effect.gen(function* () {
     seat_plan boolean not null default false,
     checked_at timestamptz
   )`;
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
  * Organization removals whose Workflow start succeeded, so the removal job reads only starts never
@@ -118,7 +119,30 @@ export const migrateOrganizationRemovalStarts = Effect.gen(function* () {
     instance_id text not null,
     started_at timestamptz not null default now()
   )`;
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
+ * The v1 import map (`notes/v1-import.md`): one row per v1 item an import attempted, with the v2
+ * resource it created, why it failed, or why it had nothing to import (`skipped`). `(v1_kind, v1_id)` is unique, so no v1 item is created
+ * twice in v2. Additive: the running server never reads it.
+ */
+export const migrateV1ImportMap = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists private_v1_import_map (
+    v1_org_id text not null,
+    v1_kind text not null,
+    v1_id text not null,
+    v2_kind text,
+    v2_id text,
+    status text not null check (status in ('imported', 'failed', 'skipped')),
+    reason text,
+    source_hash text not null,
+    updated_at timestamptz not null default now(),
+    unique (v1_kind, v1_id),
+    check ((status = 'imported') = (v2_id is not null))
+  )`;
+  yield* sql`create index if not exists private_v1_import_map_org on private_v1_import_map (v1_org_id)`;
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /** Apply Better Auth and product migrations, then close both database pools. */
 export const migrateCloudDatabase = Effect.scoped(
@@ -132,15 +156,14 @@ export const migrateCloudDatabase = Effect.scoped(
       encode: (value) => PgTypes.encode(value, PgTypes.OID.oid),
     });
     const cloudMigrations = Effect.gen(function* () {
-      const registry = yield* makeRegistryStorage;
-      yield* registry.migrate.pipe(
-        Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
-      );
+      const registry = yield* makeRegistryStorage(yield* organizationPublishers);
+      yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
       yield* migrateProductSteps("private_cloud_migrations", {
         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
         "2_billing_seats": migrateBillingSeats,
         "3_app_domain_records": migrateAppDomainRecords,
         "4_organization_removal_starts": migrateOrganizationRemovalStarts,
+        "5_v1_import_map": migrateV1ImportMap,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

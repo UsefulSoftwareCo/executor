@@ -11,7 +11,7 @@ import { listBriefs, saveBrief, refreshBrief } from "./tools";
 import { refresh } from "./workflows";
 
 export const requirements = {
-  accounts: { github },
+  user: { accounts: { github } },
 };
 
 export default defineApp(requirements, {
@@ -119,7 +119,7 @@ export const refresh = workflow(
       const path = encodeURIComponent(owner) + "/" + encodeURIComponent(name);
       const response = await step.fetch("https://api.github.com/repos/" + path, {
         headers: {
-          Authorization: "Bearer " + step.accounts.github.fields.access_token,
+          Authorization: "Bearer " + step.user.accounts.github.fields.access_token,
           "User-Agent": "Daily brief",
         },
       });

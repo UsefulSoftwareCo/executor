@@ -15,15 +15,15 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { serverControl } from "../support/server-control.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Read = Schema.Struct({
   service: Schema.Struct({
@@ -74,13 +74,78 @@ const restartAfterKill = Effect.gen(function* () {
   }
 });
 
-/** One rotating OAuth account selected by one app profile, with a tool that uses its token. */
-const rotatingAccount = (replacedRefreshTokens: "refused" | "accepted") =>
+/**
+ * The `oauth.resolve` spans in the traces of the last `count` calls, each with the `oauth.renewal`
+ * spans of the renewal attempts it made, once each of those traces has delivered its resolve.
+ */
+const resolveSpans = (count: number) =>
+  Effect.gen(function* () {
+    const evidence = yield* Evidence,
+      telemetry = yield* Telemetry;
+    const traces = (yield* evidence.requests).slice(-count).map(({ traceId }) => traceId);
+    const resolves = yield* Effect.forEach(traces, (traceId) =>
+      telemetry.query(traceId).pipe(
+        Effect.map((result) => {
+          const spans = result.data.map(({ span }) => span);
+          return spans.flatMap((resolve) =>
+            resolve.operationName === "oauth.resolve"
+              ? [
+                  {
+                    resolve,
+                    renewals: spans.filter(
+                      (span) =>
+                        span.operationName === "oauth.renewal" &&
+                        span.parentSpanId === resolve.spanId,
+                    ),
+                  },
+                ]
+              : [],
+          );
+        }),
+        Effect.filterOrFail(
+          (resolves) => resolves.length > 0,
+          () => new Error("Call trace has not arrived"),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+      ),
+    );
+    return resolves.flat();
+  });
+
+/**
+ * The time an attribute records, in epoch milliseconds, checked to fall within the resolve that
+ * made the attempt: the event's own time, which can be long after the resolve started.
+ */
+const recordedAt = (
+  renewal: { tags: Record<string, string> },
+  resolve: { startTime: string; durationMs: number },
+  attribute: string,
+  context: string,
+) => {
+  const at = Number(renewal.tags[attribute]);
+  const start = Date.parse(resolve.startTime);
+  expect(at, `${context}: ${attribute}`).toBeGreaterThanOrEqual(start);
+  expect(at, `${context}: ${attribute}`).toBeLessThanOrEqual(
+    start + Math.ceil(resolve.durationMs) + 1,
+  );
+  return at;
+};
+
+/**
+ * One rotating OAuth account linked to one app, with a tool that uses its token. The owner
+ * deploys the app; `user` connects the account and calls the tool. A member uses an app the owner
+ * opened to everyone.
+ */
+const rotatingAccount = (
+  replacedRefreshTokens: "refused" | "accepted",
+  user: "owner" | "member" = "owner",
+) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
       evidence = yield* Evidence,
       http = yield* HttpClient.HttpClient;
+    const caller = actors[user];
     const issuer = yield* oauthSetupIssuer;
     const prefix = `/api/organizations/${actors.organization.id}`;
     // Tokens issued inside the host's 30-second renewal window renew on every use, and every
@@ -97,11 +162,15 @@ const rotatingAccount = (replacedRefreshTokens: "refused" | "accepted") =>
       files: [
         {
           path: "index.ts",
-          content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
+          content: `import { defineApp, defineProvider, oauth2, query, object, router, ProviderError } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
-    read: query({ input: object({}) }, async ({ fetch }) => ({ service: await (await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json() })),
+    read: query({ input: object({}) }, async ({ fetch }) => {
+      const response = await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } });
+      if (response.status === 401) throw new ProviderError({ reason: "unauthorized", status: 401, accountId: accounts.service.id });
+      return { service: await response.json() };
+    }),
   }),
 }));`,
         },
@@ -111,17 +180,27 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const app = yield* body(AppProvider, deployed);
     const appPath = `${prefix}/apps/${app.id}`;
+    /** Open the app to every member, or keep it to its creator, the owner. */
+    const audience = (kind: "everyone" | "private") =>
+      Effect.gen(function* () {
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${appPath}/access`),
+        );
+        const changed = yield* api.request(actors.owner, "PATCH", `${appPath}/access`, {
+          revision: access.revision,
+          audience: { kind },
+        });
+        expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+      });
+    if (user === "member") yield* audience("everyone");
 
-    const profile = yield* createProfile(actors.owner, appPath);
     const connection = yield* body(
       Resource,
-      yield* api.request(actors.owner, "POST", `${appPath}/connections`, {
-        requirement: "service",
-        profile: profile.id,
-      }),
+      yield* api.request(caller, "POST", connectionsPath(appPath, "user", "service"), {}),
     );
     const started = yield* api.request(
-      actors.owner,
+      caller,
       "POST",
       `${prefix}/connections/${connection.id}/oauth/start`,
       { method: "oauth", label: "Synthetic rotating account" },
@@ -138,27 +217,21 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
       }),
     ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
     const completed = yield* api.request(
-      actors.owner,
+      caller,
       "POST",
       `${prefix}/connections/${connection.id}/oauth/complete`,
       { callbackUrl },
     );
     expect(completed.status, JSON.stringify(completed.body)).toBe(200);
     const account = yield* body(Resource, completed);
-    // Background profile setup resolves, and so renews, the new account. Let it finish so the
-    // renewals below belong to the calls the scenario makes.
-    yield* api.request(actors.owner, "GET", `${appPath}/profiles/${profile.id}`).pipe(
-      Effect.flatMap((response) => body(SetupStatus, response)),
-      Effect.flatMap((current) =>
-        current.status !== "pending"
-          ? Effect.void
-          : Effect.fail(new Error("Profile setup has not finished")),
-      ),
-      Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+    // Linking the account sets it up as the app's webhook source in the background, which
+    // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
+    // the call the scenario makes.
+    yield* settleWebhookSources(caller, appPath, (sources) =>
+      sources.some((source) => source.account === account.id && source.status !== "pending"),
     );
 
-    const read = api.request(actors.owner, "POST", `${appPath}/tools/call`, {
-      profile: profile.id,
+    const read = api.request(caller, "POST", `${appPath}/tools/call`, {
       tool: "read",
       input: {},
     });
@@ -234,6 +307,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
     return {
       issuer,
       metrics,
+      audience,
       read,
       renewed,
       heldBeyond,
@@ -295,6 +369,47 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
     for (const { response, elapsed } of calls)
       expect(elapsed, `${point}: ${JSON.stringify(response.body)}`).toBeLessThan(executeDeadline);
     const responses = calls.map(({ response }) => response);
+    // Exactly one caller renews, in one attempt with its own span. Unless the dead process had
+    // saved its renewal, that caller took over the claim the process left, and records how long
+    // it went unconfirmed: longer than the lease, since the process never confirmed it again. It
+    // records the grant it renewed, as the account and the first credential generation, which the
+    // sign-in stored with the grant, and when it claimed it, so a reconnect of that grant can be
+    // matched to the takeover. The process that held the claim is gone, so no renewal finds its
+    // claim lost.
+    const resolves = yield* resolveSpans(callers);
+    const attempts = resolves.flatMap(({ resolve, renewals }) =>
+      renewals.map((renewal) => ({ resolve, renewal })),
+    );
+    expect(attempts.length, point).toBe(1);
+    const [attempt] = attempts;
+    if (attempt === undefined) return yield* Effect.die(`${point}: no renewal attempt`);
+    const renewal = attempt.renewal.tags;
+    expect(renewal, point).toMatchObject({
+      "executor.account.id": account.id,
+      "executor.account.credential_generation": "0",
+      "executor.account.credential_generation_source": "grant",
+    });
+    const claimedAt = recordedAt(
+      attempt.renewal,
+      attempt.resolve,
+      "oauth.renewal.claimed_at_ms",
+      point,
+    );
+    expect(renewal["oauth.renewal.lost_claim_result"], point).toBeUndefined();
+    if (point === "after Executor saves the renewal")
+      expect(renewal, point).toMatchObject({ "oauth.renewal.takeover": "false" });
+    else {
+      expect(renewal, point).toMatchObject({ "oauth.renewal.takeover": "true" });
+      const unconfirmed = Number(renewal["oauth.renewal.abandoned_claim_age_ms"]);
+      expect(unconfirmed, point).toBeGreaterThan(20_000);
+      expect(Number(renewal["oauth.renewal.takeover_expired_ms"]), point).toBe(
+        unconfirmed - 20_000,
+      );
+      // The resolve span still records the unconfirmed age, as before attempts had spans.
+      expect(attempt.resolve.tags["oauth.renewal.abandoned_claim_age_ms"], point).toBe(
+        renewal["oauth.renewal.abandoned_claim_age_ms"],
+      );
+    }
 
     if (
       point === "after the service rotates the token, before Executor saves it" &&
@@ -327,6 +442,25 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
           cause: { stage: "refresh", status: 400, providerError: "invalid_grant" },
         },
       ]);
+      // The takeover itself ended in the refusal that marked the grant for reconnecting, after it
+      // claimed the grant. Its attempt span names the grant and when it found the reconnect beside
+      // its reason, so a query can match the reconnect to the takeover. Every call's resolve span
+      // records the reconnect as before; the calls that waited for the takeover find the grant
+      // already marked.
+      expect(attempt.resolve.tags, point).toMatchObject({
+        "oauth.renewal.outcome": "reconnect",
+        "oauth.reconnect.reason": "renewal_interrupted",
+      });
+      expect(renewal, point).toMatchObject({
+        "oauth.reconnect.reason": "renewal_interrupted",
+        "oauth.error.provider_code": "invalid_grant",
+      });
+      expect(
+        recordedAt(attempt.renewal, attempt.resolve, "oauth.reconnect.at_ms", point),
+        point,
+      ).toBeGreaterThanOrEqual(claimedAt);
+      for (const { resolve } of resolves)
+        expect(resolve.tags, point).toMatchObject({ "oauth.resolve.outcome": "reconnect" });
       // Later calls are refused without presenting the refused token again.
       const again = yield* read;
       expect(again.status, JSON.stringify(again.body)).toBe(409);
@@ -335,6 +469,8 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
     }
 
     // Every other kill point recovers without a new sign-in, with one renewal for all callers.
+    expect(attempt.resolve.tags, point).toMatchObject({ "oauth.renewal.outcome": "renewed" });
+    expect(renewal["oauth.reconnect.reason"], point).toBeUndefined();
     const tokens = yield* Effect.forEach(responses, renewed(point));
     expect(new Set(tokens).size, point).toBe(1);
     expect(settled.refreshesIssued - after.refreshesIssued, point).toBe(1);
@@ -347,7 +483,7 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
  */
 const slowLiveRenewal = Effect.gen(function* () {
   const context = "slow live renewal";
-  const { issuer, metrics, read, renewed, heldBeyond, newestTokenSaved } =
+  const { issuer, metrics, read, renewed, heldBeyond, newestTokenSaved, account } =
     yield* rotatingAccount("refused");
   yield* issuer.configure({ hold: "refresh-issued" });
   const before = yield* metrics;
@@ -367,7 +503,79 @@ const slowLiveRenewal = Effect.gen(function* () {
   const tokens = yield* Effect.forEach(responses, renewed(context));
   expect(new Set(tokens).size, context).toBe(1);
   expect((yield* metrics).refreshesIssued - before.refreshesIssued, context).toBe(1);
+  // Only the holder claimed the grant, in one attempt, and as a fresh claim rather than a
+  // takeover. It kept the claim through the slow response, so it never found the claim lost.
+  const resolves = yield* resolveSpans(callers + 1);
+  const attempts = resolves.flatMap(({ resolve, renewals }) =>
+    renewals.map((renewal) => ({ resolve, renewal })),
+  );
+  expect(
+    attempts.map(({ renewal }) => renewal.tags),
+    context,
+  ).toEqual([
+    expect.objectContaining({
+      "executor.account.id": account.id,
+      "executor.account.credential_generation": "0",
+      "executor.account.credential_generation_source": "grant",
+      "oauth.renewal.takeover": "false",
+    }),
+  ]);
+  for (const { resolve, renewal } of attempts) {
+    expect(resolve.tags, context).toMatchObject({ "oauth.renewal.outcome": "renewed" });
+    expect(renewal.tags["oauth.renewal.lost_claim_result"], context).toBeUndefined();
+    recordedAt(renewal, resolve, "oauth.renewal.claimed_at_ms", context);
+  }
   yield* newestTokenSaved(context, tokens[0] ?? null);
+});
+
+/**
+ * The caller loses app access while their call waits for a slow renewal. App access was checked
+ * before the renewal; it is checked again once the renewal settles, so the app's code never runs
+ * for a caller who can no longer use the app.
+ */
+const appAccessEndsDuringRenewal = Effect.gen(function* () {
+  const context = "app access ends during a renewal";
+  const { issuer, metrics, audience, read, heldBeyond } = yield* rotatingAccount(
+    "refused",
+    "member",
+  );
+  yield* issuer.configure({ hold: "refresh-issued" });
+  const before = yield* metrics;
+  const call = yield* Effect.forkChild(read);
+  yield* heldBeyond(before.held, context);
+  // The owner makes the app private to its creator while the member's renewal is held.
+  yield* audience("private");
+  yield* issuer.configure({ hold: null });
+  yield* issuer.release;
+  const response = yield* Fiber.join(call);
+  expect(response.status, `${context}: ${JSON.stringify(response.body)}`).not.toBe(200);
+  const after = yield* metrics;
+  expect(after.refreshesIssued - before.refreshesIssued, context).toBe(1);
+  // The renewed credentials never reached the app's code, so it read nothing from the service.
+  expect(after.resourceRequests, context).toEqual(before.resourceRequests);
+
+  // The same holds when the service refuses a token mid-call: a query is repeated with renewed
+  // credentials only while its caller can still use the app. Tokens without a stated lifetime are
+  // not renewed ahead, so the call starts with the saved token and renews once it is refused.
+  const refusal = "app access ends during a renewal after a refused token";
+  yield* audience("everyone");
+  yield* issuer.configure({ expiresIn: null });
+  expect((yield* read).status, refusal).toBe(200);
+  expect((yield* read).status, refusal).toBe(200);
+  yield* issuer.expireAccessTokens;
+  yield* issuer.configure({ hold: "refresh-issued" });
+  const refused = yield* metrics;
+  const retried = yield* Effect.forkChild(read);
+  yield* heldBeyond(refused.held, refusal);
+  yield* audience("private");
+  yield* issuer.configure({ hold: null });
+  yield* issuer.release;
+  const repeated = yield* Fiber.join(retried);
+  expect(repeated.status, `${refusal}: ${JSON.stringify(repeated.body)}`).not.toBe(200);
+  const settled = yield* metrics;
+  expect(settled.refreshesIssued - refused.refreshesIssued, refusal).toBe(1);
+  // Only the refused read reached the service; the query was not repeated.
+  expect(settled.resourceRequests.GET - refused.resourceRequests.GET, refusal).toBe(1);
 });
 
 /**
@@ -525,6 +733,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth renewal interruption", (
   );
   it.effect(scenarios.oauthRenewalSlowLiveHolder.title, (context) =>
     withHostedCase(context, slowLiveRenewal),
+  );
+  it.effect(scenarios.oauthRenewalAppAccessEnds.title, (context) =>
+    withHostedCase(context, appAccessEndsDuringRenewal),
   );
   it.effect(scenarios.oauthRenewalCallerDisconnects.title, (context) =>
     withHostedCase(context, callerDisconnects),

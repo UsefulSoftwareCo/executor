@@ -18,11 +18,13 @@ const servingSources: AppSources = () => ({
   head: () => noSource("head"),
   read: () => noSource("read"),
   commit: () => noSource("commit"),
+  blob: () => noSource("blob"),
+  file: () => noSource("file"),
   request: () => noSource("request"),
 });
 
 /**
- * What app pages and MCP sessions serve: apps, profiles, accounts, skills, tools, app data and
+ * What app pages and MCP sessions serve: apps, accounts and their links, skills, tools, app data and
  * build assets. This module never imports `product.ts`, so these Workers upload none of the
  * source, management, provisioning and removal code the API Worker composes.
  */

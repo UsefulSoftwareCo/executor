@@ -8,7 +8,7 @@ import {
 import { useState, type ComponentType, type ReactNode } from "react";
 import { BookOpen01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { App, AppSkillBundle, AppSkillDocument } from "@executor-js/sdk";
+import { isTextFile, type App, type AppSkillBundle, type AppSkillDocument } from "@executor-js/sdk";
 import type { SkillBindings } from "../../contracts/app-browser.ts";
 import type { FailureProps } from "../../contracts/dashboard.ts";
 import { Option } from "effect";
@@ -280,8 +280,6 @@ function SkillFiles<E>({
   const document: AppSkillDocument = {
     ...skill,
     revision: catalog.revision,
-    ...(catalog.profile === undefined ? {} : { profile: catalog.profile }),
-    ...(catalog.profileRevision === undefined ? {} : { profileRevision: catalog.profileRevision }),
     app: catalog.app,
     deployment: catalog.deployment,
     file: resource.path,
@@ -350,7 +348,7 @@ function SkillFiles<E>({
             {(source) => {
               const stored = source.files.find((item) => item.path === path);
               // Skills from code or remote sources, and apps this person cannot change, stay read-only.
-              if (stored === undefined || !source.canEdit)
+              if (stored === undefined || !isTextFile(stored) || !source.canEdit)
                 return (
                   <>
                     {header()}

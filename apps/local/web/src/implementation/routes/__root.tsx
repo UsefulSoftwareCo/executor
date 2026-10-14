@@ -12,13 +12,14 @@ import { useLocation } from "@tanstack/react-router";
 import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
 import { DashboardDocument } from "@executor-js/dashboard-start/shell";
 import styles from "../styles/globals.css?url";
+import { fontPreloads } from "@executor-js/ui/lib/fonts";
 
 /** Standalone connection handoffs and authenticated dashboard routes share only the router. */
 export const Route = createRootRouteWithContext<{
   readonly entry: BrowserEntryValues | undefined;
 }>()({
   head: () => ({
-    links: [{ rel: "stylesheet", href: styles }],
+    links: [...fontPreloads, { rel: "stylesheet", href: styles }],
     meta: [{ title: "Executor · Local" }],
   }),
   shellComponent: DashboardDocument,

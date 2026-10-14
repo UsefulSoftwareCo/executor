@@ -13,7 +13,7 @@ const MessagePage = object({
 
 /** Find the first page of message references in the selected Gmail account. */
 export const searchMail = async (
-  { accounts, fetch }: Pick<WebhookCtx, "accounts" | "fetch">,
+  { user: { accounts }, fetch }: Pick<WebhookCtx, "user" | "fetch">,
   { query }: { readonly query: string },
 ) => {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");

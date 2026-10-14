@@ -1,7 +1,23 @@
 /** Cache immutable, manifest-checked build bytes, never an HTTP authorization result. */
-import { BlobKey, type BuildId, type RuntimeBuildUnavailable } from "@executor-js/sdk/core";
-import type { AppUiAsset } from "apps/ui/contracts";
-import { Effect, FiberSet, Option, Schema } from "effect";
+import {
+  BlobKey,
+  RuntimeBuildUnavailable,
+  type BlobBody,
+  type BlobRange,
+  type BlobStoreError,
+  type BuildId,
+  type RuntimeAsset,
+} from "@executor-js/sdk/core";
+import { Effect, FiberSet, Option, Schema, Stream } from "effect";
+
+/**
+ * A public file is cached as its listing only: the response is empty and this header holds its
+ * store key, blob and size. Its bytes always come from the store, in the range a request asks for.
+ */
+const publicHeader = "x-executor-public-file";
+const PublicListing = Schema.fromJsonString(
+  Schema.Struct({ key: BlobKey, object: Schema.String, size: Schema.Int }),
+);
 
 class AssetCacheFailed extends Schema.TaggedError<AssetCacheFailed>()("AssetCacheFailed", {}) {}
 const cached = <A>(read: () => Promise<A>) =>
@@ -13,7 +29,11 @@ export const cachedBuildAssets = (
   load: (
     build: BuildId,
     path: string,
-  ) => Effect.Effect<AppUiAsset | undefined, RuntimeBuildUnavailable>,
+  ) => Effect.Effect<RuntimeAsset | undefined, RuntimeBuildUnavailable>,
+  stream: (
+    key: BlobKey,
+    range: BlobRange | undefined,
+  ) => Effect.Effect<Option.Option<BlobBody>, BlobStoreError>,
 ) =>
   Effect.gen(function* () {
     // Alchemy closes the event scope through waitUntil after sending the response.
@@ -22,6 +42,23 @@ export const cachedBuildAssets = (
     yield* Effect.addFinalizer(() =>
       FiberSet.awaitEmpty(writes).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
     );
+    const publicFile = (listing: typeof PublicListing.Type, contentType: string): RuntimeAsset => ({
+      contentType,
+      size: listing.size,
+      object: listing.object,
+      key: listing.key,
+      read: (range) =>
+        stream(listing.key, range).pipe(
+          Effect.mapError(() => new RuntimeBuildUnavailable()),
+          Effect.flatMap((found) =>
+            Option.isNone(found)
+              ? Effect.fail(new RuntimeBuildUnavailable())
+              : Effect.succeed(
+                  found.value.body.pipe(Stream.mapError(() => new RuntimeBuildUnavailable())),
+                ),
+          ),
+        ),
+    });
     return (build: BuildId, path: string) =>
       Effect.gen(function* () {
         if (Option.isNone(Schema.decodeUnknownOption(BlobKey)(`${build}/ui/${path}`)))
@@ -43,7 +80,17 @@ export const cachedBuildAssets = (
                 if (response === undefined) return undefined;
                 const contentType = response.headers.get("content-type");
                 if (contentType === null) return undefined;
-                return { body: new Uint8Array(await response.arrayBuffer()), contentType };
+                const listed = response.headers.get(publicHeader);
+                if (listed !== null) {
+                  const listing = Schema.decodeUnknownOption(PublicListing)(listed);
+                  return Option.isSome(listing)
+                    ? publicFile(listing.value, contentType)
+                    : undefined;
+                }
+                return {
+                  body: new Uint8Array(await response.arrayBuffer()),
+                  contentType,
+                } satisfies RuntimeAsset;
               }).pipe(Effect.catchTag("AssetCacheFailed", () => Effect.succeed(undefined)));
         yield* Effect.annotateCurrentSpan(
           "executor.asset.cache",
@@ -59,12 +106,24 @@ export const cachedBuildAssets = (
             cached(() =>
               cache.put(
                 key,
-                new Response(new Uint8Array(asset.body), {
-                  headers: {
-                    "content-type": asset.contentType,
-                    "cache-control": "public, max-age=31536000",
-                  },
-                }),
+                "body" in asset
+                  ? new Response(new Uint8Array(asset.body), {
+                      headers: {
+                        "content-type": asset.contentType,
+                        "cache-control": "public, max-age=31536000",
+                      },
+                    })
+                  : new Response(null, {
+                      headers: {
+                        "content-type": asset.contentType,
+                        "cache-control": "public, max-age=31536000",
+                        [publicHeader]: JSON.stringify({
+                          key: asset.key,
+                          object: asset.object,
+                          size: asset.size,
+                        }),
+                      },
+                    }),
               ),
             ).pipe(
               Effect.catchTag("AssetCacheFailed", () =>

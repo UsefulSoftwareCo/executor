@@ -66,6 +66,20 @@ export const telemetryResources = Effect.gen(function* () {
       query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where name == 'ui.app.result.receive' and ['attributes.custom']['executor.trace.context_valid'] == false | summarize count()`,
     },
     {
+      // A database call reached an AppData without the supervisor's `run` (mixed versions) and
+      // used the shared runner instead. Expected only while an older AppData still serves.
+      id: "RunnerFallback",
+      title: "database call runner fallback",
+      query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where isnotempty(tostring(['attributes.custom']['executor.runner.fallback'])) | summarize count()`,
+    },
+    {
+      // A data supervisor refused a call for another app, or a call that is not a database call.
+      // The product never sends one, so any refusal is a routing bug.
+      id: "SupervisorRefusals",
+      title: "data supervisor refusals",
+      query: `['${names.traces}'] | where ['resource.deployment.environment.name'] == '${stage}' | where isnotempty(tostring(['attributes.custom']['executor.runner.refused'])) or isnotempty(tostring(['attributes.custom']['executor.supervisor.refused'])) | summarize count()`,
+    },
+    {
       id: "TelemetryExportFailures",
       title: "telemetry export failures",
       query: `['${names.logs}'] | where ['resource.deployment.environment.name'] == '${stage}' | where body == 'Telemetry export failed' | summarize count()`,

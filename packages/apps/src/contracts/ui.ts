@@ -1,15 +1,19 @@
 /** Browser-to-host operations bind identity and authentication outside authored app code. */
-import { Schema } from "effect";
+import { Schema, type Effect, type Stream } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { JsonValue } from "./schema.ts";
 
-/** Non-secret page context injected by the serving host. */
+/**
+ * Non-secret page context injected by the serving host. `accounts` names the account IDs the page
+ * runs with, by requirement, when the app has requirements.
+ */
 export const UiContext = Schema.Struct({
   deployment: Schema.NonEmptyString,
-  profile: Schema.optional(Schema.NonEmptyString),
-  expectedProfileRevision: Schema.optional(Schema.Int),
+  accounts: Schema.optional(
+    Schema.Record(Schema.NonEmptyString, Schema.Array(Schema.NonEmptyString)),
+  ),
 });
-/** A problem with one of the page profile's accounts, from stored state. Labels are the owner's own names. */
+/** A problem with one of the page's accounts, from stored state. Labels are the owner's own names. */
 export type UiAccountProblem =
   | { readonly provider: string; readonly reason: "missing" | "removed" | "incompatible" }
   | {
@@ -25,16 +29,32 @@ export type UiAccountProblem =
 export interface UiAccountNotice {
   readonly app: string;
   readonly problems: readonly UiAccountProblem[];
-  /** The profile's accounts in the dashboard. */
+  /** The app's accounts in the dashboard. */
   readonly fix: string;
-  /** The dashboard chooser, returning to this page. */
-  readonly choose: string;
 }
 /** Retained browser bytes. Hosts authorize access before reading or rendering them. */
-export interface AppUiAsset {
+export interface AppUiFile {
   readonly body: Uint8Array;
   readonly contentType: string;
 }
+/** One byte range of a stored file, already within its size. */
+export interface AppUiRange {
+  readonly offset: number;
+  readonly length: number;
+}
+/**
+ * A public file the deployment's source served from `ui/public/`, which the host copied to its
+ * own store. `etag` names its exact bytes. Hosts authorize access before reading it.
+ */
+export interface AppUiStoredFile {
+  readonly contentType: string;
+  readonly size: number;
+  readonly etag: string;
+  readonly read: (
+    range: AppUiRange | undefined,
+  ) => Effect.Effect<Stream.Stream<Uint8Array, UiFailed>, UiFailed>;
+}
+export type AppUiAsset = AppUiFile | AppUiStoredFile;
 /** Requests name an operation on this app and the page's deployment, never another app or account. */
 export const UiOperation = Schema.Struct({
   ...UiContext.fields,

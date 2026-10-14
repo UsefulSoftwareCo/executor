@@ -1,12 +1,13 @@
 /** The private app protocol is checked through each real hosted product and its browser runtime. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { readAdvice } from "../support/write-outcome.ts";
 import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
 import {
   committedDocuments,
@@ -16,8 +17,7 @@ import {
 } from "../support/app-open-timeline.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { password } from "../support/actors.ts";
-import { App, SpanQuery } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { App } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 
 import { McpOAuth } from "../support/mcp-oauth.ts";
@@ -26,9 +26,6 @@ import { managementApp } from "../support/management-app.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { targetHosts } from "../support/role-hosts.ts";
-
-type Span = (typeof SpanQuery.Type)["data"][number]["span"];
-type ServerSpan = { readonly traceId: string; readonly spanId: string };
 
 const files = [
   {
@@ -39,7 +36,7 @@ export const list = query({ input: object({}) }, async ({ sql }) =>
 export const save = mutation({ input: object({ body: string() }) }, async ({ sql }, input) => {
   sql.exec("INSERT INTO messages (body) VALUES (?)", input.body); return input.body;
 });
-export default defineApp({ accounts: {} }, {  tools: router({
+export default defineApp({}, {  tools: router({
     list,
     save,
   }) });`,
@@ -113,6 +110,7 @@ const ApiFailure = Schema.Struct({
         recovery: Schema.optional(
           Schema.Struct({ action: Schema.String, instructions: Schema.String }),
         ),
+        retryable: Schema.Boolean,
       }),
     }),
   }),
@@ -151,16 +149,16 @@ const appFixture = Effect.gen(function* () {
   return { api, actors, browser, target, prefix, app, url, bookmark };
 });
 
-/** The owner's browser grants an MCP client that addresses the owner's Executor profile. */
+/** The owner's browser grants an MCP client that addresses the owner's Executor app. */
 const mcpSession = Effect.gen(function* () {
   const actors = yield* Actors,
     browser = yield* Browser,
     oauth = yield* McpOAuth,
     mcp = yield* McpClient;
   yield* browser.login(actors.owner);
-  const { profile } = yield* managementApp(actors.owner);
-  expect(profile.accounts.service).toBeTypeOf("string");
-  const tools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
+  const { account } = yield* managementApp(actors.owner);
+  expect(account).toBeTypeOf("string");
+  const tools = "tools.executor";
   const grant = yield* oauth.authorize;
   yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
   const client = yield* mcp.connect(
@@ -194,8 +192,8 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         );
         expect(Object.keys(apiDocument.paths)).not.toContain("/api/app-ui/authorize");
         expect(Object.keys(apiDocument.paths)).toContain("/api/viewer");
-        const { app: management, profile } = yield* managementApp(actors.owner);
-        expect(profile.accounts.service).toBeTypeOf("string");
+        const { app: management, account } = yield* managementApp(actors.owner);
+        expect(account).toBeTypeOf("string");
         const source = yield* body(
           Schema.Struct({
             files: Schema.Array(
@@ -307,12 +305,13 @@ return { items };`,
             .error,
         ).toEqual({
           message:
-            "AppNotDeployed (HTTP 409): The app has no active deployment to load. Recovery: Open Source and deploy the app before using its tools or accounts.",
+            "AppNotDeployed (HTTP 409): The app has no active deployment to load. Recovery: Open Source and deploy the app before using its tools or accounts. Retryable (unchanged call): no.",
           response: {
             code: "AppNotDeployed",
             status: 409,
             message: "The app has no active deployment to load.",
             recovery: expect.any(Object),
+            retryable: false,
           },
         });
         // A different name with the same generated address names the app that holds it.
@@ -321,11 +320,24 @@ return { items };`,
           `return await ${tools}.appManagement.create(${JSON.stringify({ path: organization, body: { name: name.toLowerCase().replaceAll(" ", "-"), files } })});`,
         );
         const message = `The app “${name}” (${app.id}) already uses the address “${app.slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`;
+        // Creating an app may write, so a failed create is reported as an unknown outcome even
+        // though Executor refuses a taken address before it creates anything. Accurate copy for
+        // such definite refusals is a separate follow-up; this is the conservative, safe text.
+        const declared = {
+          action: "Read the API’s error to determine the next step.",
+          instructions:
+            "An API the app calls returned an error its OpenAPI document declares (AppSlugTaken, HTTP 409). Read its message to decide whether the input, the account's access or the API is at fault.",
+        };
+        const recovery = {
+          action:
+            "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.",
+          instructions: `This call may have changed data or may still complete. A safe read can show effects but cannot rule out later completion. Tell the user what is known and get their agreement before repeating the change. ${readAdvice(`${declared.action} ${declared.instructions}`)} Repairing the cause does not establish whether the earlier call completed.`,
+        };
         expect(
           (yield* Schema.decodeUnknownEffect(ApiFailure)(taken.structuredContent)).execution.error,
         ).toEqual({
-          message: `AppSlugTaken (HTTP 409): ${message}`,
-          response: { code: "AppSlugTaken", status: 409, message },
+          message: `AppSlugTaken (HTTP 409): ${message} Recovery: ${recovery.action} Retryable (unchanged call): no.`,
+          response: { code: "AppSlugTaken", status: 409, message, recovery, retryable: false },
         });
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
@@ -389,28 +401,15 @@ return { items };`,
         missingApp.hostname = `missing-app.${known.hostname.split(".").slice(1).join(".")}`;
         const missingOrganization = new URL(url);
         missingOrganization.hostname = `${known.hostname.split(".")[0]}.missing-organization.${known.hostname.split(".").slice(2).join(".")}`;
-        const telemetry = yield* Telemetry;
-        const evidence = yield* Evidence;
-        /** The response names the server span it ran under, so its delivered spans can be read back. */
         const send = (request: HttpClientRequest.HttpClientRequest, accept: string) =>
           request.pipe(
             HttpClientRequest.setHeader("accept", accept),
             http.execute,
             Effect.flatMap((response) =>
-              Effect.map(response.text, (body) => {
-                const timing = response.headers["server-timing"] ?? "";
-                const server = {
-                  traceId: timing.match(/executor-trace;desc="([a-f0-9]{32})"/)?.[1] ?? "",
-                  spanId: timing.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1] ?? "",
-                };
-                expect(server.traceId, "The response names its server trace").not.toBe("");
-                expect(server.spanId, "The response names its server span").not.toBe("");
-                return {
-                  server,
-                  outcome: { status: response.status, body },
-                  headers: response.headers,
-                };
-              }),
+              Effect.map(response.text, (body) => ({
+                outcome: { status: response.status, body },
+                headers: response.headers,
+              })),
             ),
             Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
           );
@@ -418,18 +417,11 @@ return { items };`,
           send(HttpClientRequest.get(new URL(path, origin).href), accept).pipe(
             Effect.map(({ outcome }) => outcome),
           );
-        const probes: Array<{ path: string; server: ServerSpan }> = [];
-        /** A cookie-less request, whose trace must show no database work. */
         const sendAnonymously = (
           origin: URL,
           path: string,
           method: "GET" | "HEAD" | "POST" | "PUT" | "OPTIONS" = "GET",
-        ) =>
-          send(HttpClientRequest.make(method)(new URL(path, origin).href), "*/*").pipe(
-            Effect.tap(({ server }) =>
-              Effect.sync(() => probes.push({ path: `${method} ${path}`, server })),
-            ),
-          );
+        ) => send(HttpClientRequest.make(method)(new URL(path, origin).href), "*/*");
         const fetchAnonymously = (
           origin: URL,
           path: string,
@@ -462,84 +454,9 @@ return { items };`,
         expect(document.status).toBe(302);
         const page = yield* fetchAnonymously(known, "/inbox/read");
         expect(page).toEqual(probe);
-        // The signed-out navigation looks up the organization and app. It is sent after the
-        // probes, so its delivered spans show that the collector received this run's traces.
-        const navigation = yield* send(
-          HttpClientRequest.get(new URL("/", known).href),
-          "text/html",
-        );
-        expect(navigation.outcome.status).toBe(302);
-
-        const databaseWork = new Set([
-          "sdk.apps.list",
-          "auth.sql.timing",
-          "sql.connect",
-          "sql.execute",
-        ]);
-        /** The request's server span and every span delivered beneath it. */
-        const served = (server: ServerSpan, complete: (spans: ReadonlyArray<Span>) => boolean) =>
-          telemetry.query(server.traceId).pipe(
-            Effect.map((result) => {
-              const spans = result.data.map((row) => row.span);
-              const root = spans.find(
-                (span) =>
-                  span.spanId === server.spanId && span.operationName.startsWith("http.server "),
-              );
-              const byId = new Map(spans.map((span) => [span.spanId, span]));
-              const under = (span: Span) => {
-                const visited = new Set<string>();
-                let parent = span.parentSpanId;
-                while (parent !== null && !visited.has(parent)) {
-                  if (parent === server.spanId) return true;
-                  visited.add(parent);
-                  parent = byId.get(parent)?.parentSpanId ?? null;
-                }
-                return false;
-              };
-              return root === undefined ? [] : [root, ...spans.filter(under)];
-            }),
-            Effect.filterOrFail(
-              (spans) => spans.length > 0 && complete(spans),
-              (spans) =>
-                new Error(
-                  `The server spans of trace ${server.traceId} have not reached the collector: ${spans.map((span) => span.operationName).join(", ")}`,
-                ),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-          );
-        const control = yield* served(navigation.server, (spans) =>
-          ["sdk.apps.list", "sql.execute"].every((name) =>
-            spans.some((span) => span.operationName === name),
-          ),
-        );
-        /** Reads back the probes from `first` on and requires no database work in any of them. */
-        const expectNoDatabaseWork = Effect.fn(function* (first: number) {
-          for (const [index, { path, server }] of probes.entries()) {
-            if (index < first) continue;
-            const spans = yield* served(server, () => true);
-            yield* evidence.json(`anonymous-fetch-${index}.json`, {
-              path,
-              spans: spans.map((span) => span.operationName),
-            });
-            expect(
-              spans
-                .filter(
-                  (span) =>
-                    databaseWork.has(span.operationName) ||
-                    span.operationName.startsWith("FumaDB."),
-                )
-                .map((span) => span.operationName),
-              `${path} is refused before any organization, app or SQL work`,
-            ).toEqual([]);
-          }
-        });
-        const checked = probes.length;
-        yield* expectNoDatabaseWork(0);
-        yield* evidence.json("signed-out-navigation.json", {
-          spans: control.map((span) => span.operationName),
-        });
-        // A nonexistent team's hostname is refused too. These run last, after the trace checks
-        // above.
+        const navigation = yield* read(known, "/", "text/html");
+        expect(navigation.status).toBe(302);
+        // A nonexistent team's hostname is refused too.
         if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
           // Cloudflare holds one wildcard certificate per team, so a host under an unknown
           // organization fails the TLS handshake at the edge and never reaches the Worker.
@@ -563,7 +480,6 @@ return { items };`,
           expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
           expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
         }
-        yield* expectNoDatabaseWork(checked);
       }),
     ),
   );

@@ -1,5 +1,5 @@
 import { CheckOAuthSetup } from "../contracts/oauth.ts";
-import { ProfileInputs } from "../contracts/profiles.ts";
+import { OAuthClientInputs } from "../contracts/oauth-clients.ts";
 import {
   StartWorkflow,
   WorkflowTarget,
@@ -8,7 +8,16 @@ import {
 } from "../contracts/workflows.ts";
 import { CompleteWebhookSetup } from "../contracts/webhook-setup.ts";
 /** Promise facade parses plain inputs before calling native operations. */
-import { CreateWebhook, WebhookApp, WebhookTarget, DeliverWebhook } from "../contracts/webhooks.ts";
+import {
+  CreateWebhook,
+  DeliverWebhook,
+  LinkWebhookSource,
+  UpdateWebhookSource,
+  UnlinkWebhookSource,
+  WebhookApp,
+  WebhookDefinitionsInput,
+  WebhookTarget,
+} from "../contracts/webhooks.ts";
 import { Effect, Schema, Stream } from "effect";
 import type { Executor, PromiseExecutor } from "../contracts/executor.ts";
 import { AccountInputs } from "../contracts/account.ts";
@@ -73,25 +82,25 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
         run(ScheduleInputs.definitions, input, executor.schedules.definitions),
       list: (input) => run(ScheduleInputs.list, input, executor.schedules.list),
       configure: (input) => run(ScheduleInputs.configure, input, executor.schedules.configure),
+      copy: (input) => run(ScheduleInputs.copy, input, executor.schedules.copy),
+      update: (input) => run(ScheduleInputs.update, input, executor.schedules.update),
       runNow: (input) => run(ScheduleInputs.runNow, input, executor.schedules.runNow),
+      remove: (input) => run(ScheduleInputs.remove, input, executor.schedules.remove),
       runs: (input = {}) => run(ScheduleInputs.runs, input, executor.schedules.runs),
       approval: (input) => run(ScheduleInputs.approval, input, executor.schedules.approval),
       answer: (input) => run(ScheduleInputs.answer, input, executor.schedules.answer),
     },
     accounts: {
-      add: (input) => run(AccountInputs.add, input, executor.accounts.add),
       get: (input) => run(AccountInputs.get, input, executor.accounts.get),
       provider: (input) => run(AccountInputs.get, input, executor.accounts.provider),
-      list: (input = {}) => run(AccountInputs.list, input, executor.accounts.list),
+      list: (input) => run(AccountInputs.list, input, executor.accounts.list),
       update: (input) => run(AccountInputs.update, input, executor.accounts.update),
-      replaceCredentials: (input) =>
-        run(AccountInputs.replaceCredentials, input, executor.accounts.replaceCredentials),
-      remove: (input) => run(AccountInputs.remove, input, executor.accounts.remove),
+      remove: (input) => run(AccountInputs.get, input, executor.accounts.remove),
       signIn: (input) => run(AccountInputs.get, input, executor.accounts.signIn),
-      providers: (input = {}) => run(AccountInputs.providers, input, executor.accounts.providers),
-      health: (input) => run(AccountInputs.get, input, executor.accounts.health),
-      listHealth: (input = {}) =>
-        run(AccountInputs.listHealth, input, executor.accounts.listHealth),
+      providers: (input) => run(AccountInputs.providers, input, executor.accounts.providers),
+      health: (input) => run(AccountInputs.health, input, executor.accounts.health),
+      revocation: (input) => run(AccountInputs.get, input, executor.accounts.revocation),
+      listHealth: (input) => run(AccountInputs.listHealth, input, executor.accounts.listHealth),
       check: (input) => run(AccountInputs.check, input, executor.accounts.check),
     },
     accountConnections: {
@@ -106,22 +115,19 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       completeOAuth: (input) =>
         run(CompleteConnectionOAuth, input, executor.accountConnections.completeOAuth),
     },
+    oauthClients: {
+      register: (input) => run(OAuthClientInputs.register, input, executor.oauthClients.register),
+      list: (input) => run(OAuthClientInputs.list, input, executor.oauthClients.list),
+      issuers: (input) => run(OAuthClientInputs.issuers, input, executor.oauthClients.issuers),
+      get: (input) => run(OAuthClientInputs.get, input, executor.oauthClients.get),
+      update: (input) => run(OAuthClientInputs.update, input, executor.oauthClients.update),
+      remove: (input) => run(OAuthClientInputs.remove, input, executor.oauthClients.remove),
+    },
     owners: {
       check: (input) => run(OwnerInputs.check, input, executor.owners.check),
       remove: (input) => run(OwnerInputs.remove, input, executor.owners.remove),
     },
     apps: {
-      profiles: {
-        create: (input) => run(ProfileInputs.create, input, executor.apps.profiles.create),
-        get: (input) => run(ProfileInputs.get, input, executor.apps.profiles.get),
-        list: (input) => run(ProfileInputs.list, input, executor.apps.profiles.list),
-        listMany: (input) => run(ProfileInputs.listMany, input, executor.apps.profiles.listMany),
-        update: (input) => run(ProfileInputs.update, input, executor.apps.profiles.update),
-        setEnabled: (input) =>
-          run(ProfileInputs.setEnabled, input, executor.apps.profiles.setEnabled),
-        reconcile: (input) => run(ProfileInputs.reconcile, input, executor.apps.profiles.reconcile),
-        remove: (input) => run(ProfileInputs.remove, input, executor.apps.profiles.remove),
-      },
       workflows: { list: (input) => run(WorkflowApp, input, executor.apps.workflows.list) },
       workflowRuns: {
         start: (input) => run(StartWorkflow, input, executor.apps.workflowRuns.start),
@@ -165,6 +171,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
     registry: {
       list: (input = {}) => run(RegistryInputs.list, input, executor.registry.list),
       snapshot: (input) => run(RegistryInputs.snapshot, input, executor.registry.snapshot),
+      file: (input) => run(RegistryInputs.file, input, executor.registry.file),
     },
     webhookSetup: {
       read: (input) => run(WebhookTarget, input, executor.webhookSetup.read),
@@ -173,12 +180,17 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
     webhooks: {
       get: (input) => run(WebhookTarget, input, executor.webhooks.get),
       confirmRemoval: (input) => run(WebhookTarget, input, executor.webhooks.confirmRemoval),
-      definitions: (input) => run(WebhookApp, input, executor.webhooks.definitions),
+      definitions: (input) => run(WebhookDefinitionsInput, input, executor.webhooks.definitions),
       list: (input) => run(WebhookApp, input, executor.webhooks.list),
       create: (input) => run(CreateWebhook, input, executor.webhooks.create),
       reconcile: (input) => run(WebhookTarget, input, executor.webhooks.reconcile),
       remove: (input) => run(WebhookTarget, input, executor.webhooks.remove),
       deliver: (input) => run(DeliverWebhook, input, executor.webhooks.deliver),
+      sources: (input) => run(WebhookApp, input, executor.webhooks.sources),
+      link: (input) => run(LinkWebhookSource, input, executor.webhooks.link),
+      configureSource: (input) =>
+        run(UpdateWebhookSource, input, executor.webhooks.configureSource),
+      unlink: (input) => run(UnlinkWebhookSource, input, executor.webhooks.unlink),
     },
     appData: {
       subscribe: (input) =>

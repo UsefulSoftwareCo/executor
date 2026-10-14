@@ -1,0 +1,154 @@
+diff --git a/dist/PgliteClient.d.ts b/dist/PgliteClient.d.ts
+index e70c359..838369a 100644
+--- a/dist/PgliteClient.d.ts
++++ b/dist/PgliteClient.d.ts
+@@ -147,6 +147,17 @@ export declare namespace PgliteClientConfig {
+  * @since 4.0.0
+  */
+ export declare const make: (options?: PgliteClientConfig) => Effect.Effect<PgliteClient, SqlError, Scope.Scope | Reactivity.Reactivity>;
++/** Held-statement capture for {@link pipelined}; read by this client's borrower. Internal. */
++export declare const PipelineCapture: Context.Reference<unknown>;
++/**
++ * Runs `leaves` concurrently and runs the first statement of each together under the client's
++ * lock: leaves before index `outside` first, then the rest between `BEGIN <begin>` and `COMMIT`.
++ * Leaves must not wait for one another. Returns each leaf's exit, in order.
++ */
++export declare const pipelined: (
++  leaves: ReadonlyArray<Effect.Effect<unknown, unknown, never>>,
++  options?: { readonly outside?: number | undefined; readonly begin?: string | undefined }
++) => Effect.Effect<Array<import("effect/Exit").Exit<unknown, unknown>>>;
+ /**
+  * Builds a `PgliteClient` around an existing PGlite instance, adding SQL client operations, LISTEN/NOTIFY, dump helpers, and serialized access.
+  *
+diff --git a/dist/PgliteClient.js b/dist/PgliteClient.js
+index 5cc9fdf..c6ea8f5 100644
+--- a/dist/PgliteClient.js
++++ b/dist/PgliteClient.js
+@@ -15,7 +15,9 @@
+ import { PGlite } from "@electric-sql/pglite";
+ import * as Config from "effect/Config";
+ import * as Context from "effect/Context";
++import * as Deferred from "effect/Deferred";
+ import * as Effect from "effect/Effect";
++import * as Exit from "effect/Exit";
+ import * as Fiber from "effect/Fiber";
+ import * as Layer from "effect/Layer";
+ import * as Queue from "effect/Queue";
+@@ -46,6 +48,88 @@ export const TypeId = "~@effect/sql-pglite/PgliteClient";
+  * @since 4.0.0
+  */
+ export const PgliteClient = /*#__PURE__*/Context.Service("@effect/sql-pglite/PgliteClient");
++/**
++ * Set by {@link pipelined} on each of its leaves. A client's borrower asks it
++ * to `claim` a leaf's first statement; a claimed statement is held and runs
++ * with the batch. Unset everywhere else.
++ */
++export const PipelineCapture = /*#__PURE__*/Context.Reference("@effect/sql-pglite/PipelineCapture", {
++  defaultValue: () => undefined
++});
++/**
++ * Runs `leaves` concurrently and runs the first statement of each together,
++ * once every leaf has issued one or finished, holding the client's lock as a
++ * transaction does: leaves before index `outside` first, each in its own
++ * implicit transaction, then, with `begin`, the rest between `BEGIN <begin>`
++ * and `COMMIT`, so they read one snapshot. If `BEGIN` fails, every statement
++ * after it fails with that error. Statements already handed to PGlite before
++ * the lock was taken can still run inside the transaction, as with
++ * `withTransaction`. A leaf's later statements, and statements in a
++ * transaction, run as usual. Leaves must not wait for one another. Returns
++ * each leaf's exit, in order.
++ */
++export const pipelined = (leaves, options = {}) => Effect.suspend(() => {
++  if (leaves.length === 0) return Effect.succeed([]);
++  const outside = options.outside ?? 0;
++  const items = [];
++  let waiting = leaves.length;
++  let released = false;
++  const release = Deferred.makeUnsafe();
++  const settle = () => {
++    waiting--;
++    if (waiting === 0) {
++      released = true;
++      Deferred.doneUnsafe(release, Exit.void);
++    }
++  };
++  const leaf = (effect, index) => {
++    let claimed = false;
++    let settled = false;
++    const once = () => {
++      if (settled) return;
++      settled = true;
++      settle();
++    };
++    const capture = {
++      claim: () => {
++        if (released || claimed) return false;
++        claimed = true;
++        return true;
++      },
++      submit: (batch, run) => Effect.suspend(() => {
++        const deferred = Deferred.makeUnsafe();
++        items.push({ batch, run, deferred, index });
++        once();
++        return Deferred.await(deferred);
++      })
++    };
++    return effect.pipe(Effect.provideService(PipelineCapture, capture), Effect.exit, Effect.ensuring(Effect.sync(once)));
++  };
++  return Effect.gen(function* () {
++    const fibers = [];
++    for (let i = 0; i < leaves.length; i++) fibers.push(yield* Effect.forkChild(leaf(leaves[i], i)));
++    yield* Deferred.await(release);
++    items.sort((a, b) => a.index - b.index);
++    // Each client runs its own leaves' statements.
++    if (items.length > 0) yield* Effect.forEach(new Set(items.map(item => item.batch)), batch => {
++      const own = items.filter(item => item.batch === batch);
++      return batch(own.filter(item => item.index < outside), own.filter(item => item.index >= outside), options.begin).pipe(Effect.onError(cause => Effect.sync(() => {
++        for (const item of own) Deferred.doneUnsafe(item.deferred, Exit.failCause(cause));
++      })));
++    }, {
++      discard: true
++    }).pipe(Effect.withSpan("sql.pipeline", {
++      kind: "client",
++      attributes: {
++        "db.pipeline.leaves": leaves.length,
++        "db.pipeline.statements": items.length
++      }
++    }));
++    const exits = [];
++    for (const fiber of fibers) exits.push(yield* Fiber.join(fiber));
++    return exits;
++  });
++});
+ /**
+  * Creates a scoped PGlite SQL client. When no live client is supplied it creates and closes a PGlite instance; when `liveClient` is supplied, the caller retains ownership.
+  *
+@@ -92,8 +176,28 @@ export const fromClient = options => Effect.gen(function* () {
+     return Effect.as(Effect.tap(restore(semaphore.take(1)), () => Scope.addFinalizer(scope, semaphore.release(1))), connection);
+   });
+   const config = options;
++  // Statements held by `pipelined`, run under the lock a transaction takes, in
++  // order: `outside` first, then `inside` in one transaction when `begin` is set.
++  const runBatch = (outside, inside, begin) => semaphore.withPermits(1)(Effect.uninterruptible(Effect.gen(function* () {
++    const run = item => Effect.flatMap(Effect.exit(item.run(connection)), exit => Effect.sync(() => Deferred.doneUnsafe(item.deferred, exit)));
++    for (const item of outside) yield* run(item);
++    if (inside.length === 0) return;
++    if (begin === undefined) {
++      for (const item of inside) yield* run(item);
++      return;
++    }
++    const began = yield* Effect.exit(connection.executeRaw(`BEGIN ${begin}`, []));
++    if (Exit.isFailure(began)) {
++      for (const item of inside) Deferred.doneUnsafe(item.deferred, began);
++      return;
++    }
++    for (const item of inside) yield* run(item);
++    // An aborted transaction's COMMIT rolls it back; either way the session leaves it.
++    yield* Effect.exit(connection.executeRaw("COMMIT", []));
++  })));
+   const client = yield* Client.make({
+     acquirer,
++    borrower: f => Effect.flatMap(PipelineCapture, capture => capture !== undefined && capture.claim() ? capture.submit(runBatch, f) : Effect.scoped(Effect.flatMap(acquirer, f))),
+     compiler,
+     transactionAcquirer,
+     releaseSavepoint: name => `RELEASE SAVEPOINT ${name}`,

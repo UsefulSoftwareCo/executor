@@ -1,4 +1,4 @@
-import type { McpTarget, McpTargetInput } from "./targets.ts";
+import type { McpAppAccounts, McpTargetInput } from "./targets.ts";
 import type {
   App,
   Executor,
@@ -6,8 +6,11 @@ import type {
   ToolPending,
   ToolResumeResult,
   ToolPage,
+  SearchableTools,
+  ToolSearchPage,
   ToolInvocationOptions,
   ToolListOptions,
+  CatalogReadOptions,
   ElicitationFailed,
   AppSkillCatalog,
   AppSkillDocument,
@@ -45,9 +48,10 @@ export type McpEventError =
  * messages, fields and causes remain private.
  */
 export interface McpBackend<E extends Error> {
-  /** Authorize app and profile access before evaluating skill metadata. */
+  /** Authorize app and account access before evaluating skill metadata. */
   readonly listSkills: (
     input: Parameters<Executor["skills"]["list"]>[0],
+    options?: CatalogReadOptions,
   ) => Effect.Effect<AppSkillCatalog, E>;
   /** Reauthorize each document/reference read, including previous deployments. */
   readonly readSkill: (
@@ -55,24 +59,44 @@ export interface McpBackend<E extends Error> {
   ) => Effect.Effect<AppSkillDocument, E>;
   /** Reauthorize input delivery using the current request before releasing a running tool. */
   readonly authorizeElicitation: (
-    input: Pick<
-      Parameters<Executor["tools"]["call"]>[0],
-      "app" | "tool" | "profile" | "expectedProfileRevision"
-    >,
+    input: Pick<Parameters<Executor["tools"]["call"]>[0], "app" | "tool" | "accounts">,
   ) => Effect.Effect<void, ElicitationFailed>;
   /** Apply IDs in storage before loading app metadata. [] selects none; omitted IDs add no restriction.
    * Hosts still enforce owner access; this filter is never an authorization grant.
    */
   readonly listApps: (
-    input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids">,
-  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug">>, E>;
-  /** Enumerate only the caller's execution targets; skills use the same app and account authority. */
-  readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
+    input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids"> & {
+      /** Restrict the inventory to apps whose tools this caller may reach. */
+      readonly toolsOnly?: boolean;
+    },
+  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug" | "activeDeployment">>, E>;
+  /**
+   * The caller's linked accounts for the app, by user requirement; skills use the same authority.
+   * App requirements are not listed: operations name `{ app: {}, user }` and the backend fills the
+   * app requirements from the app links.
+   */
+  readonly listAccounts: (input: McpTargetInput) => Effect.Effect<McpAppAccounts, E>;
   /** Authorize the app and its selected accounts before evaluating each catalog page. */
   readonly listTools: (
     input: Parameters<Executor["tools"]["list"]>[0],
     options?: ToolListOptions,
   ) => Effect.Effect<ToolPage, E>;
+  /**
+   * Authorize the app and its selected accounts as for `listTools`, then keep the target's current
+   * listing as search rows. Only failed routers the caller may discover are returned.
+   */
+  readonly searchableTools: (
+    input: Parameters<Executor["tools"]["searchable"]>[0],
+    options?: ToolListOptions,
+  ) => Effect.Effect<SearchableTools, E>;
+  /**
+   * Rank the tools of listings `searchableTools` returned to this backend. Narrow each target's
+   * scopes to the tools the caller may discover, as `listTools` filters them, before ranking, so
+   * pages and counts never include hidden tools; never widen them.
+   */
+  readonly searchTools: (
+    input: Parameters<Executor["tools"]["search"]>[0],
+  ) => Effect.Effect<ToolSearchPage, E>;
   /** Check execution permission again; prior discovery does not authorize this call. */
   readonly callTool: (
     input: Parameters<Executor["tools"]["call"]>[0],

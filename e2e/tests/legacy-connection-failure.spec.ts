@@ -10,7 +10,6 @@ import { TestLive, withCase } from "../support/case.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { serverControl } from "../support/server-control.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
@@ -60,7 +59,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy connection failure", (it)
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Retired service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
             },
             appsManifest,
           ],
@@ -73,15 +72,11 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
             Effect.orDie,
           ),
         );
-        const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-          owner: "local",
-          subject: "local",
-        });
         const link = yield* body(
           Link,
           yield* api.request(agent, "POST", "/account-connect/api/requests", {
             owner: "local",
-            target: { app: app.id, profile: profile.id, requirement: "service" },
+            target: { app: app.id, requirement: "service" },
           }),
         );
         const start = api.request(session, "POST", "/account-connect/api/oauth/start", {

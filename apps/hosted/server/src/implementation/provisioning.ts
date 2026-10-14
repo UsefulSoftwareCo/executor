@@ -128,7 +128,7 @@ const attempt = <E, R>(
     Effect.withSpan("hosted.provision"),
   );
 
-/** Owners and admins whose default profile member setup provides; read live. */
+/** Owners and admins whose managed key member setup links; read live. */
 const managers = (organization: OrganizationId, requireVerifiedEmail: boolean, user?: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -146,7 +146,7 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
     const initialize = yield* OrganizationDefaults;
     yield* initialize(organization);
     // Member jobs that ran before installation finished wait for their retry delay. Set up
-    // those members now, so their default profile follows the installation at once. Their
+    // those members now, so their managed key is linked once the app is installed. Their
     // own jobs still own member setup and find it done.
     for (const member of yield* managers(organization, requireVerifiedEmail))
       yield* initialize(organization, member).pipe(

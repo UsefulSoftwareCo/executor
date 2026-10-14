@@ -1,12 +1,14 @@
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
-import { Effect, Fiber, Schedule, Schema } from "effect";
+import { Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource, Inventory } from "../support/contracts.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { linkedChoice } from "../support/account-choices.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { Browser } from "../support/browser.ts";
 import { managementApp } from "../support/management-app.ts";
@@ -21,9 +23,7 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   account: Schema.Struct({ id: Schema.String, label: Schema.String }),
 });
-const Selection = Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) });
 const Read = Schema.Struct({ authenticated: Schema.Boolean, generation: Schema.Number });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 
 layer(HostedLive, { excludeTestServices: true })("Machine OAuth", (it) => {
   it.effect(scenarios.oauthClientForm.title, (context) =>
@@ -43,7 +43,7 @@ layer(HostedLive, { excludeTestServices: true })("Machine OAuth", (it) => {
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Reporting",auth:{machine:oauth2({grant:"client_credentials",tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["reports:read"],tokenEndpointAuthMethod:"client_secret_post"})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
             },
             appsManifest,
           ],
@@ -162,8 +162,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         yield* browser.checkpoint("Machine account asks for a name");
         yield* browser.use("Keep the default name", (page) => nameConnectedAccount(page));
         yield* browser.use("The app shows the account without navigation", (page) =>
-          page
-            .getByRole("radio", { name: "Default", exact: true, checked: true })
+          linkedChoice(page, "Reporting", "Default")
             .waitFor({ state: "visible" })
             .then(() => {
               expect(page.url()).toContain(`/apps/${app.id}`);
@@ -182,17 +181,6 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           actors = yield* Actors;
         const issuer = yield* clientCredentialsIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        /** Background profile setup's outcome, once it has finished. */
-        const setupStatus = (path: string) =>
-          api.request(actors.owner, "GET", path).pipe(
-            Effect.flatMap((response) => body(SetupStatus, response)),
-            Effect.flatMap((current) =>
-              current.status === "pending"
-                ? Effect.fail(new Error("Profile setup has not finished"))
-                : Effect.succeed(current.status),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-          );
         // The inventory baseline must include the asynchronously provisioned personal account.
         yield* managementApp(actors.owner);
         for (const authMethod of [
@@ -201,35 +189,42 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           "client_secret_basic_raw",
         ] as const) {
           yield* issuer.configure({ method: authMethod, expiresIn: 120, rejected: false });
-          const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-            name: `Machine OAuth ${randomUUID().slice(0, 8)}`,
-            files: [
-              {
-                path: "index.ts",
-                content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
+          const files = [
+            {
+              path: "index.ts",
+              content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service=defineProvider({name:${JSON.stringify(authMethod)},auth:{machine:oauth2({grant:"client_credentials",${authMethod === "client_secret_post" ? `discover:${JSON.stringify(issuer.origin)}` : `tokenUrl:${JSON.stringify(issuer.origin + "/token")}`},scopes:["reports:read"],resource:${JSON.stringify(issuer.origin + "/resource")},tokenEndpointAuthMethod:${JSON.stringify(authMethod)}})}});
-export default defineApp({accounts:{service}},async({accounts})=>({tools: router({
+export default defineApp({user: { accounts:{service} }},async({user: { accounts }})=>({tools: router({
   read:query({input:object({})},async({fetch})=>{const result=await fetch(${JSON.stringify(issuer.origin + "/resource")},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}});return result.json();}),
 })}));`,
-              },
-              appsManifest,
-            ],
+            },
+            appsManifest,
+          ];
+          const deploy = Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+              name: `Machine OAuth ${randomUUID().slice(0, 8)}`,
+              files,
+            });
+            expect(response.status).toBe(200);
+            const deployed = yield* body(Resource, response);
+            yield* Effect.addFinalizer(() =>
+              api
+                .request(actors.owner, "DELETE", `${prefix}/apps/${deployed.id}`)
+                .pipe(Effect.orDie),
+            );
+            return deployed;
           });
-          expect(response.status).toBe(200);
-          const app = yield* body(Resource, response);
-          yield* Effect.addFinalizer(() =>
-            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
-          );
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
+          const app = yield* deploy;
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-              ...(authMethod === "client_secret_post"
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              authMethod === "client_secret_post"
                 ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                : {}),
-            }),
+                : {},
+            ),
           );
           const path = `${prefix}/connections/${connection.id}/oauth/start`;
           const payload = {
@@ -287,30 +282,30 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           );
           expect(repeated.account.id).toBe(completed.account.id);
           expect((yield* issuer.metrics).generation).toBe(issued);
-          expect(
-            (yield* body(
-              Selection,
-              yield* api.request(
-                actors.owner,
-                "GET",
-                `${prefix}/apps/${app.id}/profiles/${profile.id}`,
-              ),
-            )).accounts.service,
-          ).toBe(completed.account.id);
-          // Selecting the account started background profile setup, which resolves the account.
-          // Once the renewal phase issues tokens inside the host's refresh window, every resolve
-          // renews, so setup must be done before then or its renewals are counted here.
-          expect(yield* setupStatus(`${prefix}/apps/${app.id}/profiles/${profile.id}`)).toBe(
-            "ready",
+          // Connecting from the app linked the account to it, once.
+          expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+            completed.account.id,
+          ]);
+          // Linking sets the account up as the app's webhook source in the background, which
+          // resolves the account. Once the renewal phase issues tokens inside the host's refresh
+          // window, every resolve renews, so it must be done before then or its renewals are
+          // counted here.
+          yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
+            sources.some(
+              (source) => source.account === completed.account.id && source.status !== "pending",
+            ),
           );
           yield* issuer.configure({ expiresIn: 20 });
           const expiringConnection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-              account: completed.account.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {
+                account: completed.account.id,
+              },
+            ),
           );
           const expiring = yield* body(
             Completed,
@@ -327,7 +322,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            { profile: profile.id, tool: "read", kind: "query", input: {} },
+            { tool: "read", kind: "query", input: {} },
           );
           expect(read.status).toBe(200);
           const value = yield* body(Read, read);
@@ -342,7 +337,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            { profile: profile.id, tool: "read", kind: "query", input: {} },
+            { tool: "read", kind: "query", input: {} },
           );
           expect(kept.status, JSON.stringify(kept.body)).toBe(200);
           expect(yield* body(Read, kept)).toEqual(value);
@@ -350,11 +345,14 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           yield* issuer.configure({ rejected: false, expiresIn: 120 });
           const reconnect = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-              account: completed.account.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {
+                account: completed.account.id,
+              },
+            ),
           );
           const reconnected = yield* body(
             Completed,
@@ -370,38 +368,55 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             Inventory,
             yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
           );
+          // The app a connection was started for changes the requirement's provider while the
+          // token exchange is in flight: the exchange fails and neither an account nor a link is
+          // saved.
+          const racedApp = yield* deploy;
           const pause = yield* issuer.pauseNextToken;
           const raced = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${racedApp.id}`, "user", "service"),
+              {},
+            ),
           );
           const exchange = yield* api
             .request(actors.owner, "POST", `${prefix}/connections/${raced.id}/oauth/start`, payload)
             .pipe(Effect.forkChild);
           yield* pause.entered;
-          expect(
-            (yield* selectProfileAccounts(actors.owner, `${prefix}/apps/${app.id}`, profile.id, {}))
-              .status,
-          ).toBe(200);
-          yield* pause.release;
-          expect((yield* Fiber.join(exchange)).status).toBe(409);
-          expect(
-            (yield* body(
-              Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.Unknown) }),
-              yield* api.request(
-                actors.owner,
-                "GET",
-                `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+          const redeployed = yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/apps/${racedApp.id}/deploy`,
+            {
+              files: files.map((file) =>
+                file.path === "index.ts"
+                  ? {
+                      ...file,
+                      content: file.content.replace(
+                        `name:${JSON.stringify(authMethod)}`,
+                        `name:${JSON.stringify(`${authMethod} replacement`)}`,
+                      ),
+                    }
+                  : file,
               ),
-            )).accounts,
-          ).toEqual({});
+            },
+          );
+          expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
+          yield* pause.release;
+          const rejected = yield* Fiber.join(exchange);
+          expect(rejected.status, JSON.stringify(rejected.body)).toBe(409);
+          expect(rejected.body).toMatchObject({ _tag: "AccountConnectionTargetChanged" });
           const after = yield* body(
             Inventory,
             yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
           );
+          expect(after.links.filter((link) => link.app === racedApp.id)).toEqual([]);
+          expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+            completed.account.id,
+          ]);
           expect(after.accounts.map((account) => account.id).sort()).toEqual(
             before.accounts.map((account) => account.id).sort(),
           );
@@ -410,13 +425,14 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           for (const expected of ["Default", "Default 2"]) {
             const next = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-                ...(authMethod === "client_secret_post"
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                authMethod === "client_secret_post"
                   ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                  : {}),
-              }),
+                  : {},
+              ),
             );
             const named = yield* body(
               Completed,
@@ -439,11 +455,14 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           if (firstDefault === undefined) return yield* Effect.die("Missing default account");
           const unnamedReconnect = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-              account: firstDefault.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {
+                account: firstDefault.id,
+              },
+            ),
           );
           expect(
             (yield* body(
@@ -479,7 +498,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service=defineProvider({name:"JSON reporting",auth:{machine:oauth2({grant:"client_credentials",tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["reports:read","reports:write"],tokenEndpointAuthMethod:"client_secret_basic"${options}})}});
-export default defineApp({accounts:{service}},async({accounts})=>({tools: router({
+export default defineApp({user: { accounts:{service} }},async({user: { accounts }})=>({tools: router({
   read:query({input:object({})},async({fetch})=>{const result=await fetch(${JSON.stringify(issuer.origin + "/resource")},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}});return result.json();}),
 })}));`,
                 },
@@ -491,13 +510,14 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
             );
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -505,7 +525,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
               `${prefix}/connections/${connection.id}/oauth/start`,
               { method: "machine", label: "JSON reporting", client: machineClient },
             );
-            return { app, profile, started };
+            return { app, started };
           });
 
         // The default form request is refused by this service.
@@ -548,7 +568,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           actors.owner,
           "POST",
           `${prefix}/apps/${json.app.id}/tools/call`,
-          { profile: json.profile.id, tool: "read", kind: "query", input: {} },
+          { tool: "read", kind: "query", input: {} },
         );
         expect(read.status, JSON.stringify(read.body)).toBe(200);
         const value = yield* body(Read, read);

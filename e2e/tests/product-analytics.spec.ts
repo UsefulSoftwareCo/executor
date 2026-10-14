@@ -2,7 +2,6 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema, Schedule } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { App } from "../support/contracts.ts";
-import { createProfile } from "../support/profiles.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Evidence } from "../support/evidence.ts";
@@ -221,7 +220,7 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
                 path: "index.ts",
                 content: `
 import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
    echo: query({ input: object({ message: string() }) }, async (_, input) => {
     if (input.message === "PRIVATE_TOOL_FAILURE") throw new Error("PRIVATE_TOOL_ERROR");
     return { message: input.message, result: "PRIVATE_TOOL_RESULT" };
@@ -234,10 +233,6 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
         );
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const app = yield* body(App, deployed);
-        yield* createProfile(
-          actors.owner,
-          `/api/organizations/${actors.organization.id}/apps/${app.id}`,
-        );
         yield* open(`/org/${actors.organization.slug}/apps/${app.id}?view=tools`);
         yield* browser.use("Run a tool with private input", (page) =>
           page

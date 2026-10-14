@@ -9,6 +9,16 @@
       "message": "toolSummaries",
       "protocols": [1, 2, 3],
       "adapter": "The protocol 1 to 3 adapter turns an inspection's list of tool summaries into a catalog summary without routers."
+    },
+    {
+      "message": "requirements",
+      "protocols": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "adapter": "Every adapter for protocols 1 to 12 reads a bundle's requirements as user requirements: its accounts become accounts.user, and accounts.app is empty."
+    },
+    {
+      "message": "accounts",
+      "protocols": [6, 7, 8, 9, 10, 11, 12],
+      "adapter": "Every adapter for protocols 1 to 12 sends a bundle its invocation's user accounts as the flat record it reads, in the invocation (whose accounts protocols 1 to 5 carry only there) and in workflow step contexts. Such a bundle declares no app requirements, so it has no app accounts."
     }
   ],
   "additions": [

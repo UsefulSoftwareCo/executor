@@ -18,10 +18,13 @@ export const dashboardAtoms = {
       AsyncResult.map((value) => value.tools),
     ),
   ),
-  install: DashboardClient.runtime.fn((input: InstallApp, get) =>
-    Effect.flatMap(DashboardClient, (client) =>
-      client.dashboard.importApp({ payload: input }),
-    ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, saved)))),
+  /** One install per catalog entry, so rows add independently and each gets its own result. */
+  install: Atom.family((_entry: string) =>
+    DashboardClient.runtime.fn((input: InstallApp, get) =>
+      Effect.flatMap(DashboardClient, (client) =>
+        client.dashboard.importApp({ payload: input }),
+      ).pipe(Effect.tap((saved) => Effect.sync(() => acknowledgeApp(get, saved)))),
+    ),
   ),
   importCustom: DashboardClient.runtime.fn((input: CustomAppInput, get) =>
     Effect.flatMap(DashboardClient, (client) =>

@@ -32,10 +32,20 @@ Docs: ${origins.site}/docs`;
 export const GITHUB_URL = "https://github.com/UsefulSoftwareCo/executor";
 
 /** One-line description of the product, used as the Markdown tagline. */
-export const tagline = "Your agents' cloud.";
+export const tagline = "Everything you use, connected in one place.";
 
-/** What Executor holds for an agent, in the order the hero lists them. */
-export const introductionItems = [
+/** The hero's third beat: what you do once it is all connected. */
+export const taglineBuild = "Then build whatever you need on top.";
+
+/** Shared introduction for metadata and Markdown. */
+export const introduction =
+  "Executor connects the tools you use to the agent you already use, through one MCP server. Then your agent can build whatever you need on top: custom tools, automations, storage, and interfaces.";
+
+/** The hero subhead's lead sentence. */
+export const heroLead = "Executor is your agents' cloud.";
+
+/** What Executor holds, in the order the hero subhead lists them. */
+export const heroItems = [
   { label: "connectors" },
   { label: "skills" },
   { label: "automations" },
@@ -44,13 +54,11 @@ export const introductionItems = [
   { label: "computer", comingSoon: true },
 ] as const;
 
-const listItems = (labels: ReadonlyArray<string>) =>
-  `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
-
-/** Shared introduction for metadata and Markdown; lists only what ships today. */
-export const introduction = `Your ${listItems(
-  introductionItems.filter((item) => !("comingSoon" in item)).map((item) => item.label),
-)}, all in one place.`;
+/** The subhead as plain text, listing only what ships today. */
+export const heroSubhead = `${heroLead} All of your ${heroItems
+  .filter((item) => !("comingSoon" in item))
+  .map((item) => item.label)
+  .join(", ")}, all in one place.`;
 
 /** Capabilities an app can include, with tools first. */
 export const appParts = [
@@ -63,30 +71,116 @@ export const appParts = [
 ] as const;
 
 /**
- * The homepage leads with what an app can be, then shows one growing step by
- * step.
+ * The homepage teaches the tagline one clause at a time: everything you use,
+ * connected in one place, then built on.
  */
 export const homepageStory = {
-  apps: {
-    title: "What's an Executor app?",
-    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
+  everything: {
+    title: "Everything you use.",
+    body: "Gmail, Calendar, GitHub, Linear, Stripe. Add an MCP server you already have, or ask your agent to write the tool. You connect each account once through a secure link, so credentials never end up in chat or in code.",
   },
-  start: {
-    title: "Start with something useful.",
-    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Most apps start as one small piece.",
+  connected: {
+    title: "Connected in one place.",
+    body: "Add Executor to your agent once. Every account you connect is then available to every agent you use. Your agent does the thinking; Executor is where it reaches your tools, and where the things it builds keep running.",
   },
   build: {
-    title: "Ask for what you actually need.",
-    body: "Executor is not an agent. It’s a place for your agent to build and run software.",
-    prompt:
-      "Pull together my signups and open issues. Give my agents one way to check what's changed.",
+    title: "Then build whatever you need on top.",
+    body: "Start with the tools a service already has. When something's missing, ask your agent to add it. Here's how one Gmail connection grows:",
   },
-  automate: {
-    title: "Let it keep working.",
-    body: "Give that tool a schedule. Keep a history of what it finds. Add a page you can open. Executor runs the app, even after the conversation ends.",
-    prompt: "Run this every weekday at 9. Save the results and build me a page to read them.",
+  more: {
+    title: "Some other things to ask for",
+  },
+  apps: {
+    title: "As small or as large as you need.",
+    body: "An app can be a single tool. It can also combine tools, storage, a page, schedules, webhooks, and workflows. Add each piece when you need it.",
   },
 } as const;
+
+/** One service, extended a step at a time. The homepage animates through it. */
+export const gmailLadder = [
+  {
+    piece: "Tools",
+    title: "Connect Gmail",
+    prompt: "Connect my Gmail.",
+    result: "Your agent can search, read, label, and send mail.",
+  },
+  {
+    piece: "Workflow",
+    title: "Undo send",
+    prompt: "Hold every email I send for five minutes so I can cancel it.",
+    result: "Sends wait in a durable workflow. Cancel any of them before they go.",
+  },
+  {
+    piece: "Storage",
+    title: "Notes",
+    prompt: "Let me keep notes on the emails I get.",
+    result: "Notes live in the app's own SQLite database, ready for any agent to search.",
+  },
+  {
+    piece: "Webhook",
+    title: "Auto-archive",
+    prompt: "Archive newsletters as soon as they arrive.",
+    result: "Gmail notifies the app, and the app archives them. No agent needed.",
+  },
+  {
+    piece: "UI",
+    title: "Your own inbox",
+    prompt: "Build me a Superhuman-style inbox with keyboard shortcuts.",
+    result: "A page for you, built on the same tools your agent uses.",
+  },
+] as const;
+
+/** Short examples beyond Gmail, each naming the pieces it uses. */
+export const moreExamples = [
+  {
+    prompt: "Every three hours, copy new Stripe customers into Notion.",
+    pieces: ["Schedule", "Tool"],
+    result: "A cron job moves the data. No agent has to be running.",
+    logos: ["stripe", "notion"],
+  },
+  {
+    prompt: "Every Friday, post what shipped on GitHub to Slack.",
+    pieces: ["Schedule", "Tool"],
+    result: "Runs at 5pm every Friday, the same way every time.",
+    logos: ["github", "slack"],
+  },
+  {
+    prompt: "When a Sentry issue spikes, open a Linear ticket.",
+    pieces: ["Webhook", "Tool"],
+    result: "Sentry calls the app, and the app files the ticket.",
+    logos: ["sentry", "linear"],
+  },
+  {
+    prompt: "Show me signups, errors, and open issues on one page.",
+    pieces: ["UI", "Tool"],
+    result: "A one-off dashboard stops being a project.",
+    logos: ["posthog", "sentry", "github"],
+  },
+] as const;
+
+/** The questions people ask first, answered plainly. */
+export const differences: ReadonlyArray<{ readonly question: string; readonly answer: string }> = [
+  {
+    question: "Is it an agent?",
+    answer:
+      "No. Executor runs no AI. It extends the agent you already use, through one MCP server.",
+  },
+  {
+    question: "Is it like Composio?",
+    answer:
+      "Both connect your accounts. With Executor you can also bring your own integrations, change how any tool works, and build apps on top of them.",
+  },
+  {
+    question: "Is it like n8n or Zapier?",
+    answer:
+      "There's no flow builder. Your agent writes the automation as code, and Executor runs it on a schedule or when a webhook arrives.",
+  },
+  {
+    question: "Is it still an MCP gateway?",
+    answer:
+      "Yes. Connecting your tools and routing your agent to them is where it starts. Everything else is optional.",
+  },
+];
 
 /** Plain definition shared by the illustrated section and Markdown overview. */
 export const appDefinition = homepageStory.apps.body;

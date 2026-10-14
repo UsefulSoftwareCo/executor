@@ -3,6 +3,7 @@ import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";
 import { AsyncResult } from "effect/reactivity";
 import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+// oxlint-disable-next-line no-restricted-imports -- AuthBoundary renders it only away from /login, and its own navigation there unmounts it
 import { Link, Navigate, useLocation } from "@tanstack/react-router";
 import { Cause, Exit, Option, Schema } from "effect";
 import { OrganizationResume } from "../../contracts/navigation.ts";
@@ -58,7 +59,7 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
           </Button>
         </main>
       );
-    return pathname === "/mcp/authorize" ? (
+    return pathname === "/mcp/authorize" || pathname === "/device" ? (
       <McpConsentLoading />
     ) : (
       <div className="min-h-dvh" aria-busy="true" aria-label="Opening Executor" />

@@ -1,11 +1,19 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
-import { Profile } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
 import { Context, Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema } from "effect/http-api";
-import { Account, AccountHealth, App, OwnerId, HttpUrl, StorageError } from "@executor-js/sdk/core";
+import {
+  Account,
+  AccountHealth,
+  AccountId,
+  App,
+  AppId,
+  OwnerId,
+  HttpUrl,
+  StorageError,
+} from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,
   OrganizationIconKey,
@@ -92,7 +100,18 @@ export type OrganizationForbidden = typeof OrganizationForbidden.Type;
 export class CurrentOrganization extends Context.Service<CurrentOrganization, OrganizationAccess>()(
   "hosted/CurrentOrganization",
 ) {}
-/** Lazy, authenticated publishing handle; routes that do not need it make no slug lookup. */
+/** Public packages are published under the organization's current slug on this domain. */
+export const publishingDomain = "executor.community";
+/** An organization's publishing scope. It follows renames; the slug it had is free to reuse. */
+export const publishingScope = (slug: string) => `${slug}.${publishingDomain}`;
+/** The slug a publishing scope names, or undefined for a scope on another domain. */
+export const publishingSlug = (scope: string) =>
+  scope.endsWith(`.${publishingDomain}`) ? scope.slice(0, -publishingDomain.length - 1) : undefined;
+
+/**
+ * Lazy, authenticated publishing scope, `<slug>.executor.community`; routes that do not need it
+ * make no slug lookup.
+ */
 export class CurrentOrganizationNamespace extends Context.Service<
   CurrentOrganizationNamespace,
   Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>
@@ -156,7 +175,8 @@ export class OrganizationIcons extends Context.Service<
 
 /** Organization-owned inventory. Saved credentials never appear in these records. */
 export const Inventory = Schema.Struct({
-  profiles: Schema.Array(Profile),
+  /** The accounts the caller linked to each listed app and may use. */
+  links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
   apps: Schema.Array(App),
   /** Each account's checks by the apps listed here; reading them never runs a check. */
   accounts: Schema.Array(

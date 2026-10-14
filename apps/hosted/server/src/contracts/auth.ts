@@ -3,6 +3,7 @@ import type { ApiKeyId } from "./api-keys.ts";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
 import type { AuthorizationPolicy } from "@executor-js/authorization";
 import type { OrganizationAccess, OrganizationReference } from "./organization.ts";
+import { CurrentActor } from "@executor-js/sdk/core";
 import { Context, Effect, Schema } from "effect";
 import { HttpApiMiddleware } from "effect/http-api";
 import type { OrganizationId, OrganizationRole, OrganizationForbidden } from "./organization.ts";
@@ -137,10 +138,12 @@ export class Authentication extends Context.Service<
   }
 >()("hosted/Authentication") {}
 
-/** Verified actor for both browser sessions and bearer grants; absent for background setup. */
-export const CurrentUserId = Context.Reference<string | undefined>("hosted/CurrentUserId", {
-  defaultValue: () => undefined,
-});
+/**
+ * Verified actor for browser sessions and bearer grants; absent for background setup. It is the
+ * SDK's `CurrentActor`: providing the caller here is what scopes SDK operations to them, and the
+ * SDK provides the saved actor here around schedules, webhook callbacks and workflow steps.
+ */
+export const CurrentUserId = CurrentActor;
 
 /** Request-local identity supplied only after successful authentication. */
 export class CurrentPrincipal extends Context.Service<CurrentPrincipal, Principal>()(

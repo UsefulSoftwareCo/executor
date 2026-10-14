@@ -25,21 +25,21 @@
     "@executor-js/hosted-web": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/ui": "workspace:*",
-    "@hugeicons/core-free-icons": "^4.3.3",
-    "@hugeicons/react": "^1.1.10",
-    "@sentry/react": "^10.75.0",
+    "@hugeicons/core-free-icons": "4.3.3",
+    "@hugeicons/react": "1.1.10",
+    "@sentry/react": "10.75.0",
     "@tanstack/react-router": "1.170.41",
     "@tanstack/react-start": "1.168.60",
     "better-auth": "1.7.5",
     "effect": "4.0.1",
     "posthog-js": "1.434.7",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   },
   "devDependencies": {
-    "@sentry/vite-plugin": "^5.4.0",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
+    "@sentry/vite-plugin": "5.4.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
     "vite-plus": "0.3.3"
   }

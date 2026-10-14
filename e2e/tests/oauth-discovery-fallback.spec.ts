@@ -6,9 +6,9 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
@@ -41,7 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth discovery fallback", (it
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Path service",auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin + "/v1/mcp")}})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
             },
             appsManifest,
           ],
@@ -87,13 +87,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect((yield* body(Setup, setup)).mode).toBe("automatic");
         expect(requested).toEqual([pathMetadata, pathOpenId, originMetadata]);
 
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         const start = yield* api.request(
           actors.owner,

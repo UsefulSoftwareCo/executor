@@ -2,7 +2,14 @@
 import { Effect, Layer, Redacted } from "effect";
 import { Hex } from "effect/encoding";
 import { HttpApiBuilder } from "effect/http-api";
-import { type Executor, CredentialsError, type AccountId, type AppId } from "@executor-js/sdk/core";
+import {
+  type Executor,
+  CredentialsError,
+  type AccountId,
+  type AccountScope,
+  type AppId,
+  type CreateAccountConnection,
+} from "@executor-js/sdk/core";
 import {
   AccountConnectApi,
   ConnectionLinkRejected,
@@ -12,6 +19,25 @@ import { AuthForbidden, PairingUnauthorized } from "../contracts/auth.ts";
 import { OAuthCallbackPath } from "../contracts/dashboard.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, requestOrigin } from "./auth.ts";
+import { connectOptions, connectionClient } from "./oauth-clients.ts";
+import { executorAppOwner, localOwner } from "./owners.ts";
+import { requireScopedRequirement } from "./app-accounts.ts";
+
+/**
+ * A connected account belongs to the owner local gives the app it is connected for: `local`, or
+ * `executor-local` for the server's own Executor app. Neither the caller's owner nor the app's
+ * stored one is trusted; an app stored under another owner is not found.
+ */
+export const connectForApp = (
+  executor: Executor,
+  managedApp: AppId | undefined,
+  input: Omit<typeof CreateAccountConnection.Type, "owner">,
+) => {
+  const owner = input.target.app === managedApp ? executorAppOwner : localOwner;
+  return executor.apps
+    .get({ app: input.target.app, owner })
+    .pipe(Effect.andThen(executor.accountConnections.create({ ...input, owner })));
+};
 
 /** Sign only this purpose and connection ID. Existing links survive server restarts with the same key. */
 export const accountConnectHandlers = (
@@ -54,33 +80,61 @@ export const accountConnectHandlers = (
           if (!valid) return yield* new ConnectionLinkRejected();
           return request;
         });
+      /**
+       * Issue a signed browser link for an app requirement, for the agent's own API key only. The
+       * local server's own app and account are never connected this way.
+       */
+      const issue = (payload: Omit<typeof CreateAccountConnection.Type, "owner">) =>
+        Effect.gen(function* () {
+          const request = yield* localRequest(config.port, config.browserOrigin);
+          if (request.headers.origin !== undefined) return yield* new AuthForbidden();
+          if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`)
+            return yield* new PairingUnauthorized();
+          if (payload.account === managed.account || payload.target.app === managed.app)
+            return yield* new ConnectionLinkRejected();
+          const connection = yield* connectForApp(executor, managed.app, payload);
+          const signed = yield* Effect.tryPromise({
+            try: () => crypto.subtle.sign("HMAC", key, message(connection.id)),
+            catch: () => new CredentialsError(),
+          });
+          const url = new URL(
+            `/account-connect/${encodeURIComponent(connection.id)}`,
+            requestOrigin(config, request),
+          );
+          url.hash = `token=${Hex.encode(new Uint8Array(signed))}`;
+          return {
+            connection: connection.id,
+            url: Redacted.make(url.href),
+            expiresAt: connection.expiresAt,
+          };
+        });
+      /**
+       * A scope's connect route, as `appAccounts.<scope>.connect`: the app must declare the
+       * requirement in that scope. The connection keeps that scope, so completing it refuses a
+       * requirement redeployed into the other one instead of linking in a scope nobody chose.
+       */
+      const scopeConnect =
+        (scope: AccountScope) =>
+        ({
+          params,
+          payload,
+        }: {
+          readonly params: { readonly app: AppId; readonly requirement: string };
+          readonly payload: { readonly account?: AccountId | undefined };
+        }) =>
+          requireScopedRequirement(executor, { ...params, scope }).pipe(
+            Effect.andThen(
+              issue({
+                target: { app: params.app, requirement: params.requirement, scope },
+                ...(payload.account === undefined ? {} : { account: payload.account }),
+              }),
+            ),
+          );
       const handlers = HttpApiBuilder.group(AccountConnectApi, "accountConnect", (handlers) =>
         handlers
-          .handle("issue", ({ payload }) =>
-            Effect.gen(function* () {
-              const request = yield* localRequest(config.port, config.browserOrigin);
-              if (request.headers.origin !== undefined) return yield* new AuthForbidden();
-              if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`)
-                return yield* new PairingUnauthorized();
-              if (payload.account === managed.account || payload.target.app === managed.app)
-                return yield* new ConnectionLinkRejected();
-              const connection = yield* executor.accountConnections.create(payload);
-              const signed = yield* Effect.tryPromise({
-                try: () => crypto.subtle.sign("HMAC", key, message(connection.id)),
-                catch: () => new CredentialsError(),
-              });
-              const url = new URL(
-                `/account-connect/${encodeURIComponent(connection.id)}`,
-                requestOrigin(config, request),
-              );
-              url.hash = `token=${Hex.encode(new Uint8Array(signed))}`;
-              return {
-                connection: connection.id,
-                url: Redacted.make(url.href),
-                expiresAt: connection.expiresAt,
-              };
-            }),
-          )
+          .handle("issue", ({ payload }) => issue(payload))
+          .handle("appConnect", scopeConnect("app"))
+          .handle("userConnect", scopeConnect("user"))
           .handle("read", ({ payload }) =>
             authorize(payload).pipe(Effect.andThen(executor.accountConnections.get(payload))),
           )
@@ -94,7 +148,7 @@ export const accountConnectHandlers = (
             Effect.gen(function* () {
               const request = yield* authorize(payload);
               const connection = yield* executor.accountConnections.get(payload);
-              return yield* executor.accountConnections.oauthSetup({
+              return yield* connectOptions(executor, {
                 owner: connection.owner,
                 provider: connection.provider.id,
                 method: payload.method,
@@ -105,8 +159,15 @@ export const accountConnectHandlers = (
           .handle("startOAuth", ({ payload }) =>
             Effect.gen(function* () {
               const request = yield* authorize(payload);
+              const connection = yield* executor.accountConnections.get(payload);
+              const { client: selected, ...rest } = payload;
+              const client = yield* connectionClient(connection, {
+                method: payload.method,
+                client: selected,
+              });
               return yield* executor.accountConnections.startOAuth({
-                ...payload,
+                ...rest,
+                ...(client === undefined ? {} : { client }),
                 redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
               });
             }),

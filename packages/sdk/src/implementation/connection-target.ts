@@ -1,20 +1,26 @@
 /** Capture and apply one app requirement, independently of account authentication. */
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import {
   AccountConnectionTargetChanged,
-  type AccountConnectionTarget,
+  type CreateAccountConnection,
 } from "../contracts/account-connection.ts";
 import { AccountSelectionInvalid } from "../contracts/apps.ts";
 import type { Account } from "../contracts/account.ts";
-import { StorageError, type ProviderId } from "../contracts/shared.ts";
+import type { ResourceLifecycle } from "../contracts/executor.ts";
+import { StorageError, type AccountConnectionId, type ProviderId } from "../contracts/shared.ts";
 import type { StoredConnectionTarget } from "../contracts/storage.ts";
-import { ProfileConflict } from "../contracts/profiles.ts";
-import { storedProfile } from "./profiles.ts";
 import { lockApp, storedApp, storedDeployment } from "./apps.ts";
 import { query, type Query } from "./database.ts";
 
-/** Resolve a provider from the deployed requirement without evaluating account-dependent app code. */
-export const captureConnectionTarget = (db: Query, target: typeof AccountConnectionTarget.Type) =>
+/**
+ * Resolve a provider from the deployed requirement without evaluating account-dependent app code.
+ * The requirement's scope is kept with the target. A caller that started the connection for a
+ * scope finds the requirement moved if it has another one now.
+ */
+export const captureConnectionTarget = (
+  db: Query,
+  target: typeof CreateAccountConnection.Type.target,
+) =>
   Effect.gen(function* () {
     const app = yield* storedApp(db, target);
     const deployment = yield* storedDeployment(db, app).pipe(
@@ -26,34 +32,25 @@ export const captureConnectionTarget = (db: Query, target: typeof AccountConnect
     const invalid = (reason: AccountSelectionInvalid["reason"]) =>
       new AccountSelectionInvalid({ app: app.id, slot: target.requirement, reason });
     if (requirement === undefined) return yield* invalid("unknown_slot");
-    const profile = yield* storedProfile(db, {
-      app: app.id,
-      profile: target.profile,
-      owner: app.owner,
-    });
-    if (!profile.enabled || profile.status === "removed" || profile.status === "removing")
-      return yield* new ProfileConflict({ profile: profile.id, reason: "inactive" });
-    const bindings = profile.accounts;
-    const selection = Object.hasOwn(bindings, target.requirement)
-      ? bindings[target.requirement]
-      : undefined;
-    if (requirement.cardinality === "one" && Array.isArray(selection))
-      return yield* invalid("expected_one");
-    if (requirement.cardinality === "many" && typeof selection === "string")
-      return yield* invalid("expected_many");
+    if (target.scope !== undefined && target.scope !== requirement.scope)
+      return yield* new AccountConnectionTargetChanged({
+        app: app.id,
+        requirement: target.requirement,
+      });
     const snapshot: StoredConnectionTarget = {
-      ...target,
+      app: target.app,
+      requirement: target.requirement,
+      scope: requirement.scope,
       name: app.name,
       owner: app.owner,
-      cardinality: requirement.cardinality,
-      selection: selection ?? null,
     };
     return { provider: requirement.provider, snapshot };
   });
 
 /**
  * The provider as the target app declares it now, with the hosts connecting will grant. Undefined
- * when the app no longer requires this provider for the slot; the request can then never complete.
+ * when the app no longer requires this provider for the slot, or requires it in another scope; the
+ * request can then never complete.
  */
 export const targetProvider = (db: Query, target: StoredConnectionTarget, provider: ProviderId) =>
   Effect.gen(function* () {
@@ -72,7 +69,7 @@ export const targetProvider = (db: Query, target: StoredConnectionTarget, provid
       Object.hasOwn(deployment.requirements.accounts, target.requirement)
         ? deployment.requirements.accounts[target.requirement]
         : undefined;
-    return required?.provider === provider
+    return required?.provider === provider && required.scope === target.scope
       ? { id: provider, definition: required.definition }
       : undefined;
   });
@@ -83,10 +80,9 @@ export const targetProvider = (db: Query, target: StoredConnectionTarget, provid
  */
 export const requireTargetProvider = (
   db: Query,
-  row: { readonly target: StoredConnectionTarget | null; readonly provider: ProviderId },
+  row: { readonly target: StoredConnectionTarget; readonly provider: ProviderId },
 ) =>
   Effect.gen(function* () {
-    if (row.target === null) return undefined;
     const shown = yield* targetProvider(db, row.target, row.provider);
     if (shown === undefined)
       return yield* new AccountConnectionTargetChanged({
@@ -96,12 +92,19 @@ export const requireTargetProvider = (
     return shown;
   });
 
-/** Run in the account-save transaction. A changed target rolls back credentials and selection together. */
+/**
+ * Run in the account-save transaction, under the app's lock. The product links the account to the
+ * requirement in the scope the connection started for, in the same transaction. A changed target,
+ * including a requirement that moved to the other scope since, rolls back the credentials and the
+ * link together.
+ */
 export const applyConnectionTarget = (
   db: Query,
+  connection: AccountConnectionId,
   target: StoredConnectionTarget,
   provider: ProviderId,
   account: Account,
+  lifecycle: ResourceLifecycle | undefined,
 ) =>
   Effect.gen(function* () {
     const changed = () =>
@@ -122,15 +125,8 @@ export const applyConnectionTarget = (
       required === undefined ||
       required.provider !== provider ||
       required.provider !== account.provider ||
-      required.cardinality !== target.cardinality
+      required.scope !== target.scope
     )
-      return yield* changed();
-    const profile = yield* storedProfile(db, {
-      app: app.id,
-      profile: target.profile,
-      owner: app.owner,
-    });
-    if (!profile.enabled || profile.status === "removed" || profile.status === "removing")
       return yield* changed();
     // Connecting for this app grants the hosts it declares, replacing any earlier grant.
     yield* query(() =>
@@ -139,28 +135,12 @@ export const applyConnectionTarget = (
         set: { allowedHosts: required.definition.hosts ?? null },
       }),
     );
-    const bindings = profile.accounts;
-    const selected = Object.hasOwn(bindings, target.requirement)
-      ? bindings[target.requirement]
-      : undefined;
-    let selection;
-    if (required.cardinality === "one") {
-      if ((selected ?? null) !== target.selection) return yield* changed();
-      selection = account.id;
-    } else {
-      if (typeof selected === "string") return yield* changed();
-      selection = [...new Set([...(selected ?? []), account.id])];
-    }
-    if (!Schema.toEquivalence(Schema.Json)(selected ?? null, selection))
-      yield* query(() =>
-        db.updateMany("profiles", {
-          where: (b) => b("id", "=", profile.id),
-          set: {
-            accounts: { ...bindings, [target.requirement]: selection },
-            revision: profile.revision + 1,
-            status: "pending",
-            failure: null,
-          },
-        }),
-      );
+    if (lifecycle !== undefined)
+      yield* lifecycle.appAccountConnected({
+        connection,
+        app: app.id,
+        requirement: target.requirement,
+        scope: target.scope,
+        account,
+      });
   });

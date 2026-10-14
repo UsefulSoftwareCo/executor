@@ -114,7 +114,8 @@ export function PagePending({
   const search = location.search;
   const [root, organizationSlug, page, item, action] = pathname.split("/").filter(Boolean);
   if (root !== "org" || organizationSlug === undefined) return <UnknownPagePending fullScreen />;
-  // Older setup links open the app's Accounts view.
+  // Older setup links open the app's Accounts view. Sign-in can still return to one, so this
+  // shape shows until the server redirects it there.
   if (page === "apps" && item?.startsWith("app_") && (action === undefined || action === "setup")) {
     const selected = parseAppSearch(search);
     return (

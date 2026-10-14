@@ -98,8 +98,7 @@ layer(HostedLive, { excludeTestServices: true })("Wildcard route telemetry", (it
           files: [
             {
               path: "index.ts",
-              content:
-                'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, {});',
+              content: 'import { defineApp } from "apps"; export default defineApp({}, {});',
             },
             { path: "ui/index.html", content: "<!doctype html><h1>Route probe</h1>" },
             appsManifest,

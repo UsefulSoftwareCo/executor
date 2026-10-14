@@ -7,9 +7,9 @@ import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
 /** Distinct synthetic credentials expose different tools; a collection exposes their combined catalog. */
 export const accountToolSource = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Workspace fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { workspaces: service.many() } }, async ctx => {
-  const work = ctx.accounts.workspaces.some(account => account.fields.token === "work");
-  const personal = ctx.accounts.workspaces.some(account => account.fields.token === "personal");
+export default defineApp({ user: { accounts: { workspaces: service.many() } } }, async ctx => {
+  const work = ctx.user.accounts.workspaces.some(account => account.fields.token === "work");
+  const personal = ctx.user.accounts.workspaces.some(account => account.fields.token === "personal");
   return { tools: router({
    ...(work ? { work: query({ input: object({}), description: "Search work items" }, async () => "work"), admin: query({ input: object({}), description: "Read work settings" }, async () => "admin") } : {}),
     ...(personal ? { personal: query({ input: object({}), description: "Search personal items" }, async () => "personal") } : {}),
@@ -28,8 +28,8 @@ export const checkToolAccountContext = <E, R>(input: {
     const browser = yield* Browser;
     yield* input.select([input.work]);
     const url = (view: string) => `${input.url}${input.url.includes("?") ? "&" : "?"}view=${view}`;
-    yield* browser.use("Open the selected profile accounts", (page) => page.goto(url("accounts")));
-    yield* browser.use("Work account is shown in the selected profile", (page) =>
+    yield* browser.use("Open the linked accounts", (page) => page.goto(url("accounts")));
+    yield* browser.use("Work account is shown as linked", (page) =>
       page.getByText("Work GitHub", { exact: true }).waitFor({ state: "visible" }),
     );
     yield* browser.use("Open work tools", (page) => page.goto(url("tools")));
@@ -96,14 +96,14 @@ export const checkToolAccountContext = <E, R>(input: {
           .count(),
       ),
     ).toBe(0);
-    yield* browser.use("Overview counts the selected account", (page) =>
+    yield* browser.use("Overview counts the linked account", (page) =>
       page
         .getByRole("region", { name: "App accounts", exact: true })
-        .getByText("1 account", { exact: true })
+        .getByText("1 linked", { exact: true })
         .waitFor({ state: "visible" }),
     );
     expect(
-      yield* browser.use("Configured profile has no missing-account warning", (page) =>
+      yield* browser.use("Linked accounts have no missing-account warning", (page) =>
         page
           .getByRole("region", { name: "App accounts", exact: true })
           .getByText(/needs accounts/)

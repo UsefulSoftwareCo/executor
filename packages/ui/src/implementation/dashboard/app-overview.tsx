@@ -1,20 +1,18 @@
 import { OverviewCatalog } from "./overview-catalog.tsx";
-import type { AccountContext } from "./account-group.tsx";
 import type { App, ToolSummary } from "@executor-js/sdk";
 import type { AppAuthoringMetadata } from "@executor-js/app-management/contracts";
+import type { RequirementAccounts } from "../../contracts/app-accounts.ts";
 import type { ComponentType, ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import {
   accountNeedsSignIn,
-  accountSelectionIssues,
-  providerDisplayUrl,
   type Query,
   type FailureProps,
   type AccountSummary,
 } from "../../contracts/dashboard.ts";
 import { useDashboard } from "./context.tsx";
-import { ProviderIcon } from "./common.tsx";
+import { AppProviderIcon } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 import { cn } from "../lib/utils.ts";
 
@@ -130,7 +128,7 @@ export function AppOverview({
   );
 }
 
-/** The overview lists each tool once; account selection belongs to the Tools tab. */
+/** The overview lists each tool once; the Tools tab runs them. */
 export function AppOverviewTools<E>({
   app,
   sources,
@@ -145,7 +143,7 @@ export function AppOverviewTools<E>({
   }[];
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly empty: ReactNode;
-  /** Every source lists tools per account and has none selected, so an empty list is expected. */
+  /** Every source lists tools per account and has none linked, so an empty list is expected. */
   readonly accountsNeeded?: boolean;
 }) {
   const { AppLink } = useDashboard();
@@ -165,8 +163,8 @@ export function AppOverviewTools<E>({
           label="Loading tools preview"
           empty={
             accountsNeeded ? (
-              <EmptyState size="card" heading="h3" title="No accounts connected">
-                This app lists tools for each connected account.
+              <EmptyState size="card" heading="h3" title="No accounts linked">
+                This app lists tools for each linked account.
               </EmptyState>
             ) : (
               <EmptyState size="card" heading="h3" title="No tools">
@@ -232,21 +230,18 @@ function ToolsPreviewFrame({ app, children }: { readonly app: App; readonly chil
   );
 }
 
-/** Summarize providers across profiles; individual account choices live in Accounts. */
+/**
+ * Summarize each requirement's linked accounts: the app links of an app requirement, the caller's
+ * links of a user requirement. Linking lives in Accounts.
+ */
 export function AppOverviewAccounts({
   app,
-  accounts,
-  contexts,
+  requirements,
 }: {
   readonly app: App;
-  readonly accounts: readonly AccountSummary[];
-  readonly contexts: readonly AccountContext[];
+  /** Each requirement with its linked accounts. */
+  readonly requirements: readonly RequirementAccounts<AccountSummary>[];
 }) {
-  const requirements = Object.entries(app.requirements.accounts);
-  const selections = contexts.map((context) => context.accounts);
-  const incomplete = contexts.filter(
-    (context) => accountSelectionIssues(context.app, context.accounts, accounts).length > 0,
-  ).length;
   if (requirements.length === 0)
     return (
       <EmptyState
@@ -260,57 +255,46 @@ export function AppOverviewAccounts({
       </EmptyState>
     );
   return (
-    <div>
-      <div className="divide-y">
-        {requirements.map(([slot, requirement]) => {
-          const ids = new Set(
-            selections.flatMap((configured) => {
-              const selection = configured[slot];
-              return selection === undefined
-                ? []
-                : typeof selection === "string"
-                  ? [selection]
-                  : selection;
-            }),
-          );
-          const selected = accounts.filter((account) => ids.has(account.id));
-          const reconnect = selected.some((account) => accountNeedsSignIn(account));
-          const unavailable = selected.some((account) => account.signIn?.state === "unavailable");
-          const showSlot = requirements.some(
-            ([otherSlot, other]) =>
-              otherSlot !== slot && other.definition.name === requirement.definition.name,
-          );
-          return (
-            <div key={slot} className="flex items-center gap-3 py-2.5">
-              <ProviderIcon
-                name={requirement.definition.name}
-                url={providerDisplayUrl(requirement.definition)}
-              />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-medium">
-                  {requirement.definition.name}
-                  {showSlot && <span className="ml-2 text-xs text-muted-foreground">{slot}</span>}
-                </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {ids.size === 0
-                    ? "No accounts selected"
-                    : `${ids.size} ${ids.size === 1 ? "account" : "accounts"}`}
-                </p>
-              </div>
-              {(reconnect || unavailable) && (
-                <span className="text-xs text-sign-in-warning">
-                  {reconnect ? "Needs sign-in" : "Unavailable"}
-                </span>
-              )}
+    <div className="divide-y">
+      {requirements.map(({ slot, requirement, linked: accounts }) => {
+        const reconnect = accounts.some((account) => accountNeedsSignIn(account));
+        const unavailable = accounts.some((account) => account.signIn?.state === "unavailable");
+        const showSlot = requirements.some(
+          (other) =>
+            other.slot !== slot &&
+            other.requirement.definition.name === requirement.definition.name,
+        );
+        return (
+          <div key={slot} className="flex items-center gap-3 py-2.5">
+            <AppProviderIcon app={app} provider={requirement.definition} />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[13px] font-medium">
+                {requirement.definition.name}
+                {showSlot && <span className="ml-2 text-xs text-muted-foreground">{slot}</span>}
+              </p>
+              <p
+                className={cn(
+                  "mt-0.5 text-xs text-muted-foreground",
+                  accounts.length === 0 &&
+                    requirement.cardinality === "one" &&
+                    "text-sign-in-warning",
+                )}
+              >
+                {accounts.length === 0
+                  ? requirement.cardinality === "one"
+                    ? "Needs an account"
+                    : "No accounts linked"
+                  : `${accounts.length} linked${requirement.scope === "app" ? " for everyone" : ""}`}
+              </p>
             </div>
-          );
-        })}
-      </div>
-      {incomplete > 0 && (
-        <p className="border-t pt-2 text-xs text-sign-in-warning">
-          {incomplete === 1 ? "1 profile needs accounts" : `${incomplete} profiles need accounts`}
-        </p>
-      )}
+            {(reconnect || unavailable) && (
+              <span className="text-xs text-sign-in-warning">
+                {reconnect ? "Needs sign-in" : "Unavailable"}
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

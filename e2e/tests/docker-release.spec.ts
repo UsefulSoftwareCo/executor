@@ -25,6 +25,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { appsManifest, withApps } from "../support/apps-release.ts";
 import { containerNpmRegistry } from "../support/npm-registry.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 /**
  * `workerd --version` prints the release date of the workerd the checkout pins, which the image
@@ -258,14 +259,14 @@ for (const mode of ["explicit", "local", "railway"] as const)
                 content: `import { defineApp, defineProvider, secrets, string, query, mutation, workflow, object, router } from "apps";
 import isNumber from "is-number";
 const service = defineProvider({ name: "Release test", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     check: query({ input: object({}) }, async () => isNumber("2") && accounts.service.fields.token === "synthetic-release-token"),
     messages: query({ input: object({}) }, async ({ sql }) => sql.exec("SELECT body FROM messages ORDER BY seq").toArray().map(row => row.body)),
     save: mutation({ input: object({ body: string() }) }, async ({ sql }, input) => { sql.exec("INSERT INTO messages (body) VALUES (?)", input.body); return input.body; }),
   }),
   workflows: { check: workflow({ input: object({}) }, async (ctx) =>
-    ctx.step.do("credential", async (step) => step.accounts.service.fields.token === "synthetic-release-token")) }
+    ctx.step.do("credential", async (step) => step.user.accounts.service.fields.token === "synthetic-release-token")) }
 }));`,
               },
               {
@@ -299,18 +300,9 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         const app = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ id: Schema.String, slug: Schema.String }),
         )(yield* driver("deployment response", () => deployed.json()));
-        const profileResponse = yield* request(
-          `${prefix}/apps/${app.id}/profiles`,
-          { accounts: {}, idempotencyKey: randomUUID() },
-          cookie,
-        );
-        expect(profileResponse.status).toBe(200);
-        const profile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-          yield* driver("profile response", () => profileResponse.json()),
-        );
         const connectionResponse = yield* request(
-          `${prefix}/apps/${app.id}/connections`,
-          { requirement: "service", profile: profile.id },
+          connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+          {},
           cookie,
         );
         expect(connectionResponse.status).toBe(200);
@@ -323,6 +315,10 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           cookie,
         );
         expect(connected.status).toBe(200);
+        // Connecting from the app links the account to it; calls use it.
+        yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+          yield* driver("connected account", () => connected.json()),
+        );
         const token =
           mode === "explicit"
             ? yield* Effect.gen(function* () {
@@ -360,7 +356,6 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         const saved = yield* request(
           `${prefix}/apps/${app.id}/tools/call`,
           {
-            profile: profile.id,
             tool: "save",
             kind: "mutation",
             input: { body: "Retained app data" },
@@ -776,6 +771,28 @@ http.createServer((request, response) => {
               200,
             );
             yield* spansOf(afterRestart);
+            // The image runs Executor's workerd build pinned in workerd.json, configured to
+            // collect idle isolates, pace pressure collections and release TCMalloc memory. App
+            // Worker unloading stays with the runner's residency, and the bridges keep `gc`.
+            const pinFile = yield* (yield* Path.Path).fromFileUrl(
+              new URL("../../apps/hosted/self-host/workerd.json", import.meta.url),
+            );
+            const pin = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(Schema.Struct({ release: Schema.String })),
+            )(yield* (yield* FileSystem.FileSystem).readFileString(pinFile));
+            expect(
+              (yield* run(["exec", id, "cat", "/app/runtime-packages.txt"])).split("\n"),
+            ).toContain(`workerd@${pin.release}`);
+            const workerdConfig = yield* run(["exec", id, "cat", "/app/workerd.capnp"]);
+            for (const setting of [
+              "idleIsolateGcDelayMs=10000",
+              "pressureGcBudgetMs=100",
+              "tcmallocBackgroundReleaseBytesPerSecond=8388608",
+              "releaseMemoryAfterGc=true",
+              'v8Flags=["--expose-gc","--no-flush-liftoff-code"]',
+            ])
+              expect(workerdConfig).toContain(setting);
+            expect(workerdConfig).not.toContain("workerLoaderIdleTtlMs");
             expect(
               yield* processes.exitCode(
                 ChildProcess.make("docker", [
@@ -792,14 +809,14 @@ http.createServer((request, response) => {
 
           const called = yield* request(
             `${prefix}/apps/${app.id}/tools/call`,
-            { profile: profile.id, tool: "check", kind: "query", input: {} },
+            { tool: "check", kind: "query", input: {} },
             cookie,
           );
           expect(called.status).toBe(200);
           expect(yield* driver("query response", () => called.json())).toBe(true);
           const workflow = yield* request(
             `${prefix}/apps/${app.id}/workflow-runs`,
-            { profile: profile.id, workflow: "check", input: {}, key: randomUUID() },
+            { workflow: "check", input: {}, key: randomUUID() },
             cookie,
           );
           expect(
@@ -853,7 +870,7 @@ http.createServer((request, response) => {
                       {
                         name: "execute",
                         arguments: {
-                          code: `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].check({})`,
+                          code: `return await tools[${JSON.stringify(app.slug)}].check({})`,
                         },
                       },
                       undefined,
@@ -872,7 +889,7 @@ http.createServer((request, response) => {
           }
           const messages = yield* request(
             `${prefix}/apps/${app.id}/tools/call`,
-            { profile: profile.id, tool: "messages", kind: "query", input: {} },
+            { tool: "messages", kind: "query", input: {} },
             cookie,
           );
           expect(messages.status).toBe(200);
@@ -1077,7 +1094,7 @@ it.live("released image keeps its collector out of apps' reach with private fetc
             {
               path: "index.ts",
               content: `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     probe: query({ input: object({ url: string(), body: string() }) }, async (ctx, input) => {
       try {
@@ -1099,19 +1116,10 @@ export default defineApp({ accounts: {} }, async () => ({
       const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
         yield* driver("probe app", () => deployed.json()),
       );
-      const created = yield* request(
-        `${prefix}/apps/${app.id}/profiles`,
-        { accounts: {}, idempotencyKey: randomUUID() },
-        cookie,
-      );
-      expect(created.status).toBe(200);
-      const profile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-        yield* driver("probe profile", () => created.json()),
-      );
       const probe = (url: string, body = "") =>
         request(
           `${prefix}/apps/${app.id}/tools/call`,
-          { profile: profile.id, tool: "probe", kind: "query", input: { url, body } },
+          { tool: "probe", kind: "query", input: { url, body } },
           cookie,
         ).pipe(
           Effect.flatMap((response) => driver(`probe ${url}`, () => response.json())),
@@ -1710,7 +1718,7 @@ http.createServer((request, response) => {
             {
               path: "index.ts",
               content: `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     probe: query({ input: object({ url: string() }) }, async (ctx, input) => {
       try { return "reached:" + (await ctx.fetch(input.url)).status; }
@@ -1730,20 +1738,13 @@ export default defineApp({ accounts: {} }, async () => ({
       const app = yield* Schema.decodeUnknownEffect(
         Schema.Struct({ id: Schema.String, slug: Schema.String }),
       )(yield* driver("probe app", () => deployed.json()));
-      const created = yield* request(
-        `${prefix}/apps/${app.id}/profiles`,
-        { accounts: {}, idempotencyKey: randomUUID() },
-        cookie,
-      );
-      expect(created.status).toBe(200);
-      const probeProfile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-        yield* driver("probe profile", () => created.json()),
-      );
-      // Setup provisions the built-in Executor app in the background.
-      const executorProfile = yield* Effect.gen(function* () {
+      // Setup provisions the built-in Executor app and links the member's managed key to it in the
+      // background.
+      yield* Effect.gen(function* () {
         const inventory = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+            links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
           }),
         )(
           yield* request(`${prefix}/inventory`, undefined, cookie).pipe(
@@ -1752,14 +1753,8 @@ export default defineApp({ accounts: {} }, async () => ({
         );
         const executor = inventory.apps.find((item) => item.slug === "executor");
         if (executor === undefined) return yield* Effect.fail("Executor app pending");
-        const profiles = yield* Schema.decodeUnknownEffect(
-          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
-        )(
-          yield* request(`${prefix}/apps/${executor.id}/profiles`, undefined, cookie).pipe(
-            Effect.flatMap((response) => driver("Executor profiles", () => response.json())),
-          ),
-        );
-        return profiles[0];
+        if (!inventory.links.some((link) => link.app === executor.id))
+          return yield* Effect.fail("Executor key pending");
       }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }));
       const keyResponse = yield* request(
         "/api/auth/api-key/create",
@@ -1805,7 +1800,7 @@ export default defineApp({ accounts: {} }, async () => ({
         );
       const source = yield* execute(
         "read app source through the built-in Executor app",
-        `return await tools.executor.profiles[${JSON.stringify(executorProfile.id)}].appManagement.source(${JSON.stringify({ path: { organization: organization.id, app: app.id } })})`,
+        `return await tools.executor.appManagement.source(${JSON.stringify({ path: { organization: organization.id, app: app.id } })})`,
       );
       expect(
         source,
@@ -1817,7 +1812,7 @@ export default defineApp({ accounts: {} }, async () => ({
       const probe = (url: string) =>
         execute(
           `authored app fetches ${url}`,
-          `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(probeProfile.id)}].probe(${JSON.stringify({ url })})`,
+          `return await tools[${JSON.stringify(app.slug)}].probe(${JSON.stringify({ url })})`,
         );
       // The same listener on its private address is not the dashboard origin.
       const refused = yield* probe(`http://${address}:${containerPort}/health`);
@@ -1984,36 +1979,44 @@ it.live(
               yield* request("/api/auth/organization/list", undefined, cookie),
             );
             const prefix = `/api/organizations/${organization.id}`;
-            // Setup installs the built-in Executor app and the owner's profile of it in the
-            // background. That profile's setup loads the app's Worker, which under a low limit
-            // unloads an idle probe Worker, so it must finish before the probes are deployed.
-            const executorProfiles = yield* request(`${prefix}/inventory`, undefined, cookie).pipe(
-              Effect.flatMap((response) =>
-                json(
-                  Schema.Struct({
-                    apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
-                    profiles: Schema.Array(
-                      Schema.Struct({ app: Schema.String, status: Schema.String }),
-                    ),
-                  }),
-                  response,
+            // Setup installs the built-in Executor app and links the owner's managed key to it in
+            // the background. That link's webhook source reconciliation loads the app's Worker,
+            // which under a low limit unloads an idle probe Worker, so it must finish before the
+            // probes are deployed.
+            const executorSources = yield* Effect.gen(function* () {
+              const { apps: installed } = yield* request(
+                `${prefix}/inventory`,
+                undefined,
+                cookie,
+              ).pipe(
+                Effect.flatMap((response) =>
+                  json(
+                    Schema.Struct({
+                      apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+                    }),
+                    response,
+                  ),
                 ),
-              ),
-              Effect.flatMap(({ apps, profiles }) => {
-                const executor = apps.find((app) => app.slug === "executor");
-                const setup =
-                  executor === undefined
-                    ? []
-                    : profiles.filter((profile) => profile.app === executor.id);
-                return setup.length === 0 || setup.some((profile) => profile.status === "pending")
-                  ? Effect.fail(new Error("Executor app setup has not finished"))
-                  : Effect.succeed(setup);
-              }),
-              Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
-            );
-            // A profile that is not ready retries its setup later and loads the Worker again.
-            for (const profile of executorProfiles)
-              expect(profile.status, "the built-in Executor app is set up").toBe("ready");
+              );
+              const executorApp = installed.find((app) => app.slug === "executor");
+              if (executorApp === undefined)
+                return yield* Effect.fail(new Error("The built-in Executor app is not installed"));
+              const sources = yield* request(
+                `${prefix}/apps/${executorApp.id}/webhook-sources`,
+                undefined,
+                cookie,
+              ).pipe(
+                Effect.flatMap((response) =>
+                  json(Schema.Array(Schema.Struct({ status: Schema.String })), response),
+                ),
+              );
+              return sources.length === 0 || sources.some((source) => source.status === "pending")
+                ? yield* Effect.fail(new Error("Executor app setup has not finished"))
+                : sources;
+            }).pipe(Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }));
+            // A source that is not ready retries its reconciliation later and loads the Worker again.
+            for (const source of executorSources)
+              expect(source.status, "the built-in Executor app is set up").toBe("ready");
             const probes: Array<Probe> = [];
             for (let index = 0; index < apps; index++) {
               const deployed = yield* request(
@@ -2026,7 +2029,7 @@ it.live(
                       content: `import { defineApp, query, object, router } from "apps";
 let isolate;
 let calls = 0;
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     probe: query({ input: object({}) }, async () => {
       isolate ??= crypto.randomUUID();
@@ -2046,34 +2049,10 @@ export default defineApp({ accounts: {} }, async () => ({
                 yield* driver("deploy probe", () => deployed.clone().text()),
               ).toBe(200);
               const app = yield* json(Schema.Struct({ id: Schema.String }), deployed);
-              const profile = yield* json(
-                Schema.Struct({ id: Schema.String }),
-                yield* request(
-                  `${prefix}/apps/${app.id}/profiles`,
-                  { accounts: {}, idempotencyKey: randomUUID() },
-                  cookie,
-                ),
-              );
-              // Profile setup discovers the app in the background; let it finish before the calls.
-              yield* request(
-                `${prefix}/apps/${app.id}/profiles/${profile.id}`,
-                undefined,
-                cookie,
-              ).pipe(
-                Effect.flatMap((response) =>
-                  json(Schema.Struct({ status: Schema.String }), response),
-                ),
-                Effect.flatMap((current) =>
-                  current.status === "pending"
-                    ? Effect.fail(new Error("Profile setup has not finished"))
-                    : Effect.void,
-                ),
-                Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
-              );
               probes.push(
                 request(
                   `${prefix}/apps/${app.id}/tools/call`,
-                  { profile: profile.id, tool: "probe", input: {} },
+                  { tool: "probe", input: {} },
                   cookie,
                 ).pipe(
                   Effect.tap((response) =>
@@ -2126,6 +2105,323 @@ export default defineApp({ accounts: {} }, async () => ({
             );
             expect(oldest.calls).toBe(1);
           }),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  300_000,
+);
+
+const Workspace = Schema.Struct({ revision: Schema.Struct({ commit: Schema.String }) });
+
+/** One unencoded HTTP exchange: the bytes exactly as the image sent them. */
+type RawResponse = {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string | ReadonlyArray<string> | undefined>>;
+  readonly body: Buffer;
+};
+
+const varies = (response: RawResponse) =>
+  [response.headers.vary ?? []]
+    .flat()
+    .flatMap((value) => value.split(","))
+    .map((field) => field.trim().toLowerCase());
+
+// The image's Go host compresses text responses for clients that accept it, off workerd's thread.
+// Event streams stay unencoded, so each event must still reach an open page as it is sent.
+it.live(
+  "released image compresses dashboard files and API JSON and keeps event streams live",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
+        const registry = yield* containerNpmRegistry;
+        const run = (args: readonly string[], env: Record<string, string> = {}) =>
+          processes.string(ChildProcess.make("docker", args, { env, extendEnv: true }));
+        const id = `executor-compression-${randomBytes(6).toString("hex")}`;
+        const port = yield* driver(
+          "allocate port",
+          () =>
+            new Promise<number>((resolve, reject) => {
+              const listener = createServer();
+              listener.once("error", reject);
+              listener.listen(0, "127.0.0.1", () => {
+                const address = listener.address();
+                listener.close(() =>
+                  address === null || typeof address === "string"
+                    ? reject(new Error("No test port"))
+                    : resolve(address.port),
+                );
+              });
+            }),
+        );
+        const origin = `http://localhost:${port}`;
+        const address = `http://127.0.0.1:${port}`;
+        const environment: Record<string, string> = {
+          // Release scenarios never send product analytics, even from an image with a baked key.
+          DO_NOT_TRACK: "1",
+          PORT: "8080",
+          BETTER_AUTH_URL: origin,
+          BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+          EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+        };
+        yield* Effect.acquireRelease(
+          run(
+            [
+              "run",
+              "--detach",
+              "--name",
+              id,
+              "--init",
+              "--publish",
+              `127.0.0.1:${port}:8080`,
+              ...Object.keys(environment).flatMap((name) => ["--env", name]),
+              ...registry.docker,
+              image,
+            ],
+            environment,
+          ),
+          // An anonymous data volume is removed with the container.
+          () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
+        );
+        yield* Effect.addFinalizer((exit) =>
+          Exit.isFailure(exit)
+            ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+            : Effect.void,
+        );
+        let cookie = "";
+        const request = (route: string, data?: unknown) =>
+          driver(`${data === undefined ? "GET" : "POST"} ${route}`, (signal) =>
+            fetch(`${address}${route}`, {
+              method: data === undefined ? "GET" : "POST",
+              signal,
+              headers: {
+                origin,
+                "content-type": "application/json",
+                ...(cookie === "" ? {} : { cookie }),
+              },
+              ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+            }),
+          );
+        const json = <S extends Schema.Top>(schema: S, route: string, data?: unknown) =>
+          request(route, data).pipe(
+            Effect.flatMap((response) =>
+              driver(`read ${route}`, () => response.text()).pipe(
+                Effect.flatMap((text) =>
+                  response.status === 200
+                    ? Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(text)
+                    : Effect.fail(new Error(`${route}: HTTP ${response.status} ${text}`)),
+                ),
+              ),
+            ),
+          );
+        // Node's HTTP client neither asks for nor decodes an encoding, so the bytes are the image's.
+        const raw = (route: string, acceptEncoding: string | undefined) =>
+          driver(
+            `GET ${route} accepting ${acceptEncoding ?? "no encoding"}`,
+            () =>
+              new Promise<RawResponse>((resolve, reject) => {
+                const outgoing = httpRequest(
+                  `${address}${route}`,
+                  {
+                    headers: {
+                      origin,
+                      ...(cookie === "" ? {} : { cookie }),
+                      ...(acceptEncoding === undefined
+                        ? {}
+                        : { "accept-encoding": acceptEncoding }),
+                    },
+                  },
+                  (response) => {
+                    const chunks: Array<Buffer> = [];
+                    response.on("data", (chunk: Buffer) => chunks.push(chunk));
+                    response.once("error", reject);
+                    response.once("end", () =>
+                      resolve({
+                        status: response.statusCode ?? 0,
+                        headers: response.headers,
+                        body: Buffer.concat(chunks),
+                      }),
+                    );
+                  },
+                );
+                outgoing.once("error", reject);
+                outgoing.end();
+              }),
+          );
+        // fetch decodes the encoding it receives and still reports it.
+        const decoded = (route: string, acceptEncoding: string) =>
+          driver(`read ${route} accepting ${acceptEncoding}`, (signal) =>
+            fetch(`${address}${route}`, {
+              signal,
+              headers: {
+                origin,
+                "accept-encoding": acceptEncoding,
+                ...(cookie === "" ? {} : { cookie }),
+              },
+            }).then((response) =>
+              response.arrayBuffer().then((body) => ({
+                encoding: response.headers.get("content-encoding"),
+                body: Buffer.from(body),
+              })),
+            ),
+          );
+        yield* request("/health").pipe(
+          Effect.flatMap((response) =>
+            response.status === 200 ? Effect.void : Effect.fail("not ready"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }),
+        );
+
+        // Chromium's Accept-Encoding: brotli is preferred, and the page and its script are encoded.
+        const browserEncodings = "gzip, deflate, br, zstd";
+        const login = yield* raw("/login", browserEncodings);
+        expect(login.status).toBe(200);
+        expect(login.headers["content-encoding"], "the sign-in page is compressed").toBe("br");
+        expect(varies(login)).toContain("accept-encoding");
+        const html = (yield* decoded("/login", browserEncodings)).body.toString("utf8");
+        expect(html).toMatch(/^<!DOCTYPE html>/);
+        const script = /\/assets\/[\w-]+\.js/.exec(html)?.[0];
+        expect(script, "the sign-in page loads a hashed script").toBeDefined();
+        const identity = yield* raw(script!, undefined);
+        expect(identity.status).toBe(200);
+        expect(identity.headers["content-encoding"]).toBeUndefined();
+        expect(varies(identity), "caches keep encoded and plain copies apart").toContain(
+          "accept-encoding",
+        );
+        for (const [accepted, encoding] of [
+          [browserEncodings, "br"],
+          ["gzip", "gzip"],
+        ] as const) {
+          const encoded = yield* raw(script!, accepted);
+          expect(encoded.headers["content-encoding"], `the script is sent as ${encoding}`).toBe(
+            encoding,
+          );
+          expect(encoded.headers["content-length"]).toBeUndefined();
+          expect(encoded.headers["cache-control"]).toBe(identity.headers["cache-control"]);
+          expect(encoded.body.length).toBeLessThan(identity.body.length / 2);
+          const decoding = yield* decoded(script!, accepted);
+          expect(decoding.encoding).toBe(encoding);
+          expect(decoding.body.equals(identity.body), `${encoding} decodes exactly`).toBe(true);
+        }
+        // Already compressed formats and tiny bodies are sent as they are.
+        expect((yield* raw("/favicon.png", browserEncodings)).headers["content-encoding"]).toBe(
+          undefined,
+        );
+        expect((yield* raw("/health", browserEncodings)).headers["content-encoding"]).toBe(
+          undefined,
+        );
+
+        const setup = yield* request("/api/auth/self-host/setup", {
+          name: "Compression Owner",
+          email: "compression@example.test",
+          password: "Synthetic-compression-password-123!",
+          organizationName: "Compression lab",
+        });
+        expect(setup.status).toBe(200);
+        cookie = setup.headers
+          .getSetCookie()
+          .map((part) => part.split(";")[0])
+          .join("; ");
+        const [organization] = yield* json(
+          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+          "/api/auth/organization/list",
+        );
+        const prefix = `/api/organizations/${organization.id}`;
+
+        // API JSON is encoded and decodes to the same document.
+        const openapi = yield* raw("/openapi.json", browserEncodings);
+        expect(openapi.headers["content-encoding"], "API JSON is compressed").toBe("br");
+        const plainOpenapi = yield* raw("/openapi.json", undefined);
+        expect(openapi.body.length).toBeLessThan(plainOpenapi.body.length / 4);
+        const decodedOpenapi = yield* decoded("/openapi.json", browserEncodings);
+        expect(decodedOpenapi.encoding).toBe("br");
+        expect(JSON.parse(decodedOpenapi.body.toString("utf8"))).toEqual(
+          JSON.parse(plainOpenapi.body.toString("utf8")),
+        );
+
+        const browser = yield* Effect.acquireRelease(
+          driver("launch the compression browser", () => chromium.launch()),
+          (browser) =>
+            driver("close the compression browser", () => browser.close()).pipe(Effect.orDie),
+        );
+        const page = yield* driver("new browser session", () => browser.newPage());
+        page.setDefaultTimeout(20_000);
+        const scripts: Array<{ url: string; encoding: string | undefined }> = [];
+        page.on("response", (response) => {
+          if (new URL(response.url()).pathname.endsWith(".js"))
+            scripts.push({ url: response.url(), encoding: response.headers()["content-encoding"] });
+        });
+        // The dashboard renders from its compressed document, scripts and data.
+        yield* driver("open the dashboard sign-in", () => page.goto(`${origin}/login`));
+        yield* driver("enter the owner's email", () =>
+          page.getByLabel("Email", { exact: true }).fill("compression@example.test"),
+        );
+        yield* driver("enter the owner's password", () =>
+          page.getByLabel("Password", { exact: true }).fill("Synthetic-compression-password-123!"),
+        );
+        yield* driver("sign in", () =>
+          page.getByRole("button", { name: "Sign in", exact: true }).click(),
+        );
+        yield* driver("the apps page renders", () =>
+          page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+        );
+        expect(scripts.length).toBeGreaterThan(0);
+        expect(
+          scripts.filter((loaded) => loaded.encoding !== "br"),
+          "every dashboard script arrives compressed",
+        ).toEqual([]);
+
+        // An app page keeps an event stream open for new deployments. Deploying again must reach
+        // the open page through that stream, which reloads it.
+        const files = (heading: string) => [
+          {
+            path: "index.ts",
+            content: `import { defineApp, query, object, router } from "apps";
+export default defineApp({}, async () => ({ tools: router({ ping: query({ input: object({}) }, async () => "pong") }) }));`,
+          },
+          appsManifest,
+          {
+            path: "ui/index.html",
+            content: `<!doctype html><html><head><title>Stream check</title></head><body><h1>${heading}</h1></body></html>`,
+          },
+        ];
+        const app = yield* json(Schema.Struct({ id: Schema.String }), `${prefix}/apps/deploy`, {
+          name: "Stream check",
+          files: files("First deployment"),
+        });
+        const path = `${prefix}/apps/${app.id}`;
+        const ui = yield* json(
+          Schema.Struct({ status: Schema.Literal("ready"), url: Schema.String }),
+          `${path}/ui`,
+        ).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }));
+        const [stream] = yield* driver("open the app page and its deployment stream", () =>
+          Promise.all([
+            page.waitForResponse(
+              (response) => new URL(response.url()).pathname === "/_executor/version",
+            ),
+            page.goto(ui.url),
+          ]),
+        );
+        expect(stream.status()).toBe(200);
+        expect(stream.headers()["content-type"]).toMatch(/^text\/event-stream/);
+        expect(stream.headers()["content-encoding"], "event streams are not encoded").toBe(
+          undefined,
+        );
+        yield* driver("the first deployment renders", () =>
+          page.getByRole("heading", { name: "First deployment" }).waitFor(),
+        );
+        const workspace = yield* json(Workspace, `${path}/workspace`);
+        const saved = yield* json(Workspace, `${path}/commits`, {
+          expected: workspace.revision.commit,
+          files: files("Second deployment"),
+          message: "Change the heading",
+        });
+        expect((yield* request(`${path}/deploy`, { commit: saved.revision.commit })).status).toBe(
+          200,
+        );
+        yield* driver("the open page reloads into the new deployment", () =>
+          page.getByRole("heading", { name: "Second deployment" }).waitFor(),
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

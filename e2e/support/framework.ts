@@ -10,14 +10,14 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-/** Open a scoped client with the actor's real management profile and live tool execution. */
+/** Open a scoped client with the actor's linked Executor key and live tool execution. */
 export const frameworkSession = Effect.gen(function* () {
   const actors = yield* Actors,
     browser = yield* Browser;
   const oauth = yield* McpOAuth,
     mcp = yield* McpClient;
   yield* browser.login(actors.owner);
-  const { profile } = yield* managementApp(actors.owner);
+  const { account } = yield* managementApp(actors.owner);
   const grant = yield* oauth.authorize;
   yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
   const client = yield* mcp.connect(
@@ -34,6 +34,6 @@ export const frameworkSession = Effect.gen(function* () {
       return (yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent)).execution
         .value;
     });
-  const queries = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
-  return { client, execute, queries, profile };
+  const queries = "tools.executor";
+  return { client, execute, queries, account };
 });

@@ -3,8 +3,6 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   AppId,
-  ProfileId,
-  ProfileRevision,
   DeploymentId,
   WorkflowRunId,
   HostedWorkflow,
@@ -23,16 +21,15 @@ const app = { organization: OrganizationReference, app: AppId };
 const run = { ...app, run: WorkflowRunId };
 const errors = [...WorkflowErrors, OrganizationForbidden] as const;
 const path = "/api/organizations/:organization/apps/:app";
-/** Definitions and run state are readable by members; starting/terminating requires an administrator. */
+/**
+ * Members who can use the app read definitions and start runs with their accounts. Runs belong to
+ * the actor that started them; terminating someone else's run needs app management.
+ */
 export const HostedWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
       params: app,
-      query: {
-        profile: Schema.optional(ProfileId),
-        expectedProfileRevision: Schema.optional(ProfileRevision),
-        deployment: Schema.optional(DeploymentId),
-      },
+      query: { deployment: Schema.optional(DeploymentId) },
       success: Schema.Array(HostedWorkflow),
       error: errors,
     }),
@@ -40,7 +37,7 @@ export const HostedWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.post("start", `${path}/workflow-runs`, {
       params: app,
-      payload: StartWorkflow.mapFields(({ app: _app, ...fields }) => fields),
+      payload: StartWorkflow.mapFields(({ app: _app, accounts: _accounts, ...fields }) => fields),
       success: WorkflowRun,
       error: errors,
     }),

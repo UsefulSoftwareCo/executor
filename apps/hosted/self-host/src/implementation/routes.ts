@@ -24,6 +24,7 @@ import {
   clientMetadataDocument,
   clientMetadataDocumentPath,
   clientMetadataSetting,
+  authSettings,
   hostedWebhookCallback,
   catalogLive,
   hostedMiddlewareLive,
@@ -39,7 +40,7 @@ import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
 import { appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
 import { HttpApiBuilder } from "effect/http-api";
-import { appUiBaseUrl } from "../contracts/config.ts";
+import { appUiBaseUrl, catalogFeedUrl } from "../contracts/config.ts";
 import { type HostEgress } from "@executor-js/utils/url-policy";
 import { Config, Effect, Layer, Option } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -49,7 +50,7 @@ import { selfHostMcp } from "../mcp.ts";
 import { SelfHostAuth } from "../auth.ts";
 import { selfHostAnalytics } from "./product-analytics.ts";
 
-import type { SourceFile } from "@executor-js/sdk/core";
+import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import type { selfHostExecutorServices } from "./executor-services.ts";
 /** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
 export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
@@ -86,10 +87,10 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         : worker.pipe(Effect.provideService(ScheduleObservation, analytics.schedules));
     }).pipe(Effect.provide(executorServices));
     // A span per wake, named as Cloud's coordinator wake, shows which write asked for setup.
-    const wake = scheduler.wakeProfiles.pipe(
+    const wake = scheduler.wakeWebhookSources.pipe(
       Effect.withSpan("schedule.wake", { attributes: { "executor.schedule.wake": "change" } }),
     );
-    // Member setup saves profiles and redeploys the default Executor app; it wakes their setup.
+    // Member setup links accounts and redeploys the default Executor app; it wakes webhook sources.
     yield* drainProvisioning(selfHostProvisioningServices).pipe(
       Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
       Effect.repeat(Schedule.spaced("1 second")),
@@ -97,7 +98,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Effect.provide(executorServices),
       Effect.forkScoped,
     );
-    const clientMetadata = yield* clientMetadataSetting(auth.origin);
+    // The account callback the executor's sign-ins send, so the document lists the same one.
+    const clientMetadata = yield* clientMetadataSetting({
+      origin: auth.origin,
+      oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
+    });
     const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
     const appUi = hostedAppUi(addresses);
     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
@@ -108,7 +113,13 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Layer.provide(appUi.dashboard),
       HttpRouter.provideRequest(auth.appSessions),
       HttpRouter.provideRequest(
-        catalogLive(document.document, egress, clientMetadata, auth.origin),
+        catalogLive(
+          document.document,
+          egress,
+          clientMetadata,
+          auth.origin,
+          Option.getOrUndefined(yield* catalogFeedUrl),
+        ),
       ),
       Layer.provide(hostedMiddlewareLive),
       // Organization middleware reads the product's removal tombstones when it is built.

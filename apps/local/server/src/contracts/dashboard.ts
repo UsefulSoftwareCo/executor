@@ -1,15 +1,16 @@
 import {
+  blockedRecovery,
+  LocalOwnerMigration,
+} from "@executor-js/app-management/contracts/local-owners";
+import {
   DeploymentDisplay,
   SourceDisplayFile,
   SourceDisplayFileQuery,
 } from "@executor-js/app-management/contracts/source-display";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
-import { Profile } from "@executor-js/sdk/core";
 import { DashboardAppBrowser } from "./app-browser.ts";
 import { DashboardWorkflows, DashboardWebhooks } from "./resources.ts";
-import { DashboardProfiles } from "./profiles.ts";
-import { ProfileId, ProfileRevision, ToolKind, ToolKindMismatch } from "@executor-js/sdk/core";
-import { ProfileErrors } from "@executor-js/sdk/core";
+import { AccountChoiceUnsupported, ToolKind, ToolKindMismatch } from "@executor-js/sdk/core";
 import { AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { DashboardSchedules } from "./schedules.ts";
 import { DashboardMcpConnections } from "./mcp-connections.ts";
@@ -18,10 +19,13 @@ import { AppWebhooksActive } from "@executor-js/sdk/core";
 /** Browser-safe read contracts for inspecting the local Executor instance. */
 import {
   AccountConnectionTargetChanged,
+  AccountConnectionRefused,
+  AccountScope,
   AccountConnectionNotFound,
   AccountConnectionClosed,
   Account,
   AccountHealth,
+  AccountRevocation,
   CredentialCheck,
   AccountNotFound,
   AccountRequired,
@@ -56,8 +60,9 @@ import {
   DeploymentBuildFailed,
   BuildMemoryExceeded,
   SkillDefinitionInvalid,
-  OAuthClientInput,
-  OAuthClientSetup,
+  OAuthClientSelection,
+  OAuthClientNotFound,
+  OAuthConnectOptions,
   OAuthClientUnavailable,
   OAuthCompletionFailed,
   OAuthSetupFailed,
@@ -97,6 +102,7 @@ import {
   ToolRunApprovalRefused,
 } from "@executor-js/mcp/browser";
 import { ConnectionSignIn } from "./account-connections.ts";
+import { RequirementMismatch } from "./requirement-mismatch.ts";
 import { AuthStorageError } from "./auth.ts";
 import { Schema } from "effect";
 import {
@@ -105,7 +111,11 @@ import {
   HttpApiGroup,
   HttpApiMiddleware,
   HttpApiSchema,
+  OpenApi,
 } from "effect/http-api";
+
+/** Why the last start did not move other owners' records to `local`; see data step 7. */
+export { blockedRecovery, LocalOwnerMigration };
 
 /** Same callback path as Executor local, cloud and self-host; the host supplies its origin. */
 export const OAuthCallbackPath = "/api/oauth/callback";
@@ -165,6 +175,25 @@ export class AppRenameBlocked extends Schema.TaggedError<AppRenameBlocked>()(
     description: "This app is managed by the local server and cannot be renamed.",
   },
 ) {}
+/**
+ * The server links its own Executor app to the account it manages each time it starts, and that
+ * app's tools need the link. Nothing else links, unlinks, replaces or connects its accounts.
+ */
+export const AppAccountLinksBlocked = UserFacingError.define({
+  tag: "AppAccountLinksBlocked",
+  status: 409,
+  fields: { app: AppId },
+  title: "This app's account is managed by Executor",
+  description:
+    "The local server links this app's account itself each time it starts, and its tools need that link. Its account links can't be changed.",
+  recovery: {
+    action: "Leave this app's account as it is.",
+    instructions:
+      "Do not link, unlink, replace or connect accounts for the local Executor app. The server keeps its own account linked; use the Executor tools as they are.",
+  },
+});
+/** Parsed AppAccountLinksBlocked failure. */
+export type AppAccountLinksBlocked = typeof AppAccountLinksBlocked.Type;
 /** The server's own API connection is managed at the host boundary. */
 export class AccountManagementBlocked extends Schema.TaggedError<AccountManagementBlocked>()(
   "AccountManagementBlocked",
@@ -174,13 +203,55 @@ export class AccountManagementBlocked extends Schema.TaggedError<AccountManageme
     description: "This account is managed by the local server and cannot be changed here.",
   },
 ) {}
+
+/** The account is linked to apps for every call; it cannot be deleted until it is unlinked. */
+export const AccountLinkedToApp = UserFacingError.define({
+  tag: "AccountLinkedToApp",
+  status: 409,
+  fields: { account: AccountId, apps: Schema.NonEmptyArray(AppId) },
+  title: "This account is linked to an app for everyone",
+  description: "An app uses this account as its own, so it can't be deleted while it is linked.",
+  recovery: {
+    action: "Unlink the account under App accounts on each app's Accounts tab, then delete it.",
+    instructions:
+      "Read the app accounts of each named app and unlink this account from them. Link a replacement first if the app still needs one. Then delete the account.",
+  },
+});
+/** Parsed AccountLinkedToApp failure. */
+export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
+
+/** One account linked to one of the app's requirements, with its checks by this app. */
+export const AppAccountLink = Schema.Struct({
+  requirement: Schema.NonEmptyString,
+  account: Account,
+  createdAt: Schema.Date,
+  health: Schema.optionalKey(AccountHealth),
+});
+export type AppAccountLink = typeof AppAccountLink.Type;
+
+/** One account a requirement lists: linked to it, or one that could be linked. */
+export const RequirementAccount = Schema.Struct({ account: Account, linked: Schema.Boolean });
+export type RequirementAccount = typeof RequirementAccount.Type;
 /**
- * The app requirement a dashboard sign-in fills. `account` replaces that account's credentials
- * instead of adding one; the app page is the only place credentials are entered.
+ * One requirement of the app in one scope: its linked accounts, oldest first, then the app owner's
+ * other accounts of its provider, which could be linked.
+ */
+export const AppAccountRequirement = Schema.Struct({
+  requirement: Schema.NonEmptyString,
+  scope: AccountScope,
+  provider: ProviderId,
+  cardinality: Schema.Literals(["one", "many"]),
+  accounts: Schema.Array(RequirementAccount),
+});
+export type AppAccountRequirement = typeof AppAccountRequirement.Type;
+const linkErrors = [StorageError, AppNotFound, AccountNotFound, RequirementMismatch] as const;
+const linkChangeErrors = [...linkErrors, AppAccountLinksBlocked] as const;
+
+/**
+ * A dashboard sign-in for the requirement its route names. `account` replaces that account's
+ * credentials instead of adding one; the app page is the only place credentials are entered.
  */
 export const AppAccountTarget = Schema.Struct({
-  profile: ProfileId,
-  requirement: Schema.NonEmptyString,
   account: Schema.optional(AccountId),
 });
 const appConnectionErrors = [
@@ -190,13 +261,103 @@ const appConnectionErrors = [
   AccountNotFound,
   AuthMethodInvalid,
   AccountManagementBlocked,
-  ...ProfileErrors,
+  AppAccountLinksBlocked,
   AccountConnectionNotFound,
   AccountConnectionClosed,
   AccountConnectionTargetChanged,
+  AccountConnectionRefused,
   AppNotFound,
   AccountSelectionInvalid,
+  RequirementMismatch,
 ] as const;
+
+/**
+ * The account routes of one scope under `/dashboard/api/apps/:app/accounts/<scope>`: list, read one
+ * requirement, link, unlink, and connect a new account by entering its fields or starting OAuth.
+ * `app` routes link for every call; `user` routes link for the local user.
+ */
+const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+  const path = `/dashboard/api/apps/:app/accounts/${scope}` as const;
+  const params = { app: AppId };
+  const requirement = { app: AppId, requirement: Schema.NonEmptyString };
+  const link = { ...requirement, account: AccountId };
+  const forEveryone = scope === "app";
+  return [
+    HttpApiEndpoint.get(`${scope}List`, path, {
+      params,
+      success: Schema.Array(AppAccountLink),
+      error: [StorageError, AppNotFound],
+    }).annotate(
+      OpenApi.Description,
+      forEveryone
+        ? "List the accounts linked to this app's own requirements, oldest first per requirement, with each account's checks by this app. Every call and the app's background work use them."
+        : "List the accounts linked to this app's user requirements, oldest first per requirement, with each account's checks by this app. Each call uses the one of a plain requirement and every one of a many() requirement.",
+    ),
+    HttpApiEndpoint.get(`${scope}Get`, `${path}/:requirement`, {
+      params: requirement,
+      success: AppAccountRequirement,
+      error: linkErrors,
+    }).annotate(
+      OpenApi.Description,
+      "Read one requirement of this scope: its linked accounts, then the other accounts of its provider that could be linked, each marked linked or not.",
+    ),
+    HttpApiEndpoint.put(`${scope}Link`, `${path}/:requirement/:account`, {
+      params: link,
+      success: AppAccountLink,
+      error: linkChangeErrors,
+    }).annotate(
+      OpenApi.Description,
+      "Link an account to one requirement of this scope. Linking an account to a plain requirement replaces the account linked to it before, which stays saved; for many() it adds one. Linking again changes nothing.",
+    ),
+    HttpApiEndpoint.delete(`${scope}Unlink`, `${path}/:requirement/:account`, {
+      params: link,
+      success: Schema.Struct({ requirement: Schema.NonEmptyString, account: AccountId }),
+      error: linkChangeErrors,
+    }).annotate(
+      OpenApi.Description,
+      forEveryone
+        ? "Stop this app using an account for one of its own requirements. Calls and background work that need the requirement fail until another account is linked, and the app's webhooks registered with the account are removed. The account stays saved."
+        : "Stop using an account for one of this app's user requirements. The account stays saved.",
+    ),
+    HttpApiEndpoint.post(`${scope}Connect`, `${path}/:requirement/connections`, {
+      params: requirement,
+      payload: Schema.Struct({
+        ...AppAccountTarget.fields,
+        method: AuthMethodName,
+        label: Schema.optional(Schema.NonEmptyString),
+        fields: AccountFieldsInput,
+      }),
+      success: Account,
+      error: [...appConnectionErrors, AccountFieldsInvalid],
+    }).annotate(
+      OpenApi.Description,
+      "Save a new account for one requirement of this scope from the fields entered on the app page, and link it to the requirement.",
+    ),
+    HttpApiEndpoint.post(`${scope}ConnectOAuth`, `${path}/:requirement/connections/oauth`, {
+      params: requirement,
+      payload: Schema.Struct({
+        ...AppAccountTarget.fields,
+        method: AuthMethodName,
+        label: Schema.optional(Schema.NonEmptyString),
+        client: Schema.optional(OAuthClientSelection),
+      }),
+      success: ConnectionSignIn,
+      error: [
+        ...appConnectionErrors,
+        OAuthClientUnavailable,
+        OAuthClientNotFound,
+        OAuthSetupFailed,
+      ],
+    }).annotate(
+      OpenApi.Description,
+      "Start an OAuth sign-in for one requirement of this scope; completing it links the new account to the requirement.",
+    ),
+  ] as const;
+};
+const [appList, appGet, appLink, appUnlink, appConnect, appConnectOAuth] = scopeEndpoints("app");
+const [userList, userGet, userLink, userUnlink, userConnect, userConnectOAuth] =
+  scopeEndpoints("user");
+
 /** Local session authentication, with explicit failures carried through AtomHttpApi. */
 export class DashboardAccess extends HttpApiMiddleware.Service<DashboardAccess>()(
   "DashboardAccess",
@@ -234,6 +395,8 @@ export const DashboardAccountDetail = Schema.Struct({
   apps: Schema.Array(App),
   /** The latest check by each app in `apps`; reading it never runs a check. */
   health: AccountHealth,
+  /** Whether deleting the account also asks its service to revoke access. */
+  revocation: AccountRevocation.fields.revocation,
   canManage: Schema.Boolean,
 });
 export type DashboardAccountDetail = typeof DashboardAccountDetail.Type;
@@ -256,8 +419,9 @@ export const providerDisplayUrl = (
 };
 /** A cheap inventory read, without evaluating app code or fetching live tool catalogs. */
 export const DashboardOverview = Schema.Struct({
-  profiles: Schema.Array(Profile),
   apps: Schema.Array(App),
+  /** The accounts linked to each app, oldest first. */
+  links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
   accounts: Schema.Array(DashboardAccount),
 });
 export type DashboardOverview = typeof DashboardOverview.Type;
@@ -316,7 +480,6 @@ export class ToolCatalogChanged extends Schema.TaggedError<ToolCatalogChanged>()
 
 const liveErrors = Schema.Union([DashboardUnauthorized, AuthStorageError]);
 const toolErrors = [
-  ...ProfileErrors,
   StorageError,
   CredentialsError,
   AppNotFound,
@@ -327,6 +490,7 @@ const toolErrors = [
   AppProviderFailed,
   AccountNotFound,
   AccountRequired,
+  AccountChoiceUnsupported,
   AccountSelectionInvalid,
   ToolDiscoveryTimedOut,
   OAuthReconnectRequired,
@@ -370,10 +534,6 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.get("liveTools", "/dashboard/api/live/apps/:app/tools", {
         params: { app: AppId },
-        query: {
-          profile: Schema.optional(ProfileId),
-          expectedProfileRevision: Schema.optional(ProfileRevision),
-        },
         success: HttpApiSchema.StreamSse({
           data: LiveSnapshot(DashboardTools, Schema.Union([...toolErrors, ToolCatalogChanged])),
           error: liveErrors,
@@ -387,12 +547,30 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
+      // Set once at startup, by data step 7, only while other owners' records have not moved.
+      HttpApiEndpoint.get("ownerMigration", "/dashboard/api/owner-migration", {
+        success: Schema.NullOr(LocalOwnerMigration),
+      }),
+    )
+    .add(
       HttpApiEndpoint.get("app", "/dashboard/api/apps/:app", {
         params: { app: AppId },
         success: DashboardApp,
         error: [StorageError, AppNotFound],
       }),
     )
+    .add(appList)
+    .add(appGet)
+    .add(appLink)
+    .add(appUnlink)
+    .add(appConnect)
+    .add(appConnectOAuth)
+    .add(userList)
+    .add(userGet)
+    .add(userLink)
+    .add(userUnlink)
+    .add(userConnect)
+    .add(userConnectOAuth)
     .add(
       HttpApiEndpoint.delete("deleteApp", "/dashboard/api/apps/:app", {
         params: { app: AppId },
@@ -434,30 +612,12 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       HttpApiEndpoint.get("tools", "/dashboard/api/apps/:app/tools", {
         params: { app: AppId },
         query: {
-          profile: Schema.optional(ProfileId),
-          expectedProfileRevision: Schema.optional(ProfileRevision),
           cursor: Schema.optional(Cursor),
           limit: Schema.optional(PageLimit),
           deployment: Schema.optional(DeploymentId),
         },
         success: ToolPage,
-        error: [
-          ...ProfileErrors,
-          StorageError,
-          CredentialsError,
-          AppNotFound,
-          AppNotDeployed,
-          DeploymentNotFound,
-          AppEvaluationFailed,
-          ToolListingTimedOut,
-          AppProviderFailed,
-          AccountNotFound,
-          AccountRequired,
-          AccountSelectionInvalid,
-          ToolDiscoveryTimedOut,
-          OAuthReconnectRequired,
-          OAuthRenewalFailed,
-        ],
+        error: toolErrors,
       }),
     )
     .add(
@@ -469,12 +629,9 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           kind: Schema.optional(ToolKind),
           input: Json,
           deployment: Schema.optional(DeploymentId),
-          profile: Schema.optional(ProfileId),
-          expectedProfileRevision: Schema.optional(ProfileRevision),
         }),
         success: BrowserToolRun,
         error: [
-          ...ProfileErrors,
           StorageError,
           CredentialsError,
           AppNotFound,
@@ -484,6 +641,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           AppProviderFailed,
           AccountNotFound,
           AccountRequired,
+          AccountChoiceUnsupported,
           AccountSelectionInvalid,
           OAuthReconnectRequired,
           OAuthRenewalFailed,
@@ -628,6 +786,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
         success: Schema.Struct({ account: AccountId }),
         error: [
           StorageError,
+          AccountLinkedToApp,
           AccountWebhooksActive,
           AccountWorkflowsActive,
           AccountManagementBlocked,
@@ -637,7 +796,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.post("oauthSetup", "/dashboard/api/accounts/oauth/setup", {
         payload: Schema.Struct({ provider: ProviderId, method: AuthMethodName }),
-        success: OAuthClientSetup,
+        success: OAuthConnectOptions,
         error: [
           StorageError,
           CredentialsError,
@@ -645,32 +804,6 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           AuthMethodInvalid,
           OAuthSetupFailed,
         ],
-      }),
-    )
-    .add(
-      HttpApiEndpoint.post("connectAccount", "/dashboard/api/apps/:app/accounts", {
-        params: { app: AppId },
-        payload: Schema.Struct({
-          ...AppAccountTarget.fields,
-          method: AuthMethodName,
-          label: Schema.optional(Schema.NonEmptyString),
-          fields: AccountFieldsInput,
-        }),
-        success: Account,
-        error: [...appConnectionErrors, AccountFieldsInvalid],
-      }),
-    )
-    .add(
-      HttpApiEndpoint.post("startOAuth", "/dashboard/api/apps/:app/oauth/start", {
-        params: { app: AppId },
-        payload: Schema.Struct({
-          ...AppAccountTarget.fields,
-          method: AuthMethodName,
-          label: Schema.optional(Schema.NonEmptyString),
-          client: Schema.optional(OAuthClientInput),
-        }),
-        success: ConnectionSignIn,
-        error: [...appConnectionErrors, OAuthClientUnavailable, OAuthSetupFailed],
       }),
     )
     .add(
@@ -684,10 +817,10 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           ProviderNotFound,
           AccountNotFound,
           OAuthCompletionFailed,
-          ...ProfileErrors,
           AccountConnectionNotFound,
           AccountConnectionClosed,
           AccountConnectionTargetChanged,
+          AccountConnectionRefused,
         ],
       }),
     )
@@ -702,7 +835,6 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .middleware(DashboardAccess),
   DashboardSchedules.middleware(DashboardAccess),
   DashboardAppBrowser.middleware(DashboardAccess),
-  DashboardProfiles.middleware(DashboardAccess),
   DashboardWorkflows.middleware(DashboardAccess),
   DashboardWebhooks.middleware(DashboardAccess),
   DashboardMcpConnections.middleware(DashboardAccess),

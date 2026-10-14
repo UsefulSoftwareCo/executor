@@ -4,7 +4,6 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
 import { openapiAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -12,6 +11,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 layer(HostedLive, { excludeTestServices: true })("OpenAPI User-Agent", (it) => {
   it.effect(scenarios.openapiUserAgent.title, (context) =>
@@ -83,30 +83,18 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI User-Agent", (it) => {
         expect(imported.status, JSON.stringify(imported.body)).toBe(200);
         const app = yield* body(App, imported);
         const path = `${prefix}/apps/${app.id}`;
-        let profile: string | undefined;
         let account: string | undefined;
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            if (profile !== undefined)
-              yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile}`);
             yield* api.request(actors.owner, "DELETE", path);
             if (account !== undefined)
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        profile = (yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${path}/profiles`, {
-            accounts: { service: [] },
-            idempotencyKey: randomUUID(),
-          }),
-        )).id;
+        // Connecting from the app links the account; the account array uses it.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         account = (yield* body(
           Resource,
@@ -123,7 +111,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI User-Agent", (it) => {
         )).id;
         for (const userAgent of [undefined, "Custom REST client"]) {
           const result = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile,
             tool: "user.currentUser",
             kind: "query",
             input: {

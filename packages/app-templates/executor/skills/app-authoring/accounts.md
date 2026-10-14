@@ -1,8 +1,20 @@
 ## Use a provider account
 
 Declare the provider's credential shape in source. The host derives its provider
-ID, stores account credentials and supplies a selected account on each call.
+ID, stores account credentials and supplies the accounts each call runs with.
 Never put real tokens into source files or return them from tools.
+
+Each requirement is one of two scopes:
+
+- `user`: each caller's own account. Every member links their own, and
+  `ctx.user.accounts.<name>` is the caller's.
+- `app`: the app's own account, such as a team's service key. People who can
+  edit the app link it for everyone, and `ctx.app.accounts.<name>` is that
+  account for every caller and for the app's background work. Callers never
+  choose or replace it.
+
+Use `user` unless the account belongs to the team rather than to whoever calls
+the tool. A requirement name is used once across both scopes.
 
 **The provider ID comes from the whole definition except `hosts`, including
 `name`, labels and OAuth `scopes`.** Changing any of them after users connect
@@ -35,14 +47,14 @@ const vercel = defineProvider({
   },
 });
 
-const requirements = { accounts: { vercel } };
+const requirements = { user: { accounts: { vercel } } };
 type Context = QueryContext<typeof requirements>;
 const Projects = object({ projects: array(object({ id: string(), name: string() })) });
 const listProjects = query(
-  { description: "List projects accessible to the selected Vercel account", input: object({}) },
-  async ({ accounts, fetch }: Context) => {
-    const response = await fetch("https://api.vercel.com/v9/projects?limit=10", {
-      headers: { Authorization: `Bearer ${accounts.vercel.fields.token}` },
+  { description: "List projects accessible to the caller's Vercel account", input: object({}) },
+  async (ctx: Context) => {
+    const response = await ctx.fetch("https://api.vercel.com/v9/projects?limit=10", {
+      headers: { Authorization: `Bearer ${ctx.user.accounts.vercel.fields.token}` },
     });
     return decodeJson(response, Projects);
   },
@@ -50,6 +62,18 @@ const listProjects = query(
 
 export default defineApp(requirements, { tools: router({ listProjects }) });
 ```
+
+For one shared account instead, declare it under `app` and read
+`ctx.app.accounts.vercel`:
+
+```ts
+const requirements = { app: { accounts: { vercel } } };
+```
+
+A context of the `"app"` scope, such as `QueryContext<typeof requirements, "app">`,
+has no `user`. App schedules, webhooks whose source is an app account and the
+workflows they start run without a caller and use it; see
+[workflows.md](workflows.md) and [webhooks.md](webhooks.md).
 
 ## Limit where credentials go
 
@@ -59,8 +83,11 @@ handle with the real value only on requests to a declared host, in the URL,
 headers, Basic credentials, and JSON, form or text bodies up to 1 MiB. Executor
 refuses a request that sends a handle anywhere else: `ctx.fetch` rejects with
 `NetworkRefused`, naming the host and the provider's allowed hosts, and the
-global `fetch` receives status 421 with the same details. Values the service
-echoes back reach the app as handles.
+global `fetch` receives status 421 with the same details. A request that carries
+a handle is never sent with `TRACE`. Values the service echoes back in headers or
+in JSON, form or text bodies up to 1 MiB reach the app as handles; other
+responses reach it as the service sent them, so the declared hosts are trusted
+not to echo a credential back.
 
 **Adding a host to a provider that already declares hosts means users must
 connect existing accounts again.** Each account keeps the hosts it was connected
@@ -97,7 +124,8 @@ provider, so existing accounts must be connected again.
 
 Basic credentials work with handles. Encode `username:password` with `btoa` as
 usual; Executor decodes a `Basic` `Authorization` header, replaces the handles
-inside it and encodes it again. This [check](#check-an-account) sends a
+inside it and encodes it again. With a `request` (see below), declare
+`basic(username, password)` and send `account.headers()` instead. This [check](#check-an-account) sends a
 `secrets` method's `username` and `password` fields to a declared host:
 
 ```ts
@@ -111,6 +139,95 @@ async health({ account, fetch, signal }) {
   return { accountInfo: { externalId: me.id, email: me.email } };
 },
 ```
+
+## Place credentials exactly
+
+`hosts` limits where a credential goes; `request` also limits where in the
+request it goes. Give a method a `request` and Executor substitutes its handles
+only as the whole value of the declared headers or query parameters, matching
+the template exactly. A handle anywhere else (a body, the URL path, another
+header, or a value with extra text) is refused with `NetworkRefused`
+(`credential_placement`), so a service cannot be made to store the secret and
+hand it back. A provider that declares `request` must declare `hosts`. Placed
+credentials go only over HTTPS; plain HTTP is refused (`credential_transport`),
+except to a loopback address on an instance that lets apps reach private
+addresses, for local development.
+
+`request` receives a reference for each of the method's fields and runs once,
+when the provider is declared. Build values with the tagged template `t`; an
+untagged template literal throws. `header(name, value)` and `query(name, value)`
+choose the location; `base64(value)` encodes; `bearer(token)` and
+`basic(user, password)` are shorthands for the usual `Authorization` values:
+
+```ts
+import {
+  base64,
+  bearer,
+  defineProvider,
+  header,
+  oauth2,
+  object,
+  plain,
+  query,
+  secrets,
+  string,
+  t,
+} from "apps";
+
+const jira = defineProvider({
+  name: "Jira",
+  hosts: ["*.atlassian.net"],
+  auth: {
+    token: secrets({
+      label: "API token",
+      fields: object({ email: plain(string()), token: string() }),
+      request: ({ email, token }) =>
+        header("authorization", t`Basic ${base64(t`${email}:${token}`)}`),
+    }),
+    oauth: oauth2({
+      discover: "https://auth.atlassian.com",
+      scopes: ["read:jira-work"],
+      request: ({ access_token }) => bearer(access_token),
+    }),
+  },
+});
+
+const google = defineProvider({
+  name: "Google API key",
+  hosts: ["www.googleapis.com"],
+  auth: {
+    key: secrets({
+      label: "API key",
+      fields: object({ key: string() }),
+      request: ({ key }) => [header("x-goog-api-key", key), query("key", key)],
+    }),
+  },
+});
+```
+
+Each placement references at least one secret field, never a `raw()` field.
+`plain()` fields in a template are copied as the app sends them. Send the
+credentials with the account's `headers()` and `url()`, which render the
+declared placements with the handles app code holds:
+
+```ts
+const response = await fetch(account.url("https://www.googleapis.com/books/v1/volumes?q=x"), {
+  headers: { ...account.headers(), accept: "application/json" },
+});
+```
+
+A header written by hand also works when it matches the template exactly.
+`request` is part of the provider's identity, like `plain()` and `raw()`:
+adding or changing it means existing accounts must be connected again.
+Bodies over 1 MiB and streamed bodies are not searched; a handle in one is sent
+as the handle, never the value.
+
+Some accounts are connected through an OAuth client the Executor instance
+provides. Their credentials are always handles, `plain()` and `raw()` do not
+apply, and `request` is replaced by the instance's own header: send
+`account.headers()`. The token goes only to the instance's hosts that the
+provider also declares, so a provider without `hosts` sends it nowhere. A handle
+of such an account anywhere but that header is refused.
 
 ## Check an account
 
@@ -262,8 +379,8 @@ oauth2({
 
 The host still checks the document's `issuer` against the issuer discovered from
 `discover`. It applies its network policy and never follows a redirect or falls
-back to another document when the explicit URL fails. Signing algorithms and
-JWKS come from the validated metadata; validation cannot be disabled.
+back to another document when the explicit URL fails. The endpoints come from the
+validated metadata; the issuer check cannot be disabled.
 
 For MCP discovery, explicit `scopes` take precedence over the resource's Bearer
 challenge scope, which takes precedence over its protected-resource metadata
@@ -370,21 +487,22 @@ there is no browser redirect. App code reads `account.fields.access_token`.
 Executor exchanges the client credentials again when the token expires; this
 grant has no refresh token.
 
-Deploy the source, create a profile, then request a connection for its account requirement.
-The management examples below use the **local** API. For hosted calls, use
-`profiles.create` and `accounts.connect` with `path.organization`, as shown in
-[deploy.md](deploy.md). Hosted calls derive owner and subject from the caller.
-Discover the management profile path with `tools.search` before calling it:
+Deploy the source, then request a connection for its account requirement.
+Use `appAccounts.userConnect` for a user requirement and
+`appAccounts.appConnect` for one of the app's own requirements. The examples
+below use the **local** API; hosted calls add `organization` to `path`, as shown
+in [deploy.md](deploy.md).
+Hosted calls derive owner and subject from the caller. Local assigns owners
+itself: apps you create belong to `local`, whatever owner you send, and a
+connected account belongs to its app's owner, so a connection request takes no
+owner. Read the operation signatures with `tools.search` before calling them:
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const app = await executor.apps.get({ path: { app: "<vercel-app-id>" } });
-const profile = await executor.appProfiles.create({
-  path: { app: app.id },
-  body: { owner: "alice", subject: "alice", accounts: {}, idempotencyKey: "vercel-setup" },
-});
-return await executor.accountConnect.issue({
-  body: { owner: "alice", target: { app: app.id, profile: profile.id, requirement: "vercel" } },
+return await executor.appAccounts.userConnect({
+  path: { app: app.id, requirement: "vercel" },
+  body: {},
 });
 ```
 
@@ -394,89 +512,100 @@ files for tokens, or put credentials in app source or execute code.
 After the user finishes, check the request in a new execute call:
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
-const connection = await executor.accountConnections.get({
+const connection = await tools.executor.accountConnections.get({
   path: { connection: "<connection-id>" },
 });
 return connection.state; // { status: "completed", account } means setup finished.
 // A pending state with `failure` holds the error the user saw, including the service's own error.
 ```
 
-Completing a request saves the account and selects it for the named profile in
-one transaction. A `.many()` target appends without duplicates. Other selections
-are kept. If a single-account selection or the requirement changed during sign-in,
-completion returns `AccountConnectionTargetChanged` without saving credentials;
-inspect the profile and request a new link. A pending link whose app was redeployed
-with a different provider for that requirement, such as an API key instead of OAuth,
-returns the same error when read or opened. Request a new link after such a deploy.
+Completing a request saves the account and links it to the requirement in one
+transaction: for the caller for a user requirement, for everyone for an app
+requirement. Only people who can edit the app can request one for an app
+requirement; completion is refused with `AccountConnectionRefused` when the
+person may no longer link it. If the requirement changed during sign-in, completion returns
+`AccountConnectionTargetChanged` without saving credentials; request a new link.
+A pending link whose app was redeployed with a different provider for that
+requirement, such as an API key instead of OAuth, returns the same error when read
+or opened. Request a new link after such a deploy.
 
-Every request names an app profile requirement; there are no standalone
-connections. To replace the credentials of an account a profile already uses,
-add `account` beside `target`. The account keeps its ID, name and selections:
+Every request names an app requirement; there are no standalone connections. To
+replace the credentials of an account the app already uses, pass its ID as
+`account` in the body. The account keeps its ID, name and links:
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].accountConnect.issue({
-  body: {
-    owner: "alice",
-    target: { app: "<app-id>", profile: "<profile-id>", requirement: "vercel" },
-    account: "<account-id>",
-  },
+return await tools.executor.appAccounts.userConnect({
+  path: { app: "<app-id>", requirement: "vercel" },
+  body: { account: "<account-id>" },
 });
 ```
 
 Requests expire after thirty minutes. Cancelled or expired requests need a new link. Do not wait or busy-poll
 inside execute.
 
-Use `accounts.list({ query: { provider } })` to find compatible saved accounts first when
-appropriate. `appProfiles.update({ path: { app, profile }, body: { expectedRevision, accounts } })`
-replaces the whole profile selection map. Include every slot you want to keep.
-A missing required slot prevents tool discovery and calls for that profile.
-Account-dependent apps without profiles expose no direct MCP tools.
-Connect the account, then start a new execution to discover or call its profile.
+Use `accounts.list({ query: { owner: "local", provider } })` to find compatible
+saved accounts first when appropriate. `owner` is required; listing never spans
+owners.
+
+Each scope has the same tools, `appAccounts.user.*` for the caller's own links
+and `appAccounts.app.*` for the app's, each taking
+`path: { app, requirement[, account] }`, plus `organization` on hosted:
+
+- `list` (no `requirement`) lists the scope's links.
+- `get` lists a requirement's linked accounts, then the other accounts of its
+  provider the caller could link.
+- `link` links an account to the requirement, `unlink` removes the link and
+  keeps the account.
+- `connect` connects a new account, as above.
+
+For a plain requirement, linking another account replaces the one before; the
+previous account stays saved. For `.many()`, linking adds one. Linking fails
+with `RequirementMismatch` when the app has no such requirement in that scope or
+the account's provider differs. App links need edit access to the app and, to
+link, use of the account. The same account may be linked in both scopes. An
+account linked to an app for everyone cannot be deleted until it is unlinked
+(`AccountLinkedToApp`).
+
+An app whose requirement has no linked account exposes no tools. Connect or
+link the account, then start a new execution to discover or call its tools.
 
 An account has `id`, `method`, and typed `fields` inside app code. It exists
-independently of the app and can be selected by several apps with the same
+independently of the app and can be linked to several apps with the same
 normalized provider definition. Changing that definition can change its provider
-ID and account compatibility. Account owners and app owners can differ. Owner
-values are lookup metadata, not access control; the current local bearer key
-allows access to the entire local instance.
+ID and account compatibility. Owner values are lookup metadata, not access
+control; the current local bearer key allows access to the entire local instance.
 
 ## Two accounts and multiple tools
 
-To use the same app with a second account, call:
+Calls never choose accounts. A plain user requirement uses the one account the
+caller linked to it, and an app requirement the account linked for everyone; a
+call that passes `$accounts` fails with `AccountChoiceUnsupported`, and one with
+no account fails with `AccountRequired`, which says whether to link one or ask
+someone who can edit the app to link one. Linking a second account to that
+requirement replaces the first.
 
-```js
-const executor = tools.executor.profiles["<management-profile-id>"];
-return await executor.appProfiles.create({
-  path: { app: "<vercel-app-id>" },
-  body: {
-    owner: "alice",
-    subject: "alice",
-    name: "Personal Vercel",
-    idempotencyKey: "vercel-personal",
-    accounts: { vercel: "<second-compatible-account-id>" },
-  },
-});
-```
+To use two accounts of one provider side by side, either declare a collection
+slot or use two apps. A collection slot,
+`const requirements = { user: { accounts: { mailboxes: gmail.many() } } }`, uses
+every linked mailbox; in app code, `ctx.user.accounts.mailboxes` is an array,
+empty when none is linked. `.many()` works under `app` too, with every account
+linked for everyone.
+To use fewer, unlink some. Two apps come from `apps.copy`: each is independent, with
+its own source, Git history, links and an empty database.
 
-Profiles share the app's code, deployment and data. Each has its own account
-selections and appears under `tools[appSlug].profiles[profileId]`. Use `apps.copy`
-only when you need an independent app with its own source, Git history and data.
-
-For an app that needs several accounts together, declare a collection slot:
-`const accounts = { mailboxes: gmail.many() }`. Select it with
-`{ mailboxes: [workAccountId, personalAccountId] }`. In app code,
-`context.accounts.mailboxes` is an array. Select `[]` explicitly to use zero.
 Requirements apply to the whole app. A plain provider requires exactly one
 account; optional single-account requirements are not implemented.
 
 `defineApp(requirements, definition)` accepts a plain object for static declarations.
 Each handler receives fresh accounts, traced fetch and cancellation in `ctx`.
 External handlers can share types from a separate requirements module without
-importing the final app. `AppContext<typeof requirements>` describes factory
-context, which has no database session.
+importing the final app. `AppContext<typeof requirements>` describes a handler's
+context without its database session.
 
 An async factory passed to `defineApp` runs afresh during inspection and calls.
-It can return tools based on its selected accounts and upstream state. Keep
+It can return tools based on its accounts and upstream state. It also runs
+without a caller for the app's background work, such as an app schedule, so its
+`ctx.user` may be undefined: write `ctx.user?.accounts.service ?? []` for a
+`.many()` requirement, or return no tools without a caller. Keep
 writes inside tool handlers; do not register webhooks or perform mutations in
 the factory. Build output retains code, not a permanent tool catalog.

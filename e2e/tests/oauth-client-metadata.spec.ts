@@ -12,11 +12,15 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { clientMetadataIssuer } from "../support/client-metadata-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
-import { oauthRelayCallback as configuredCallback, scenarios } from "../test-plan.ts";
+import {
+  oauthDocumentOriginCallback as configuredCallback,
+  oauthRelayCallback,
+  scenarios,
+} from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 /** The address the scenario's operator setting publishes; the issuer maps it to the product. */
 const publicOrigin = "https://executor.example";
@@ -72,13 +76,14 @@ const startSignIn = (app: App) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors;
-    const profile = yield* createProfile(actors.owner, `${app.prefix}/apps/${app.id}`);
     const connection = yield* body(
       Resource,
-      yield* api.request(actors.owner, "POST", `${app.prefix}/apps/${app.id}/connections`, {
-        requirement: "service",
-        profile: profile.id,
-      }),
+      yield* api.request(
+        actors.owner,
+        "POST",
+        connectionsPath(`${app.prefix}/apps/${app.id}`, "user", "service"),
+        {},
+      ),
     );
     const started = yield* api.request(
       actors.owner,
@@ -167,7 +172,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         expect(authorization.searchParams.get("client_id"), "the document is the client ID").toBe(
           clientId,
         );
-        // The operator's callback, serialized as a URL: the form the host sends and lists.
+        // The operator's callback on the document's origin, serialized as a URL: the form the host
+        // sends and lists.
         const redirectUri = authorization.searchParams.get("redirect_uri");
         expect(redirectUri).toBe(new URL(configuredCallback).href);
         expect(redirectUri).not.toBe(configuredCallback);
@@ -253,6 +259,82 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
     ),
   );
 
+  it.effect(scenarios.oauthClientMetadataDocumentOrigin.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          target = yield* Target;
+        const issuer = yield* clientMetadataIssuer({
+          publicOrigins: { [publicOrigin]: target.metadata.origin },
+          documentOriginRedirects: true,
+        });
+        const app = yield* deployApp(issuer.origin, "Document origin client");
+        const { authorization, complete } = yield* startSignIn(app);
+        expect(authorization.searchParams.get("client_id")).toBe(clientId);
+
+        // The server holds the sign-in to the document and to the document's origin.
+        const consent = yield* authorize(authorization);
+        expect(consent.status, JSON.stringify(yield* issuer.metrics)).toBe(302);
+        const redirectUri = authorization.searchParams.get("redirect_uri");
+        expect(redirectUri, "the callback is on the document's origin").toBe(
+          `${publicOrigin}/api/oauth/callback`,
+        );
+        expect(redirectUri, "not the operator's callback on another origin").not.toBe(
+          new URL(oauthRelayCallback).href,
+        );
+        const served = yield* fetchProduct(documentPath);
+        expect(
+          JSON.parse(served.text).redirect_uris,
+          "the document lists the callback the sign-in sent",
+        ).toEqual([redirectUri]);
+
+        // The host serves that callback and sends the browser on to finish the sign-in.
+        const callback = new URL(consent.location ?? "");
+        expect(`${callback.origin}${callback.pathname}`).toBe(redirectUri);
+        const returned = yield* fetchProduct(`${callback.pathname}${callback.search}`);
+        expect(returned.status).toBe(302);
+        const finish = new URL(returned.headers.location ?? "");
+        expect(finish.pathname).toBe("/oauth/callback");
+        expect(finish.search).toBe(callback.search);
+
+        const completed = yield* api.request(actors.owner, "POST", complete, {
+          callbackUrl: consent.location,
+        });
+        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+        const account = yield* body(Resource, completed);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(
+              actors.owner,
+              "DELETE",
+              `/api/organizations/${actors.organization.id}/accounts/${account.id}`,
+            )
+            .pipe(Effect.orDie),
+        );
+        const metrics = yield* issuer.metrics;
+        expect(metrics.refusals).toEqual([]);
+        expect(metrics.authorizations).toEqual([{ clientId, redirectUri, client: "document" }]);
+        expect(metrics.exchanges).toEqual([
+          { clientId, clientAuthentication: false, issued: true },
+        ]);
+        expect(metrics.registrations, "no dynamic registration").toEqual([]);
+
+        // A registered client still uses the operator's callback, where the service allows it.
+        yield* issuer.configure({ documents: false });
+        const registered = yield* startSignIn(yield* deployApp(issuer.origin, "Relay client"));
+        expect(registered.authorization.searchParams.get("redirect_uri")).toBe(
+          new URL(oauthRelayCallback).href,
+        );
+        expect((yield* issuer.metrics).registrations).toEqual([
+          { redirectUris: [new URL(oauthRelayCallback).href] },
+        ]);
+        yield* finishSignIn(registered);
+      }),
+    ),
+  );
+
   it.effect(scenarios.oauthClientMetadataEnabled.title, (context) =>
     withHostedCase(
       context,
@@ -265,7 +347,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         const existing = yield* deployApp(issuer.origin, "Existing client");
         yield* finishSignIn(yield* startSignIn(existing));
         expect((yield* issuer.metrics).registrations).toHaveLength(1);
-        expect(yield* setupMode(existing)).toBe("saved");
+        expect(yield* setupMode(existing)).toBe("automatic");
 
         // The operator turns the setting on, as Cloud's deploy does.
         yield* serverControl("stop");
@@ -275,20 +357,25 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
 
         // A server without document support keeps the client registered before.
         yield* issuer.configure({ documents: false });
-        expect(yield* setupMode(existing), "the registered client is still saved").toBe("saved");
+        expect(yield* setupMode(existing), "the registered client is still used").toBe("automatic");
         const kept = yield* startSignIn(existing);
         expect(kept.authorization.searchParams.get("client_id")).toBe("registered-client-1");
         yield* finishSignIn(kept);
 
-        // A saved client is used before the document, also where the server accepts documents.
+        // A registered client is used before the document, also where the server accepts documents.
         yield* issuer.configure({ documents: true });
-        expect(yield* setupMode(existing)).toBe("saved");
+        expect(yield* setupMode(existing)).toBe("automatic");
         const preferred = yield* startSignIn(existing);
         expect(preferred.authorization.searchParams.get("client_id")).toBe("registered-client-1");
         yield* finishSignIn(preferred);
 
-        // An owner without a client for a service uses the document.
-        const added = yield* startSignIn(yield* deployApp(issuer.origin, "New client"));
+        // An owner without a client for a service uses the document. Clients belong to the
+        // service's authorization server, so this is another server: another app of the first
+        // one would find the client registered there.
+        const other = yield* clientMetadataIssuer({
+          publicOrigins: { [publicOrigin]: target.metadata.origin },
+        });
+        const added = yield* startSignIn(yield* deployApp(other.origin, "New client"));
         expect(added.authorization.searchParams.get("client_id")).toBe(clientId);
         yield* finishSignIn(added);
         const metrics = yield* issuer.metrics;
@@ -297,8 +384,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
           "registered",
           "registered",
           "registered",
-          "document",
         ]);
+        const elsewhere = yield* other.metrics;
+        expect(elsewhere.registrations, "the new server registered no client").toHaveLength(0);
+        expect(elsewhere.authorizations.map((entry) => entry.client)).toEqual(["document"]);
       }),
     ),
   );

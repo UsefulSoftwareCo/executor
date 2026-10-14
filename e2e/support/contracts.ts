@@ -9,6 +9,8 @@ export const Resource = Schema.Struct({ id: Schema.String });
 export const App = Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String });
 export const Inventory = Schema.Struct({
   apps: Schema.Array(App),
+  /** The caller's linked accounts by app. Local derives them from the apps' requirements. */
+  links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
   accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
 });
 export const Collector = Schema.Struct({ state: Schema.Literal("running"), url: Schema.String });

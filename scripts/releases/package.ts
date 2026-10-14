@@ -1,7 +1,7 @@
-/** Build a portable, platform-specific npm package. Nothing is published. */
+/** Build the platform's release install and its npm package. Nothing is published. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Console, Effect, FileSystem, Path } from "effect";
+import { Config, Console, Effect, FileSystem, Path } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { bundleLocalRuntime } from "./runtime-bundle.ts";
 import {
@@ -13,6 +13,7 @@ import {
 } from "./config.ts";
 import { installWindowsGitHttpBackend } from "./windows-git.ts";
 import { launcherAnalytics } from "./analytics.ts";
+import { buildStandalone } from "./standalone.ts";
 
 const build = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -21,7 +22,8 @@ const build = Effect.gen(function* () {
   const root = yield* path.fromFileUrl(new URL("../../", import.meta.url));
   const version = release.version;
   const target = nativePlatform(process.platform, process.arch);
-  if (process.argv[2] !== undefined && process.argv[2] !== version)
+  const requested = process.argv.slice(2).find((argument) => !argument.startsWith("--"));
+  if (requested !== undefined && requested !== version)
     return yield* Effect.die(new Error("Build the version recorded in apps/cli/package.json."));
   const output = path.join(
     root,
@@ -57,6 +59,10 @@ const build = Effect.gen(function* () {
     path.join(root, "scripts/releases/runtime-env.mjs"),
     path.join(stage, "runtime-env.mjs"),
   );
+  yield* fs.copyFile(
+    path.join(root, "scripts/releases/compile-cache.mjs"),
+    path.join(stage, "compile-cache.mjs"),
+  );
   yield* fs.copy(path.join(root, "scripts/releases/licenses"), path.join(stage, "licenses"), {
     overwrite: true,
   });
@@ -72,12 +78,12 @@ const build = Effect.gen(function* () {
       access: "public",
       tag: `${release.channel}-${target.platform}-${target.arch}`,
     },
-    engines: { node: `>=${release.minimumNodeVersion}` },
     os: [process.platform],
     cpu: [process.arch],
     files: [
       "bin.mjs",
       "runtime-env.mjs",
+      "compile-cache.mjs",
       "apps",
       "packages",
       "licenses",
@@ -92,9 +98,11 @@ const build = Effect.gen(function* () {
     imports: { "#cloudflare-runtime-core-worker/*": "./alchemy-workers/*.mjs" },
   };
   yield* fs.writeFileString(path.join(stage, "package.json"), JSON.stringify(manifest, null, 2));
+  // Node's compile cache keeps the runtime's compiled code in the user's cache directory, so every
+  // launch after the first skips recompiling the bundled server (about 150 ms).
   yield* fs.writeFileString(
     path.join(stage, "bin.mjs"),
-    `#!/usr/bin/env node\nimport { homedir } from "node:os";\nimport { join } from "node:path";\nimport { packagedRuntimeEnvironment } from "./runtime-env.mjs";\nObject.assign(process.env, packagedRuntimeEnvironment(process.env));\nprocess.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");\nprocess.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};\n${yield* launcherAnalytics}await import("./runtime/cli.mjs");\n`,
+    `#!/usr/bin/env node\nimport { flushCompileCache } from "node:module";\nimport { homedir } from "node:os";\nimport { join } from "node:path";\nimport { enablePrivateCompileCache } from "./compile-cache.mjs";\nimport { packagedRuntimeEnvironment } from "./runtime-env.mjs";\nObject.assign(process.env, packagedRuntimeEnvironment(process.env));\nprocess.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");\nprocess.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};\n${yield* launcherAnalytics}enablePrivateCompileCache();\nawait import("./runtime/cli.mjs");\nflushCompileCache();\n`,
   );
   yield* fs.chmod(path.join(stage, "bin.mjs"), 0o755);
   yield* fs.copyFile(path.join(root, "scripts/releases/README.md"), path.join(stage, "README.md"));
@@ -126,19 +134,19 @@ if (backend.status !== 0 || !backend.stdout.includes("Status: 404")) {
     ],
     stage,
   );
-  // Windows npm is a shell wrapper. Invoke its JavaScript entry with Node, without a shell.
-  const npm =
-    process.platform === "win32"
-      ? {
-          command: process.execPath,
-          prefix: [path.join(path.dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")],
-        }
-      : { command: "npm", prefix: [] };
-  yield* run(
-    npm.command,
-    [...npm.prefix, "pack", "--ignore-scripts", "--pack-destination", output],
-    stage,
-  );
+  // The npm package is the release install: the executable and the files beside it. The staged
+  // runtime stays for the desktop app, which runs it with its own Node.
+  // Signing is a deliberate choice per build, and notarizing implies signing. A published macOS
+  // build must be notarized.
+  const notarize = process.argv.includes("--notarize");
+  const signing = notarize ? "notarize" : process.argv.includes("--sign") ? "sign" : "unsigned";
+  if (
+    target.platform === "darwin" &&
+    signing !== "notarize" &&
+    (yield* Config.String("EXECUTOR_RELEASE_PUBLISH").pipe(Config.withDefault(""))) === "true"
+  )
+    return yield* Effect.die(new Error("A published macOS build must be signed and notarized."));
+  yield* buildStandalone(root, output, stage, target, signing);
   // Guard each native target before its offline tests or any publication can run.
   const bytes = Number((yield* fs.stat(path.join(output, platformArchive(target)))).size);
   const budgetBytes = npmArchiveBudgetBytes;

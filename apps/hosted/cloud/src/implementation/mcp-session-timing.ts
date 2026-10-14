@@ -16,29 +16,58 @@ interface Answering {
   count: number;
 }
 
+/** Every session object in one isolate, which all count against its one memory limit. */
+interface Isolate extends Answering {
+  /** Chosen at its first request: an isolate may not generate random values before one. */
+  id: string | undefined;
+  first: number | undefined;
+  requests: number;
+  objects: number;
+}
+
 /**
  * Module state lives as long as the isolate, so every session object in it shares this count.
  * Alchemy runs a Durable Object's constructor effect once per object, so the session factory
  * cannot hold it.
  */
-const isolate: Answering = { count: 0 };
+const isolate: Isolate = { count: 0, id: undefined, first: undefined, requests: 0, objects: 0 };
 
 /**
- * Answer one object's requests. Each request's span records how many other requests this object
- * and its isolate were answering when it started; a request counts until its response is ready, so
- * an open stream does not. The response carries the time the object observed until then.
+ * Answer one object's requests. Each request's span records its isolate and how many other
+ * requests this object and its isolate were answering when it started; a request counts until its
+ * response is ready, so an open stream does not. The response carries the time the object observed
+ * until then.
+ *
+ * An isolate that exceeds its memory limit ends every request in it, and their spans are never
+ * exported. So each request also records `mcp.session.admitted`, which ends at once, with what the
+ * isolate held when the request started: `held` adds the host's own measures to it.
  */
-export const makeAnswer = () => {
+export const makeAnswer = (held: () => Record<string, number>) => {
   const object: Answering = { count: 0 };
+  isolate.objects += 1;
   return <E, R>(
     handle: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   ): Effect.Effect<HttpServerResponse.HttpServerResponse, E, R> =>
     Effect.acquireUseRelease(
       Effect.gen(function* () {
         const started = yield* Clock.currentTimeMillis;
-        yield* Effect.annotateCurrentSpan({
+        isolate.id ??= crypto.randomUUID();
+        isolate.first ??= started;
+        isolate.requests += 1;
+        const answering = {
+          "executor.mcp.isolate.id": isolate.id,
           "executor.mcp.concurrent.object": object.count,
           "executor.mcp.concurrent.isolate": isolate.count,
+        };
+        yield* Effect.annotateCurrentSpan(answering);
+        yield* Effect.withSpan(Effect.void, "mcp.session.admitted", {
+          attributes: {
+            ...answering,
+            "executor.mcp.isolate.age_ms": started - isolate.first,
+            "executor.mcp.isolate.requests": isolate.requests,
+            "executor.mcp.isolate.objects": isolate.objects,
+            ...held(),
+          },
         });
         object.count += 1;
         isolate.count += 1;

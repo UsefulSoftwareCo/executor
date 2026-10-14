@@ -7,6 +7,18 @@
     // Effect.gen bodies without a yield are valid Effect code.
     "require-yield": "off",
     "executor/exportable-schema-pattern": "error",
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "@tanstack/react-router",
+            "importNames": ["Navigate"],
+            "message": "<Navigate> starts its navigation again on every render, so under a layout that re-renders on location changes it never finishes and freezes the tab. Throw redirect() from the route's beforeLoad, or navigate once from an effect.",
+          },
+        ],
+      },
+    ],
   },
   "overrides": [
     {
@@ -16,6 +28,7 @@
         "packages/apps/src/contracts/protocols/**",
         "packages/apps/src/contracts/provider.ts",
         "packages/apps/src/contracts/failure.ts",
+        "packages/apps/src/contracts/icons.ts",
         "packages/app-cache/src/contracts/cache.ts",
       ],
       "rules": { "executor/exportable-schema-pattern": "off" },

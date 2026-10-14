@@ -24,7 +24,7 @@ const files = [
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { greeting } from "./lib/greeting.js";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     greet: query({ input: object({ name: string() }) }, async (_ctx, input) => greeting(input.name)),
     client: query({ input: object({}) }, async () => {

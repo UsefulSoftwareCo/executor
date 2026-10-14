@@ -2,9 +2,8 @@
  * An event carries data from the accounts its invocation used, so a subscriber receives it only
  * if they may use every one of them. Here an app shared with everyone emits from the owner's
  * personal account: the owner's subscription receives it, a member's does not. A grant limited
- * to some profiles also receives only occurrences whose accounts those profiles select.
+ * to some accounts also receives only occurrences that used those accounts.
  */
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -17,6 +16,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { Granted, eventFixtures, secrets } from "../support/events.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const files = [
   {
@@ -27,7 +27,7 @@ const service = defineProvider({ name: "Mailbox fixture", auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
 const mailReceived = event({ description: "A message arrived in the mailbox.", payload: object({ subject: string() }) });
-const requirements = { accounts: { service }, events: { "mail.received": mailReceived } };
+const requirements = { user: { accounts: { service } }, events: { "mail.received": mailReceived } };
 const receive = mutation({ input: object({ id: string() }) },
   async (ctx: MutationContext<typeof requirements>, { id }) => {
     ctx.events.emit("mail.received", { subject: "Private subject" }, { id });
@@ -52,15 +52,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
             oauth = yield* McpOAuth;
           const { prefix, suffix, callbackUrl, awaitDeliveries, events, rpcAs, ok, createKey } =
             yield* eventFixtures;
-          const created: { app?: string; profile?: string; account?: string } = {};
+          const created: { app?: string; account?: string } = {};
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
-              if (created.profile)
-                yield* api.request(
-                  actors.owner,
-                  "DELETE",
-                  `${prefix}/apps/${created.app}/profiles/${created.profile}`,
-                );
               if (created.app)
                 yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created.app}`);
               if (created.account)
@@ -86,12 +80,13 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
               audience: { kind: "everyone" },
             })).status,
           ).toBe(200);
-          const profile = yield* createProfile(actors.owner, path);
-          created.profile = profile.id;
-          const connection = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          });
+          // Connecting the owner's account from the app links it for the owner.
+          const connection = yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(path, "user", "service"),
+            {},
+          );
           expect(connection.status).toBe(200);
           const saved = yield* api.request(
             actors.owner,
@@ -104,7 +99,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
             },
           );
           expect(saved.status).toBe(200);
-          created.account = (yield* body(Resource, saved)).id;
+          const account = (yield* body(Resource, saved)).id;
+          created.account = account;
 
           const name = `${app.slug}.mail.received`;
           const subscribe = (key: Parameters<typeof rpcAs>[0], variant: string) =>
@@ -135,7 +131,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
 
           const id = randomUUID();
           const emitted = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "receive",
             kind: "mutation",
             input: { id },
@@ -153,8 +148,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
             ),
           ).toHaveLength(0);
 
-          // OAuth grants limited to some of the app's profiles: the profile that selects the
-          // owner's account receives its occurrences; the account-free target does not.
+          // OAuth grants limited to some of the app's targets: the owner's account receives its
+          // occurrences; the account-free target does not.
           yield* browser.login(actors.owner);
           const limitedTo = (targets: readonly unknown[]) =>
             Effect.gen(function* () {
@@ -176,13 +171,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP event accounts", (it) => {
               return Redacted.make(Redacted.value(issued.tokens).access_token);
             });
           const scoped = yield* subscribe(
-            yield* limitedTo([{ kind: "profile", id: profile.id }]),
+            yield* limitedTo([{ kind: "account", id: account }]),
             "scoped",
           );
           const accountFree = yield* subscribe(yield* limitedTo([{ kind: "app" }]), "app-only");
           const next = randomUUID();
           const again = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "receive",
             kind: "mutation",
             input: { id: next },

@@ -15,6 +15,7 @@ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { driver } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { containerNpmRegistry } from "../support/npm-registry.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Read = Schema.Struct({
   service: Schema.Struct({
@@ -163,7 +164,7 @@ it.live(
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     read: query({ input: object({}) }, async ({ fetch }) => ({ service: await (await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json() })),
   }),
@@ -175,16 +176,9 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         expect(deployed.status, deployed.text).toBe(200);
         const app = yield* json(Schema.Struct({ id: Schema.String }), deployed);
         const appPath = `${prefix}/apps/${app.id}`;
-        const profile = yield* json(
-          Schema.Struct({ id: Schema.String }),
-          yield* request(`${appPath}/profiles`, { accounts: {}, idempotencyKey: randomUUID() }),
-        );
         const connection = yield* json(
           Schema.Struct({ id: Schema.String }),
-          yield* request(`${appPath}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* request(connectionsPath(appPath, "user", "service"), {}),
         );
         const started = yield* request(`${prefix}/connections/${connection.id}/oauth/start`, {
           method: "oauth",
@@ -205,16 +199,26 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           callbackUrl,
         });
         expect(completed.status, completed.text).toBe(200);
-        // Background profile setup renews the new account; let it finish first.
-        yield* request(`${appPath}/profiles/${profile.id}`).pipe(
-          Effect.flatMap((response) => json(Schema.Struct({ status: Schema.String }), response)),
-          Effect.flatMap((current) =>
-            current.status !== "pending" ? Effect.void : Effect.fail("Profile setup is pending"),
+        const account = yield* json(Schema.Struct({ id: Schema.String }), completed);
+        // Connecting from the app links the account, which sets it up as a webhook source in the
+        // background; let that finish first.
+        yield* request(`${appPath}/webhook-sources`).pipe(
+          Effect.flatMap((response) =>
+            json(
+              Schema.Array(Schema.Struct({ account: Schema.String, status: Schema.String })),
+              response,
+            ),
+          ),
+          Effect.flatMap((sources) =>
+            sources.some((source) => source.account === account.id && source.status !== "pending")
+              ? Effect.void
+              : Effect.fail("Webhook source setup is pending"),
           ),
           Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
         );
 
-        const call = { profile: profile.id, tool: "read", input: {} };
+        // Calls use the account linked to the app.
+        const call = { tool: "read", input: {} };
         const read = (signal?: AbortSignal) => request(`${appPath}/tools/call`, call, signal);
         const renewed =
           (context: string) => (response: { readonly status: number; readonly text: string }) =>

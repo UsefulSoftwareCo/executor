@@ -1,26 +1,24 @@
 /** Install the bundled management app using the same deployment and account operations as user apps. */
-import { OwnerId, StorageError, type Executor } from "@executor-js/sdk/core";
+import { StorageError, sourceFilesEqual, type Executor } from "@executor-js/sdk/core";
 import { Effect, Redacted } from "effect";
+import type { SqlClient } from "effect/sql";
+import { linkAccount } from "./app-accounts.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { executorAppSource } from "./executor-app-source.ts";
-
-const owner = OwnerId.make("executor-local");
+import { executorAppOwner as owner } from "./owners.ts";
 
 /** Keep the host's bundled source and explicitly configured local API connection ready across restarts. */
-export const installExecutorApp = (executor: Executor, config: ServerConfig) =>
+export const installExecutorApp = (
+  executor: Executor,
+  sql: SqlClient.SqlClient,
+  config: ServerConfig,
+) =>
   Effect.gen(function* () {
     const files = yield* executorAppSource();
     const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
     const current =
       existing === undefined ? undefined : yield* executor.apps.source({ owner, app: existing.id });
-    const currentFiles =
-      current === undefined
-        ? undefined
-        : new Map(current.files.map((file) => [file.path, file.content]));
-    const unchanged =
-      currentFiles !== undefined &&
-      currentFiles.size === files.length &&
-      files.every((file) => currentFiles.get(file.path) === file.content);
+    const unchanged = current !== undefined && sourceFilesEqual(current.files, files);
     const app =
       existing === undefined
         ? (yield* executor.apps.deploy({ owner, name: "Executor", files })).app
@@ -38,37 +36,28 @@ export const installExecutorApp = (executor: Executor, config: ServerConfig) =>
       baseUrl: `http://127.0.0.1:${config.port}`,
       apiKey: Redacted.value(config.apiKey),
     });
-    const profile =
-      (yield* executor.apps.profiles.list({
-        app: app.id,
-        owner,
-        subject: "local",
-        idempotencyKey: "executor-default",
-      }))[0] ?? null;
-    // The immutable creation request retains the host-owned account even after a user clears its selection.
-    const selected = profile === null ? undefined : profile.request.accounts.executor;
+    // The host's owner holds only this account.
+    const [saved] = (yield* executor.accounts.list({ owner })).filter(
+      (account) => account.provider === requirement.provider,
+    );
     const account =
-      typeof selected === "string"
-        ? yield* executor.accounts.get({ account: selected })
-        : yield* executor.accounts.add({
+      saved !== undefined
+        ? saved
+        : yield* executor.managedAccounts.add({
             owner,
             provider: requirement.provider,
             method: "apiKey",
             label: "Local Executor",
             fields,
           });
-    if (account.provider !== requirement.provider) return yield* Effect.fail(new StorageError());
     // Update the host-owned connection in place when its configured port/key changes; keep the account ID stable.
-    yield* executor.accounts.replaceCredentials({ owner, account: account.id, fields });
-    const saved =
-      profile === null
-        ? yield* executor.apps.profiles.create({
-            app: app.id,
-            owner,
-            subject: "local",
-            idempotencyKey: "executor-default",
-            accounts: { executor: account.id },
-          })
-        : profile;
-    return { app: app.id, account: account.id, profile: saved.id };
+    yield* executor.managedAccounts.replaceCredentials({ owner, account: account.id, fields });
+    // It is the app's one linked account; linking it again changes nothing.
+    yield* linkAccount(sql, executor, {
+      app: app.id,
+      scope: "user",
+      requirement: "executor",
+      account: account.id,
+    }).pipe(Effect.catchTag("RequirementMismatch", () => new StorageError()));
+    return { app: app.id, account: account.id };
   });

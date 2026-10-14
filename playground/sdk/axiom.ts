@@ -20,23 +20,9 @@ export async function startAxiomSignIns(executor: Executor, owner: OwnerId) {
     ],
   });
   const personal = await executor.apps.copy({ from: work.id, owner, name: "Personal Axiom" });
-  const workProfile = await executor.apps.profiles.create({
-    app: work.id,
-    owner,
-    subject: "me",
-    idempotencyKey: "work",
-    accounts: {},
-  });
-  const personalProfile = await executor.apps.profiles.create({
-    app: personal.id,
-    owner,
-    subject: "me",
-    idempotencyKey: "personal",
-    accounts: {},
-  });
   const workConnection = await executor.accountConnections.create({
     owner,
-    target: { app: work.id, profile: workProfile.id, requirement: "axiom" },
+    target: { app: work.id, requirement: "axiom" },
   });
   const workSignIn = await executor.accountConnections.startOAuth({
     connection: workConnection.id,
@@ -46,7 +32,7 @@ export async function startAxiomSignIns(executor: Executor, owner: OwnerId) {
   });
   const personalConnection = await executor.accountConnections.create({
     owner,
-    target: { app: personal.id, profile: personalProfile.id, requirement: "axiom" },
+    target: { app: personal.id, requirement: "axiom" },
   });
   const personalSignIn = await executor.accountConnections.startOAuth({
     connection: personalConnection.id,
@@ -60,7 +46,8 @@ export async function startAxiomSignIns(executor: Executor, owner: OwnerId) {
 
 /**
  * The product authorizes the target when creating the request. The callback
- * validates state/PKCE and saves the account and its app selection together.
+ * validates state/PKCE and saves the account; the product links it to the app in the same
+ * transaction.
  */
 export async function finishAxiomSignIn(
   executor: Executor,

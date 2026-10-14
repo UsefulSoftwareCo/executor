@@ -12,9 +12,9 @@ import { scenarios } from "../test-plan.ts";
 const Runs = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, status: Schema.String }),
 );
-const source = `import { defineApp, mutation, interval, object, router } from "apps";
+const source = `import { defineApp, mutation, userInterval, object, router } from "apps";
 const record = mutation({ input: object({}) }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ record }), schedules: { record: interval({ minutes: 1 }, record, {}) } }));`;
+export default defineApp({}, async () => ({ tools: router({ record }), schedules: { record: userInterval({ minutes: 1 }, record, {}) } }));`;
 // Two full dispatch batches: the scheduler scans eight due candidates, oldest first.
 const orphans = 16;
 

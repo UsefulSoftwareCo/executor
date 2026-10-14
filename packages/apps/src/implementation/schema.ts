@@ -8,8 +8,18 @@ import {
   SchemaIssue,
   SchemaParser,
 } from "effect";
-import { deepCompareStrict, dereference, validate } from "@cfworker/json-schema";
-import { JsonObject, ValidationError, type JsonValue } from "../contracts/schema.ts";
+import {
+  deepCompareStrict,
+  dereference,
+  validate,
+  type Schema as ValidatorSchema,
+} from "@cfworker/json-schema";
+import {
+  DeclarationInvalid,
+  JsonObject,
+  ValidationError,
+  type JsonValue,
+} from "../contracts/schema.ts";
 
 import type { FieldExposure } from "../contracts/provider.ts";
 
@@ -79,6 +89,46 @@ export const parse = <T>(
 ): Effect.Effect<T, ValidationError> =>
   Effect.suspend(() => EffectSchema.decodeUnknownEffect(decoder)(input)).pipe(
     Effect.mapError(() => new ValidationError()),
+  );
+
+const declarationIssues = SchemaIssue.makeFormatterStandardSchemaV1({
+  leafHook: SchemaIssue.defaultLeafHook,
+});
+
+/**
+ * Decode an author's declaration, naming every failing path. A declaration with several forms,
+ * such as `oauth2()`'s discovered, declared and client credentials endpoints, is explained by the
+ * form its author chose (`intended`), so the problems are that form's, including the options it
+ * lacks, rather than every other form's objections. Messages never include the supplied values.
+ */
+export const parseDeclaration = <T>(
+  decoder: EffectSchema.Decoder<T>,
+  input: unknown,
+  declaration: string,
+  intended: (input: unknown) => EffectSchema.Decoder<unknown> = () => decoder,
+): Effect.Effect<T, DeclarationInvalid> =>
+  Effect.suspend(() => EffectSchema.decodeUnknownEffect(decoder)(input)).pipe(
+    Effect.catch((failed) =>
+      Effect.suspend(() =>
+        EffectSchema.decodeUnknownEffect(intended(input))(input, { errors: "all" }),
+      ).pipe(
+        Effect.flip,
+        Effect.orElseSucceed(() => failed),
+        Effect.flatMap((error) =>
+          Effect.fail(
+            new DeclarationInvalid({
+              declaration,
+              issues: declarationIssues(error.issue).issues.map((issue) => ({
+                path: (issue.path ?? []).map((segment) =>
+                  String(typeof segment === "object" ? segment.key : segment),
+                ),
+                message: issue.message,
+              })),
+            }),
+          ),
+        ),
+      ),
+    ),
   );
 
 /** Present a native decoder through the synchronous author API. */
@@ -279,7 +329,7 @@ export const withLazyJsonSchemaDocument = <S extends EffectSchema.Decoder<unknow
 export const nestJsonSchema = (input: JsonObject, pointer: string): JsonObject => {
   const document = structuredClone(input);
   const lookup = dereference(document);
-  const schemas = new Set(Object.values(lookup));
+  const evaluated = evaluatedSchemas(document, lookup);
   const pointers = new Map<unknown, string>();
   const locate = (value: JsonValue, path: string): void => {
     if (!pointers.has(value)) pointers.set(value, path);
@@ -293,8 +343,7 @@ export const nestJsonSchema = (input: JsonObject, pointer: string): JsonObject =
   };
   locate(document, pointer);
   const references = new Map<unknown, Readonly<Record<string, string>>>();
-  for (const schema of schemas) {
-    if (typeof schema === "boolean") continue;
+  for (const schema of evaluated) {
     const refs: Record<string, string> = {};
     for (const [key, absolute] of [
       ["$ref", schema.__absolute_ref__],
@@ -345,6 +394,38 @@ const schemaNodes = new Set([
   "unevaluatedItems",
   "propertyNames",
 ]);
+
+const isSchemaObject = (value: unknown): value is ValidatorSchema =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+/**
+ * The schemas the validator can evaluate: the root, schemas at schema positions, and the targets
+ * of their references. Its `dereference` also indexes the object value of every keyword it does
+ * not know, such as Stripe's `"x-expansionResources": { "oneOf": [{ "$ref": ... }] }`. Those
+ * values are annotations it never evaluates, so their references are not checked or rewritten.
+ */
+const evaluatedSchemas = (
+  root: ValidatorSchema,
+  lookup: Readonly<Record<string, ValidatorSchema | boolean>>,
+) => {
+  const found = new Set<ValidatorSchema>();
+  const pending: unknown[] = [root];
+  for (let value = pending.pop(); value !== undefined; value = pending.pop()) {
+    if (!isSchemaObject(value) || found.has(value)) continue;
+    found.add(value);
+    for (const target of [value.__absolute_ref__, value.__absolute_recursive_ref__]) {
+      const schema = target === undefined ? undefined : lookup[target];
+      if (schema !== undefined) pending.push(schema);
+    }
+    for (const [key, item] of Object.entries(value)) {
+      if (Array.isArray(item)) {
+        if (schemaArrays.has(key) || key === "items") pending.push(...item);
+      } else if (schemaMaps.has(key) || key === "dependencies") {
+        if (isJsonRecord(item)) pending.push(...Object.values(item));
+      } else if (schemaNodes.has(key)) pending.push(item);
+    }
+  }
+  return found;
+};
 function interpretedDocument(value: EffectSchema.Json): EffectSchema.Json {
   if (typeof value === "boolean") return value;
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -1201,8 +1282,7 @@ export const compileJsonSchemaDecoder = (document: JsonObject) =>
         const lookup = dereference(normalized);
         // Resolve the whole selected schema before any tool side effect, including
         // references in output schemas and branches not reached by a sample input.
-        for (const schema of new Set(Object.values(lookup))) {
-          if (typeof schema === "boolean") continue;
+        for (const schema of evaluatedSchemas(normalized, lookup)) {
           for (const pattern of [schema.pattern, ...Object.keys(schema.patternProperties ?? {})]) {
             if (pattern === undefined) continue;
             // Match the interpreter's Unicode-first compatibility patch, but do

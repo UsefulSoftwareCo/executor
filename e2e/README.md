@@ -30,6 +30,19 @@ built. `scripts/e2e-prepare.ts` lists each step's inputs; add a file there when 
 build starts reading one outside them. CI and `--no-cache` build every step. The Node server runs current TypeScript source; the workerd host bundle is prebuilt, so a change to the SDK's app runner needs `bun run e2e:runtime` before a self-host run sees it. `bun run e2e:check` runs the
 boundary check and TypeScript check; the root `check` includes it.
 
+Scenarios on the self-host, local and managed Cloud targets do not install npm
+packages from the internet. Products install them from the run's loopback registry
+(`support/npm-registry.ts`). It serves the staged `apps` package and only the
+versions pinned in `e2e/npm-packages.json`, from archives that `e2e:prepare`
+downloads once and checks against their integrity. It refuses any other package with
+a 404 that names the lock. When a scenario declares a new package, add it to the
+roots in `scripts/e2e-npm-packages.ts`, then run
+`node scripts/e2e-npm-packages.ts --update`. Self-host and local read a
+synthetic official app feed and the public app registry from a loopback copy
+(`support/public-catalogs.ts`), through `EXECUTOR_CATALOG_URL` and
+`EXECUTOR_REGISTRY_URL`. A scenario that checks interoperation with a real
+third-party service, such as `remoteMcpCloudflare`, runs only in Cloud tests on main.
+
 ```sh
 bun run e2e:local
 E2E_ROWS=12 bun run e2e:self-host
@@ -40,6 +53,43 @@ The default data-volume scenario remains 1,000 accounts with four concurrent
 writers. Smaller runs use the same assertions. `--test-name` is a regular expression
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
+
+## Line coverage
+
+`E2E_COVERAGE=1` profiles every self-host and local product process. Self-host runs
+under `bun test --coverage` through `apps/hosted/self-host/scripts/coverage-main.ts`,
+because Bun profiles nothing else; local runs with `NODE_V8_COVERAGE`. Each scenario
+starts its own product, so each report under `<run>/<target>/coverage/<scenario id>/`
+belongs to one scenario. Chromium also records each scenario's page scripts on every
+target; `e2e:prepare` builds the dashboards with unreferenced source maps, which map
+that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
+at once, so Cloud counts only browser coverage.
+
+The code each product runs inside workerd is profiled too: the host Worker, and the app
+framework in every app and data facet Worker. The runner starts workerd with V8's
+`--log-function-events` (through `ALCHEMY_WORKERD_V8_FLAGS`), and
+`support/workerd-coverage.ts` reads each isolate's log once the product stops. A function
+counts as run when V8 compiled it lazily, which only a call does, or logged its first
+execution: a function that ran counts all its lines, including branches it skipped.
+Nothing attaches to the product. workerd's inspector stays closed: with it open, an app
+Worker the runtime unloaded fails to load again under the same name. `e2e:prepare` writes
+source maps beside the host bundle (`.local/test-runtime/host.json.map`) and the framework
+modules (`packages/apps/dist/runtime.json.map`, outside the package's files), which map that
+coverage to `packages/`. An app's own bundle is not product code and is not counted.
+
+```sh
+E2E_COVERAGE=1 bun run e2e:self-host --test-name 'password login'
+node e2e/coverage.ts collect .local/line-coverage.json .local/e2e/<run>
+node e2e/coverage.ts report .local/line-coverage.json
+```
+
+`report` prints coverage by target and package, and the scenarios that cover no line
+another scenario does not. On a full run, CI's `line-coverage` job fails when a target
+covers fewer lines than `e2e/coverage-baseline.json` records, less a tolerance for
+paths that timing decides. Before deleting a scenario as redundant, check that it adds
+no line; a change that removes product code records a new baseline with
+`node e2e/coverage.ts baseline e2e/coverage-baseline.json <collected files>` from the
+`line-coverage-*` artifacts of a full run.
 
 ## Dependency injection
 
@@ -63,8 +113,8 @@ Filtered cases are not counted as executed cases in the evidence view.
 Each test yields the services it needs. Native Vitest setup hooks start the isolated
 server and provision the actors declared in the test plan. Provisioning belongs to
 the setup deadline; scenario actions retain their full deadline. Scenarios that need
-the default management app can declare `managementProfiles` with the required actor
-roles. Setup waits for those committed profiles through public APIs. Scenarios that
+the default management app can declare `managementApps` with the required actor
+roles. Setup waits for the app and each actor's linked Executor key through public APIs. Scenarios that
 exercise provisioning progress leave that prerequisite undeclared. Scenarios that need
 another Testing SDK scenario declare `sdkScenarios`; setup creates each one in a
 child scope the test may close. Native cleanup
@@ -100,10 +150,12 @@ public surface can create. A scenario that needs such rows declares
 parameterized SQL to its own PGlite database in one transaction, returns each
 statement's rows, and leaves the product stopped. `serverControl("start")` then
 boots the current server over that state, as an upgrade would. Statement errors
-roll back the whole write.
+roll back the whole write. A write targets the product database unless it names
+`"mcp-auth"`: Local's separate MCP auth database, where MCP connections and grants live.
 
-Use it only for legacy or upgrade-era data, and for reading rows that exist only
-in storage. Create everything else through the product, as usual. The boundary
+Use it only for legacy or upgrade-era data, for reading rows that exist only
+in storage, and for a storage fault no public surface can cause, such as a
+trigger that fails one owner's writes to one table. Create everything else through the product, as usual. The boundary
 check rejects any use outside a declared scenario. Only scenarios and the runner
 may import the module, and it is the only file allowed a database driver. The
 control route refuses undeclared scenarios at runtime. Self-host and Local
@@ -145,7 +197,7 @@ when operations are independent. Keep dependent actions ordered.
 
 The self-host load case creates 1,000 accounts through four concurrent API
 writers. The MCP catalog scale case deploys 29 apps with 7,000 tools and about
-46 MB of input schemas, plus three MCP apps with profiles whose server never answers, and bounds
+46 MB of input schemas, plus nine MCP apps whose server never answers, and bounds
 execute and search latency. CI gives both cases their own 16-vCPU Linux runner, one
 after the other, in parallel with the functional suite. The PGlite workload depends on single-thread speed. Running both workloads on one machine can consume its CPU budget and
 invalidate the load timing. The normal self-host command still includes every
@@ -531,6 +583,14 @@ Saved trace samples are not a full trace archive. The telemetry test checks actu
 server spans, status and the presence of SQL spans; client spans cannot satisfy it. While
 running, `data/diagnostics/collector.json` identifies the collector query URL.
 
+Managed Cloud's collector is four Motels behind one router (`serveShardedOtlpCollector` in
+`support/otlp-collector.ts`). One Motel stores about 1,500 spans a second, and six workers
+provisioning their organizations export more than that; a single Motel refused thousands of
+exports a run, which the product dropped once its three-second export budget ran out. The router
+splits each export by trace ID, sends a trace's reads to its Motel, and merges searches across
+all four. Each Motel keeps its database in `data/diagnostics/motel-<n>` and its log in
+`collector-<n>.log`; `GET /api/ingest` on the router lists each one's refused exports.
+
 All runs use synthetic identities. Private run directories and session files are
 ignored by Git. They can still contain session cookies and should not be published.
 
@@ -804,15 +864,24 @@ own environment.
 ### Installed CLI artifact
 
 To verify the installed CLI artifact through the same local scenarios, set
-`EXECUTOR_E2E_LOCAL_ENTRY` to the absolute installed `bin.mjs` path and run
-`bun run e2e:local`. The harness starts that entry from its installed package directory,
+`EXECUTOR_E2E_LOCAL_ENTRY` to the absolute path of the installed `executor` executable
+(`executor.exe` on Windows), from the platform archive `bun run release:cli` builds, and run
+`bun run e2e:local`. The harness starts that entry from its install directory,
 with an isolated data directory and synthetic secrets. Pairing, dashboard loading and
-app deployment/call use real HTTP requests against the installed package.
+app deployment/call use real HTTP requests against the installed package. A JavaScript entry,
+such as the source `bin.ts`, runs under Node instead.
+
+The release executable runs no preload, so the local CLI owns the runner's two process hooks:
+`EXECUTOR_TEST_CLOCK_OFFSET_MS` with `EXECUTOR_TEST_CLOCK_CONTROL=stdin` for its wall clock and
+`EXECUTOR_TEST_STOP_FD=3` for stop requests, honoured only with `EXECUTOR_ENVIRONMENT=e2e`
+(`apps/local/server/src/implementation/e2e-process.ts`). Scenarios that replace a package the
+executable loads from disk, such as the OS credential store binding, start it from a shadow
+copy of its install (`support/stand-in-package.ts`).
 
 The first-launch key scenarios also run against an installed entry:
 
 ```sh
-EXECUTOR_E2E_LOCAL_ENTRY=/path/to/node_modules/executor/bin.mjs \
+EXECUTOR_E2E_LOCAL_ENTRY=/path/to/node_modules/executor/executor \
   bunx vitest run --config e2e/local-bootstrap.config.ts
 ```
 
@@ -822,9 +891,37 @@ the CLI with a stand-in keyring module that reproduces the package's errors: an
 absent store, a cancelled or dismissed prompt, and a store that grants access.
 Only an absent store may fall back to `keys.json`. The key storage scenario
 covers `EXECUTOR_KEY_STORAGE`: `file` on a new or denied-pending directory,
-no-ops on matching directories, refusals on mismatched ones, and invalid values. On Linux outside a D-Bus
+no-ops on matching directories, refusals on mismatched ones, and invalid values. The pair scenario
+pairs with a running server whose key is in the stand-in store, and refuses denied, absent, missing
+and unfinished keys without writing anything. On Linux outside a D-Bus
 session, set `EXECUTOR_E2E_CREDENTIAL_STORE=absent` to use the real missing
 Secret Service for the key file scenario instead; release CI runs both.
+
+The npm launcher scenario unpacks the launcher and native archives as npm lays
+them out, then starts `--version` through every launcher entry point, including
+Executor 1's `bin/executor`, which stale command shims still start. It checks that
+the launcher passes on exit codes and SIGTERM, explains a missing platform package,
+and, with `EXECUTOR_E2E_OLD_NODE`, starts on the oldest Node its package accepts:
+
+```sh
+bun run release:wrapper
+EXECUTOR_E2E_LAUNCHER_ARCHIVE=.local/releases/<version>/wrapper/executor-<version>.tgz \
+EXECUTOR_E2E_RUNTIME_ARCHIVE=/path/to/executor-<version>-<platform>-<arch>.tgz \
+  bunx vitest run --config e2e/npm-launcher.config.ts
+```
+
+Two more release suites take the executable or its archive. `standalone-lockdown.config.ts`
+starts the executable with every Bun override a local process could set, from `BUN_OPTIONS`
+to a `bunfig.toml` in its working directory, and requires that none takes effect.
+`installer.config.ts` runs `apps/docs/public/install.sh` (or `install.ps1`) against a local
+copy of a release download:
+
+```sh
+EXECUTOR_E2E_LOCAL_ENTRY=/path/to/executor \
+  bunx vitest run --config e2e/standalone-lockdown.config.ts
+EXECUTOR_E2E_RUNTIME_ARCHIVE=/path/to/executor-<version>-<platform>-<arch>.tgz \
+  bunx vitest run --config e2e/installer.config.ts
+```
 
 The desktop artifact smoke uses the packaged executable, synthetic secrets and a
 fresh profile/data directory. It deploys a dependency-using app, calls it, closes

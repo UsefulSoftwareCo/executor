@@ -7,11 +7,11 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { withApps } from "../support/apps-release.ts";
+import { connectionsPath, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
 
 const fixture = () =>
   Effect.gen(function* () {
@@ -154,16 +154,16 @@ const source = (url: string, cached: boolean, accounts: boolean) => [
 import { defineApp, defineProvider, accountRouter, secrets, object, string, query, router } from "apps";
 import { graphqlRouter } from "apps/graphql";
 const provider = defineProvider({ name: "GraphQL fixture", auth: { key: secrets({ label: "Variant", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: ${accounts ? "{ service: provider.many() }" : "{}"} }, async ctx => {
+export default defineApp({ user: { accounts: ${accounts ? "{ service: provider.many() }" : "{}"} } }, async ctx => {
   const options = account => ({ url: ${JSON.stringify(url)}, signal: ctx.signal,
     ${cached ? "cache: ctx.cache," : ""}
     ...(account ? { account, headers: { "X-Fixture-Variant": account.fields.token } } : {}),
   });
-  const tools = ${accounts ? "await accountRouter(ctx.accounts.service, account => graphqlRouter(options(account)), { signal: ctx.signal })" : "await graphqlRouter(options(undefined))"};
+  const tools = ${accounts ? "await accountRouter(ctx.user.accounts.service, account => graphqlRouter(options(account)), { signal: ctx.signal })" : "await graphqlRouter(options(undefined))"};
   return { tools: router({
     upstream: tools,
     refresh: query({ input: object({ id: string() }) }, async (_, { id }) => {
-      const account = ${accounts ? "ctx.accounts.service.find(account => account.id === id)" : "undefined"};
+      const account = ${accounts ? "ctx.user.accounts.service.find(account => account.id === id)" : "undefined"};
       ${accounts ? 'if (!account) throw new Error("Missing account");' : ""}
       await graphqlRouter({ ...options(account), revalidate: true }); return true;
     }),
@@ -183,16 +183,19 @@ const deploy = (url: string, cached: boolean, accounts = false) =>
     expect(response.status).toBe(200);
     const path = `${prefix}/apps/${(yield* body(App, response)).id}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    const profile = yield* createProfile(actors.owner, path);
     // Introspected operations are mounted under "upstream" beside the app's own refresh query.
-    const call = (name: string, input: Schema.Json = {}, profileId = profile.id) =>
-      api.request(actors.owner, "POST", `${path}/tools/call`, {
-        profile: profileId,
+    // A call runs as the owner unless another caller is named, with the caller's linked accounts.
+    const call = (
+      name: string,
+      input: Schema.Json = {},
+      options: { readonly actor?: Session } = {},
+    ) =>
+      api.request(options.actor ?? actors.owner, "POST", `${path}/tools/call`, {
         tool: name === "refresh" ? name : `upstream.${name}`,
         kind: name.startsWith("mutation_") ? "mutation" : "query",
         input,
       });
-    return { api, actors, path, prefix, profile, call };
+    return { api, actors, path, prefix, call };
   });
 
 layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
@@ -206,10 +209,20 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         expect(first.status).toBe(200);
         expect(yield* body(Schema.Json, first)).toBe("revision 1");
         expect((yield* upstream.stats).discover).toBe(1);
-        const other = yield* createProfile(app.actors.owner, app.path);
+        // Another member calls the shared app.
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* app.api.request(app.actors.owner, "GET", `${app.path}/access`),
+        );
+        expect(
+          (yield* app.api.request(app.actors.owner, "PATCH", `${app.path}/access`, {
+            revision: access.revision,
+            audience: { kind: "everyone" },
+          })).status,
+        ).toBe(200);
         yield* upstream.configure({ version: 2, fail: true });
         // Only introspection fails; execution still runs live using the shared metadata.
-        const next = yield* app.call("query_public_fixture_0", {}, other.id);
+        const next = yield* app.call("query_public_fixture_0", {}, { actor: app.actors.member });
         expect(next.status).toBe(200);
         expect(yield* body(Schema.Json, next)).toBe("revision 2");
         expect((yield* upstream.stats).discover).toBe(1);
@@ -224,7 +237,6 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
       Effect.gen(function* () {
         const upstream = yield* fixture();
         const app = yield* deploy(upstream.url, true, true);
-        yield* selectProfileAccounts(app.actors.owner, app.path, app.profile.id, { service: [] });
         const ids: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.forEach(ids, (id) =>
@@ -235,10 +247,13 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              yield* app.api.request(app.actors.owner, "POST", `${app.path}/connections`, {
-                requirement: "service",
-                profile: app.profile.id,
-              }),
+              // Connecting from the app links the account; the account array uses every linked one.
+              yield* app.api.request(
+                app.actors.owner,
+                "POST",
+                connectionsPath(app.path, "user", "service"),
+                {},
+              ),
             );
             const account = yield* body(
               Resource,
@@ -274,11 +289,7 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         );
         expect((yield* upstream.stats).discover).toBe(1);
         expect((yield* upstream.stats).lastQuery).toContain("$value: String!");
-        const page = yield* app.api.request(
-          app.actors.owner,
-          "GET",
-          `${app.path}/tools?profile=${app.profile.id}`,
-        );
+        const page = yield* app.api.request(app.actors.owner, "GET", `${app.path}/tools`);
         expect(page.status).toBe(200);
         expect(
           (yield* body(
@@ -331,9 +342,9 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         expect((yield* upstream.stats).discover).toBe(3);
         yield* upstream.configure({ version: 2, fail: false });
         const bravo = yield* connect("bravo");
-        yield* selectProfileAccounts(app.actors.owner, app.path, app.profile.id, {
-          service: [bravo],
-        });
+        // With the first account unlinked, calls use only the second and see only its catalog.
+        yield* unlinkAccount(app.actors.owner, app.path, "service", alpha);
+        expect(yield* linkedAccountIds(app.actors.owner, app.path)).toEqual([bravo]);
         expect(
           (yield* app.call("query_bravo_revision_2", { accountId: bravo, input: {} })).status,
         ).toBe(200);
@@ -343,11 +354,14 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         expect((yield* upstream.stats).discover).toBe(4);
         const reconnect = yield* body(
           Resource,
-          yield* app.api.request(app.actors.owner, "POST", `${app.path}/connections`, {
-            requirement: "service",
-            profile: app.profile.id,
-            account: bravo,
-          }),
+          yield* app.api.request(
+            app.actors.owner,
+            "POST",
+            connectionsPath(app.path, "user", "service"),
+            {
+              account: bravo,
+            },
+          ),
         );
         expect(
           (yield* app.api.request(

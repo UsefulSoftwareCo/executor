@@ -1,31 +1,34 @@
-import { useDashboard } from "./context.tsx";
-import { useEffect, useRef, useState, type ReactNode, type ComponentType } from "react";
+import { useQuery } from "./context.tsx";
+import { useEffect, useId, useRef, useState, type ReactNode, type ComponentType } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult, type Atom } from "effect/reactivity";
-import { Exit, type Cause } from "effect";
+import { Exit, Option, type Cause } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+import { RadioGroup } from "radix-ui";
 import type {
+  Account,
   AccountAppHealth,
+  AccountScope,
   App,
   AccountId,
   AccountRequirement,
-  SelectedAccounts,
-  Profile,
-  ProfileInputs,
 } from "@executor-js/sdk";
+import type { RequirementChoice, RequirementLink } from "../../contracts/app-accounts.ts";
 import {
   providerDisplayUrl,
   accountNeedsSignIn,
   type AccountDetail,
   type AccountSummary,
   type FailureProps,
+  type Query,
 } from "../../contracts/dashboard.ts";
-import { ProviderIcon } from "./common.tsx";
+import { AppProviderIcon, ProviderIcon } from "./common.tsx";
 import { AccountAvatar, AccountCheckResult } from "./account-health.tsx";
 import { EmptyState } from "./empty-state.tsx";
 import { Button } from "../components/button.tsx";
 import { Checkbox } from "../components/checkbox.tsx";
+import { Spinner } from "../components/spinner.tsx";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,100 +43,31 @@ import {
   DialogFooter,
   DialogTitle,
 } from "../components/dialog.tsx";
+import { cn } from "../lib/utils.ts";
 
-/** Explain a provider's account limit and offer a separate profile when the host permits it. */
-export function ProviderAccountSupport({
-  requirement,
-  onCreateProfile,
-}: {
-  readonly requirement: AccountRequirement;
-  readonly onCreateProfile?: (() => void) | undefined;
-}) {
-  const many = requirement.cardinality === "many";
-  return (
-    <>
-      {many
-        ? `This app supports using multiple ${requirement.definition.name} accounts.`
-        : `This app only supports one ${requirement.definition.name} account${onCreateProfile ? ", create a" : "."}`}
-      {onCreateProfile && (
-        <span className={many ? "block text-pretty" : undefined}>
-          {many ? "If you want to use a different combination of accounts,\u00a0" : " "}
-          <Button
-            variant="link"
-            className="h-auto p-0 text-xs text-foreground max-[740px]:min-h-0"
-            aria-label="Create a profile"
-            onClick={onCreateProfile}
-          >
-            {many ? "create a profile" : "profile"}
-          </Button>
-          {many ? "." : " to add more than one account."}
-        </span>
-      )}
-    </>
-  );
-}
-
-type AccountBindingProps<E> = {
-  readonly profile: Profile;
-  readonly slot: string;
-  readonly account: AccountId;
-  readonly label: string;
-  /** Whether this profile selects the account; only a selected account can be removed from it. */
-  readonly bound: boolean;
-  readonly update: Atom.AtomResultFn<
-    Omit<typeof ProfileInputs.update.Type, "app" | "profile">,
-    Profile,
-    E
-  >;
-  readonly Failure: ComponentType<FailureProps<E>>;
-  readonly onRemoved?: ((account: AccountId) => void) | undefined;
-};
-
-/** Remove only this binding; keep the reusable account and every other provider selection. */
-function useRemoveAccountBinding<E>({
-  profile,
-  slot,
-  account,
-  update,
-  onRemoved,
-}: AccountBindingProps<E>) {
-  const save = useAtomSet(update, { mode: "promiseExit" });
-  const result = useAtomValue(update);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<Cause.Cause<E>>();
-  return {
-    pending,
-    error,
-    disabled: AsyncResult.isWaiting(result) || profile.status === "removing",
-    remove: async () => {
-      const current = profile.accounts[slot];
-      const accounts: SelectedAccounts = Object.fromEntries(
-        Object.entries(profile.accounts).filter(([name]) => name !== slot),
-      );
-      const next =
-        current !== undefined && typeof current !== "string"
-          ? { ...accounts, [slot]: current.filter((id) => id !== account) }
-          : accounts;
-      setError(undefined);
-      setPending(true);
-      const saved = await save({ accounts: next, expectedRevision: profile.revision });
-      setPending(false);
-      if (Exit.isFailure(saved)) setError(saved.cause);
-      else onRemoved?.(account);
-    },
-  };
-}
+const accountName = (account: AccountSummary) => account.label || "Unnamed account";
 
 /**
- * An account's actions in this app: the host's items, then removal from the profile when the
- * profile selects it. Removal keeps the reusable account and every other provider selection.
+ * An account's actions in this app: the host's items, then unlinking when the host offers it.
+ * Unlinking stops using the account for the requirement; the saved account and its other links
+ * stay.
  */
-export function AccountBindingMenu<E>({
+export function LinkedAccountMenu<A, E>({
+  label,
+  unlink,
+  Failure,
+  onUnlinked,
   children,
-  ...props
-}: AccountBindingProps<E> & { readonly children?: ReactNode }) {
-  const removal = useRemoveAccountBinding(props);
-  const { Failure } = props;
+}: {
+  readonly label: string;
+  readonly unlink?: Atom.AtomResultFn<void, A, E> | undefined;
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly onUnlinked?: (() => void) | undefined;
+  readonly children?: ReactNode;
+}) {
+  const [error, setError] = useState<Cause.Cause<E>>();
+  const [pending, setPending] = useState(false);
+  if (children === undefined && unlink === undefined) return null;
   return (
     <>
       <DropdownMenu>
@@ -141,40 +75,72 @@ export function AccountBindingMenu<E>({
           <Button
             variant="ghost"
             size="icon-xs"
-            aria-label={`Manage ${props.label}`}
+            aria-label={`Manage ${label}`}
             className="shrink-0 text-muted-foreground hover:text-foreground"
-            loading={removal.pending}
+            loading={pending}
           >
             <HugeiconsIcon icon={MoreHorizontalIcon} size={14} strokeWidth={2} aria-hidden />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-44">
           {children}
-          {children && props.bound && <DropdownMenuSeparator />}
-          {props.bound && (
-            <DropdownMenuItem
-              variant="destructive"
-              disabled={removal.disabled}
-              onSelect={() => void removal.remove()}
-            >
-              Remove
-            </DropdownMenuItem>
+          {children && unlink && <DropdownMenuSeparator />}
+          {unlink && (
+            <UnlinkItem
+              unlink={unlink}
+              label="Unlink"
+              onStart={() => {
+                setError(undefined);
+                setPending(true);
+              }}
+              onDone={(exit) => {
+                setPending(false);
+                if (Exit.isFailure(exit)) setError(exit.cause);
+                else onUnlinked?.();
+              }}
+            />
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      {removal.error && (
+      {error && (
         <div className="basis-full text-xs">
-          <Failure cause={removal.error} />
+          <Failure cause={error} />
         </div>
       )}
     </>
   );
 }
 
+function UnlinkItem<A, E>({
+  unlink,
+  label,
+  onStart,
+  onDone,
+}: {
+  readonly unlink: Atom.AtomResultFn<void, A, E>;
+  readonly label: string;
+  readonly onStart: () => void;
+  readonly onDone: (exit: Exit.Exit<A, E>) => void;
+}) {
+  const run = useAtomSet(unlink, { mode: "promiseExit" });
+  const result = useAtomValue(unlink);
+  return (
+    <DropdownMenuItem
+      variant="destructive"
+      disabled={AsyncResult.isWaiting(result)}
+      onSelect={() => {
+        onStart();
+        void run().then(onDone);
+      }}
+    >
+      {label}
+    </DropdownMenuItem>
+  );
+}
+
 /**
- * Accounts are saved separately from the apps that select them, so removing one from an app
- * keeps it. After an explicit removal leaves no app selecting an account, offer to delete it.
- * Unselecting an account in a chooser is not a removal and does not prompt.
+ * Accounts are saved separately from the apps that use them, so unlinking one from an app keeps
+ * it. After an unlink leaves no app using an account, offer to delete it.
  */
 export function useUnusedAccountPrompt<E, A>({
   usage,
@@ -238,12 +204,14 @@ function DeleteUnusedAccount<E, A>({
           </span>
         </div>
         <DialogDescription>
-          Accounts are saved separately from apps, so any app can reuse them. Removing an account
+          Accounts are saved separately from apps, so any app can reuse them. Unlinking an account
           from an app keeps it saved. No app uses this account now.
         </DialogDescription>
         <p className="text-sm text-muted-foreground">
-          Delete it if you no longer need it. This removes the saved credentials from Executor but
-          does not revoke access at {provider}.
+          Delete it if you no longer need it.{" "}
+          {data.revocation === "automatic"
+            ? `This removes the saved credentials from Executor and asks ${provider} to revoke its access.`
+            : `This removes the saved credentials from Executor but does not revoke access at ${provider}. To end access, revoke it there too.`}
         </p>
         {AsyncResult.isFailure(result) && <Failure cause={result.cause} />}
         <DialogFooter>
@@ -265,65 +233,31 @@ function DeleteUnusedAccount<E, A>({
   );
 }
 
-/** Saves one slot's next binding in place; rows stay disabled while a save is in flight. */
-export interface AccountChooser {
-  readonly choose: (slot: string, value: SelectedAccounts[string]) => void;
-  readonly pending: boolean;
-}
-
-/**
- * One slot's rows. Choosing lists every compatible saved account oldest first, so a new account
- * joins the end; bound accounts that are no longer compatible stay visible to be removed.
- */
-function slotRows(
-  requirement: AccountRequirement,
-  ids: readonly AccountId[],
-  accounts: readonly AccountSummary[],
-  choosing: boolean,
-): readonly AccountId[] {
-  if (!choosing) return ids;
-  return [
-    ...accounts
-      .filter((account) => account.provider === requirement.provider)
-      .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
-      .map((account) => account.id),
-    ...ids.filter(
-      (id) =>
-        !accounts.some((account) => account.id === id && account.provider === requirement.provider),
-    ),
-  ];
-}
-
-const selectedIds = (selected: SelectedAccounts[string] | undefined): readonly AccountId[] =>
-  typeof selected === "string" ? [selected] : (selected ?? []);
-
 /** How long a check result stays fresh before viewing the app's accounts checks again. */
 const checkFreshFor = 5 * 60 * 1000;
 
 /**
- * Stale while revalidate: rows show the recorded checks at once, and each listed account this
- * app checks is checked again in the background, once per view, when its result is missing,
- * outdated or older than `checkFreshFor`. Reads hide this app's result for an account it does
- * not select, so the reported identity's age stands in there.
+ * Stale while revalidate: rows show the recorded checks at once, and each account this app checks
+ * is checked again in the background, once per view, when its result is missing, outdated or older
+ * than `checkFreshFor`.
  */
 function useRevalidateChecks(
   app: App,
-  selection: SelectedAccounts,
+  scope: AccountScope,
   accounts: readonly AccountSummary[],
-  choosing: boolean,
   revalidate: ((account: AccountId) => Promise<unknown>) | undefined,
 ) {
   const started = useRef(new Set<AccountId>());
   useEffect(() => {
     if (revalidate === undefined) return;
     const now = Date.now();
-    for (const [slot, requirement] of Object.entries(app.requirements.accounts)) {
-      if (requirement.health !== true) continue;
-      for (const id of slotRows(requirement, selectedIds(selection[slot]), accounts, choosing)) {
-        const account = accounts.find((item) => item.id === id);
+    for (const requirement of Object.values(app.requirements.accounts)) {
+      if (requirement.health !== true || requirement.scope !== scope) continue;
+      for (const account of accounts) {
         if (
-          account?.health === undefined ||
-          started.current.has(id) ||
+          account.provider !== requirement.provider ||
+          account.health === undefined ||
+          started.current.has(account.id) ||
           accountNeedsSignIn(account) ||
           account.signIn?.state === "unavailable"
         )
@@ -336,198 +270,505 @@ function useRevalidateChecks(
           entry?.check?.current !== false &&
           now - checkedAt.getTime() < checkFreshFor;
         if (fresh) continue;
-        started.current.add(id);
-        void revalidate(id);
+        started.current.add(account.id);
+        void revalidate(account.id);
       }
     }
   });
 }
 
-/** Provider rows show the account bindings inside one profile or its editor. */
-export function AppAccounts({
+type RequirementEntry = readonly [string, AccountRequirement];
+
+const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
+  Object.entries(app.requirements.accounts).filter(
+    ([, requirement]) => requirement.scope === scope,
+  );
+
+/** Changing the links of one scope. The host still authorizes every link and connection. */
+export interface LinkEditing<E> {
+  /** One requirement's linked accounts, then the other accounts the caller could link. */
+  readonly choices: (
+    slot: string,
+  ) => Query<{ readonly accounts: readonly RequirementChoice<Account>[] }, E>;
+  readonly link: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+  readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+  /** Connect a new account for the requirement; saving it links it. */
+  readonly connect: (slot: string, requirement: AccountRequirement) => void;
+  /** A connection is open or saving, so the other changes wait for it. */
+  readonly connecting?: boolean | undefined;
+  readonly onUnlinked?: ((account: AccountId) => void) | undefined;
+}
+
+/** The links of one scope and what the caller can do with them. */
+export interface ScopeAccounts<E> {
+  /** The scope's links with their sign-in and check details, oldest first per requirement. */
+  readonly links: readonly RequirementLink<AccountSummary>[];
+  /** Absent when the caller cannot change these links. */
+  readonly edit?: LinkEditing<E> | undefined;
+  /** Why the caller cannot change these links, shown with the greyed-out list. */
+  readonly readOnly?: string | undefined;
+  /** Each account's menu, such as editing or reconnecting it. */
+  readonly accountMenu?:
+    | ((
+        account: AccountSummary,
+        slot: string,
+        requirement: AccountRequirement,
+        linked: boolean,
+      ) => ReactNode)
+    | undefined;
+  readonly reconnectAction?:
+    | ((account: AccountSummary, slot: string, requirement: AccountRequirement) => ReactNode)
+    | undefined;
+  /** Check one linked account again; its result reaches `links` through the host's queries. */
+  readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
+}
+
+/**
+ * The app's account requirements in two sections with the same layout: "App accounts", linked for
+ * everyone who uses the app and its background work, and "Your accounts", linked for the caller.
+ * Each requirement lists every account the caller could use: a radio for a plain requirement,
+ * checkboxes for a many() requirement, and "Connect new account" last. Selecting an account links
+ * it, which replaces a plain requirement's account; clearing a checkbox unlinks it.
+ */
+export function AppAccounts<E>({
   app,
-  selection,
+  appAccounts,
+  yourAccounts,
   accounts,
-  chooser,
-  chooseAction,
-  reconnectAction,
-  accountActions,
-  removeAccountAction,
-  onCreateProfile,
-  revalidate,
+  Failure,
 }: {
   readonly app: App;
-  readonly selection: SelectedAccounts;
+  readonly appAccounts: ScopeAccounts<E>;
+  readonly yourAccounts: ScopeAccounts<E>;
+  /** The caller's usable accounts, whose sign-in and check details the choices reuse. */
   readonly accounts: readonly AccountSummary[];
-  readonly chooser?: AccountChooser | undefined;
-  readonly chooseAction?: ReactNode;
-  readonly reconnectAction?: (account: AccountSummary) => ReactNode;
-  readonly accountActions?: (slot: string, requirement: AccountRequirement) => ReactNode;
-  readonly removeAccountAction?: (
-    slot: string,
-    account: AccountId,
-    label: string,
-    bound: boolean,
-  ) => ReactNode;
-  readonly onCreateProfile?: (() => void) | undefined;
-  /** Check one account again; its result reaches `accounts` through the host's queries. */
-  readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
+  readonly Failure: ComponentType<FailureProps<E>>;
 }) {
-  const { AccountLink } = useDashboard();
-  useRevalidateChecks(app, selection, accounts, chooser !== undefined, revalidate);
-  const requirements = Object.entries(app.requirements.accounts);
-  if (requirements.length === 0)
+  const appRequirements = scoped(app, "app");
+  const userRequirements = scoped(app, "user");
+  if (appRequirements.length === 0 && userRequirements.length === 0)
     return (
       <EmptyState size="compact" title="No accounts required">
         This app can run without a saved account.
       </EmptyState>
     );
   return (
-    <div className="accounts-section space-y-5">
-      {requirements.map(([slot, requirement]) => {
-        const selected = selection[slot];
-        const ids = selectedIds(selected);
-        const many = requirement.cardinality === "many";
-        const rows = slotRows(requirement, ids, accounts, chooser !== undefined);
-        const action = accountActions?.(slot, requirement) ?? chooseAction;
-        const showSlot = requirements.some(
-          ([otherSlot, other]) =>
-            otherSlot !== slot && other.definition.name === requirement.definition.name,
-        );
-        return (
-          <section
-            key={slot}
-            aria-label={
-              requirements.length > 1
-                ? `${requirement.definition.name} (${slot})`
-                : requirement.definition.name
-            }
-            className="min-w-0 space-y-2.5"
-          >
-            <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
-              <ProviderIcon
-                name={requirement.definition.name}
-                url={providerDisplayUrl(requirement.definition)}
-                large
-              />
-              <div className="min-w-0">
-                <p className="truncate font-medium">{requirement.definition.name}</p>
-                <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
-                  {showSlot && `${slot} · `}
-                  <ProviderAccountSupport
-                    requirement={requirement}
-                    onCreateProfile={onCreateProfile}
-                  />
-                </p>
-              </div>
-              {ids.length > 0 && (
-                <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
-                  {ids.length} {ids.length === 1 ? "account" : "accounts"}
-                </span>
-              )}
-            </div>
-            {(rows.length > 0 || action) && (
-              <div
-                className={
-                  rows.length === 0
-                    ? "overflow-hidden rounded-lg border border-dashed"
-                    : "overflow-hidden rounded-lg border"
-                }
-              >
-                {rows.length > 0 && (
-                  <ul
-                    role={chooser && !many ? "radiogroup" : undefined}
-                    aria-label={chooser ? `${requirement.definition.name} accounts` : undefined}
-                    className="divide-y divide-border/50 text-[13px]"
-                  >
-                    {rows.map((id) => {
-                      const account = accounts.find((item) => item.id === id);
-                      const label = account?.label || (account ? "Unnamed account" : undefined);
-                      const bound = ids.includes(id);
-                      const status =
-                        account && accountNeedsSignIn(account) ? (
-                          <span className="flex items-center gap-2 text-xs text-sign-in-warning">
-                            Needs sign-in{reconnectAction?.(account)}
-                          </span>
-                        ) : account?.signIn?.state === "unavailable" ? (
-                          <span className="text-xs text-sign-in-warning">Unavailable</span>
-                        ) : (
-                          <AppCheck
-                            health={account?.health?.apps.find((entry) => entry.app === app.id)}
-                          />
-                        );
-                      return (
-                        <li
-                          key={id}
-                          className="group/account flex min-h-10 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2 transition-colors hover:bg-muted/25 focus-within:bg-muted/25"
-                        >
-                          {chooser ? (
-                            <label
-                              className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 ${bound ? "" : "text-muted-foreground hover:text-foreground"} has-disabled:cursor-default`}
-                            >
-                              {many ? (
-                                <Checkbox
-                                  checked={bound}
-                                  disabled={chooser.pending}
-                                  onCheckedChange={(checked) =>
-                                    chooser.choose(
-                                      slot,
-                                      checked === true
-                                        ? [...ids, id]
-                                        : ids.filter((other) => other !== id),
-                                    )
-                                  }
-                                />
-                              ) : (
-                                <input
-                                  type="radio"
-                                  name={`${app.id}-${slot}`}
-                                  checked={bound}
-                                  disabled={chooser.pending || (!bound && !account)}
-                                  onChange={() => chooser.choose(slot, id)}
-                                  className="size-4 shrink-0 cursor-pointer appearance-none rounded-full border border-input shadow-xs outline-none transition-shadow checked:border-[5px] checked:border-primary focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-50 dark:bg-input/30"
-                                />
-                              )}
-                              <AccountAvatar info={account?.health?.info} className="size-5" />
-                              <span className="min-w-0 flex-1 break-words">
-                                {label ?? "Account disconnected"}
-                              </span>
-                            </label>
-                          ) : (
-                            <>
-                              <AccountAvatar info={account?.health?.info} className="size-5" />
-                              <span className="min-w-0 flex-1 break-words [&_a:hover]:underline">
-                                {label ? (
-                                  <AccountLink account={id}>{label}</AccountLink>
-                                ) : (
-                                  "Account disconnected"
-                                )}
-                              </span>
-                            </>
-                          )}
-                          {status}
-                          {/* Unchecking only unselects; removal is its own action and may offer deletion. */}
-                          {removeAccountAction?.(slot, id, label ?? "Account disconnected", bound)}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-                {action && (
-                  <div className={rows.length > 0 ? "border-t border-border/50" : undefined}>
-                    {action}
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-        );
-      })}
+    <div className="accounts-section space-y-8">
+      {appRequirements.length > 0 && (
+        <LinkScope
+          app={app}
+          scope="app"
+          title="App accounts"
+          description="Linked for everyone"
+          requirements={appRequirements}
+          data={appAccounts}
+          accounts={accounts}
+          Failure={Failure}
+        />
+      )}
+      {userRequirements.length > 0 && (
+        <LinkScope
+          app={app}
+          scope="user"
+          title="Your accounts"
+          description="Linked for you"
+          requirements={userRequirements}
+          data={yourAccounts}
+          accounts={accounts}
+          Failure={Failure}
+        />
+      )}
     </div>
   );
 }
 
-/** This app's check of a selected account; apps without a check show nothing. */
+interface ScopeProps<E> {
+  readonly app: App;
+  readonly scope: AccountScope;
+  readonly data: ScopeAccounts<E>;
+  readonly accounts: readonly AccountSummary[];
+  readonly Failure: ComponentType<FailureProps<E>>;
+}
+
+function LinkScope<E>({
+  title,
+  description,
+  requirements,
+  ...props
+}: ScopeProps<E> & {
+  readonly title: string;
+  readonly description: string;
+  readonly requirements: readonly RequirementEntry[];
+}) {
+  const { app, scope, data } = props;
+  useRevalidateChecks(
+    app,
+    scope,
+    data.links.map((link) => link.account),
+    data.revalidate,
+  );
+  const all = Object.values(app.requirements.accounts);
+  const readOnly = data.edit === undefined;
+  return (
+    <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">{title}</h2>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      {readOnly && data.readOnly !== undefined && (
+        <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+      )}
+      <div className={cn("space-y-5", readOnly && "opacity-60")}>
+        {requirements.map(([slot, requirement]) => (
+          <RequirementView
+            key={slot}
+            {...props}
+            slot={slot}
+            requirement={requirement}
+            linked={data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []))}
+            label={
+              all.length > 1
+                ? `${requirement.definition.name} (${slot})`
+                : requirement.definition.name
+            }
+            showSlot={
+              all.filter((other) => other.definition.name === requirement.definition.name).length >
+              1
+            }
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Short guidance under a requirement; the rows say the rest. */
+const requirementNote = (requirement: AccountRequirement, linked: number) =>
+  requirement.cardinality === "many"
+    ? requirement.scope === "app"
+      ? "The app uses every linked account, for everyone."
+      : "The app uses every account you link."
+    : linked === 0
+      ? requirement.scope === "app"
+        ? "Link an account so the app can run."
+        : "Link an account to use this app."
+      : requirement.scope === "app"
+        ? "The app uses this account for everyone."
+        : "The app uses this account when you use it.";
+
+function RequirementView<E>({
+  slot,
+  requirement,
+  linked,
+  label,
+  showSlot,
+  ...props
+}: ScopeProps<E> & {
+  readonly slot: string;
+  readonly requirement: AccountRequirement;
+  /** The requirement's linked accounts, oldest first. */
+  readonly linked: readonly AccountSummary[];
+  readonly label: string;
+  readonly showSlot: boolean;
+}) {
+  const { data } = props;
+  return (
+    <section aria-label={label} className="min-w-0 space-y-2.5">
+      <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
+        <AppProviderIcon app={props.app} provider={requirement.definition} large />
+        <div className="min-w-0">
+          <p className="truncate font-medium">{requirement.definition.name}</p>
+          <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
+            {showSlot && `${slot} · `}
+            {requirementNote(requirement, linked.length)}
+          </p>
+        </div>
+      </div>
+      <div className="overflow-hidden rounded-lg border">
+        {data.edit === undefined ? (
+          <ReadOnlyChoices {...props} slot={slot} requirement={requirement} linked={linked} />
+        ) : (
+          <EditableChoices
+            {...props}
+            edit={data.edit}
+            slot={slot}
+            requirement={requirement}
+            linked={linked}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+const rowClass =
+  "group/account flex min-h-10 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2 transition-colors";
+const radioClass =
+  "grid size-4 shrink-0 place-items-center rounded-full border border-input shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
+const radioDot = "size-2 rounded-full bg-primary";
+
+/** Account names sort the rows, so linking one does not move it. */
+const byName = <C extends { readonly account: AccountSummary }>(choices: readonly C[]) =>
+  [...choices].sort(
+    (a, b) =>
+      accountName(a.account).localeCompare(accountName(b.account)) ||
+      a.account.id.localeCompare(b.account.id),
+  );
+
+/** A member's view: the linked accounts with their status, and no controls. */
+function ReadOnlyChoices<E>({
+  app,
+  slot,
+  requirement,
+  linked,
+  data,
+}: ScopeProps<E> & {
+  readonly slot: string;
+  readonly requirement: AccountRequirement;
+  readonly linked: readonly AccountSummary[];
+}) {
+  const plain = requirement.cardinality === "one";
+  if (linked.length === 0)
+    return <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">No account linked</p>;
+  const rows = linked.map((account) => (
+    <li key={account.id} className={rowClass}>
+      {plain ? (
+        <RadioGroup.Item
+          value={account.id}
+          aria-label={accountName(account)}
+          className={radioClass}
+        >
+          <RadioGroup.Indicator className={radioDot} />
+        </RadioGroup.Item>
+      ) : (
+        <Checkbox checked disabled aria-label={accountName(account)} />
+      )}
+      <AccountAvatar info={account.health?.info} className="size-5" />
+      <span className="min-w-0 flex-1 break-words">{accountName(account)}</span>
+      <AccountStatus app={app} account={account} />
+      {data.accountMenu?.(account, slot, requirement, true)}
+    </li>
+  ));
+  const list = (
+    <ul
+      aria-label={`${requirement.definition.name} accounts`}
+      className="divide-y divide-border/50 text-[13px]"
+    >
+      {rows}
+    </ul>
+  );
+  return plain ? (
+    <RadioGroup.Root
+      value={linked.at(-1)?.id ?? ""}
+      disabled
+      aria-label={`${requirement.definition.name} account`}
+    >
+      {list}
+    </RadioGroup.Root>
+  ) : (
+    list
+  );
+}
+
+/**
+ * The accounts the caller could use for one requirement, from the host's read of it. Until that
+ * read arrives the linked accounts show, without controls that could act on stale choices.
+ */
+function EditableChoices<E>({
+  app,
+  slot,
+  requirement,
+  linked,
+  data,
+  edit,
+  accounts,
+  Failure,
+}: ScopeProps<E> & {
+  readonly edit: LinkEditing<E>;
+  readonly slot: string;
+  readonly requirement: AccountRequirement;
+  readonly linked: readonly AccountSummary[];
+}) {
+  const { result, data: loaded, refresh } = useQuery(edit.choices(slot));
+  const plain = requirement.cardinality === "one";
+  // A choice shows the page's own view of the account: its link's details, with sign-in state and
+  // checks, or the caller's account list, which renames and reconnects keep current.
+  const summarize = (account: Account): AccountSummary =>
+    linked.find((item) => item.id === account.id) ??
+    accounts.find((item) => item.id === account.id) ??
+    account;
+  const choices = byName(
+    Option.match(loaded, {
+      onNone: () => linked.map((account) => ({ account, linked: true })),
+      // An account deleted since the read is no longer the caller's to link.
+      onSome: (value) =>
+        value.accounts.flatMap((choice) =>
+          choice.linked || accounts.some((item) => item.id === choice.account.id)
+            ? [{ account: summarize(choice.account), linked: choice.linked }]
+            : [],
+        ),
+    }),
+  );
+  const ready = Option.isSome(loaded) && edit.connecting !== true;
+  const rows = choices.map((choice) => (
+    <ChoiceRow
+      key={choice.account.id}
+      app={app}
+      slot={slot}
+      requirement={requirement}
+      choice={choice}
+      plain={plain}
+      ready={ready}
+      edit={edit}
+      data={data}
+      Failure={Failure}
+    />
+  ));
+  const list = (
+    <ul
+      aria-label={`${requirement.definition.name} accounts`}
+      className="divide-y divide-border/50 text-[13px]"
+    >
+      {rows}
+    </ul>
+  );
+  return (
+    <div className="divide-y divide-border/50">
+      {AsyncResult.isFailure(result) && (
+        <div className="px-3.5 py-2.5 text-xs">
+          <Failure cause={result.cause} retry={refresh} retrying={result.waiting} />
+        </div>
+      )}
+      {choices.length > 0 &&
+        (plain ? (
+          <RadioGroup.Root
+            value={choices.find((choice) => choice.linked)?.account.id ?? ""}
+            aria-label={`${requirement.definition.name} account`}
+          >
+            {list}
+          </RadioGroup.Root>
+        ) : (
+          list
+        ))}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
+        disabled={edit.connecting === true}
+        onClick={() => edit.connect(slot, requirement)}
+      >
+        <HugeiconsIcon icon={Add01Icon} size={14} aria-hidden />
+        Connect new account
+      </Button>
+    </div>
+  );
+}
+
+function ChoiceRow<E>({
+  app,
+  slot,
+  requirement,
+  choice,
+  plain,
+  ready,
+  edit,
+  data,
+  Failure,
+}: {
+  readonly app: App;
+  readonly slot: string;
+  readonly requirement: AccountRequirement;
+  readonly choice: RequirementChoice<AccountSummary>;
+  readonly plain: boolean;
+  /** The choices are read and no connection is open. */
+  readonly ready: boolean;
+  readonly edit: LinkEditing<E>;
+  readonly data: ScopeAccounts<E>;
+  readonly Failure: ComponentType<FailureProps<E>>;
+}) {
+  const { account, linked } = choice;
+  const link = edit.link(slot, account.id);
+  const unlink = edit.unlink(slot, account.id);
+  const runLink = useAtomSet(link, { mode: "promiseExit" });
+  const runUnlink = useAtomSet(unlink, { mode: "promiseExit" });
+  const linking = useAtomValue(link);
+  const unlinking = useAtomValue(unlink);
+  const pending = AsyncResult.isWaiting(linking) || AsyncResult.isWaiting(unlinking);
+  const [error, setError] = useState<Cause.Cause<E>>();
+  const id = useId();
+  const name = accountName(account);
+  const change = async (next: boolean) => {
+    setError(undefined);
+    const exit = await (next ? runLink() : runUnlink());
+    if (Exit.isFailure(exit)) setError(exit.cause);
+    else if (!next) edit.onUnlinked?.(account.id);
+  };
+  return (
+    <li aria-busy={pending} className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}>
+      {plain ? (
+        <RadioGroup.Item
+          id={id}
+          value={account.id}
+          aria-label={name}
+          disabled={!ready || pending}
+          className={radioClass}
+          onClick={() => {
+            if (!linked) void change(true);
+          }}
+        >
+          <RadioGroup.Indicator className={radioDot} />
+        </RadioGroup.Item>
+      ) : (
+        <Checkbox
+          id={id}
+          checked={linked}
+          aria-label={name}
+          disabled={!ready || pending}
+          onCheckedChange={(checked) => void change(checked === true)}
+        />
+      )}
+      <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
+        <AccountAvatar info={account.health?.info} className="size-5" />
+        <span className="min-w-0 flex-1 break-words">{name}</span>
+      </label>
+      {pending && <Spinner className="size-3.5 text-muted-foreground" />}
+      <AccountStatus
+        app={app}
+        account={account}
+        reconnect={data.reconnectAction?.(account, slot, requirement)}
+      />
+      {data.accountMenu?.(account, slot, requirement, linked)}
+      {error && (
+        <div className="basis-full text-xs">
+          <Failure cause={error} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** An account's sign-in state, or this app's check of it. */
+function AccountStatus({
+  app,
+  account,
+  reconnect,
+}: {
+  readonly app: App;
+  readonly account: AccountSummary;
+  readonly reconnect?: ReactNode;
+}) {
+  if (accountNeedsSignIn(account))
+    return (
+      <span className="flex items-center gap-2 text-xs text-sign-in-warning">
+        Needs sign-in{reconnect}
+      </span>
+    );
+  if (account.signIn?.state === "unavailable")
+    return <span className="text-xs text-sign-in-warning">Unavailable</span>;
+  return <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} />;
+}
+
+/** This app's check of a linked account; apps without a check show nothing. */
 function AppCheck({ health }: { readonly health: AccountAppHealth | undefined }) {
   if (health === undefined || (!health.checkable && health.check === null)) return null;
   return <AccountCheckResult health={health} />;

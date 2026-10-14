@@ -1,0 +1,16 @@
+diff --git a/scripts/build/bun.ts b/scripts/build/bun.ts
+index fc1a7481..3b06562d 100644
+--- a/scripts/build/bun.ts
++++ b/scripts/build/bun.ts
+@@ -277,8 +277,9 @@ export function emitBun(n: Ninja, cfg: Config, sources: Sources): BunOutput {
+   const cFlagsFull = [...flags.cflags, ...includeFlags, ...defineFlags];
+ 
+   // ─── Step 4: PCH ───
+-  // CI full mode (unused by the pipeline) skips the PCH; cpp-only/archive-link use it.
+-  const usePch = !cfg.ci || cfg.mode !== "full";
++  // CI full mode skips the PCH upstream, but that mode is unused by Bun's pipeline and its
++  // headers rely on the PCH for declarations (Bun::createClassStructure), so always use it.
++  const usePch = true;
+   let pchOut: { pch: string; wrapperHeader: string } | undefined;
+ 
+   if (usePch) {

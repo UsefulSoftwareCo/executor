@@ -1,7 +1,7 @@
 /** Poll only while a view is mounted; query refresh and mutation acknowledgement remain on the source atom. */
 import { type Duration, Effect } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
-import type { Profile, ScheduleSettings, WebhookSubscription, WorkflowRun } from "@executor-js/sdk";
+import type { ScheduleSettings, WebhookSubscription, WorkflowRun } from "@executor-js/sdk";
 
 /** Idle reconciliation for writes made outside this tab; focus and acknowledged writes cover the rest. */
 const reconcileInterval: Duration.Input = "30 seconds";
@@ -66,8 +66,6 @@ const withStatus =
   (rows: ReadonlyArray<A>) =>
     rows.some(({ status }) => statuses.includes(status));
 
-/** Profiles still being set up or removed by the server. */
-export const unsettledProfiles = whileLoaded(withStatus<Profile>(["pending", "removing"]));
 /** Webhook subscriptions still registering or unregistering upstream. */
 export const unsettledWebhooks = whileLoaded(
   withStatus<WebhookSubscription>(["pending", "stopping"]),

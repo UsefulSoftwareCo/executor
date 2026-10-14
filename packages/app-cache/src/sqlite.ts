@@ -98,12 +98,12 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
           const write = (key: string, entry: CacheEntry) => {
             const value = JSON.stringify(entry.value);
             const bytes = new TextEncoder().encode(value).byteLength;
-            if (
-              bytes > cacheLimits.entryBytes ||
-              entry.staleUntil > now + cacheLimits.retentionMs ||
-              entry.freshUntil > entry.staleUntil
-            )
-              throw new CacheError({ reason: "capacity" });
+            if (bytes > cacheLimits.entryBytes)
+              throw new CacheError({ reason: "capacity", limit: "entryBytes" });
+            if (entry.freshUntil > entry.staleUntil) throw new CacheError({ reason: "capacity" });
+            // Nothing is kept past the retention, whatever the caller's clock said.
+            const staleUntil = Math.min(entry.staleUntil, now + cacheLimits.retentionMs);
+            const freshUntil = Math.min(entry.freshUntil, staleUntil);
             storage.sql.exec(
               `INSERT INTO executor_cache VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)
             ON CONFLICT(namespace, key) DO UPDATE SET value=excluded.value, version=excluded.version,
@@ -112,8 +112,8 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               key,
               value,
               entry.version,
-              entry.freshUntil,
-              entry.staleUntil,
+              freshUntil,
+              staleUntil,
               bytes,
               now,
             );
@@ -122,8 +122,10 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
             const totals = Schema.decodeUnknownSync(Usage)(
               storage.sql.exec("SELECT bytes, count FROM executor_cache_usage WHERE id = 0").one(),
             );
-            if (totals.bytes > cacheLimits.totalBytes || totals.count > cacheLimits.totalEntries)
-              throw new CacheError({ reason: "capacity" });
+            if (totals.bytes > cacheLimits.totalBytes)
+              throw new CacheError({ reason: "capacity", limit: "totalBytes" });
+            if (totals.count > cacheLimits.totalEntries)
+              throw new CacheError({ reason: "capacity", limit: "totalEntries" });
           };
           const claim = (key: string) => {
             const lease = crypto.randomUUID();
@@ -144,13 +146,14 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
           switch (command.operation) {
             case "read": {
               if (command.keys.length > cacheLimits.batchEntries)
-                throw new CacheError({ reason: "capacity" });
+                throw new CacheError({ reason: "capacity", limit: "batchEntries" });
               let bytes = 0;
               return command.keys.map((key) => {
                 const row = read(key);
                 if (row === undefined || row.value === null) return null;
                 bytes += row.bytes;
-                if (bytes > cacheLimits.batchBytes) throw new CacheError({ reason: "capacity" });
+                if (bytes > cacheLimits.batchBytes)
+                  throw new CacheError({ reason: "capacity", limit: "batchBytes" });
                 return entry(row);
               });
             }
@@ -162,7 +165,23 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
                 (command.refresh || current === null || now >= current.freshUntil);
               const lease =
                 wanted && (row === undefined || row.lease_until <= now) ? claim(command.key) : null;
-              return { entry: current, lease };
+              if (command.reads === undefined || command.reads.length > cacheLimits.batchEntries)
+                return { entry: current, lease };
+              // The same reads a `read` makes, in this transaction. Past the batch's byte bound the
+              // reply leaves them out and the caller reads them on its own, as it would without them.
+              let bytes = 0;
+              const reads: (CacheEntry | null)[] = [];
+              for (const key of command.reads) {
+                const found = read(key);
+                if (found === undefined || found.value === null) {
+                  reads.push(null);
+                  continue;
+                }
+                bytes += found.bytes;
+                if (bytes > cacheLimits.batchBytes) return { entry: current, lease };
+                reads.push(entry(found));
+              }
+              return { entry: current, lease, reads };
             }
             case "claim": {
               const row = read(command.key);
@@ -181,12 +200,13 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
               return true;
             }
             case "write": {
+              if (command.entries.length > cacheLimits.batchEntries)
+                throw new CacheError({ reason: "capacity", limit: "batchEntries" });
               if (
-                command.entries.length > cacheLimits.batchEntries ||
                 new TextEncoder().encode(JSON.stringify(command.entries)).byteLength >
-                  cacheLimits.batchBytes
+                cacheLimits.batchBytes
               )
-                throw new CacheError({ reason: "capacity" });
+                throw new CacheError({ reason: "capacity", limit: "batchBytes" });
               for (const { key, entry } of command.entries) write(key, entry);
               bound();
               return null;

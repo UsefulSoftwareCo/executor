@@ -2,7 +2,7 @@ import { SqlClient } from "effect/sql";
 import { GroupDatabase } from "./contracts/groups.ts";
 import { CurrentUserId } from "./contracts/auth.ts";
 import { OrganizationId } from "./contracts/organization.ts";
-import { resourceAuthorityForApp } from "./implementation/resource-policy.ts";
+import { resourceAuthorityForApps } from "./implementation/resource-policy.ts";
 import { StorageError, type App } from "@executor-js/sdk/core";
 import type { AppCapabilities } from "@executor-js/app-management/contracts";
 import { Context } from "effect";
@@ -18,24 +18,44 @@ import { Effect, Layer, Schema } from "effect";
 import { Base64 } from "effect/encoding";
 import { ApiAuthentication, Authentication } from "./contracts/auth.ts";
 import { OrganizationTombstones } from "./contracts/organization-removal.ts";
-import { OrganizationReference, CurrentOrganization } from "./contracts/organization.ts";
+import {
+  OrganizationReference,
+  CurrentOrganization,
+  publishingScope,
+} from "./contracts/organization.ts";
 
-/** Capture only the host database; identity and group grants are checked for every authoring operation. */
+/**
+ * Capture only the host database; identity and group grants are checked for every authoring
+ * operation. Membership and every app's policy are read once for the whole list.
+ */
 export const hostedAppCapabilities = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return (app: App, identity: Context.Service.Shape<typeof AppIdentity>) =>
+  return (apps: ReadonlyArray<App>, identity: Context.Service.Shape<typeof AppIdentity>) =>
     Effect.gen(function* () {
+      if (apps.length === 0) return [];
       const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(identity.scope).pipe(
         Effect.mapError(() => new StorageError()),
       );
-      if (app.owner !== `organization:${organization}`)
+      if (apps.some((app) => app.owner !== `organization:${organization}`))
         return yield* new AppAccessDenied({ reason: "forbidden" });
-      const { access } = yield* resourceAuthorityForApp(organization, identity.actor, app.id);
-      return {
-        visible: access.canUse,
-        manage: access.canManage,
-        edit: access.canManage,
-      } satisfies AppCapabilities;
+      // Membership and every policy are read in one statement, so they share one snapshot.
+      const { access: found } = yield* resourceAuthorityForApps(
+        organization,
+        identity.actor,
+        apps.map((app) => app.id),
+      );
+      const policies = new Map(found.map((access) => [access.app, access]));
+      return yield* Effect.forEach(apps, (app) => {
+        const access = policies.get(app.id);
+        // A missing policy denies access, as it does for one app.
+        return access === undefined
+          ? Effect.fail(new AppAccessDenied({ reason: "forbidden" }))
+          : Effect.succeed({
+              visible: access.canUse,
+              manage: access.canManage,
+              edit: access.canManage,
+            } satisfies AppCapabilities);
+      });
     }).pipe(
       Effect.provideService(GroupDatabase, Effect.succeed(sql)),
       Effect.catchTag("OrganizationForbidden", () =>
@@ -131,14 +151,21 @@ export const hostedAppGitAccess = Layer.effect(
             actor: grant.userId,
             readOwner: grant.access.owner,
             scope: grant.access.organization,
-            namespace: grant.organizationSlug,
+            namespace: publishingScope(grant.organizationSlug),
             canWrite: permitsAction(grant.policy, "manage"),
             appIds: permittedAppIds(grant.policy),
             protectedApps: [],
           };
         }).pipe(
+          // Git reports a 401 as a failed sign-in, so only a credential the host refused is one.
+          // A session check that could not run is retryable and leaves the credential in place.
+          Effect.catchTags({
+            Unauthorized: () => Effect.fail(new AppAccessDenied({ reason: "authentication" })),
+            OrganizationForbidden: () => Effect.fail(new AppAccessDenied({ reason: "forbidden" })),
+            AuthenticationUnavailable: () => Effect.fail(new StorageError()),
+          }),
           Effect.mapError((error) =>
-            Schema.is(AppAccessDenied)(error)
+            Schema.is(AppAccessDenied)(error) || Schema.is(StorageError)(error)
               ? error
               : new AppAccessDenied({ reason: "authentication" }),
           ),

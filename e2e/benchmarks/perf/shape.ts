@@ -5,6 +5,8 @@
  * the preceding 36 hours (Cloud stage `v2`). `pullShape` repeats those queries so the file can be
  * refreshed; it returns quantiles over organizations or requests and nothing else.
  * Members per organization are not observable in traces; the fixture's three roles are used.
+ * `linksPerApp` still holds the distinct profiles per organization observed before profiles were
+ * replaced by account links, the nearest earlier measure; the next `--pull` replaces it.
  */
 import { Config, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -19,8 +21,11 @@ export const Shape = Schema.Struct({
   appsPerOrg: Quantiles,
   /** Distinct accounts touched per organization. */
   accountsPerOrg: Quantiles,
-  /** Distinct profiles touched per organization. */
-  profilesPerOrg: Quantiles,
+  /**
+   * Distinct accounts linked or unlinked per app (organization and app) through
+   * `apps/{app}/accounts/{account}`. Members are not observable, so this bounds links per member.
+   */
+  linksPerApp: Quantiles,
   /** Apps and tools in one MCP catalog (per mcp.catalog span). */
   catalogApps: Quantiles,
   catalogTools: Quantiles,
@@ -52,7 +57,7 @@ export const productionShape: Shape = {
     [0.95, 10],
     [0.99, 10],
   ],
-  profilesPerOrg: [
+  linksPerApp: [
     [0.1, 1],
     [0.25, 1],
     [0.5, 2],
@@ -129,7 +134,7 @@ export const pullShape = (dataset: string, hours: number) =>
     const queries = {
       appsPerOrg: perOrg("/apps/(app_[^/]+)"),
       accountsPerOrg: perOrg("/accounts/([^/]+)"),
-      profilesPerOrg: perOrg("/profiles/([^/]+)"),
+      linksPerApp: `${org} | extend app = extract("/apps/(app_[^/]+)/accounts/", 1, ['attributes.url.path']), item = extract("/apps/app_[^/]+/accounts/([^/]+)", 1, ['attributes.url.path']) | where isnotempty(app) and isnotempty(item) | summarize n=dcount(item) by org, app | summarize p=percentiles_array(n, ${p})`,
       catalogApps: `${base} and name == "mcp.catalog" | summarize p=percentiles_array(toint(['attributes.custom']['executor.discovery.apps']), ${p})`,
       catalogTools: `${base} and name == "mcp.catalog" | summarize p=percentiles_array(toint(['attributes.custom']['executor.discovery.tools']), ${p})`,
       callsPerExecute: `${base} and name == "mcp.execute" | summarize p=percentiles_array(toint(['attributes.custom']['executor.tool_call.count']), ${p})`,

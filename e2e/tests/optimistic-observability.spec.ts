@@ -50,7 +50,7 @@ layer(HostedLive, { excludeTestServices: true })("Optimistic observability", (it
                 content: `import { defineApp, query, mutation, object, string, number, boolean, router } from "apps";
 export const read = query({ input: object({ key: string() }), output: number() }, async () => 1);
 export const write = mutation({ input: object({}), output: boolean() }, async () => true);
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
    read,
    write,
  }) });`,

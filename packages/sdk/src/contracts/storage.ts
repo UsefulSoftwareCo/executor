@@ -1,9 +1,9 @@
 import type { WorkflowRunId } from "apps/contracts";
 import { appSlug } from "./app-slug.ts";
 /** Persisted records. Decode database results with these schemas before use. */
-import { Schema, Struct } from "effect";
+import { Effect, Schema, Struct } from "effect";
 import { Account } from "./account.ts";
-import { App, AppRequirements } from "./apps.ts";
+import { AccountScope, App, AppRequirements } from "./apps.ts";
 import { Deployment } from "./deployment.ts";
 import {
   ApprovalRequestId,
@@ -16,7 +16,7 @@ import {
   StorageError,
 } from "./shared.ts";
 import { AccountConnectionDestination } from "./account-connection.ts";
-import type { Effect, Redacted } from "effect";
+import type { Redacted } from "effect";
 import type { OAuthClientId, OAuthAttemptId } from "./oauth.ts";
 
 /**
@@ -47,7 +47,7 @@ export const StoredDeployment = Schema.Struct({
 export type StoredDeployment = typeof StoredDeployment.Type;
 
 /**
- * An app stores its source identity and active deployment; profiles store selections.
+ * An app stores its source identity and active deployment; callers choose its accounts.
  * Public App.requirements is read from that deployment rather than duplicated.
  */
 export const StoredApp = Schema.Struct({
@@ -75,13 +75,16 @@ export const StoredConnectionState = Schema.Union([
 ]);
 export type StoredConnectionState = typeof StoredConnectionState.Type;
 
-/** Frozen target intent. Single selections are compared at completion; collections merge with current IDs. */
+/**
+ * Frozen target intent; completion checks the app still requires the same provider there, in the
+ * same scope. Connections saved before scopes were recorded were started for profiles, which are
+ * user links.
+ */
 export const StoredConnectionTarget = Schema.Struct({
   ...AccountConnectionDestination.fields,
   owner: OwnerId,
-  cardinality: Schema.Literals(["one", "many"]),
-  selection: Schema.NullOr(Schema.Union([AccountId, Schema.Array(AccountId)])),
-}).pipe(Schema.encodeKeys({ profile: "installation" }));
+  scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
+});
 export type StoredConnectionTarget = typeof StoredConnectionTarget.Type;
 
 /** Atomic product writes beside SDK writes are host-only, outside the public HTTP/Promise facade. */
@@ -95,6 +98,22 @@ export interface StorageHost {
   readonly transaction: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | StorageError, R>;
+  /**
+   * Product SQL names the product tables it reads, so live queries that read them run again after
+   * a tracked write commits. Names must not collide with the executor's own tables.
+   */
+  readonly read: <A, E, R>(
+    tables: ReadonlyArray<string>,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
+  /**
+   * Product SQL names the product tables it changes. Inside {@link StorageHost.transaction} they
+   * are published when it commits; a standalone statement publishes once it succeeds.
+   */
+  readonly write: <A, E, R>(
+    tables: ReadonlyArray<string>,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
 }
 /** The host owns encryption and key custody. Ciphertexts are bound to their stable resource identity. */
 export interface Credentials {
@@ -124,4 +143,13 @@ export interface Credentials {
       | import("./events.ts").StoredEventId,
     bytes: Redacted.Redacted<Uint8Array>,
   ) => Effect.Effect<Redacted.Redacted<JsonObject>, CredentialsError>;
+  /**
+   * A keyed digest of a secret value under the host's key, so stored data can find it again
+   * without holding it or a digest anyone without the key could guess. Equal for equal `purpose`
+   * and `value`; never equal across purposes.
+   */
+  readonly fingerprint: (
+    purpose: string,
+    value: Redacted.Redacted<string>,
+  ) => Effect.Effect<string, CredentialsError>;
 }

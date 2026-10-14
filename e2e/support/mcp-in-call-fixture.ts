@@ -2,7 +2,8 @@
  * A synthetic upstream MCP server whose tools act inside their own call, using only the public
  * JSON-RPC and Streamable HTTP wire contract: `confirm` asks its client a question before answering,
  * and `refresh` announces that its tool list changed. Both messages travel on the call's own event
- * stream, so the call is still open when the client handles them.
+ * stream, so the call is still open when the client handles them. `answer` answers at once, and
+ * `retire` stops listing `answer` without announcing it, so only a catalog refresh sees it go.
  */
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -31,6 +32,8 @@ const event = (message: object) =>
 export const mcpInCallFixture = Effect.gen(function* () {
   // Questions sent on a call's stream, by request ID, until the client's answer arrives.
   const asked = new Map<string, Deferred.Deferred<string>>();
+  // Whether `retire` has removed `answer` from the tool list.
+  let retired = false;
   const handler = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const message = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Message)));
@@ -66,9 +69,31 @@ export const mcpInCallFixture = Effect.gen(function* () {
               inputSchema: { type: "object", properties: {} },
               annotations: { readOnlyHint: true },
             },
+            {
+              name: "retire",
+              description: "Stop listing answer",
+              inputSchema: { type: "object", properties: {} },
+              annotations: { readOnlyHint: true },
+            },
+            ...(retired
+              ? []
+              : [
+                  {
+                    name: "answer",
+                    description: "Answer at once",
+                    inputSchema: { type: "object", properties: {} },
+                    annotations: { readOnlyHint: true },
+                  },
+                ]),
           ],
         });
       case "tools/call": {
+        if (message.params?.name === "answer")
+          return answer({ content: [{ type: "text", text: "answered" }] });
+        if (message.params?.name === "retire") {
+          retired = true;
+          return answer({ content: [{ type: "text", text: "retired" }] });
+        }
         if (message.params?.name === "refresh")
           return HttpServerResponse.stream(
             Stream.make(

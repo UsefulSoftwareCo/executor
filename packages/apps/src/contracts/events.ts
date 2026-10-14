@@ -94,7 +94,8 @@ export interface EmitOptions<Filters> {
   readonly occurredAt?: Date | number | undefined;
   /**
    * The ID of the account the event came from. A webhook handler defaults to its source account,
-   * and an invocation with exactly one account to that account. Name it when there are several.
+   * and an invocation with exactly one of the caller's accounts to that account; the app's own
+   * accounts never count. Name it when there are several.
    */
   readonly account?: string | undefined;
 }

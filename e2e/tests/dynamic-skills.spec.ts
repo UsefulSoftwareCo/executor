@@ -1,6 +1,6 @@
 /** Dynamic skill freshness through the real app compiler, runtime, HTTP, MCP and browser. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -11,8 +11,8 @@ import { Browser } from "../support/browser.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { skillUpstream } from "../support/skill-upstream.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 
 const Bundle = Schema.Struct({
   deployment: Schema.String,
@@ -24,7 +24,6 @@ const Bundle = Schema.Struct({
     }),
   ),
 });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 
 /**
  * An app reading skills from a private GitHub repository with its selected account's token. App
@@ -42,10 +41,10 @@ const github = defineProvider({
   hosts: ${JSON.stringify(options.hosts)},
   auth: { token: secrets({ label: "Token", fields: object({ token: string() }) }) },
 });
-export default defineApp({ accounts: { github } }, async (ctx) => ({
+export default defineApp({ user: { accounts: { github } } }, async (ctx) => ({
   dynamicSkills: dynamicSkills({ list: () => githubSkills({
     repo: ${JSON.stringify(options.repo)}, path: "skills", cache: ctx.cache, signal: ctx.signal,
-    account: ctx.accounts.github, token: ctx.accounts.github.fields.token,
+    account: ctx.user.accounts.github, token: ctx.user.accounts.github.fields.token,
     fetch: (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input);
       return ctx.fetch(${JSON.stringify(options.upstream)} + "/github" + url.pathname + url.search, init);
@@ -72,7 +71,7 @@ layer(HostedLive, { excludeTestServices: true })("Dynamic skills", (it) => {
               path: "index.ts",
               content: `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { githubSkills, wellKnownSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: async () => [
     ...await wellKnownSkills({ url: ${JSON.stringify(upstream.url)}, fetch: ctx.fetch, signal: ctx.signal }),
@@ -98,15 +97,9 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
           api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
         );
         const base = `${prefix}/${app.id}`;
-        const profile = yield* createProfile(actors.owner, base);
-        const tools = yield* api.request(
-          actors.owner,
-          "GET",
-          `${base}/tools?profile=${profile.id}`,
-        );
+        const tools = yield* api.request(actors.owner, "GET", `${base}/tools`);
         expect(tools.status).toBe(200);
         const ping = yield* api.request(actors.owner, "POST", `${base}/tools/call`, {
-          profile: profile.id,
           tool: "ping",
           kind: "query",
           input: {},
@@ -268,25 +261,17 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
             );
             return `${prefix}/apps/${app.id}`;
           });
-        /** Wait until background profile setup has resolved the profile's accounts. */
-        const settled = (path: string, profile: string) =>
-          api.request(actors.owner, "GET", `${path}/profiles/${profile}`).pipe(
-            Effect.flatMap((response) => body(SetupStatus, response)),
-            Effect.flatMap((current) =>
-              current.status !== "pending"
-                ? Effect.void
-                : Effect.fail(new Error("Profile setup has not finished")),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-          );
-        /** Connect a GitHub account with this token through a fresh profile. */
+        /** Connect a GitHub account with this token from the app, which links it. */
         const connect = (path: string, label: string, value: string) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, path);
-            const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "github",
-              profile: profile.id,
-            });
+            const pending = yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(path, "user", "github"),
+              {
+                destination: { kind: "personal" },
+              },
+            );
             expect(pending.status, JSON.stringify(pending.body)).toBe(200);
             const saved = yield* api.request(
               actors.owner,
@@ -301,16 +286,18 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
                 .request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)
                 .pipe(Effect.orDie),
             );
-            yield* settled(path, profile.id);
-            return { profile: profile.id, account };
+            return account;
           });
-        const read = (path: string, profile: string) =>
-          api.request(actors.owner, "GET", `${path}/skill-bundle?profile=${profile}`);
+        /**
+         * Read the skills with the app's linked account. Connecting another account from the app
+         * replaces the link, so the read uses the account connected or linked last.
+         */
+        const read = (path: string) => api.request(actors.owner, "GET", `${path}/skill-bundle`);
 
         const host = new URL(upstream.url).host;
         const path = yield* deploy([host]);
         const reader = yield* connect(path, "Reader", token);
-        const readable = yield* read(path, reader.profile);
+        const readable = yield* read(path);
         expect(
           readable.status,
           JSON.stringify({ response: readable.body, credentials: yield* upstream.credentials }),
@@ -334,23 +321,23 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
               : `token ${token}`,
           );
 
-        // Another account of the same app does not read the first account's cached catalog; its
-        // rejected token is reported against that account.
+        // Another account, connected in place of the first, does not read the first account's
+        // cached catalog; its rejected token is reported against that account.
         const outsider = yield* connect(path, "Outsider", `synthetic-revoked-${randomUUID()}`);
-        const rejected = yield* read(path, outsider.profile);
+        const rejected = yield* read(path);
         expect(rejected.status, JSON.stringify(rejected.body)).toBe(502);
         expect(rejected.body).toMatchObject({
           _tag: "AppProviderFailed",
           reason: "unauthorized",
           status: 401,
-          account: { id: outsider.account, label: "Outsider" },
+          account: { id: outsider, label: "Outsider" },
         });
 
         // GitHub answers 404 with a token for a repository the token cannot read, as for one that
         // does not exist: the copy says it is not available with the token, and claims neither.
         const absentPath = yield* deploy([host], "synthetic/absent-skills");
-        const absentReader = yield* connect(absentPath, "Reader", token);
-        const absent = yield* read(absentPath, absentReader.profile);
+        yield* connect(absentPath, "Reader", token);
+        const absent = yield* read(absentPath);
         expect(absent.status, JSON.stringify(absent.body)).toBe(502);
         expect(absent.body).toMatchObject({
           _tag: "AppEvaluationFailed",
@@ -370,13 +357,8 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
         // elsewhere, and says which hosts the read needs.
         const before = (yield* upstream.credentials).length;
         const elsewhere = yield* deploy(["github.com", "raw.githubusercontent.com"]);
-        const selected = yield* createProfile(actors.owner, elsewhere);
-        const selection = yield* selectProfileAccounts(actors.owner, elsewhere, selected.id, {
-          github: reader.account,
-        });
-        expect(selection.status, JSON.stringify(selection.body)).toBe(200);
-        yield* settled(elsewhere, selected.id);
-        const refused = yield* read(elsewhere, selected.id);
+        yield* linkAccount(actors.owner, elsewhere, "github", reader);
+        const refused = yield* read(elsewhere);
         expect(refused.status, JSON.stringify(refused.body)).toBe(502);
         expect(refused.body).toMatchObject({
           _tag: "AppEvaluationFailed",

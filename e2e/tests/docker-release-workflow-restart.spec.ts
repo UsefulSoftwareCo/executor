@@ -22,7 +22,7 @@ it.live(
         const stepSeconds = 180;
         const sleepSeconds = 45;
         const server = yield* workflowServer(`import { defineApp, workflow, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   workflows: {
     woken: workflow({ input: object({}) }, async (ctx) => {
       await ctx.step.sleep("wait", "${sleepSeconds} seconds");
@@ -81,7 +81,7 @@ it.live(
         const count = 12;
         const sleepSeconds = 60;
         const server = yield* workflowServer(`import { defineApp, workflow, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   workflows: {
     nap: workflow({ input: object({}) }, async (ctx) => {
       const before = await ctx.step.do("before", async () => Date.now());

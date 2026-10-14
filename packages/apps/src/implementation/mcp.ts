@@ -172,6 +172,8 @@ const transportFetch =
           try: () => {
             const headers = new Headers(Redacted.value(connection.headers));
             new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+            // Workers send no User-Agent, and some Cloudflare-hosted servers refuse requests without one.
+            if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             return HttpClientRequest.fromWeb(new Request(target, { ...init, headers }));
           },
           // The provider's headers cannot form an HTTP request, such as a name with a space.
@@ -237,6 +239,20 @@ const explain = <E>(
   responses: ErrorResponses,
 ) => {
   if (Schema.is(ProviderError)(error)) return providerErrorDetail(error, { phase });
+  // A tool call's request that failed without an answer, such as on a closed connection, failed
+  // the call, which the server may already have run; it is not a failure to connect.
+  if (
+    phase === "call" &&
+    Schema.is(McpError)(error) &&
+    error.phase === "transport" &&
+    error.reason === "request"
+  )
+    return new McpError({
+      phase,
+      reason: error.reason,
+      ...(error.status === undefined ? {} : { status: error.status }),
+      ...(error.upstream === undefined ? {} : { upstream: error.upstream }),
+    });
   if (!Schema.is(McpError)(error) || error.status === undefined) return error;
   const response = responses.get(error.status);
   if (

@@ -15,7 +15,6 @@ import {
   publicProviderErrorUpstream,
   providerSecretMarker,
 } from "../support/provider-error-upstream.ts";
-import { createProfile } from "../support/profiles.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -135,13 +134,8 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
         const publicApp = yield* body(App, remote);
         apps.push(publicApp.id);
         const path = `${prefix}/apps/${publicApp.id}`;
-        const profile = yield* createProfile(actors.owner, path);
         yield* upstream.configure({ status: 520, accounts: "all" });
-        const tools = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/tools?profile=${profile.id}`,
-        );
+        const tools = yield* api.request(actors.owner, "GET", `${path}/tools`);
         expect(tools.status).toBe(502);
         expect(tools.body).toMatchObject({
           _tag: "AppProviderFailed",
@@ -151,9 +145,7 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
         expect(JSON.stringify(tools.body)).not.toContain(providerSecretMarker);
         yield* browser.use("Show the outage inside the saved app", (page) =>
           page
-            .goto(
-              `/org/${actors.organization.slug}/apps/${publicApp.id}?view=tools&profile=${profile.id}`,
-            )
+            .goto(`/org/${actors.organization.slug}/apps/${publicApp.id}?view=tools`)
             .then(() =>
               page
                 .getByRole("heading", { name: "Service temporarily unavailable", exact: true })
@@ -177,9 +169,7 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
             .click()
             .then(() => page.getByRole("heading", { name: "identity", exact: true }).waitFor()),
         );
-        expect(
-          (yield* api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`)).status,
-        ).toBe(200);
+        expect((yield* api.request(actors.owner, "GET", `${path}/tools`)).status).toBe(200);
       }),
     ),
   );

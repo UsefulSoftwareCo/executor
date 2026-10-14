@@ -68,6 +68,18 @@ const relativeRouteFiles = (): PluginOption => {
   };
 };
 
+/**
+ * E2E builds write source maps beside the bundles without referencing them, so the suite can map
+ * the browser's coverage of each bundle back to its sources. See `e2e/coverage.ts`.
+ */
+const e2eSourceMaps = (): PluginOption => ({
+  name: "executor-e2e-source-maps",
+  config: () =>
+    process.env.EXECUTOR_DASHBOARD_SOURCEMAP === "hidden"
+      ? { build: { sourcemap: "hidden" } }
+      : undefined,
+});
+
 /** Start owns routing, code splitting, the browser entry and the server document handler. */
 export const dashboardStartPlugins = ({
   runtime,
@@ -79,6 +91,7 @@ export const dashboardStartPlugins = ({
   readonly tailwind?: ReturnType<typeof tailwindcss>;
 }): Array<PluginOption> => [
   buildMetadata(),
+  e2eSourceMaps(),
   serverBundle(runtime),
   tanstackStart({
     srcDirectory: "src",

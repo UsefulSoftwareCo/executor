@@ -14,14 +14,14 @@ import { appsManifest } from "../support/apps-release.ts";
 const echoAppSource = (
   name: string,
 ) => `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text from the ${name} fixture" },
     async (_ctx, { text }) => ({ app: ${JSON.stringify(name)}, text })),
 }) }));`;
 
 // Discovery of this app always fails, so `unavailableApps` shows whether an execution touched it.
 const brokenAppSource = `import { defineApp } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new Error("Synthetic evaluation failure");
 });`;
 
@@ -108,7 +108,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP execute reach", (it) => {
         expect(direct.execution).toMatchObject(echoed("alpha", "static"));
         expect(direct.touchedBroken).toBe(false);
 
-        // Every other use of `tools` can name any app at run time, so every app is discovered.
+        // Every other use of `tools` can name any app at run time. An app is discovered when the
+        // program reaches it, so none of these touch the broken app.
         const dynamic = [
           {
             label: "Computed member access",
@@ -138,17 +139,27 @@ return await all[${a}].echo({ text: "aliased" });`,
             label: "Destructure tools",
             code: `const { [${a}]: app } = tools;
 return await app.echo({ text: "destructured" });`,
-            // CodeMode rejects destructuring the namespace itself; discovery has already run.
+            // CodeMode rejects destructuring the namespace itself.
             expected: { ok: false, error: { kind: "InvalidDataValue" } },
           },
         ];
         for (const { label, code, expected } of dynamic) {
           const result = yield* execute(label, code);
           expect(result.execution, label).toMatchObject(expected);
-          expect(result.touchedBroken, label).toBe(true);
+          expect(result.touchedBroken, label).toBe(false);
         }
 
-        // The global `search` reads the program's own tool index, which covers every app.
+        // A computed access that reaches the broken app discovers it, and reports why it failed.
+        const reached = yield* execute(
+          "Computed access to the broken app",
+          `const name = [${JSON.stringify(broken.slug)}][0];
+return await tools[name].echo({ text: "broken" });`,
+        );
+        expect(reached.execution.ok).toBe(false);
+        expect(reached.touchedBroken).toBe(true);
+
+        // The global `search` ranks every app's tools with Executor's search, which reports the
+        // broken app it could not list.
         const globalSearch = yield* execute(
           "Global search",
           `return search({ query: "Echo text from the beta fixture" });`,
@@ -158,9 +169,12 @@ return await app.echo({ text: "destructured" });`,
         expect(globalSearch.touchedBroken).toBe(true);
 
         // Source that does not parse still reports CodeMode's parse error.
-        const unparsed = yield* execute("Unparsed source", "return tools[;");
+        const unparsed = yield* execute(
+          "Unparsed source",
+          `return tools[${JSON.stringify(broken.slug)}][;`,
+        );
         expect(unparsed.execution.ok).toBe(false);
-        expect(unparsed.touchedBroken).toBe(true);
+        expect(unparsed.touchedBroken).toBe(false);
 
         // A namespaced search discovers the named app mid-program and nothing else.
         const namespaced = yield* execute(

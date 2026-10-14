@@ -16,6 +16,7 @@ import {
   hostedExecutorOrigin,
   remoteRegistry,
   httpEventSender,
+  type DurableDeclarations,
   type Executor,
   type RepositoryBackend,
 } from "@executor-js/sdk/core";
@@ -29,11 +30,14 @@ import {
   organizationDefaults,
   noOrganizationRemovals,
   lazyHostedApiDocument,
+  authSettings,
   clientMetadataSetting,
+  firstPartyOAuthClients,
   hostedOAuthClientName,
   withDeploySetupWake,
   withExecutorAnalytics,
   executorDefaultRedeployed,
+  hostedAppCopies,
 } from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
@@ -52,6 +56,8 @@ export interface SelfHostPlatform {
   readonly repositories: RepositoryBackend;
   readonly runtime: AppRuntime;
   readonly workflows: WorkflowRuntime;
+  /** Evaluated results kept in each app's data supervisor. */
+  readonly declarations: DurableDeclarations;
 }
 
 /** Private callback surface for app workflows, exposed only through a service binding. */
@@ -68,18 +74,32 @@ export const selfHostExecutorServices = <E, R>(
   Layer.unwrap(
     Effect.gen(function* () {
       const key = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY");
-      const origin = yield* Config.String("BETTER_AUTH_URL");
-      const clientMetadata = yield* clientMetadataSetting(origin);
+      const settings = yield* authSettings;
+      const origin = settings.url;
+      // A configured account callback is the one saved clients were keyed with.
+      const accountCallback = settings.oauthRedirectUri;
+      const clientMetadata = yield* clientMetadataSetting({
+        origin,
+        oauthRedirectUri: Option.getOrUndefined(accountCallback),
+      });
+      // Only E2E hosts add test client definitions; see `firstPartyOAuthClients`.
+      const firstPartyClients = yield* firstPartyOAuthClients({
+        testDefinitions:
+          (yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""))) === "e2e",
+      });
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
       const ready = yield* Deferred.make<Executor>();
-      const { runtime, workflows, blobs, repositories } = yield* acquire(Deferred.await(ready));
+      const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
+        Deferred.await(ready),
+      );
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
           Config.withDefault(hostedExecutorOrigin),
         ),
       );
+      const lifecycle = yield* hostedResourceLifecycle;
       const executor = yield* createExecutor({
         database: storage,
         secret: key,
@@ -89,15 +109,26 @@ export const selfHostExecutorServices = <E, R>(
         runtime,
         workflows,
         registry,
-        hooks: yield* hostedResourceLifecycle,
+        hooks: lifecycle.hooks,
         oauth: {
           httpClient: egress.client,
           clientName: hostedOAuthClientName,
           urlPolicy: egress.policy,
-          ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
+          ...(Option.isSome(clientMetadata)
+            ? {
+                clientMetadataUrl: clientMetadata.value.url,
+                clientMetadataRedirectUri: clientMetadata.value.redirectUri,
+              }
+            : {}),
+          ...(Option.isSome(accountCallback)
+            ? { savedClientCallbacks: [accountCallback.value] }
+            : {}),
+          firstPartyClients,
         },
         cache: {
           memory: makeDeclarationCache(evaluation.limits),
+          // Kept in each app's supervisor too, so a restart does not evaluate every app again.
+          durable: declarations,
           toolListings: evaluation.toolListings,
         },
         // Stale declarations refresh on the server's own lifetime.
@@ -108,6 +139,7 @@ export const selfHostExecutorServices = <E, R>(
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
       }).pipe(Effect.provide(BrowserCrypto.layer));
+      yield* lifecycle.attach(executor);
       yield* Deferred.succeed(ready, executor);
       yield* Effect.forkScoped(deliverEvents(executor));
       // The schema is current and nothing serves or builds yet; the caller holds the data lock.
@@ -117,9 +149,10 @@ export const selfHostExecutorServices = <E, R>(
           executor,
           blobs,
           agentGrants: auth.agentGrants,
-          // Nothing sets profiles up yet: the schedule worker starts after these steps, and its
-          // first pass sets up the profiles a redeploy left pending.
+          // Nothing reconciles webhook sources yet: the schedule worker starts after these steps,
+          // and its first pass reconciles the sources a redeploy left pending.
           executorAppRedeployed: executorDefaultRedeployed(Effect.void),
+          appCopies: hostedAppCopies(executor),
         },
         "private_hosted",
       );

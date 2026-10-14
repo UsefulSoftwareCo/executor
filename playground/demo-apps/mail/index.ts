@@ -77,7 +77,7 @@ async function listGmailMessages(account: AccountOf<typeof gmail>, pageToken?: s
 const accounts = { mailboxes: gmail.many() };
 
 export default defineApp(
-  { accounts },
+  { user: { accounts } },
   {
     tools: router({
       listMessages: query(
@@ -86,7 +86,7 @@ export default defineApp(
             "List message references in one selected inbox. Pass its nextPageToken to continue.",
           input: ListMessagesInput,
         },
-        async ({ accounts }, { accountId, pageToken }) => {
+        async ({ user: { accounts } }, { accountId, pageToken }) => {
           const account = accounts.mailboxes.find((mailbox) => mailbox.id === accountId);
           if (!account) throw new MailboxNotSelected();
           return listGmailMessages(account, pageToken);
@@ -98,7 +98,7 @@ export default defineApp(
             "List the first page of message references from every selected inbox, grouped by account.",
           input: object({}),
         },
-        async ({ accounts }) => {
+        async ({ user: { accounts } }) => {
           const inboxes: Array<Awaited<ReturnType<typeof listGmailMessages>>> = [];
           // Account count is user-selected; avoid unbounded request fan-out.
           for (const account of accounts.mailboxes) {

@@ -34,9 +34,12 @@ import type { Executor } from "../contracts/executor.ts";
 import { runtimeAdapter } from "./runtime.ts";
 import { appRuntime, buildLoadSpan } from "./app-runtime.ts";
 import { appWorker } from "./app-runner.ts";
+import { encodeLoadedBuild } from "./remote-app-runner.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
 import { loadWorkerBuild, retainWorkerBuild, workerBuildAsset } from "./worker-build-storage.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
+import type { EvaluatedCommand } from "@executor-js/app-data/evaluated";
+import { evaluatedDeclarations } from "./evaluated-declarations.ts";
 
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
@@ -180,6 +183,11 @@ export interface WorkerdTransport {
     work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | RuntimeProtocolFailed>;
   readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
+  /** One command to the app's store of evaluated results, answered with its reply. */
+  readonly evaluated: (
+    app: string,
+    command: EvaluatedCommand,
+  ) => Effect.Effect<unknown, RuntimeProtocolFailed>;
   readonly backend: (
     operation: "start" | "status" | "terminate",
     run: WorkflowRunId,
@@ -213,10 +221,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
           const callbacks = new HostCallbacks(
             capabilities.elicit,
             capabilities.controls,
-            async () =>
-              Schema.encodeSync(Schema.fromJsonString(LoadedWorkerBuild))(
-                await capabilities.load(),
-              ),
+            async () => encodeLoadedBuild(await capabilities.load()),
           );
           return yield* rpc((api) =>
             Effect.tryPromise({
@@ -228,10 +233,11 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             }),
           );
         }),
-      build: ({ files }) =>
+      build: ({ files, public: publicPaths }) =>
         Effect.gen(function* () {
           const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(CompileWorkerApp))({
             files,
+            ...(publicPaths === undefined ? {} : { public: publicPaths }),
           }).pipe(
             Effect.mapError(
               (cause) =>
@@ -286,5 +292,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
         status: (run: WorkflowRunId) => transport.backend("status", run),
         terminate: (run: WorkflowRunId) => transport.backend("terminate", run).pipe(Effect.asVoid),
       } satisfies WorkflowRuntime,
+      /** Evaluated results kept in each app's supervisor, so they outlive this process. */
+      declarations: evaluatedDeclarations(transport.evaluated),
     };
   });

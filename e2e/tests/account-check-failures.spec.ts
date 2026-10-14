@@ -42,7 +42,7 @@ const service = defineProvider({
     throw new Error("403: token " + account.fields.token + " lacks the accounts scope");
   },
 });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
             },
             appsManifest,

@@ -9,10 +9,10 @@ import { Clock, Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
+import { linkLocal } from "../support/local-links.ts";
 import { appBuildLoads } from "../support/build-loads.ts";
 import { Observation, observerApp, RunObservation } from "../support/worker-observer.ts";
 import { scenarios } from "../test-plan.ts";
@@ -35,7 +35,7 @@ const Run = Schema.Struct({
   output: Schema.optionalKey(Schema.Json),
 });
 
-/** Deploy an observer app through the agent API and return its per-profile operations. */
+/** Deploy an observer app through the agent API and return its per-account operations. */
 const localApp = (resource: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -53,7 +53,7 @@ const localApp = (resource: string) =>
       },
     };
     const resources: { app?: string; accounts: string[] } = { accounts: [] };
-    // Remove the app before the accounts its profiles select.
+    // Remove the app before the accounts linked to it.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         if (resources.app !== undefined)
@@ -64,7 +64,7 @@ const localApp = (resource: string) =>
           expect((yield* api.request(agent, "DELETE", `/v1/accounts/${account}`)).status).toBe(200);
       }).pipe(Effect.orDie),
     );
-    const owner = "worker-reuse-e2e",
+    const owner = "local",
       name = `Worker reuse ${randomUUID().slice(0, 8)}`;
     const deployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
       owner,
@@ -83,29 +83,29 @@ const localApp = (resource: string) =>
     const path = `/v1/apps/${app.id}`;
     const connect = (token: string) =>
       Effect.gen(function* () {
-        const created = yield* api.request(agent, "POST", "/v1/accounts", {
-          owner,
-          provider: app.requirements.accounts.service.provider,
-          method: "key",
-          label: name,
-          fields: { token },
-        });
-        expect(created.status, JSON.stringify(created.body)).toBe(200);
-        const account = (yield* body(Resource, created)).id;
+        const account = (yield* connectAccount({ token })).id;
         resources.accounts.push(account);
-        const profile = yield* createProfile(agent, path, { owner, subject: "local" });
-        expect(
-          (yield* selectProfileAccounts(agent, path, profile.id, { service: account })).status,
-        ).toBe(200);
-        return { account, profile: profile.id };
+        return account;
       });
-    const observe = (profile: string) =>
+    /** Save an account for the app's requirement, or replace the given account's key. */
+    const connectAccount = (input: { token: string; account?: string }) =>
+      connectLocalAccount(agent, {
+        app: app.id,
+        requirement: "service",
+        method: "key",
+        label: name,
+        fields: { token: input.token },
+        ...(input.account === undefined ? {} : { account: input.account }),
+      });
+    // Calls cannot choose accounts: each one uses the account linked to the app, so the account a
+    // call or run should use is linked first. Linking it again changes nothing.
+    const observe = (account: string) =>
       Effect.gen(function* () {
+        yield* linkLocal(agent, app.id, "service", account);
         // The call names its kind, as agents do. Without one the host first describes the tool,
         // which cold-starts the app Worker beside the data facet that runs the query.
         const response = yield* api.request(agent, "POST", "/v1/tools/call", {
           app: app.id,
-          profile,
           tool: "probe",
           kind: "query",
           input: {},
@@ -115,10 +115,10 @@ const localApp = (resource: string) =>
           (yield* body(Completed, response)).value,
         );
       });
-    const run = (profile: string) =>
+    const run = (account: string) =>
       Effect.gen(function* () {
+        yield* linkLocal(agent, app.id, "service", account);
         const started = yield* api.request(agent, "POST", `${path}/workflow-runs`, {
-          profile,
           workflow: "probe",
           input: {},
           key: randomUUID(),
@@ -142,7 +142,7 @@ const localApp = (resource: string) =>
           yield* Effect.sleep("100 millis");
         }
       });
-    return { agent, api, app: app.id, connect, observe, run };
+    return { agent, api, app: app.id, connect, connectAccount, observe, run };
   });
 
 layer(TestLive, { excludeTestServices: true })("Local app worker reuse", (it) => {
@@ -151,22 +151,17 @@ layer(TestLive, { excludeTestServices: true })("Local app worker reuse", (it) =>
       context,
       Effect.gen(function* () {
         const issuer = yield* oauthSetupIssuer;
-        const { agent, api, app, connect, observe, run } = yield* localApp(
+        const { app, connect, connectAccount, observe, run } = yield* localApp(
           `${issuer.origin}/resource`,
         );
         const first = yield* connect("synthetic-local-0");
-        const observed: Array<typeof Observation.Type> = [yield* run(first.profile)];
+        const observed: Array<typeof Observation.Type> = [yield* run(first)];
         for (let round = 1; round <= rotations; round++) {
           const token = `synthetic-local-${round}`;
-          const replaced = yield* api.request(
-            agent,
-            "PUT",
-            `/v1/accounts/${first.account}/credentials`,
-            { fields: { token } },
-          );
-          expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
-          const call = yield* observe(first.profile);
-          const workflow = yield* run(first.profile);
+          const replaced = yield* connectAccount({ token, account: first });
+          expect(replaced.id).toBe(first);
+          const call = yield* observe(first);
+          const workflow = yield* run(first);
           expect(workflow.run).toBe(workflow.id);
           // Each call and run presents the current key, also through its outbound fetch.
           for (const entry of [call, workflow])
@@ -181,18 +176,18 @@ layer(TestLive, { excludeTestServices: true })("Local app worker reuse", (it) =>
 
         // Another account's calls and runs use another Worker, with no module state from the first.
         const second = yield* connect("synthetic-local-other");
-        const other = yield* run(second.profile);
+        const other = yield* run(second);
         expect(other).toMatchObject({ previous: null, token: "synthetic-local-other" });
         expect(other.isolate).not.toBe(observed[0]!.isolate);
-        expect((yield* observe(second.profile)).isolate).toBe(other.isolate);
-        const back = yield* observe(first.profile);
+        expect((yield* observe(second)).isolate).toBe(other.isolate);
+        const back = yield* observe(first);
         expect(back).toMatchObject({
           isolate: observed[0]!.isolate,
           previous: `synthetic-local-${rotations}`,
           token: `synthetic-local-${rotations}`,
         });
-        // Each account's Worker loaded the build once, whether a workflow run, a call or profile
-        // setup started it. A workflow cold start records its load under the Worker's name.
+        // Each account's Worker loaded the build once, whether a workflow run or a call started it.
+        // A workflow cold start records its load under the Worker's name.
         const loads = yield* appBuildLoads(app);
         expect(Object.values(loads), JSON.stringify(loads)).toEqual([1, 1]);
         expect(Object.keys(loads).every((runtime) => runtime.startsWith("worker "))).toBe(true);

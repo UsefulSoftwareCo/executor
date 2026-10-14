@@ -14,7 +14,7 @@ Read these files in order:
 4. `aesGcmCredentials` from `@executor-js/sdk/core` encrypts account fields with AES-GCM.
 5. `packages/mcp` declares and implements execute, skills, search and the transport;
    `src/implementation/mcp.ts` supplies local SDK access and documentation I/O.
-6. `src/implementation/executor-app.ts` deploys the bundled management app and selects its local API account.
+6. `src/implementation/executor-app.ts` deploys the bundled management app and links its local API account.
 7. `src/contracts/config.ts` defines local paths, port, explicit secrets and MCP limits.
 8. `src/contracts/dashboard.ts` defines the typed dashboard API;
    `src/implementation/dashboard.ts` projects SDK data and `web.ts` serves the UI.
@@ -60,12 +60,13 @@ directory. `bun run with:local …` loads 1Password values instead; see
 | `EXECUTOR_KEY_STORAGE`                  | Optional key storage for a new directory: `file` for `keys.json`, `os` for the OS credential store without the key file fallback. See [Key storage](#key-storage).                          |
 | `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `300000`.                                                                                                                               |
 | `EXECUTOR_MCP_MAX_TOOL_CALLS`           | Admitted calls per execute, including search; defaults to `100`.                                                                                                                            |
-| `EXECUTOR_MCP_MAX_OUTPUT_BYTES`         | Result value/log truncation budget; defaults to `65536`. Protocol metadata and truncation markers add overhead.                                                                             |
+| `EXECUTOR_MCP_MAX_OUTPUT_BYTES`         | Result value/log truncation budget; defaults to `100000`. Protocol metadata and truncation markers add overhead.                                                                            |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS`   | Reuse an app's evaluated tool list this long before refreshing it in the background; defaults to `30`.                                                                                      |
 | `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `60`.                                                                                             |
 | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS`    | Stop evaluating an app's tool list after this long when no request is waiting for it; defaults to `45`.                                                                                     |
 | `EXECUTOR_EVALUATION_MEMORY_MB`         | Memory for kept tool lists and app declarations; defaults to `256`.                                                                                                                         |
 | `EXECUTOR_APP_WORKERS`                  | Most app and data Workers kept loaded; defaults to `64`. Idle ones above it unload and reload on their next call. An app with a database runs its calls in a data Worker, which counts too. |
+| `EXECUTOR_APP_WORKER_IDLE_SECONDS`      | Unload an app or data Worker not called for this long, even below `EXECUTOR_APP_WORKERS`; `0` turns this off. Defaults to `300`.                                                            |
 
 ### Key storage
 
@@ -177,11 +178,11 @@ Bearer authentication for SDK/MCP remains unchanged. Requests must use the exact
 `http://127.0.0.1:<port>` origin and Host; no remote access or CORS is enabled.
 The public HTML and bundled assets contain no key or account data.
 
-Inspect apps, saved account selections, live tools, retained deployments and
+Inspect apps, their linked accounts, live tools, retained deployments and
 source files. The Accounts page shows provider metadata and the apps that use
 each account. It never returns saved credentials. This first dashboard is
-also supports catalog imports and app account selection. Accounts are connected and their
-credentials replaced from an app's Accounts tab, which selects them for that app.
+also supports catalog imports. Accounts are connected and their credentials replaced
+from an app's Accounts tab, which also links and unlinks saved accounts.
 The SDK and MCP expose the underlying operations to other clients.
 
 The React UI lives in `apps/local/web`. Effect Atom reads the shared HTTP API
@@ -235,19 +236,21 @@ return await tools.search({ query: "Executor" });
 ```
 
 Search returns exact callable paths, one-line descriptions and input types;
-`tools.search.describe({ paths })` returns full signatures. The Executor app exposes
-`deployApp`, `addApp`, `listApps`, `getApp`, `addAccount`, `listAccounts`,
-`getAccount`, `activateDeployment` and `listTools`. Account selections use
-`apps.profiles` with an explicit profile and expected revision.
-It calls this server's API through an ordinary selected account. The host uses
+`tools.search.describe({ paths })` returns full signatures. The Executor app's
+tools are generated from this server's management API, such as `apps.deploy`,
+`apps.list`, `accounts.list`, `appAccounts.userConnect` and `tools.list`.
+It calls this server's API through its linked account. The host uses
 the existing configured bearer key; it does not create a separate admin key.
 The persisted host-owned app is named `Executor`, with owner `executor-local`.
 Startup restores its bundled source and updates its local account's port/key
 while retaining the account identity. Leave that connection under host control.
 
-All configured apps get an app-ID namespace. Copies with different accounts
-have independent source and deployments. The catalog is evaluated at
-the start of each execute, and tool calls resolve the saved selection again.
+Each app appears once, under `tools[appSlug]`. Calls never choose accounts: each
+uses the accounts linked to the app, the newest one for each plain requirement and
+every one for a many() requirement. Linking or connecting another account for a
+plain requirement replaces the one linked before; it stays saved. Links are kept
+in `local_app_account_links`. Copies have independent source and deployments. The catalog is evaluated at the start of each execute,
+and tool calls resolve their accounts again.
 Run a new execute to discover apps added or configured during a previous one.
 Incomplete or failing apps appear in `unavailableApps` with a safe error tag.
 
@@ -262,9 +265,9 @@ already completed are not rolled back when an execution fails or is cancelled.
 
 - Deploy source, derive provider IDs and retain immutable deployments.
 - Add API-key accounts and read account metadata without returning credentials.
-- Create configured app copies and save independent account selections.
+- Create configured app copies.
 - Validate account existence, provider compatibility, cardinality and duplicates.
-- List live tools and invoke them using a snapshot of saved account selections.
+- List live tools and invoke them with the accounts linked to the app.
 - Activate retained deployments in the same code lineage.
 - Serve MCP execute for app calls and management through the bundled Executor app.
 - Serve a read-only skills tool for deployed app documents, including the Executor app’s `executor`, `code-mode` and `app-authoring` skills.
@@ -272,7 +275,7 @@ already completed are not rolled back when an execution fails or is cancelled.
 - Serve a local dashboard over the same persisted apps and accounts, with catalog imports and account setup.
 
 SDK writes use database transactions. Builds and app execution run outside
-transactions. A failed selection or activation leaves the saved app unchanged.
+transactions. A failed activation leaves the saved app unchanged.
 Unused retained builds can remain after a later database failure; build garbage
 collection is deferred.
 
@@ -299,11 +302,12 @@ See [OAuth notes](../../../notes/oauth.md) for the protocol library and limits.
 
 ### Add apps and accounts
 
-The local dashboard can import OpenAPI and MCP apps from the public integrations.sh
-catalog. **Apps → Add app** generates ordinary `index.ts`, `provider.ts`,
-`request.ts`, and `operations.json` source and deploys it through the SDK. Choose
-an unused app name; this flow never replaces an existing app. API definitions
-are fetched at import time, not when a tool runs.
+**Apps → Add app** lists Executor's official apps from the feed at
+`EXECUTOR_CATALOG_URL` (the feed's `index.json`; without it the list is empty).
+Choosing one installs the app's own source as a copy, the way a published app is
+installed, and then asks for an account through the app's own providers. Choose
+an unused app name; this flow never replaces an existing app. See
+[catalog imports](../../../notes/catalog-imports.md).
 
 **Apps → Add app → Custom app** also accepts MCP, GraphQL, and OpenAPI URLs.
 These templates generate source and deploy through the same SDK. API keys are
@@ -317,35 +321,18 @@ discovery or tool call owns its connection; session state is not retained across
 separate calls. Remote prompts/resources, sampling, and elicitation are
 not included. See [catalog imports](../../../notes/catalog-imports.md).
 
-For stdio, choose **MCP → Local process (stdio)** in Custom app. Enter an
-executable, one argument per line, an optional working directory, and any
-environment variable names. Environment values are saved through the normal
-account flow. No-account servers can be used immediately.
-
-This generates `index.ts`, `stdio.ts`, `package.json`, and a provider declaration
-when environment fields are needed. The retained `stdio.ts` uses the official
-MCP SDK as an ordinary npm dependency; the apps framework has no stdio transport.
-Discovery and calls launch separate processes, pass arguments without a shell,
-and close the child on success, failure, timeout, or cancellation. Each process
-gets the selected account's environment plus the MCP SDK's basic inherited
-environment, rather than the host's full environment. Stderr is not sent to
-Executor logs. The default operation timeout is 30 seconds and is editable in
-the generated app source. Persistent process sessions are not part of this template.
-
 Automatic import checks the server's Bearer OAuth metadata advertisement when
 the catalog does not already include OAuth. This supplements incomplete API-key
 entries with OAuth while keeping their API-key method. The account form prefers
 OAuth when available. An authentication error alone does not imply OAuth support.
 
-After import, choose a compatible saved account or add one. **Accounts → Add
-account** uses the same form and the provider definitions of installed apps.
-Saving an account and selecting it for an app are separate operations. If account
-selection fails, the saved account remains available and selection can be retried.
+After import, connect an account from the app's **Accounts** tab. Every saved
+account whose provider one of the app's requirements uses is linked to it.
 Account responses never include credentials. If a network failure leaves saving
 uncertain, inspect Accounts before submitting a new account.
 
 On an app page, **Delete app** opens a full-page confirmation. It removes only
-that configured copy and its account selections. Saved accounts, other app
+that configured copy. Saved accounts, other app
 copies, and retained source/builds stay available. The built-in Executor app is
 managed by the local server and cannot be deleted. The same operation is exposed
 as `executor.apps.remove({ app })` and the management app's `removeApp` tool.

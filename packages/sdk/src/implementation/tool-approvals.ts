@@ -1,5 +1,5 @@
 /** Pending tool calls are encrypted; consumption clears their payload before external work. */
-import type { ApprovalElicitation, ApprovalResponse } from "apps/contracts";
+import { approvalElicitation, type ApprovalResponse } from "apps/contracts";
 import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
 import {
   defaultToolApprovalLimits,
@@ -20,13 +20,12 @@ import {
 import type { Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-const Payload = Schema.Struct({
-  invocation: ToolInvocation.pipe(
-    Schema.encodeKeys({
-      profile: "installation",
-      profileRevision: "installationRevision",
-    }),
-  ),
+/**
+ * A pending call as its encrypted record holds it, read again on resume. Requests saved before
+ * accounts were named per call carry installation keys; decoding ignores them.
+ */
+export const ApprovalPayload = Schema.Struct({
+  invocation: ToolInvocation,
   originalInput: Json,
   issuer: Schema.optional(ToolApprovalIssuer),
 });
@@ -80,7 +79,7 @@ export function makeToolApprovals(
       .decrypt(row.id, row.encrypted)
       .pipe(
         Effect.flatMap((value) =>
-          Schema.decodeUnknownEffect(Payload)(Redacted.value(value)).pipe(
+          Schema.decodeUnknownEffect(ApprovalPayload)(Redacted.value(value)).pipe(
             Effect.mapError(() => new StorageError()),
           ),
         ),
@@ -99,10 +98,13 @@ export function makeToolApprovals(
           ...(payload.issuer === undefined ? {} : { issuer: payload.issuer }),
         };
       }),
+    /**
+     * Save a call for review. Its prompt is built here from the saved invocation, never taken from
+     * the app, so it describes the exact call approval runs, as every later review of it does.
+     */
     save: (
       invocation: ToolInvocation,
       originalInput: Json,
-      elicitation: ApprovalElicitation,
       issuer: ToolApprovalIssuer | undefined,
     ) =>
       Effect.gen(function* () {
@@ -112,7 +114,7 @@ export function makeToolApprovals(
         const expiresAt = new Date(
           (yield* Clock.currentTimeMillis) + defaultToolApprovalLimits.ttlMs,
         );
-        const payload = yield* Schema.encodeEffect(Payload)({
+        const payload = yield* Schema.encodeEffect(ApprovalPayload)({
           invocation,
           originalInput,
           ...(issuer === undefined ? {} : { issuer }),
@@ -136,7 +138,7 @@ export function makeToolApprovals(
           status: "approval-required" as const,
           requestId: id,
           invocation,
-          elicitation,
+          elicitation: approvalElicitation(invocation.tool, invocation.input),
           expiresAt: expiresAt.getTime(),
         };
       }),

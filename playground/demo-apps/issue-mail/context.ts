@@ -11,7 +11,7 @@ const issueOpened = event({
 
 /** Shared requirements contain declarations, never selected credentials. */
 export const requirements = {
-  accounts: { github, gmail },
+  user: { accounts: { github, gmail } },
   events: { "issue.opened": issueOpened },
 };
 /** The same account shape with interactive query capabilities. */

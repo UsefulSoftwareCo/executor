@@ -12,10 +12,12 @@ import {
 
 export type WorkerName =
   | "api"
+  | "app-data"
   | "app-pages"
   | "mcp-server"
   | "dashboard"
   | "formatter"
+  | "authoring"
   | "compiler"
   | "marketing"
   | "edge";
@@ -24,15 +26,19 @@ export type WorkerName =
  * Bytes of JavaScript each Worker may upload. Cloudflare compiles every uploaded ES module when
  * an isolate starts, whether or not the Worker ever imports it, so each megabyte adds about
  * 50 ms to every cold request. Load rarely used code from another Worker rather than raising a
- * budget: the API Worker leaves rendering to `dashboard`, source formatting to `formatter` and
- * MCP sessions to `mcp-server`.
+ * budget: the API Worker leaves rendering to `dashboard`, source formatting to `formatter`, the
+ * authoring reference to `authoring` and MCP sessions to `mcp-server`.
  */
 const uploadBudgets: Record<WorkerName, number> = {
-  api: 5_400_000,
+  api: 5_450_000,
+  // App runners and data supervisors: a cold tool call starts both isolates.
+  "app-data": 700_000,
   "app-pages": 2_500_000,
   "mcp-server": 3_400_000,
   dashboard: 3_900_000,
   formatter: 2_000_000,
+  // Generated data: the published skills and the framework reference.
+  authoring: 700_000,
   compiler: 1_700_000,
   marketing: 1_000_000,
   // A test stage's forwarding Worker: routing and a service binding call.

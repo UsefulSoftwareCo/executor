@@ -6,18 +6,19 @@ import { DashboardRuntime } from "./telemetry.ts";
 import { HostedApi } from "@executor-js/hosted-server/contracts";
 import { Atom, AtomHttpApi } from "effect/reactivity";
 import { batchReads } from "@executor-js/dashboard-start/batch-browser";
+import { observeBuild } from "@executor-js/dashboard-start/build-change";
 
 const batched = batchReads(HostedApi);
 
 /**
  * Relative URLs keep the dashboard and API on the current origin. Reads a page starts together
- * travel as one batch.
+ * travel as one batch. Responses from another build mark the page outdated.
  */
 export class HostedClient extends AtomHttpApi.Service<HostedClient>()("HostedClient", {
   api: HostedApi,
   httpClient: organizationHttpClient,
   runtime: DashboardRuntime,
-  transformClient: (client) => observeBrowserTransport(batched(client)),
+  transformClient: (client) => observeBrowserTransport(batched(observeBuild(client))),
   transformResponse: observeBrowserResponse,
 }) {}
 

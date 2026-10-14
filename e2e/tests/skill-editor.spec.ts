@@ -44,8 +44,7 @@ const edited = skill
 const files = [
   {
     path: "index.ts",
-    content:
-      'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, async () => ({}));',
+    content: 'import { defineApp } from "apps"; export default defineApp({}, async () => ({}));',
   },
   { path: "skills/search-messages/SKILL.md", content: skill },
   appsManifest,

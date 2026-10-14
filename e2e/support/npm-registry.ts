@@ -1,13 +1,19 @@
 /**
  * A local npm registry for product builds. It serves the `apps` package staged from this checkout
  * (`bun run e2e:prepare`) as the version the hosts ship, which new apps pin, so scenarios run before
- * that version is published. Every other request, including every published `apps` release, is
- * forwarded to the public registry unchanged. Products on this machine reach it on loopback;
- * released images reach it from their containers through Docker's host gateway.
+ * that version is published.
+ *
+ * The suite's registry (`lockedNpmRegistry`) serves every other package only from
+ * `e2e/npm-packages.json`: the versions the scenarios install, downloaded by `e2e:prepare` and
+ * checked against their pinned integrity. Scenarios never reach the public registry, and a package
+ * or version outside the lock is refused with a 404 that names the lock. Release checks, which do
+ * not run `e2e:prepare`, use the forwarding registries, which pass every other request to the
+ * public registry unchanged. Products on this machine reach it on loopback; released images reach
+ * it from their containers through Docker's host gateway.
  */
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Console, Effect, FileSystem, Path, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -24,21 +30,207 @@ class RegistryFailed extends Schema.TaggedError<RegistryFailed>()("RegistryFaile
   reason: Schema.String,
 }) {}
 
+/** `e2e/npm-packages.json`, written by `node scripts/e2e-npm-packages.ts --update`. */
+const Lock = Schema.Struct({
+  packages: Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      distTags: Schema.Record(Schema.String, Schema.String),
+      versions: Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          integrity: Schema.String,
+          dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+        }),
+      ),
+    }),
+  ),
+});
+type Lock = typeof Lock.Type;
+
+const integrityOf = (bytes: Uint8Array) =>
+  `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
+
+/** The pinned packages and a reader for their archives, which `e2e:prepare` downloads. */
+const lockedPackages = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const directory = path.resolve(".local/test-runtime/npm");
+  if (!(yield* fs.exists(directory)))
+    return yield* new RegistryFailed({
+      reason: "Run bun run e2e:prepare, or node scripts/e2e-npm-packages.ts, to download them.",
+    });
+  const lock = yield* fs
+    .readFileString(path.resolve("e2e/npm-packages.json"))
+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Lock))));
+  const read = (name: string, version: string) =>
+    Effect.gen(function* () {
+      const integrity = lock.packages[name]?.versions[version]?.integrity;
+      if (integrity === undefined)
+        return yield* new RegistryFailed({
+          reason: `${name}@${version} is not in e2e/npm-packages.json`,
+        });
+      // The same file name scripts/e2e-npm-packages.ts writes.
+      const bytes = yield* fs.readFile(
+        path.join(directory, `${name.replace("/", "+")}-${version}.tgz`),
+      );
+      if (integrityOf(bytes) !== integrity)
+        return yield* new RegistryFailed({
+          reason: `${name}@${version} does not match its pinned integrity; run bun run e2e:prepare`,
+        });
+      return bytes;
+    });
+  return { lock, read };
+});
+
+/** A pinned archive from `e2e/npm-packages.json`, read from disk and checked against its integrity. */
+export const lockedArchive = (name: string, version: string) =>
+  lockedPackages.pipe(Effect.flatMap(({ read }) => read(name, version)));
+
 type Reply = { readonly status: number; readonly type: string; readonly body: Uint8Array };
 
-/** One version this registry serves itself. */
-interface Served {
+const json = (status: number, value: unknown): Reply => ({
+  status,
+  type: "application/json",
+  body: new TextEncoder().encode(JSON.stringify(value)),
+});
+
+/** Where npm serves a version's archive, relative to the registry. */
+const tarballPath = (name: string, version: string) =>
+  `/${name}/-/${name.slice(name.lastIndexOf("/") + 1)}-${version}.tgz`;
+
+interface Staged {
   readonly version: string;
-  readonly manifest: typeof JsonObject.Type;
   readonly bytes: Uint8Array;
+  readonly tarballPath: string;
+  readonly entry: (base: string) => typeof JsonObject.Type;
 }
 
-/** Start the registry for the scope on `hostname` and return the port it listens on. */
-const serveRegistry = Effect.fnUntraced(function* (hostname: string) {
+/**
+ * Serve the staged `apps` and the pinned packages. A packument lists only pinned versions, so every
+ * range resolves to the version it resolved to when the lock was written.
+ */
+const lockedReply = (staged: Staged) =>
+  Effect.gen(function* () {
+    const { lock, read } = yield* lockedPackages;
+    const archives = new Map(
+      Object.entries(lock.packages).flatMap(([name, entry]) =>
+        Object.keys(entry.versions).map(
+          (version) => [tarballPath(name, version), { name, version }] as const,
+        ),
+      ),
+    );
+    const packument = (
+      name: string,
+      base: string,
+      pinned: Lock["packages"][string] | undefined,
+    ) => ({
+      name,
+      "dist-tags": pinned?.distTags ?? {},
+      versions: {
+        ...Object.fromEntries(
+          Object.entries(pinned?.versions ?? {}).map(([version, entry]) => [
+            version,
+            {
+              name,
+              version,
+              ...(entry.dependencies === undefined ? {} : { dependencies: entry.dependencies }),
+              dist: { tarball: `${base}${tarballPath(name, version)}`, integrity: entry.integrity },
+            },
+          ]),
+        ),
+        ...(name === "apps" ? { [staged.version]: staged.entry(base) } : {}),
+      },
+    });
+    const replies: Replies = (url, base) => {
+      if (url === staged.tarballPath)
+        return Effect.succeed({
+          status: 200,
+          type: "application/octet-stream",
+          body: staged.bytes,
+        });
+      const archive = archives.get(url);
+      if (archive !== undefined)
+        return read(archive.name, archive.version).pipe(
+          Effect.map((body) => ({ status: 200, type: "application/octet-stream", body })),
+          Effect.catch((error) =>
+            Console.error(`e2e npm registry: ${error.message}`).pipe(
+              Effect.as(json(500, { error: error.message })),
+            ),
+          ),
+        );
+      const name = decodeURIComponent(url.slice(1));
+      const pinned = lock.packages[name];
+      if (pinned !== undefined || name === "apps")
+        return Effect.succeed(json(200, packument(name, base, pinned)));
+      const error = `${name} is not in e2e/npm-packages.json. Add it to the roots in scripts/e2e-npm-packages.ts and run node scripts/e2e-npm-packages.ts --update.`;
+      return Console.error(`e2e npm registry: ${error}`).pipe(Effect.as(json(404, { error })));
+    };
+    return replies;
+  });
+
+/** Serve the staged `apps` and forward every other request to the public registry unchanged. */
+const forwardingReply = (staged: Staged) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    const forward = (url: string) =>
+      Effect.gen(function* () {
+        const response = yield* http.get(`${upstream}${url}`);
+        return {
+          status: response.status,
+          type: response.headers["content-type"] ?? "application/json",
+          body: new Uint8Array(yield* response.arrayBuffer),
+        } satisfies Reply;
+      }).pipe(
+        Effect.scoped,
+        Effect.catch(() =>
+          Effect.succeed({
+            status: 502,
+            type: "text/plain",
+            body: new Uint8Array(),
+          } satisfies Reply),
+        ),
+      );
+    const replies: Replies = (url, base) =>
+      Effect.gen(function* () {
+        if (url === staged.tarballPath)
+          return {
+            status: 200,
+            type: "application/octet-stream",
+            body: staged.bytes,
+          } satisfies Reply;
+        if (url !== "/apps") return yield* forward(url);
+        // Published versions stay as npm serves them; the staged package is added as its version.
+        const published = yield* forward(url);
+        const packument: typeof JsonObject.Type =
+          published.status === 200
+            ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
+                new TextDecoder().decode(published.body),
+              ).pipe(Effect.orElseSucceed((): typeof JsonObject.Type => ({})))
+            : {};
+        const versions = Schema.is(JsonObject)(packument.versions) ? packument.versions : {};
+        return json(200, {
+          ...packument,
+          name: "apps",
+          versions: { ...versions, [staged.version]: staged.entry(base) },
+        });
+      });
+    return replies;
+  });
+
+type Replies = (url: string, base: string) => Effect.Effect<Reply>;
+
+/**
+ * Start the registry for the scope on `hostname` and return the port it listens on. `replies`
+ * answers every request except the stalled package's.
+ */
+const serveRegistry = Effect.fnUntraced(function* <E, R>(
+  hostname: string,
+  replies: (staged: Staged) => Effect.Effect<Replies, E, R>,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const http = yield* HttpClient.HttpClient;
   const archive = path.resolve(".local/test-runtime/apps.tgz");
   if (!(yield* fs.exists(archive)))
     return yield* new RegistryFailed({
@@ -53,79 +245,22 @@ const serveRegistry = Effect.fnUntraced(function* (hostname: string) {
   );
   const raw = yield* decodeJson(text);
   const manifest = yield* Schema.decodeUnknownEffect(Manifest)(raw);
-  const staged: Served = {
+  const bytes = yield* fs.readFile(archive);
+  const staged = {
     version: manifest.version,
-    manifest: raw,
-    bytes: yield* fs.readFile(archive),
+    bytes,
+    tarballPath: tarballPath("apps", manifest.version),
+    /** The staged version's packument entry, with its archive at the origin the client addressed. */
+    entry: (base: string) => ({
+      ...raw,
+      dist: {
+        tarball: `${base}${tarballPath("apps", manifest.version)}`,
+        integrity: integrityOf(bytes),
+        shasum: createHash("sha1").update(bytes).digest("hex"),
+      },
+    }),
   };
-
-  const served = [staged].map((entry) => ({
-    ...entry,
-    tarballPath: `/apps/-/apps-${entry.version}.tgz`,
-    integrity: `sha512-${createHash("sha512").update(entry.bytes).digest("base64")}`,
-    shasum: createHash("sha1").update(entry.bytes).digest("hex"),
-  }));
-
-  const forward = (url: string) =>
-    Effect.gen(function* () {
-      const response = yield* http.get(`${upstream}${url}`);
-      return {
-        status: response.status,
-        type: response.headers["content-type"] ?? "application/json",
-        body: new Uint8Array(yield* response.arrayBuffer),
-      } satisfies Reply;
-    }).pipe(
-      Effect.scoped,
-      Effect.catch(() =>
-        Effect.succeed({ status: 502, type: "text/plain", body: new Uint8Array() } satisfies Reply),
-      ),
-    );
-
-  const reply = (url: string, base: string): Effect.Effect<Reply> =>
-    Effect.gen(function* () {
-      const archive = served.find((entry) => entry.tarballPath === url);
-      if (archive !== undefined)
-        return {
-          status: 200,
-          type: "application/octet-stream",
-          body: archive.bytes,
-        } satisfies Reply;
-      if (url !== "/apps") return yield* forward(url);
-      // Published versions stay as npm serves them; each served package is added as its version.
-      const published = yield* forward(url);
-      const packument: typeof JsonObject.Type =
-        published.status === 200
-          ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
-              new TextDecoder().decode(published.body),
-            ).pipe(Effect.orElseSucceed((): typeof JsonObject.Type => ({})))
-          : {};
-      const versions = Schema.is(JsonObject)(packument.versions) ? packument.versions : {};
-      const body = JSON.stringify({
-        ...packument,
-        name: "apps",
-        versions: {
-          ...versions,
-          ...Object.fromEntries(
-            served.map((entry) => [
-              entry.version,
-              {
-                ...entry.manifest,
-                dist: {
-                  tarball: `${base}${entry.tarballPath}`,
-                  integrity: entry.integrity,
-                  shasum: entry.shasum,
-                },
-              },
-            ]),
-          ),
-        },
-      });
-      return {
-        status: 200,
-        type: "application/json",
-        body: new TextEncoder().encode(body),
-      } satisfies Reply;
-    });
+  const reply = yield* replies(staged);
 
   const server = yield* Effect.acquireRelease(
     Effect.tryPromise({
@@ -141,7 +276,7 @@ const serveRegistry = Effect.fnUntraced(function* (hostname: string) {
             // Archive links use the origin the client addressed, loopback or a container's gateway.
             const base = `http://${request.headers.host ?? ""}`;
             // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- node:http request handlers are plain callbacks
-            Effect.runPromise(reply(url, base)).then(
+            Effect.runPromise(reply(url.split("?")[0] ?? "/", base)).then(
               (result) => {
                 response.writeHead(result.status, { "Content-Type": result.type });
                 response.end(result.body);
@@ -173,9 +308,23 @@ const serveRegistry = Effect.fnUntraced(function* (hostname: string) {
   return { port: address.port, version: manifest.version };
 });
 
-/** Start the registry for the scope on loopback and return its origin. */
-export const localNpmRegistry = serveRegistry("127.0.0.1").pipe(
-  Effect.map(({ port, version }) => ({ url: `http://127.0.0.1:${port}`, version })),
+const loopback = ({ port, version }: { readonly port: number; readonly version: string }) => ({
+  url: `http://127.0.0.1:${port}`,
+  version,
+});
+
+/**
+ * Start the suite's registry for the scope on loopback and return its origin. It serves only the
+ * staged `apps` and `e2e/npm-packages.json`, so no scenario depends on the public registry.
+ */
+export const lockedNpmRegistry = serveRegistry("127.0.0.1", lockedReply).pipe(Effect.map(loopback));
+
+/**
+ * Start a forwarding registry for the scope on loopback and return its origin. Release checks use
+ * it: they install released archives' whole dependency trees and do not run `e2e:prepare`.
+ */
+export const localNpmRegistry = serveRegistry("127.0.0.1", forwardingReply).pipe(
+  Effect.map(loopback),
 );
 
 /** The name released images resolve to the machine running the suite. */
@@ -186,7 +335,7 @@ const gatewayHost = "npm-registry.e2e.internal";
  * is the host's address on the container network, so the registry listens on every interface.
  * `docker` holds the `docker run` arguments that point a product container at it.
  */
-export const containerNpmRegistry = serveRegistry("0.0.0.0").pipe(
+export const containerNpmRegistry = serveRegistry("0.0.0.0", forwardingReply).pipe(
   Effect.provide(FetchHttpClient.layer),
   Effect.map(({ port, version }) => {
     const url = `http://${gatewayHost}:${port}`;

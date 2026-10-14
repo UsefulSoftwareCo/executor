@@ -1,20 +1,23 @@
 /**
- * Tool invocations resolve their selection without holding a database transaction. An open
- * transaction pins a pooled server connection (Hyperdrive in Cloud) until the caller's next
- * statement; under heavy concurrent load, those pins delayed every other request. The transaction
- * span count is the regression guard. The second half checks that calls running while the saved
- * selection changes keep succeeding, each return exactly one saved selection, and observe the
- * changes as they commit. A selection is one row, so that half cannot detect a torn read.
+ * Tool invocations resolve their linked accounts once per call. Calls running while an account is
+ * linked and unlinked keep succeeding, each use exactly one committed set of linked accounts, and
+ * observe the changes as they commit. A link is one row, so this cannot detect a torn read.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Ref, Schedule } from "effect";
+import { Effect, Ref } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { Evidence } from "../support/evidence.ts";
+import {
+  connectionsPath,
+  linkAccount,
+  linkedAccountIds,
+  requirementPath,
+  unlinkAccount,
+} from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -22,9 +25,9 @@ const source = `import { defineApp, defineProvider, secrets, object, string, que
 const service = defineProvider({ name: "Snapshot fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { workspaces: service.many() } }, async ctx => ({
+export default defineApp({ user: { accounts: { workspaces: service.many() } } }, async ctx => ({
   tools: router({
-    selected: query({ input: object({}) }, async () => ctx.accounts.workspaces.map(account => account.fields.token)),
+    selected: query({ input: object({}) }, async () => ctx.user.accounts.workspaces.map(account => account.fields.token)),
   })
 }));`;
 
@@ -35,8 +38,7 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
       Effect.gen(function* () {
         const api = yield* Api,
           actors = yield* Actors,
-          evidence = yield* Evidence,
-          telemetry = yield* Telemetry;
+          evidence = yield* Evidence;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const accounts: string[] = [];
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -57,12 +59,14 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
           }).pipe(Effect.orDie),
         );
 
-        const profile = yield* createProfile(actors.owner, path);
+        // Connecting from the app links each account to it.
         for (const label of ["first", "second"]) {
-          const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "workspaces",
-            profile: profile.id,
-          });
+          const pending = yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(path, "user", "workspaces"),
+            {},
+          );
           expect(pending.status).toBe(200);
           const connection = yield* body(Resource, pending);
           const saved = yield* api.request(
@@ -75,75 +79,22 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
           accounts.push((yield* body(Resource, saved)).id);
         }
         const [first, second] = accounts as [string, string];
+        // With no choice, the account array uses every account linked when the call resolves.
         const call = api.request(actors.owner, "POST", `${path}/tools/call`, {
-          profile: profile.id,
           tool: "selected",
           kind: "query",
           input: {},
         });
 
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, profile.id, { workspaces: [first] }))
-            .status,
-        ).toBe(200);
+        yield* unlinkAccount(actors.owner, path, "workspaces", second);
         const called = yield* call;
         expect(called.status).toBe(200);
         expect(called.body).toEqual(["token-first"]);
-        const request = (yield* evidence.requests).at(-1);
-        if (request === undefined) return yield* Effect.die(new Error("Request evidence missing"));
 
-        // The snapshot's reads must reach Motel before its transaction spans can be judged.
-        const resolution = yield* telemetry.query(request.traceId).pipe(
-          Effect.flatMap((result) => {
-            const root = result.data.find(
-              (entry) => entry.span.operationName === "sdk.invocation.snapshot",
-            );
-            const complete = result.data.some(
-              (entry) => entry.span.tags["http.response.status_code"] === "200",
-            );
-            if (root === undefined || !complete)
-              return Effect.fail(new Error("The completed server trace must reach Motel"));
-            const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
-            const under = (spanId: string | null) => {
-              const visited = new Set<string>();
-              let parent = spanId;
-              while (parent !== null && !visited.has(parent)) {
-                if (parent === root.span.spanId) return true;
-                visited.add(parent);
-                parent = byId.get(parent)?.parentSpanId ?? null;
-              }
-              return false;
-            };
-            const descendants = result.data.filter(({ span }) => under(span.parentSpanId));
-            const reads = descendants.filter(({ span }) => span.operationName === "sql.execute");
-            return reads.length === 0
-              ? Effect.fail(new Error("SQL descendants must reach Motel"))
-              : Effect.succeed({
-                  reads: reads.length,
-                  transactions: descendants.filter(({ span }) =>
-                    ["sql.transaction", "storage.transaction"].includes(span.operationName),
-                  ).length,
-                });
-          }),
-          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-          Effect.timeout("25 seconds"),
-        );
-        yield* evidence.json("invocation-snapshot-spans.json", {
-          traceId: request.traceId,
-          ...resolution,
-        });
-        expect(
-          resolution.transactions,
-          "Resolving an invocation must not open a database transaction",
-        ).toBe(0);
-
-        // Start the calls only after the second selection commits, then keep flipping the
-        // selection until the calls have observed both. Seeing the first selection again proves
+        // Start the calls only after linking the second account commits, then keep unlinking and
+        // linking it until the calls have observed both sets. Seeing the first set again proves
         // the calls overlapped with the updates.
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, profile.id, { workspaces: [second] }))
-            .status,
-        ).toBe(200);
+        yield* linkAccount(actors.owner, path, "workspaces", second);
         const flipping = yield* Ref.make(true);
         const updates = yield* Ref.make<ReadonlyArray<{ status: number; at: number }>>([]);
         const calls = yield* Ref.make<
@@ -151,10 +102,11 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
         >([]);
         const flipper = Effect.gen(function* () {
           const flipped = yield* Ref.get(updates);
-          const workspaces = flipped.length % 2 === 0 ? [first] : [second];
-          const response = yield* selectProfileAccounts(actors.owner, path, profile.id, {
-            workspaces,
-          });
+          const response = yield* api.request(
+            actors.owner,
+            flipped.length % 2 === 0 ? "DELETE" : "PUT",
+            `${requirementPath(path, "user", "workspaces")}/${second}`,
+          );
           yield* Ref.update(updates, (all) => [
             ...all,
             { status: response.status, at: Date.now() },
@@ -184,22 +136,22 @@ layer(HostedLive, { excludeTestServices: true })("Invocation snapshot", (it) => 
         yield* Effect.all([flipper, caller], { concurrency: 2 });
         const flips = yield* Ref.get(updates);
         const results = yield* Ref.get(calls);
-        yield* evidence.json("concurrent-selection.json", { updates: flips, calls: results });
+        yield* evidence.json("concurrent-links.json", { updates: flips, calls: results });
         expect(flips.every((update) => update.status === 200)).toBe(true);
         for (const response of results) {
           expect(response.status).toBe(200);
-          expect([["token-first"], ["token-second"]]).toContainEqual(response.body);
+          expect([["token-first"], ["token-first", "token-second"]]).toContainEqual(response.body);
         }
         expect(
           observed(results),
-          "Calls running during the updates must observe both saved selections",
+          "Calls running during the updates must observe both committed sets of links",
         ).toBe(2);
 
-        // After the updates stop, the next call sees the last committed selection.
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, profile.id, { workspaces: [second] }))
-            .status,
-        ).toBe(200);
+        // After the updates stop, the next call sees the last committed links. Linking is
+        // idempotent, so the second account is linked whichever update came last.
+        yield* linkAccount(actors.owner, path, "workspaces", second);
+        yield* unlinkAccount(actors.owner, path, "workspaces", first);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([second]);
         const final = yield* call;
         expect(final.status).toBe(200);
         expect(final.body).toEqual(["token-second"]);

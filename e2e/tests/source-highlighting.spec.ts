@@ -138,7 +138,7 @@ layer(HostedLive, { excludeTestServices: true })("Source highlighting", (it) => 
           files: [
             {
               path: "index.ts",
-              content: `import { defineApp } from "apps";\nexport default defineApp({ accounts: {} }, async () => ({}));`,
+              content: `import { defineApp } from "apps";\nexport default defineApp({}, async () => ({}));`,
             },
             {
               path: "skills/greet/SKILL.md",

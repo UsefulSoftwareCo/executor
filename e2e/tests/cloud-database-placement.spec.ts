@@ -4,10 +4,13 @@
  * also the only way anything unplaced may wake the schedule coordinator. Durable Objects serve
  * many calls, so an MCP session holds its connections across calls and operations, replaces one
  * the server drops, makes a stalled connection attempt once more, and closes them once the
- * session has been idle.
+ * session has been idle. The statements one request or tool call issues at the same time share one
+ * of the session's connections, which carries nothing else meanwhile; each call still gets its own
+ * rows, beside transactions that reserve a connection. A statement a caller gives up on while it
+ * waits on a lock is cancelled in the database and delays no other call.
  */
 import { expect, layer } from "@effect/vitest";
-import { Duration, Effect, Schedule, Schema } from "effect";
+import { Duration, Effect, Fiber, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
@@ -62,7 +65,9 @@ const deliveredAncestry = (traceId: string, select: (span: Spans[number]["span"]
     Effect.flatMap((trace) => {
       const found = trace.data.find(({ span }) => select(span));
       const chain = found === undefined ? [] : ancestry(trace.data, found.span.spanId);
-      return chain.at(-1)?.parentSpanId === null
+      // Motel answers a span whose parent has not arrived with a placeholder root in its place.
+      return chain.at(-1)?.parentSpanId === null &&
+        !chain.some((span) => span.operationName.startsWith("[missing parent"))
         ? Effect.succeed({ trace: trace.data, chain })
         : Effect.fail(new Error("The span or its ancestors have not all reached Motel"));
     }),
@@ -70,14 +75,38 @@ const deliveredAncestry = (traceId: string, select: (span: Spans[number]["span"]
   );
 
 const echoAppSource = `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text" },
     async (_ctx, { text }) => ({ text })),
 }) }));`;
 
-const scheduledAppSource = `import { defineApp, mutation, interval, object, router } from "apps";
+/** A query that answers after the given number of milliseconds. */
+const timerAppSource = `import { defineApp, query, object, number, router } from "apps";
+export default defineApp({}, async () => ({ tools: router({
+  wait: query({ input: object({ ms: number() }) },
+    async (_ctx, { ms }) => { await new Promise((resolve) => setTimeout(resolve, ms)); return { ms }; }),
+}) }));`;
+
+/** An echo query and an echo mutation that always needs approval. */
+const reviewedAppSource = `import { defineApp, query, mutation, object, string, router } from "apps";
+import { always } from "apps/operations/approval";
+export default defineApp({}, async () => ({ tools: router({
+  echo: query({ input: object({ text: string() }) }, async (_ctx, { text }) => ({ text })),
+  review: mutation({ input: object({ text: string() }), approval: always() },
+    async (_ctx, { text }) => ({ text })),
+}) }));`;
+
+const Pending = Schema.Struct({
+  status: Schema.Literal("approval-required"),
+  requestId: Schema.String,
+});
+
+/** The session object's connection limit (`objectConnectionLimit` in object-database.ts). */
+const objectConnectionLimit = 4;
+
+const scheduledAppSource = `import { defineApp, mutation, userInterval, object, router } from "apps";
 const tick = mutation({ input: object({}) }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ tick }), schedules: { tick: interval({ minutes: 60 }, tick, {}) } }));`;
+export default defineApp({}, async () => ({ tools: router({ tick }), schedules: { tick: userInterval({ minutes: 60 }, tick, {}) } }));`;
 
 const Runs = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, status: Schema.String }),
@@ -90,14 +119,22 @@ const Completed = Schema.Struct({
 
 /**
  * Count or terminate one MCP session object's connections in the local database. A stall makes
- * the next connection the object opens wait that many seconds in PostgreSQL's login.
+ * the next connection the object opens wait that many seconds in PostgreSQL's login. A statement
+ * stall makes the object's token update after `stallTokenUpdateAfter` more wait on the lock
+ * `holdLock` holds for that many seconds. `largeAppRow` makes reads of that app's row wait on the
+ * lock `holdLargeAppRows` holds, while reads of other apps' rows go on (see
+ * database-connections-fixture.ts).
  */
-const objectConnections = (
+const objectDatabase = (
   owner: string,
   options: {
     readonly terminate?: boolean;
     readonly stallNextConnect?: number;
     readonly releaseStalls?: boolean;
+    readonly holdLock?: number;
+    readonly stallTokenUpdateAfter?: number;
+    readonly largeAppRow?: string;
+    readonly holdLargeAppRows?: number;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -117,13 +154,125 @@ const objectConnections = (
             ? []
             : ["--stall-next-connect", String(options.stallNextConnect)]),
           ...(options.releaseStalls === true ? ["--release-stalls"] : []),
+          ...(options.holdLock === undefined ? [] : ["--hold-lock", String(options.holdLock)]),
+          ...(options.stallTokenUpdateAfter === undefined
+            ? []
+            : ["--stall-token-update-after", String(options.stallTokenUpdateAfter)]),
+          ...(options.largeAppRow === undefined ? [] : ["--large-app-row", options.largeAppRow]),
+          ...(options.holdLargeAppRows === undefined
+            ? []
+            : ["--hold-large-app-rows", String(options.holdLargeAppRows)]),
+        ],
+        {
+          env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
+          extendEnv: false,
+        },
+      ),
+    );
+    return yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(
+        Schema.Struct({
+          connections: Schema.Number,
+          waiting: Schema.Number,
+          holding: Schema.Number,
+        }),
+      ),
+    )(output);
+  });
+
+/** Poll an object's database state until `done` holds. */
+const untilObject = (
+  owner: string,
+  label: string,
+  done: (state: Effect.Success<ReturnType<typeof objectDatabase>>) => boolean,
+) =>
+  objectDatabase(owner).pipe(
+    Effect.flatMap((current) =>
+      done(current) ? Effect.succeed(current) : Effect.fail(new Error(label)),
+    ),
+    Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+  );
+
+/**
+ * The SQL statements of the last MCP request's tool call, outside the app's runtime: their text,
+ * when each ended, and whether it is one of the access check's reads made beside the recheck.
+ */
+const toolCallStatements = Effect.gen(function* () {
+  const evidence = yield* Evidence,
+    telemetry = yield* Telemetry;
+  const request = (yield* evidence.requests).filter((request) => request.path === "/mcp").at(-1);
+  if (request === undefined) return yield* Effect.die("MCP request evidence missing");
+  return yield* telemetry.query(request.traceId).pipe(
+    Effect.flatMap((trace) => {
+      const calls = below(trace.data, (span) => span.operationName === "mcp.tool.call");
+      const found = calls
+        .filter(({ span }) => span.operationName === "sql.execute")
+        .map(({ span }) => {
+          const names = ancestry(trace.data, span.spanId).map((parent) => parent.operationName);
+          return {
+            text: String(span.tags["db.query.text"] ?? "").replace(/\s+/g, " "),
+            end: Date.parse(span.startTime) + span.durationMs,
+            readAhead:
+              names.includes("FumaDB.SqlQuery.findFirst") && !names.includes("sdk.tools.call"),
+            runtime: names.some((name) => name.startsWith("runtime.")),
+          };
+        })
+        .filter(({ runtime }) => !runtime);
+      return found.some(({ text }) => text.includes("from apikey where key"))
+        ? Effect.succeed(found)
+        : Effect.fail(new Error("The tool call's statements have not reached Motel"));
+    }),
+    Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+  );
+});
+
+const objectConnections = (owner: string, options: Parameters<typeof objectDatabase>[1] = {}) =>
+  Effect.map(objectDatabase(owner, options), ({ connections }) => connections);
+
+/** The session object behind the last MCP request, once its spans have reached Motel. */
+const lastSessionObject = Effect.gen(function* () {
+  const evidence = yield* Evidence,
+    telemetry = yield* Telemetry;
+  const request = (yield* evidence.requests).filter((request) => request.path === "/mcp").at(-1);
+  if (request === undefined) return yield* Effect.die("MCP request evidence missing");
+  return yield* telemetry.query(request.traceId).pipe(
+    Effect.flatMap((trace) => {
+      const id = trace.data
+        .map(({ span }) => span.tags["executor.mcp.object_id"])
+        .find((id) => id !== undefined);
+      return id === undefined
+        ? Effect.fail(new Error("The session object's spans have not reached Motel"))
+        : Effect.succeed(`mcp ${String(id)}`);
+    }),
+    Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+  );
+});
+
+/**
+ * One case of the probe of the session objects' database pool against the local database (see
+ * database-pool-fixture.ts): the pool Cloud's session objects use, with the cases a tool call's
+ * statements cannot reach on their own.
+ */
+const poolCase = (name: string) =>
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const output = yield* processes.string(
+      ChildProcess.make(
+        "node",
+        [
+          "apps/hosted/testing/database-pool-fixture.ts",
+          "--configuration",
+          `${target.directory}/sso-database.json`,
+          "--case",
+          name,
         ],
         { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
       ),
     );
-    return (yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Struct({ connections: Schema.Number })),
-    )(output)).connections;
+    return yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+    )(output.trim().split("\n").at(-1) ?? "");
   });
 
 layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it) => {
@@ -251,7 +400,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it
           );
           // The session's first requests, from initialization on, are part of its first window.
           const opened = (yield* evidence.requests).length;
-          const client = yield* mcp.connect(key.key, "object-connections", {
+          let client = yield* mcp.connect(key.key, "object-connections", {
             organization: actors.organization.id,
           });
           // Six sequential tool calls: each is its own MCP operation inside the session object.
@@ -345,11 +494,32 @@ return out;`,
           expect(dropped.windows).toBe(0);
           expect(dropped.connects).toBeGreaterThan(0);
 
-          // Once the session has been idle, it holds no connection; the next call opens a window.
-          yield* Effect.sleep(Duration.seconds(32));
+          // A pause between an agent's tool calls keeps the window and its connections: the next
+          // call opens neither a window nor a connection.
+          yield* Effect.sleep(Duration.seconds(45));
+          expect(yield* objectConnections(owner)).toBeGreaterThan(0);
+          const paused = yield* sessionSpans(
+            yield* execute("Tool calls after a pause"),
+            (counts) => counts.operations >= 6 && counts.databases >= 6,
+          );
+          yield* evidence.json("after-pause.json", paused);
+          expect(paused.windows, "A 45 s pause keeps the window").toBe(0);
+          expect(paused.connects, "A 45 s pause keeps the connections").toBe(0);
+
+          // Once the session has been idle for the whole window (120 s), it holds no connection;
+          // the next call opens a window.
+          yield* Effect.sleep(Duration.seconds(122));
           expect(yield* objectConnections(owner)).toBe(0);
+          // Without the window's socket and timer, the idle object may be evicted with its MCP
+          // sessions, so the client starts a new session, as clients do on "session not found".
+          // The new session's own requests may open the window, so they are counted with the calls.
+          const idled = (yield* evidence.requests).length;
+          client = yield* mcp.connect(key.key, "object-connections-after-idle", {
+            organization: actors.organization.id,
+          });
+          yield* execute("Tool calls after idling");
           const reopened = yield* sessionSpans(
-            yield* execute("Tool calls after idling"),
+            (yield* evidence.requests).slice(idled).map((request) => request.traceId),
             (counts) => counts.operations >= 6 && counts.windows >= 1 && counts.connects >= 1,
           );
           yield* evidence.json("after-idle.json", reopened);
@@ -357,7 +527,7 @@ return out;`,
           expect(reopened.connects).toBeGreaterThan(0);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
-    { timeout: 120_000 },
+    { timeout: 300_000 },
   );
 
   it.effect(scenarios.cloudMcpObjectConnectRetry.title, (context) =>
@@ -680,5 +850,462 @@ return out;`,
         }),
       ),
     { timeout: 240_000 },
+  );
+  it.effect(
+    scenarios.cloudMcpParallelCalls.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            mcp = yield* McpClient,
+            evidence = yield* Evidence;
+          const prefix = `/api/organizations/${actors.organization.id}`;
+          const key = yield* body(
+            Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+            yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+              name: "Parallel calls",
+            }),
+          );
+          yield* Effect.addFinalizer(() =>
+            api
+              .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+              .pipe(Effect.orDie),
+          );
+          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+            name: `Parallel calls ${randomUUID().slice(0, 8)}`,
+            files: [{ path: "index.ts", content: reviewedAppSource }, appsManifest],
+          });
+          expect(deployed.status).toBe(200);
+          const app = yield* body(App, deployed);
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+          );
+          const client = yield* mcp.connect(key.key, "parallel-calls", {
+            organization: actors.organization.id,
+          });
+          const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
+          const call = (label: string, name: string, args: Record<string, unknown>) =>
+            client.use(label, (client, signal) =>
+              client.callTool({ name, arguments: args }, undefined, { signal }),
+            );
+
+          const once = yield* call("Call once", "execute", {
+            code: `return (await ${tool("echo")}({ text: "once" })).text`,
+          }).pipe(
+            Effect.flatMap((result) =>
+              Schema.decodeUnknownEffect(Completed)(result.structuredContent),
+            ),
+          );
+          expect(once.execution.value).toBe("once");
+          const object = yield* lastSessionObject;
+
+          // A call's token recheck and the reads sent with it share one connection: while the
+          // recheck waits on a lock, the reads queued behind it on that connection wait too.
+          // Without grouping each read would take a connection of its own and finish at once.
+          const holder = yield* Effect.forkScoped(objectDatabase(object, { holdLock: 170 }));
+          yield* untilObject(object, "The lock is held", ({ holding }) => holding === 1);
+          // The request's own authentication updates the token first; its tool call's recheck next.
+          yield* objectDatabase(object, { stallTokenUpdateAfter: 1 });
+          const held = yield* Effect.forkChild(
+            call("Call while the recheck waits", "execute", {
+              code: `return (await ${tool("echo")}({ text: "held" })).text`,
+            }),
+          );
+          yield* untilObject(
+            object,
+            "The recheck is waiting on the lock",
+            ({ waiting }) => waiting === 1,
+          );
+          yield* Effect.sleep("1 second");
+          yield* Fiber.interrupt(holder);
+          const released = yield* Fiber.join(held).pipe(
+            Effect.flatMap((result) =>
+              Schema.decodeUnknownEffect(Completed)(result.structuredContent),
+            ),
+          );
+          expect(released.execution.value).toBe("held");
+          const statements = yield* toolCallStatements;
+          yield* evidence.json("shared-connection-statements.json", statements);
+          const recheck = statements.find(({ text }) => text.includes("from apikey where key"));
+          const reads = statements.filter(({ readAhead }) => readAhead);
+          expect(recheck, "The call's token recheck").toBeDefined();
+          expect(reads.length, "The reads sent with the recheck").toBeGreaterThan(0);
+          for (const read of reads)
+            expect(
+              read.end,
+              "A read sent with the recheck waited behind it on the recheck's connection",
+            ).toBeGreaterThanOrEqual((recheck?.end ?? Infinity) - 5);
+
+          // Approvals waiting to be resumed: each resume claims its approval in a transaction.
+          const pending = yield* Effect.forEach([0, 1, 2], (i) =>
+            call("Ask for an approval", "execute", {
+              code: `return await ${tool("review")}({ text: "review ${i}" })`,
+            }).pipe(
+              Effect.flatMap((result) =>
+                Schema.decodeUnknownEffect(Pending)(result.structuredContent),
+              ),
+            ),
+          );
+          const texts = Array.from({ length: 24 }, (_, i) => `call ${i}`);
+          const [parallel, ...resumed] = yield* evidence.step(
+            "Twenty-four parallel calls and three resumed approvals run at once in one session",
+            Effect.all(
+              [
+                call("Run calls in parallel", "execute", {
+                  code: `return (await Promise.all(${JSON.stringify(texts)}.map((text) => ${tool("echo")}({ text })))).map((result) => result.text)`,
+                }),
+                ...pending.map(({ requestId }) =>
+                  call("Resume an approval", "resume", {
+                    requestId,
+                    response: { action: "accept" },
+                  }),
+                ),
+              ],
+              { concurrency: "unbounded" },
+            ),
+          );
+          const ran = yield* Schema.decodeUnknownEffect(Completed)(parallel?.structuredContent);
+          expect(ran.execution.value, "Each parallel call returns its own input").toEqual(texts);
+          for (const [i, result] of resumed.entries()) {
+            const completed = yield* Schema.decodeUnknownEffect(Completed)(
+              result.structuredContent,
+            );
+            expect(completed.execution.value, "Each resume runs its own approval").toEqual({
+              text: `review ${i}`,
+            });
+          }
+
+          // The object's connections, while its idle window keeps them open.
+          const connections = yield* objectConnections(object);
+          yield* evidence.json("parallel-connections.json", { connections });
+          expect(connections, "The object held connections for the calls").toBeGreaterThan(0);
+          expect(connections, "The object stays within its connection limit").toBeLessThanOrEqual(
+            objectConnectionLimit,
+          );
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    { timeout: 120_000 },
+  );
+  it.effect(
+    scenarios.cloudMcpAbandonedStatement.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            mcp = yield* McpClient,
+            evidence = yield* Evidence;
+          const prefix = `/api/organizations/${actors.organization.id}`;
+          const key = yield* body(
+            Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+            yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+              name: "Abandoned statement",
+            }),
+          );
+          yield* Effect.addFinalizer(() =>
+            api
+              .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+              .pipe(Effect.orDie),
+          );
+          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+            name: `Abandoned statement ${randomUUID().slice(0, 8)}`,
+            files: [{ path: "index.ts", content: echoAppSource }, appsManifest],
+          });
+          expect(deployed.status).toBe(200);
+          const app = yield* body(App, deployed);
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+          );
+          const client = yield* mcp.connect(key.key, "abandoned-statement", {
+            organization: actors.organization.id,
+          });
+          const echo = (label: string, text: string) =>
+            client
+              .use(label, (client, signal) =>
+                client.callTool(
+                  {
+                    name: "execute",
+                    arguments: {
+                      code: `return (await tools[${JSON.stringify(app.slug)}].echo({ text: ${JSON.stringify(text)} })).text`,
+                    },
+                  },
+                  undefined,
+                  { signal },
+                ),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Schema.decodeUnknownEffect(Completed)(result.structuredContent),
+                ),
+                Effect.map(({ execution }) => execution.value),
+              );
+          expect(yield* echo("Warm the session", "warm")).toBe("warm");
+          const object = yield* lastSessionObject;
+          const state = objectDatabase(object);
+          const until = (label: string, done: Parameters<typeof untilObject>[2]) =>
+            untilObject(object, label, done);
+
+          // A lock the session's next per-call token recheck waits on, held for the rest of the scenario.
+          yield* Effect.forkScoped(objectDatabase(object, { holdLock: 170 }));
+          yield* until("The lock is held", ({ holding }) => holding === 1);
+          // The request's own authentication updates the token first; its tool call's recheck next.
+          yield* objectDatabase(object, { stallTokenUpdateAfter: 1 });
+          const abandoned = yield* Effect.forkChild(
+            Effect.exit(echo("Call while the lock is held", "abandoned")),
+          );
+          yield* evidence.step(
+            "The call's token recheck waits on the lock",
+            until("The recheck is waiting on the lock", ({ waiting }) => waiting === 1),
+          );
+          // The client gives up on the call (as at its request timeout): MCP cancels it, which the
+          // session processes within a few hundred milliseconds.
+          yield* Fiber.interrupt(abandoned);
+          yield* Effect.sleep("2 seconds");
+
+          // Another call in the same session, while the lock is still held, is not delayed by it.
+          const started = Date.now();
+          const value = yield* echo("Call again while the lock is held", "after").pipe(
+            Effect.timeout("20 seconds"),
+          );
+          const elapsed = Date.now() - started;
+          yield* evidence.json("abandoned-statement.json", { elapsed });
+          expect(value).toBe("after");
+          expect(elapsed, "A call after the abandoned statement waits for nothing").toBeLessThan(
+            5_000,
+          );
+          expect((yield* state).holding, "The lock was still held meanwhile").toBe(1);
+          yield* evidence.step(
+            "The statement its caller gave up on is cancelled in the database",
+            until(
+              "The abandoned statement still waits on the lock",
+              ({ waiting }) => waiting === 0,
+            ),
+          );
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    { timeout: 240_000 },
+  );
+
+  it.effect(
+    scenarios.cloudMcpDiscoveryListings.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            mcp = yield* McpClient,
+            evidence = yield* Evidence;
+          const prefix = `/api/organizations/${actors.organization.id}`;
+          const key = yield* body(
+            Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+            yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+              name: "Discovery listings",
+            }),
+          );
+          yield* Effect.addFinalizer(() =>
+            api
+              .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+              .pipe(Effect.orDie),
+          );
+          const deploy = (name: string, source = echoAppSource) =>
+            Effect.gen(function* () {
+              const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+                name: `${name} ${randomUUID().slice(0, 8)}`,
+                files: [{ path: "index.ts", content: source }, appsManifest],
+              });
+              expect(deployed.status).toBe(200);
+              const app = yield* body(App, deployed);
+              yield* Effect.addFinalizer(() =>
+                api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+              );
+              return app;
+            });
+          const slow = yield* deploy("Slow listing");
+          const others = [yield* deploy("Listing B"), yield* deploy("Listing C")];
+          const timer = yield* deploy("Timer", timerAppSource);
+          const client = yield* mcp.connect(key.key, "discovery-listings", {
+            organization: actors.organization.id,
+          });
+          const run = (label: string, code: string) =>
+            client
+              .use(label, (client, signal) =>
+                client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Schema.decodeUnknownEffect(Completed)(result.structuredContent),
+                ),
+              );
+          const warm = yield* run("Warm the session", "return 1");
+          expect(warm.execution.value).toBe(1);
+          const object = yield* lastSessionObject;
+          yield* objectDatabase(object, { largeAppRow: slow.id });
+
+          // The program reaches only the timer app, so discovery lists the slow app and the others
+          // only by name up front (reading the slow app's row before the lock). After the timer,
+          // the searches list the three apps at once, each its own listing: the slow app's reads
+          // its row while the lock is held.
+          const namespaces = [slow, ...others].map((app) => app.slug);
+          const code = `await tools[${JSON.stringify(timer.slug)}].wait({ ms: 3000 });
+const started = Date.now();
+const listed = {};
+await Promise.all(${JSON.stringify(namespaces)}.map(async (namespace) => {
+  const found = await tools.search({ query: "Echo text", namespace });
+  listed[namespace] = { ms: Date.now() - started, paths: found.items.map((item) => item.path) };
+}));
+return listed;`;
+          const execute = yield* Effect.forkChild(run("Discover three apps", code));
+          yield* Effect.sleep("1500 millis");
+          yield* Effect.forkScoped(objectDatabase(object, { holdLargeAppRows: 8 }));
+          yield* untilObject(object, "The lock is held", ({ holding }) => holding === 1);
+          yield* evidence.step(
+            "The slow app's listing waits on the lock",
+            untilObject(
+              object,
+              "A listing read is waiting on the lock",
+              ({ waiting }) => waiting > 0,
+            ),
+          );
+          const listed = yield* Fiber.join(execute);
+          const Listed = Schema.Record(
+            Schema.String,
+            Schema.Struct({ ms: Schema.Number, paths: Schema.Array(Schema.String) }),
+          );
+          const byApp = yield* Schema.decodeUnknownEffect(Listed)(listed.execution.value);
+          yield* evidence.json("discovery-listings.json", byApp);
+          expect(
+            byApp[slow.slug]?.ms,
+            "The slow app's listing waited for the lock",
+          ).toBeGreaterThanOrEqual(3_000);
+          for (const app of others) {
+            const found = byApp[app.slug];
+            expect(found?.paths.length, `${app.slug} was discovered`).toBeGreaterThan(0);
+            expect(
+              found?.ms,
+              `${app.slug} was discovered without waiting behind the slow app's listing`,
+            ).toBeLessThan(2_000);
+          }
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    { timeout: 240_000 },
+  );
+  it.effect(
+    scenarios.cloudMcpObjectPool.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const evidence = yield* Evidence;
+          const step = (title: string, name: string) =>
+            evidence.step(
+              title,
+              poolCase(name).pipe(Effect.tap((seen) => evidence.json(`pool-${name}.json`, seen))),
+            );
+
+          // A callback's second statement is refused after a sibling on its connection gave up;
+          // the callback's insert was sent, so the callback is not run again.
+          const once = yield* step("A callback that sent a statement runs once", "use-once");
+          expect(once.siblingGaveUp, "The sibling gave up on its lock wait").toBe(true);
+          expect(once.twoStatements, "The refused read fails the callback").toBe("refused");
+          expect(once.rows, "The callback's insert ran once").toBe(1);
+          expect(once.otherSiblingGaveUp, "The second sibling gave up on its lock wait").toBe(true);
+          expect(once.firstRead, "A callback refused before sending runs again").toBe("ok");
+
+          const nested = yield* step("A hold inside a hold uses its connection", "held-nested");
+          expect(nested.split, "Rounds whose inner hold took another connection").toBe(0);
+
+          const shared = yield* step("Only an exclusive pool holds", "held-shared");
+          expect(shared).toEqual({ exclusive: true, shared: false, plain: false });
+
+          // 6 s, longer than the 5 s cancellation bound, under the 30 s bound on what nobody awaits:
+          // a statement nobody abandoned is waited for.
+          const unawaited = yield* step(
+            "A hold keeps its connection for a statement nobody awaits until it finishes",
+            "held-unawaited",
+          );
+          expect(unawaited.heldReturned, "The hold returned without waiting").toBeLessThan(1_000);
+          expect(unawaited.sleeper, "The unawaited statement finished").toBe("ok");
+          expect(unawaited.sleeperFinished).toBeGreaterThanOrEqual(5_900);
+          expect(
+            unawaited.next,
+            "The next statement waited for the connection",
+          ).toBeGreaterThanOrEqual(5_900);
+          expect(unawaited.sameConnection, "The connection was kept").toBe(true);
+
+          // A 45 s statement nobody awaits: past the 30 s bound it is cancelled and its connection
+          // closed, so a hung `COMMIT` cannot keep one of the object's connections indefinitely.
+          const hung = yield* step(
+            "A statement nobody awaits gives its connection up 30 s after its hold returned",
+            "held-hung",
+          );
+          expect(hung.heldReturned, "The hold returned without waiting").toBeLessThan(1_000);
+          // Cancelled first (`57014`), or, on a socket that went silent, failed by the close.
+          expect(hung.sleeper, "The unawaited statement was cut off").toBe("failed");
+          expect(hung.sleeperEnded, "It ran up to the bound").toBeGreaterThanOrEqual(29_900);
+          expect(hung.sleeperEnded, "It did not run to its end").toBeLessThan(40_000);
+          expect(hung.next, "The next statement waited for the bound").toBeGreaterThanOrEqual(
+            29_900,
+          );
+          expect(hung.next).toBeLessThan(40_000);
+          expect(hung.sameConnection, "The broken connection was replaced").toBe(false);
+          expect(hung.oldBackendRunning, "The old backend's statement was cancelled").toBe(0);
+
+          const drain = yield* step(
+            "An abandoned statement whose cancel never lands closes its connection after 5 s",
+            "drain",
+          );
+          const Arm = Schema.Struct({
+            gaveUp: Schema.Literal(true),
+            callerReturned: Schema.Number,
+            next: Schema.Number,
+            sameConnection: Schema.Boolean,
+            cancelRequests: Schema.Number,
+          });
+          const dropped = yield* Schema.decodeUnknownEffect(Arm)(drain.dropped);
+          const delivered = yield* Schema.decodeUnknownEffect(Arm)(drain.delivered);
+          expect(dropped.callerReturned, "The caller did not wait for the drain").toBeLessThan(
+            1_000,
+          );
+          expect(dropped.cancelRequests, "The cancel was sent").toBe(1);
+          expect(dropped.next, "The connection was given up at the bound").toBeGreaterThanOrEqual(
+            4_900,
+          );
+          expect(dropped.next).toBeLessThan(8_000);
+          expect(dropped.sameConnection, "The broken connection was replaced").toBe(false);
+          expect(delivered.next, "A delivered cancel drains at once").toBeLessThan(1_000);
+          expect(delivered.sameConnection, "A drained connection is kept").toBe(true);
+
+          const sibling = yield* step(
+            "A statement that finished does not wait for its group's drain",
+            "sibling",
+          );
+          expect(sibling.gaveUp, "The sibling gave up on its lock wait").toBe(true);
+          expect(sibling.awaited).toBe("ok");
+          expect(sibling.awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
+
+          // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
+          // there it uses one connection and one snapshot, and outside one it writes nothing. A
+          // batch that cannot connect (the first attempt and its retry both closed) returns each
+          // leaf's failure, so a tool call's recheck decides it as on main.
+          const batch = yield* step(
+            "A batch writes BEGIN only on a held connection, and returns its leaves' failures when it cannot connect",
+            "batch",
+          );
+          expect(batch).toEqual({
+            held: { ok: 4, backends: 1, snapshots: 1 },
+            outside: { refused: true },
+            unreachable: {
+              attempts: 2,
+              batch: "returned",
+              leaves: ["could not connect", "could not connect", "could not connect"],
+            },
+          });
+        }),
+      ),
+    { timeout: 180_000 },
   );
 });

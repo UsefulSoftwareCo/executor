@@ -6,7 +6,8 @@
   "exports": {
     "./node": "./src/node.ts",
     "./cloudflare": "./src/cloudflare.ts",
-    "./host": "./src/host.ts"
+    "./host": "./src/host.ts",
+    "./git-client": "./src/git-client.ts"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.1",

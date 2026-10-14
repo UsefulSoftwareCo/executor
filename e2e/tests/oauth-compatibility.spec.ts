@@ -8,8 +8,9 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile, Profile } from "../support/profiles.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 import { scenarios } from "../test-plan.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
@@ -43,6 +44,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           scopes: ["read"],
           includeIdToken: false,
           idTokenAlgorithms: ["ES256"],
+          idTokenAlgorithm: "ES256",
+          idTokenIssuer: null,
           invalidNonce: false,
           setupFailure: undefined,
           completionFailure: undefined,
@@ -59,7 +62,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           readonly malformedRegistration: boolean;
           readonly scopes: readonly string[];
           readonly includeIdToken: boolean;
-          readonly idTokenAlgorithms: readonly string[];
+          /** Advertised ID token algorithms; null omits them from OAuth metadata. */
+          readonly idTokenAlgorithms: readonly string[] | null;
+          readonly idTokenAlgorithm: "ES256" | "RS256" | "HS256";
+          /** The ID token's `iss`; null names this issuer. */
+          readonly idTokenIssuer: string | null;
           readonly invalidNonce: boolean;
           /** The 422 reason when setup must stop before sign-in. */
           readonly setupFailure: string | undefined;
@@ -76,8 +83,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           },
           // Vercel answers a client_secret_basic registration with a public client.
           { ...valid, name: "Public client issued", issuePublicClients: true },
+          // Executor uses only the access token and ignores any ID token, so none of these
+          // can fail a sign-in, and a service may omit the ID token after `openid`.
           { ...valid, name: "ES256 OIDC", scopes: ["openid", "read"], includeIdToken: true },
-          // Executor does not use the ID token, so a service may omit it after `openid`.
           { ...valid, name: "OpenID without ID token", scopes: ["openid", "read"] },
           {
             ...valid,
@@ -85,15 +93,31 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             scopes: ["openid", "read"],
             includeIdToken: true,
             idTokenAlgorithms: ["RS256"],
-            completionFailure: "incompatible_response",
           },
           {
             ...valid,
-            name: "Wrong nonce",
+            name: "Nonce never sent",
             scopes: ["openid", "read"],
             includeIdToken: true,
             invalidNonce: true,
-            completionFailure: "incompatible_response",
+          },
+          // Miro: an HS256 ID token without a nonce, its OAuth metadata listing no algorithms.
+          {
+            ...valid,
+            name: "Miro-like ID token",
+            scopes: ["openid", "read"],
+            includeIdToken: true,
+            idTokenAlgorithms: null,
+            idTokenAlgorithm: "HS256",
+          },
+          // Readwise: an HS256 ID token naming an issuer its metadata does not.
+          {
+            ...valid,
+            name: "Readwise-like ID token",
+            scopes: ["openid", "read"],
+            includeIdToken: true,
+            idTokenAlgorithm: "HS256",
+            idTokenIssuer: "https://readwise.example/",
           },
           {
             ...valid,
@@ -131,7 +155,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             setupFailure: "client_registration_required",
           },
         ];
+        // Clients belong to the service's server, so another app of it reuses a client the
+        // organization registered. Each case starts without one, so each case registers.
         for (const scenario of cases) {
+          yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
           yield* issuer.configure(scenario);
           // Deploy the quick-add OAuth source directly; these cases break discovery on purpose.
           const name = `${scenario.name} ${randomUUID().slice(0, 8)}`;
@@ -144,13 +171,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            ),
           );
           const started = yield* api.request(
             actors.owner,
@@ -182,11 +210,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           }
           expect(started.status, scenario.name).toBe(200);
           const { authorizationUrl } = yield* body(SignIn, started);
-          if (scenario.scopes.includes("openid"))
-            expect(
-              new URL(authorizationUrl).searchParams.get("nonce"),
-              scenario.name,
-            ).not.toBeNull();
+          // Executor never asks for a nonce, even when it requests `openid`.
+          expect(
+            new URL(authorizationUrl).searchParams.get("scope")?.split(" ").includes("openid"),
+            scenario.name,
+          ).toBe(scenario.scopes.includes("openid"));
+          expect(new URL(authorizationUrl).searchParams.has("nonce"), scenario.name).toBe(false);
           const callbackUrl = yield* Effect.scoped(
             Effect.gen(function* () {
               const consent = yield* HttpClient.withScope(http).get(authorizationUrl);
@@ -234,11 +263,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
               reason: scenario.completionFailure,
             });
           expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges + 1);
-          const selected = yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
-          );
+          // Completing links the new account to the app; a failed completion links nothing.
+          const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
           if (scenario.completionFailure === undefined) {
             const account = yield* body(Resource, completed);
             yield* Effect.addFinalizer(() =>
@@ -246,13 +272,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
                 .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
                 .pipe(Effect.orDie),
             );
-            expect(selected.body).toMatchObject({ accounts: { service: [account.id] } });
+            expect(linked).toEqual([account.id]);
             expect(
               (yield* api.request(actors.owner, "GET", `${prefix}/connections/${connection.id}`))
                 .body,
             ).toMatchObject({ state: { status: "completed", account: { id: account.id } } });
           } else {
-            expect((yield* body(Profile, selected)).accounts).toEqual(profile.accounts);
+            expect(linked).toEqual([]);
             expect(
               (yield* api.request(actors.owner, "GET", `${prefix}/connections/${connection.id}`))
                 .body,

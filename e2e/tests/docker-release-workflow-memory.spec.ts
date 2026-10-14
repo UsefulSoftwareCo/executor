@@ -10,7 +10,7 @@ it.live(
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* workflowServer(`import { defineApp, workflow, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   workflows: { once: workflow({ input: object({}) }, async (ctx) => ctx.step.do("once", async () => ctx.runId)) },
 });`);
         const runs = yield* Effect.forEach(
@@ -54,7 +54,7 @@ it.live(
         const stepSeconds = 180;
         const sleepSeconds = 120;
         const server = yield* workflowServer(`import { defineApp, workflow, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   workflows: {
     patient: workflow({ input: object({}) }, async (ctx) => {
       const long = await ctx.step.do("long", { timeout: "10 minutes" }, async () => {

@@ -8,6 +8,7 @@ import { AppNotDeployed } from "../contracts/apps.ts";
 import { Crypto, Effect, Schema } from "effect";
 import { Hex } from "effect/encoding";
 import type { BlobStorage } from "../contracts/blobs.ts";
+import type { CatalogReadOptions } from "../contracts/declarations.ts";
 import { AppSkillInputs, AppSkillNotFound, SkillRevisionChanged } from "../contracts/skills.ts";
 import { RequestInvalid, StorageError } from "../contracts/shared.ts";
 import type { Runtime } from "../contracts/runtime.ts";
@@ -49,10 +50,12 @@ const sorted = (skills: typeof AppSkills.Type) =>
 
 /**
  * Bind skill reads to the app's code lineage. Builds with the skills capability are evaluated
- * with the selected profile. A read pinned to a revision is served a kept catalog with that
+ * with the named accounts. A read pinned to a revision is served a kept catalog with that
  * revision, stale-while-revalidate within its bound. A read without one gets the publisher's
  * current catalog: a stale kept catalog that reflects a publisher is evaluated again first, so
- * the revision it returns is not replaced by a background refresh moments later.
+ * the revision it returns is not replaced by a background refresh moments later. A listing read
+ * with `refreshStale: false`, such as the index of every app's skills, is served any kept catalog
+ * as it is; reading a skill then names that catalog's revision.
  */
 export const makeSkills = (
   db: Query,
@@ -61,7 +64,7 @@ export const makeSkills = (
   declarations: Declarations,
   blobs: BlobStorage,
 ) => {
-  const snapshot = (input: typeof AppSkillInputs.list.Type) =>
+  const snapshot = (input: typeof AppSkillInputs.list.Type, read: CatalogReadOptions = {}) =>
     Effect.gen(function* () {
       const app = yield* storedApp(db, input);
       const deployment = input.deployment ?? app.activeDeployment;
@@ -107,6 +110,7 @@ export const makeSkills = (
                       ),
                     ),
                 {
+                  ...(read.refreshStale === undefined ? {} : { refreshStale: read.refreshStale }),
                   retain: (value) => Schema.is(Reusable)(value),
                   revalidate: (value) => known === undefined && Schema.is(Published)(value),
                   // A caller holding another revision rereads rather than receive an older one.
@@ -132,16 +136,13 @@ export const makeSkills = (
                 ),
                 Effect.flatMap((catalog) => decode(catalog.skills)),
               );
-              return { skills, profile: state.profile };
+              return skills;
             })
-          : {
-              skills: yield* readDeploymentSource(blobs, retained.id).pipe(
-                Effect.flatMap(prepareAppSkills),
-                Effect.flatMap(decode),
-              ),
-              profile: undefined,
-            };
-      const skills = live.skills;
+          : yield* readDeploymentSource(blobs, retained.id).pipe(
+              Effect.flatMap(prepareAppSkills),
+              Effect.flatMap(decode),
+            );
+      const skills = live;
       const revision = yield* catalogRevision(crypto, skills);
       if (input.revision !== undefined && input.revision !== revision)
         return yield* new SkillRevisionChanged({
@@ -154,9 +155,6 @@ export const makeSkills = (
         deployment: retained.id,
         revision,
         skills,
-        ...(live.profile === undefined
-          ? {}
-          : { profile: live.profile.id, profileRevision: live.profile.revision }),
       };
     });
   return {
@@ -166,10 +164,10 @@ export const makeSkills = (
         Effect.flatMap(snapshot),
         Effect.withSpan("sdk.skills.bundle"),
       ),
-    list: (input: typeof AppSkillInputs.list.Type) =>
+    list: (input: typeof AppSkillInputs.list.Type, options?: CatalogReadOptions) =>
       Schema.decodeUnknownEffect(AppSkillInputs.list)(input).pipe(
         Effect.mapError(() => new RequestInvalid()),
-        Effect.flatMap(snapshot),
+        Effect.flatMap((input) => snapshot(input, options)),
         Effect.map((snapshot) => ({
           ...snapshot,
           skills: snapshot.skills.map(({ files: _files, ...metadata }) => metadata),

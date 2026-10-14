@@ -1,11 +1,11 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
-import { ProfileErrors } from "@executor-js/sdk/core";
 /** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
   AccountConnection,
   AccountConnectionId,
+  AccountConnectionTarget,
   Account,
   CreateAccountConnection,
   AccountConnectionNotFound,
@@ -13,6 +13,7 @@ import {
   AppNotFound,
   AccountSelectionInvalid,
   AccountConnectionTargetChanged,
+  AccountConnectionRefused,
   AccountNotFound,
   ProviderNotFound,
   StorageError,
@@ -20,15 +21,20 @@ import {
   AccountFieldsInput,
   AccountFieldsInvalid,
   AuthMethodInvalid,
-  OAuthClientInput,
-  OAuthClientSetup,
+  OAuthClientSelection,
+  OAuthClientNotFound,
+  OAuthConnectOptions,
   OAuthStartResult,
   OAuthClientUnavailable,
   OAuthSetupFailed,
   OAuthCompletionFailed,
   HttpUrl,
+  AccountId,
+  AccountScope,
+  AppId,
 } from "@executor-js/sdk";
 import { AuthForbidden, PairingUnauthorized } from "./auth.ts";
+import { RequirementMismatch } from "./requirement-mismatch.ts";
 
 /** A limited bearer value, redacted everywhere except its browser fragment and API submission. */
 export const ConnectionGrant = Schema.Struct({
@@ -69,16 +75,15 @@ export const ConnectionSubmission = Schema.Struct({
   label: Schema.optional(Schema.NonEmptyString),
   fields: AccountFieldsInput,
 });
-/** Provider consent started from the link's form, optionally with a user-supplied client. */
+/** Provider consent started from the link's form, optionally with the client the person chose. */
 export const ConnectionOAuthStart = Schema.Struct({
   ...ConnectionGrant.fields,
   method: Schema.NonEmptyString,
   label: Schema.optional(Schema.NonEmptyString),
-  client: Schema.optional(OAuthClientInput),
+  client: Schema.optional(OAuthClientSelection),
 });
 
 const errors = [
-  ...ProfileErrors,
   ConnectionLinkRejected,
   AuthForbidden,
   StorageError,
@@ -89,19 +94,54 @@ const errors = [
   AccountNotFound,
   ProviderNotFound,
 ] as const;
+const issueErrors = [...errors, PairingUnauthorized, AppNotFound, AccountSelectionInvalid] as const;
+
+/**
+ * Create a browser connection link for one requirement of an app in the scope the route names, as
+ * `appAccounts.appConnect` or `appAccounts.userConnect`: the agent-facing form of `issue`.
+ */
+const scopeConnect = <const S extends AccountScope>(scope: S) =>
+  HttpApiEndpoint.post(
+    `${scope}Connect`,
+    `/account-connect/api/apps/:app/accounts/${scope}/:requirement/connections`,
+    {
+      params: { app: AppId, requirement: Schema.NonEmptyString },
+      payload: Schema.Struct({
+        /** Replace this account's credentials instead of adding an account. */
+        account: Schema.optional(AccountId),
+      }),
+      success: AccountConnectionLink,
+      error: [...issueErrors, RequirementMismatch],
+    },
+  ).annotate(
+    OpenApi.Description,
+    `${
+      scope === "app"
+        ? "Connect a new account for one of this app's own requirements, which every call and the app's background work use."
+        : "Connect a new account of your own for one of this app's user requirements."
+    } Returns the url of the browser form where the user enters credentials or signs in with OAuth; give the user that url. Completing it saves the account under the app's owner and links it to this requirement. Pass account to replace an existing account's credentials instead; it keeps its ID and links. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.`,
+  );
+
 /** Browser submissions never accept an owner, provider, callback destination, or target account. */
 export const AccountConnectApi = HttpApi.make("account-connect").add(
   HttpApiGroup.make("accountConnect")
     .add(
       HttpApiEndpoint.post("issue", "/account-connect/api/requests", {
-        payload: CreateAccountConnection,
+        // The account takes the target app's owner; a caller's owner is ignored. The connection
+        // keeps the requirement's scope when it is issued.
+        payload: CreateAccountConnection.mapFields(({ owner: _owner, ...fields }) => ({
+          ...fields,
+          target: AccountConnectionTarget,
+        })),
         success: AccountConnectionLink,
-        error: [...errors, PairingUnauthorized, AppNotFound, AccountSelectionInvalid],
+        error: issueErrors,
       }).annotate(
         OpenApi.Description,
-        "Create a browser connection link for an app requirement: target { app, profile, requirement }. Completing it saves the account and selects it for that profile. Optional account reconnects that existing account through the app without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
+        "Create a browser connection link for an app requirement: target { app, requirement }. Completing it saves the account under the app's owner and links it to the requirement, in the requirement's scope: for you for a user requirement, for every call for one of the app's own requirements. Optional account reconnects that existing account through the app without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
       ),
     )
+    .add(scopeConnect("app"))
+    .add(scopeConnect("user"))
     .add(
       HttpApiEndpoint.post("read", "/account-connect/api/read", {
         payload: ConnectionGrant,
@@ -120,13 +160,13 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
       HttpApiEndpoint.post("submit", "/account-connect/api/submit", {
         payload: ConnectionSubmission,
         success: Account,
-        error: [...errors, AccountFieldsInvalid, AuthMethodInvalid],
+        error: [...errors, AccountConnectionRefused, AccountFieldsInvalid, AuthMethodInvalid],
       }),
     )
     .add(
       HttpApiEndpoint.post("oauthSetup", "/account-connect/api/oauth/setup", {
         payload: Schema.Struct({ ...ConnectionGrant.fields, method: Schema.NonEmptyString }),
-        success: OAuthClientSetup,
+        success: OAuthConnectOptions,
         error: [...errors, AuthMethodInvalid, OAuthSetupFailed],
       }),
     )
@@ -134,7 +174,14 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
       HttpApiEndpoint.post("startOAuth", "/account-connect/api/oauth/start", {
         payload: ConnectionOAuthStart,
         success: OAuthStartResult,
-        error: [...errors, AuthMethodInvalid, OAuthClientUnavailable, OAuthSetupFailed],
+        error: [
+          ...errors,
+          AccountConnectionRefused,
+          AuthMethodInvalid,
+          OAuthClientUnavailable,
+          OAuthClientNotFound,
+          OAuthSetupFailed,
+        ],
       }),
     )
     .add(
@@ -144,7 +191,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
           callbackUrl: Schema.RedactedFromValue(HttpUrl),
         }),
         success: Account,
-        error: [...errors, OAuthCompletionFailed],
+        error: [...errors, AccountConnectionRefused, OAuthCompletionFailed],
       }),
     ),
 );

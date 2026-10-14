@@ -1,46 +1,18 @@
-/** MCP paths retain the real app and distinguish each saved profile below it. */
-import type { Account, App, AppId, Profile, ProfileId } from "@executor-js/sdk/core";
-/** An account-free app call or a particular revision of one personal profile. */
-export type McpTarget =
-  | { readonly kind: "app" }
-  | {
-      readonly kind: "profile";
-      readonly id: ProfileId;
-      readonly revision: number;
-      readonly label: string;
-      /** The selected accounts' descriptions, each after its account's label. */
-      readonly accounts?: string;
-    };
-/** Products authorize these records before projection; this function grants no access. */
-export function appTargets(
-  app: App,
-  profiles: readonly Profile[],
-  accounts: readonly Pick<Account, "id" | "label" | "description">[],
-): readonly McpTarget[] {
-  const targets: McpTarget[] = profiles
-    .filter((item) => item.enabled && item.status !== "removed" && item.status !== "removing")
-    .map((item) => {
-      const ids = new Set(Object.values(item.accounts).flat());
-      const selected = accounts.filter((account) => ids.has(account.id));
-      const labels = selected.map((account) => account.label);
-      // Agents read descriptions in every tool's description, so each stays on one line.
-      const described = selected.flatMap((account) =>
-        account.description === null
-          ? []
-          : [`${account.label}: ${account.description.replace(/\s+/g, " ").trim()}`],
-      );
-      return {
-        kind: "profile",
-        id: item.id,
-        revision: item.revision,
-        label: item.name ?? (labels.length === 0 ? "Personal profile" : labels.join(", ")),
-        ...(described.length === 0 ? {} : { accounts: described.join("; ") }),
-      };
-    });
-  if (Object.keys(app.requirements.accounts).length === 0) targets.unshift({ kind: "app" });
-  return targets;
-}
-/** An app filter remains separate from the profile's immutable identity. */
+/** The accounts the caller linked for each of an app's requirements. */
+import type { Account, AppId, DeploymentId, LinkedAccounts } from "@executor-js/sdk/core";
+/** One account the caller linked to an app, as agents see it. */
+export type McpAccount = Pick<Account, "id" | "label" | "description">;
+/**
+ * Every user requirement of the app with the caller's linked accounts for it, oldest link first,
+ * after product and grant checks. Calls use them: the newest for a plain requirement, all for
+ * many(). App requirements are left out: the backend fills them from the app links.
+ */
+export type McpAppAccounts = LinkedAccounts<McpAccount>;
+/**
+ * The app whose linked accounts are requested, for the requirements of its active deployment or
+ * of a retained one in its lineage that a read pins.
+ */
 export interface McpTargetInput {
   readonly app: AppId;
+  readonly deployment?: DeploymentId | undefined;
 }

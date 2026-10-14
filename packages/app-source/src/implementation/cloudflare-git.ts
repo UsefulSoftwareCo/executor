@@ -3,6 +3,7 @@ import { protectGit } from "./protected-git.ts";
 import { Clock, Context, Effect, Exit, Redacted, Schema, Scope, Stream } from "effect";
 import {
   FetchHttpClient,
+  HttpBody,
   HttpClient,
   HttpClientError,
   HttpClientRequest,
@@ -10,20 +11,39 @@ import {
 } from "effect/http";
 import { captureTelemetry, pendingSpan, traceHeaders } from "@executor-js/telemetry";
 import * as Git from "isomorphic-git";
-import { Volume, createFsFromVolume } from "memfs";
 import {
   AppCodeId,
   SourceError,
   SourceFiles,
   Branch,
-  GitCommit,
+  GitObjectId,
   SourceCommit,
+  inlineBytes,
+  isPublicSourcePath,
+  isUpload,
+  publicFits,
   sourceFiles,
   sourceFits,
+  sourceLimits,
+  removedPaths,
   type RepositoryBackend,
+  type SourceFile,
 } from "@executor-js/sdk/core";
 
 import type { ArtifactsTokens } from "../contracts/artifacts-tokens.ts";
+import { buildTrees, commitObject, objectId, pushObjects, type PackObject } from "./git-pack.ts";
+
+/** Blobs one coordinator call reads, so each call's storage operations stay well inside a Worker's. */
+const blobsPerCall = 500;
+
+/**
+ * Git responses this adapter reads into memory are ref advertisements and push reports, never
+ * packs of files; one larger than this is refused as `limit`.
+ */
+const responseBytes = 32 * 1024 * 1024;
+
+/** History lists as many recent commits as native hosts' `git log -50`. */
+const historyCommits = 50;
 
 interface RepositoryAccess {
   readonly remote: URL;
@@ -80,11 +100,12 @@ const failure = (cause?: unknown) => {
   }
   return error;
 };
-/** Only the requested missing branch is an empty workspace; object and transport failures stay errors. */
-const branchFailure = (cause: unknown, ref: string): SourceError =>
-  cause instanceof Git.Errors.NotFoundError && cause.data.what === ref
-    ? new SourceError({ reason: "not-found" })
-    : failure(cause);
+/** Artifacts refused the repository token; the failure records it, and Git never sees it. */
+const rejectedToken = (status: number) => {
+  const error = new SourceError({ reason: "git" });
+  failures.set(error, { type: "RejectedToken", status });
+  return error;
+};
 const observeFailure = (error: SourceError) =>
   Effect.gen(function* () {
     const details = failures.get(error);
@@ -134,7 +155,15 @@ export const cloudflareRepositories = (
     });
   // Artifacts rejects invalid/expired/revoked credentials with this exact 403 body.
   // Other denials and provider failures retain their original semantics and push reconciliation.
-  const authenticatedRequest = (value: RepositoryAccess, http: HttpClient.HttpClient) => {
+  // A rejected token is replaced once per access. A streamed body cannot be sent twice, so its
+  // request fails as retryable after the refresh; the next request uses the new token. A rejection
+  // is never passed on: Git reports a 401 as the caller's own sign-in failing, and this token is
+  // the host's, not the caller's.
+  const authenticatedRequest = (
+    value: RepositoryAccess,
+    http: HttpClient.HttpClient,
+    body: "replayable" | "streamed" = "replayable",
+  ) => {
     let token = value.token;
     let refreshed = false;
     const scoped = HttpClient.withScope(http);
@@ -153,8 +182,8 @@ export const cloudflareRepositories = (
             );
           return { response, scope };
         });
-        let { response, scope } = yield* send;
-        if (!refreshed) {
+        for (;;) {
+          const { response, scope } = yield* send;
           const denial =
             response.status === 403
               ? new Uint8Array(yield* response.arrayBuffer.pipe(Effect.mapError(failure)))
@@ -164,31 +193,34 @@ export const cloudflareRepositories = (
             (denial !== undefined &&
               new TextDecoder().decode(denial) === "Invalid or expired token");
           if (rejected) {
-            refreshed = true;
             yield* Scope.close(scope, Exit.void);
+            if (refreshed) return yield* rejectedToken(response.status);
+            refreshed = true;
             token = yield* value.refresh.pipe(
               Effect.withSpan("source.repository.token.refresh", {
                 attributes: { "source.token.rejected_status": response.status },
               }),
             );
-            ({ response, scope } = yield* send);
-          } else if (denial !== undefined) {
+            if (body === "streamed") return yield* rejectedToken(response.status);
+            continue;
+          }
+          if (denial !== undefined) {
             // Inspection consumed the body; preserve every byte of an unrelated denial.
             yield* Scope.close(scope, Exit.void);
             return { response, body: Stream.succeed(denial) };
           }
-        }
-        return {
-          response,
-          body: response.stream.pipe(
-            Stream.catch((error) =>
-              error.reason instanceof HttpClientError.EmptyBodyError
-                ? Stream.empty
-                : Stream.fail(failure(error)),
+          return {
+            response,
+            body: response.stream.pipe(
+              Stream.catch((error) =>
+                error.reason instanceof HttpClientError.EmptyBodyError
+                  ? Stream.empty
+                  : Stream.fail(failure(error)),
+              ),
+              Stream.onExit((exit) => Scope.close(scope, exit)),
             ),
-            Stream.onExit((exit) => Scope.close(scope, exit)),
-          ),
-        };
+          };
+        }
       });
   };
   const client = (
@@ -209,6 +241,8 @@ export const cloudflareRepositories = (
             );
             if (url.origin !== remote.origin || !url.pathname.startsWith(`${remote.pathname}/`))
               return yield* failure(new Error("Unexpected Git destination"));
+            // isomorphic-git sends packs built from a source already within `sourceLimits`.
+            // The body is kept so a request rejected for an expired token can be sent again.
             const chunks: Uint8Array[] = [];
             let size = 0;
             if (request.body !== undefined) {
@@ -218,10 +252,8 @@ export const cloudflareRepositories = (
                   : Stream.fromIterable(request.body);
               yield* stream.pipe(
                 Stream.runForEach((chunk) =>
-                  Effect.gen(function* () {
+                  Effect.sync(() => {
                     size += chunk.length;
-                    if (size > 32 * 1024 * 1024)
-                      return yield* failure(new Error("Git request too large"));
                     chunks.push(chunk);
                   }),
                 ),
@@ -275,8 +307,7 @@ export const cloudflareRepositories = (
                   Stream.tap((chunk) =>
                     Effect.gen(function* () {
                       total += chunk.length;
-                      if (total > 32 * 1024 * 1024)
-                        return yield* failure(new Error("Git repository too large"));
+                      if (total > responseBytes) return yield* new SourceError({ reason: "limit" });
                     }),
                   ),
                   Stream.onExit((exit) =>
@@ -323,41 +354,13 @@ export const cloudflareRepositories = (
       const http = yield* HttpClient.HttpClient;
       return yield* work(client(value, http, controller.signal, context));
     }).pipe(Effect.withSpan(name), Effect.scoped, Effect.provide(FetchHttpClient.layer));
-  const session = (credentials: ReturnType<typeof access>) =>
-    credentials.pipe(
-      Effect.map((access) => ({ ...access, fs: createFsFromVolume(new Volume()), dir: "/repo" })),
-    );
   return protectGit({
+    // Commit metadata from the Artifacts binding. Git would have to fetch every file of every
+    // listed commit, so history size, not the current source, would bound the listing.
     history: (id) =>
-      Effect.gen(function* () {
-        const value = yield* session(access(id));
-        const rows = yield* withGit("source.git.history", value, (http) =>
-          Effect.gen(function* () {
-            const options = { fs: value.fs, dir: value.dir };
-            yield* gitCall(() =>
-              Git.clone({
-                ...options,
-                http,
-                url: value.remote.href,
-                ref: "main",
-                singleBranch: true,
-                noCheckout: true,
-                noTags: true,
-                depth: 50,
-              }),
-            );
-            return (yield* gitCall(() => Git.log({ ...options, ref: "main", depth: 50 }))).map(
-              (entry) => ({
-                commit: entry.oid,
-                author: entry.commit.author.name,
-                message: entry.commit.message.trim(),
-                timestamp: entry.commit.author.timestamp,
-              }),
-            );
-          }),
-        );
-        return yield* Schema.decodeUnknownEffect(Schema.Array(GitCommit))(rows);
-      }).pipe(Effect.mapError(failure)),
+      tokens
+        .history(id, historyCommits)
+        .pipe(Effect.withSpan("source.git.history"), Effect.tapError(observeFailure)),
     create: (id) => create(id).pipe(Effect.asVoid),
     head: (id, branch) =>
       Effect.gen(function* () {
@@ -375,73 +378,125 @@ export const cloudflareRepositories = (
         const ref = refs.find((ref) => ref.ref === `refs/heads/${name}`);
         return ref === undefined ? null : yield* Schema.decodeUnknownEffect(SourceCommit)(ref.oid);
       }).pipe(Effect.mapError(failure)),
+    // Reads walk the commit's trees through the binding and read only the blobs they return or
+    // size; no pack of the commit is fetched, so public files never all sit in the isolate.
     read: (id, ref) =>
       Effect.gen(function* () {
         if (!Schema.is(SourceCommit)(ref) && !Schema.is(Branch)(ref))
           return yield* new SourceError({ reason: "invalid-source" });
-        const value = yield* session(access(id));
-        const options = { fs: value.fs, dir: value.dir };
-        const requested = Schema.is(SourceCommit)(ref) ? ref : `refs/heads/${ref}`;
-        // Request only this snapshot, including when its SHA is no longer a branch tip.
-        yield* withGit("source.git.clone", value, (http) =>
-          Effect.tryPromise({
-            try: () =>
-              Git.clone({
-                ...options,
-                http,
-                url: value.remote.href,
-                ref: requested,
-                noCheckout: true,
-                singleBranch: true,
-                depth: 1,
-                noTags: true,
-              }),
-            catch: (cause) =>
-              Schema.is(SourceCommit)(ref) ? failure(cause) : branchFailure(cause, requested),
-          }),
+        const resolved = yield* tokens.resolve(id, ref);
+        if (resolved === null) return yield* new SourceError({ reason: "not-found" });
+        const entries = yield* tokens.tree(id, resolved.tree);
+        for (const entry of entries)
+          if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755"))
+            return yield* new SourceError({ reason: "invalid-source" });
+        const code = entries.filter((entry) => !isPublicSourcePath(entry.path));
+        const served = entries
+          .filter((entry) => isPublicSourcePath(entry.path))
+          .toSorted((a, b) => (a.path < b.path ? -1 : 1));
+        if (!sourceFits(code.length, 0)) return yield* new SourceError({ reason: "limit" });
+        const chunks = <A>(items: ReadonlyArray<A>) =>
+          Array.from({ length: Math.ceil(items.length / blobsPerCall) }, (_, index) =>
+            items.slice(index * blobsPerCall, (index + 1) * blobsPerCall),
+          );
+        const read = (objects: ReadonlyArray<string>, mode: "sizes" | "bytes", budget: number) =>
+          Effect.forEach(chunks(objects), (chunk) => tokens.blobs(id, chunk, mode, budget)).pipe(
+            Effect.map((pages) => pages.flat()),
+          );
+        const codeBlobs = yield* read(
+          code.map((entry) => entry.object),
+          "bytes",
+          sourceLimits.bytes,
         );
-        const result = yield* Effect.gen(function* () {
-          const commit = Schema.is(SourceCommit)(ref)
-            ? ref
-            : yield* Effect.tryPromise({
-                try: () => Git.resolveRef({ ...options, ref: `refs/remotes/origin/${ref}` }),
-                // An empty repository makes clone succeed without writing a remote branch.
-                catch: (cause) => branchFailure(cause, `refs/remotes/origin/${ref}`),
-              });
-          const files: Array<{ path: string; content: string }> = [];
-          let total = 0;
-          const walk = (oid: string, prefix: string): Effect.Effect<void, SourceError> =>
-            Effect.gen(function* () {
-              const tree = yield* gitCall(() => Git.readTree({ ...options, oid }));
-              for (const entry of tree.tree) {
-                if (entry.type === "tree") {
-                  yield* walk(entry.oid, `${prefix}${entry.path}/`);
-                  continue;
-                }
-                if (entry.type !== "blob" || (entry.mode !== "100644" && entry.mode !== "100755"))
-                  return yield* new SourceError({ reason: "invalid-source" });
-                const blob = yield* gitCall(() => Git.readBlob({ ...options, oid: entry.oid }));
-                total += blob.blob.length;
-                if (!sourceFits(files.length + 1, total))
-                  return yield* new SourceError({ reason: "limit" });
-                const content = yield* Effect.try({
-                  try: () => new TextDecoder("utf-8", { fatal: true }).decode(blob.blob),
-                  catch: failure,
-                });
-                files.push({
-                  path: prefix + entry.path,
-                  content,
-                });
-              }
-            });
-          yield* walk(commit, "");
-          return { commit, files };
-        }).pipe(Effect.withSpan("source.git.tree"));
+        const codeBytes = codeBlobs.reduce((sum, blob) => sum + blob.size, 0);
+        if (!sourceFits(code.length, codeBytes) || codeBlobs.some((blob) => blob.bytes === null))
+          return yield* new SourceError({ reason: "limit" });
+        const sizes = yield* read(
+          served.map((entry) => entry.object),
+          "sizes",
+          0,
+        );
+        if (
+          !publicFits(
+            served.length,
+            sizes.reduce((sum, blob) => sum + blob.size, 0),
+            Math.max(0, ...sizes.map((blob) => blob.size)),
+          )
+        )
+          return yield* new SourceError({ reason: "limit" });
+        // Public files are inline while they fit beside the code, in path order.
+        let remaining = sourceLimits.bytes - codeBytes;
+        const candidates: string[] = [];
+        served.forEach((entry, index) => {
+          const size = sizes[index]?.size ?? Number.POSITIVE_INFINITY;
+          if (size > remaining) return;
+          remaining -= size;
+          candidates.push(entry.object);
+        });
+        const inline = new Map(
+          (yield* read([...new Set(candidates)], "bytes", sourceLimits.bytes)).map((blob) => [
+            blob.object,
+            blob.bytes,
+          ]),
+        );
+        const utf8 = (bytes: Uint8Array) =>
+          Effect.try({
+            try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+            catch: () => new SourceError({ reason: "invalid-source" }),
+          });
+        const files: SourceFile[] = [];
+        for (const [index, entry] of code.entries()) {
+          const bytes = codeBlobs[index]?.bytes;
+          if (bytes === null || bytes === undefined)
+            return yield* new SourceError({ reason: "git" });
+          files.push({ path: entry.path, content: yield* utf8(bytes) });
+        }
+        for (const [index, entry] of served.entries()) {
+          const size = sizes[index]?.size ?? 0;
+          const bytes = candidates.includes(entry.object) ? inline.get(entry.object) : undefined;
+          const content =
+            bytes === null || bytes === undefined
+              ? undefined
+              : yield* utf8(bytes).pipe(Effect.orElseSucceed(() => undefined));
+          files.push(
+            content === undefined
+              ? { path: entry.path, object: entry.object, size }
+              : { path: entry.path, content },
+          );
+        }
         return {
-          commit: yield* Schema.decodeUnknownEffect(SourceCommit)(result.commit),
-          files: yield* sourceFiles(yield* Schema.decodeUnknownEffect(SourceFiles)(result.files)),
+          commit: yield* Schema.decodeUnknownEffect(SourceCommit)(resolved.commit),
+          files: yield* sourceFiles(yield* Schema.decodeUnknownEffect(SourceFiles)(files)),
         };
-      }).pipe(Effect.mapError(failure), Effect.tapError(observeFailure)),
+      }).pipe(
+        Effect.mapError(failure),
+        Effect.withSpan("source.git.read"),
+        Effect.tapError(observeFailure),
+      ),
+    blob: (id, object) =>
+      Effect.gen(function* () {
+        const oid = yield* Schema.decodeUnknownEffect(GitObjectId)(object);
+        const [blob] = yield* tokens.blobs(id, [oid], "bytes", Number.POSITIVE_INFINITY);
+        if (blob?.bytes === null || blob?.bytes === undefined)
+          return yield* new SourceError({ reason: "not-found" });
+        return blob.bytes;
+      }).pipe(
+        Effect.mapError(failure),
+        Effect.withSpan("source.git.blob"),
+        Effect.tapError(observeFailure),
+      ),
+    file: (id, commit, path) =>
+      Effect.gen(function* () {
+        const bytes = yield* tokens.file(id, commit, path);
+        if (bytes === null) return yield* new SourceError({ reason: "not-found" });
+        return bytes;
+      }).pipe(
+        Effect.mapError(failure),
+        Effect.withSpan("source.git.file"),
+        Effect.tapError(observeFailure),
+      ),
+    // Saves push only the objects they write. Unchanged files are named by their blob and stay
+    // on the server, so a save never fetches the commit it replaces.
     commit: (input) =>
       Effect.gen(function* () {
         const files = yield* sourceFiles(input.files);
@@ -453,129 +508,152 @@ export const cloudflareRepositories = (
                 ),
               )
             : access(input.id);
-        const value = yield* session(credentials);
-        return yield* withGit("source.git.commit", value, (http) =>
+        const value = yield* credentials;
+        const listing = (commit: string) =>
           Effect.gen(function* () {
-            const options = { fs: value.fs, dir: value.dir };
-            if (input.expected === null) {
-              yield* gitCall(() => Git.init({ ...options, defaultBranch: input.branch }));
-              yield* gitCall(() =>
-                Git.addRemote({ ...options, remote: "origin", url: value.remote.href }),
-              );
-            } else
-              yield* gitCall(() =>
-                Git.clone({
-                  ...options,
-                  http,
-                  url: value.remote.href,
-                  noCheckout: true,
-                  ref: input.branch,
-                  singleBranch: true,
-                  depth: 1,
-                  noTags: true,
-                }),
-              );
-            const writeTree = (prefix: string): Effect.Effect<string, SourceError> =>
-              Effect.gen(function* () {
-                const entries: Git.TreeEntry[] = [];
-                const directories = new Set<string>();
-                for (const file of files) {
-                  if (!file.path.startsWith(prefix)) continue;
-                  const rest = file.path.slice(prefix.length);
-                  const slash = rest.indexOf("/");
-                  if (slash >= 0) {
-                    directories.add(rest.slice(0, slash));
-                    continue;
-                  }
-                  entries.push({
-                    mode: "100644",
-                    path: rest,
-                    type: "blob",
-                    oid: yield* gitCall(() =>
-                      Git.writeBlob({
-                        ...options,
-                        blob: new TextEncoder().encode(file.content),
-                      }),
-                    ),
-                  });
-                }
-                for (const directory of directories)
-                  entries.push({
-                    mode: "040000",
-                    path: directory,
-                    type: "tree",
-                    oid: yield* writeTree(`${prefix}${directory}/`),
-                  });
-                return yield* gitCall(() => Git.writeTree({ ...options, tree: entries }));
-              });
-            const author = {
-              name: "Executor",
-              email: "apps@executor.local",
-              timestamp: Math.floor((yield* Clock.currentTimeMillis) / 1000),
-              timezoneOffset: 0,
-            };
-            const tree = yield* writeTree("");
-            const commit = yield* gitCall(() =>
-              Git.writeCommit({
-                ...options,
-                commit: {
-                  tree,
-                  parent: input.expected === null ? [] : [input.expected],
-                  author,
-                  committer: author,
-                  message: input.message,
-                },
-              }),
-            );
-            yield* gitCall(() =>
-              Git.writeRef({
-                ...options,
-                ref: `refs/heads/${input.branch}`,
-                value: commit,
-                force: true,
-              }),
-            );
-            yield* gitCall(() =>
-              Git.push({
-                ...options,
-                http,
-                url: value.remote.href,
-                ref: input.branch,
-                remoteRef: input.branch,
-                onPrePush: ({ remoteRef }) => {
-                  if (remoteRef.oid !== (input.expected ?? "0".repeat(40)))
-                    throw new SourceError({ reason: "conflict" });
-                  return true;
-                },
-              }),
-            ).pipe(
-              Effect.flatMap((result) => (result.ok ? Effect.void : Effect.fail(failure()))),
-              Effect.catch((cause) =>
-                Effect.gen(function* () {
-                  if (cause.reason === "conflict") return yield* cause;
-                  // A rejected push or lost acknowledgment has several protocol error shapes.
-                  // Reconcile the actual ref: our commit succeeded, another writer won,
-                  // or the expected ref still holds and the original failure must surface.
-                  const ref = `refs/heads/${input.branch}`;
-                  const refs = yield* gitCall(() =>
-                    Git.listServerRefs({ http, url: value.remote.href, prefix: ref }),
-                  );
-                  const current = refs.find((entry) => entry.ref === ref)?.oid ?? null;
-                  if (current === commit) return;
-                  if (current !== input.expected)
-                    return yield* new SourceError({ reason: "conflict" });
-                  return yield* cause;
-                }),
-              ),
-            );
-            return commit;
-          }),
-        ).pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(SourceCommit)),
-          Effect.mapError(failure),
-          Effect.tapError(observeFailure),
+            const resolved = yield* tokens.resolve(input.id, commit);
+            if (resolved === null) return yield* new SourceError({ reason: "conflict" });
+            return yield* tokens.tree(input.id, resolved.tree);
+          });
+        // The push moves the branch only from `expected`, so its tree holds the files this save
+        // replaces, and the blobs a stored file may keep.
+        const previous = input.expected === null ? [] : yield* listing(input.expected);
+        const basis = input.basis ?? input.expected;
+        const known = new Set(
+          (basis === input.expected ? previous : basis === null ? [] : yield* listing(basis)).map(
+            (entry) => entry.object,
+          ),
         );
-      }),
+        const blobs = new Map<string, PackObject>();
+        const entries: Array<{ path: string; object: string }> = [];
+        for (const file of files) {
+          if (isUpload(file)) {
+            blobs.set(file.object, {
+              type: "blob",
+              object: file.object,
+              size: file.size,
+              read: file.read,
+            });
+            entries.push({ path: file.path, object: file.object });
+          } else if ("object" in file) {
+            if (!known.has(file.object))
+              return yield* new SourceError({ reason: "invalid-source" });
+            entries.push({ path: file.path, object: file.object });
+          } else {
+            const bytes = inlineBytes(file);
+            const object = objectId("blob", bytes);
+            blobs.set(object, {
+              type: "blob",
+              object,
+              size: bytes.length,
+              read: Effect.succeed(bytes),
+            });
+            entries.push({ path: file.path, object });
+          }
+        }
+        const { tree, trees } = buildTrees(entries);
+        const seconds = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const commitBytes = commitObject({
+          tree,
+          parents: input.expected === null ? [] : [input.expected],
+          message: input.message,
+          seconds,
+        });
+        const commit = objectId("commit", commitBytes);
+        const ref = `refs/heads/${input.branch}`;
+        const http = yield* HttpClient.HttpClient;
+        const send = authenticatedRequest(value, http);
+        // A cheap advertisement first, so a rejected token is replaced before a pack streams.
+        yield* send(
+          HttpClientRequest.get(`${value.remote.href}/info/refs?service=git-receive-pack`),
+        ).pipe(
+          Effect.flatMap(({ response, body }) =>
+            response.status === 200
+              ? Stream.runDrain(body)
+              : Effect.fail(new SourceError({ reason: "git" })),
+          ),
+          Effect.scoped,
+        );
+        const receive = (body: Stream.Stream<Uint8Array, SourceError>) =>
+          send(
+            HttpClientRequest.post(`${value.remote.href}/git-receive-pack`).pipe(
+              HttpClientRequest.setHeader("accept", "application/x-git-receive-pack-result"),
+              HttpClientRequest.bodyStream(body, {
+                contentType: "application/x-git-receive-pack-request",
+              }),
+            ),
+          ).pipe(
+            Effect.flatMap(({ response, body }) =>
+              response.status === 200
+                ? Stream.runCollect(body).pipe(
+                    Effect.map((chunks) => {
+                      const out = new Uint8Array(
+                        chunks.reduce((size, chunk) => size + chunk.length, 0),
+                      );
+                      let offset = 0;
+                      for (const chunk of chunks) {
+                        out.set(chunk, offset);
+                        offset += chunk.length;
+                      }
+                      return out;
+                    }),
+                  )
+                : Effect.fail(new SourceError({ reason: "git" })),
+            ),
+            Effect.scoped,
+            Effect.withSpan("source.git.push"),
+          );
+        const report = yield* pushObjects({
+          receive,
+          ref,
+          expected: input.expected,
+          commit: {
+            type: "commit",
+            object: commit,
+            size: commitBytes.length,
+            read: Effect.succeed(commitBytes),
+          },
+          trees: trees.map((entry) => ({
+            type: "tree" as const,
+            object: entry.object,
+            size: entry.bytes.length,
+            read: Effect.succeed(entry.bytes),
+          })),
+          blobs: [...blobs.values()],
+          staging: `refs/heads/__executor/uploads/${crypto.randomUUID()}`,
+          seconds,
+        }).pipe(Effect.result);
+        if (report._tag === "Failure" || report.success.refs.get(ref) !== "ok") {
+          // A refused push or a lost report has several shapes. Reconcile the actual ref: our
+          // commit landed, another writer won, or the expected ref holds and the failure stands.
+          const current = yield* tokens.resolve(input.id, input.branch);
+          if (current?.commit === commit)
+            return {
+              commit: yield* Schema.decodeUnknownEffect(SourceCommit)(commit),
+              removed: removedPaths(
+                previous.map((entry) => entry.path),
+                files,
+              ),
+            };
+          if ((current?.commit ?? null) !== input.expected)
+            return yield* new SourceError({ reason: "conflict" });
+          return yield* report._tag === "Failure"
+            ? report.failure
+            : new SourceError({ reason: "git" });
+        }
+        return {
+          commit: yield* Schema.decodeUnknownEffect(SourceCommit)(commit),
+          removed: removedPaths(
+            previous.map((entry) => entry.path),
+            files,
+          ),
+        };
+      }).pipe(
+        Effect.provide(FetchHttpClient.layer),
+        Effect.mapError(failure),
+        Effect.withSpan("source.git.commit"),
+        Effect.tapError(observeFailure),
+      ),
     request: (id, request) =>
       Effect.gen(function* () {
         const url = yield* Schema.decodeUnknownEffect(Schema.URLFromString)(request.url).pipe(
@@ -595,28 +673,8 @@ export const cloudflareRepositories = (
           const header = request.headers.get(name);
           if (header !== null) headers[name] = header;
         }
-        const body = yield* Effect.gen(function* () {
-          const stream = request.body;
-          if (stream === null) return undefined;
-          const chunks: Uint8Array[] = [];
-          let length = 0;
-          yield* Stream.fromReadableStream({ evaluate: () => stream, onError: failure }).pipe(
-            Stream.runForEach((chunk) =>
-              Effect.gen(function* () {
-                length += chunk.length;
-                if (length > 32 * 1024 * 1024) return yield* new SourceError({ reason: "limit" });
-                chunks.push(chunk);
-              }),
-            ),
-          );
-          const bytes = new Uint8Array(length);
-          let offset = 0;
-          for (const chunk of chunks) {
-            bytes.set(chunk, offset);
-            offset += chunk.length;
-          }
-          return bytes;
-        });
+        // The body streams through, so a push is bounded by Artifacts, not by Worker memory.
+        const body = request.body;
         if (!HttpMethod.isHttpMethod(request.method)) return yield* failure();
         const outgoing = HttpClientRequest.make(request.method)(
           value.remote.href + suffix + url.search,
@@ -634,13 +692,13 @@ export const cloudflareRepositories = (
                 const { response, body: responseBody } = yield* authenticatedRequest(
                   value,
                   http,
+                  body === null ? "replayable" : "streamed",
                 )(
-                  body === undefined
+                  body === null
                     ? outgoing
-                    : HttpClientRequest.bodyUint8Array(
+                    : HttpClientRequest.setBody(
                         outgoing,
-                        body,
-                        outgoing.headers["content-type"],
+                        HttpBody.raw(body, { contentType: outgoing.headers["content-type"] }),
                       ),
                 ).pipe(Scope.provide(scope));
                 if (response.status >= 300 && response.status < 400) return yield* failure();
@@ -660,6 +718,6 @@ export const cloudflareRepositories = (
             ).pipe(Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))));
           }),
         );
-      }).pipe(Effect.provide(FetchHttpClient.layer)),
+      }).pipe(Effect.provide(FetchHttpClient.layer), Effect.tapError(observeFailure)),
   });
 };

@@ -3,7 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { appSlug } from "./app-slug.ts";
 import { AppId, JsonObject, OwnerId } from "./shared.ts";
-import { SourceCommit, SourceFiles, SourceRevision } from "./source.ts";
+import { SourceCommit, SourceFilePath, SourceFiles, SourceRevision, isTextFile } from "./source.ts";
 
 /**
  * The hosted Executor API origin: the default public registry and the host the CLI and SDK call.
@@ -11,25 +11,27 @@ import { SourceCommit, SourceFiles, SourceRevision } from "./source.ts";
  */
 export const hostedExecutorOrigin = "https://api.executor.sh";
 
-/** Public name inside a publishing owner's namespace. */
+/**
+ * Public name inside a publishing owner's scope, such as `@acme.executor.community/notes`. The
+ * scope is the owner's current one; the label after it identifies the listing within the owner.
+ */
 export const PackageName = Schema.String.check(
-  Schema.isPattern(/^@[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,62}$/u),
+  Schema.isPattern(/^@[a-z0-9][a-z0-9.-]{0,119}\/[a-z0-9][a-z0-9-]{0,62}$/u),
 );
 export type PackageName = typeof PackageName.Type;
+/** The scope of a package name, without its `@`. */
+export const packageScope = (name: PackageName) => name.slice(1, name.indexOf("/"));
+/** The label of a package name: what stays when its owner's scope changes. */
+export const packageLabel = (name: PackageName) => name.slice(name.indexOf("/") + 1);
 /** Standard npm metadata remains source; only name and description identify a public listing. */
 export const PackageManifest = Schema.Struct({
   name: PackageName,
   description: Schema.optional(Schema.String.check(Schema.isMaxLength(2000))),
-  executor: Schema.optional(
-    Schema.Struct({
-      dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-    }),
-  ),
 });
 export type PackageManifest = typeof PackageManifest.Type;
 /** Derive a public name from an authenticated publishing namespace and an app label. */
 export const publicPackageName = (namespace: string, name: string) => {
-  const label = Schema.is(PackageName)(name) ? name.slice(name.indexOf("/") + 1) : name;
+  const label = Schema.is(PackageName)(name) ? packageLabel(name) : name;
   return Schema.decodeUnknownOption(PackageName)(`@${namespace}/${appSlug(label)}`);
 };
 
@@ -42,7 +44,6 @@ export class PublicationIssue extends Schema.TaggedError<PublicationIssue>()("Pu
     "unscoped-name",
     "invalid-name",
     "invalid-metadata",
-    "unsupported-dependencies",
     "invalid-source",
     "limit",
     "forbidden-scope",
@@ -81,14 +82,13 @@ export const PublicationReference = Schema.Struct({
 export type PublicationReference = typeof PublicationReference.Type;
 const registryFailures = {
   "not-found": "The public app listing or its selected commit does not exist.",
-  forbidden: "This publisher may not use this package scope or change this public listing.",
+  forbidden: "This package name is not in the publisher's current scope.",
   conflict: "Another app already publishes this package name.",
   changed:
     "The public listing changed since its commit was reviewed. Review the current listing before copying it.",
   "invalid-source": "The app source at this commit cannot be read as a public listing.",
   "invalid-manifest":
     "The app's package.json needs a valid package name in the publisher's scope and valid metadata.",
-  "unsupported-dependencies": "The app declares dependencies that public listings do not support.",
   storage: "Executor could not read or write the public app catalog. Try again.",
   network: "Executor could not reach the public app registry. Try again.",
   status: "The public app registry returned an unexpected HTTP status.",
@@ -108,7 +108,6 @@ export const RegistryError = ApiError.define({
       "changed",
       "invalid-source",
       "invalid-manifest",
-      "unsupported-dependencies",
       "storage",
       "network",
       "status",
@@ -138,13 +137,33 @@ export interface Registry {
     name: string,
     commit: string,
   ) => Effect.Effect<PublicationSnapshot, RegistryError>;
+  /**
+   * One file of a listing's selected commit, by path, as its exact bytes. Installation reads the
+   * public files a snapshot lists by their blob this way, one at a time.
+   */
+  readonly file: (
+    name: string,
+    commit: string,
+    path: string,
+  ) => Effect.Effect<Uint8Array, RegistryError>;
+  /**
+   * Read many files of one listing's selected commit. The listing is resolved once, so an install
+   * reading its public files does not look it up again for each one.
+   */
+  readonly files: (
+    name: string,
+    commit: string,
+  ) => Effect.Effect<(path: string) => Effect.Effect<Uint8Array, RegistryError>, RegistryError>;
 }
 
 /** A public listing has one stable URL even when its selected commit changes. */
 export const registryPublicationPath = (name: string): string =>
   `/apps/${name.slice(1).split("/").map(encodeURIComponent).join("/")}`;
 
-/** Catalog rows point to retained Git source. Installed copies do not depend on these rows. */
+/**
+ * One listing with its owner and retained source. The name is the owner's current scope and the
+ * listing's label; storage keeps only the label, so an owner's new scope renames every listing.
+ */
 export const StoredPublication = Schema.Struct({
   name: PackageName,
   owner: OwnerId,
@@ -155,7 +174,6 @@ export const StoredPublication = Schema.Struct({
 export type StoredPublication = typeof StoredPublication.Type;
 /** Host-owned catalog persistence; public callers only see catalog metadata and selected source. */
 export interface RegistryStorage {
-  readonly scopeOwner: (scope: string) => Effect.Effect<OwnerId | null, RegistryError>;
   readonly get: (name: string) => Effect.Effect<StoredPublication, RegistryError>;
   readonly list: (name?: string) => Effect.Effect<ReadonlyArray<Publication>, RegistryError>;
   readonly owned: (owner: OwnerId) => Effect.Effect<ReadonlyArray<Publication>, RegistryError>;
@@ -172,7 +190,8 @@ export type RegistryOptions = Registry | { readonly storage: RegistryStorage };
 export const scopeGeneratedPackage = (files: SourceFiles, namespace: string, name: string) =>
   Effect.gen(function* () {
     const file = files.find((file) => file.path === "package.json");
-    if (file === undefined) return yield* new RegistryError({ reason: "invalid-manifest" });
+    if (file === undefined || !isTextFile(file))
+      return yield* new RegistryError({ reason: "invalid-manifest" });
     const manifest = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
       file.content,
     ).pipe(Effect.mapError(() => new RegistryError({ reason: "invalid-manifest" })));
@@ -208,4 +227,5 @@ export const PublicationInputs = {
 export const RegistryInputs = {
   list: Schema.Struct({ name: Schema.optional(PackageName) }),
   snapshot: Schema.Struct({ name: PackageName, commit: SourceCommit }),
+  file: Schema.Struct({ name: PackageName, commit: SourceCommit, path: SourceFilePath }),
 };

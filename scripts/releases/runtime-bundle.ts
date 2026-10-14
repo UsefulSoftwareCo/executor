@@ -1,7 +1,7 @@
 /** Assemble the reachable local server code and its portable native resources. */
 import { bundleWorkerdHost } from "@executor-js/sdk/node/build";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
 import { createRequire } from "node:module";
 import { cp, lstat, readFile } from "node:fs/promises";
 import { release } from "./config.ts";
@@ -15,6 +15,236 @@ const Manifest = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   optionalDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
+
+/**
+ * Packages the runtime loads from its install directory instead of bundling: native bindings,
+ * WebAssembly, executables, and a TypeScript compiler that reads its own files.
+ */
+const installedPackages = [
+  "ws",
+  "@electric-sql/pglite",
+  "workerd",
+  "sharp",
+  "@napi-rs/keyring",
+  "typescript",
+] as const;
+
+/** The source substitutions both runtime builds share. */
+const sourcePlugin = (root: string) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const modules = yield* bundleWorkerdHost;
+    const prepared = modules.map((module) => {
+      const content =
+        module.type === "Wasm"
+          ? `Buffer.from(${JSON.stringify(Buffer.from(module.content).toString("base64"))}, "base64")`
+          : JSON.stringify(module.content);
+      return `{name:${JSON.stringify(module.name)},type:${JSON.stringify(module.type)},content:${content}}`;
+    });
+    const plugin: Plugin = {
+      name: "local-runtime-resources",
+      setup(builder) {
+        // jsonc-parser's `main` is a UMD build that requires ./impl/* at runtime,
+        // which bundling leaves unresolvable. Its ESM build bundles statically.
+        builder.onResolve({ filter: /^jsonc-parser$/ }, (args) =>
+          builder.resolve("jsonc-parser/lib/esm/main.js", {
+            kind: args.kind,
+            resolveDir: args.resolveDir,
+          }),
+        );
+        builder.onLoad(
+          { filter: /sdk[/\\]src[/\\]implementation[/\\]workerd-bundle\.ts$/ },
+          () => ({
+            contents: `import { Effect } from "effect"; export const workerdHostModules = Effect.succeed([${prepared.join(",")}]);`,
+            loader: "js",
+            resolveDir: path.join(root, "packages/sdk"),
+          }),
+        );
+        // These modules locate static resources relative to their original source URL.
+        // Every generated chunk lives in runtime/, so preserve those URLs after bundling.
+        builder.onLoad(
+          {
+            filter:
+              /(?:server[/\\]src[/\\]implementation[/\\]web|telemetry[/\\]src[/\\]local)\.ts$/,
+          },
+          async (args) => {
+            const relative = path.relative(root, args.path).split(path.sep).join("/");
+            return {
+              contents: (await readFile(args.path, "utf8")).replaceAll(
+                "import.meta.url",
+                `new URL(${JSON.stringify(`../${relative}`)}, import.meta.url).href`,
+              ),
+              loader: "ts",
+              resolveDir: path.dirname(args.path),
+            };
+          },
+        );
+      },
+    };
+    return plugin;
+  });
+
+/**
+ * What the release executable's code reads in place of its own module URL. A module compiled
+ * into an executable has a URL inside it, so the bundle instead takes `runtime/cli.mjs` in the
+ * install directory as every module's location, as in the npm package where every chunk lives in
+ * runtime/. Resources, `require` and `import.meta.resolve` then find the same files from the
+ * executable, through any launcher symlink, as from the npm package.
+ */
+const standaloneBanner = [
+  'import { createRequire as __runtimeRequire } from "node:module";',
+  'import { pathToFileURL as __runtimeUrl } from "node:url";',
+  'import { dirname as __runtimeDir, join as __runtimeJoin } from "node:path";',
+  'import { realpathSync as __runtimeRealPath } from "node:fs";',
+  "const __executorRoot = __runtimeDir(__runtimeRealPath(process.execPath));",
+  'const __filename = __runtimeJoin(__executorRoot, "runtime", "cli.mjs");',
+  "const __dirname = __runtimeDir(__filename);",
+  "const __executorModuleUrl = __runtimeUrl(__filename).href;",
+  "const __executorRequire = __runtimeRequire(__filename);",
+  "const require = __executorRequire;",
+  "const __executorResolve = (specifier) => __runtimeUrl(Bun.resolveSync(specifier, __dirname)).href;",
+].join(" ");
+
+/** The values the release executable's entry reads; see standalone-entry.ts. */
+export interface StandaloneRelease {
+  readonly version: string;
+  readonly analytics: { readonly key: string; readonly host: string } | undefined;
+}
+
+/**
+ * Bundle the release executable's entry into one module for `bun build --compile`. The packages
+ * the runtime keeps on disk load from runtime/node_modules in the install directory, and
+ * Alchemy's internal Workers, which its package resolves through package imports, are bundled.
+ */
+export const bundleStandaloneRuntime = (
+  root: string,
+  outfile: string,
+  constants: StandaloneRelease,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const plugin = yield* sourcePlugin(root);
+    const alchemy = yield* fs.realPath(
+      path.join(
+        path.dirname(
+          createRequire(path.join(root, "packages/sdk/package.json")).resolve(
+            "@alchemy.run/cloudflare-runtime/package.json",
+          ),
+        ),
+      ),
+    );
+    const workers = yield* internalWorkers(alchemy);
+    const installed: Plugin = {
+      name: "standalone-install",
+      setup(builder) {
+        // esbuild matches filters with Go's RegExp, which has no u flag.
+        const names = new RegExp(
+          `^(?:${installedPackages.map((name) => name.replace("/", "\\/")).join("|")})$`,
+        );
+        builder.onResolve({ filter: names }, (args) => ({
+          path: args.path,
+          namespace: "installed-package",
+        }));
+        // The banner's require, rooted at runtime/ in the install directory. A plain `require`
+        // here would resolve to this module again.
+        builder.onLoad({ filter: /.*/, namespace: "installed-package" }, (args) => ({
+          contents: `module.exports = __executorRequire(${JSON.stringify(args.path)});`,
+          loader: "js",
+        }));
+        // Alchemy loads each internal Worker through its package's imports map, which only a
+        // package directory on disk has. Every one it can name is bundled here instead.
+        builder.onLoad(
+          {
+            filter:
+              /cloudflare-runtime[/\\]dist[/\\]core[/\\]node[/\\]internal[/\\]internal-worker\.mjs$/,
+          },
+          () => ({
+            contents: [
+              "const workers = {",
+              ...workers.map(
+                ({ specifier, file }) =>
+                  `  ${JSON.stringify(specifier)}: () => import(${JSON.stringify(file)}),`,
+              ),
+              "};",
+              "export const loadInternalWorker = (specifier) => {",
+              "  const load = workers[specifier];",
+              '  if (load === undefined) return Promise.reject(new Error("Unknown internal Worker " + specifier));',
+              "  return load();",
+              "};",
+            ].join("\n"),
+            loader: "js",
+          }),
+        );
+      },
+    };
+    const bundled = yield* Effect.tryPromise(() =>
+      build({
+        absWorkingDir: root,
+        entryPoints: ["scripts/releases/standalone-entry.ts"],
+        outfile,
+        bundle: true,
+        format: "esm",
+        platform: "node",
+        target: "esnext",
+        minify: true,
+        keepNames: true,
+        legalComments: "external",
+        metafile: true,
+        define: {
+          "process.env.EXECUTOR_DESKTOP_DEV": '"0"',
+          "import.meta.url": "__executorModuleUrl",
+          "import.meta.resolve": "__executorResolve",
+          executorRelease: JSON.stringify(constants),
+        },
+        external: ["bun", "bun:*"],
+        banner: { js: standaloneBanner },
+        plugins: [installed, plugin],
+      }),
+    );
+    const loaders = Object.keys(bundled.metafile.inputs).filter((input) =>
+      /internal[/\\]internal-worker\.mjs$/.test(input),
+    );
+    if (loaders.length !== 1)
+      return yield* Effect.die(
+        new Error(`Expected one internal Worker loader in the bundle, found ${loaders.length}`),
+      );
+    return bundled.metafile;
+  });
+
+/** Every module Alchemy's package imports map names, as specifier and absolute file. */
+const internalWorkers = (directory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const manifest = yield* fs
+      .readFileString(path.join(directory, "package.json"))
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({ imports: Schema.Record(Schema.String, Schema.String) }),
+            ),
+          ),
+        ),
+      );
+    const workers: Array<{ readonly specifier: string; readonly file: string }> = [];
+    for (const [pattern, target] of Object.entries(manifest.imports)) {
+      const match = /^(#[^*]+\/)\*$/.exec(pattern);
+      const files = /^\.\/(.+\/)\*\.mjs$/.exec(target);
+      if (match === null || files === null)
+        return yield* Effect.die(new Error(`Unexpected Alchemy package import ${pattern}`));
+      const base = path.join(directory, files[1] ?? "");
+      if (!(yield* fs.exists(base))) continue;
+      for (const file of yield* fs.readDirectory(base, { recursive: true }))
+        if (file.endsWith(".mjs"))
+          workers.push({
+            specifier: `${match[1]}${file.slice(0, -".mjs".length).split(path.sep).join("/")}`,
+            file: path.join(base, file),
+          });
+    }
+    return workers;
+  });
 
 /** Bundle both process entry points once; copy only locked native dependencies and resource files. */
 export const bundleLocalRuntime = (root: string, stage: string) =>
@@ -44,14 +274,7 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
             : Effect.succeed(directory),
         ),
       );
-    const modules = yield* bundleWorkerdHost;
-    const prepared = modules.map((module) => {
-      const content =
-        module.type === "Wasm"
-          ? `Buffer.from(${JSON.stringify(Buffer.from(module.content).toString("base64"))}, "base64")`
-          : JSON.stringify(module.content);
-      return `{name:${JSON.stringify(module.name)},type:${JSON.stringify(module.type)},content:${content}}`;
-    });
+    const plugin = yield* sourcePlugin(root);
     const output = path.join(stage, "runtime");
     const bundled = yield* Effect.tryPromise(() =>
       build({
@@ -74,61 +297,11 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
         legalComments: "external",
         metafile: true,
         define: { "process.env.EXECUTOR_DESKTOP_DEV": '"0"' },
-        external: [
-          "bun",
-          "bun:*",
-          "ws",
-          "@electric-sql/pglite",
-          "workerd",
-          "sharp",
-          "@napi-rs/keyring",
-          "typescript",
-        ],
+        external: ["bun", "bun:*", ...installedPackages],
         banner: {
           js: 'import { createRequire as __runtimeRequire } from "node:module"; import { fileURLToPath as __runtimeFile } from "node:url"; import { dirname as __runtimeDir } from "node:path"; const require = __runtimeRequire(import.meta.url); const __filename = __runtimeFile(import.meta.url); const __dirname = __runtimeDir(__filename);',
         },
-        plugins: [
-          {
-            name: "local-runtime-resources",
-            setup(builder) {
-              // jsonc-parser's `main` is a UMD build that requires ./impl/* at runtime,
-              // which bundling leaves unresolvable. Its ESM build bundles statically.
-              builder.onResolve({ filter: /^jsonc-parser$/ }, (args) =>
-                builder.resolve("jsonc-parser/lib/esm/main.js", {
-                  kind: args.kind,
-                  resolveDir: args.resolveDir,
-                }),
-              );
-              builder.onLoad(
-                { filter: /sdk[/\\]src[/\\]implementation[/\\]workerd-bundle\.ts$/ },
-                () => ({
-                  contents: `import { Effect } from "effect"; export const workerdHostModules = Effect.succeed([${prepared.join(",")}]);`,
-                  loader: "js",
-                  resolveDir: path.join(root, "packages/sdk"),
-                }),
-              );
-              // These modules locate static resources relative to their original source URL.
-              // Every generated chunk lives in runtime/, so preserve those URLs after bundling.
-              builder.onLoad(
-                {
-                  filter:
-                    /(?:server[/\\]src[/\\]implementation[/\\]web|telemetry[/\\]src[/\\]local)\.ts$/,
-                },
-                async (args) => {
-                  const relative = path.relative(root, args.path).split(path.sep).join("/");
-                  return {
-                    contents: (await readFile(args.path, "utf8")).replaceAll(
-                      "import.meta.url",
-                      `new URL(${JSON.stringify(`../${relative}`)}, import.meta.url).href`,
-                    ),
-                    loader: "ts",
-                    resolveDir: path.dirname(args.path),
-                  };
-                },
-              );
-            },
-          },
-        ],
+        plugins: [plugin],
       }),
     );
     yield* fs.writeFileString(

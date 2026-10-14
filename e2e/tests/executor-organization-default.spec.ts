@@ -38,7 +38,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor organization default"
           browser = yield* Browser,
           oauth = yield* McpOAuth,
           mcp = yield* McpClient;
-        const { app, profile } = yield* managementApp(actors.owner);
+        const { app } = yield* managementApp(actors.owner);
         const path = `/api/organizations/${actors.organization.id}/apps/${app.id}`;
         // The organization's Executor app is generated with the exact apps release this host ships.
         const deployed = yield* body(
@@ -51,11 +51,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor organization default"
 
         const tool = yield* body(
           ListTool,
-          yield* api.request(
-            actors.owner,
-            "GET",
-            `${path}/tools/appManagement.list?profile=${profile.id}`,
-          ),
+          yield* api.request(actors.owner, "GET", `${path}/tools/appManagement.list`),
         );
         expect(tool.inputSchema.required ?? []).not.toContain("path");
         expect(tool.inputSchema.properties.path.required).not.toContain("organization");
@@ -79,7 +75,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor organization default"
               {
                 name: "execute",
                 arguments: {
-                  code: `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].appManagement.list({});`,
+                  code: `return await tools[${JSON.stringify(app.slug)}].appManagement.list({});`,
                 },
               },
               undefined,

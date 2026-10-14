@@ -1,4 +1,3 @@
-import { createProfile } from "../support/profiles.ts";
 /** Real Cloud organizations exercise tenant boundaries through the hosted API. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -9,12 +8,13 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Organization } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath, linkAccountResponse } from "../support/app-accounts.ts";
 const Access = Schema.Struct({ revision: Schema.String });
 const Group = Schema.Struct({ id: Schema.String, revision: Schema.String });
 const singleSource = `import {defineApp, defineProvider, secrets, query, object, string, router} from "apps";
 const service=defineProvider({name:"Group isolation fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-export default defineApp({accounts:{service}},async ctx=>({name:"Isolation",tools: router({
-  identity:query({input:object({})},async()=>ctx.accounts.service.fields.token),
+export default defineApp({user: { accounts:{service} }},async ctx=>({name:"Isolation",tools: router({
+  identity:query({input:object({})},async()=>ctx.user.accounts.service.fields.token),
 })}));`;
 layer(HostedLive, { excludeTestServices: true })("Resource isolation", (it) => {
   it.effect(scenarios.resourceIsolation.title, (context) =>
@@ -73,7 +73,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource isolation", (it) => {
             ).toBe(200);
           }).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const second = yield* body(
           App,
           yield* api.request(actors.owner, "POST", `${foreign}/apps/deploy`, {
@@ -88,7 +87,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource isolation", (it) => {
           ).toBe(403);
         expect(
           (yield* api.request(actors.owner, "POST", `${foreign}/apps/${app.id}/tools/call`, {
-            profile: profile.id,
             tool: "identity",
             kind: "query",
             input: {},
@@ -106,10 +104,12 @@ layer(HostedLive, { excludeTestServices: true })("Resource isolation", (it) => {
         ).toBe(403);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         expect(
           (yield* api.request(
@@ -129,18 +129,30 @@ layer(HostedLive, { excludeTestServices: true })("Resource isolation", (it) => {
           ),
         );
         saved.push(account.id);
+        // An account of one organization cannot be linked to another's app, so that app's calls
+        // never run with it.
         expect(
-          (yield* api.request(actors.owner, "POST", `${foreign}/apps/${second.id}/profiles`, {
-            idempotencyKey: randomUUID(),
-            accounts: { service: account.id },
-          })).status,
+          (yield* linkAccountResponse(
+            actors.owner,
+            `${foreign}/apps/${second.id}`,
+            "service",
+            account.id,
+          )).status,
         ).toBe(403);
+        const foreignCall = yield* api.request(
+          actors.owner,
+          "POST",
+          `${foreign}/apps/${second.id}/tools/call`,
+          { tool: "identity", kind: "query", input: {} },
+        );
+        expect(foreignCall.status, JSON.stringify(foreignCall.body)).toBe(409);
+        expect(foreignCall.body).toMatchObject({ _tag: "AccountRequired" });
+        expect(JSON.stringify(foreignCall.body)).not.toContain(account.id);
         expect(
           (yield* api.request(actors.owner, "GET", `${foreign}/accounts/${account.id}`)).status,
         ).toBe(403);
         expect(
           (yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
-            profile: profile.id,
             tool: "identity",
             kind: "query",
             input: {},

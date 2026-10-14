@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Bun's JavaScriptCore and workerd's V8 compile JavaScript into executable pages. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Nothing else. Library validation stays on: every native addon and library in the
+         install is signed with the same Developer ID, so the executable loads only those.
+         No allow-dyld-environment-variables, so DYLD_* cannot inject a library either. -->
+</dict>
+</plist>

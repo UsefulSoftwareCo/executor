@@ -9,7 +9,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import type { AccountId } from "@executor-js/sdk";
 import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dashboard.ts";
-import { selectedIds, accountNeedsSignIn } from "../../contracts/dashboard.ts";
+import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 
 import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
@@ -18,9 +18,12 @@ import { Button } from "../components/button.tsx";
 export function AccountsPage<E>({
   query,
   Failure,
+  action,
   ...props
 }: QueryProps<Inventory, E> & {
   readonly filters?: ReactNode;
+  /** A page action beside the title, such as managing OAuth clients; hidden while there are none. */
+  readonly action?: ReactNode;
   readonly empty?: ReactNode;
   readonly accountActions?: (account: AccountSummary) => ReactNode;
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
@@ -35,7 +38,9 @@ export function AccountsPage<E>({
         title="Accounts"
         description="Saved sign-ins, available to your apps."
         {...(Option.isSome(data) ? { count: data.value.accounts.length } : {})}
-      />
+      >
+        {(!Option.isSome(data) || data.value.accounts.length > 0) && action}
+      </PageHeader>
       <div className="list-toolbar mb-4 flex flex-wrap items-center gap-[10px_16px]">
         {(!Option.isSome(data) || data.value.accounts.length > 0 || search.length > 0) && (
           <SearchInput value={search} onChange={setSearch} placeholder="Search accounts…" />
@@ -116,10 +121,7 @@ function AccountsList({
           </div>
           {accounts.map((account) => {
             const apps = data.apps.filter((app) =>
-              data.profiles.some(
-                (profile) =>
-                  profile.app === app.id && selectedIds(profile.accounts).includes(account.id),
-              ),
+              data.links.some((link) => link.app === app.id && link.account === account.id),
             );
             return (
               <div

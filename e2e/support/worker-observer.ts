@@ -47,10 +47,10 @@ const service = defineProvider({ name: ${JSON.stringify(options.name)}, auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
 ${observer(options.resource)}
-export default defineApp({ accounts: { service } }, {
-  tools: router({ probe: query({ input: object({}) }, async (ctx) => observe(ctx.accounts.service.fields.token)) }),
+export default defineApp({ user: { accounts: { service } } }, {
+  tools: router({ probe: query({ input: object({}) }, async (ctx) => observe(ctx.user.accounts.service.fields.token)) }),
   workflows: { probe: workflow({ input: object({}) }, async (ctx) => ({
-    ...(await ctx.step.do("probe", async (step) => observe(step.accounts.service.fields.token))),
+    ...(await ctx.step.do("probe", async (step) => observe(step.user.accounts.service.fields.token))),
     run: ctx.runId,
   })) },
 });`;

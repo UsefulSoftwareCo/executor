@@ -14,8 +14,9 @@ import { appsManifest, databaseFiles, withApps, mcpSdkVersion } from "../support
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, ReceivedRequest } from "../support/credential-upstream.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { Target } from "../support/platform.ts";
+import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
 const App = Schema.Struct({
@@ -94,14 +95,14 @@ const send = async (url, init) => {
   const response = await fetch(url, init);
   return { status: response.status, echoed: response.headers.get("x-echo-authorization") ?? "", text: await response.text() };
 };
-export default defineApp({ accounts: { service } }, {
+export default defineApp({ user: { accounts: { service } } }, {
   // A workflow step reads its accounts through the run's own capability.
   workflows: { fields: workflow({ input: object({}) }, async (ctx) =>
-    ctx.step.do("fields", async (step) => step.accounts.service.fields)) },
+    ctx.step.do("fields", async (step) => step.user.accounts.service.fields)) },
   tools: router({
-    fields: query({ input: object({}) }, async (ctx) => ctx.accounts.service.fields),
+    fields: query({ input: object({}) }, async (ctx) => ctx.user.accounts.service.fields),
     placements: query({ input: object({ origin: string() }) }, async (ctx, { origin }) => {
-      const token = ctx.accounts.service.fields.token;
+      const token = ctx.user.accounts.service.fields.token;
       return [
         await send(origin + "/query?key=" + encodeURIComponent(token), {
           headers: { authorization: "Bearer " + token, "x-api-key": token },
@@ -116,9 +117,12 @@ export default defineApp({ accounts: { service } }, {
       ];
     }),
     send: query({ input: object({ url: string() }) }, async (ctx, { url }) =>
-      send(url, { headers: { authorization: "Bearer " + ctx.accounts.service.fields.token } })),
+      send(url, { headers: { authorization: "Bearer " + ctx.user.accounts.service.fields.token } })),
+    // App code may keep a handle beyond its invocation, such as in its own storage.
+    sendKept: query({ input: object({ url: string(), token: string() }) }, async (_, { url, token }) =>
+      send(url, { headers: { authorization: "Bearer " + token } })),
     fetchSend: query({ input: object({ url: string() }) }, async (ctx, { url }) => {
-      const response = await ctx.fetch(url, { headers: { authorization: "Bearer " + ctx.accounts.service.fields.token } });
+      const response = await ctx.fetch(url, { headers: { authorization: "Bearer " + ctx.user.accounts.service.fields.token } });
       return { status: response.status, echoed: "", text: await response.text() };
     }),
   }),
@@ -141,18 +145,18 @@ const service = defineProvider({
     }),
   },
 });
-export default defineApp({ accounts: { service } }, async (ctx) => ({
+export default defineApp({ user: { accounts: { service } } }, async (ctx) => ({
   tools: await mcpRouter({
     url: ${JSON.stringify(options.url)},
-    account: ctx.accounts.service,
-    headers: { authorization: "Bearer " + ctx.accounts.service.fields.token },
+    account: ctx.user.accounts.service,
+    headers: { authorization: "Bearer " + ctx.user.accounts.service.fields.token },
     signal: ctx.signal,
   }),
 }));`;
 
 /** An app with no accounts that sends whatever credential it is given. */
 const replayApp = `import { defineApp, object, string, query, router } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     send: query({ input: object({ url: string(), credential: string() }) }, async (_, { url, credential }) => {
       const response = await fetch(url, { headers: { authorization: "Bearer " + credential } });
@@ -192,28 +196,18 @@ const scenario = Effect.gen(function* () {
         ),
         Effect.flatMap((response) => body(CredentialCheck, response)),
       );
-  /**
-   * Select an existing account in a fresh profile of another app. Tool calls read the saved
-   * selection, so nothing here waits for background profile setup: on a shared Cloud stage that
-   * setup queues behind every other organization's.
-   */
+  /** Link an existing account to another app. */
   const select = (path: string, account: string) =>
-    Effect.gen(function* () {
-      const profile = yield* createProfile(actors.owner, path);
-      const selected = yield* selectProfileAccounts(actors.owner, path, profile.id, {
-        service: account,
-      });
-      expect(selected.status, JSON.stringify(selected.body)).toBe(200);
-      return profile.id;
-    });
-  /** Connect one account through a fresh profile, which selects it. */
+    linkAccount(actors.owner, path, "service", account);
+  /** Connect one account from the app, which links it as the app's only account. */
   const connect = (path: string, label: string, fields: typeof Fields.Type) =>
     Effect.gen(function* () {
-      const profile = yield* createProfile(actors.owner, path);
-      const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-        requirement: "service",
-        profile: profile.id,
-      });
+      const pending = yield* api.request(
+        actors.owner,
+        "POST",
+        connectionsPath(path, "user", "service"),
+        {},
+      );
       expect(pending.status, JSON.stringify(pending.body)).toBe(200);
       const saved = yield* api.request(
         actors.owner,
@@ -226,29 +220,22 @@ const scenario = Effect.gen(function* () {
       yield* Effect.addFinalizer(() =>
         api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
       );
-      return { profile: profile.id, account };
+      return { account };
     });
-  const call = <A>(
-    path: string,
-    output: Schema.Decoder<A>,
-    tool: string,
-    input: object,
-    profile?: string,
-  ) =>
+  /** Call a tool with the app's one linked account. */
+  const call = <A>(path: string, output: Schema.Decoder<A>, tool: string, input: object) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-        ...(profile === undefined ? {} : { profile }),
         tool,
         input,
       });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(output, response);
     });
-  /** Call a tool that must fail, and return the failure the caller receives. */
-  const callFailure = (path: string, tool: string, input: object, profile: string) =>
+  /** Call a tool that must fail with the app's one linked account, and return the failure. */
+  const callFailure = (path: string, tool: string, input: object) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-        profile,
         tool,
         input,
       });
@@ -256,10 +243,9 @@ const scenario = Effect.gen(function* () {
       return yield* body(ToolFailed, response);
     });
   /** Run a workflow to completion and return its output. */
-  const runWorkflow = (path: string, workflow: string, profile: string) =>
+  const runWorkflow = (path: string, workflow: string) =>
     Effect.gen(function* () {
       const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
-        profile,
         workflow,
         input: {},
         key: randomUUID(),
@@ -345,23 +331,19 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         appsManifest,
         database,
       );
-      const { profile, account } = yield* connect(path, name, values);
+      const { account } = yield* connect(path, name, values);
 
       // Secret fields are handles; plain and raw fields keep their values.
-      const fields = yield* call(path, Fields, "fields", {}, profile);
+      const fields = yield* call(path, Fields, "fields", {});
       expect(fields.region).toBe(values.region);
       expect(fields.signing).toBe(values.signing);
       expect(fields.token).toMatch(handle);
       expect(JSON.stringify(fields)).not.toContain(values.token);
 
       // A host the provider does not declare is refused before anything is sent.
-      const undeclared = yield* call(
-        path,
-        Sent,
-        "send",
-        { url: `${undeclaredOrigin}/undeclared` },
-        profile,
-      );
+      const undeclared = yield* call(path, Sent, "send", {
+        url: `${undeclaredOrigin}/undeclared`,
+      });
       expect(undeclared.status).toBe(421);
       const refusal = `Executor refused this request: ${name} credentials cannot be sent to ${new URL(undeclaredOrigin).host}. The provider allows: ${declaredHost}.`;
       expect(Schema.decodeUnknownSync(Refusal)(undeclared.text)).toEqual({
@@ -375,12 +357,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         message: refusal,
       });
       // ctx.fetch rejects with the refusal, and the caller reads why: no service answered.
-      const fetched = yield* callFailure(
-        path,
-        "fetchSend",
-        { url: `${undeclaredOrigin}/fetched` },
-        profile,
-      );
+      const fetched = yield* callFailure(path, "fetchSend", {
+        url: `${undeclaredOrigin}/fetched`,
+      });
       expect(fetched.failure).toEqual({
         source: "app",
         errorName: "NetworkRefused",
@@ -388,7 +367,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         message: refusal,
       });
       expect(fetched.reason).toBe(`The app threw NetworkRefused (credential_host): ${refusal}`);
-      return { values, path, profile, account, refusal, sealed: fields.token };
+      return { values, path, account, refusal, sealed: fields.token };
     });
 
   it.effect(scenarios.credentialHostsRefused.title, (context) =>
@@ -401,36 +380,33 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         const hosts = yield* refusalHosts;
         const name = `Credential hosts ${randomUUID().slice(0, 8)}`;
         // The replay and MCP apps do not depend on the sealed app, so all three deploy together.
-        const [{ values, path, profile, account, refusal, sealed }, replay, mcp] =
-          yield* Effect.all(
-            [
-              sealedApp(false, hosts, name),
-              deploy(`Credential replay ${randomUUID().slice(0, 8)}`, replayApp),
-              deploy(
-                `Credential MCP ${randomUUID().slice(0, 8)}`,
-                mcpApp({
-                  name,
-                  host: hosts.declaredHost,
-                  url: `${hosts.undeclaredOrigin}/mcp`,
+        const [{ values, path, account, refusal, sealed }, replay, mcp] = yield* Effect.all(
+          [
+            sealedApp(false, hosts, name),
+            deploy(`Credential replay ${randomUUID().slice(0, 8)}`, replayApp),
+            deploy(
+              `Credential MCP ${randomUUID().slice(0, 8)}`,
+              mcpApp({
+                name,
+                host: hosts.declaredHost,
+                url: `${hosts.undeclaredOrigin}/mcp`,
+              }),
+              {
+                path: "package.json",
+                content: JSON.stringify({
+                  dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
                 }),
-                {
-                  path: "package.json",
-                  content: JSON.stringify({
-                    dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
-                  }),
-                },
-              ),
-            ],
-            { concurrency: "unbounded" },
-          );
+              },
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
 
         yield* Effect.all(
           [
             // Workflow steps receive the same handles, never the stored value.
             Effect.gen(function* () {
-              const stepped = Schema.decodeUnknownSync(Fields)(
-                yield* runWorkflow(path, "fields", profile),
-              );
+              const stepped = Schema.decodeUnknownSync(Fields)(yield* runWorkflow(path, "fields"));
               expect(stepped.token).toMatch(handle);
               expect(stepped.signing).toBe(values.signing);
             }),
@@ -445,12 +421,8 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
             }),
             // A protocol helper reports the same refusal when its server is on an undeclared host.
             Effect.gen(function* () {
-              const mcpProfile = yield* select(mcp.path, account);
-              const listed = yield* api.request(
-                actors.owner,
-                "GET",
-                `${mcp.path}/tools?profile=${mcpProfile}`,
-              );
+              yield* select(mcp.path, account);
+              const listed = yield* api.request(actors.owner, "GET", `${mcp.path}/tools`);
               expect(listed.status, JSON.stringify(listed.body)).not.toBe(200);
               expect(listed.body).toMatchObject({
                 _tag: "AppEvaluationFailed",
@@ -587,25 +559,17 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         // Hosts are not part of the provider's identity, so the account fills every slot.
         expect(others.map(provider)).toEqual([provider(original), provider(original)]);
         for (const other of others) {
-          const profile = yield* select(other.path, account);
+          yield* select(other.path, account);
           // Connected for one host, the account is sealed even where the app declares none.
-          const fields = yield* call(other.path, Fields, "fields", {}, profile);
+          const fields = yield* call(other.path, Fields, "fields", {});
           expect(fields.token).toMatch(handle);
-          const widened = yield* call(
-            other.path,
-            Sent,
-            "send",
-            { url: `${upstream.undeclaredOrigin}/widened` },
-            profile,
-          );
+          const widened = yield* call(other.path, Sent, "send", {
+            url: `${upstream.undeclaredOrigin}/widened`,
+          });
           expect(widened.status).toBe(421);
-          const granted = yield* call(
-            other.path,
-            Sent,
-            "send",
-            { url: `${upstream.origin}/granted` },
-            profile,
-          );
+          const granted = yield* call(other.path, Sent, "send", {
+            url: `${upstream.origin}/granted`,
+          });
           expect(granted.status).toBe(200);
         }
         const received = yield* upstream.received;
@@ -631,22 +595,18 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           credentialApp({ name, host: new URL(origin).host, health: null }),
         );
         const key = yield* apiKey;
-        const { profile } = yield* connect(path, name, {
+        yield* connect(path, name, {
           region: "synthetic-region",
           token: key,
           signing: `synthetic-signing-${randomUUID()}`,
         });
-        const fields = yield* call(path, Fields, "fields", {}, profile);
+        const fields = yield* call(path, Fields, "fields", {});
         expect(fields.token).toMatch(handle);
         // The product accepts only the real key, so a success proves Executor substituted it on
         // the app's outbound request; the handle itself would be refused.
-        const inventory = yield* call(
-          path,
-          Sent,
-          "send",
-          { url: `${origin}/api/organizations/${actors.organization.id}/inventory` },
-          profile,
-        );
+        const inventory = yield* call(path, Sent, "send", {
+          url: `${origin}/api/organizations/${actors.organization.id}/inventory`,
+        });
         expect(inventory.status, inventory.text).toBe(200);
         expect(inventory.text).not.toContain(key);
       }),
@@ -668,17 +628,13 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         // The account check runs before the account is saved, through the same network.
         const checked = yield* check(path, app.requirements.accounts.service!.provider, values);
         expect(checked.status).toBe("healthy");
-        const { profile } = yield* connect(path, name, values);
-        const { token } = yield* call(path, Fields, "fields", {}, profile);
+        yield* connect(path, name, values);
+        const { token } = yield* call(path, Fields, "fields", {});
         expect(token).toMatch(handle);
 
-        const replies = yield* call(
-          path,
-          Schema.Array(Sent),
-          "placements",
-          { origin: upstream.origin },
-          profile,
-        );
+        const replies = yield* call(path, Schema.Array(Sent), "placements", {
+          origin: upstream.origin,
+        });
         expect(replies.map((reply) => reply.status)).toEqual([200, 200, 200, 200]);
         const received = yield* upstream.received;
         const at = (pathname: string): ReceivedRequest => {
@@ -693,7 +649,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         // Each placement reached the service with the real value.
         const query = at("/query");
         expect(query.authorization).toBe(`Bearer ${values.token}`);
-        expect(query.apiKey).toBe(values.token);
+        expect(query.headers["x-api-key"]).toBe(values.token);
         expect(new URL(query.url, upstream.origin).searchParams.get("key")).toBe(values.token);
         expect(JSON.parse(at("/json").body)).toEqual({ token: values.token });
         expect(new URLSearchParams(at("/form").body).get("token")).toBe(values.token);
@@ -712,6 +668,42 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         expect(
           Schema.decodeUnknownSync(Schema.fromJsonString(ReceivedRequest))(replies[0]!.text),
         ).toMatchObject({ authorization: replies[0]!.echoed });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialHostsRestart.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deploy, connect, call } = yield* scenario;
+        const upstream = yield* credentialUpstream;
+        const name = `Credential restart ${randomUUID().slice(0, 8)}`;
+        const { path } = yield* deploy(
+          name,
+          credentialApp({ name, host: `127.0.0.1:${upstream.port}`, health: null }),
+        );
+        const values = synthetic();
+        yield* connect(path, name, values);
+        const kept = (yield* call(path, Fields, "fields", {})).token;
+        expect(kept).toMatch(handle);
+        const replay = (pathname: string) =>
+          call(path, Sent, "sendKept", { url: `${upstream.origin}${pathname}`, token: kept });
+        expect((yield* replay("/before")).status).toBe(200);
+
+        // The handle key comes from the instance's encryption key, which the restart keeps, so the
+        // kept handle still opens and the service receives the real value.
+        yield* serverControl("restart");
+        const after = yield* replay("/after");
+        expect(after.status, after.text).toBe(200);
+        const received = yield* upstream.received;
+        expect(
+          ["/before", "/after"].map(
+            (pathname) =>
+              received.find((entry) => new URL(entry.url, upstream.origin).pathname === pathname)
+                ?.authorization,
+          ),
+        ).toEqual([`Bearer ${values.token}`, `Bearer ${values.token}`]);
       }),
     ),
   );

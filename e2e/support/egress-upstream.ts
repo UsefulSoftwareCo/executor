@@ -1,6 +1,7 @@
 /** A loopback service whose answers an app must read as the service's own, beside a port nothing listens on. */
 import { Effect } from "effect";
 import { createServer, type Server } from "node:http";
+import { refusingPort } from "./ports.ts";
 
 const listen = (server: Server) =>
   Effect.callback<number>((resume) => {
@@ -36,10 +37,7 @@ export const egressUpstream = Effect.gen(function* () {
     }
   });
   const port = yield* Effect.acquireRelease(listen(server), () => close(server));
-  // A port that was just free and is closed again refuses connections.
-  const spare = createServer();
-  const closedPort = yield* listen(spare);
-  yield* close(spare);
+  const closedPort = yield* refusingPort;
   return {
     origin: `http://127.0.0.1:${port}`,
     closedOrigin: `http://127.0.0.1:${closedPort}`,

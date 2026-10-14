@@ -16,6 +16,58 @@ import {
 } from "../contracts/public-apps.ts";
 import { HighlightedCode } from "./highlighted-code.tsx";
 
+const communityDomain = ".executor.community";
+/** A package name read as its app label and publisher; the community domain becomes a badge. */
+function packageParts(name: string) {
+  const scope = name.slice(1, name.indexOf("/"));
+  const community = scope.endsWith(communityDomain);
+  return {
+    label: name.slice(name.indexOf("/") + 1),
+    publisher: community ? scope.slice(0, -communityDomain.length) : scope,
+    community,
+  };
+}
+
+function CommunityBadge() {
+  return (
+    <span className="inline-flex shrink-0 items-center rounded-full border border-rule px-2 py-0.5 font-mono text-[11px] leading-4 text-ink-3">
+      executor.community
+    </span>
+  );
+}
+
+function WarningIcon() {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 20 20"
+      className="mt-0.5 size-4 shrink-0 fill-none stroke-[#f59e0b] stroke-[1.75]"
+    >
+      <path d="M10 3.5 2.5 16.5h15L10 3.5Z" strokeLinejoin="round" />
+      <path d="M10 8.5v3.5M10 14.2v.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Published apps are user code. Every surface that lists or shows one says so. */
+function UntrustedNotice({ children }: { readonly children: ReactNode }) {
+  return (
+    <div
+      role="note"
+      className="flex gap-3 rounded-lg border border-rule border-l-2 border-l-[#f59e0b] bg-surface-2 px-4 py-3 text-sm leading-6"
+    >
+      <WarningIcon />
+      <div className="min-w-0 text-ink-2">{children}</div>
+    </div>
+  );
+}
+
+const publishedDate = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+
 function usePageTitle(title: string) {
   useEffect(() => {
     document.title = `${title} — Executor`;
@@ -101,10 +153,19 @@ function DirectoryFrame({
       <header className="shrink-0">
         <h1 className="text-[clamp(1.75rem,3vw,2.25rem)] font-semibold tracking-tight">Apps</h1>
         <p className="mt-4 max-w-2xl text-base leading-7 text-ink-2">
-          Find a published app, view its source, and make a copy in Executor.
+          Apps shared by people building with Executor. Browse the source and make your own copy.
         </p>
-        <div className="mb-4 mt-8 grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
-          <label className="min-w-0">
+        <div className="mt-6 max-w-3xl">
+          <UntrustedNotice>
+            <strong className="font-medium text-ink">
+              Community apps aren’t reviewed by Executor.
+            </strong>{" "}
+            Anyone can publish one. Read its source before you copy it: a copy runs with the
+            accounts you connect to it.
+          </UntrustedNotice>
+        </div>
+        <div className="mb-4 mt-6">
+          <label className="block max-w-sm">
             <span className="sr-only">Search apps</span>
             <input
               type="search"
@@ -138,21 +199,11 @@ function DirectoryCardsLoading() {
   return (
     <div role="status" aria-label="Loading apps">
       <span className="sr-only">Loading apps…</span>
-      <div
-        aria-hidden
-        className="grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1"
-      >
-        {Array.from({ length: 3 }, (_, index) => (
-          <div
-            key={index}
-            className={`flex min-h-44 flex-col rounded-lg border border-rule p-5 ${index >= 2 ? "max-[1100px]:hidden" : index >= 1 ? "max-[600px]:hidden" : ""}`}
-          >
-            <Placeholder className="h-4 w-2/3" />
-            <div className="mt-4 space-y-2.5">
-              <Placeholder className="h-3 w-full" />
-              <Placeholder className="h-3 w-4/5" />
-            </div>
-            <Placeholder className="mt-auto h-3 w-16" />
+      <div aria-hidden className="divide-y divide-rule rounded-lg border border-rule">
+        {Array.from({ length: 4 }, (_, index) => (
+          <div key={index} className="space-y-2.5 px-5 py-4">
+            <Placeholder className="h-4 w-48 max-w-full" />
+            <Placeholder className="h-3 w-3/5" />
           </div>
         ))}
       </div>
@@ -177,35 +228,48 @@ function Directory() {
     <DirectoryFrame search={search} onSearch={setSearch}>
       <RegistryQuery result={result} pending={<DirectoryCardsLoading />}>
         {(publications) => {
-          const matching = publications.filter((item) =>
-            `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()),
-          );
+          const matching = publications
+            .filter((item) =>
+              `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()),
+            )
+            .toSorted((left, right) => right.publishedAt.localeCompare(left.publishedAt));
           return matching.length === 0 ? (
-            <p className="flex min-h-44 items-center justify-center rounded-lg border border-rule p-8 text-center text-sm text-ink-2">
+            <p className="flex min-h-32 items-center justify-center rounded-lg border border-rule p-8 text-center text-sm text-ink-2">
               {publications.length === 0
                 ? "No apps have been published yet."
                 : "No matching apps. Try another search."}
             </p>
           ) : (
-            <div className="grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1">
-              {matching.map((publication) => (
-                <a
-                  key={publication.name}
-                  href={registryPublicationPath(publication.name)}
-                  className="flex min-h-44 min-w-0 flex-col rounded-lg border border-rule p-5 transition-colors hover:border-rule-strong hover:bg-surface-2 focus-visible:outline-ink"
-                >
-                  <h2 className="break-words text-sm font-semibold">{publication.name}</h2>
-                  {publication.description && (
-                    <p className="mt-3 line-clamp-3 text-sm leading-6 text-ink-2">
-                      {publication.description}
-                    </p>
-                  )}
-                  <span className="mt-auto inline-block pt-5 text-xs text-ink-2">
-                    View app <span aria-hidden>↗</span>
-                  </span>
-                </a>
-              ))}
-            </div>
+            <ul className="divide-y divide-rule overflow-hidden rounded-lg border border-rule">
+              {matching.map((publication) => {
+                const { label, publisher } = packageParts(publication.name);
+                return (
+                  <li key={publication.name}>
+                    <a
+                      href={registryPublicationPath(publication.name)}
+                      title={publication.name}
+                      className="group grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-6 gap-y-1 px-5 py-4 transition-colors hover:bg-surface-2 focus-visible:outline-ink"
+                    >
+                      <h2 className="min-w-0 truncate text-[15px] leading-6">
+                        <span className="font-semibold text-ink">{label}</span>
+                        <span className="text-ink-3"> by {publisher}</span>
+                      </h2>
+                      <span className="text-xs tabular-nums text-ink-3 transition-colors group-hover:text-ink-2">
+                        {publishedDate.format(new Date(publication.publishedAt))}
+                        <span aria-hidden className="ml-2">
+                          →
+                        </span>
+                      </span>
+                      {publication.description && (
+                        <p className="col-span-2 truncate text-sm leading-6 text-ink-2">
+                          {publication.description}
+                        </p>
+                      )}
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
           );
         }}
       </RegistryQuery>
@@ -263,9 +327,7 @@ function PublicationLoading({ name }: { readonly name?: string }) {
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div className="min-w-0 flex-1">
           {name ? (
-            <h1 className="break-words text-[clamp(1.4rem,2.5vw,2rem)] font-semibold tracking-tight">
-              {name}
-            </h1>
+            <PublicationHeading name={name} />
           ) : (
             <Placeholder className="h-10 w-2/3 max-w-96" />
           )}
@@ -321,6 +383,22 @@ function PublishedFilesLoading() {
   );
 }
 
+function PublicationHeading({ name }: { readonly name: string }) {
+  const { label, publisher, community } = packageParts(name);
+  return (
+    <>
+      <h1 className="break-words text-[clamp(1.4rem,2.5vw,2rem)] font-semibold tracking-tight">
+        {label}
+      </h1>
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-ink-2">
+        <span>by {publisher}</span>
+        {community && <CommunityBadge />}
+      </div>
+      <code className="mt-2 block break-all text-xs text-ink-3">{name}</code>
+    </>
+  );
+}
+
 function AppPublication({ publication }: { readonly publication: typeof Publication.Type }) {
   const source = useAtomValue(publicAppFiles(publication.name, publication.commit));
   const [copyLabel, setCopyLabel] = useState("Copy link");
@@ -328,9 +406,7 @@ function AppPublication({ publication }: { readonly publication: typeof Publicat
     <>
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div className="min-w-0 flex-1">
-          <h1 className="break-words text-[clamp(1.4rem,2.5vw,2rem)] font-semibold tracking-tight">
-            {publication.name}
-          </h1>
+          <PublicationHeading name={publication.name} />
           {publication.description && (
             <p className="mt-4 max-w-2xl text-base leading-7 text-ink-2">
               {publication.description}
@@ -355,9 +431,16 @@ function AppPublication({ publication }: { readonly publication: typeof Publicat
         </button>
       </div>
       <p className="mt-5 text-xs leading-6 text-ink-3">
-        Published {new Date(publication.publishedAt).toLocaleDateString()} · Find this package in
+        Published {publishedDate.format(new Date(publication.publishedAt))} · Find this package in
         Add app to make a copy.
       </p>
+      <div className="mt-6 max-w-3xl">
+        <UntrustedNotice>
+          <strong className="font-medium text-ink">Community app, not reviewed by Executor.</strong>{" "}
+          Anyone can publish one. Read the source below before you copy it. A copy runs with the
+          accounts you connect to it, and can read and change what they can.
+        </UntrustedNotice>
+      </div>
       <section className="mt-9" aria-label="Published source">
         <div className="mb-3 flex items-center justify-between gap-4">
           <h2 className="text-sm font-medium">Published source</h2>
@@ -413,7 +496,12 @@ function PublishedFiles({ files }: { readonly files: typeof PublicationSnapshot.
           </select>
         </div>
         <pre className="m-0 max-h-[34rem] min-h-80 overflow-auto p-5 font-mono text-xs leading-6 text-ink">
-          {file && <HighlightedCode code={file.content} path={file.path} />}
+          {file &&
+            ("content" in file ? (
+              <HighlightedCode code={file.content} path={file.path} />
+            ) : (
+              `Binary file, ${file.size.toLocaleString("en-US")} bytes.`
+            ))}
         </pre>
       </div>
     </div>

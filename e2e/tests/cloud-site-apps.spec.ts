@@ -87,14 +87,14 @@ layer(HostedLive, { excludeTestServices: true })("Cloud site Apps publication", 
           browser = yield* Browser;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const slug = `site-apps-${randomUUID().slice(0, 8)}`;
-        const name = `@${actors.organization.slug}/${slug}`;
+        const name = `@${actors.organization.slug}.executor.community/${slug}`;
         const marker = `Listed from the API host ${randomUUID()}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Site apps ${slug}`,
           files: [
             {
               path: "index.ts",
-              content: `import { defineApp } from "apps";\n// ${marker}\nexport default defineApp({ accounts: {} }, {});\n`,
+              content: `import { defineApp } from "apps";\n// ${marker}\nexport default defineApp({}, {});\n`,
             },
             {
               path: "package.json",
@@ -149,16 +149,23 @@ layer(HostedLive, { excludeTestServices: true })("Cloud site Apps publication", 
           page.getByRole("searchbox", { name: "Search apps" }).fill(slug),
         );
         yield* browser.use("The publication is listed", (page) =>
-          page.getByRole("heading", { name, exact: true }).waitFor(),
+          // A row names the app by its label and its publisher by the organization's slug.
+          page
+            .getByRole("link", { name: new RegExp(`^${slug} by ${actors.organization.slug}\\b`) })
+            .waitFor(),
         );
         yield* browser.checkpoint("Apps directory lists the publication");
 
         // Its page shows the published source, read from the same registry.
         yield* browser.use("Open the publication", (page) =>
-          page.getByRole("heading", { name, exact: true }).click(),
+          page
+            .getByRole("heading", { name: `${slug} by ${actors.organization.slug}`, exact: true })
+            .click(),
         );
         yield* browser.use("The publication page opens", (page) =>
-          page.waitForURL(`${hosts.edge}/apps/${actors.organization.slug}/${slug}`),
+          page.waitForURL(
+            `${hosts.edge}/apps/${actors.organization.slug}.executor.community/${slug}`,
+          ),
         );
         yield* browser.use("The published index.ts is shown", (page) =>
           page

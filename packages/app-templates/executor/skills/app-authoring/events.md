@@ -23,7 +23,7 @@ const issueOpened = event({
   filters: { repo: string() },
   payload: object({ title: string(), number: number() }),
 });
-const requirements = { accounts: {}, events: { "issue.opened": issueOpened } };
+const requirements = { events: { "issue.opened": issueOpened } };
 
 const openIssue = mutation(
   { input: object({ repo: string(), title: string() }) },
@@ -85,8 +85,8 @@ invocation used.
 
 A connection or OAuth grant selects an app's events beside its tools: all
 events, including ones added later, by default, or exact names. A connection
-limited to some profiles receives only occurrences whose accounts those
-profiles select.
+that runs an app as some of its linked accounts receives only occurrences whose
+accounts it includes.
 
 ### Change events safely
 

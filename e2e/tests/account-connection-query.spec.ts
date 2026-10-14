@@ -14,6 +14,8 @@ import {
   nameConnectedAccount,
 } from "../support/name-account.ts";
 import { holdQuery } from "../support/query-transition.ts";
+import { linkedAccountIds } from "../support/app-accounts.ts";
+import { accountChoices, linkedChoice, linkedLabels } from "../support/account-choices.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -38,7 +40,7 @@ import { defineApp, defineProvider, mutation, object, secrets, string, router } 
 const service = defineProvider({ name: "Connection fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     echo: mutation({ description: "Echo with the connected account", input: object({ text: string() }) },
     async (_, input) => ({ text: input.text, connected: accounts.service.fields.token === "synthetic-connection-token" })),
@@ -132,16 +134,20 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         const timeOrigin = yield* browser.use("Remember this document before saving", (page) =>
           page.evaluate(() => performance.timeOrigin),
         );
-        const paths = [actors.organization.slug, actors.organization.id].map(
-          (reference) => `/api/organizations/${reference}/apps/${app.id}/profiles`,
-        );
+        // The caller's links: the list, or the requirement's linked and linkable accounts.
+        const paths = [actors.organization.slug, actors.organization.id].flatMap((reference) => [
+          `/api/organizations/${reference}/apps/${app.id}/accounts/user`,
+          `/api/organizations/${reference}/apps/${app.id}/accounts/user/service`,
+        ]);
         const read = yield* holdQuery(paths, "continue", { allRequests: true });
         const saved = yield* browser.use("Save credentials through the account form", (page) =>
           Promise.all([
+            // Cloud's error-report tunnel also posts to a path ending in `/submit`, and reports the
+            // lost response above; only the connection's own submit is this save.
             page.waitForResponse(
               (response) =>
                 response.request().method() === "POST" &&
-                new URL(response.url()).pathname.endsWith("/submit"),
+                /\/connections\/[^/]+\/submit$/.test(new URL(response.url()).pathname),
             ),
             page.getByRole("button", { name: "Connect account", exact: true }).click(),
           ]).then(([response]) =>
@@ -170,17 +176,10 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
             accountNameField(page).inputValue(),
           ),
         ).toBe("Default");
-        const selections = yield* body(
-          Schema.Array(
-            Schema.Struct({
-              id: Schema.String,
-              accounts: Schema.Struct({ service: Schema.String }),
-            }),
-          ),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles`),
-        );
-        expect(selections).toHaveLength(1);
-        expect(selections[0]?.accounts.service).toBe(account);
+        // Saving the connection linked the account to the app, once.
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+          account,
+        ]);
         expect(
           (yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`)).body,
         ).not.toHaveProperty("accounts");
@@ -194,15 +193,15 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
               .then(() => new URL(page.url()).searchParams),
         );
         expect(search.has("rename")).toBe(false);
-        yield* browser.checkpoint("App waits for confirmed profile bindings");
+        yield* browser.checkpoint("App waits for confirmed account links");
         const refreshPath = yield* evidence.step(
-          "Saving starts a fresh profile metadata read",
+          "Saving starts a fresh read of the app's linked accounts",
           read.requested,
         );
         // The modal prompt hides the page from assistive technology while it is open.
-        // The Accounts tab keeps its previous content while the profile read is held.
+        // The Accounts tab keeps its previous content while the linked accounts read is held.
         expect(
-          yield* browser.use("The pending profile read keeps the tab on screen", (page) =>
+          yield* browser.use("The pending linked accounts read keeps the tab on screen", (page) =>
             page
               .getByRole("status", { name: "Loading accounts", exact: true, includeHidden: true })
               .count(),
@@ -213,8 +212,13 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         );
         yield* read.release;
         yield* browser.use("The new account appears on the same app", (page) =>
-          page
-            .getByRole("radio", { name: "Default", exact: true, includeHidden: true })
+          accountChoices(page, "Connection fixture", { includeHidden: true })
+            .getByRole("radio", {
+              name: "Default",
+              exact: true,
+              checked: true,
+              includeHidden: true,
+            })
             .waitFor({ state: "visible" }),
         );
         expect(
@@ -231,13 +235,16 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         yield* browser.checkpoint("Name the connected account after the Accounts tab reloads");
         yield* browser.use("Save the account's name", (page) => nameConnectedAccount(page, name));
         yield* browser.use("The app shows the saved name", (page) =>
-          page.getByRole("radio", { name, exact: true }).waitFor({ state: "visible" }),
+          linkedChoice(page, "Connection fixture", name).waitFor({ state: "visible" }),
         );
         expect(
-          yield* browser.use("The new account is the selected one", (page) =>
-            page.getByRole("radio", { name, exact: true }).isChecked(),
+          yield* browser.use("The new account is the app's only account and linked", (page) =>
+            Promise.all([
+              accountChoices(page, "Connection fixture").getByRole("listitem").count(),
+              linkedLabels(page, "Connection fixture"),
+            ]),
           ),
-        ).toBe(true);
+        ).toEqual([1, [name]]);
         expect(
           yield* browser.use("The accounts tab stays selected", (page) =>
             page.evaluate(() => new URL(location.href).searchParams.get("view")),
@@ -252,6 +259,8 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           ),
         ).toBe(0);
         yield* browser.checkpoint("Account connected in place");
+        // A plain requirement with its account still offers to connect another, which would
+        // replace it.
         yield* browser.use("Connect another account from the list", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );
@@ -281,7 +290,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         yield* browser.checkpoint("Connected app tools loaded without refresh");
         yield* evidence.json("account-connection-query.json", {
           refreshPath,
-          accountSelected: true,
+          accountLinked: true,
           toolsVisibleWithoutReload: true,
         });
       }),

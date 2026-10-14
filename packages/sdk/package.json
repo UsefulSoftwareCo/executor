@@ -31,7 +31,7 @@
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "@jridgewell/trace-mapping": "0.3.31",
-    "ajv": "^8.17.1",
+    "ajv": "8.20.0",
     "apps": "workspace:*",
     "capnweb": "0.12.0",
     "effect": "4.0.1",

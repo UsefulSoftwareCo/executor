@@ -1,5 +1,5 @@
 /** Revisioned OpenAPI sources. Calls read a manifest, one operation and only its schema dependencies. */
-import { Deferred, Effect, Option, Schema, Duration } from "effect";
+import { Clock, Deferred, Effect, Option, Schema, Duration } from "effect";
 import { RouterMeta } from "../contracts/router.ts";
 import { parse as parseYamlStrictly } from "yaml";
 import { CORE_SCHEMA, load as loadYaml } from "js-yaml";
@@ -9,6 +9,7 @@ import {
   OpenapiOperation,
   OpenapiError,
   isOpenapiReadMethod,
+  type OpenapiTools,
   type OpenapiToolsOptions,
 } from "../contracts/openapi.ts";
 import { JsonObject, JsonValue } from "../contracts/schema.ts";
@@ -17,7 +18,8 @@ import {
   OpenapiSkippedOperation,
   type OpenapiToolNames,
 } from "../contracts/openapi-compile.ts";
-import type { HostedTool, HostedToolSummary } from "../contracts/host.ts";
+import { HostToolNotFound, type HostedTool, type HostedToolSummary } from "../contracts/host.ts";
+import { OpenapiResponseError } from "../contracts/api-response-error.ts";
 import { compileOpenApiDocument } from "./openapi-compile.ts";
 import { yieldToRuntime } from "./runtime-yield.ts";
 import {
@@ -295,6 +297,20 @@ const retain = (revision: string, parts: ReadonlyMap<string, string>, bytes: num
   storedBytes += bytes;
 };
 
+/**
+ * When this isolate last started rechecking each source's document because a route was missing,
+ * by source identity, and whether that recheck still runs. Routers are made per invocation, so
+ * this lives beside the module's other per-isolate state. An API that answers 404 for items that
+ * do not exist would otherwise reload and compile its document on every such call.
+ */
+const rechecked = new Map<string, { readonly started: number; running: boolean }>();
+const recheckEvery = 30_000;
+/** A response that may mean the upstream no longer serves the operation's route. */
+const missingRoute = (error: unknown) =>
+  ((Schema.is(OpenapiError)(error) && error.reason === "request") ||
+    Schema.is(OpenapiResponseError)(error)) &&
+  (error.status === 404 || error.status === 405);
+
 /** Static credential placement and destination are reviewed when the app is authored/imported. */
 export interface OpenapiSourceOptions extends Omit<
   OpenapiToolsOptions,
@@ -302,7 +318,11 @@ export interface OpenapiSourceOptions extends Omit<
 > {
   readonly cache: AppCache;
   readonly source: { readonly url: string } | { readonly document: JsonObject };
-  readonly allowedOrigin: string;
+  /**
+   * The origin that may receive credentials, or several origins of one service, such as its API
+   * and upload hosts. Operations on any other origin are left out.
+   */
+  readonly allowedOrigin: string | readonly string[];
   readonly securitySchemes: Readonly<Record<string, JsonObject>>;
   readonly baseUrl?: string;
   /**
@@ -696,6 +716,56 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       ),
     );
   });
+  // A route the upstream stopped serving may belong to an operation its document dropped after
+  // the retained revision. The first such call reloads the document, bypassing freshness. Calls
+  // while that reload runs join it through the cache's lease, which also coalesces reloads across
+  // isolates; later calls within `recheckEvery` read the revision it published.
+  const recheck = Effect.gen(function* () {
+    const id = yield* sourceId;
+    const now = yield* Clock.currentTimeMillis;
+    const last = rechecked.get(id);
+    if (last !== undefined && !last.running && now - last.started < recheckEvery)
+      return yield* current;
+    const owned = last === undefined || !last.running ? { started: now, running: true } : undefined;
+    if (owned !== undefined) {
+      rechecked.delete(id);
+      rechecked.set(id, owned);
+      if (rechecked.size > 64) rechecked.delete(rechecked.keys().next().value ?? id);
+    }
+    return yield* pointer.pipe(
+      Effect.flatMap((key) =>
+        fromPromise(
+          method(options.cache, "revalidate"),
+          "cache",
+        )({
+          key,
+          schema: schema(Manifest),
+          freshFor,
+          staleFor,
+          load: toPromise(refresh, (context: CacheLoadContext) => context.signal),
+        }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (owned !== undefined) owned.running = false;
+        }),
+      ),
+    );
+  });
+  /**
+   * A missing route's failure: the unknown-tool error when the rechecked document no longer has
+   * the operation, otherwise the upstream's own. A recheck that fails keeps the upstream's.
+   */
+  const removedOr = (name: string, error: unknown) =>
+    recheck.pipe(
+      Effect.flatMap((manifest) => operationFor(manifest, name)),
+      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.flatMap((found) =>
+        Effect.fail(
+          found !== undefined && found.value === undefined ? new HostToolNotFound() : error,
+        ),
+      ),
+    );
   // Parts are read in groups one cache command can return, a few groups at a time.
   const read = <A>(
     revision: string,
@@ -877,6 +947,31 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
       }
       return yield* invalid();
     });
+  // Each tool with a run that rechecks the document when the upstream answers that the route is
+  // missing. A lazily built output schema stays lazy.
+  const recheckMissing = (tools: OpenapiTools, name: string) =>
+    Object.fromEntries(
+      Object.entries(tools).map(([key, tool]) => {
+        const guarded = {
+          description: tool.description,
+          readOnly: tool.readOnly,
+          input: tool.input,
+          run: (context: unknown, input: Schema.Json) =>
+            tool
+              .run(context, input)
+              .pipe(Effect.catchIf(missingRoute, (error) => removedOr(name, error))),
+        };
+        return [
+          key,
+          "outputSchema" in tool
+            ? Object.defineProperty(guarded, "outputSchema", {
+                enumerable: true,
+                get: () => tool.outputSchema,
+              })
+            : guarded,
+        ];
+      }),
+    );
   return routerDeclaration({
     kind: "dynamic",
     meta: () => current.pipe(Effect.map((manifest) => manifest.meta ?? {})),
@@ -902,7 +997,7 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
             { ...options, operations: [operation], definitions },
             new Map([[operation.name, schemas]]),
           );
-          const declarations = protocolOperations(tools, {
+          const declarations = protocolOperations(recheckMissing(tools, name), {
             [operation.name]: kindOf(operation),
           });
           const declaration = Object.hasOwn(declarations, name) ? declarations[name] : undefined;

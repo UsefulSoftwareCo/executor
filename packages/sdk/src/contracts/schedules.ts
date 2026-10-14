@@ -1,7 +1,5 @@
-import { ProfileId } from "./shared.ts";
 import { ApiError } from "@executor-js/utils/api-error";
-import { ProfileErrors, ProfileRevision } from "./profiles.ts";
-/** Installed schedule controls and run review; timing and arguments remain authored app source. */
+/** Schedule controls and run review; timing and arguments remain authored app source. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { OperationSchedule, ScheduleTiming } from "apps/contracts";
@@ -13,7 +11,15 @@ import {
   RequestInvalid,
   ToolName,
 } from "./shared.ts";
-import { AppNotDeployed, AppNotFound, AccountRequired, AccountSelectionInvalid } from "./apps.ts";
+import {
+  AppAccounts,
+  AppAccountsQuery,
+  AppNotDeployed,
+  AppNotFound,
+  AccountRequired,
+  AccountChoiceUnsupported,
+  AccountSelectionInvalid,
+} from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
 import { AccountId } from "./shared.ts";
 import { DeploymentNotFound } from "./deployment.ts";
@@ -41,14 +47,21 @@ export const ScheduledRunStatus = Schema.Literals([
   "expired",
   "interrupted",
 ]);
-/** Installation state is independent of an authored schedule's current definition. */
+/**
+ * Saved state for one member's copy of a declared user schedule, or for an app schedule,
+ * independent of its current definition. A member has at most one copy of each user declaration;
+ * each run is checked against the copy's actor and runs with the app's linked accounts and the
+ * actor's linked accounts: the one of each plain requirement and every one of a many()
+ * requirement. An app declaration has one schedule, without an actor, which runs without a
+ * caller with the app's accounts only.
+ */
 export const ScheduleSettings = Schema.Struct({
   id: ScheduleId,
   app: AppId,
-  profile: Schema.NullOr(ProfileId),
   owner: OwnerId,
   name: Schema.NonEmptyString,
-  actor: Schema.NonEmptyString,
+  /** The subject the copy belongs to, whose access each run is checked against; null for an app schedule. */
+  actor: Schema.NullOr(Schema.NonEmptyString),
   enabled: Schema.Boolean,
   approvalMode: ScheduleApprovalMode,
   timing: ScheduleTiming,
@@ -56,18 +69,22 @@ export const ScheduleSettings = Schema.Struct({
   activeRun: Schema.NullOr(ScheduledRunId),
   revision: Schema.String,
   /**
-   * Read-only state, never stored: an account this profile selects must reconnect before the
-   * schedule can run. Its occurrences are skipped without running until the account reconnects,
-   * then the schedule resumes on its own.
+   * Read-only state, never stored: an account the schedule resolves must reconnect before it can
+   * run. Its occurrences are skipped without running until the account reconnects, then the
+   * schedule resumes on its own.
    */
   reconnectAccount: Schema.optionalKey(AccountId),
+  /**
+   * Read-only state, never stored: the actor has no account linked for this plain requirement.
+   * Occurrences are skipped until they link one.
+   */
+  accountRequired: Schema.optionalKey(Schema.NonEmptyString),
 }).check(Schema.makeFilter((value) => !value.enabled || value.nextAt !== null));
 export type ScheduleSettings = typeof ScheduleSettings.Type;
 /** Discovery remains account-dependent; a missing settings row means paused. */
 export const AppSchedule = Schema.Struct({
   ...OperationSchedule.fields,
   app: AppId,
-  profile: Schema.optional(ProfileId),
   tool: ToolName,
   settings: Schema.NullOr(ScheduleSettings),
 });
@@ -77,7 +94,6 @@ export const ScheduledRun = Schema.Struct({
   id: ScheduledRunId,
   scheduleId: ScheduleId,
   app: AppId,
-  profile: Schema.NullOr(ProfileId),
   owner: OwnerId,
   name: Schema.String,
   status: ScheduledRunStatus,
@@ -122,8 +138,7 @@ export type ScheduleNotFound = typeof ScheduleNotFound.Type;
 export const ScheduleConflict = ApiError.define({
   tag: "ScheduleConflict",
   status: 409,
-  message:
-    "The schedule changed or is already running, or its profile changed. Read the schedule again before retrying.",
+  message: "The schedule changed or is already running. Read the schedule again before retrying.",
 });
 export type ScheduleConflict = typeof ScheduleConflict.Type;
 /** Calendar timing could not produce a valid future occurrence. */
@@ -136,27 +151,52 @@ export type ScheduleInvalid = typeof ScheduleInvalid.Type;
 
 const app = {
   app: AppId,
-  profile: Schema.optional(ProfileId),
   owner: Schema.optional(OwnerId),
 };
 const run = { run: ScheduledRunId, owner: Schema.optional(OwnerId) };
+/** One copy, under its declaration. A copy of another declaration is not found. */
+const copy = { ...app, name: Schema.NonEmptyString, copy: ScheduleId };
+/** The actor's copy of a user declaration, or without an actor an app declaration's schedule. */
+const own = { ...app, name: Schema.NonEmptyString, actor: Schema.optional(Schema.NonEmptyString) };
 /** Runtime identity is supplied by the serving host; owner filters alone do not authorize changes. */
 export const ScheduleInputs = {
   list: Schema.Struct(app),
-  definitions: Schema.Struct(app),
-  configure: Schema.Struct({
+  /**
+   * Declarations evaluated with the named accounts, which the product resolved from the caller's
+   * links. Each carries `actor`'s copy, or null without one.
+   */
+  definitions: Schema.Struct({
     ...app,
-    name: Schema.NonEmptyString,
-    actor: Schema.NonEmptyString,
-    expectedProfileRevision: Schema.optional(ProfileRevision),
+    accounts: Schema.optional(AppAccounts),
+    actor: Schema.optional(Schema.NonEmptyString),
+  }),
+  /**
+   * Configure the actor's copy, adding it when they have none; without an actor, the app
+   * declaration's one schedule. Enabling evaluates the app with the accounts its runs use and
+   * checks the declaration has that scope.
+   */
+  configure: Schema.Struct({
+    ...own,
     enabled: Schema.Boolean,
     approvalMode: Schema.optional(ScheduleApprovalMode),
   }),
-  runNow: Schema.Struct({ ...app, name: Schema.NonEmptyString }),
+  /** The actor's copy; `ScheduleNotFound` when they have none. */
+  copy: Schema.Struct(own),
+  /** Pause or resume one copy, or change its approvals. Its actor never changes. */
+  update: Schema.Struct({
+    ...copy,
+    enabled: Schema.Boolean,
+    approvalMode: Schema.optional(ScheduleApprovalMode),
+  }),
+  runNow: Schema.Struct(copy),
+  /**
+   * Remove one copy and its run history. A waiting approval is withdrawn; a running mutation
+   * finishes, then its record is removed.
+   */
+  remove: Schema.Struct(copy),
   runs: Schema.Struct({
     owner: Schema.optional(OwnerId),
     app: Schema.optional(AppId),
-    profile: Schema.optional(ProfileId),
     pending: Schema.optional(Schema.Boolean),
   }),
   approval: Schema.Struct(run),
@@ -164,7 +204,6 @@ export const ScheduleInputs = {
 };
 /** Live discovery preserves existing account and source failures rather than returning an empty catalog. */
 export const ScheduleErrors = [
-  ...ProfileErrors,
   StorageError,
   RequestInvalid,
   ScheduleNotFound,
@@ -173,6 +212,7 @@ export const ScheduleErrors = [
   AppNotFound,
   AppNotDeployed,
   AccountRequired,
+  AccountChoiceUnsupported,
   AccountSelectionInvalid,
   AccountNotFound,
   DeploymentNotFound,
@@ -187,7 +227,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.get("list", "/v1/apps/:app/schedules", {
       params: { app: AppId },
-      query: { owner: Schema.optional(OwnerId), profile: Schema.optional(ProfileId) },
+      query: { owner: Schema.optional(OwnerId) },
       success: Schema.Array(ScheduleSettings),
       error: ScheduleErrors,
     }),
@@ -195,7 +235,11 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
   .add(
     HttpApiEndpoint.get("definitions", "/v1/apps/:app/schedules/definitions", {
       params: { app: AppId },
-      query: { owner: Schema.optional(OwnerId), profile: Schema.optional(ProfileId) },
+      query: {
+        owner: Schema.optional(OwnerId),
+        accounts: AppAccountsQuery,
+        actor: Schema.optional(Schema.NonEmptyString),
+      },
       success: Schema.Array(AppSchedule),
       error: ScheduleErrors,
     }),
@@ -205,9 +249,7 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
       params: { app: AppId, name: Schema.NonEmptyString },
       payload: Schema.Struct({
         owner: Schema.optional(OwnerId),
-        actor: Schema.NonEmptyString,
-        expectedProfileRevision: Schema.optional(ProfileRevision),
-        profile: Schema.optional(ProfileId),
+        actor: Schema.optional(Schema.NonEmptyString),
         enabled: Schema.Boolean,
         approvalMode: Schema.optional(ScheduleApprovalMode),
       }),
@@ -216,12 +258,40 @@ export const SchedulesGroup = HttpApiGroup.make("schedules")
     }),
   )
   .add(
-    HttpApiEndpoint.post("runNow", "/v1/apps/:app/schedules/:name/run", {
+    HttpApiEndpoint.get("copy", "/v1/apps/:app/schedules/:name/copy", {
       params: { app: AppId, name: Schema.NonEmptyString },
+      query: {
+        owner: Schema.optional(OwnerId),
+        actor: Schema.optional(Schema.NonEmptyString),
+      },
+      success: ScheduleSettings,
+      error: ScheduleErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.patch("update", "/v1/apps/:app/schedules/:name/copies/:copy", {
+      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
       payload: Schema.Struct({
         owner: Schema.optional(OwnerId),
-        profile: Schema.optional(ProfileId),
+        enabled: Schema.Boolean,
+        approvalMode: Schema.optional(ScheduleApprovalMode),
       }),
+      success: ScheduleSettings,
+      error: ScheduleErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("runNow", "/v1/apps/:app/schedules/:name/copies/:copy/run", {
+      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+      payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
+      success: ScheduleSettings,
+      error: ScheduleErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/v1/apps/:app/schedules/:name/copies/:copy", {
+      params: { app: AppId, name: Schema.NonEmptyString, copy: ScheduleId },
+      query: { owner: Schema.optional(OwnerId) },
       success: ScheduleSettings,
       error: ScheduleErrors,
     }),

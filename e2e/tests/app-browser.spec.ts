@@ -46,7 +46,8 @@ layer(HostedLive, { excludeTestServices: true })("App browsing", (it) => {
           })).status,
         ).toBe(200);
 
-        const run = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+        // Run history belongs to the member who started the run, so the browsing member starts it.
+        const run = yield* api.request(actors.member, "POST", `${path}/workflow-runs`, {
           workflow: "report",
           input: {},
         });
@@ -54,7 +55,7 @@ layer(HostedLive, { excludeTestServices: true })("App browsing", (it) => {
         const runId = (yield* body(Schema.Struct({ id: Schema.String }), run)).id;
         yield* Effect.addFinalizer(() =>
           api
-            .request(actors.owner, "POST", `${path}/workflow-runs/${runId}/terminate`)
+            .request(actors.member, "POST", `${path}/workflow-runs/${runId}/terminate`)
             .pipe(Effect.orDie),
         );
         expect((yield* api.request(actors.member, "GET", `${path}/source`)).status).toBe(403);

@@ -4,17 +4,18 @@
  * an empty scope. Declared options read Slack's nested user grant and send JSON token requests.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "vitest";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer, type TokenShape } from "../support/oauth-setup-issuer.ts";
 import { appsManifest } from "../support/apps-release.ts";
-import { createProfile } from "../support/profiles.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Redirect = Schema.Struct({
@@ -30,7 +31,6 @@ const Echo = Schema.Struct({
   authorization: Schema.NullOr(Schema.String),
 });
 const ScopeEcho = Schema.Struct({ ...Echo.fields, scope: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const client = { clientId: "token-shape-client", clientSecret: "synthetic-manual-secret" };
 
 /** Slack's `oauth.v2.access` answer for a bot install with token rotation. */
@@ -108,12 +108,11 @@ const dpop =
 
 /**
  * Deploy an app whose only query presents the account's token to the issuer, with helpers that
- * sign a new profile in and call that query. With `scope`, the provider declares a response that
+ * sign a new account in and call that query with it. With `scope`, the provider declares a response that
  * requires a string `scope` and the query echoes the scope app code sees.
  */
 const serviceApp = (
   issuer: Effect.Success<typeof oauthSetupIssuer>,
-  kind: "declared" | "discovered",
   options: {
     readonly scope?: boolean;
     /** Further OAuth options the provider declares. */
@@ -126,14 +125,9 @@ const serviceApp = (
       http = yield* HttpClient.HttpClient;
     const prefix = `/api/organizations/${actors.organization.id}`;
     const oauth = {
-      ...(kind === "declared"
-        ? {
-            authorizationUrl: `${issuer.origin}/authorize`,
-            tokenUrl: `${issuer.origin}/token`,
-            scopes: ["openid", "read"],
-          }
-        : // Authorization-server discovery and dynamic registration; the resource advertises nothing.
-          { discover: issuer.origin, scopes: ["openid", "read"] }),
+      authorizationUrl: `${issuer.origin}/authorize`,
+      tokenUrl: `${issuer.origin}/token`,
+      scopes: ["openid", "read"],
       ...options.oauth,
     };
     const method =
@@ -145,7 +139,7 @@ const serviceApp = (
         ? "({ ...(await result.json()), scope: accounts.service.fields.scope })"
         : "result.json()";
 
-    const name = `Token shapes, ${kind} ${randomUUID().slice(0, 8)}`;
+    const name = `Token shapes ${randomUUID().slice(0, 8)}`;
     const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name,
       files: [
@@ -153,7 +147,7 @@ const serviceApp = (
           path: "index.ts",
           content: `import { defineApp, defineProvider, oauth2, query, object, string, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: ${method} } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ tools: router({ read: query({ input: object({}) }, async ({ fetch }) => {
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({ read: query({ input: object({}) }, async ({ fetch }) => {
   const result = await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } });
   return ${echo};
 }) }) }));
@@ -168,16 +162,17 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
       api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
     );
 
-    /** Sign a new profile's account in through the issuer and complete the callback. */
+    /** Sign a new account in through the issuer and complete the callback, linking it to the app. */
     const signIn = (label: string) =>
       Effect.gen(function* () {
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         const started = yield* api.request(
           actors.owner,
@@ -186,12 +181,12 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
           {
             method: "oauth",
             label,
-            ...(kind === "declared" ? { client } : {}),
+            client,
           },
         );
         expect(started.status, `${label}: ${JSON.stringify(started.body)}`).toBe(200);
         const { authorizationUrl, redirectUri } = yield* body(Redirect, started);
-        if (kind === "declared") yield* issuer.allowClient({ ...client, redirect: redirectUri });
+        yield* issuer.allowClient({ ...client, redirect: redirectUri });
         const callbackUrl = yield* Effect.scoped(
           Effect.gen(function* () {
             const consent = yield* HttpClient.withScope(http).get(authorizationUrl);
@@ -209,41 +204,45 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
           `${prefix}/connections/${connection.id}/oauth/complete`,
           { callbackUrl },
         );
+        let account: string | undefined;
         if (completed.status === 200) {
-          const account = yield* body(Resource, completed);
+          account = (yield* body(Resource, completed)).id;
+          const saved = account;
           yield* Effect.addFinalizer(() =>
-            api
-              .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
-              .pipe(Effect.orDie),
+            api.request(actors.owner, "DELETE", `${prefix}/accounts/${saved}`).pipe(Effect.orDie),
           );
-          // Selecting the account queues profile setup, whose live read of the app resolves the
-          // account and may renew its token. Wait until it is done so each call below is the
-          // only renewal the issuer sees.
-          yield* api
-            .request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile.id}`)
-            .pipe(
-              Effect.flatMap((response) => body(SetupStatus, response)),
-              Effect.flatMap((current) =>
-                current.status !== "pending"
-                  ? Effect.void
-                  : Effect.fail(new Error(`${label}: profile setup has not finished`)),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-            );
+          // Linking the account sets it up as the app's webhook source in the background, which
+          // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
+          // the call the scenario makes.
+          yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
+            sources.some((source) => source.account === saved && source.status !== "pending"),
+          );
         }
         expect((yield* issuer.metrics).tokenExchanges, label).toBe(exchanges + 1);
-        return { profile, completed, failure: yield* body(Failure, completed) };
+        return { account, completed, failure: yield* body(Failure, completed) };
       });
 
-    /** Call the app's query, which presents the account's access token to the issuer. */
-    const read = (signedIn: { readonly profile: { readonly id: string } }) =>
+    /**
+     * Call the app's query, which presents the account's access token to the issuer. Each sign-in
+     * links its account to the app in place of the one before, so the call uses the signed-in one.
+     */
+    const read = (signedIn: { readonly account: string | undefined }) =>
       Effect.gen(function* () {
+        if (signedIn.account === undefined)
+          return yield* Effect.die("The sign-in saved no account");
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+          signedIn.account,
+        ]);
         const before = (yield* issuer.metrics).refreshes;
         const response = yield* api.request(
           actors.owner,
           "POST",
           `${prefix}/apps/${app.id}/tools/call`,
-          { profile: signedIn.profile.id, tool: "read", kind: "query", input: {} },
+          {
+            tool: "read",
+            kind: "query",
+            input: {},
+          },
         );
         return { response, refreshes: (yield* issuer.metrics).refreshes - before };
       });
@@ -251,13 +250,13 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
     return { signIn, read };
   });
 
-/** Sign in and renew with each shape through declared endpoints or discovery. */
-const tokenResponses = (kind: "declared" | "discovered") => (context: TestContext) =>
+/** Sign in and renew with each shape through declared endpoints. */
+const tokenResponses = (context: TestContext) =>
   withHostedCase(
     context,
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
-      const { signIn, read } = yield* serviceApp(issuer, kind);
+      const { signIn, read } = yield* serviceApp(issuer);
 
       const accepted: ReadonlyArray<{
         readonly name: string;
@@ -359,7 +358,7 @@ const emptyScope = (context: TestContext) =>
     context,
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
-      const { signIn, read } = yield* serviceApp(issuer, "declared", { scope: true });
+      const { signIn, read } = yield* serviceApp(issuer, { scope: true });
       const cases: ReadonlyArray<{
         readonly name: string;
         readonly tokenShape: TokenShape;
@@ -411,7 +410,7 @@ const nestedTokenResponse = (context: TestContext) =>
     context,
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
-      const nested = yield* serviceApp(issuer, "declared", {
+      const nested = yield* serviceApp(issuer, {
         scope: true,
         oauth: { tokenResponse: { path: "authed_user" } },
       });
@@ -456,7 +455,7 @@ const nestedTokenResponse = (context: TestContext) =>
       }
 
       // The same response without the declared option has no access token Executor can read.
-      const standard = yield* serviceApp(issuer, "declared", { scope: true });
+      const standard = yield* serviceApp(issuer, { scope: true });
       yield* issuer.configure({ tokenShape: slackUser, refreshTokens: true, expiresIn: 10 });
       const refused = yield* standard.signIn("Slack user token without the option");
       expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
@@ -474,7 +473,7 @@ const jsonTokenRequests = (context: TestContext) =>
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
       yield* issuer.configure({ tokenRequestFormat: "json", refreshTokens: true, expiresIn: 10 });
-      const json = yield* serviceApp(issuer, "declared", {
+      const json = yield* serviceApp(issuer, {
         oauth: { tokenRequestFormat: "json" },
       });
       const sent = (yield* issuer.metrics).tokenContentTypes.length;
@@ -492,12 +491,12 @@ const jsonTokenRequests = (context: TestContext) =>
           `call ${call}: ${JSON.stringify((yield* issuer.metrics).refreshChecks)}`,
         ).toMatch(/^Bearer synthetic-refreshed-token-\d+$/);
       }
-      // The exchange and every renewal, including any during profile setup, were JSON.
+      // The exchange and every renewal were JSON.
       const types = (yield* issuer.metrics).tokenContentTypes.slice(sent);
       expect(types.length).toBeGreaterThanOrEqual(3);
       expect(types).toEqual(types.map(() => "application/json"));
 
-      const form = yield* serviceApp(issuer, "declared");
+      const form = yield* serviceApp(issuer);
       const refused = yield* form.signIn("Form token request");
       expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
       expect(refused.failure._tag).toBe("OAuthCompletionFailed");
@@ -508,8 +507,7 @@ const jsonTokenRequests = (context: TestContext) =>
   );
 
 layer(HostedLive, { excludeTestServices: true })("OAuth provider token responses", (it) => {
-  it.effect(scenarios.oauthDeclaredTokenResponses.title, tokenResponses("declared"));
-  it.effect(scenarios.oauthDiscoveredTokenResponses.title, tokenResponses("discovered"));
+  it.effect(scenarios.oauthDeclaredTokenResponses.title, tokenResponses);
   it.effect(scenarios.oauthEmptyTokenScope.title, emptyScope);
   it.effect(scenarios.oauthNestedTokenResponse.title, nestedTokenResponse);
   it.effect(scenarios.oauthJsonTokenRequests.title, jsonTokenRequests);

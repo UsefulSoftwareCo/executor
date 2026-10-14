@@ -1,83 +1,33 @@
-import { useMcpOrigin } from "../resource-origin.ts";
-import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
-import { appManagement } from "../../contracts/app-management.ts";
 import { useAtomMount } from "@effect/atom-react";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
-import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboard/catalog";
-import { InstallPublication } from "@executor-js/ui/dashboard/install-publication";
-import { type AppAcknowledgement } from "@executor-js/ui/contracts/app-management";
-import type { CatalogEntry } from "@executor-js/catalog/contracts";
-import type { Publication } from "@executor-js/sdk";
-import type { App } from "@executor-js/sdk";
-import { useState } from "react";
+import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { useOrganizationRoute } from "../components/organization.tsx";
-import { acknowledgeApp } from "../../contracts/apps.ts";
 
-type Selection =
-  | { readonly kind: "catalog"; readonly entry: CatalogEntry }
-  | { readonly kind: "publication"; readonly publication: typeof Publication.Type };
-/** Public publications and integration templates share Add app and the same organization-owned app records. */
+/** Catalog apps install into the same organization-owned app records. */
 export function AddAppPage() {
-  const mcpOrigin = useMcpOrigin();
   const atoms = useDashboardAtoms();
   useAtomMount(atoms.catalog);
-  const { organization, slug: organizationSlug } = useOrganizationRoute();
-  const navigate = useNavigate();
-  const management = appManagement(organization);
-  const [selection, setSelection] = useState<Selection>();
-  const onApp: AppAcknowledgement = (get, app) => acknowledgeApp(get, organization, app);
-  const installed = (app: App) =>
-    navigate({
-      to: "/org/$organizationSlug/apps/$appId",
-      search: { view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" },
-      params: { organizationSlug, appId: app.id },
-    });
-  const back = () => {
-    reportBrowserUsage({ area: "apps", action: "install", outcome: "cancelled" });
-    setSelection(undefined);
-  };
-  if (selection?.kind === "publication")
-    return (
-      <InstallPublication
-        key={`${selection.publication.name}:${selection.publication.commit}`}
-        Failure={HostedFailure}
-        publication={selection.publication}
-        atoms={management}
-        onApp={onApp}
-        onInstalled={installed}
-        onBack={back}
-      />
-    );
-  if (selection?.kind === "catalog")
-    return (
-      <CatalogInstall
-        mutation={atoms.install}
-        Failure={HostedFailure}
-        key={selection.entry.id}
-        entry={selection.entry}
-        endpoint={`${mcpOrigin}/mcp`}
-        onBack={back}
-        onInstalled={installed}
-      />
-    );
+  const { slug: organizationSlug } = useOrganizationRoute();
   return (
     <Catalog
       query={atoms.catalog}
-      publications={management.catalog}
-      PublicationFailure={HostedFailure}
       Failure={HostedFailure}
-      onSelect={(entry) => {
-        reportBrowserUsage({ area: "apps", action: "select_template", outcome: "started" });
-        setSelection({ kind: "catalog", entry });
-      }}
-      onPublication={(publication) => {
-        reportBrowserUsage({ area: "apps", action: "select_publication", outcome: "started" });
-        setSelection({ kind: "publication", publication });
-      }}
+      mutation={atoms.install}
+      InstallFailure={HostedFailure}
+      inventory={atoms.inventory}
+      open={(app) => (
+        <Link
+          to="/org/$organizationSlug/apps/$appId"
+          search={{ view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" }}
+          params={{ organizationSlug, appId: app.id }}
+        >
+          Open
+        </Link>
+      )}
       back={
         <Link
           to="/org/$organizationSlug/apps"

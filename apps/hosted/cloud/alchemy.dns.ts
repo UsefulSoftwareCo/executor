@@ -8,6 +8,8 @@
  *
  * - Workers Custom Domains own the `100::` AAAA records of `executor.sh` (v1, wrangler) and
  *   `v2.executor.sh` (the `v2` stage).
+ * - The `v2` stage's `executor-app-catalog` R2 bucket owns `catalog.executor.sh` as its custom
+ *   domain. See `src/infrastructure/app-catalog.ts`.
  *
  * The `v2` stage's role hosts (`app.`, `mcp.`, `api.`) are declared here as proxied `100::`
  * records, which the `v2` stage's Worker routes serve. Routes order no certificate, so these hosts

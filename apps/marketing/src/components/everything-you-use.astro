@@ -1,0 +1,49 @@
+---
+// The services people connect first.
+import gmail from "../assets/logos/gmail.svg?url";
+import calendar from "../assets/logos/google-calendar.svg?url";
+import drive from "../assets/logos/google-drive.svg?url";
+import github from "../assets/logos/github.svg?url";
+import linear from "../assets/logos/linear.svg?url";
+import slack from "../assets/logos/slack.svg?url";
+import notion from "../assets/logos/notion.svg?url";
+import stripe from "../assets/logos/stripe.svg?url";
+import posthog from "../assets/logos/posthog.svg?url";
+import sentry from "../assets/logos/sentry.svg?url";
+import x from "../assets/logos/x.svg?url";
+import { logoClass } from "../lib/logos";
+
+const services = [
+  { name: "Gmail", logo: gmail, key: "gmail" },
+  { name: "Calendar", logo: calendar, key: "google-calendar" },
+  { name: "GitHub", logo: github, key: "github" },
+  { name: "Linear", logo: linear, key: "linear" },
+  { name: "Slack", logo: slack, key: "slack" },
+  { name: "Notion", logo: notion, key: "notion" },
+  { name: "Stripe", logo: stripe, key: "stripe" },
+  { name: "Drive", logo: drive, key: "google-drive" },
+  { name: "PostHog", logo: posthog, key: "posthog" },
+  { name: "Sentry", logo: sentry, key: "sentry" },
+  { name: "X", logo: x, key: "x" },
+];
+---
+
+<div class="doc__fig--wide @container mt-7 max-w-225">
+  <ul class="grid grid-cols-2 gap-px overflow-hidden rounded-[10px] border border-tone-90 bg-tone-90 @min-[480px]:grid-cols-3 @min-[720px]:grid-cols-4">
+    {services.map((service, index) => (
+      <li class="reveal flex flex-col justify-center bg-tone-100 px-4 py-4 @min-[720px]:px-5" style={`transition-delay:${index * 40}ms`}>
+        <span class="flex items-center gap-2.5">
+          <img src={service.logo} alt="" width="18" height="18" class:list={["size-4.5 shrink-0 object-contain", logoClass(service.key)]} />
+          <span class="text-[14px] font-medium text-tone-20">{service.name}</span>
+        </span>
+      </li>
+    ))}
+    <li class="reveal flex flex-col justify-center gap-1 bg-tone-98 px-4 py-4 @min-[720px]:px-5" style={`transition-delay:${services.length * 40}ms`}>
+      <span class="flex items-center gap-2.5">
+        <span aria-hidden="true" class="grid size-4.5 shrink-0 place-items-center rounded-[4px] border border-dashed border-tone-73 font-mono text-[11px] text-tone-53">+</span>
+        <span class="text-[14px] font-medium text-tone-20">Missing something?</span>
+      </span>
+      <span class="pl-7 text-[12px] leading-normal text-tone-60">Ask your agent to add it</span>
+    </li>
+  </ul>
+</div>

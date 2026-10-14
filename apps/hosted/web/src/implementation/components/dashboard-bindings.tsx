@@ -4,9 +4,8 @@ import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-no
 import { CompactFailure, ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ConnectionFailed, hasConnectionFailure } from "@executor-js/utils/connection-failure";
-import { parseAppSearch } from "../../contracts/navigation.ts";
 import type { ReactNode } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { DashboardProvider } from "@executor-js/ui/dashboard/context";
 import type {
   AppLinkProps,
@@ -16,31 +15,25 @@ import type {
 import { Alert } from "@executor-js/ui/components/alert";
 import { Button } from "@executor-js/ui/components/button";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
-import { catalogIconDomainsAtom } from "@executor-js/ui/contracts/icons";
+import { catalogIconsAtom } from "@executor-js/ui/contracts/icons";
 import { catalogAtom } from "../../contracts/api.ts";
 import { useOrganizationRoute } from "./organization.tsx";
 import { appError } from "../../contracts/apps.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 
-const iconDomains = catalogIconDomainsAtom(catalogAtom);
+const catalogIcons = catalogIconsAtom(catalogAtom);
 /** Organization-aware atoms stay inside the hosted product. */
 export function useDashboardAtoms() {
   return dashboardAtoms(useOrganizationRoute().organization);
 }
 
-const AppLink = ({ app, view, tool, profile, ...props }: AppLinkProps) => {
+const AppLink = ({ app, view, tool, ...props }: AppLinkProps) => {
   const { slug: organizationSlug } = useOrganizationRoute();
-  const location = useRouterState({ select: (state) => state.location });
-  const current =
-    location.pathname ===
-    `/org/${encodeURIComponent(organizationSlug)}/apps/${encodeURIComponent(app)}`
-      ? parseAppSearch(location.search).profile
-      : undefined;
   return (
     <Link
       to="/org/$organizationSlug/apps/$appId"
       params={{ organizationSlug, appId: app }}
-      search={{ view, tool, profile: profile ?? current }}
+      search={{ view, tool }}
       {...props}
     />
   );
@@ -65,7 +58,7 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
     return (
       <ProviderErrorNotice
         error={error.value}
-        context="While using this app and selected profile."
+        context="While using this app and its accounts."
         retry={retry}
         retrying={retrying}
         layout={layout}
@@ -121,7 +114,7 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
 /** Shared views bind independently of access checks and sidebar metadata. */
 export function HostedDashboard({ children }: { readonly children: ReactNode }) {
   return (
-    <DashboardProvider iconDomains={iconDomains} AppLink={AppLink} AccountLink={AccountLink}>
+    <DashboardProvider catalogIcons={catalogIcons} AppLink={AppLink} AccountLink={AccountLink}>
       {children}
     </DashboardProvider>
   );

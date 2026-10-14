@@ -1,5 +1,5 @@
 /** Choose one macOS signing identity per build; no signing secret reaches persistent storage. */
-import { Config, Effect, FileSystem, Path, Redacted, Stream } from "effect";
+import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** The macOS section electron-builder needs for the chosen signing mode. */
@@ -389,3 +389,123 @@ export const developerIdMac = (options: {
         options.notarize ? notarizeDiskImages(keychain, directory) : Effect.void,
     } satisfies MacSigning;
   });
+
+/** Mach-O and universal binary magic numbers, in file byte order. */
+const machOMagic = new Set([
+  "feedface",
+  "feedfacf",
+  "cefaedfe",
+  "cffaedfe",
+  "cafebabe",
+  "bebafeca",
+]);
+
+/** The release executable's signing identifier, which the Keychain items it creates trust. */
+export const standaloneIdentifier = "com.usefulsoftware.executor.v2.cli";
+
+/**
+ * Sign every Mach-O file in a standalone install with Developer ID and the hardened runtime, the
+ * executable last, and notarize the whole install when asked. A bare executable cannot hold a
+ * stapled ticket, so Gatekeeper confirms notarization online on first run.
+ *
+ * Executables get `entitlements`: Bun and workerd compile JavaScript at runtime. None of them may
+ * load a library from another team: every native addon and library is signed here, so library
+ * validation stays on and no unsigned code can be loaded into the signed process.
+ */
+export const signStandaloneMac = (
+  install: string,
+  executable: string,
+  options: { readonly entitlements: string; readonly notarize: boolean },
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      if (process.platform !== "darwin")
+        return yield* Effect.die(new Error("Signing a macOS build requires macOS"));
+      const keychain = yield* temporaryKeychain;
+      const identity = yield* importIdentity(keychain);
+      const files: Array<{ readonly file: string; readonly executable: boolean }> = [];
+      for (const relative of yield* fs.readDirectory(install, { recursive: true })) {
+        const file = path.join(install, relative);
+        const info = yield* fs.stat(file);
+        if (info.type !== "File" || file === executable) continue;
+        const head = yield* Effect.scoped(
+          Effect.flatMap(fs.open(file), (handle) => handle.readAlloc(4)),
+        );
+        if (Option.isNone(head) || head.value.length < 4) continue;
+        if (!machOMagic.has(Buffer.from(head.value).toString("hex"))) continue;
+        files.push({
+          file,
+          executable: (info.mode & 0o111) !== 0 && !/\.(node|dylib|so)$/u.test(file),
+        });
+      }
+      // Nested code first, so each enclosing signature covers signed contents.
+      files.sort(
+        (left, right) => right.file.split(path.sep).length - left.file.split(path.sep).length,
+      );
+      const sign = (file: string, extra: ReadonlyArray<string>) =>
+        succeed(
+          "/usr/bin/codesign",
+          [
+            "--force",
+            "--sign",
+            identity,
+            "--keychain",
+            keychain.file,
+            "--options",
+            "runtime",
+            "--timestamp",
+            ...extra,
+            file,
+          ],
+          `Signing ${path.relative(install, file)}`,
+        );
+      for (const entry of files)
+        yield* sign(entry.file, entry.executable ? ["--entitlements", options.entitlements] : []);
+      yield* sign(executable, [
+        "--identifier",
+        standaloneIdentifier,
+        "--entitlements",
+        options.entitlements,
+      ]);
+      for (const file of [executable, ...files.map((entry) => entry.file)])
+        yield* succeed(
+          "/usr/bin/codesign",
+          ["--verify", "--strict", file],
+          `Verifying ${path.relative(install, file)}`,
+        );
+      yield* Console.log(`Signed ${files.length + 1} Mach-O files in ${install}`);
+      if (!options.notarize) return;
+      yield* storeNotaryCredentials(keychain);
+      const archive = path.join(
+        yield* fs.makeTempDirectoryScoped({ prefix: "executor-notarize-" }),
+        "executor.zip",
+      );
+      yield* succeed(
+        "/usr/bin/ditto",
+        ["-c", "-k", "--keepParent", install, archive],
+        "Archiving the install for notarization",
+      );
+      const report = yield* processes.string(
+        ChildProcess.make("/usr/bin/xcrun", [
+          "notarytool",
+          "submit",
+          archive,
+          "--keychain-profile",
+          notaryProfile,
+          "--keychain",
+          keychain.file,
+          "--wait",
+          "--output-format",
+          "json",
+        ]),
+      );
+      const status = /"status"\s*:\s*"([^"]+)"/u.exec(report)?.[1];
+      // The submission id identifies the job to Apple and is not a credential.
+      yield* Console.log(`Notarization: ${report.trim()}`);
+      if (status !== "Accepted")
+        return yield* Effect.die(new Error(`Apple did not accept the install: ${status}`));
+    }),
+  ).pipe(Effect.orDie);

@@ -12,27 +12,48 @@ import { Button } from "@executor-js/ui/components/button";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@executor-js/ui/dashboard/context";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
+import { OAuthClientsDialog } from "./oauth-clients.tsx";
 import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
-/** Personal and shared credentials use one list. */
-export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
+/**
+ * Personal and shared credentials use one list. Administrators also manage the organization's
+ * OAuth clients from here, since those clients only exist to connect accounts.
+ */
+export function AccountsPage({
+  highlight,
+  oauthClients,
+}: {
+  readonly highlight?: AccountId | undefined;
+  readonly oauthClients: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void };
+}) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   const directory = useQuery(resourceDirectoryAtom(organization));
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
+  const role = useOrganizationDetails()?.role;
+  const admin = role !== undefined && role !== "member";
+  const manageClients = admin && (
+    <Button variant="outline" onClick={() => oauthClients.onOpenChange(true)}>
+      OAuth clients
+    </Button>
+  );
   return (
     <>
       <SharedPage
         query={resourceInventoryAtom(organization)}
         Failure={HostedFailure}
+        action={manageClients}
         empty={
           <EmptyState
             title="No accounts available"
             action={
-              <Button asChild>
-                <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
-                  Choose an app
-                </Link>
-              </Button>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button asChild>
+                  <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
+                    Choose an app
+                  </Link>
+                </Button>
+                {manageClients}
+              </div>
             }
           >
             Open an app to connect an account, or ask a teammate to share one.
@@ -72,6 +93,7 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
           onClose={() => setDialog(undefined)}
         />
       )}
+      {admin && <OAuthClientsDialog {...oauthClients} />}
     </>
   );
 }

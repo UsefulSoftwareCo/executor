@@ -14,7 +14,9 @@ import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-t
 const callbackError = (error: unknown): string | null => {
   if (typeof error !== "string" || error === "") return null;
   if (error === "access_denied") return "Sign-in was canceled. You can try again.";
-  if (error === "account_not_linked" || error === "unable_to_link_account")
+  if (error === "account_not_linked")
+    return "An Executor account already uses this email. Sign in with the method you used before.";
+  if (error === "unable_to_link_account")
     return "This email is not linked to this sign-in method. Contact an administrator.";
   return "Sign-in could not be completed. Please try again.";
 };

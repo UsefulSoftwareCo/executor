@@ -2,10 +2,16 @@
 import { Clock, Crypto, Effect, Option } from "effect";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
+import { adoptStoredFiles, type StoredBytes } from "./public-files.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
 import { AppCodeId, AppId, StorageError } from "../contracts/shared.ts";
-import { SourceError, type AppSourceStorage, type RepositoryBackend } from "../contracts/source.ts";
+import {
+  SourceError,
+  sourcePathsFit,
+  type AppSourceStorage,
+  type RepositoryBackend,
+} from "../contracts/source.ts";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedApp, createApp as storeApp } from "./apps.ts";
@@ -22,14 +28,25 @@ export const makeAppAuthoring = (
   const create = (
     input: Parameters<Executor["apps"]["create"]>[0],
     copiedFrom: AppCopyOrigin | null = null,
+    stored?: StoredBytes,
+    reserved?: AppId,
   ) =>
     Effect.gen(function* () {
+      yield* sourcePathsFit(input.files);
       const code = AppCodeId.make(
         `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
       );
-      const id = AppId.make(
-        `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-      );
+      // A new app has no repository yet. Stored files of a copy are first copied into its own
+      // store, which its initial files then name; anything else stored names nothing it owns.
+      if (input.files.some((file) => "object" in file)) {
+        if (stored === undefined) return yield* new SourceError({ reason: "invalid-source" });
+        yield* adoptStoredFiles(blobs, code, input.files, stored);
+      }
+      const id =
+        reserved ??
+        AppId.make(
+          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+        );
       yield* writeInitialSource(blobs, code, input.files);
       const app = {
         id,
@@ -87,13 +104,14 @@ export const makeAppAuthoring = (
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
         yield* initializeAppRepository(db, sources, blobs, app);
-        const { revision } = yield* sources.commit({
+        yield* sourcePathsFit(input.files);
+        const { revision, removed } = yield* sources.commit({
           code: app.code,
           expected: input.expected,
           files: input.files,
           message: input.message,
         });
-        return { revision };
+        return { revision, removed };
       }),
   };
 };

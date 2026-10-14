@@ -1,7 +1,7 @@
-import { ProfileErrors } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 /** Account-dependent discovery and execution within a configured app. */
 import {
+  AccountChoiceUnsupported,
   AccountNotFound,
   AccountRequired,
   AccountSelectionInvalid,
@@ -9,8 +9,6 @@ import {
   AppProviderFailed,
   AppId,
   ApprovalRequestId,
-  ProfileId,
-  ProfileRevision,
   AppNotFound,
   AppNotDeployed,
   CredentialsError,
@@ -55,7 +53,6 @@ import {
 
 const params = { organization: OrganizationReference, app: AppId };
 const discoveryErrors = [
-  ...ProfileErrors,
   StorageError,
   CredentialsError,
   AppNotFound,
@@ -66,9 +63,11 @@ const discoveryErrors = [
   AppProviderFailed,
   AccountNotFound,
   AccountRequired,
+  AccountChoiceUnsupported,
   AccountSelectionInvalid,
   OAuthReconnectRequired,
   OAuthRenewalFailed,
+  OrganizationForbidden,
 ] as const;
 const prefix = "/api/organizations/:organization/apps/:app/tools";
 const callPayload = Schema.Struct({
@@ -77,8 +76,6 @@ const callPayload = Schema.Struct({
   kind: Schema.optional(ToolKind),
   input: Json,
   deployment: Schema.optional(DeploymentId),
-  profile: Schema.optional(ProfileId),
-  expectedProfileRevision: Schema.optional(ProfileRevision),
 });
 const callErrors = [
   ...discoveryErrors,
@@ -110,8 +107,6 @@ export const HostedTools = HttpApiGroup.make("tools")
       query: {
         cursor: Schema.optional(Cursor),
         deployment: Schema.optional(DeploymentId),
-        profile: Schema.optional(ProfileId),
-        expectedProfileRevision: Schema.optional(ProfileRevision),
       },
       success: ToolPage,
       error: discoveryErrors,
@@ -122,8 +117,6 @@ export const HostedTools = HttpApiGroup.make("tools")
       params,
       query: {
         deployment: Schema.optional(DeploymentId),
-        profile: Schema.optional(ProfileId),
-        expectedProfileRevision: Schema.optional(ProfileRevision),
       },
       success: ToolIndex,
       error: discoveryErrors,
@@ -134,8 +127,6 @@ export const HostedTools = HttpApiGroup.make("tools")
       params: { ...params, tool: ToolName },
       query: {
         deployment: Schema.optional(DeploymentId),
-        profile: Schema.optional(ProfileId),
-        expectedProfileRevision: Schema.optional(ProfileRevision),
       },
       success: Tool,
       error: [...discoveryErrors, ToolNotFound],

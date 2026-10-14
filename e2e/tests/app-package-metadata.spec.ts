@@ -33,12 +33,12 @@ layer(HostedLive, { excludeTestServices: true })("App package metadata", (it) =>
           {
             label: "display",
             name: `MCP Notes ${suffix}`,
-            package: `@${actors.organization.slug}/mcp-notes-${suffix}`,
+            package: `@${actors.organization.slug}.executor.community/mcp-notes-${suffix}`,
           },
           {
             label: "scoped",
             name: `@fixture/mcp-${suffix}`,
-            package: `@${actors.organization.slug}/mcp-${suffix}`,
+            package: `@${actors.organization.slug}.executor.community/mcp-${suffix}`,
           },
         ] as const) {
           const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {

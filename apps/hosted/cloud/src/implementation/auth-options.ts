@@ -1,14 +1,19 @@
 /** Cloud sign-in policy; self-hosted deployments do not need these OAuth credentials. */
+import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
-import { authOptions } from "@executor-js/hosted-server";
-import { HttpUrl } from "@executor-js/sdk/core";
-import { cloudHosts, type CloudHosts } from "../infrastructure/stage.ts";
+import { authOptions, type RefreshRejection } from "@executor-js/hosted-server";
+import { cloudHosts } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { organization } from "better-auth/plugins/organization";
 import { oAuthProxy } from "better-auth/plugins/oauth-proxy";
 import { oauthProxyLocationGuard, oauthProxyProductionGuard } from "./oauth-proxy-guard.ts";
+import {
+  cloudAccountRedirectUri,
+  cloudOAuthProxy,
+  socialCallbackOrigin,
+} from "./oauth-proxy-settings.ts";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { emailCodeExpiresIn, emailCodeMessage, invitationEmailMessage } from "./email-messages.ts";
@@ -23,45 +28,6 @@ import { cloudMemberLimit } from "./member-limit.ts";
 /** The better-auth endpoint that creates accounts from a verified email code. */
 const emailCodeSignInPath = "/sign-in/email-otp";
 
-const ProxyOrigin = Schema.String.check(
-  Schema.makeFilter(
-    (value) => {
-      try {
-        const url = new URL(value);
-        return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
-      } catch {
-        return false;
-      }
-    },
-    {
-      message:
-        "The OAuth proxy's production URL must be an HTTP(S) origin without a trailing slash",
-    },
-  ),
-);
-
-/**
- * One registered OAuth client serves every stage, and its callback belongs to production.
- * A test stage needs both the production origin and the shared proxy secret, or neither.
- */
-const OAuthProxySettings = Schema.Struct({
-  productionUrl: Schema.Option(ProxyOrigin),
-  secret: Schema.Option(Schema.Redacted(Schema.String.check(Schema.isMinLength(32)))),
-}).check(
-  Schema.makeFilter((value) => Option.isSome(value.productionUrl) === Option.isSome(value.secret), {
-    message: "Set the OAuth proxy's production URL and secret together, or set neither",
-  }),
-);
-
-/**
- * Where social providers send sign-in back. With role hosts it is the edge (`executor.sh`), whose
- * callback answers with a redirect to the same path on the browser origin: the sign-in's state
- * cookie is host-only there, and the code exchange names the registered edge URI. Without role
- * hosts it is the browser origin itself.
- */
-const socialCallbackOrigin = (hosts: CloudHosts) =>
-  Option.match(hosts.roles, { onNone: () => hosts.browser, onSome: (roles) => roles.edge });
-
 /** Require both cloud social providers and reject blank credentials at startup. */
 export const cloudAuthSettings = Effect.gen(function* () {
   const hosts = yield* cloudHosts;
@@ -69,34 +35,8 @@ export const cloudAuthSettings = Effect.gen(function* () {
   const resourceOrigins = hosts.resourceOrigins;
   const callbackOrigin = socialCallbackOrigin(hosts);
   const emulators = yield* cloudEmulators;
-  const configuredRedirectUri = yield* Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(
-    Config.option,
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Option(HttpUrl))),
-  );
-  // With role hosts, new connected-account sign-ins return to the edge's callback, which sends the
-  // browser to the browser origin. Without them, an operator may set a relay.
-  const oauthRedirectUri = Option.isNone(hosts.accountCallbacks)
-    ? configuredRedirectUri
-    : Option.isSome(configuredRedirectUri)
-      ? yield* Effect.die(
-          new Error(
-            "EXECUTOR_OAUTH_CALLBACK_URL is derived from the role hosts; remove it from this deployment",
-          ),
-        )
-      : Option.some(HttpUrl.make(hosts.accountCallbacks.value.current));
-  // Emulated sign-ins never resolve the real proxy credentials, including bindings retained from
-  // a previous non-emulated version: they name production and its shared secret. A run that
-  // proves the proxy names an emulated one, whose production is another emulated deployment.
-  const proxyNames = Option.isSome(emulators)
-    ? {
-        productionUrl: "EXECUTOR_EMULATED_OAUTH_PROXY_PRODUCTION_URL",
-        secret: "EXECUTOR_EMULATED_OAUTH_PROXY_SECRET",
-      }
-    : { productionUrl: "OAUTH_PROXY_PRODUCTION_URL", secret: "OAUTH_PROXY_SECRET" };
-  const oauthProxy = yield* Config.all({
-    productionUrl: Config.String(proxyNames.productionUrl).pipe(Config.option),
-    secret: Config.Redacted(proxyNames.secret).pipe(Config.option),
-  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(OAuthProxySettings)), Effect.map(Option.all));
+  const oauthRedirectUri = yield* cloudAccountRedirectUri;
+  const { names: proxyNames, settings: oauthProxy } = yield* cloudOAuthProxy;
   // The proxy's production is where its sign-ins return. A value naming this deployment's other
   // hosts is stale configuration: production would proxy its own sign-ins to itself. The browser
   // origin moves with `CLOUD_BROWSER_ORIGIN`; the callback origin does not, so neither does this.
@@ -186,9 +126,9 @@ export const cloudAuthOptions = (
   onLogin?: (userId: string) => Promise<void>,
   onOperation?: (usage: NativeAuthUsage) => Promise<void>,
   allowsOrganization?: (userId: string) => Promise<boolean>,
-  onRefreshFamilyRevoked?: () => void,
+  onRefreshRejected?: (rejection: RefreshRejection) => void,
 ) => {
-  const base = authOptions(settings, ipAddressHeaders, onRefreshFamilyRevoked);
+  const base = authOptions(settings, ipAddressHeaders, onRefreshRejected);
   // A test stage that signs in through production's proxy uses production's callback, which the
   // proxy sets. Every other deployment names its own social callback origin explicitly.
   const proxiedElsewhere = Option.exists(
@@ -217,37 +157,34 @@ export const cloudAuthOptions = (
       // hook that sees a returning or newly linked provider's verified profile, so keep the
       // photo current here. Name and email stay as they are, and a provider without a photo
       // never clears one. Accepts every identity; a failed write must not block sign-in.
+      // ChatGPT never joins an existing account by email. The rejection is returned, not
+      // thrown: Better Auth replaces anything thrown here with a generic validation failure.
       validateUserInfo: ({ user, source }, context) =>
-        Effect.runPromise(
-          Effect.gen(function* () {
-            if (
-              source.method === "oauth" &&
-              source.oauth?.providerId === "openai" &&
-              source.action === "link-account"
-            )
-              return yield* Effect.fail(
-                new APIError("FORBIDDEN", {
-                  code: "account_not_linked",
-                  message: "Sign in with your existing method before linking ChatGPT.",
-                }),
-              );
-            const { id, image } = user;
-            if (source.method !== "oauth" || source.action === "create-user") return;
-            if (typeof id !== "string" || typeof image !== "string" || image.length === 0) return;
-            const adapter = context.context.internalAdapter;
-            const current = yield* Effect.tryPromise(() => adapter.findUserById(id));
-            if (!current || current.image === image) return;
-            yield* Effect.tryPromise(() => adapter.updateUser(id, { image }));
-          }).pipe(
-            Effect.catch((error) =>
-              error instanceof APIError
-                ? Effect.fail(error)
-                : Effect.sync(() =>
+        source.method === "oauth" &&
+        source.oauth?.providerId === "openai" &&
+        source.action === "link-account"
+          ? Promise.resolve({
+              error: "account_not_linked",
+              errorDescription: "Sign in with your existing method before linking ChatGPT.",
+            })
+          : Effect.runPromise(
+              Effect.gen(function* () {
+                const { id, image } = user;
+                if (source.method !== "oauth" || source.action === "create-user") return;
+                if (typeof id !== "string" || typeof image !== "string" || image.length === 0)
+                  return;
+                const adapter = context.context.internalAdapter;
+                const current = yield* Effect.tryPromise(() => adapter.findUserById(id));
+                if (!current || current.image === image) return;
+                yield* Effect.tryPromise(() => adapter.updateUser(id, { image }));
+              }).pipe(
+                Effect.catch((error) =>
+                  Effect.sync(() =>
                     context.context.logger.warn("Unable to refresh the provider photo", error),
                   ),
+                ),
+              ),
             ),
-          ),
-        ),
     } satisfies BetterAuthOptions["user"],
     databaseHooks: {
       account: {
@@ -289,8 +226,21 @@ export const cloudAuthOptions = (
       },
       session: {
         create: {
-          after: async (session) => {
+          // Consume the site visitor identity on every successful sign-in, including returning
+          // users. It must never be linked to a second account later.
+          after: async (session, context) => {
             if (onLogin !== undefined) await onLogin(session.userId);
+            if (!context) return;
+            context.setCookie(siteVisitorCookie, "", {
+              path: "/",
+              maxAge: 0,
+              sameSite: "lax",
+              secure: new URL(settings.url).protocol === "https:",
+              ...Option.match(settings.hosts.sharedCookieDomain, {
+                onNone: () => ({}),
+                onSome: (domain) => ({ domain }),
+              }),
+            });
           },
           before: async (session, context) => {
             if (!context) throw new APIError("UNAUTHORIZED");

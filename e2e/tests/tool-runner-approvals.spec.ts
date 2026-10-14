@@ -13,17 +13,27 @@ import { App } from "../support/contracts.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { isPreviousServerAnswer, previousServerAnswers } from "../support/release-cb81bce6b.ts";
 import { scenarios } from "../test-plan.ts";
 
-const source = `import { defineApp, interval, mutation, object, string, router } from "apps";
+const source = `import { defineApp, userInterval, mutation, object, string, router } from "apps";
 const publish = mutation(
   { input: object({ title: string() }), approval: () => "user-approval" },
   async (_, input) => ({ published: input.title }),
 );
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({ publish }),
-  schedules: { nightly: interval({ minutes: 1 }, publish, { title: "From the schedule" }) },
+  schedules: { nightly: userInterval({ minutes: 1 }, publish, { title: "From the schedule" }) },
 }));`;
+// Approving `fails` resumes the saved call, which throws.
+const failingSource = `import { defineApp, mutation, object, router } from "apps";
+const fails = mutation(
+  { input: object({}), approval: () => "user-approval" },
+  async () => {
+    throw new Error("The service rejected the approved write");
+  },
+);
+export default defineApp({}, async () => ({ tools: router({ fails }) }));`;
 const Pending = Schema.Struct({
   status: Schema.Literal("approval-required"),
   requestId: Schema.String,
@@ -48,23 +58,41 @@ const accept = { response: { action: "accept", content: {} } };
 const unrecorded = { _tag: "ToolRunApprovalRefused", reason: "unrecorded" };
 const anotherPerson = { _tag: "ToolRunApprovalRefused", reason: "another-person" };
 
+/** What the current dashboard shows for each answer the cb81bce6b release's server sends. */
+const previousServerCopy: Record<string, string> = {
+  "execution-failed":
+    "The tool failed after you approved it. It may have already made changes. Check before running it again.",
+  completed: "Approved. The tool ran, and its result is below.",
+  "completed with a tool error": "Approved. The tool ran and reported an error, shown below.",
+  denied: "Declined. Executor will not resume this saved call.",
+  cancelled: "Cancelled. Executor will not resume this saved call.",
+  expired: "This request expired, so Executor will not resume this saved call.",
+  "context-changed":
+    "The app or its accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
+  "already-consumed": "This request was already answered.",
+  unavailable: "This request has expired, was handled, or is no longer running.",
+};
+const unreadableReply =
+  "Executor received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.";
+
 /** The owner deploys the publisher; the scenario removes it when it ends. */
-const deployPublisher = Effect.gen(function* () {
-  const actors = yield* Actors,
-    api = yield* Api;
-  const prefix = `/api/organizations/${actors.organization.id}`;
-  const name = `Publisher ${randomUUID().slice(0, 8)}`;
-  const app = yield* body(
-    App,
-    yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-      name,
-      files: [{ path: "index.ts", content: source }, appsManifest],
-    }),
-  );
-  const path = `${prefix}/apps/${app.id}`;
-  yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-  return { actors, api, prefix, name, app, path };
-});
+const deployPublisher = (files = source) =>
+  Effect.gen(function* () {
+    const actors = yield* Actors,
+      api = yield* Api;
+    const prefix = `/api/organizations/${actors.organization.id}`;
+    const name = `Publisher ${randomUUID().slice(0, 8)}`;
+    const app = yield* body(
+      App,
+      yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+        name,
+        files: [{ path: "index.ts", content: files }, appsManifest],
+      }),
+    );
+    const path = `${prefix}/apps/${app.id}`;
+    yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
+    return { actors, api, prefix, name, app, path };
+  });
 /** Read and answer a request through the dashboard routes, as `actor`. */
 const throughDashboard = (actor: Session, approval: string, response: unknown = accept) =>
   Effect.gen(function* () {
@@ -79,7 +107,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { actors, api, name, app, path } = yield* deployPublisher;
+        const { actors, api, name, app, path } = yield* deployPublisher();
         const browser = yield* Browser,
           oauth = yield* McpOAuth;
         yield* browser.login(actors.owner);
@@ -222,7 +250,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { actors, api, prefix, app, path } = yield* deployPublisher;
+        const { actors, api, prefix, app, path } = yield* deployPublisher();
         const mcp = yield* McpClient;
         const created = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
           name: "Dashboard approval refusal",
@@ -331,7 +359,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { actors, api, app, path } = yield* deployPublisher;
+        const { actors, api, app, path } = yield* deployPublisher();
         // Every member may run the app, so only the run's own person decides it.
         const access = yield* body(
           Schema.Struct({ revision: Schema.String }),
@@ -439,6 +467,102 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
           status: "answered",
           result: { status: "completed", value: { published: secret } },
         });
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedToolRunnerPreviousServer.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { actors, api, app, path } = yield* deployPublisher(failingSource);
+        const browser = yield* Browser;
+        yield* browser.login(actors.owner);
+        // Each answer reaches this server, which resumes the saved call and uses the request up.
+        // The page then receives the next reply queued here in place of this server's.
+        const replies: Array<(requestId: string) => unknown> = [];
+        const sent: Array<unknown> = [];
+        yield* browser.use("Replace the review's replies", (page) =>
+          page.route(`**/apps/${app.id}/tools/approvals/*`, (route) => {
+            if (route.request().method() !== "POST") return route.fallback();
+            const reply = replies.shift();
+            if (reply === undefined) return route.fallback();
+            const requestId = new URL(route.request().url()).pathname.split("/").at(-1) ?? "";
+            return route.fetch().then((response) =>
+              response.json().then((body) => {
+                sent.push(body);
+                return route.fulfill({ response, json: reply(requestId) });
+              }),
+            );
+          }),
+        );
+        yield* browser.use("Open the tool that fails after approval", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools&tool=fails`),
+        );
+        /** Run the tool, approve its review, wait for `text` and count the answer buttons left. */
+        const approve = (label: string, text: string) =>
+          browser.use(label, (page) =>
+            page
+              .getByRole("button", { name: "Run tool", exact: true })
+              .click()
+              .then(() => page.getByRole("button", { name: "Approve", exact: true }).click())
+              .then(() => page.getByText(text, { exact: true }).waitFor())
+              .then(() =>
+                Promise.all(
+                  ["Approve", "Decline", "Cancel"].map((name) =>
+                    page.getByRole("button", { name, exact: true }).count(),
+                  ),
+                ),
+              ),
+          );
+
+        // A dashboard from this release reads every answer the previous release's server sends,
+        // including its execution failure without an error, and shows that answer's outcome.
+        const answers = (requestId: string) => new Map(previousServerAnswers(requestId));
+        expect([...answers("apr_shown").keys()]).toEqual(Object.keys(previousServerCopy));
+        for (const [label, copy] of Object.entries(previousServerCopy)) {
+          expect(isPreviousServerAnswer(answers("apr_shown").get(label)), label).toBe(true);
+          replies.push((requestId) => answers(requestId).get(label));
+          expect(
+            yield* approve(`The previous server answers ${label}`, copy),
+            `no answer is offered after ${label}`,
+          ).toEqual([0, 0, 0]);
+          if (label === "execution-failed") {
+            // This server reported the same outcome, with the error the previous one dropped.
+            expect(sent.at(-1)).toMatchObject({
+              status: "answered",
+              result: {
+                status: "failed",
+                reason: "execution-failed",
+                error: { _tag: "ToolCallFailed", tool: "fails" },
+              },
+            });
+            yield* browser.checkpoint("Previous server's execution failure");
+          }
+        }
+
+        // A reply no release decodes still followed an accepted answer, so the card ends there.
+        let unread = "";
+        replies.push((requestId) => {
+          unread = requestId;
+          return {
+            status: "answered",
+            result: { status: "failed", requestId, reason: "a-later-reason" },
+          };
+        });
+        expect(
+          yield* approve("A reply this dashboard cannot read", unreadableReply),
+          "no answer is offered after an unreadable reply",
+        ).toEqual([0, 0, 0]);
+        expect(
+          yield* browser.use("The card says the answer was sent", (page) =>
+            page.getByRole("heading", { name: "Answer sent", exact: true }).count(),
+          ),
+        ).toBe(1);
+        yield* browser.checkpoint("Unreadable reply");
+        expect(
+          (yield* api.request(actors.owner, "GET", `${path}/tools/approvals/${unread}`)).body,
+          "the server used the request up",
+        ).toEqual({ status: "unavailable" });
       }),
     ),
   );

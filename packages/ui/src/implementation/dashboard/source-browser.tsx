@@ -237,7 +237,15 @@ function RemoteSourceFile<E>({
         retry={refresh}
         pending={<SourceCodeLoading label={`Loading ${path}`} />}
       >
-        {(file) => <Code code={file.content} path={file.path} copyable copyLabel="Copy source" />}
+        {(file) =>
+          file.content === undefined ? (
+            <p className="p-4 text-sm text-muted-foreground">
+              Binary file, {file.size.toLocaleString()} bytes. Clone the app to get it.
+            </p>
+          ) : (
+            <Code code={file.content} path={file.path} copyable copyLabel="Copy source" />
+          )
+        }
       </QueryResult>
     </SourceFilePane>
   );

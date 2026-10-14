@@ -17,7 +17,7 @@ const DeployedApp = Schema.Struct({ ...App.fields, activeDeployment: Schema.Stri
 const files = [
   {
     path: "index.ts",
-    content: 'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, {});',
+    content: 'import { defineApp } from "apps"; export default defineApp({}, {});',
   },
   {
     path: "package.json",
@@ -177,6 +177,42 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         );
         expect(
           yield* browser.use("Extension errors leave the app usable", (page) =>
+            page.getByRole("dialog").count(),
+          ),
+        ).toBe(0);
+        const resizeLoop = yield* browser.use("A ResizeObserver loop reaches the page", (page) =>
+          page.evaluate(
+            () =>
+              new Promise<{ message: string; errorIsNull: boolean; lineno: number }>((resolve) => {
+                const box = document.createElement("div");
+                document.body.append(box);
+                let height = 1;
+                const observer = new ResizeObserver(() => {
+                  height += 1;
+                  box.style.height = `${height}px`;
+                });
+                window.addEventListener("error", function listener(event) {
+                  if (!event.message.startsWith("ResizeObserver loop")) return;
+                  window.removeEventListener("error", listener);
+                  observer.disconnect();
+                  box.remove();
+                  resolve({
+                    message: event.message,
+                    errorIsNull: event.error === null,
+                    lineno: event.lineno,
+                  });
+                });
+                observer.observe(box);
+              }),
+          ),
+        );
+        expect(resizeLoop).toEqual({
+          message: "ResizeObserver loop completed with undelivered notifications.",
+          errorIsNull: true,
+          lineno: 0,
+        });
+        expect(
+          yield* browser.use("A ResizeObserver loop is not an app failure", (page) =>
             page.getByRole("dialog").count(),
           ),
         ).toBe(0);

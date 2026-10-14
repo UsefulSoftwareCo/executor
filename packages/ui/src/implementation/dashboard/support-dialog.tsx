@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactElement } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   DiscordIcon,
@@ -38,14 +38,17 @@ const optionClass = buttonVariants({ variant: "outline", className: "justify-sta
 
 /**
  * A "Get support" entry for the sidebar's resource links, opening the ways to reach
- * the team. The owning product records usage; this view does not choose an analytics sink.
+ * the team. `trigger` replaces the sidebar entry where another element opens it. The owning
+ * product records usage; this view does not choose an analytics sink.
  */
 export function SupportDialog({
   onOpen,
   onLinkClick,
+  trigger,
 }: {
   readonly onOpen: () => void;
   readonly onLinkClick: (label: SupportLink) => void;
+  readonly trigger?: ReactElement | undefined;
 }) {
   const slackId = useId();
   const [slackOpen, setSlackOpen] = useState(false);
@@ -57,14 +60,16 @@ export function SupportDialog({
       }}
     >
       <DialogTrigger asChild>
-        <button
-          type="button"
-          title="Get support"
-          className="support-trigger cursor-pointer text-left hover:text-foreground"
-        >
-          <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={2} size={13} aria-hidden />
-          <span>Get support</span>
-        </button>
+        {trigger ?? (
+          <button
+            type="button"
+            title="Get support"
+            className="support-trigger cursor-pointer text-left hover:text-foreground"
+          >
+            <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={2} size={13} aria-hidden />
+            <span>Get support</span>
+          </button>
+        )}
       </DialogTrigger>
       <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>

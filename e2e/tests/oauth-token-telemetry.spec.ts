@@ -1,8 +1,9 @@
 /**
  * Cloud's OAuth token endpoint answers MCP clients with RFC 6749 errors that are theirs to act on,
  * so these never reach Sentry. Its request span records what was asked and answered instead, from
- * closed vocabularies: the grant type, the OAuth error, rate limiting, whether refresh-token
- * reuse detection ended a whole grant, and the family of MCP client the registration names.
+ * closed vocabularies: the grant type, the OAuth error, rate limiting, why a refresh was refused,
+ * whether refresh-token reuse detection ended a whole grant, how long ago a refused token was
+ * replaced, and the family of MCP client the registration names.
  * Authorization and consent spans name that family too, so re-logins can be counted per client.
  */
 import { randomBytes } from "node:crypto";
@@ -144,6 +145,7 @@ const expectRecorded = (
     readonly grant: string;
     readonly error: string;
     readonly revoked: boolean;
+    readonly rejection: string;
     readonly family: string;
   },
 ) => {
@@ -154,6 +156,7 @@ const expectRecorded = (
     "auth.token.error": expected.error,
     "auth.token.rate_limited": "false",
     "auth.token.refresh_family_revoked": String(expected.revoked),
+    "auth.token.refresh_rejection": expected.rejection,
     "auth.token.client_family": expected.family,
   });
   expect(span.events.filter(({ name }) => name === revokedEvent)).toHaveLength(
@@ -186,6 +189,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "authorization_code",
           error: "none",
           revoked: false,
+          rejection: "none",
           family: "claude-code",
         });
 
@@ -197,14 +201,25 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         });
         expect(unsupported.status).toBe(400);
 
-        // End the rotation's replay window without waiting an hour: the stored token now
-        // reads as rotated long ago. Only this client's rows change.
+        // End the rotation's replay window without waiting: the stored token now reads as
+        // rotated `age` ago. Only this client's rows change.
         const locks = yield* cloudLocks;
-        yield* locks.run({
-          sql: `update "oauthRefreshToken" set "rotationReplayExpiresAt" = now() - interval '1 minute'
-            where "clientId" = $1 and "rotatedAt" is not null`,
-          params: [stored.clientId],
-        });
+        const rotatedAgo = (age: string) =>
+          locks.run({
+            sql: `update "oauthRefreshToken" set "rotationReplayExpiresAt" = now() - interval '1 minute',
+              "revoked" = now() - interval '${age}', "rotatedAt" = now() - interval '${age}'
+              where "clientId" = $1 and "rotatedAt" is not null`,
+            params: [stored.clientId],
+          });
+        // An idle instance presenting a copy replaced two hours ago is refused alone; the
+        // current token keeps working.
+        yield* rotatedAgo("2 hours");
+        const superseded = yield* tokenRequest(refreshFields(stored));
+        expect(superseded.status).toBe(400);
+        const current = yield* tokenRequest(refreshFields(first));
+        expect(current.status).toBe(200);
+        // A copy replaced more than a day ago still revokes the grant.
+        yield* rotatedAgo("25 hours");
         const reused = yield* tokenRequest(refreshFields(stored));
         expect(reused.status).toBe(400);
         // Reuse detection removed every refresh token of the grant, the rotated one included.
@@ -229,6 +244,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         const spans = {
           sibling: yield* tokenSpan(sibling.traceId),
           unsupported: yield* tokenSpan(unsupported.traceId),
+          superseded: yield* tokenSpan(superseded.traceId),
+          current: yield* tokenSpan(current.traceId),
           reused: yield* tokenSpan(reused.traceId),
           ended: yield* tokenSpan(ended.traceId),
           duplicated: yield* tokenSpan(duplicated.traceId),
@@ -241,6 +258,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "refresh_token",
           error: "none",
           revoked: false,
+          rejection: "none",
           family: "claude-code",
         });
         expectRecorded(spans.unsupported, {
@@ -248,6 +266,23 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "other",
           error: "unsupported_grant_type",
           revoked: false,
+          rejection: "none",
+          family: "claude-code",
+        });
+        expectRecorded(spans.superseded, {
+          status: 400,
+          grant: "refresh_token",
+          error: "invalid_grant",
+          revoked: false,
+          rejection: "superseded",
+          family: "claude-code",
+        });
+        expectRecorded(spans.current, {
+          status: 200,
+          grant: "refresh_token",
+          error: "none",
+          revoked: false,
+          rejection: "none",
           family: "claude-code",
         });
         expectRecorded(spans.reused, {
@@ -255,13 +290,42 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
           grant: "refresh_token",
           error: "invalid_grant",
           revoked: true,
+          rejection: "reused",
           family: "claude-code",
         });
+        // Each refused copy records how long ago rotation replaced it; tokens that were never
+        // revoked carry no age. The database set the rotation time and the app reads its own
+        // clock, so allow them to differ by a minute.
+        const ages = [
+          [spans.superseded, 2 * 3600],
+          [spans.reused, 25 * 3600],
+        ] as const;
+        for (const [span, seconds] of ages) {
+          const age = Number(span.tags["auth.token.refresh_revoked_age_seconds"]);
+          expect(age).toBeGreaterThanOrEqual(seconds - 60);
+          expect(age).toBeLessThan(seconds + 600);
+          expect(span.tags["auth.token.refresh_rotated"]).toBe("true");
+        }
+        for (const span of [spans.sibling, spans.current, spans.ended, spans.duplicated])
+          expect(span.tags["auth.token.refresh_revoked_age_seconds"]).toBeUndefined();
+        // Every refresh grant names the token it presented by one reference, so retries of one
+        // token can be counted once; other grants name none.
+        const ref = (span: Span) => span.tags["auth.token.refresh_token_ref"];
+        const storedRefs = [spans.sibling, spans.superseded, spans.reused].map(ref);
+        const firstRefs = [spans.current, spans.ended, spans.duplicated, spans.padded].map(ref);
+        expect(storedRefs[0]).toMatch(/^[0-9a-f]{16}$/u);
+        expect(firstRefs[0]).toMatch(/^[0-9a-f]{16}$/u);
+        expect(new Set(storedRefs)).toEqual(new Set([storedRefs[0]]));
+        expect(new Set(firstRefs)).toEqual(new Set([firstRefs[0]]));
+        expect(firstRefs[0]).not.toBe(storedRefs[0]);
+        for (const span of [spans.unsupported, spans.lastUnsupported, spans.uppercase])
+          expect(ref(span)).toBeUndefined();
         expectRecorded(spans.ended, {
           status: 400,
           grant: "refresh_token",
           error: "invalid_grant",
           revoked: false,
+          rejection: "unknown_token",
           family: "claude-code",
         });
         for (const span of [spans.duplicated, spans.padded])
@@ -270,6 +334,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             grant: "refresh_token",
             error: "invalid_grant",
             revoked: false,
+            rejection: "unknown_token",
             family: "claude-code",
           });
         for (const span of [spans.lastUnsupported, spans.uppercase])
@@ -278,6 +343,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             grant: "other",
             error: "unsupported_grant_type",
             revoked: false,
+            rejection: "none",
             family: "claude-code",
           });
 
@@ -354,9 +420,18 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         // Each answer is the client's to act on: none is reported as an Executor failure.
         yield* Effect.sleep("2 seconds");
         const traces = new Set(
-          [sibling, unsupported, reused, ended, duplicated, lastUnsupported, padded, uppercase].map(
-            ({ traceId }) => traceId,
-          ),
+          [
+            sibling,
+            unsupported,
+            superseded,
+            current,
+            reused,
+            ended,
+            duplicated,
+            lastUnsupported,
+            padded,
+            uppercase,
+          ].map(({ traceId }) => traceId),
         );
         const reported = (yield* sentryExceptions).filter(
           ({ trace }) => trace !== undefined && traces.has(trace),

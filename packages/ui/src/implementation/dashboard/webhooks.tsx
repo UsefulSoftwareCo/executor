@@ -1,8 +1,10 @@
 /** Saved webhook lifecycle stays visible independently of account-dependent app evaluation. */
 import {
-  ProfileWebhookConfig,
-  type Profile,
-  type ProfileInputs,
+  WebhookSourceConfig,
+  type AccountId,
+  type ConfigureWebhookSource,
+  type WebhookSource,
+  type WebhookSourceSummary,
   type WebhookSubscription,
   type WebhookId,
 } from "@executor-js/sdk";
@@ -14,7 +16,12 @@ import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import { QueryView } from "./context.tsx";
 import { Button } from "../components/button.tsx";
 import { Textarea } from "../components/textarea.tsx";
-/** Profile-owned subscriptions are stopped through the account toggle, never a misleading per-hook stop button. */
+
+type SourceUpdate<E> = Atom.AtomResultFn<typeof ConfigureWebhookSource.Type, WebhookSource, E>;
+/**
+ * Managed subscriptions follow linked accounts: unlinking an account's last link stops them, so
+ * there is no per-hook stop button.
+ */
 export function AppWebhooks<E>({
   query,
   retry,
@@ -99,49 +106,77 @@ function WebhookRow<E>({
     </div>
   );
 }
-/** Capture account bindings with the editor revision; a concurrent selection change must conflict. */
-export function WebhookConfiguration<E>({
-  profile,
+/**
+ * Each linked source account keeps one configuration per webhook name for its subscriptions. The
+ * app's other requirements use its actor's linked accounts.
+ */
+export function WebhookSourceConfigurations<E>({
+  query,
+  configure,
+  Failure,
+}: {
+  readonly query: Query<readonly WebhookSourceSummary[], E>;
+  readonly configure: (account: AccountId) => SourceUpdate<E>;
+  readonly Failure: ComponentType<FailureProps<E>>;
+}) {
+  return (
+    <QueryView query={query} Failure={Failure} pending={null}>
+      {(sources) =>
+        sources.length > 0 && (
+          <div className="space-y-3">
+            {sources.map((source) => (
+              <WebhookConfiguration
+                key={source.account}
+                source={source}
+                update={configure(source.account)}
+                Failure={Failure}
+              />
+            ))}
+          </div>
+        )
+      }
+    </QueryView>
+  );
+}
+function WebhookConfiguration<E>({
+  source,
   update,
   Failure,
 }: {
-  readonly profile: Profile;
-  readonly update: Atom.AtomResultFn<
-    Omit<typeof ProfileInputs.update.Type, "app" | "profile">,
-    Profile,
-    E
-  >;
+  readonly source: WebhookSourceSummary;
+  readonly update: SourceUpdate<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
-  const [base, setBase] = useState(profile);
-  const [config, setConfig] = useState(() => JSON.stringify(profile.webhookConfig, null, 2));
+  const [config, setConfig] = useState(() => JSON.stringify(source.config, null, 2));
   const [invalid, setInvalid] = useState(false);
+  // Opens for a source that needs its configuration, and stays as the user leaves it once a save
+  // clears the failure.
+  const [open, setOpen] = useState(() => source.failure === "configuration");
   const save = useAtomSet(update, { mode: "promiseExit" }),
     result = useAtomValue(update);
   return (
-    <details open={profile.failure === "configuration"} className="max-w-xl">
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="max-w-xl"
+    >
       <summary className="cursor-pointer text-xs text-muted-foreground">
-        Webhook configuration
+        Webhook configuration for {source.label}
       </summary>
       <form
         className="mt-3 space-y-3"
         onSubmit={async (event) => {
           event.preventDefault();
-          const value = Schema.decodeUnknownExit(Schema.fromJsonString(ProfileWebhookConfig))(
+          const value = Schema.decodeUnknownExit(Schema.fromJsonString(WebhookSourceConfig))(
             config,
           );
           setInvalid(Exit.isFailure(value));
           if (Exit.isFailure(value)) return;
-          const saved = await save({
-            accounts: base.accounts,
-            expectedRevision: base.revision,
-            webhookConfig: value.value,
-          });
-          if (Exit.isSuccess(saved)) setBase(saved.value);
+          await save({ config: value.value });
         }}
       >
         <Textarea
-          aria-label="Webhook configuration"
+          aria-label={`Webhook configuration for ${source.label}`}
           className="min-h-32 font-mono text-xs"
           value={config}
           onChange={(event) => setConfig(event.target.value)}

@@ -4,15 +4,16 @@
  * arrived. The receiver gives a callback URL on the product's own origin, so deployed Cloudflare
  * needs no outside service.
  */
-import { createProfile } from "./profiles.ts";
 import { expect } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Api, body } from "./api.ts";
 import { Actors } from "./actors.ts";
+import { connectionsPath, requirementPath } from "./app-accounts.ts";
 import { App, Resource } from "./contracts.ts";
 import { Target } from "./platform.ts";
+import { removeAppWhenStopped, settleWebhookSubscriptions } from "./webhook-sources.ts";
 import { appsManifest } from "./apps-release.ts";
 
 const whsec = () => `whsec_${randomBytes(32).toString("base64")}`;
@@ -27,7 +28,7 @@ export const receiverFiles = [
 const service = defineProvider({ name: "Event receiver", auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
-const requirements = { accounts: { service } };
+const requirements = { user: { accounts: { service } } };
 const empty = object({});
 const SECRETS = ${JSON.stringify(secrets)};
 const decode = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
@@ -38,7 +39,7 @@ const expected = async (secret, id, timestamp, text) => {
   return "v1," + encode(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(id + "." + timestamp + "." + text)));
 };
 const inbox = {
-  account: "service", config: empty, state: empty,
+  account: { user: "service" }, config: empty, state: empty,
   async register() { return {}; },
   async unregister() {},
   async handle(ctx, { request }) {
@@ -101,7 +102,7 @@ const issueOpened = event({
   filters: { repo: string({ minLength: 3 }) },
   payload: object({ title: string(), number: number() }),
 });
-const requirements = { accounts: {}, events: { "issue.opened": issueOpened } };
+const requirements = { events: { "issue.opened": issueOpened } };
 const open = mutation(
   { input: object({ repo: string(), title: string(), number: number(), id: string() }) },
   async (ctx: MutationContext<typeof requirements>, input) => {
@@ -159,11 +160,6 @@ export const Occurrence = Schema.fromJsonString(
     cursor: Schema.Null,
   }),
 );
-const Subscription = Schema.Struct({ callbackUrl: Schema.String, status: Schema.String });
-const ProfileStatus = Schema.Struct({
-  status: Schema.String,
-  failure: Schema.NullOr(Schema.String),
-});
 export const RpcResult = Schema.Struct({ result: Schema.Record(Schema.String, Schema.Unknown) });
 export const RpcError = Schema.Struct({
   error: Schema.Struct({
@@ -209,7 +205,6 @@ export const eventFixtures = Effect.gen(function* () {
   const created: {
     apps: string[];
     account?: string;
-    profile?: string;
     key?: string | undefined;
   } = {
     apps: [],
@@ -220,14 +215,15 @@ export const eventFixtures = Effect.gen(function* () {
         yield* api.request(actors.owner, "POST", "/api/auth/api-key/delete", {
           keyId: created.key,
         });
-      if (created.profile && created.apps[0])
+      // Unlinking the receiver's account removes its webhook; the app is removable once it stops.
+      if (created.account && created.apps[0])
         yield* api.request(
           actors.owner,
           "DELETE",
-          `${prefix}/apps/${created.apps[0]}/profiles/${created.profile}`,
+          `${requirementPath(`${prefix}/apps/${created.apps[0]}`, "user", "service")}/${created.account}`,
         );
       for (const app of created.apps)
-        yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
+        yield* removeAppWhenStopped(actors.owner, `${prefix}/apps/${app}`);
       if (created.account)
         yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${created.account}`);
     }).pipe(Effect.orDie),
@@ -244,15 +240,15 @@ export const eventFixtures = Effect.gen(function* () {
       return app;
     });
 
-  // The receiver's webhook is registered by profile setup and gives a public callback URL.
+  // The receiver's webhook is registered when an account is linked to it, and gives a public
+  // callback URL. Connecting the account from the app links it.
   const receiver = yield* deploy(`Event receiver ${suffix}`, receiverFiles);
-  const profile = yield* createProfile(actors.owner, `${prefix}/apps/${receiver.id}`);
-  created.profile = profile.id;
+  const receiverPath = `${prefix}/apps/${receiver.id}`;
   const connection = yield* api.request(
     actors.owner,
     "POST",
-    `${prefix}/apps/${receiver.id}/connections`,
-    { requirement: "service", profile: profile.id },
+    connectionsPath(receiverPath, "user", "service"),
+    {},
   );
   expect(connection.status).toBe(200);
   const saved = yield* api.request(
@@ -262,26 +258,13 @@ export const eventFixtures = Effect.gen(function* () {
     { method: "key", label: `Receiver ${suffix}`, fields: { token: "synthetic-events" } },
   );
   expect(saved.status).toBe(200);
-  created.account = (yield* body(Resource, saved)).id;
-  const setupDeadline = (yield* Clock.currentTimeMillis) + 30_000;
-  for (;;) {
-    const reconciled = yield* api.request(
-      actors.owner,
-      "POST",
-      `${prefix}/apps/${receiver.id}/profiles/${profile.id}/reconcile`,
-    );
-    const status = yield* body(ProfileStatus, reconciled);
-    if (status.status === "ready") break;
-    expect(status.status, JSON.stringify(status)).not.toBe("failed");
-    expect(yield* Clock.currentTimeMillis).toBeLessThan(setupDeadline);
-    yield* Effect.sleep("200 millis");
-  }
-  const [hook] = yield* body(
-    Schema.Array(Subscription),
-    yield* api.request(
-      actors.owner,
-      "GET",
-      `${prefix}/apps/${receiver.id}/webhooks?profile=${profile.id}`,
+  const account = (yield* body(Resource, saved)).id;
+  created.account = account;
+  const [hook] = yield* settleWebhookSubscriptions(actors.owner, receiverPath, (hooks) =>
+    hooks.some((hook) => hook.sourceAccount === account && hook.status === "active"),
+  ).pipe(
+    Effect.map((hooks) =>
+      hooks.filter((hook) => hook.sourceAccount === account && hook.status === "active"),
     ),
   );
   expect(hook?.status).toBe("active");
@@ -291,8 +274,7 @@ export const eventFixtures = Effect.gen(function* () {
     kind: "query" | "mutation",
     input: unknown,
   ) =>
-    api.request(actors.owner, "POST", `${prefix}/apps/${receiver.id}/tools/call`, {
-      profile: profile.id,
+    api.request(actors.owner, "POST", `${receiverPath}/tools/call`, {
       tool,
       kind,
       input,
@@ -345,6 +327,9 @@ export const eventFixtures = Effect.gen(function* () {
           "content-type": "application/json",
           "mcp-protocol-version": revision,
           "mcp-method": method,
+          ...(method === "tools/call" && typeof params.name === "string"
+            ? { "mcp-name": params.name }
+            : {}),
           "x-executor-organization": actors.organization.id,
         }),
       );

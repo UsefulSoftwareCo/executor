@@ -3,14 +3,16 @@ import { Clock, Effect, Option, Schema } from "effect";
 import { McpSchema } from "effect/ai";
 import { NativeElicitationFailed } from "../contracts/elicitation.ts";
 import type { McpBackend } from "../contracts/backend.ts";
-import type { makeExecutions } from "./executions.ts";
+import type { ApprovalMode, makeExecutions } from "./executions.ts";
+import type { Program } from "./execute.ts";
 
 /** Drive the shared continuation manager using the requesting client's elicitation responses. */
 export const executeNative = (
   executions: Effect.Success<ReturnType<typeof makeExecutions>>,
   caller: string,
   backend: McpBackend<Error>,
-  code: string,
+  work: Program,
+  approval: ApprovalMode = "ask",
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -26,7 +28,7 @@ export const executeNative = (
         return yield* new NativeElicitationFailed({ reason: "unsupported" });
       }
       const reverse = yield* client.value.getClient;
-      let result = yield* executions.execute(caller, backend, code);
+      let result = yield* executions.execute(caller, backend, work, "prompt", approval);
       while (result.status === "approval-required" || result.status === "input-required") {
         const request = result;
         result = yield* Effect.gen(function* () {

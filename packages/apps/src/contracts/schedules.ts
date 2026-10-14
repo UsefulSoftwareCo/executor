@@ -38,9 +38,15 @@ export const ScheduleTiming = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("cron"), calendar: CalendarSchedule }),
 ]);
 export type ScheduleTiming = typeof ScheduleTiming.Type;
-/** A named trigger attached to the mutation it invokes, including schema-validated arguments. */
+/**
+ * A named trigger attached to the mutation it invokes, including schema-validated arguments.
+ * `scope: "app"` marks an app schedule: one schedule, run without a caller with the app's accounts.
+ * Without it, each member who enables the schedule has a copy that runs as them; bundles of
+ * protocol 12 and earlier declare only those.
+ */
 export const OperationSchedule = Schema.Struct({
   name: Schema.NonEmptyString,
+  scope: Schema.optionalKey(Schema.Literal("app")),
   timing: ScheduleTiming,
   input: JsonValue,
 });

@@ -6,10 +6,16 @@ import { AppId, DeploymentId, OwnerId, RequestInvalid, StorageError } from "./sh
 import { AccountNotFound } from "./account.ts";
 import { CredentialsError } from "./shared.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
-import { ProfileErrors, ProfileRevision } from "./profiles.ts";
-import { ProfileId } from "./shared.ts";
 import { AppEvaluationFailed, AppProviderFailed } from "./tools.ts";
-import { AccountRequired, AccountSelectionInvalid, AppNotFound, AppNotDeployed } from "./apps.ts";
+import {
+  AccountRequired,
+  AccountChoiceUnsupported,
+  AccountSelectionInvalid,
+  AppAccounts,
+  AppAccountsQuery,
+  AppNotFound,
+  AppNotDeployed,
+} from "./apps.ts";
 import { AppSlug } from "./app-slug.ts";
 import { DeploymentNotFound, SourceFilePath } from "./deployment.ts";
 import {
@@ -31,11 +37,7 @@ export const SkillRevisionChanged = ApiError.define({
     "The app's skills changed since the requested revision. List the skills again and read the current revision.",
 });
 export type SkillRevisionChanged = typeof SkillRevisionChanged.Type;
-const identity = {
-  revision: SkillRevision,
-  profile: Schema.optionalKey(ProfileId),
-  profileRevision: Schema.optionalKey(ProfileRevision),
-};
+const identity = { revision: SkillRevision };
 export const AppSkillCatalog = Schema.Struct({
   ...identity,
   app: SkillApp,
@@ -75,11 +77,12 @@ export type AppSkillNotFound = typeof AppSkillNotFound.Type;
 
 export const SkillSelection = {
   deployment: Schema.optional(DeploymentId),
-  profile: Schema.optional(ProfileId),
-  expectedProfileRevision: Schema.optional(ProfileRevision),
+  accounts: Schema.optional(AppAccounts),
   revision: Schema.optional(SkillRevision),
 };
 const selection = { owner: Schema.optional(OwnerId), ...SkillSelection };
+/** The same selection in a GET query. */
+const selectionQuery = { ...selection, accounts: AppAccountsQuery };
 /** Omit deployment for active code; pass revision to detect changed skill content. */
 export const AppSkillInputs = {
   list: Schema.Struct({ app: AppId, ...selection }),
@@ -90,7 +93,10 @@ export const AppSkillInputs = {
     file: Schema.optional(SourceFilePath),
   }),
 };
-/** Typed source and lookup failures shared by SDK and product adapters. */
+/**
+ * Typed source and lookup failures shared by SDK and product adapters. A product resolves the
+ * accounts from the caller's links and reports a plain requirement with none as `AccountRequired`.
+ */
 export const AppSkillErrors = [
   AppNotFound,
   AppNotDeployed,
@@ -100,6 +106,7 @@ export const AppSkillErrors = [
   SkillDefinitionInvalid,
   SkillRevisionChanged,
   AccountRequired,
+  AccountChoiceUnsupported,
   AccountSelectionInvalid,
   AppEvaluationFailed,
   AppProviderFailed,
@@ -107,15 +114,14 @@ export const AppSkillErrors = [
   CredentialsError,
   OAuthReconnectRequired,
   OAuthRenewalFailed,
-  ...ProfileErrors,
 ] as const;
 
-/** Programmatic skill routes; serving products authorize the app and account profile. */
+/** Programmatic skill routes; serving products authorize the app and its accounts. */
 export const AppSkillsGroup = HttpApiGroup.make("skills")
   .add(
     HttpApiEndpoint.get("bundle", "/v1/apps/:app/skill-bundle", {
       params: { app: AppId },
-      query: selection,
+      query: selectionQuery,
       success: AppSkillBundle,
       error: AppSkillErrors,
     }).annotate(
@@ -126,22 +132,22 @@ export const AppSkillsGroup = HttpApiGroup.make("skills")
   .add(
     HttpApiEndpoint.get("list", "/v1/apps/:app/skills", {
       params: { app: AppId },
-      query: selection,
+      query: selectionQuery,
       success: AppSkillCatalog,
       error: AppSkillErrors,
     }).annotate(
       OpenApi.Description,
-      "List this app's skill metadata using the selected account profile. The response identifies its deployment.",
+      "List this app's skill metadata using the chosen accounts. The response identifies its deployment.",
     ),
   )
   .add(
     HttpApiEndpoint.get("read", "/v1/apps/:app/skills/:name", {
       params: { app: AppId, name: AppSkillName },
-      query: { ...selection, file: Schema.optional(SourceFilePath) },
+      query: { ...selectionQuery, file: Schema.optional(SourceFilePath) },
       success: AppSkillDocument,
       error: [...AppSkillErrors, AppSkillNotFound],
     }).annotate(
       OpenApi.Description,
-      "Read SKILL.md or a listed file within the skill. Pass the returned deployment, profile and revision when reading references to reject changed content. Files are text; they are never executed.",
+      "Read SKILL.md or a listed file within the skill. Pass the returned deployment and revision, and the same accounts, when reading references to reject changed content. Files are text; they are never executed.",
     ),
   );

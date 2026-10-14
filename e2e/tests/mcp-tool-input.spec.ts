@@ -1,6 +1,6 @@
 /**
  * A running tool of an account-free app asks for input through `ctx.elicit`. The call has no
- * profile, so its pending interaction names only the app and tool. Model mode returns it to the
+ * accounts, so its pending interaction names only the app and tool. Model mode returns it to the
  * agent and browser mode adds a review link; each answer resumes the same program and invocation.
  */
 import { expect, layer } from "@effect/vitest";
@@ -33,7 +33,7 @@ const ask = async ({ elicit }) => {
   });
   return response.action === "accept" ? { action: "accept", name: response.content?.name } : { action: response.action };
 };
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     name: mutation({ description: "Ask the user to name the result", input: object({}) }, ask),
     approvedName: mutation({ description: "Ask for a name after approval", input: object({}), approval: always() }, ask),
@@ -115,17 +115,16 @@ const modelMode = (client: Connection, app: { id: string; slug: string }) =>
     }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(InputRequired)));
     yield* evidence.json("model-input-required.json", pending);
     expect(pending.requestId).toMatch(/^elc_/);
-    // An account-free call has no profile, so the request names only the app and tool.
+    // An account-free call has no accounts, so the request names only the app and tool.
     expect(pending.tool).toStrictEqual({ app: app.id, tool: "name" });
     expect(pending.elicitation.message).toBe(message);
     yield* answer(client, "Answer the question through resume", pending.requestId, "Model answer");
 
-    // After an approval, the question comes from the resumed invocation, which also has no profile.
+    // After an approval, the question comes from the resumed invocation, which also has no accounts.
     const approval = yield* call(client, "Execute until the tool needs approval", "execute", {
       code: program(app.slug, "approvedName"),
     }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ApprovalRequired)));
-    expect(approval.invocation).toMatchObject({ app: app.id, tool: "approvedName" });
-    expect(Object.keys(approval.invocation)).not.toContain("profile");
+    expect(approval.invocation).toMatchObject({ app: app.id, tool: "approvedName", accounts: {} });
     const approved = yield* call(client, "Approve the tool, which then asks for input", "resume", {
       requestId: approval.requestId,
       response: { action: "accept" },

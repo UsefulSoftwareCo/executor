@@ -107,9 +107,9 @@ export const installScenarioLifecycle = () =>
               scope,
             );
             const actors = yield* Actors.pipe(Effect.provideContext(fixtures));
-            if (plan.managementProfiles !== undefined)
+            if (plan.managementApps !== undefined)
               yield* Effect.forEach(
-                plan.managementProfiles,
+                plan.managementApps,
                 (role) => prepareManagementApp(actors[role], actors.organization.id),
                 { concurrency: 3, discard: true },
               ).pipe(Effect.provideContext(fixtures));

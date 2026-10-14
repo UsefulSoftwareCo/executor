@@ -1,4 +1,4 @@
-/** Run history is protected by its pinned accounts, not a later replacement app binding. */
+/** Run history is protected by its actor and pinned accounts, not a later replacement link. */
 import {
   WorkflowFailure,
   WorkflowRunId,
@@ -8,9 +8,16 @@ import {
   type AppId,
 } from "@executor-js/sdk/core";
 import { Effect } from "effect";
+import { CurrentUserId } from "../contracts/auth.ts";
+import { OrganizationForbidden } from "../contracts/organization.ts";
 import { requireAppAccess } from "./resource-policy.ts";
-import { checkAccounts, ownProfile } from "./access.ts";
-/** Check current app use and every account that contributed to the retained run. */
+import { checkScopedAccounts } from "./access.ts";
+/**
+ * Check current app use, that the run is the caller's own or was started without an actor, and
+ * every account that contributed to the retained run, by the scope its requirement had on the
+ * run's pinned deployment: an app account by its current app link, a user account by the caller's
+ * use.
+ */
 export const requireWorkflowAccess = (
   executor: Executor,
   owner: OwnerId,
@@ -26,8 +33,9 @@ export const requireWorkflowAccess = (
           Effect.fail(new WorkflowFailure({ reason: "not_found", retryable: false })),
         ),
       );
-    if (saved.profile !== null) yield* ownProfile(executor, owner, app, saved.profile);
-    yield* checkAccounts(owner, saved.accounts);
+    if (saved.actor !== null && saved.actor !== (yield* CurrentUserId))
+      return yield* new OrganizationForbidden();
+    yield* checkScopedAccounts(owner, app, saved.accounts);
     return saved;
   });
 
@@ -36,16 +44,21 @@ export const requireWorkflowReplayAccess = (
   executor: Executor,
   owner: OwnerId,
   app: AppId,
-  input: Pick<typeof StartWorkflow.Type, "key" | "profile">,
+  input: Pick<typeof StartWorkflow.Type, "key">,
 ) =>
   Effect.gen(function* () {
     if (input.key === undefined) return;
-    const page = yield* executor.apps.workflowRuns.list({
-      app,
-      key: input.key,
-      ...(input.profile === undefined ? {} : { profile: input.profile }),
-      limit: 1,
-    });
-    const retained = page.items.find((item) => (item.profile ?? undefined) === input.profile);
+    const actor = (yield* CurrentUserId) ?? null;
+    // The SDK reuses a run with this key started by the same actor; other actors' runs with the
+    // same key stay theirs.
+    const page = yield* executor.apps.workflowRuns.list({ app, key: input.key, limit: 100 });
+    let retained: (typeof page.items)[number] | undefined;
+    for (const item of page.items) {
+      const pinned = yield* executor.apps.workflowRuns.pinned({ owner, app, run: item.id });
+      if (pinned.actor === actor) {
+        retained = item;
+        break;
+      }
+    }
     if (retained !== undefined) yield* requireWorkflowAccess(executor, owner, app, retained.id);
   });

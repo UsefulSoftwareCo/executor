@@ -26,16 +26,16 @@ import { wellKnownSkills } from "apps/skills";
 import { executor } from "./provider.ts";
 import configuration from "./openapi.json";
 
-export default defineApp({ accounts: { executor } }, async (context) => {
-  const baseUrl = context.accounts.executor.fields.baseUrl;
+export default defineApp({ user: { accounts: { executor } } }, async (context) => {
+  const baseUrl = context.user.accounts.executor.fields.baseUrl;
   const tools = liveOpenapiRouter({
     ...configuration,
     baseUrl,
     allowedOrigin: new URL(baseUrl).origin,
     cache: context.cache,
     account: {
-      method: context.accounts.executor.method,
-      fields: { token: context.accounts.executor.fields.apiKey },
+      method: context.user.accounts.executor.method,
+      fields: { token: context.user.accounts.executor.fields.apiKey },
     },
     fetch: context.fetch,
     ...(context.signal === undefined ? {} : { signal: context.signal }),

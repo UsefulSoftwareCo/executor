@@ -3,10 +3,11 @@ import type { LocalAppManagementApi } from "@executor-js/local-server/app-manage
 import type { LocalWebhookSetupApi } from "@executor-js/local-server/webhook-setup";
 import type { DashboardApi } from "@executor-js/local-server/contracts";
 import type { AccountConnectApi } from "@executor-js/local-server/account-connections";
-import type { AccountId } from "@executor-js/sdk";
+import { mayHaveWrittenFailure, type AccountId } from "@executor-js/sdk";
 import { Cause, Match, Option, type Schema } from "effect";
 import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { HttpClientError } from "effect/http";
+import { pageOutdated } from "@executor-js/dashboard-start/build-change";
 import type { Sse } from "effect/encoding";
 import type { LiveConnectionLost } from "./api.ts";
 import type { ToolCatalogChanged } from "@executor-js/local-server/contracts";
@@ -33,8 +34,12 @@ export interface FailureMessage {
   readonly account?: AccountId;
 }
 const message = (title: string, description: string): FailureMessage => ({ title, description });
+/** A page from a previous build fails against the upgraded server; reloading is the fix. */
+const outdated = () => message("Executor was updated", "Reload this page to use the new version.");
 const unavailable = () =>
-  message("Could not reach Executor", "Check that the local server is running, then retry.");
+  pageOutdated()
+    ? outdated()
+    : message("Could not reach Executor", "Check that the local server is running, then retry.");
 const errorMessage = Match.type<DashboardError>().pipe(
   Match.tagsExhaustive({
     SkillRevisionChanged: () => ({
@@ -46,10 +51,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
     WorkflowFailure: () =>
       message(
         "Workflow could not complete",
-        "Check this run or reload its account selection before trying again.",
+        "Check this run or its linked accounts before trying again.",
       ),
-    ProfileNotFound: () =>
-      message("Profile unavailable", "This profile is no longer available for this app."),
     ConnectionNotFound: () =>
       message("Connection unavailable", "This connection was revoked or no longer exists."),
     ConnectionIdTaken: () =>
@@ -59,13 +62,10 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Connection not saved",
         {
           app: "An included app is no longer available. Remove it and try again.",
-          profile: "A selected profile is no longer available. Choose how the app runs again.",
           account: "A selected account is no longer available for this app. Choose another one.",
           target: "Choose how each included app runs.",
         }[reason],
       ),
-    ProfileConflict: () =>
-      message("Profile changed", "Reload the current account selection before trying again."),
     ScheduleNotFound: () =>
       message("Schedule unavailable", "This schedule or run is no longer available."),
     ScheduleConflict: () =>
@@ -89,13 +89,25 @@ const errorMessage = Match.type<DashboardError>().pipe(
       ),
     AccountConnectionClosed: () =>
       message("This connection has ended", "Ask your agent for a new connection link."),
+    AccountConnectionRefused: () =>
+      message(
+        "Account not connected",
+        "Connecting this account for the app was refused, so nothing was saved. Start account setup again.",
+      ),
     OAuthSetupFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
     OAuthCompletionFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
+    // Local has one subject, who manages every app, so an app's own account is theirs to reconnect.
     OAuthReconnectRequired: (error) => ({
-      title: "This account needs a new sign-in",
-      description: "Reconnect to load its tools.",
+      title:
+        error.appRequirement === undefined
+          ? "This account needs a new sign-in"
+          : `The app’s “${error.appRequirement}” account needs a new sign-in`,
+      description:
+        error.appRequirement === undefined
+          ? "Reconnect to load its tools."
+          : "The app uses this account for every call. Reconnect it to load its tools.",
       account: error.account,
     }),
     OAuthRenewalFailed: (error) =>
@@ -119,6 +131,16 @@ const errorMessage = Match.type<DashboardError>().pipe(
             "Source unavailable",
             "The app source could not be saved or loaded. Check its files and try again.",
           ),
+    SourcePathConflict: ({ file, nested }) =>
+      message(
+        "File and folder share a path",
+        `${file} is a file, so ${nested} cannot be inside it. Rename or remove one, then save again.`,
+      ),
+    SourcePathNotUnicode: ({ path }) =>
+      message(
+        "File path is not valid Unicode",
+        `The file path ${JSON.stringify(path)} is not valid Unicode. Rename the file, then save again.`,
+      ),
     AppNotFound: () =>
       message(
         "App not found",
@@ -130,19 +152,46 @@ const errorMessage = Match.type<DashboardError>().pipe(
       message("Managed by Executor", "This app is part of the local server and cannot be renamed."),
     AppDeletionBlocked: () =>
       message("Managed by Executor", "This app is part of the local server and cannot be deleted."),
+    AppAccountLinksBlocked: () =>
+      message(
+        "Managed by Executor",
+        "This app is part of the local server, which links its account itself.",
+      ),
     DeploymentNotFound: () =>
       message("Deployment not found", "Choose another retained deployment."),
-    AccountRequired: () =>
+    AccountRequired: ({ scope }) =>
+      scope === "app"
+        ? message(
+            "Link an account first",
+            "This app needs its own account before its live tools can load. Link one under App accounts on the Accounts tab.",
+          )
+        : message(
+            "Connect an account first",
+            "This app needs an account before its live tools can load. Connect one from the Accounts tab.",
+          ),
+    AccountChoiceUnsupported: () =>
       message(
-        "Select an account first",
-        "This app needs an account before its live tools can load. Choose an account from the Accounts tab.",
+        "Accounts are not chosen per call",
+        "Each app uses the accounts linked to it. Change them in the app's Accounts tab.",
       ),
     AccountNotFound: () =>
-      message("Selected account is unavailable", "Choose an available account for this app."),
+      message("Chosen account is unavailable", "Choose an available account for this app."),
+    RequirementMismatch: ({ reason }) =>
+      message(
+        "Account not linked",
+        reason === "provider"
+          ? "This requirement uses another kind of account. Link an account of the kind it names."
+          : "This app no longer has that account requirement here. Reload the app's accounts.",
+      ),
+    AccountLinkedToApp: () =>
+      message(
+        "This account is linked to an app for everyone",
+        "An app uses it as its own account. Unlink it under App accounts on the app's Accounts tab, then delete it.",
+      ),
     AccountSelectionInvalid: () =>
       message(
         "Account selection needs attention",
-        "Review this app's account requirements and update its selection.",
+        "Review this app's account requirements and choose matching accounts.",
       ),
     AppProviderFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
@@ -195,11 +244,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Tool changed",
         "This tool changed between a query and a mutation. Reload the app’s tools and try again.",
       ),
-    InputInvalid: () =>
-      message(
-        "Check the input",
-        "The input does not match this tool’s schema. The tool did not run.",
-      ),
+    InputInvalid: () => message("Check the input", "The input does not match this tool’s schema."),
     ToolCallFailed: () =>
       message("The tool failed", "It may have already made changes. Check before trying again."),
     ToolBlocked: (error) => message(error.title, `${error.description} ${error.recovery.action}`),
@@ -211,10 +256,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
     ToolRunApprovalRefused: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
     ToolPolicyFailed: () =>
-      message(
-        "Approval policy failed",
-        "The tool’s approval policy could not be evaluated. The tool did not run.",
-      ),
+      message("Approval policy failed", "The tool’s approval policy could not be evaluated."),
     ToolElicitationFailed: ({ reason }) =>
       message(
         "The tool needed more input",
@@ -239,7 +281,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Check the local server's credential configuration.",
       ),
     CatalogUnavailable: () =>
-      message("Catalog unavailable", "integrations.sh could not be reached. Try again."),
+      message("Catalog unavailable", "The app catalog could not be reached. Try again."),
     AppDeploymentChanged: () =>
       message("App changed", "Reload its source before updating or activating a deployment."),
     AppSlugTaken: () =>
@@ -265,10 +307,12 @@ const errorMessage = Match.type<DashboardError>().pipe(
     CatalogImportFailed: (error) => message("App could not be imported", error.reason),
     HttpClientError: unavailable,
     SchemaError: () =>
-      message(
-        "Unexpected server response",
-        "Check that the dashboard and server use the same version, then retry.",
-      ),
+      pageOutdated()
+        ? outdated()
+        : message(
+            "Unexpected server response",
+            "Check that the dashboard and server use the same version, then retry.",
+          ),
     LiveConnectionLost: unavailable,
     NoSuchElementError: unavailable,
     Retry: unavailable,
@@ -282,6 +326,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
       message("Sign-in method unavailable", "Choose another sign-in method for this account."),
     OAuthClientUnavailable: () =>
       message("OAuth client required", "Enter your OAuth client details to connect this account."),
+    OAuthClientNotFound: () =>
+      message("OAuth client unavailable", "Choose another OAuth client, or enter its details."),
     AuthForbidden: () =>
       message("Request not allowed", "Open the dashboard from this local server’s address."),
     AuthStorageError: () =>
@@ -303,12 +349,22 @@ export const connectionLinkRecovery = Match.type<DashboardError>().pipe(
     AccountConnectionNotFound: newConnectionLink,
     AccountConnectionClosed: newConnectionLink,
     AccountConnectionTargetChanged: newConnectionLink,
+    AccountConnectionRefused: newConnectionLink,
   }),
   Match.orElse(() => undefined),
 );
-/** Unexpected defects receive safe copy without printing arbitrary cause values. */
+/**
+ * Unexpected defects receive safe copy without printing arbitrary cause values. A failed call that
+ * may have written shows the presentation every surface shows for it, with the write warning as its
+ * action, instead of the fixed copy above, which may advise another call.
+ */
 export const failureMessage = (cause: Cause.Cause<DashboardError>): FailureMessage =>
   Option.match(Cause.findErrorOption(cause), {
-    onSome: errorMessage,
+    onSome: (error) => {
+      const written = mayHaveWrittenFailure(error);
+      return written === undefined
+        ? errorMessage(error)
+        : message(written.title, `${written.description} ${written.recovery.action}`);
+    },
     onNone: () => message("Something went wrong", "The request did not finish. Try again."),
   });

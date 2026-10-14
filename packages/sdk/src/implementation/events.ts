@@ -25,8 +25,7 @@ import {
   type EventSubscriptionKey,
   type ExecutorEvents,
 } from "../contracts/events.ts";
-import { AccountId, AppId, ProfileId, StorageError } from "../contracts/shared.ts";
-import { SelectedAccounts } from "../contracts/apps.ts";
+import { AccountId, AppId, StorageError } from "../contracts/shared.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { BackgroundWork } from "../contracts/declarations.ts";
 import { query, transaction, type Query } from "./database.ts";
@@ -395,39 +394,16 @@ export const makeEvents = (input: {
     );
 
   /**
-   * Whether every account an occurrence used is selected by one of these profiles of the
-   * subscription's app. An occurrence that used no account is within any scope.
+   * Whether every account an occurrence used is one of the accounts the scope allows. An
+   * occurrence that used no account is within any scope.
    */
-  const withinProfiles = (
-    subscription: EventSubscription,
-    profiles: readonly ProfileId[],
-    stored: unknown,
-  ) =>
+  const withinAccounts = (allowed: readonly AccountId[], stored: unknown) =>
     Effect.gen(function* () {
       const accounts = yield* Schema.decodeUnknownEffect(Schema.Array(AccountId))(stored).pipe(
         Effect.mapError(() => new StorageError()),
       );
-      if (accounts.length === 0) return true;
-      if (profiles.length === 0) return false;
-      const rows = yield* query(() =>
-        db.findMany("profiles", {
-          where: (b) =>
-            b.and(
-              b("id", "in", [...profiles]),
-              b("owner", "=", subscription.owner),
-              b("app", "=", subscription.app),
-            ),
-        }),
-      );
-      const selected = new Set<string>();
-      for (const row of rows) {
-        // An unreadable selection grants nothing, so the occurrence stays hidden.
-        const parsed = Schema.decodeUnknownOption(SelectedAccounts)(row.accounts);
-        if (Option.isSome(parsed))
-          for (const value of Object.values(parsed.value))
-            for (const account of Array.isArray(value) ? value : [value]) selected.add(account);
-      }
-      return accounts.every((account) => selected.has(account));
+      const permitted = new Set<string>(allowed);
+      return accounts.every((account) => permitted.has(account));
     });
 
   const stopWith = (
@@ -706,9 +682,9 @@ export const makeEvents = (input: {
         })
         .pipe(
           Effect.flatMap((scope) =>
-            scope?.profiles === undefined
+            scope?.accounts === undefined
               ? Effect.succeed("allowed" as const)
-              : withinProfiles(found.metadata, scope.profiles, occurrence.accounts).pipe(
+              : withinAccounts(scope.accounts, occurrence.accounts).pipe(
                   Effect.map((within) => (within ? ("allowed" as const) : ("hidden" as const))),
                 ),
           ),

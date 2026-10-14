@@ -1,7 +1,7 @@
 /**
  * A new organization's first Tools index loads the Executor catalog without redundant cache round
- * trips, later browsing reads the kept tool listing instead of evaluating the app again, and a new
- * profile revision evaluates it again.
+ * trips, later browsing reads the kept tool listing instead of evaluating the app again, and another
+ * account set evaluates it again.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
@@ -11,7 +11,7 @@ import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { managementApp } from "../support/management-app.ts";
-import { selectProfileAccounts } from "../support/profiles.ts";
+import { linkAccount, linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 
 const Index = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 const Detail = Schema.Struct({
@@ -19,15 +19,14 @@ const Detail = Schema.Struct({
   inputSchema: Schema.Record(Schema.String, Schema.Unknown),
 });
 
-/** One Tools index request through the actor's own Executor profile. */
-const indexTools = (actor: Session, label: string) =>
+/** One Tools index request through the actor's linked Executor key. */
+const indexTools = (actor: Session, app: string, label: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
       evidence = yield* Evidence;
-    const { app, profile } = yield* managementApp(actor);
-    const root = `/api/organizations/${actors.organization.id}/apps/${app.id}`;
-    const response = yield* api.request(actor, "GET", `${root}/tools/index?profile=${profile.id}`);
+    const root = `/api/organizations/${actors.organization.id}/apps/${app}`;
+    const response = yield* api.request(actor, "GET", `${root}/tools/index`);
     expect(response.status, label).toBe(200);
     const index = yield* body(Index, response);
     const request = (yield* evidence.requests).at(-1);
@@ -74,19 +73,14 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>) =>
     };
   });
 
-/** One tool's schemas through the actor's own Executor profile. */
-const toolDetail = (actor: Session, name: string) =>
+/** One tool's schemas through the actor's linked account. */
+const toolDetail = (actor: Session, app: string, name: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
       evidence = yield* Evidence;
-    const { app, profile } = yield* managementApp(actor);
-    const root = `/api/organizations/${actors.organization.id}/apps/${app.id}`;
-    const response = yield* api.request(
-      actor,
-      "GET",
-      `${root}/tools/${encodeURIComponent(name)}?profile=${profile.id}`,
-    );
+    const root = `/api/organizations/${actors.organization.id}/apps/${app}`;
+    const response = yield* api.request(actor, "GET", `${root}/tools/${encodeURIComponent(name)}`);
     expect(response.status, name).toBe(200);
     const tool = yield* body(Detail, response);
     expect(tool.name).toBe(name);
@@ -126,10 +120,13 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const actors = yield* Actors;
-        const cold = yield* indexTools(actors.owner, "cold-index");
+        const api = yield* Api,
+          actors = yield* Actors;
+        const { app, account } = yield* managementApp(actors.owner);
+        yield* managementApp(actors.admin);
+        const cold = yield* indexTools(actors.owner, app.id, "cold-index");
         // Browsing again reads the listing the first index kept instead of evaluating the app.
-        const kept = yield* indexTools(actors.owner, "kept-index");
+        const kept = yield* indexTools(actors.owner, app.id, "kept-index");
         expect(cold.names.length).toBeGreaterThan(0);
         expect(kept.names).toEqual(cold.names);
         const keptIndex = yield* listingRead(kept.request.traceId, "kept-index");
@@ -137,21 +134,45 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         expect(keptIndex.dispatched).toBe(false);
 
         // Another account context runs in its own Worker and reads the shared stored revision.
-        const other = yield* indexTools(actors.admin, "other-account-index");
+        const other = yield* indexTools(actors.admin, app.id, "other-account-index");
         expect(other.names).toEqual(cold.names);
 
-        // A new profile revision is another listing: the app is evaluated again, and its Worker
-        // reuses the catalog it already loaded.
-        const { app, profile } = yield* managementApp(actors.owner);
-        const revision = yield* selectProfileAccounts(
-          actors.owner,
-          `/api/organizations/${actors.organization.id}/apps/${app.id}`,
-          profile.id,
-          profile.accounts,
+        // Another linked account is another account set and so another listing: connecting it
+        // from the app replaces the linked key, and the app is evaluated again and reuses the
+        // catalog revision already stored.
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const connection = yield* body(
+          Schema.Struct({ id: Schema.String }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
-        expect(revision.status).toBe(200);
-        const revised = yield* indexTools(actors.owner, "revised-index");
+        const submitted = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${connection.id}/submit`,
+          {
+            method: "apiKey",
+            label: "Second Executor key",
+            fields: { token: "synthetic-second-key", organization: actors.organization.id },
+          },
+        );
+        expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+        const secondKey = yield* body(Schema.Struct({ id: Schema.String }), submitted);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${secondKey.id}`)
+            .pipe(Effect.orDie),
+        );
+        const appPath = `${prefix}/apps/${app.id}`;
+        expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([secondKey.id]);
+        const revised = yield* indexTools(actors.owner, app.id, "revised-index");
         expect(revised.names).toEqual(cold.names);
+        const revisedListing = yield* listingRead(revised.request.traceId, "revised-listing");
+        expect(revisedListing.dispatched).toBe(true);
 
         const [first, second, third] = yield* Effect.all(
           [cacheTrips(cold), cacheTrips(revised), cacheTrips(other)],
@@ -176,8 +197,11 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         expect(third.count("read")).toBeGreaterThan(0);
         expect(third.count("write") + third.count("publish") + third.count("claim")).toBe(0);
 
-        // Opening one tool reads its schemas from the kept listing.
-        const tool = yield* toolDetail(actors.owner, cold.names[0] ?? "");
+        // Linking the first key again replaces the second; opening one tool reads its schemas
+        // from that key's kept listing.
+        yield* linkAccount(actors.owner, appPath, "service", account);
+        expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([account]);
+        const tool = yield* toolDetail(actors.owner, app.id, cold.names[0] ?? "");
         const keptTool = yield* listingRead(tool.traceId, "kept-tool");
         expect(keptTool.cache).toBe("hit");
         expect(keptTool.source).toBe("listing");

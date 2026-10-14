@@ -2,6 +2,7 @@
 import { Effect } from "effect";
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { bearerChallenge } from "./oauth-challenge.ts";
+import { withExecutorUserAgent } from "./user-agent.ts";
 
 /**
  * Probe an already policy-checked endpoint with the host's checked HTTP client. The result keeps
@@ -9,8 +10,9 @@ import { bearerChallenge } from "./oauth-challenge.ts";
  * Never follow redirects or invoke tools. Release streaming bodies and any probe session.
  * An unauthorized response without a Bearer metadata challenge does not imply OAuth.
  */
-export const probeOAuthChallenge = (endpoint: string | URL, client: HttpClient.HttpClient) =>
+export const probeOAuthChallenge = (endpoint: string | URL, egress: HttpClient.HttpClient) =>
   Effect.gen(function* () {
+    const client = withExecutorUserAgent(egress);
     const get = yield* Effect.scoped(
       HttpClient.withScope(client)
         .get(endpoint, {

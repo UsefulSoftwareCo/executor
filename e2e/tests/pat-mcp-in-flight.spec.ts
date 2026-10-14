@@ -32,7 +32,7 @@ layer(HostedLive, { excludeTestServices: true })("In-flight MCP authority", (it)
             {
               path: "index.ts",
               content: `import {defineApp,query,object, router} from "apps";
-export default defineApp({accounts:{}},{tools: router({
+export default defineApp({},{tools: router({
   wait:query({input:object({})},async ctx=>(await ctx.fetch(${JSON.stringify(`${gate.origin}/wait`)})).json()),
 done:query({input:object({})},async ctx=>(await ctx.fetch(${JSON.stringify(`${gate.origin}/done`)})).json()),
 })});`,

@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@paralleldrive/cuid2": "^3.3.0",
+    "@paralleldrive/cuid2": "3.3.0",
     "effect": "4.0.1"
   },
   "devDependencies": {

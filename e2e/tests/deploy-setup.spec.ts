@@ -1,9 +1,10 @@
 /**
- * A deploy moves every profile of its app to the new deployment and leaves them `pending` until
- * setup re-registers their schedules. Each deploy wakes profile setup (Cloud's schedule
- * coordinator, self-host's setup worker), so setup reaches the new deployment without a reconcile
- * and without waiting for polling. Member setup, which saves the default Executor profile and
- * redeploys the default Executor app, wakes setup from the background job it runs in.
+ * A deploy leaves every webhook source of its app `pending` until setup registers its webhooks on
+ * the new deployment. Each deploy wakes webhook source setup (Cloud's schedule coordinator,
+ * self-host's setup worker), so setup reaches the new deployment without a reconcile and without
+ * waiting for polling. A schedule keeps its saved setting when its timing changes. Member setup,
+ * which links the default Executor app's managed key and redeploys that app, wakes setup from the
+ * background job it runs in.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
@@ -12,25 +13,34 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App, type SpanQuery } from "../support/contracts.ts";
+import { App, Resource, type SpanQuery } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { removeAppWhenStopped } from "../support/webhook-sources.ts";
+import { connectionsPath, unlinkAccount } from "../support/app-accounts.ts";
 
+/** A linked account's webhook source registers `incoming` on each deployment. */
 const source = (
   timing: string,
-) => `import { defineApp, mutation, interval, cron, object, router } from "apps";
+) => `import { defineApp, defineProvider, secrets, mutation, userInterval, userCron, object, string, router } from "apps";
+const service = defineProvider({ name: "Deploy setup fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
+const incoming = { account: { user: "service" }, config: object({}), state: object({}),
+  register: async () => ({}), unregister: async () => {}, handle: async () => new Response(null, { status: 204 }) };
 const tick = mutation({ input: object({}) }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ tick }), schedules: { tick: ${timing} } }));`;
-const hourly = "interval({ hours: 24 }, tick, {})";
-const daily = 'cron({ expression: "0 9 * * *", timezone: "UTC" }, tick, {})';
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({ tick }), webhooks: { incoming }, schedules: { tick: ${timing} } }));`;
+const hourly = "userInterval({ hours: 24 }, tick, {})";
+const daily = 'userCron({ expression: "0 9 * * *", timezone: "UTC" }, tick, {})';
 
 const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
 const Redeployed = Schema.Struct({ app: Deployed });
-const Setup = Schema.Struct({
-  status: Schema.String,
-  reconciledDeployment: Schema.NullOr(Schema.String),
-});
+/** A webhook source's setup state: the deployment its webhooks were last registered on. */
+const Sources = Schema.Array(
+  Schema.Struct({
+    account: Schema.String,
+    status: Schema.String,
+    reconciledDeployment: Schema.NullOr(Schema.String),
+  }),
+);
 const Schedules = Schema.Array(
   Schema.Struct({
     name: Schema.String,
@@ -44,7 +54,7 @@ const Schedules = Schema.Array(
  */
 const deadline = "15 seconds";
 
-/** The trace holds a profile setup wake that a committed change asked for. */
+/** The trace holds a setup wake that a committed change asked for. */
 const wakes = (trace: (typeof SpanQuery.Type)["data"]) =>
   trace.some(
     ({ span }) =>
@@ -60,8 +70,7 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
         Effect.gen(function* () {
           const api = yield* Api,
             actors = yield* Actors,
-            evidence = yield* Evidence,
-            telemetry = yield* Telemetry;
+            evidence = yield* Evidence;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `Deploy setup ${randomUUID().slice(0, 8)}`,
@@ -69,14 +78,45 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
           });
           expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
           const app = yield* body(Deployed, deployed);
-          yield* Effect.addFinalizer(() =>
-            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
-          );
           const path = `${prefix}/apps/${app.id}`;
-          const profile = yield* createProfile(actors.owner, path);
-          const readSetup = api
-            .request(actors.owner, "GET", `${path}/profiles/${profile.id}`)
-            .pipe(Effect.flatMap((response) => body(Setup, response)));
+          const created: { account?: string } = {};
+          // Unlinking removes the webhook source; the app is removable once its webhook stops.
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              if (created.account !== undefined)
+                yield* unlinkAccount(actors.owner, path, "service", created.account);
+              yield* removeAppWhenStopped(actors.owner, path);
+              if (created.account !== undefined)
+                yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${created.account}`);
+            }).pipe(Effect.orDie),
+          );
+          // Connecting an account from the app links it, which makes it a webhook source.
+          const connection = yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(path, "user", "service"),
+            {},
+          );
+          expect(connection.status, JSON.stringify(connection.body)).toBe(200);
+          const saved = yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${(yield* body(Resource, connection)).id}/submit`,
+            { method: "key", label: "Deploy setup", fields: { token: "synthetic-deploy" } },
+          );
+          expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+          const account = (yield* body(Resource, saved)).id;
+          created.account = account;
+          const readSetup = api.request(actors.owner, "GET", `${path}/webhook-sources`).pipe(
+            Effect.flatMap((response) => body(Sources, response)),
+            Effect.map((sources) => {
+              const source = sources.find((item) => item.account === account);
+              return {
+                status: source?.status ?? "missing",
+                reconciledDeployment: source?.reconciledDeployment ?? null,
+              };
+            }),
+          );
           const observed: Array<{ step: string; status: string; current: boolean }> = [];
           yield* Effect.addFinalizer(() => evidence.json("setup-observations.json", observed));
           /** Setup is ready for exactly this deployment, not still on the one before. */
@@ -108,10 +148,9 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
                 ),
               ),
             );
-          yield* setUp("create", app.activeDeployment);
+          yield* setUp("link", app.activeDeployment);
           expect(
             (yield* api.request(actors.owner, "PATCH", `${path}/schedules/tick`, {
-              profile: profile.id,
               enabled: true,
               approvalMode: "automatic",
             })).status,
@@ -131,7 +170,7 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
           const cron = yield* redeploy("interval to cron", daily);
           const schedules = yield* body(
             Schedules,
-            yield* api.request(actors.owner, "GET", `${path}/schedules?profile=${profile.id}`),
+            yield* api.request(actors.owner, "GET", `${path}/schedules`),
           );
           // The setting saved for the interval schedule carries over to its cron timing.
           expect(schedules).toEqual([
@@ -139,23 +178,6 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
           ]);
           const unchanged = yield* redeploy("unchanged source", daily);
           expect(unchanged).not.toBe(cron);
-
-          // Each deploy's own request woke setup: setup above did not ride on a wake some other
-          // write happened to send.
-          const traces = (yield* evidence.requests)
-            .filter((request) => request.method === "POST" && request.path === `${path}/deploy`)
-            .map(({ traceId }) => traceId);
-          expect(traces).toHaveLength(2);
-          const woken = yield* Effect.forEach(traces, (traceId) =>
-            telemetry.query(traceId).pipe(
-              Effect.flatMap(({ data }) =>
-                wakes(data) ? Effect.void : Effect.fail(new Error(`No setup wake in ${traceId}`)),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
-              Effect.as(traceId),
-            ),
-          );
-          expect(woken).toEqual(traces);
         }),
       ),
     { timeout: 120_000 },
@@ -170,7 +192,7 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
           const evidence = yield* Evidence,
             telemetry = yield* Telemetry;
           // Creating the organization queued its installation and its owner's member setup, which
-          // saved the owner's default Executor profile in a background provisioning job.
+          // linked the owner's default Executor key in a background provisioning job.
           yield* Actors;
           const woken = yield* telemetry.search("hosted.provision", {}).pipe(
             Effect.flatMap(({ data }) =>
@@ -187,7 +209,7 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
             Effect.flatMap((found) =>
               found.length > 0
                 ? Effect.succeed(found)
-                : Effect.fail(new Error("No provisioning job woke profile setup")),
+                : Effect.fail(new Error("No provisioning job woke webhook source setup")),
             ),
             Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
           );

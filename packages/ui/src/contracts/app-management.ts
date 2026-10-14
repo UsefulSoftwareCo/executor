@@ -1,7 +1,7 @@
 /** Typed app bindings share reconciliation; products supply their existing client and runtime. */
 import { revalidated } from "./refresh.ts";
-import type { App, AppId } from "@executor-js/sdk";
-import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
+import { isTextFile, type App, type AppId } from "@executor-js/sdk";
+import { AppAccess, appManagementApi } from "@executor-js/app-management/contracts";
 import { Array as Arr, Data, Effect, Schema, type Cause } from "effect";
 import type { HttpApiClient } from "effect/http-api";
 import { hydratedResult, requestKey } from "./http.ts";
@@ -9,7 +9,6 @@ import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, readInto } from "./mutations.ts";
 
 class OwnedCopy extends Data.Class<{ readonly app: AppId }> {}
-class PublicCopy extends Data.Class<{ readonly package: string; readonly commit: string }> {}
 class SourceFileKey extends Data.Class<{
   readonly app: AppId;
   readonly commit: string;
@@ -40,11 +39,6 @@ export const makeAppManagementAtoms = <R, E>(
   params: { readonly organization?: string },
   retainFailure?: (cause: Cause.Cause<E>) => boolean,
 ) => {
-  const catalog = runtime
-    .atom(Effect.flatMap(client, (api) => api.catalog({ params, query: {} })))
-    .pipe(hydrate("catalog", params), revalidated, (source) =>
-      acknowledgedQuery(source, retainFailure),
-    );
   const published = runtime
     .atom(Effect.flatMap(client, (api) => api.published({ params })))
     .pipe(hydrate("published", params), (source) => acknowledgedQuery(source, retainFailure));
@@ -124,7 +118,7 @@ export const makeAppManagementAtoms = <R, E>(
             api.source({ params: { ...params, app } }),
           );
           const file = current.files.find((item) => item.path === input.path);
-          if ((file === undefined ? null : file.content) !== input.base)
+          if ((file === undefined || !isTextFile(file) ? null : file.content) !== input.base)
             return { _tag: "FileChanged" as const };
           const files =
             file === undefined
@@ -172,7 +166,7 @@ export const makeAppManagementAtoms = <R, E>(
         ),
     ),
   );
-  const copies = Atom.family((from: typeof CopyApp.Type.from) =>
+  const copies = Atom.family((from: OwnedCopy) =>
     runtime.fn((input: { name: string; onApp: AppAcknowledgement }, get) =>
       Effect.flatMap(client, (api) =>
         api.copy({ params, payload: { from, name: input.name } }),
@@ -186,11 +180,10 @@ export const makeAppManagementAtoms = <R, E>(
       ).pipe(
         Effect.tap((saved) =>
           Effect.sync(() => {
-            for (const query of [published, catalog])
-              acknowledge(get, query, (rows) => [
-                ...rows.filter((row) => row.name !== saved.name),
-                saved,
-              ]);
+            acknowledge(get, published, (rows) => [
+              ...rows.filter((row) => row.name !== saved.name),
+              saved,
+            ]);
           }),
         ),
       ),
@@ -201,15 +194,13 @@ export const makeAppManagementAtoms = <R, E>(
       Effect.flatMap(client, (api) => api.unpublish({ params, payload: { package: name } })).pipe(
         Effect.tap((saved) =>
           Effect.sync(() => {
-            for (const query of [published, catalog])
-              acknowledge(get, query, (rows) => rows.filter((row) => row.name !== saved.name));
+            acknowledge(get, published, (rows) => rows.filter((row) => row.name !== saved.name));
           }),
         ),
       ),
     ),
   );
   return {
-    catalog,
     published,
     authoring,
     source,
@@ -220,8 +211,7 @@ export const makeAppManagementAtoms = <R, E>(
     workspace,
     commitFile,
     deploy,
-    copy: (from: typeof CopyApp.Type.from) =>
-      copies("app" in from ? new OwnedCopy(from) : new PublicCopy(from)),
+    copy: (from: { readonly app: AppId }) => copies(new OwnedCopy(from)),
     publish,
     unpublish,
   };

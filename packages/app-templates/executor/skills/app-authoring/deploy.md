@@ -2,10 +2,13 @@
 
 Use this path when you can run shell commands and `executor apps --help` works.
 If the command is missing, or it has no `framework` subcommand, install the
-current release. It needs Node.js 24.14.0 or newer:
+current release. An older CLI can also fail against a newer host with `NotFound`
+or `UnexpectedResponse`. Install it with npm, or without Node on macOS or Linux
+with the install script:
 
 ```sh
 npm i -g executor@beta --include=optional
+curl -fsSL https://executor.sh/docs/install.sh | sh
 ```
 
 The `beta` tag is required. The `latest` tag installs the previous Executor,
@@ -15,7 +18,32 @@ so ask first if that has not been approved.
 Keep one directory per app with `index.ts` and `package.json` at its root. The
 CLI sends the whole directory, skipping `.git`, `node_modules` and `.DS_Store`.
 Keep scratch files out of it; files missing from the directory are deleted
-from the app.
+from the app. `--files` also accepts a JSON file holding an array of
+`{ "path", "content" }` objects.
+
+Code, every file outside `ui/public/`, is UTF-8 text: at most 4,096 files and
+16 MiB of file contents, on every host. Files under `ui/public/` are served as
+they are and may be binary, such as images, fonts, audio, WebAssembly or a
+prebuilt bundle: at most 10,000 files, each at most 32 MB and 1 GB in total.
+Builds never load them; each deploy copies them to the host's own storage.
+The CLI checks these limits before it uploads anything. A source over them
+fails with `SourceRejected`, which states the count or size and names the
+largest files; a binary file outside `ui/public/` fails the same way and is
+named. The host rejects a larger source with `SourceError` and HTTP 413.
+
+A directory of at most 16 MiB in total is sent as files, with binary files as
+base64. A larger one is pushed with Git: `executor apps create`, `commit` and
+`deploy --files` do this themselves, send only the files the app does not
+already hold, and split large uploads into several pushes. Deploy a directory
+in one step with `executor apps deploy --app <app-id> --files ./app`.
+
+Reading source lists a `ui/public/` file that is not UTF-8 text, or does not
+fit beside the rest of the source, as `{ "path", "object", "size" }` without
+its bytes. Send that entry back unchanged in a commit to keep the file. Through
+`appManagement.commit`, send a small binary file as
+`{ "path", "content": "<base64>", "encoding": "base64" }`. `executor apps source
+--app <app-id> --out ./copy` writes every file, binary files included, and a
+Git clone has them all.
 
 Read these docs with
 `executor apps skills --app executor --name app-authoring --file deploy.md`.
@@ -23,8 +51,35 @@ Read these docs with
 Commands target the local server at `http://127.0.0.1:4312` by default. It
 reads the local API key from `EXECUTOR_API_KEY`. If that variable is unset, ask
 the user to set it; do not search files for it. For hosted Executor, run
-`executor apps login --host https://api.executor.sh` once. It signs in through
-the browser. Then pass the same `--host` to every command.
+`executor apps login --host https://api.executor.sh` once. It prints a link and
+a code and waits; ask the user to open the link and approve the code. Then pass
+the same `--host` to every command, or set `EXECUTOR_HOST` to it once.
+`--organization` defaults to the organization you signed in to.
+
+A command that fails exits with status 1. Its standard error states the
+message, the error code, the HTTP status when the host answered, and the
+host's recovery: `Next step` for the user and `For agents` for you. When
+standard output is not a terminal, the command also prints the same failure
+there as JSON, so scripts can read it:
+
+```json
+{
+  "error": {
+    "code": "DeploymentBuildFailed",
+    "status": 422,
+    "message": "App build failed at the declaration stage: ...",
+    "details": {
+      "stage": "declaration",
+      "location": { "file": "index.ts", "line": 3, "column": 7 }
+    }
+  }
+}
+```
+
+`recovery` holds `action` and `instructions` when the error declares them;
+follow the instructions. `details` holds the error's other fields. When a newer
+CLI release exists, `update` says so with the install command, and standard error
+ends with the same line; update the CLI before retrying.
 
 A new app is a directory with `index.ts` and a `package.json` that pins the
 exact `apps` version the host runs. `executor apps framework` prints that
@@ -38,7 +93,7 @@ mkdir hello
 cat > hello/index.ts <<'EOF'
 import { defineApp, object, query, router } from "apps";
 
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     hello: query({ description: "Say hello", input: object({}) }, async () => ({ message: "Hello" })),
   }),
@@ -65,24 +120,44 @@ Each iteration saves the directory as a commit and deploys it:
 
 ```sh
 executor apps commit --app <app-id> --files ./hello \
-  --expected <last-commit> --message "Add search" | jq -r .revision.commit
+  --expected <last-commit> --message "Add search" > /tmp/commit.json
+jq .removed /tmp/commit.json             # { count, paths }: files this save deleted
+jq -r .revision.commit /tmp/commit.json
 executor apps deploy --app <app-id> --commit <new-commit>
 ```
 
 The commit prints the new revision; its `commit` is the next `--expected`.
+`removed` gives how many files the save deleted and at most 100 of their paths. If it
+names a file you meant to keep, it is still in the `--expected` commit
+(`git show <last-commit>:<path>` in a clone): restore it and commit again before
+deploying. A path cannot be both a file and a folder (`a` and `a/b`); such a
+save fails with `SourcePathConflict` and saves nothing.
 `--expected` is the commit your edits are based on. If someone else saved in
 between, the commit is rejected. Read the source again and reconcile before
 retrying. A commit alone does not change the running app.
 
 On hosted Executor you can also use Git. `executor apps git --app <app-id>`
-prints the clone URL. Configure the credential helper for the clone:
+prints the clone URL. Clone with the credential helper configured in the clone, so later
+pushes and fetches use it too:
 
 ```sh
-git -c credential.helper='!executor apps credential' -c credential.useHttpPath=true clone <url>
+git clone -c credential.helper= -c credential.helper='!executor apps credential' \
+  -c credential.useHttpPath=true <url>
 ```
+
+The empty `credential.helper` stops other helpers, such as the macOS keychain, from keeping
+copies of the helper's short-lived tokens. In a clone made without it, run
+`git config credential.helper ''` and then
+`git config --add credential.helper '!executor apps credential'`.
 
 Pushes save source but do not deploy it. Deploy the pushed commit with
 `executor apps deploy --app <app-id> --commit "$(git rev-parse HEAD)"`.
+Pushes stream to the repository, so Executor sets no push size limit of its own. On
+hosted Executor the repository host accepts files up to 32 MB each and repositories up
+to 1 GB, and a single push of more than about 64 MiB of packed data currently fails;
+push a larger history in several pushes. The CLI does this for you. A pushed source
+over the limits above cannot be read or deployed. The limits apply to the commit being
+read, not to the history before it.
 
 Type-check locally before deploying. A deploy compiles the app and reports
 build errors, but it does not type-check. The framework is published to npm as
@@ -149,12 +224,11 @@ return await tools.search({ query: "Executor" });
 ```
 
 Search returns `items` with the exact callable `path`, the first line of the
-`description` and the `input` type on one line. `namespaces` lists each app and
-profile, with its accounts, once. A page holds at most `limit` items, 10 by
+`description` and the `input` type on one line. `namespaces` lists each app,
+with its linked accounts, once. A page holds at most `limit` items, 10 by
 default, and ends sooner at its size budget. `remaining` counts the matches
 after it; pass `next` to `tools.search` for the following page, until `next` is
 null. An item with `inputTruncated` has a longer input type than search shows.
-A tool that several profiles share is one item; `alsoAt` lists its other paths.
 
 Read the whole signature, with the output type, and the whole description before
 relying on a result's shape:
@@ -171,7 +245,7 @@ Use `organization` explicitly in management calls. Never guess `me` or `default`
 and do not search local files for an organization or credentials.
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].apps.deploy({
+return await tools.executor.apps.deploy({
   path: { organization: "<approved-organization-id>" },
   body: {
     name: "Hello",
@@ -195,7 +269,7 @@ and a `package.json` that pins the exact `apps` version `framework.release`
 returns:
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const path = { organization: "<approved-organization-id>" };
 const { version } = await executor.framework.release({ path });
 const files = [
@@ -233,10 +307,13 @@ Running apps copy their deployed source and deploy the copy. Unfinished apps cop
 their working files and remain undeployed.
 
 Publishing reads a scoped `name` and optional `description` from `package.json`.
+The scope is the organization's current one, `<slug>.executor.community`, such as
+`@acme.executor.community/notes`. After the organization is renamed, change the
+scope to the new slug before publishing again; the listing keeps its label.
 The public listing points to the selected Git commit. Normal npm `dependencies`
 are supported; `version` is optional author metadata and does not select an
-Executor release. Executor app dependencies are deferred. Include the app source
-it needs directly; do not add `executor.dependencies` or an Executor lockfile.
+Executor release. Apps cannot depend on other Executor apps; include the source
+an app needs directly.
 
 Copy a public app with `appManagement.copy`, using `from: { package, commit }`
 and a new `name`. Owned apps use the same operation with `from: { app }`. This creates an independent app and Git repository with empty
@@ -249,25 +326,24 @@ Hosted deployment currently creates a new named app and returns the app directly
 It rejects an existing name. Use source commits and deployment by app ID for edits.
 After deployment, start a new execute to discover and call its tools.
 Other hosted operations include `organization.inventory`, `organization.catalog`,
-`apps.install`, `apps.importCustom`, `apps.get`, `appUi.location`, profile operations, and
+`apps.install`, `apps.importCustom`, `apps.get`, `appUi.location`, `appAccounts` operations, and
 `apps.remove`. Always read their discovered signatures before calling them.
 
-For hosted account setup, create a profile with `profiles.create` first.
-The host derives its owner and subject from the caller. Pass the returned ID to
-the connection request:
+For hosted account setup, request a connection for the requirement. The host
+derives its owner and subject from the caller, and completing it links the new
+account to that requirement. Use `appAccounts.userConnect` for a user
+requirement, which links it for you, and `appAccounts.appConnect` for an app
+requirement, which links it for everyone and needs edit access to the app:
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
-const path = { organization: "<approved-organization-id>", app: "<app-id>" };
-const profile = await executor.profiles.create({
-  path,
-  body: { accounts: {}, idempotencyKey: "vercel-setup" },
-});
-return await executor.accounts.connect({
-  path,
-  body: { profile: profile.id, requirement: "vercel" },
+return await tools.executor.appAccounts.userConnect({
+  path: { organization: "<approved-organization-id>", app: "<app-id>", requirement: "vercel" },
 });
 ```
+
+To use an account you already have, `appAccounts.userGet` (or
+`appAccounts.appGet`) lists the accounts you could link, and
+`appAccounts.userLink` (or `appAccounts.appLink`) links one.
 
 Give the returned `url` to the user. It opens Executor's signed-in browser form;
 credentials and OAuth are completed there. Check progress with
@@ -285,10 +361,10 @@ Use the returned app ID for API arguments and its name-derived slug for the agen
 Send the actual source string in `files[].content`.
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 return await executor.apps.deploy({
   body: {
-    owner: "my-project",
+    owner: "local",
     name: "Hello",
     files: [
       { path: "index.ts", content: "<contents of index.ts>" },
@@ -298,9 +374,10 @@ return await executor.apps.deploy({
 });
 ```
 
-The response contains `app` and `deployment`. Creating an app with the same
-`owner` and `name` again fails with `AppNameTaken`. To deploy an existing app,
-use `body: { owner, app: app.id, files }` or `body: { owner, app: app.id, commit }`.
+The response contains `app` and `deployment`. Local creates every app under the
+`local` owner, whatever owner you send. Creating an app with the same name again
+fails with `AppNameTaken`. To deploy an existing app, use
+`body: { owner: app.owner, app: app.id, files }` or `body: { owner: app.owner, app: app.id, commit }`.
 Deployment activates the new build after it succeeds and does not save working
 source. Use relative file paths such as `index.ts` and `lib/client.ts`.
 
@@ -348,7 +425,7 @@ one does not change the other. Read both when you need to compare pending edits
 with the running app.
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const path = { organization: "<approved-organization-id>", app: "<app-id>" };
 const source = await executor.appManagement.source({ path });
 const entry = source.files.find((file) => file.path === "index.ts");
@@ -364,25 +441,34 @@ const saved = await executor.appManagement.commit({
   path,
   body: { expected: source.revision.commit, files, message: "Update app" },
 });
+if (saved.removed.count > 0) {
+  throw new Error(
+    `The save removed ${saved.removed.count} files: ${saved.removed.paths.join(", ")}`,
+  );
+}
 return await executor.appManagement.deploy({
   path,
   body: { commit: saved.revision.commit },
 });
 ```
 
-Commit sends the complete file list; omitted files are deleted. A stale
+Commit sends the complete file list; omitted files are deleted. The result's
+`removed` has their `count` and at most 100 of their `paths`; check it before
+deploying, as above. A deleted file is still in `source.files`: add it back and
+commit against `saved.revision.commit`. A stale
 `expected` returns `SourceError` with `reason: "conflict"`. Read working source
 again and reconcile the edits before retrying. Deployment returns `{ app,
 deployment }`, preserves the app ID and data, and never updates the Git branch.
-It has no expected-active-deployment argument. Check profiles after changing
-account requirements; saved selections can become incompatible with new code.
+It has no expected-active-deployment argument. Check the app's linked accounts
+after changing account requirements; an account whose provider no requirement
+uses no longer applies.
 
-Every profile follows the active deployment, so do not update or reconcile a
-profile to pick up new code. The next `execute` lists and calls the new tools.
-A deploy marks each profile's setup `pending` and starts background setup,
-which re-registers its webhooks and schedules, usually within seconds. `pending`
-does not block tool calls. Setup that cannot finish shows `needs-setup` or
-`failed` with its cause.
+Every call follows the active deployment, so nothing needs updating to pick up
+new code. The next `execute` lists and calls the new tools. Activating a
+deployment re-registers each webhook source's subscriptions on it in the
+background, usually within seconds, without blocking tool calls; the app's
+Webhooks tab shows their status. It also deletes the saved settings of schedules
+the new deployment no longer declares.
 
 `apps.deployments` lists retained versions. `apps.source` accepts an optional
 `query.deployment` to read a specific version. `apps.activate` requires
@@ -450,7 +536,7 @@ network error, and Cloud answers with Cloudflare's own 403 whose body reads
 Working: custom tools, API-key and OAuth providers, saved account selection,
 retained builds, configured copies, live discovery and tool calls. The local
 catalog imports OpenAPI and remote MCP apps. Custom Add also generates GraphQL
-and local stdio MCP apps. OAuth clients can be supplied or resolved through
+apps. OAuth clients can be supplied or resolved through
 DCR/CIMD; the host stores and refreshes grants. Private local/self-host app UI,
 app data, webhook lifecycle and scheduled mutations are implemented. App-to-app
 calls and `executor dev` remain deferred.

@@ -1,5 +1,5 @@
 /** Portable Effect exporters. The host owns scope and export lifetime. */
-import { Effect, Layer, Logger, Metric, Redacted } from "effect";
+import { type Duration, Effect, Layer, Logger, Metric, Redacted } from "effect";
 import { telemetryHttpClient } from "./transport.ts";
 import { spanAttributes } from "./span-attributes.ts";
 import { OtlpLogger, OtlpMetrics, OtlpSerialization, OtlpTracer } from "effect/observability";
@@ -10,23 +10,31 @@ import {
   type TelemetryTarget,
 } from "./config.ts";
 
-/** Build one tracer per runtime. Event mode defers export until Worker scope finalization. */
+/** How long each signal's final flush may take when the scope closes. */
+export type ShutdownTimeouts = Partial<Record<"traces" | "logs" | "metrics", Duration.Input>>;
+
+/**
+ * Build one tracer per runtime. Event mode defers export until Worker scope finalization.
+ * A signal's final flush gets three seconds unless `shutdownTimeouts` names its own bound; only
+ * the host that owns a destination knows it answers faster.
+ */
 export const telemetryLayer = (
   config: TelemetryConfig,
   lifetime: "process" | "event" = "process",
   logger: Logger.Logger<unknown, void> = Logger.withConsoleError(Logger.formatJson),
+  shutdownTimeouts: ShutdownTimeouts = {},
 ) => {
   const resource = {
     serviceName: config.service,
     serviceVersion: config.version,
     attributes: { "deployment.environment.name": config.environment },
   };
-  const signal = (target: TelemetryTarget) => ({
+  const signal = (target: TelemetryTarget, name: keyof ShutdownTimeouts) => ({
     url: target.url,
     resource,
     ...(target.headers === undefined ? {} : { headers: Redacted.value(target.headers) }),
     exportInterval: lifetime === "event" ? ("1 hour" as const) : ("1 second" as const),
-    shutdownTimeout: "3 seconds" as const,
+    shutdownTimeout: shutdownTimeouts[name] ?? ("3 seconds" as const),
   });
   const console = Logger.layer([logger]);
   return Layer.mergeAll(
@@ -39,7 +47,7 @@ export const telemetryLayer = (
         // not authority to suppress server diagnostics.
         spanAttributes(config.clock, true).pipe(
           Layer.provideMerge(
-            OtlpTracer.layer(signal(config.traces)).pipe(
+            OtlpTracer.layer(signal(config.traces, "traces")).pipe(
               Layer.provide(OtlpSerialization.layerJson),
             ),
           ),
@@ -47,13 +55,13 @@ export const telemetryLayer = (
     config.logs === undefined
       ? console
       : OtlpLogger.layer({
-          ...signal(config.logs),
+          ...signal(config.logs, "logs"),
           mergeWithExisting: true,
         }).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provideMerge(console)),
     config.metrics === undefined
       ? Layer.empty
       : OtlpMetrics.layer({
-          ...signal(config.metrics),
+          ...signal(config.metrics, "metrics"),
           exportInterval: "30 seconds",
           temporality: "delta",
         }).pipe(

@@ -12,7 +12,7 @@ const App = Schema.Struct({ id: Schema.String });
 /** MCP servers often namespace every tool with their own name, repeating the router's key. */
 const source = `import { defineApp, object, query, router } from "apps";
 const tool = (description: string) => query({ description, input: object({}) }, async () => "ok");
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     planetscale: router({
       planetscale_list_databases: tool("List databases"),

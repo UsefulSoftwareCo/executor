@@ -3,8 +3,11 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { workflowBindings } from "./resources.ts";
 import type { HostedError } from "./errors.ts";
 import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/app-browser";
-/** Deployment and account identities invalidate discovery without freezing dynamic catalogs. */
-import type { App, AppId, DeploymentId, ProfileId, Profile } from "@executor-js/sdk";
+/**
+ * One discovery cache per app and deployment. Linking or unlinking an account reads it again
+ * (see `refreshAppDiscovery`), as does the page's normal refresh.
+ */
+import type { App, AppId, DeploymentId } from "@executor-js/sdk";
 import { Data } from "effect";
 import { Atom } from "effect/reactivity";
 import { HostedClient } from "./api.ts";
@@ -15,20 +18,15 @@ class AppKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
   readonly deployment: DeploymentId | null;
-  readonly profile: ProfileId | undefined;
-  readonly expectedProfileRevision: number | undefined;
 }> {}
+const query = (key: AppKey) => ({ deployment: key.deployment ?? undefined });
 const skills = Atom.family((key: AppKey) =>
   HostedClient.query(
     "skills",
     "list",
     hydrated({
       params: { organization: key.organization, app: key.app },
-      query: {
-        deployment: key.deployment ?? undefined,
-        profile: key.profile,
-        expectedProfileRevision: key.expectedProfileRevision,
-      },
+      query: query(key),
     }),
   ).pipe(revalidated, protectedQuery),
 );
@@ -38,11 +36,7 @@ const bundle = Atom.family((key: AppKey) =>
     "bundle",
     hydrated({
       params: { organization: key.organization, app: key.app },
-      query: {
-        deployment: key.deployment ?? undefined,
-        profile: key.profile,
-        expectedProfileRevision: key.expectedProfileRevision,
-      },
+      query: query(key),
     }),
   ).pipe(revalidated, protectedQuery),
 );
@@ -50,25 +44,23 @@ const bundle = Atom.family((key: AppKey) =>
 export function appBrowserBindings(
   organization: OrganizationReference,
   app: App,
-  profile?: Profile,
 ): SkillBindings<HostedError> & WorkflowBindings<HostedError> {
-  const key = new AppKey({
-    organization,
-    app: app.id,
-    deployment: app.activeDeployment,
-    profile: profile?.id,
-    expectedProfileRevision: profile?.revision,
-  });
+  const key = new AppKey({ organization, app: app.id, deployment: app.activeDeployment });
   return {
     skills: skills(key),
     ...workflowBindings({
       organization,
       app: app.id,
-      accounts: JSON.stringify(profile?.accounts ?? {}),
       deployment: app.activeDeployment ?? undefined,
-      profile: profile?.id,
-      expectedProfileRevision: profile?.revision,
     }),
     bundle: bundle(key),
   };
 }
+/** Read the app's skills again, as after the caller links or unlinks an account. */
+export const refreshSkillDiscovery = (
+  get: Atom.FnContext,
+  key: ConstructorParameters<typeof AppKey>[0],
+) => {
+  get.refresh(skills(new AppKey(key)));
+  get.refresh(bundle(new AppKey(key)));
+};

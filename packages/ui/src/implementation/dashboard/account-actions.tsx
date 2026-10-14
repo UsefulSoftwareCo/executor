@@ -201,8 +201,10 @@ export function DisconnectAccountForm<E>({
     <div className="flex flex-col gap-5">
       <AccountDialogIdentity data={data} />
       <p className="text-sm text-muted-foreground">
-        This deletes the saved credentials from Executor. It does not revoke access at{" "}
-        {provider.definition.name}. {apps.length === 0 && "No apps use this account."}
+        {data.revocation === "automatic"
+          ? `This deletes the saved credentials from Executor and asks ${provider.definition.name} to revoke its access.`
+          : `This deletes the saved credentials from Executor but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
+        {apps.length === 0 && "No apps use this account."}
       </p>
       {apps.length > 0 && (
         <section className="flex flex-col gap-2">
@@ -248,7 +250,7 @@ export function DisconnectAccountForm<E>({
   );
 }
 
-/** Account selections are edited on the app itself. */
+/** Links are managed on the app itself. */
 export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
   const { AppLink } = useDashboard();
   return apps.length === 0 ? (

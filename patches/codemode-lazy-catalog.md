@@ -8,7 +8,8 @@ and for Effect schemas (the `search` and `search.describe` tools, and `Schema.Js
 JSON Schema document first.
 
 `execute` makes a runtime over the reachable catalog on every call and reads neither. It never
-calls the runtime's `catalog()`, and a program reaches the global `search()` only when it uses it.
+calls the runtime's `catalog()`, and it serves the global `search()` itself (see
+[codemode-host-search](codemode-host-search.md)), so the index is never built.
 `tools.search` ranks with Executor's own projections. A Node CPU profile of `executeProgram` over
 1,000 kept tools put 69% of the call in `prepare`. Session objects run these calls (F-020 in
 executor-perf-watch).
@@ -20,7 +21,8 @@ bad tool path fails at the same point. `ToolRuntime.make` and `executeWithLimits
 as a function. `ToolRuntime` is internal: the package root does not export it.
 
 The runtime also counts the signatures it renders, `signaturesRendered()`. `execute` records the
-count on `mcp.execute` as `executor.codemode.signatures_rendered`, and the `mcp-catalog` scenario
+count on `mcp.execute` as `executor.codemode.signatures_rendered`, adding the signatures its own
+`search()` pages render, and the `mcp-catalog` scenario
 "MCP execute renders tool signatures only for a program that searches with CodeMode's search()"
 requires 0 for a tool call and for `tools.search`. A patch that applies but renders eagerly again
 fails it; one that does not apply fails `bun run patches:check` and the typecheck.

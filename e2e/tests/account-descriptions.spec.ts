@@ -37,7 +37,7 @@ import { defineApp, defineProvider, object, router, secrets, string } from "apps
 const service = defineProvider({ name: "Description fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
             },
             appsManifest,
@@ -86,7 +86,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             page.waitForResponse(
               (response) =>
                 response.request().method() === "POST" &&
-                new URL(response.url()).pathname.endsWith("/submit"),
+                /\/connections\/[^/]+\/submit$/.test(new URL(response.url()).pathname),
             ),
             connect.getByRole("button", { name: "Connect account", exact: true }).click(),
           ]).then(([response]) => response.json() as Promise<unknown>),

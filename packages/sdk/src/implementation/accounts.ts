@@ -2,21 +2,19 @@ import { AccountWorkflowsActive } from "../contracts/account.ts";
 import { AccountWebhooksActive } from "../contracts/account.ts";
 /** Reusable account operations. Owners remain lookup predicates, not authorization. */
 import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
-import { Account, AccountNotFound, type AccountSignIn } from "../contracts/account.ts";
+import {
+  Account,
+  AccountNotFound,
+  type AccountSignIn,
+  type ManagedAccountInputs,
+} from "../contracts/account.ts";
 import { OAuthGrant } from "../contracts/oauth.ts";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { Provider, ProviderNotFound } from "../contracts/provider.ts";
-import {
-  AccountId,
-  StorageError,
-  type Json,
-  type OwnerId,
-  type ProviderId,
-} from "../contracts/shared.ts";
+import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { validateFields } from "./provider.ts";
-import { lockApp } from "./apps.ts";
 
 /** A stable digest of stored ciphertext; any credential write changes it. */
 const fingerprint = (bytes: Uint8Array) =>
@@ -31,62 +29,6 @@ const fingerprint = (bytes: Uint8Array) =>
       (byte) => byte.toString(16).padStart(2, "0"),
     ).join(""),
   );
-
-/** Drop one account from every profile selection of its owner; affected profiles become pending. */
-const clearBindings = (tx: Query, owner: OwnerId, account: AccountId) =>
-  Effect.gen(function* () {
-    const rows = yield* query(() =>
-      tx.findMany("profiles", {
-        where: (b) => b.and(b("owner", "=", owner), b("status", "!=", "removed")),
-        orderBy: ["app", "asc"],
-      }),
-    );
-    const references = (value: unknown) =>
-      value === account || (Array.isArray(value) && value.includes(account));
-    const affected = rows.filter(
-      (row) =>
-        row.accounts !== null &&
-        typeof row.accounts === "object" &&
-        Object.values(row.accounts as Record<string, unknown>).some(references),
-    );
-    // Match the SDK app lock order before editing any profile of that app. Removing an app
-    // deletes its profiles with it, so an app removed meanwhile leaves nothing here to clear.
-    const locked = new Set<string>();
-    for (const app of [...new Set(affected.map((row) => row.app))].sort())
-      if (
-        yield* lockApp(tx, { app, owner }).pipe(
-          Effect.as(true),
-          Effect.catchTag("AppNotFound", () => Effect.succeed(false)),
-        )
-      )
-        locked.add(app);
-    for (const row of affected) {
-      if (!locked.has(row.app)) continue;
-      const accounts: Record<string, Json> = {};
-      for (const [slot, value] of Object.entries(row.accounts as Record<string, unknown>)) {
-        if (value === account) continue;
-        if (Array.isArray(value)) {
-          const kept = value.filter((selected) => selected !== account);
-          // A collection that held only this account is unselected, not left empty.
-          if (kept.length === 0 && value.length > 0) continue;
-          accounts[slot] = kept as Json;
-          continue;
-        }
-        accounts[slot] = value as Json;
-      }
-      yield* query(() =>
-        tx.updateMany("profiles", {
-          where: (b) => b("id", "=", row.id),
-          set: {
-            accounts,
-            revision: row.revision + 1,
-            status: row.status === "removing" ? row.status : "pending",
-            failure: null,
-          },
-        }),
-      );
-    }
-  });
 
 /** Load private account data without exposing it through public account responses. */
 export const storedAccount = (db: Query, account: AccountId, owner?: OwnerId) =>
@@ -141,7 +83,7 @@ export const makeAccounts = (
   /** Best-effort provider-side revocation; it never fails and runs only after the delete commits. */
   revokeRemoved?: (removed: RemovedGrant) => Effect.Effect<void>,
 ) => ({
-  add: (input: Parameters<Executor["accounts"]["add"]>[0]) =>
+  add: (input: typeof ManagedAccountInputs.add.Type) =>
     Effect.gen(function* () {
       const row = yield* query(() =>
         db.findFirst("providers", { where: (b) => b("id", "=", input.provider) }),
@@ -214,7 +156,7 @@ export const makeAccounts = (
         );
       }),
     ).pipe(Effect.withSpan("sdk.accounts.update")),
-  replaceCredentials: (input: Parameters<Executor["accounts"]["replaceCredentials"]>[0]) =>
+  replaceCredentials: (input: typeof ManagedAccountInputs.replaceCredentials.Type) =>
     transaction(db, (tx) =>
       Effect.gen(function* () {
         const account = yield* ownedAccount(tx, input);
@@ -277,7 +219,10 @@ export const makeAccounts = (
               );
               yield* lifecycle.accountRemoving(account);
             }
-            if (input.bindings === "clear") yield* clearBindings(tx, row.owner, row.id);
+            // A source whose subscriptions have all stopped goes with its account.
+            yield* query(() =>
+              tx.deleteMany("webhookSources", { where: (b) => b("account", "=", input.account) }),
+            );
             const grant = yield* query(() =>
               tx.findFirst("oauthGrants", { where: (b) => b("id", "=", input.account) }),
             );
@@ -299,17 +244,17 @@ export const makeAccounts = (
       );
       // Revoke only after the deletion is durable; the outcome cannot change the result.
       if (removed !== undefined && revokeRemoved !== undefined) yield* revokeRemoved(removed);
-      // Keep selected IDs as unresolved references. An app must never silently switch accounts or run a partial collection.
+      // Saved choices keep the ID as an unresolved reference. An app must never silently switch accounts or run a partial collection.
       return { account: input.account };
     }).pipe(Effect.withSpan("sdk.accounts.remove")),
-  list: (input: NonNullable<Parameters<Executor["accounts"]["list"]>[0]> = {}) =>
+  list: (input: Parameters<Executor["accounts"]["list"]>[0]) =>
     Effect.gen(function* () {
       const rows = yield* query(() =>
         db.findMany("accounts", {
           select: ["id", "provider", "method", "label", "description", "owner", "createdAt"],
           where: (b) =>
             b.and(
-              input.owner === undefined ? true : b("owner", "=", input.owner),
+              b("owner", "=", input.owner),
               input.provider === undefined ? true : b("provider", "=", input.provider),
             ),
           orderBy: ["id", "asc"],
@@ -319,23 +264,20 @@ export const makeAccounts = (
         Effect.mapError(() => new StorageError()),
       );
     }).pipe(Effect.withSpan("sdk.accounts.list")),
-  providers: (input: NonNullable<Parameters<Executor["accounts"]["providers"]>[0]> = {}) =>
+  providers: (input: Parameters<Executor["accounts"]["providers"]>[0]) =>
     Effect.gen(function* () {
-      const owner = input.owner;
-      const used =
-        owner === undefined
-          ? undefined
-          : new Set(
-              (yield* query(() =>
-                db.findMany("accounts", {
-                  select: ["provider"],
-                  where: (b) => b("owner", "=", owner),
-                }),
-              )).map((row) => row.provider),
-            );
+      const used = new Set(
+        (yield* query(() =>
+          db.findMany("accounts", {
+            select: ["provider"],
+            where: (b) => b("owner", "=", input.owner),
+          }),
+        )).map((row) => row.provider),
+      );
+      if (used.size === 0) return [];
       const rows = yield* query(() =>
         db.findMany("providers", {
-          where: (b) => (used === undefined ? true : b("id", "in", [...used])),
+          where: (b) => b("id", "in", [...used]),
           orderBy: ["id", "asc"],
         }),
       );

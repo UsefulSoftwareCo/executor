@@ -32,7 +32,7 @@ const Document = Schema.Struct({
   files: Schema.Array(Schema.String),
 });
 const source = `import { defineApp } from "apps";
-export default defineApp({ accounts: {} }, async () => ({}));`;
+export default defineApp({}, async () => ({}));`;
 const document = (version: string) =>
   `---\nname: search-messages\ndescription: Search cached messages.\nallowed-tools: search\nmetadata:\n  version: "${version}"\n---\nRead [examples](references/examples.md).\n`;
 const files = (version: string) => [

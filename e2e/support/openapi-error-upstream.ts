@@ -23,8 +23,23 @@ export const openapiConflictRecovery = {
 export const openapiDeniedMessage = "This workspace does not allow exports by members.";
 /** A reason-specific response from an error schema with no static description. */
 export const openapiOAuthMessage = "We could not register an OAuth client for this connection.";
+/** A declared conflict a bulk write meets after saving part of its records. */
+export const openapiConflictMessage = "The record store changed while these records were saved.";
+/** Advice a service declares for its own error, which would repeat a bulk write's saved part. */
+export const openapiRetryRecovery = {
+  action: "Try again.",
+  instructions: "Send the same request again.",
+};
 
-/** A real HTTP API using the product's published memory-error schema and controlled failures. */
+/**
+ * A real HTTP API using the product's published memory-error schema and controlled failures.
+ * `POST /records` saves its record and then fails with HTTP 502, as a service that commits a
+ * change before its gateway or response fails. `POST /records/bulk` appends its records in order
+ * and stops at the first one it refuses, with a declared error: `StoreConflict` (HTTP 409, with
+ * the service's own advice to try again) for the name `conflict`, `InvalidRecord` (HTTP 422,
+ * without advice) for an empty one. The records before it stay saved, so repeating the request
+ * saves them again. `GET /records` reads the records.
+ */
 export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown) =>
   Effect.gen(function* () {
     // Import the running product's public schemas without importing its implementation.
@@ -57,7 +72,36 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
           ],
         }).annotate(OpenApi.Identifier, "fail"),
       ),
+      HttpApiGroup.make("records")
+        .add(
+          HttpApiEndpoint.post("create", "/records", {
+            payload: Schema.Struct({ name: Schema.String }),
+            success: Schema.Struct({ name: Schema.String }),
+          }).annotate(OpenApi.Identifier, "createRecord"),
+        )
+        .add(
+          HttpApiEndpoint.post("bulk", "/records/bulk", {
+            payload: Schema.Struct({ names: Schema.Array(Schema.String) }),
+            success: Schema.Struct({ saved: Schema.Array(Schema.String) }),
+            error: [
+              Schema.TaggedStruct("StoreConflict", {
+                message: Schema.String,
+                recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
+              }).annotate({ identifier: "StoreConflict", httpApiStatus: 409 }),
+              Schema.TaggedStruct("InvalidRecord", { message: Schema.String }).annotate({
+                identifier: "InvalidRecord",
+                httpApiStatus: 422,
+              }),
+            ],
+          }).annotate(OpenApi.Identifier, "createRecords"),
+        )
+        .add(
+          HttpApiEndpoint.get("list", "/records", {
+            success: Schema.Struct({ records: Schema.Array(Schema.String) }),
+          }).annotate(OpenApi.Identifier, "listRecords"),
+        ),
     );
+    const records: Array<string> = [];
     const document = OpenApi.fromApi(api);
     const operation = document.paths["/failure"]?.get;
     if (operation === undefined) return yield* Effect.die("Fixture must declare GET /failure");
@@ -106,7 +150,11 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
     Object.assign(document, {
       components: {
         ...document.components,
-        schemas: { ...document.components.schemas, Cat: pet("meow"), Dog: pet("bark") },
+        schemas: {
+          ...document.components.schemas,
+          Cat: pet("meow"),
+          Dog: pet("bark"),
+        },
         parameters: {
           WireId: {
             name: "id",
@@ -211,6 +259,53 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
         }),
       ),
       HttpRouter.add("GET", "/openapi.json", HttpServerResponse.json(document)),
+      HttpRouter.add(
+        "POST",
+        "/records",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const record = yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(Schema.Struct({ name: Schema.String })),
+          )(yield* request.text);
+          // The change is committed before the failure, so a repeat would save it twice.
+          records.push(record.name);
+          return yield* HttpServerResponse.json({ message: openapiSecretMarker }, { status: 502 });
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/records/bulk",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const { names } = yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(Schema.Struct({ names: Schema.Array(Schema.String) })),
+          )(yield* request.text);
+          for (const name of names) {
+            // The records before a refused one stay saved: the request partly committed.
+            if (name === "")
+              return yield* HttpServerResponse.json(
+                { _tag: "InvalidRecord", message: "Record names must not be empty." },
+                { status: 422 },
+              );
+            if (name === "conflict")
+              return yield* HttpServerResponse.json(
+                {
+                  _tag: "StoreConflict",
+                  message: openapiConflictMessage,
+                  recovery: openapiRetryRecovery,
+                },
+                { status: 409 },
+              );
+            records.push(name);
+          }
+          return yield* HttpServerResponse.json({ saved: names });
+        }),
+      ),
+      HttpRouter.add(
+        "GET",
+        "/records",
+        Effect.suspend(() => HttpServerResponse.json({ records })),
+      ),
       HttpRouter.add(
         "GET",
         "/items/*",
@@ -325,17 +420,19 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
                 ? 403
                 : mode === "limited"
                   ? 429
-                  : mode === "constrained"
-                    ? 424
-                    : mode === "ref-sibling"
-                      ? 425
-                      : mode === "unsupported-response"
-                        ? 421
-                        : mode === "unsupported"
-                          ? 418
-                          : mode === "wrong-status"
-                            ? 409
-                            : 422;
+                  : mode === "bad-gateway"
+                    ? 502
+                    : mode === "constrained"
+                      ? 424
+                      : mode === "ref-sibling"
+                        ? 425
+                        : mode === "unsupported-response"
+                          ? 421
+                          : mode === "unsupported"
+                            ? 418
+                            : mode === "wrong-status"
+                              ? 409
+                              : 422;
           return yield* HttpServerResponse.json(body, { status });
         }),
       ),

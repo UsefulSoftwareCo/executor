@@ -1,8 +1,7 @@
 /** Paired-dashboard access to workflow history and webhook lifecycle metadata. */
 import {
+  AccountId,
   AppId,
-  ProfileId,
-  ProfileRevision,
   DeploymentId,
   WorkflowRunId,
   HostedWorkflow,
@@ -14,21 +13,23 @@ import {
   WebhookSubscription,
   WebhookErrors,
   WebhookId,
+  WebhookSource,
+  ConfigureWebhookSource,
+  WebhookSourceSummary,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 const app = { app: AppId };
 const path = "/dashboard/api/apps/:app";
-/** The paired browser has the same workflow capabilities as the local SDK. */
+/**
+ * The paired browser has the same workflow capabilities as the local SDK. Runs use the accounts
+ * linked to the app.
+ */
 export const DashboardWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
       params: app,
-      query: {
-        profile: Schema.optional(ProfileId),
-        deployment: Schema.optional(DeploymentId),
-        expectedProfileRevision: Schema.optional(ProfileRevision),
-      },
+      query: { deployment: Schema.optional(DeploymentId) },
       success: Schema.Array(HostedWorkflow),
       error: WorkflowErrors,
     }),
@@ -36,7 +37,7 @@ export const DashboardWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.post("start", `${path}/workflow-runs`, {
       params: app,
-      payload: StartWorkflow.mapFields(({ app: _app, ...fields }) => fields),
+      payload: StartWorkflow.mapFields(({ app: _app, accounts: _accounts, ...fields }) => fields),
       success: WorkflowRun,
       error: WorkflowErrors,
     }),
@@ -61,7 +62,6 @@ export const DashboardWebhooks = HttpApiGroup.make("webhooks")
   .add(
     HttpApiEndpoint.get("list", `${path}/webhooks`, {
       params: app,
-      query: { profile: Schema.optional(ProfileId) },
       success: Schema.Array(WebhookSubscription),
       error: WebhookErrors,
     }),
@@ -70,6 +70,21 @@ export const DashboardWebhooks = HttpApiGroup.make("webhooks")
     HttpApiEndpoint.post("reconcile", `${path}/webhooks/:subscription/reconcile`, {
       params: { ...app, subscription: WebhookId },
       success: WebhookSubscription,
+      error: WebhookErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("sources", `${path}/webhook-sources`, {
+      params: app,
+      success: Schema.Array(WebhookSourceSummary),
+      error: WebhookErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("configureSource", `${path}/webhook-sources/:account/config`, {
+      params: { ...app, account: AccountId },
+      payload: ConfigureWebhookSource,
+      success: WebhookSource,
       error: WebhookErrors,
     }),
   );

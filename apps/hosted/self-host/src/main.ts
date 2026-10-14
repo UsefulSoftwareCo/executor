@@ -74,42 +74,42 @@ const server = Layer.unwrap(
   Layer.provide(BunHttpServer.layerHttpServices),
 );
 
-if (import.meta.main)
-  BunRuntime.runMain(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { host, port } = yield* settings;
-        const listener = yield* Layer.build(
-          // Bun closes a request after 10 seconds without a response by default; account checks
-          // and server-rendered documents can wait longer.
-          BunHttpServer.layer({ hostname: host, port, idleTimeout: 30 }),
-        );
-        const bound = yield* HttpServer.HttpServer.pipe(Effect.provideContext(listener));
-        const address = bound.address;
-        if (!("port" in address)) return yield* Effect.die("Self-host requires a TCP listener");
-        const base = yield* ConfigProvider.ConfigProvider;
-        const overrides: Record<string, string> = { PORT: String(address.port) };
-        // Port zero is a real OS allocation, not a released-port probe. Resolve local URLs
-        // before auth, managed app installation, or any callback is configured.
-        for (const key of ["BETTER_AUTH_URL", "EXECUTOR_OAUTH_CALLBACK_URL"]) {
-          const value = yield* Config.String(key).pipe(Config.option);
-          if (Option.isSome(value)) {
-            const url = URL.parse(value.value);
-            if (url !== null && url.port === "0") {
-              url.port = String(address.port);
-              overrides[key] = key === "BETTER_AUTH_URL" ? url.origin : url.href;
-            }
-          }
+/** Serve until interrupted; `scripts/coverage-main.ts` runs it under Bun's coverage profiler. */
+export const main = Effect.scoped(
+  Effect.gen(function* () {
+    const { host, port } = yield* settings;
+    const listener = yield* Layer.build(
+      // Bun closes a request after 10 seconds without a response by default; account checks
+      // and server-rendered documents can wait longer.
+      BunHttpServer.layer({ hostname: host, port, idleTimeout: 30 }),
+    );
+    const bound = yield* HttpServer.HttpServer.pipe(Effect.provideContext(listener));
+    const address = bound.address;
+    if (!("port" in address)) return yield* Effect.die("Self-host requires a TCP listener");
+    const base = yield* ConfigProvider.ConfigProvider;
+    const overrides: Record<string, string> = { PORT: String(address.port) };
+    // Port zero is a real OS allocation, not a released-port probe. Resolve local URLs
+    // before auth, managed app installation, or any callback is configured.
+    for (const key of ["BETTER_AUTH_URL", "EXECUTOR_OAUTH_CALLBACK_URL"]) {
+      const value = yield* Config.String(key).pipe(Config.option);
+      if (Option.isSome(value)) {
+        const url = URL.parse(value.value);
+        if (url !== null && url.port === "0") {
+          url.port = String(address.port);
+          overrides[key] = key === "BETTER_AUTH_URL" ? url.origin : url.href;
         }
-        const configuration = yield* selfHostConfiguration.pipe(
-          Effect.provideService(
-            ConfigProvider.ConfigProvider,
-            ConfigProvider.fromUnknown(overrides).pipe(ConfigProvider.orElse(base)),
-          ),
-        );
-        return yield* Layer.launch(server.pipe(Layer.provide(Layer.succeedContext(listener)))).pipe(
-          Effect.provideService(ConfigProvider.ConfigProvider, configuration),
-        );
-      }),
-    ).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
-  );
+      }
+    }
+    const configuration = yield* selfHostConfiguration.pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown(overrides).pipe(ConfigProvider.orElse(base)),
+      ),
+    );
+    return yield* Layer.launch(server.pipe(Layer.provide(Layer.succeedContext(listener)))).pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, configuration),
+    );
+  }),
+).pipe(Effect.provide(BunHttpServer.layerHttpServices));
+
+if (import.meta.main) BunRuntime.runMain(main);

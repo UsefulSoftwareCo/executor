@@ -31,21 +31,38 @@ import type { Target } from "./platform.ts";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import {
   applyLegacyStatements,
+  LegacyDatabase,
+  legacyDatabase,
   LegacyResults,
   LegacyStatements,
-  productDatabase,
 } from "./legacy-storage.ts";
 import { scenarios } from "../test-plan.ts";
+import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
+import { localEntryCommand } from "./local-entry.ts";
 
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
 
-/** The furthest a scenario may move a stopped product's clock; `wall-clock.mjs` enforces it too. */
+/** The furthest a scenario may move the product's clock; `wall-clock.mjs` enforces it too. */
 const maxClockOffset = 40 * 86_400_000;
 /** Operator settings a scenario may turn on between product generations. */
 export const OperatorSettings = Schema.Struct({
-  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.NonEmptyString,
+  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optionalKey(Schema.NonEmptyString),
+  /** The build an upgrade installs. */
+  EXECUTOR_BUILD_VERSION: Schema.optionalKey(Schema.NonEmptyString),
+  /**
+   * The operator's OAuth clients (notes/oauth.md, "First-party clients"): test client definitions
+   * an E2E host adds to the reviewed ones, and the credentials of the clients scenarios turn on.
+   * An empty value unsets one, as it does for the product.
+   */
+  EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_SLACK_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
 });
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (
@@ -69,6 +86,8 @@ export const startManagedServer = (
     );
     // The suite's loopback registry serves this checkout's apps release; see npm-registry.ts.
     const npmRegistry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
+    // The run's loopback official app feed and app registry; see public-catalogs.ts.
+    const catalogs = yield* Config.NonEmptyString("E2E_PUBLIC_CATALOGS").pipe(Config.option);
     const entry =
       target.metadata.target === "local" && Option.isSome(packagedEntry)
         ? // Run the installed CLI from its package, as the desktop runs its backend from its
@@ -89,9 +108,27 @@ export const startManagedServer = (
     // Each product process sends its analytics to its own loopback collector, kept across restarts.
     const analyticsPort = yield* startAnalyticsCollector(target.directory);
     const gate = yield* Semaphore.make(1);
+    // `E2E_COVERAGE=1` profiles each product process; see `e2e/coverage.ts`.
+    const coverageDirectory =
+      (yield* Config.Boolean("E2E_COVERAGE").pipe(Config.withDefault(false))) &&
+      target.scenarioId !== undefined
+        ? path.join(target.evidenceDirectory ?? target.directory, "coverage", target.scenarioId)
+        : undefined;
+    if (coverageDirectory !== undefined) {
+      yield* fs.makeDirectory(coverageDirectory, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(coverageDirectory, "scenario.json"),
+        JSON.stringify({ target: target.metadata.target, title: target.scenarioLabel }),
+      );
+    }
+    let generation = 0;
+    /** The clock offset the running process last confirmed; see `wall-clock.mjs`. */
+    let confirmedOffset = 0;
     let current: Scope.Closeable | undefined;
     /** The running product process, for an abrupt kill that runs none of its shutdown. */
     let running: ChildProcessSpawner.ChildProcessHandle | undefined;
+    /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
+    let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
     const env = {
       PATH: runtimePath,
       NODE_ENV: "test",
@@ -116,19 +153,30 @@ export const startManagedServer = (
       EXECUTOR_BUILD_VERSION: target.metadata.commit,
       EXECUTOR_WORKER_BUNDLE: path.resolve(".local/test-runtime/host.json"),
       ...(Option.isSome(npmRegistry) ? { EXECUTOR_NPM_REGISTRY: npmRegistry.value } : {}),
+      ...(Option.isSome(catalogs)
+        ? {
+            EXECUTOR_CATALOG_URL: `${catalogs.value}/catalog/index.json`,
+            EXECUTOR_REGISTRY_URL: catalogs.value,
+          }
+        : {}),
       EXECUTOR_TEST_CLOCK_OFFSET_MS: "0",
+      EXECUTOR_TEST_CLOCK_CONTROL: "stdin",
       EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
       ...environment,
     };
-    // On Windows every signal terminates at once, so the scope's tree kill stays the only stop.
-    const stopRequests = process.platform !== "win32";
     // Ask the product alone to stop, as the self-host image's supervisor does, so its own shutdown
     // flushes its telemetry before it stops the collector it started. A signal to its whole
     // process group stopped the collector first, and the product then spent its 3-second export
-    // budget retrying. Releasing the process scope afterwards ends anything it left behind.
+    // budget retrying. On Windows the scope's tree kill awaits only the product, so a collector still
+    // terminating held the data directory open when the scenario removed it. Releasing the process
+    // scope afterwards ends anything it left behind.
     const shutdown = Effect.suspend(() => {
       const child = running;
-      if (child === undefined || !stopRequests) return Effect.void;
+      if (child === undefined) return Effect.void;
+      // workerd's function logs are complete once it has stopped with the product.
+      return stopProduct(child).pipe(Effect.andThen(saveWorkerdCoverage));
+    });
+    const stopProduct = (child: ChildProcessSpawner.ChildProcessHandle) => {
       // The request goes through a pipe only the product holds (see stop-request.mjs), not to its
       // PID: once the product is reaped, its PID can name another process before its handle
       // reports the exit. A write to a product that already exited never completes, so the
@@ -146,7 +194,7 @@ export const startManagedServer = (
         ),
         Effect.ignore,
       );
-    });
+    };
     const stop = Effect.suspend(() =>
       current === undefined
         ? Effect.void
@@ -165,29 +213,65 @@ export const startManagedServer = (
       const scope = yield* Scope.make();
       current = scope;
       yield* Effect.gen(function* () {
+        // Self-host runs under Bun, which loads the runner's hooks as preloads. The local CLI owns
+        // the same hooks (see e2e-process.ts): a release executable runs no preload.
+        const preloads = ["./wall-clock.mjs", "./stop-request.mjs"].map(
+          (file) => new URL(file, import.meta.url),
+        );
+        // Each process generation writes its own report: Bun's lcov file has a fixed name.
+        const coverage =
+          coverageDirectory === undefined
+            ? undefined
+            : path.join(coverageDirectory, String(generation++));
+        // The product's workerd logs its function events here; see workerd-coverage.ts.
+        if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
+        const [program = "", ...programArgs] = entry.command;
+        const launch =
+          target.metadata.target === "local"
+            ? localEntryCommand(program, programArgs)
+            : {
+                command: "bun",
+                args:
+                  coverage !== undefined && mode === "product"
+                    ? [
+                        "test",
+                        "--coverage",
+                        "--coverage-reporter=lcov",
+                        `--coverage-dir=${coverage}`,
+                        "--timeout=0",
+                        ...(yield* Effect.forEach(preloads, path.fromFileUrl).pipe(
+                          Effect.orDie,
+                        )).flatMap((file) => ["--preload", file]),
+                        "./apps/hosted/self-host/scripts/coverage-main.ts",
+                      ]
+                    : [
+                        // Bun accepts Node's --import preload, so self-host can advance wall time too.
+                        ...preloads.flatMap((url) => ["--import", url.href]),
+                        ...entry.command,
+                      ],
+              };
         const child = yield* processes.spawn(
-          ChildProcess.make(
-            target.metadata.target === "local" ? "node" : "bun",
-            [
-              // Bun accepts Node's --import preload, so self-host can advance wall time too.
-              "--import",
-              new URL("./wall-clock.mjs", import.meta.url).href,
-              ...(stopRequests
-                ? ["--import", new URL("./stop-request.mjs", import.meta.url).href]
-                : []),
-              ...entry.command,
-            ],
-            {
-              extendEnv: false,
-              ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
-              env,
-              stdout: "pipe",
-              stderr: "pipe",
-              ...(stopRequests ? { additionalFds: { fd3: { type: "input" } } } : {}),
-              killSignal: "SIGTERM",
-              forceKillAfter: "15 seconds",
+          ChildProcess.make(launch.command, launch.args, {
+            extendEnv: false,
+            ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
+            env: {
+              ...env,
+              ...(target.metadata.target === "local" ? { EXECUTOR_TEST_STOP_FD: "3" } : {}),
+              ...(coverage === undefined
+                ? {}
+                : { ALCHEMY_WORKERD_V8_FLAGS: workerdCoverageFlags(coverage) }),
+              ...(coverage !== undefined && target.metadata.target === "local"
+                ? { NODE_V8_COVERAGE: coverage }
+                : {}),
             },
-          ),
+            // Stays open for clock moves while the process runs.
+            stdin: { stream: "pipe", endOnDone: false },
+            stdout: "pipe",
+            stderr: "pipe",
+            additionalFds: { fd3: { type: "input" } },
+            killSignal: "SIGTERM",
+            forceKillAfter: "15 seconds",
+          }),
         );
         running = child;
         yield* Scope.addFinalizer(
@@ -196,6 +280,19 @@ export const startManagedServer = (
             if (running === child) running = undefined;
           }),
         );
+        if (coverage !== undefined) {
+          const recorder = yield* recordWorkerdCoverage({
+            directory: coverage,
+            bundle: env.EXECUTOR_WORKER_BUNDLE,
+          });
+          saveWorkerdCoverage = recorder.save;
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.sync(() => {
+              if (saveWorkerdCoverage === recorder.save) saveWorkerdCoverage = Effect.void;
+            }),
+          );
+        }
         const ready = yield* Deferred.make<void>();
         const output = yield* Stream.merge(child.stdout, child.stderr).pipe(
           Stream.decodeText(),
@@ -207,6 +304,8 @@ export const startManagedServer = (
                 `${line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>")}\n`,
                 { flag: "a", mode: 0o600 },
               );
+              const clock = /^Executor test clock: (\d+)$/.exec(line);
+              if (clock !== null) confirmedOffset = Number(clock[1]);
               if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
                 origin = line.slice("Executor: ".length);
                 env.PORT = new URL(origin).port;
@@ -274,8 +373,10 @@ export const startManagedServer = (
         yield* gate.withPermits(1)(
           Effect.gen(function* () {
             // A kill models a crash or out-of-memory stop: the whole process group ends at once.
-            if (action === "kill" && running !== undefined)
+            if (action === "kill" && running !== undefined) {
               yield* running.kill({ killSignal: "SIGKILL" });
+              yield* saveWorkerdCoverage;
+            }
             if (action !== "start") yield* stop;
             if (action === "start" || action === "restart") yield* start;
           }),
@@ -303,10 +404,20 @@ export const startManagedServer = (
           );
           return yield* gate.withPermits(1)(
             Effect.gen(function* () {
-              if (current !== undefined) return HttpServerResponse.empty({ status: 409 });
               const offset = Number(env.EXECUTOR_TEST_CLOCK_OFFSET_MS) + body.milliseconds;
               if (offset > maxClockOffset) return HttpServerResponse.empty({ status: 400 });
               env.EXECUTOR_TEST_CLOCK_OFFSET_MS = String(offset);
+              // A later process generation starts at the offset; a running one moves now.
+              if (running !== undefined) {
+                yield* Stream.run(
+                  Stream.make(new TextEncoder().encode(`clock ${offset}\n`)),
+                  running.stdin,
+                );
+                yield* Effect.sync(() => confirmedOffset).pipe(
+                  Effect.filterOrFail((confirmed) => confirmed === offset),
+                  Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 400 }),
+                );
+              }
               return HttpServerResponse.jsonUnsafe({ offset });
             }),
           );
@@ -371,15 +482,26 @@ export const startManagedServer = (
           );
           if (!declared || target.metadata.target === "cloud")
             return HttpServerResponse.empty({ status: 403 });
-          const database = productDatabase(env.EXECUTOR_DATA_DIR, target.metadata.target);
           const body = yield* request.json.pipe(
             Effect.flatMap(
-              Schema.decodeUnknownEffect(Schema.Struct({ statements: LegacyStatements })),
+              Schema.decodeUnknownEffect(
+                Schema.Struct({ statements: LegacyStatements, database: LegacyDatabase }),
+              ),
             ),
           );
+          const database = legacyDatabase(
+            env.EXECUTOR_DATA_DIR,
+            target.metadata.target,
+            body.database,
+          );
+          if (database === undefined) return HttpServerResponse.empty({ status: 403 });
           // Hold the lifecycle gate so no product generation can open the database meanwhile.
           const rows = yield* gate.withPermits(1)(
-            stop.pipe(Effect.andThen(applyLegacyStatements(database, body.statements))),
+            stop.pipe(
+              Effect.andThen(
+                applyLegacyStatements(database, body.statements, env.EXECUTOR_ENCRYPTION_KEY),
+              ),
+            ),
           );
           return HttpServerResponse.text(
             yield* Schema.encodeEffect(Schema.fromJsonString(LegacyResults))(rows),
@@ -446,15 +568,36 @@ const startIsolatedSelfHost = (
       entry,
       environment,
     );
-    return server.origin;
+    return server;
   });
 
 /** Start the complete self-host development entry point beside the production test target. */
-export const startDevelopmentServer = (target: typeof Target.Service) =>
-  startIsolatedSelfHost(target, "development");
+export const startDevelopmentServer = (
+  target: typeof Target.Service,
+  environment: Readonly<Record<string, string>> = {},
+) =>
+  startIsolatedSelfHost(target, "development", environment).pipe(
+    Effect.map(({ origin }) => origin),
+  );
 
 /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
 export const startFreshSelfHost = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
-) => startIsolatedSelfHost(target, "product", environment);
+) => startIsolatedSelfHost(target, "product", environment).pipe(Effect.map(({ origin }) => origin));
+
+/**
+ * Start an unconfigured product instance as `startFreshSelfHost` does, and return the target that
+ * reaches it: its origin, and the control plane `serverControl` uses to move its clock.
+ */
+export const startControlledSelfHost = (
+  target: typeof Target.Service,
+  environment: Readonly<Record<string, string>> = {},
+) =>
+  startIsolatedSelfHost(target, "product", environment).pipe(
+    Effect.map(({ origin, controlOrigin }): typeof Target.Service => ({
+      ...target,
+      controlOrigin,
+      metadata: { ...target.metadata, origin, target: "self-host" },
+    })),
+  );

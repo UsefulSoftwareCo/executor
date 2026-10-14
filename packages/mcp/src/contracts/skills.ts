@@ -7,8 +7,6 @@ import {
   SkillApp,
   DeploymentId,
   SourceFilePath,
-  ProfileId,
-  ProfileRevision,
   SkillRevision,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
@@ -18,20 +16,26 @@ import { UnavailableApp } from "./execute.ts";
 
 const absent = Schema.optionalKey(Schema.Never);
 const version = Schema.optionalKey(DeploymentId);
-const selection = {
-  profile: Schema.optionalKey(ProfileId),
-  expectedProfileRevision: Schema.optionalKey(ProfileRevision),
-  revision: Schema.optionalKey(SkillRevision),
-};
+/**
+ * Reads no longer choose accounts. The key is still read so a caller that sets it gets
+ * `AccountChoiceUnsupported`, presented as a {@link SkillAccessFailed} with its code and status,
+ * rather than having it ignored.
+ */
+const accounts = Schema.optionalKey(
+  Schema.Unknown.annotate({
+    description:
+      "Not supported: skills are read with the accounts linked to the app. Setting it fails.",
+  }),
+);
+const selection = { revision: Schema.optionalKey(SkillRevision), accounts };
 const SkillSelection = Schema.Union([
   Schema.Struct({
     app: absent,
     name: absent,
     file: absent,
     deployment: absent,
-    profile: absent,
-    expectedProfileRevision: absent,
     revision: absent,
+    accounts: absent,
   }),
   Schema.Struct({ app: AppSlug, name: absent, file: absent, deployment: version, ...selection }),
   Schema.Struct({
@@ -56,8 +60,6 @@ export const SkillSummary = Schema.Struct({
   app: SkillApp,
   deployment: DeploymentId,
   revision: SkillRevision,
-  profile: Schema.optionalKey(ProfileId),
-  profileRevision: Schema.optionalKey(ProfileRevision),
 });
 /** MCP returns the same versioned text document as the SDK. Files never execute. */
 export const SkillDocument = AppSkillDocument;
@@ -107,35 +109,29 @@ export class SkillAppSlugAmbiguous extends Schema.TaggedError<SkillAppSlugAmbigu
     return "Several visible apps share the requested slug";
   }
 }
-/** The app has several profiles and the caller did not choose one. */
-export class SkillProfileRequired extends Schema.TaggedError<SkillProfileRequired>()(
-  "SkillProfileRequired",
-  { app: AppSlug, profiles: Schema.Array(ProfileId) },
-) {
-  override get message() {
-    return `${this.app} has several account profiles. Pass profile as one of: ${this.profiles.join(", ")}.`;
-  }
-  get [RecordedMessage]() {
-    return "The app has several account profiles and the call chose none";
-  }
-}
-/** The app requires accounts and the caller has no profile for it. */
+/**
+ * An app requirement has no account: a user requirement none the caller linked, an app requirement
+ * none linked for everyone.
+ */
 export class SkillAccountRequired extends Schema.TaggedError<SkillAccountRequired>()(
   "SkillAccountRequired",
-  { app: AppSlug },
+  { app: AppSlug, scope: Schema.Literals(["app", "user"]) },
 ) {
   override get message() {
-    return `${this.app} needs a connected account before its skills can be read. Connect one through Executor's account connection tool, then retry.`;
+    return this.scope === "app"
+      ? `${this.app} needs its own account, which someone who can edit the app links for everyone on its Accounts page, before its skills can be read. Ask them to link one, then retry.`
+      : `${this.app} needs a linked account before its skills can be read. Connect one through Executor's account connection tool, or link one on the app's Accounts page, then retry.`;
   }
   get [RecordedMessage]() {
-    return "The app needs a connected account before its skills can be read";
+    return this.scope === "app"
+      ? "The app needs an app account linked for everyone before its skills can be read"
+      : "The app needs a linked account before its skills can be read";
   }
 }
 export const SkillsFailure = Schema.Union([
   SkillAccessFailed,
   SkillAppNotFound,
   SkillAppSlugAmbiguous,
-  SkillProfileRequired,
   SkillAccountRequired,
 ]);
 export type SkillsFailure = typeof SkillsFailure.Type;
@@ -143,7 +139,7 @@ export type SkillsFailure = typeof SkillsFailure.Type;
 /** List summaries first, then read documents/references on demand through app evaluation. */
 export const SkillsTool = McpTool.make("skills", {
   description:
-    "Read instructions that apps ship. Start with the Executor app's executor skill: {app:'executor',name:'executor'}, using the slug {} returns if the app was renamed. {} lists visible skills; {app:'support-inbox'} lists one app's skills; {app:'support-inbox',name:'triage'} reads SKILL.md. Pass the returned profile, deployment and revision with a listed file to read a reference. App slugs are the namespaces used in execute. Skill text and allowed-tools metadata never grant tool permissions.",
+    "Read instructions that apps ship. Start with the Executor app's executor skill: {app:'executor',name:'executor'}, using the slug {} returns if the app was renamed. {} lists visible skills; {app:'support-inbox'} lists one app's skills; {app:'support-inbox',name:'triage'} reads SKILL.md. Pass the returned deployment and revision with a listed file to read a reference. App slugs are the namespaces used in search, call and execute. Skill text and allowed-tools metadata never grant tool permissions.",
   parameters: SkillsInput,
   success: SkillsResult,
   failure: SkillsFailure,

@@ -1,7 +1,7 @@
 /**
  * The SQL client one Worker event (or Durable Object call) uses for every database consumer:
- * the executor, hosted permission checks and Better Auth. A TLS login to PgBouncer costs about
- * 70 ms from a placed Worker, so consumers share one pool and sequential work reuses one connection.
+ * the executor, hosted permission checks and Better Auth. Worker events connect through Hyperdrive
+ * (about 4 ms); consumers still share one pool, so sequential work reuses one connection.
  */
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Context, Effect, Layer, Option, Scope } from "effect";

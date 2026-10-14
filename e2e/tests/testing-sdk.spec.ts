@@ -52,7 +52,7 @@ layer(HostedLive, { excludeTestServices: true })("Testing SDK", (it) => {
             "POST",
             `/api/organizations/${actors.organization.id}/apps/${app.id}/tools/call`,
             // Both seeded tools are queries.
-            { tool, kind: "query", profile: app.profile, input: {} },
+            { tool, kind: "query", accounts: app.accounts, input: {} },
           );
         const [rows, repository, foreign, secondRows] = yield* Effect.all(
           [
@@ -79,7 +79,7 @@ layer(HostedLive, { excludeTestServices: true })("Testing SDK", (it) => {
                 other.actors.owner,
                 "POST",
                 `/api/organizations/${other.actors.organization.id}/apps/${otherApp.id}/tools/call`,
-                { tool: "summary", kind: "query", profile: otherApp.profile, input: {} },
+                { tool: "summary", kind: "query", accounts: otherApp.accounts, input: {} },
               )
               .pipe(Effect.flatMap((response) => body(Summary, response))),
           ],

@@ -12,8 +12,8 @@ The local dashboard shows apps, accounts, live tools and retained source.
 Provider OAuth supports supplied clients, DCR, CIMD, and token refresh.
 Outbound MCP works over HTTP/SSE on local, self-host and cloud: custom remote
 MCP imports and catalog MCP entries deploy, discover live upstream tools, and
-call them, verified end to end including a real public server. Local process
-(stdio) MCP servers remain local-only. The remote SDK facade
+call them, verified end to end including a real public server. Apps cannot
+start local processes, so stdio MCP servers are not supported. The remote SDK facade
 (`createRemoteExecutor`) is not implemented.
 
 Effect is pinned to an upstream snapshot with MCP `2026-07-28` support.
@@ -79,8 +79,8 @@ in these files, never resolved credentials. Vault and item references also stay
 out of tracked scripts. Edit values in 1Password, then restart the affected
 process. Keep encryption/signing keys stable.
 
-Cloud uses Alchemy's PlanetScale database and role resources; Workers connect
-through PlanetScale's PgBouncer.
+Cloud uses Alchemy's PlanetScale database and role resources. Worker events reach
+PlanetScale's PgBouncer through Hyperdrive; Durable Objects connect to PgBouncer directly.
 `bun run hosted:cloud:dev` starts the cloud Worker, local Postgres, migrations,
 and frontend through Alchemy with service emulators and no credentials.
 `bun run hosted:cloud:dev:1password` uses `.env.cloud-development.op` instead;
@@ -101,9 +101,9 @@ Keep contracts flat, one cohesive area per file.
 - `packages/sdk/src/contracts/`
   - `provider.ts`: normalized definitions, named auth methods and derived references
   - `account.ts`: reusable accounts, API-key fields, OAuth start/completion and lookups
-  - `apps.ts`: apps, requirements, source, deployment and profile operations
+  - `apps.ts`: apps, requirements, source, deployment and account errors
   - `deployment.ts`: immutable source versions and retained builds
-  - `tools.ts`: existing tool seam, using explicit profile selections
+  - `tools.ts`: existing tool seam, using accounts the product resolves from links
   - `shared.ts`: branded IDs, owners, JSON and secret boundary types
   - `http.ts`: one HTTP contract, composed from accounts/apps/tools
   - `executor.ts`: the Promise SDK projected from that contract
@@ -121,7 +121,7 @@ Keep contracts flat, one cohesive area per file.
 - `apps/hosted/self-host/`: Effect Node HTTP entry point and Docker image
 - `packages/fumadb-effect/`: Effect SQL schema, typed query and migration implementation
 - `packages/mcp/`: shared execute/skills contracts, codemode and search over product-authorized operations
-- `packages/app-templates/`: source generators using the `apps` protocol subpaths for MCP, stdio, OpenAPI and GraphQL
+- `packages/app-templates/`: source generators using the `apps` protocol subpaths for MCP, OpenAPI and GraphQL
 - `packages/apps/`: provider/app authoring, shared context, schema constructors,
   native Effect contracts, an author facade, a portable host handler and fetch decoding
 - `playground/demo-apps/`: Vercel, Axiom, Mail, and Issue Mail authoring examples
@@ -181,7 +181,7 @@ Standalone runtime callers use `createAppRuntime({ runtime, blobs })` for Promis
 
 `apps/host` exposes `createAppHandler` and `hostContext` for other hosts. Its
 framework-owned Request/Response protocol supports requirements, inspection and
-calls. Trusted account bindings arrive separately from the request, are parsed
+calls. Trusted resolved accounts arrive separately from the request, are parsed
 and redacted, and are decoded through each provider's native method schema.
 The handler evaluates the app factory for every inspect/call, validates native
 tool input, and returns parsed JSON. Error envelopes contain fixed error tags,
@@ -208,26 +208,31 @@ stay out of returned metadata. Public SDK calls take plain credential fields;
 host contracts redact them at entry. OAuth client configuration, state, PKCE,
 refresh tokens and grant storage belong to the trusted host.
 
-An app owns source, deployment, requirements and shared data. Profiles hold account selections. `apps.deploy`
+An app owns source, deployment, requirements and shared data. It holds no account selections. `apps.deploy`
 creates, builds and activates a new app, keyed by `(owner,name)`.
 `apps.copy({ from, owner, name })` copies running source into an independent app
 with fresh Git history and deploys it. Unfinished apps copy their working source
 and remain undeployed. Copies retain their origin but no accounts or app data.
 
-`apps.profiles.update({ app, profile, expectedRevision, accounts })` replaces a
-profile's selected account map. Missing requirements are allowed during setup;
-every requirement must be filled before the profile runs. A `.many()` slot accepts an explicit empty array. Requirements
-apply to the whole app, including tools that use only part of its context.
+Operations that run app code take an explicit `accounts` map, nested by scope:
+`{ app, user }`, each from requirement name to account IDs. App requirements are
+filled by the app links, set for everyone by people who can edit the app, and
+user requirements by the caller's user links; app-scope work, such as an app schedule, has no `user`. Every requirement
+is named; a plain one names exactly one account and `.many()` any number,
+including none. Products resolve the map, never the caller: a plain user
+requirement uses its one linked account and `.many()` every linked account; see
+[app accounts](notes/app-accounts.md).
+Requirements apply to the whole app, including tools that use only part of its
+context.
 
 `AppCodeId` groups the deployments belonging to one independent app; it has no
 separate CRUD API. A deployment retains immutable source, its deploying owner,
-and a compiled-build reference. Code activation changes the app's pointer and marks profile setup pending.
-New calls validate each profile against the active requirements.
-It does not copy accounts, rewrite selections, or migrate app data.
+and a compiled-build reference. Code activation changes the app's pointer and
+re-registers managed webhooks. New calls validate their accounts against the active
+requirements. It does not copy accounts, rewrite links, or migrate app data.
 
-Tool calls identify the app and an explicit profile when accounts are required.
-The host snapshots its deployment, profile revision and selected IDs for that
-invocation, checks product authorization, resolves current credentials, and
+Tool calls identify the app and the accounts they use. The host snapshots the
+deployment and account IDs for that invocation, checks product authorization, resolves current credentials, and
 evaluates the dynamic app. An explicit deployment pins code only. The local MCP adapter evaluates catalogs for each execute and names tools by
 configured app ID. Durable indexing and cross-call revision handling remain deferred.
 
@@ -344,3 +349,9 @@ Development happens in this private repository. The public
 through `scripts/export-public.sh`. Paths listed in
 `scripts/export-public.exclude`, such as `notes/`, stay private. The export
 workflow runs the script on every push to `main`. See `RELEASING.md`.
+
+Pull requests against `v2` are ported into the private repository with the
+contributor's `Co-Authored-By` trailer and a line naming the public pull request
+and its full head sha, `Public-PR: UsefulSoftwareCo/executor#<number> <sha>`. The next
+export takes that head as another parent of its commit, so the pull request shows
+as merged and its commits stay in `v2`'s history.

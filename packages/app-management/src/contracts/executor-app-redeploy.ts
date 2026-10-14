@@ -1,6 +1,6 @@
 /**
  * One-off data step: redeploy Executor apps still built on an `apps` release before
- * `0.0.1-beta.10` on this host's release, changing nothing but the pin.
+ * `0.0.1-beta.10` on `0.0.1-beta.84`, changing nothing but the pin.
  *
  * Releases up to beta.9 refreshed cached values in the background with the invocation's `fetch`,
  * which aborts when the invocation ends, so dynamic catalogs such as the Executor app's skills only
@@ -14,6 +14,14 @@ export const executorAppRedeployStepName = "5_redeploy_pre_beta10_executor_apps"
 
 /** The first release with the fix. Apps pinned to an exact earlier release are redeployed. */
 export const executorAppRedeployFixedRelease = "0.0.1-beta.10";
+
+/**
+ * The release the step pins: the last one of host protocol 12, which has the fix and still builds
+ * the source these apps were written for. From protocol 13 an app declares `{ user: { accounts } }`
+ * and reads `ctx.user.accounts`, so their unchanged source no longer builds on the host's release.
+ * Hosts that ran the step before protocol 13 pinned their own release; it does not repeat there.
+ */
+export const executorAppRedeployTargetRelease = "0.0.1-beta.84";
 
 /**
  * Items are apps whose only account slot is a provider named `Executor`, the shape of every
@@ -39,7 +47,7 @@ export const executorAppRedeployFixedRelease = "0.0.1-beta.10";
  * - `other-pin`: the running source declares no exact `apps` release, or its manifest is not JSON.
  * - `edited`: `main` holds other work. Left alone.
  * - `undeployed`: nothing runs. Left alone.
- * - `build-failed`: the running source does not build on this host's release, so nothing changed.
+ * - `build-failed`: the running source does not build on the target release, so nothing changed.
  *   Not retried: it fails the same way every time.
  * - `conflict`: the app was deployed or its `main` changed while it was handled. Retried.
  * - `failed`: storage, Git or the build service failed for this app; other apps continue. Retried.

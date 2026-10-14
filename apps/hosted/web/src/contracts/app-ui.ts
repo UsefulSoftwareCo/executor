@@ -15,6 +15,13 @@ import type { HttpApiEndpoint } from "effect/http-api";
 import type { HttpClientError } from "effect/http";
 import { DashboardRuntime } from "./telemetry.ts";
 import { batchReads } from "@executor-js/dashboard-start/batch-browser";
+import {
+  observeBuild,
+  outdatedPageMessage,
+  pageOutdated,
+} from "@executor-js/dashboard-start/build-change";
+
+const batched = batchReads(HostedAppUiApi);
 
 /**
  * This client is used only by products that mount private app pages. Its reads batch with the
@@ -24,7 +31,7 @@ export class AppUiClient extends AtomHttpApi.Service<AppUiClient>()("HostedAppUi
   api: HostedAppUiApi,
   httpClient: organizationHttpClient,
   runtime: DashboardRuntime,
-  transformClient: batchReads(HostedAppUiApi),
+  transformClient: (client) => batched(observeBuild(client)),
 }) {}
 class AppUiKey extends Data.Class<{
   readonly organization: OrganizationReference;
@@ -100,8 +107,10 @@ const message = Match.type<AppUiError>().pipe(
     Unauthorized: () => "Your session ended. Sign in again.",
     Forbidden: () => "Open Executor from its configured address.",
     AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
-    HttpClientError: () => "Could not reach the server. Try again.",
-    SchemaError: () => "The server returned an unexpected response.",
+    HttpClientError: () =>
+      pageOutdated() ? outdatedPageMessage : "Could not reach the server. Try again.",
+    SchemaError: () =>
+      pageOutdated() ? outdatedPageMessage : "The server returned an unexpected response.",
   }),
 );
 /** Display safe copy instead of arbitrary error or credential payloads. */

@@ -48,12 +48,13 @@ $L $P shape --pull --hours 36          # refresh from executor-next-v2-traces (n
 $P seed --control $E/stage-control.json --receipt $E/receipt.json --seed 925
 ```
 
-`perf/shape.ts` holds only quantiles (apps/accounts/profiles per org, catalog apps and tools,
+`perf/shape.ts` holds only quantiles (apps and accounts per org, linked accounts per app, catalog
+apps and tools,
 calls per execute, upstream call and discovery latency). The seeded RNG turns them into
 organizations `a1f a8f a24f` (fast upstreams), `a1s a8s a24s` (production-latency upstreams,
 first-load delays) and `call` (zero-latency MCP, account-bound MCP and OpenAPI apps). Apps are
-imported through `POST apps/import` from the emulator, with profiles, API-key accounts and a PAT
-per org. The same seed and emulator origin produce equivalent data on every stage. Seeding
+imported through `POST apps/import` from the emulator, with API-key accounts connected from each
+account-bound app (which links them to it for the owner) and a PAT per org. The same seed and emulator origin produce equivalent data on every stage. Seeding
 resumes from the private receipt (it holds PATs; keep it out of Git).
 
 ## 4. Scenarios

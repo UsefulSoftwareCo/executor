@@ -11,13 +11,23 @@ const LeftOut = Schema.Struct({
   failure: Schema.Struct({ errorName: Schema.String, code: Schema.String }),
 });
 
+/** A call to a tool the app no longer exposes. */
+const Removed = Schema.Struct({ _tag: Schema.Literal("ToolNotFound"), message: Schema.String });
+/** A call the upstream answered with an error its document does not declare. */
+const Failed = Schema.Struct({
+  _tag: Schema.Literal("ToolCallFailed"),
+  reason: Schema.String,
+  failure: Schema.Struct({ errorName: Schema.String, message: Schema.String }),
+});
+const Listing = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
+
 layer(HostedLive, { excludeTestServices: true })("Live OpenAPI", (it) => {
   it.effect(scenarios.liveOpenapi.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
         const fixture = yield* liveOpenapiFixture(0, { staleFor: 0 });
-        const { call, callTool, api, actors, path, profile } = fixture;
+        const { call, callTool, api, actors, path } = fixture;
         const first = yield* call("old", "old");
         expect(first.status).toBe(200);
         expect(yield* body(Schema.Json, first)).toEqual({
@@ -41,17 +51,63 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI", (it) => {
           errorName: "OpenapiCompileError",
           code: "multiple_hosts",
         });
-        const tools = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/tools?profile=${profile.id}`,
-        );
+        const tools = yield* api.request(actors.owner, "GET", `${path}/tools`);
         expect(tools.status).toBe(200);
         const listing = yield* body(
           Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
           tools,
         );
         expect(listing.items.map((tool) => tool.name)).toEqual(["echoes.new", "status.getHealth"]);
+      }),
+    ),
+  );
+  it.effect(scenarios.liveOpenapiRetired.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        // Fresh for a minute: without a recheck, the retained document keeps the removed operation.
+        const fixture = yield* liveOpenapiFixture(60_000, { retiring: true });
+        const { invoke, api, actors, path } = fixture;
+        const listed = (yield* body(
+          Listing,
+          yield* api.request(actors.owner, "GET", `${path}/tools`),
+        )).items.map((tool) => tool.name);
+        expect(listed).toContain("legacy.list");
+        expect(listed).toContain("items.get");
+        expect((yield* invoke("legacy.list", {})).status).toBe(200);
+
+        // The upstream drops the operation and its route answers 404. Concurrent calls share one
+        // recheck of the document, which no longer has it: each reports an unknown tool.
+        yield* fixture.publish;
+        const downloads = yield* fixture.downloads;
+        const removed = yield* Effect.all(
+          Array.from({ length: 3 }, () => invoke("legacy.list", {})),
+          { concurrency: "unbounded" },
+        );
+        for (const response of removed) {
+          expect(response.status, JSON.stringify(response.body)).toBe(404);
+          const { message } = yield* body(Removed, response);
+          expect(message).toContain("legacy.list");
+          expect(message).toMatch(/search/i);
+        }
+        expect(yield* fixture.downloads).toBe(downloads + 1);
+        const relisted = (yield* body(
+          Listing,
+          yield* api.request(actors.owner, "GET", `${path}/tools`),
+        )).items.map((tool) => tool.name);
+        expect(relisted).not.toContain("legacy.list");
+        expect(relisted).toContain("items.get");
+
+        // An operation the document still has keeps the upstream's failure, which names its
+        // status but never its body. The recent recheck is not repeated.
+        const missing = yield* invoke("items.get", {});
+        expect(missing.status, JSON.stringify(missing.body)).toBe(502);
+        const failed = yield* body(Failed, missing);
+        expect(failed.failure.errorName).toBe("OpenapiError");
+        expect(failed.reason).toContain("GET /missing responded with HTTP 404");
+        expect(JSON.stringify(missing.body)).not.toContain("No item for token");
+        expect(JSON.stringify(missing.body)).not.toContain("synthetic-live-key");
+        expect(yield* fixture.downloads).toBe(downloads + 1);
       }),
     ),
   );

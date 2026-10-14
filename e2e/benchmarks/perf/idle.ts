@@ -53,7 +53,7 @@ export const runIdle = (input: {
       pairs,
       ({ gapSeconds, app }) =>
         Effect.gen(function* () {
-          const path = `/api/organizations/${entry.organization.id}/apps/${app.id}/${tab}?profile=${app.profile}`;
+          const path = `/api/organizations/${entry.organization.id}/apps/${app.id}/${tab}`;
           // Start every supervisor from a known warm state.
           yield* client.request("GET", path);
           for (let round = 0; round < input.rounds; round++) {

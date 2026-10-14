@@ -13,8 +13,8 @@
  *    sends, the live schema accepts everything the released schema accepts. For a message the
  *    host sends, the released schema accepts everything the live schema sends, except additions
  *    that `packages/apps/protocols/gates.json` says the host gates on something the bundle
- *    declared, and messages an adapter in `packages/sdk/src/implementation/app-protocols.ts`
- *    converts.
+ *    declared. Messages an adapter in `packages/sdk/src/implementation/app-protocols.ts`
+ *    converts, in either direction, are not compared.
  *
  * A snapshot records Effect's schema representation of each message's JSON form, without
  * documentation, type-only and derived annotations. It records only the messages that differ from
@@ -605,15 +605,19 @@ const compatibility = (
         continue;
       }
       const released = other.whole(version, name);
+      // An adapter converts this message for the protocol's bundles, whether the live protocol
+      // dropped it or changed its shape, so the two shapes need not be compatible.
+      const adapted = gates.adapted.find(
+        (entry) => entry.message === name && entry.protocols.includes(version),
+      );
+      if (adapted !== undefined) {
+        used.add(`adapted:${adapted.message}:${version}`);
+        continue;
+      }
       if (!liveNames.has(name)) {
-        const adapted = gates.adapted.find(
-          (entry) => entry.message === name && entry.protocols.includes(version),
+        problems.push(
+          `Protocol ${version}'s message ${name} is gone from the live protocol and no adapter in gates.json converts it.`,
         );
-        if (adapted === undefined)
-          problems.push(
-            `Protocol ${version}'s message ${name} is gone from the live protocol and no adapter in gates.json converts it.`,
-          );
-        else used.add(`adapted:${adapted.message}:${version}`);
         continue;
       }
       const live = mine.whole(liveVersion, name);
@@ -762,7 +766,7 @@ if (releasedVersions.every((version) => committed.has(version))) {
     for (const protocol of entry.protocols)
       if (!used.has(`adapted:${entry.message}:${protocol}`))
         problems.push(
-          `gates.json adapts ${entry.message} for protocol ${protocol}, but the live protocol still has it or ${protocol} is not released.`,
+          `gates.json adapts ${entry.message} for protocol ${protocol}, but ${protocol} is not released or does not have that message.`,
         );
   for (const entry of gates.additions)
     if (!used.has(`addition:${entry.message}:${entry.path}:${entry.since}`))

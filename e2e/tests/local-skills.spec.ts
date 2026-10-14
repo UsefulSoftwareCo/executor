@@ -2,12 +2,13 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Evidence } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectAccountsThroughOtherApp } from "../support/app-accounts.ts";
 import { wholeStringInputPattern } from "../support/mcp-input-patterns.ts";
 
 const App = Schema.Struct({
@@ -22,7 +23,7 @@ const Index = Schema.Struct({
       name: Schema.String,
       app: Schema.Struct({ id: Schema.String, slug: Schema.String }),
       deployment: Schema.String,
-      profile: Schema.optional(Schema.String),
+      revision: Schema.String,
     }),
   ),
 });
@@ -34,8 +35,7 @@ const Document = Schema.Struct({
 const files = (version: string) => [
   {
     path: "index.ts",
-    content:
-      'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, async () => ({}));',
+    content: 'import { defineApp } from "apps"; export default defineApp({}, async () => ({}));',
   },
   {
     path: "skills/app-authoring/SKILL.md",
@@ -113,19 +113,17 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         expect(instructions).toBe(
           entryDocument.content.replace(/^---\n[\s\S]*?\n---\n/, "").trim(),
         );
-        if (guide.profile === undefined)
-          return yield* Effect.die("The Executor app's skill summary must name its profile");
         const listed = yield* client.use("Discover the skills input schema", (client) =>
           client.listTools(),
         );
         expect(guide.deployment).toMatch(
           yield* wholeStringInputPattern(listed.tools, "skills", "deployment"),
         );
-        expect(guide.profile).toMatch(
-          yield* wholeStringInputPattern(listed.tools, "skills", "profile"),
+        expect(guide.revision).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "skills", "revision"),
         );
         const selected = yield* client.use(
-          "Read the guide with its returned deployment and profile",
+          "Read the guide with its returned deployment and revision",
           (client, signal) =>
             client.callTool(
               {
@@ -134,7 +132,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
                   app: guide.app.slug,
                   name: guide.name,
                   deployment: guide.deployment,
-                  profile: guide.profile,
+                  revision: guide.revision,
                 },
               },
               undefined,
@@ -187,82 +185,94 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         expect(
           (yield* Schema.decodeUnknownEffect(Document)(topic.structuredContent)).content,
         ).toContain("withOptimisticUpdate");
-        const profiles = yield* body(
-          Schema.Array(Schema.Struct({ id: Schema.String })),
-          yield* session.send("GET", `/v1/apps/${guide.app.id}/profiles`, undefined, headers),
-        );
-        expect(profiles).toHaveLength(1);
-        const profile = profiles[0];
-        if (profile === undefined)
-          return yield* Effect.die("The local Executor profile is missing");
-        const referenceTools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
-        const profileTools = yield* client.use(
-          "Discover profile management operations",
+        // The Executor app appears once, at its slug, with its linked local key.
+        const referenceTools = "tools.executor";
+        const accountTools = yield* client.use(
+          "Discover account management operations",
           (client, signal) =>
             client.callTool(
               {
                 name: "execute",
-                arguments: { code: 'return await tools.search({ query: "appProfiles.create" });' },
+                arguments: { code: 'return await tools.search({ query: "accounts.update" });' },
               },
               undefined,
               { signal },
             ),
         );
-        yield* (yield* Evidence).json("profile-tools.json", profileTools.structuredContent);
-        expect(profileTools.structuredContent).toMatchObject({
+        yield* (yield* Evidence).json("account-tools.json", accountTools.structuredContent);
+        expect(accountTools.structuredContent).toMatchObject({
           status: "completed",
           execution: {
             ok: true,
             value: {
               items: expect.arrayContaining([
                 expect.objectContaining({
-                  path: expect.stringContaining("appProfiles.create"),
-                  input: expect.stringContaining("idempotencyKey"),
+                  path: expect.stringContaining("accounts.update"),
+                  input: expect.stringContaining("description"),
                 }),
               ]),
             },
           },
         });
-        const managedProfile = yield* client.use(
-          "Create, read, and update a profile through the management app",
+        // Agents save accounts only by completing an app's connection request, so the fixture
+        // connects one and the management app reads, renames, lists, and removes it.
+        const agent: Session = {
+          ...session,
+          send: (method, path, data, extra = {}) => {
+            const { origin: _origin, ...rest } = extra;
+            return session.send(method, path, data, { ...rest, ...headers });
+          },
+        };
+        const [docsAccount] = yield* connectAccountsThroughOtherApp(agent, {
+          provider: `defineProvider({ name: "Local skills docs", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } })`,
+          method: "key",
+          accounts: [{ label: "Docs account", fields: { token: "synthetic-docs-key" } }],
+        });
+        if (docsAccount === undefined)
+          return yield* Effect.die("The docs fixture account was not connected");
+        const managedAccount = yield* client.use(
+          "Read, update, list, and remove an account through the management app",
           (client, signal) =>
             client.callTool(
               {
                 name: "execute",
                 arguments: {
                   code: `const executor = ${referenceTools};
-const path = { app: ${JSON.stringify(app.id)} };
-const created = await executor.appProfiles.create({ path, body: { owner: "local", subject: "local", accounts: {}, idempotencyKey: "management-docs-profile" } });
-const target = { ...path, profile: created.id };
-const read = await executor.appProfiles.get({ path: target });
-const updated = await executor.appProfiles.update({ path: target, body: { expectedRevision: read.revision, accounts: {} } });
-const listed = await executor.appProfiles.list({ path });
-return { sameProfile: created.id === read.id && read.id === updated.id, listed: listed.some((profile) => profile.id === created.id), revision: updated.revision, previousRevision: read.revision };`,
+const owner = "local";
+const target = { account: ${JSON.stringify(docsAccount.id)} };
+const read = await executor.accounts.get({ path: target, query: { owner } });
+const updated = await executor.accounts.update({ path: target, query: { owner }, body: { label: "Renamed docs account" } });
+const listed = await executor.accounts.list({ query: { owner } });
+await executor.accounts.remove({ path: target, query: { owner } });
+const after = await executor.accounts.list({ query: { owner } });
+return { sameAccount: target.account === read.id && read.id === updated.id, label: updated.label, listed: listed.some((account) => account.id === target.account), removed: !after.some((account) => account.id === target.account) };`,
                 },
               },
               undefined,
               { signal },
             ),
         );
+        yield* (yield* Evidence).json("managed-account.json", managedAccount.structuredContent);
         const managed = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             status: Schema.Literal("completed"),
             execution: Schema.Struct({
               ok: Schema.Literal(true),
               value: Schema.Struct({
-                sameProfile: Schema.Boolean,
+                sameAccount: Schema.Boolean,
+                label: Schema.String,
                 listed: Schema.Boolean,
-                revision: Schema.Number,
-                previousRevision: Schema.Number,
+                removed: Schema.Boolean,
               }),
             }),
           }),
-        )(managedProfile.structuredContent);
-        expect(managed.execution.value.sameProfile).toBe(true);
-        expect(managed.execution.value.listed).toBe(true);
-        expect(managed.execution.value.revision).toBeGreaterThan(
-          managed.execution.value.previousRevision,
-        );
+        )(managedAccount.structuredContent);
+        expect(managed.execution.value).toEqual({
+          sameAccount: true,
+          label: "Renamed docs account",
+          listed: true,
+          removed: true,
+        });
 
         const contracts = yield* client.use(
           "Discover local framework types through the installed app",

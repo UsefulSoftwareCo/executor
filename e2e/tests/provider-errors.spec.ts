@@ -1,17 +1,16 @@
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
-import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { selectProfileAccounts } from "../support/profiles.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { providerErrorUpstream, providerSecretMarker } from "../support/provider-error-upstream.ts";
 import { authoredAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Failure = Schema.Struct({
   _tag: Schema.Literal("AppProviderFailed"),
@@ -49,7 +48,7 @@ const providerErrors = (kind: Kind) =>
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, secrets, object, string, query, ProviderError, router } from "apps";
 const provider = defineProvider({ name: "Custom service", auth: { apiKey: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, signal }) => {
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ({ user: { accounts }, signal }) => {
   const account = accounts.service[1];
   if (!account) return { tools: router({}) };
   async function read(phase) {
@@ -103,39 +102,31 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
       expect(updated.status).toBe(200);
     }
     const accounts: string[] = [];
-    const profile = yield* body(
-      Resource,
-      yield* api.request(actors.owner, "POST", `${path}/profiles`, {
-        accounts: { service: [] },
-        idempotencyKey: randomUUID(),
-      }),
-    );
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         yield* upstream.configure(undefined);
-        yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile.id}`);
         yield* api.request(actors.owner, "DELETE", path);
         for (const account of accounts)
           yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
       }).pipe(Effect.orDie),
     );
-    for (const label of ["work", "personal"]) {
-      const connection = yield* body(
-        Resource,
-        yield* api.request(actors.owner, "POST", `${path}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        }),
-      );
-      const saved = yield* api.request(
-        actors.owner,
-        "POST",
-        `${prefix}/connections/${connection.id}/submit`,
-        { method: "apiKey", label, fields: { token: `synthetic-${label}` } },
-      );
-      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
-      accounts.push((yield* body(Resource, saved)).id);
-    }
+    // Connecting from the app links each account; the account array uses every linked one.
+    const connect = (label: string) =>
+      Effect.gen(function* () {
+        const connection = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
+        );
+        const saved = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${connection.id}/submit`,
+          { method: "apiKey", label, fields: { token: `synthetic-${label}` } },
+        );
+        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+        accounts.push((yield* body(Resource, saved)).id);
+      });
+    for (const label of ["work", "personal"]) yield* connect(label);
     const affected = accounts[1];
     if (affected === undefined) return yield* Effect.die("Missing second account");
     const tool =
@@ -144,13 +135,11 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
         : kind === "openapi"
           ? "identity.getIdentity"
           : "identity";
-    const catalog = () => api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`);
+    const catalog = () => api.request(actors.owner, "GET", `${path}/tools`);
     // The dashboard's index reads the same kept listing as the catalog.
-    const index = () =>
-      api.request(actors.owner, "GET", `${path}/tools/index?profile=${profile.id}`);
+    const index = () => api.request(actors.owner, "GET", `${path}/tools/index`);
     const call = () =>
       api.request(actors.owner, "POST", `${path}/tools/call`, {
-        profile: profile.id,
         tool,
         // Every template's identity operation is a read.
         kind: "query",
@@ -211,11 +200,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
       if (kind !== "custom")
         expectStated(listed, kind === "mcp" ? "while connecting" : "while listing its tools");
       // Lazy MCP sources do not discover tools when listing unrelated webhooks.
-      const setup = yield* api.request(
-        actors.owner,
-        "GET",
-        `${path}/webhook-definitions?profile=${profile.id}`,
-      );
+      const setup = yield* api.request(actors.owner, "GET", `${path}/webhook-definitions`);
       expect(setup.status, JSON.stringify(setup.body)).toBe(kind === "mcp" ? 200 : 502);
       if (kind === "mcp") expect(setup.body).toEqual([]);
     }
@@ -241,6 +226,24 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
         yield* assertFailure(yield* call(), reason, status);
       }
     }
+    if (kind === "openapi") {
+      // A bare 403 does not say why the service refused. When its body states an error in a
+      // nested error object, that error goes with the rejection, the account's credential replaced.
+      for (const [code, message] of [
+        [403, "User-rate limit exceeded. Token synthetic-personal"],
+        ["Authorization_RequestDenied", "Insufficient privileges for synthetic-personal"],
+      ] as const) {
+        yield* upstream.configure({
+          status: 403,
+          body: { error: { code, message, errors: [{ reason: "detail" }] } },
+          phase: "call",
+        });
+        const failure = yield* assertFailure(yield* call(), "rejected", 403, "call");
+        const redacted = message.replace("synthetic-personal", "[redacted]");
+        expect(failure.upstream).toEqual({ code, message: redacted });
+        expect(failure.message).toContain(`${code}: "${redacted}"`);
+      }
+    }
     if (kind === "custom") {
       yield* upstream.configure({ status: 402 });
       // This factory fetches its upstream without the app cache, so nothing tells Executor
@@ -252,13 +255,10 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
       const keptIndex = yield* index();
       expect(keptIndex.status, JSON.stringify(keptIndex.body)).toBe(200);
       expect(keptIndex.body).toMatchObject({ items: [{ name: "identity" }] });
-      // A new profile revision has no kept listing, so its first read evaluates the app and
-      // reports the new failure. A failed evaluation is not kept for the index: the next read
-      // evaluates again and reports whatever the service says then.
-      expect(
-        (yield* selectProfileAccounts(actors.owner, path, profile.id, { service: accounts }))
-          .status,
-      ).toBe(200);
+      // Linking another account changes the account set, which has no kept listing, so its
+      // first read evaluates the app and reports the new failure. A failed evaluation is not
+      // kept for the index: the next read evaluates again and reports whatever the service says.
+      yield* connect("spare");
       const forged = yield* body(Failure, yield* index());
       expect(forged.account).toBeUndefined();
       yield* upstream.configure({ status: 400 });
@@ -284,17 +284,29 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
       yield* upstream.configure({ status: 200, code });
       yield* assertFailure(yield* catalog(), reason, 200);
     }
+    // Saving the affected account's webhook source sets it up again; the rejected credential
+    // leaves it waiting for the account to be repaired.
     yield* upstream.configure({ status: 401 });
-    expect(
-      (yield* selectProfileAccounts(actors.owner, path, profile.id, { service: accounts })).status,
-    ).toBe(200);
+    const configured = yield* api.request(
+      actors.owner,
+      "PUT",
+      `${path}/webhook-sources/${affected}/config`,
+      { config: {} },
+    );
+    expect(configured.status, JSON.stringify(configured.body)).toBe(200);
     const deadline = (yield* Clock.currentTimeMillis) + 40_000;
     for (;;) {
-      const result = yield* body(
-        Schema.Struct({ status: Schema.String, failure: Schema.NullOr(Schema.String) }),
-        yield* api.request(actors.owner, "POST", `${path}/profiles/${profile.id}/reconcile`),
-      );
-      if (result.status === "needs-setup") {
+      const result = (yield* body(
+        Schema.Array(
+          Schema.Struct({
+            account: Schema.String,
+            status: Schema.String,
+            failure: Schema.NullOr(Schema.String),
+          }),
+        ),
+        yield* api.request(actors.owner, "GET", `${path}/webhook-sources`),
+      )).find((source) => source.account === affected);
+      if (result?.status === "needs-setup") {
         expect(result.failure).toBe("accounts");
         break;
       }
@@ -302,7 +314,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
       yield* Effect.sleep("200 millis");
     }
     yield* browser.login(actors.owner);
-    const url = `/org/${actors.organization.slug}/apps/${app.id}?view=tools&profile=${profile.id}`;
+    const url = `/org/${actors.organization.slug}/apps/${app.id}?view=tools`;
     yield* browser.use("Open authentication failure", (page) =>
       page
         .goto(url)
@@ -314,11 +326,6 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
     expect(
       yield* browser.use("No blind auth retry", (page) =>
         page.getByRole("button", { name: "Try again", exact: true }).count(),
-      ),
-    ).toBe(0);
-    expect(
-      yield* browser.use("Account errors replace the generic setup banner", (page) =>
-        page.getByText("Background setup failed. Retry setup.", { exact: true }).count(),
       ),
     ).toBe(0);
     yield* browser.checkpoint("Authentication error names the account and recovery");

@@ -1,6 +1,6 @@
 /** Private compiler entry point. The esbuild WASM module belongs only to this Worker. */
 import { WorkerEnvironment } from "alchemy/Cloudflare";
-import { RuntimeBuildFailed, SourceFiles } from "@executor-js/sdk/core";
+import { CodeFiles, RuntimeBuildFailed } from "@executor-js/sdk/core";
 import { CloudCompileResult } from "./contracts/builds.ts";
 import { withRemoteSpan } from "@executor-js/telemetry";
 import { Config, Effect, Option, Predicate, Schema } from "effect";
@@ -79,10 +79,14 @@ export default AppCompiler.make(
       ...(Option.isSome(version) ? { apps: { version: version.value, files } } : {}),
     };
     return AppCompiler.of({
-      compile: (files, headers) =>
-        Schema.decodeUnknownEffect(SourceFiles)(files).pipe(
+      compile: (files, publicPaths, headers) =>
+        Schema.decodeUnknownEffect(
+          Schema.Struct({ files: CodeFiles, publicPaths: Schema.Array(Schema.String) }),
+        )({ files, publicPaths }).pipe(
           Effect.mapError(() => new RuntimeBuildFailed({ stage: "source" })),
-          Effect.flatMap((files) => admitted(compileCloudApp(files, host))),
+          Effect.flatMap((input) =>
+            admitted(compileCloudApp(input.files, host, input.publicPaths)),
+          ),
           Effect.map((value) => ({ ok: true as const, value })),
           Effect.catchTags({
             RuntimeBuildFailed: (error) => Effect.succeed({ ok: false as const, error }),

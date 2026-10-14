@@ -1,4 +1,3 @@
-import { createProfile } from "../support/profiles.ts";
 /** Real hosted account setup, including host config parsing and the SDK's URL policy. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -7,6 +6,7 @@ import { scenarios } from "../test-plan.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -35,7 +35,7 @@ import { defineApp, defineProvider, oauth2, router } from "apps";
 const service = defineProvider({ name: "URL policy fixture", auth: {
   oauth: oauth2({ authorizationUrl: ${JSON.stringify(origin + "/authorize")}, tokenUrl: ${JSON.stringify(origin + "/token")}, scopes: ["read"] })
 } });
-export default defineApp({ accounts: { service } }, async () => ({  tools: router({}) }));`,
+export default defineApp({ user: { accounts: { service } } }, async () => ({  tools: router({}) }));`,
               },
               appsManifest,
             ],
@@ -47,12 +47,11 @@ export default defineApp({ accounts: { service } }, async () => ({  tools: route
               .request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)
               .pipe(Effect.asVoid, Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const opened = yield* api.request(
             actors.owner,
             "POST",
-            `${prefix}/apps/${app.id}/connections`,
-            { requirement: "service", profile: profile.id },
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
           );
           expect(opened.status).toBe(200);
           const connection = yield* body(Resource, opened);

@@ -16,7 +16,7 @@ layer(WelcomeEmailTarget.layer, { excludeTestServices: true })("Cloud welcome em
           }),
         ).toBe(200);
         expect(yield* target.tick()).toBe(200);
-        expect(yield* target.messages(email, "welcome to executor")).toHaveLength(0);
+        expect(yield* target.messages(email, "Welcome to Executor")).toHaveLength(0);
 
         const otp = yield* target.code(email, "sign-up");
         expect(
@@ -34,30 +34,26 @@ layer(WelcomeEmailTarget.layer, { excludeTestServices: true })("Cloud welcome em
         expect(welcomes).toHaveLength(1);
         const welcome = welcomes[0];
         expect(welcome?.from).toBe('"Rhys at Executor" <rhys@executor.sh>');
-        expect(welcome?.text.split("\n\nand if you'd rather not get these at all")[0])
-          .toBe(`hey Taylor,
+        expect(welcome?.text).toBe(`Hey Taylor,
 
-i'm rhys, founder of executor - thanks for signing up!
+I'm Rhys, founder of Executor. Thanks for signing up!
 
-if you're still working out where to start, here's a prompt you can hand to your agent:
+Here's a prompt you can hand to your agent to get started:
 
-"add the executor mcp server at ${target.origin}/mcp, then read the executor docs at ${target.origin}/docs and work out how you can best use executor to help me."
+"Add the Executor MCP server at ${target.origin}/mcp, then read the Executor docs at ${target.origin}/docs and work out how you can best use Executor to help me."
 
-candidly, i hate getting these emails as much as you do, so you won't get many from me. when i do send one, i'll make sure it's worth opening.
+This is an email directly from me. If you reply, it comes straight to my inbox. I'd love to hear from you if you need any help or have feedback.
 
-if you get stuck or have questions, just reply. this was an automated email but replies go straight to me, and i'd love to hear what you're using executor for.`);
-        expect(welcome?.html).toContain("<p>hey Taylor,</p>");
-        expect(welcome?.html).toContain(`read the executor docs at ${target.origin}/docs`);
-        const link = welcome?.text.match(
-          /and if you'd rather not get these at all, the unsubscribe link is right here: (\S+)$/,
-        )?.[1];
-        expect(link).toBeDefined();
-        if (!link) return yield* Effect.die("Missing unsubscribe link");
-        const url = new URL(link);
-        expect(url.origin).toBe(target.origin);
-        expect(url.pathname).toBe("/email/unsubscribe");
-        expect(welcome?.html).toContain(`href="${link}"`);
-        const token = url.hash.slice(1);
+I hope you enjoy Executor.
+
+Best,
+Rhys`);
+        expect(welcome?.html).toContain("<p>Hey Taylor,</p>");
+        expect(welcome?.html).toContain(`read the Executor docs at ${target.origin}/docs`);
+        expect(welcome?.html).toContain("<p>Best,<br>Rhys</p>");
+        expect(welcome?.text).not.toContain("unsubscribe");
+        expect(welcome?.html).not.toContain("unsubscribe");
+        const { browser: link, token } = yield* target.links(email);
         const visit = yield* target.preference("GET", token);
         expect(visit.status).toBe(303);
         expect(visit.location).toBe(link);
@@ -86,7 +82,7 @@ if you get stuck or have questions, just reply. this was an automated email but 
           }),
         ).toBe(200);
         expect(yield* target.tick()).toBe(200);
-        expect(yield* target.messages(email, "welcome to executor")).toHaveLength(1);
+        expect(yield* target.messages(email, "Welcome to Executor")).toHaveLength(1);
         expect(yield* target.request("/api/auth/sign-out", {})).toBe(200);
       }),
   );

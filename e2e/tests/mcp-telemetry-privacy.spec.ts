@@ -87,7 +87,7 @@ const crashing = [
 export const ${failingOperation} = query({ input: object({}) }, async () => {
   throw new Error("The operation failed");
 });
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     crash: query({ input: object({ text: string() }) }, async (_ctx, input) => {
       throw new Error(input.text);

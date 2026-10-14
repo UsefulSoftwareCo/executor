@@ -1,6 +1,7 @@
 import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
-import type { ResourceLifecycle } from "../contracts/executor.ts";
+import { AppProviderFailed, mayHaveWritten } from "../contracts/tools.ts";
+import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
 import type { WorkflowHostControls } from "apps/contracts";
 import { CompleteWebhookSetup, WebhookSetupView } from "../contracts/webhook-setup.ts";
 /** Persist intent before upstream work. Explicit reconciliation uses a bounded, compare-and-swap lease. */
@@ -18,29 +19,77 @@ import {
   DeliverWebhook,
   WebhookSubscription,
   WebhookApp,
+  WebhookDefinitionsInput,
   WebhookNotFound,
   WebhookConflict,
   WebhookFailed,
 } from "../contracts/webhooks.ts";
-import { AppId, WebhookId, StorageError, RequestInvalid } from "../contracts/shared.ts";
+import {
+  AppId,
+  WebhookId,
+  StorageError,
+  RequestInvalid,
+  type AccountId,
+} from "../contracts/shared.ts";
+import { SelectedAccounts } from "../contracts/apps.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
-import { snapshot, resolve, type InvocationSnapshot } from "./tools.ts";
-import { storedProfile } from "./profiles.ts";
+import { snapshot, resolve, resolveRemoval, type InvocationSnapshot } from "./tools.ts";
 import { storedAccount } from "./accounts.ts";
-import { storedApp } from "./apps.ts";
+import { storedApp, storedDeployment } from "./apps.ts";
+import { backgroundAccounts } from "./background-accounts.ts";
+import { accountAuthority } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
 const StoredWebhook = Schema.Struct({
   ...WebhookSubscription.fields,
+  registeredActor: Schema.NullOr(Schema.NonEmptyString),
+  registeredAccounts: Schema.NullOr(SelectedAccounts),
   encrypted: Schema.RedactedFromValue(Schema.Uint8Array),
   revision: Schema.String,
   leaseUntil: Schema.Date,
 });
+/**
+ * The actor and accounts an upstream registration ran as, saved before it reached the provider.
+ * An app-account webhook's registration ran without an actor.
+ */
+interface Registration {
+  readonly actor: string | null;
+  readonly accounts: SelectedAccounts;
+}
+/** A subscription's registration, if one started; both columns are saved together. */
+const registrationOf = (row: {
+  readonly registeredActor: string | null;
+  readonly registeredAccounts: SelectedAccounts | null;
+}) =>
+  row.registeredAccounts === null
+    ? row.registeredActor === null
+      ? Effect.succeed(undefined)
+      : Effect.fail(new StorageError())
+    : Effect.succeed<Registration | undefined>({
+        actor: row.registeredActor,
+        accounts: row.registeredAccounts,
+      });
+/** A source's managed subscription; one of an app-account source has no actor. */
+const ManagedWebhook = Schema.Struct({
+  ...CreateWebhook.fields,
+  actor: Schema.NullOr(Schema.NonEmptyString),
+});
+
+const refusedRemoval =
+  "Executor could not remove this registration: it is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
+const selectedIds = (selected: SelectedAccounts) =>
+  Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value));
+/**
+ * Accounts a subscription depends on: its source and the accounts its registration ran with,
+ * which removing it needs. Deletion guards read them.
+ */
+const dependencies = (source: AccountId, registered: SelectedAccounts | null) =>
+  [...new Set([source, ...(registered === null ? [] : selectedIds(registered))])].sort();
 const PrivateState = Schema.Struct({
   config: Schema.Json,
   secret: Schema.String,
@@ -48,7 +97,10 @@ const PrivateState = Schema.Struct({
   setup: Schema.optional(ManualWebhookDescriptor),
 });
 
-/** The host owns origin and authority. Each subscription pins code/account IDs while resolving current credentials. */
+/**
+ * The host owns origin and authority. Each subscription pins its code and source account; every
+ * callback resolves the actor's current accounts for the app's other requirements.
+ */
 export const makeWebhooks = (
   storage: ExecutorDatabase,
   runtime: Runtime,
@@ -83,39 +135,131 @@ export const makeWebhooks = (
       Effect.flatMap((value) => Schema.decodeUnknownEffect(PrivateState)(Redacted.value(value))),
       Effect.mapError(() => new StorageError()),
     );
-  const invoke = (row: typeof StoredWebhook.Type, command: WebhookCommand) =>
+  /** The subscription's pinned deployment and source, with the actor's accounts for the rest. */
+  const subscriptionState = (row: typeof StoredWebhook.Type) =>
     Effect.gen(function* () {
-      const state = yield* snapshot(
-        db,
-        { app: row.app, deployment: row.deployment, profile: row.profile ?? undefined },
-        row.accounts,
-        row.profileRevision ?? undefined,
-        command.operation === "webhook-unregister",
+      const accounts = yield* backgroundAccounts(db, lifecycle, {
+        app: row.app,
+        deployment: row.deployment,
+        actor: row.actor ?? undefined,
+        source: row.sourceAccount,
+      });
+      return yield* snapshot(db, { app: row.app, deployment: row.deployment, accounts });
+    }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
+  /**
+   * The registration's pinned deployment and the accounts it ran with, as the actor it ran as.
+   * Removing it uses only them: the subscription may have moved to another actor since, and the
+   * actor's current links may no longer resolve every requirement.
+   */
+  const removalState = (row: typeof StoredWebhook.Type, registration: Registration) =>
+    snapshot(db, {
+      app: row.app,
+      deployment: row.deployment,
+      // Only an app-account webhook's registration runs without an actor, and without a caller.
+      captured: {
+        accounts: registration.accounts,
+        scope: registration.actor === null ? "app" : "user",
+      },
+    }).pipe(Effect.provideService(CurrentActor, registration.actor ?? undefined));
+  /**
+   * Whether the product still lets the registration remove what it registered with every account
+   * it ran with (`ResourceLifecycle.removalResolving`): the user accounts by the registration's
+   * actor's use, and each app requirement's account by the app's authority over it, which outlives
+   * its app link. A refusal is lasting until access changes, so removal waits for a person rather
+   * than retrying.
+   */
+  const registrationUsable = (state: InvocationSnapshot, registration: Registration) =>
+    Effect.gen(function* () {
+      const { user, app: appUses } = accountAuthority(state.selections);
+      if (lifecycle === undefined || (user.length === 0 && appUses.length === 0)) return true;
+      const allowed = yield* lifecycle
+        .removalResolving({ id: state.app.id, owner: state.app.owner }, user, appUses)
+        .pipe(Effect.provideService(CurrentActor, registration.actor ?? undefined));
+      return [...user, ...appUses.map(({ account }) => account)].every((account) =>
+        allowed.has(account.id),
       );
-      const context = yield* resolve(state, resolveAccount, lifecycle);
-      return yield* runtime
-        .webhook({
-          app: row.app,
-          build: state.deployment.build,
-          database: ownsDatabase(state.deployment.requirements),
-          ...context,
-          ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
-          command,
-        })
-        .pipe(
-          Effect.mapError((error) =>
-            Schema.is(ProviderError)(error)
-              ? appProviderFailure(state, error)
-              : new WebhookFailed({
-                  reason: command.operation === "webhook-handle" ? "delivery" : "definition",
-                }),
-          ),
-        );
     });
-  /** Dashboard reads may reuse a recent evaluation; `live` evaluates the current build now. */
-  const definitions = (input: typeof WebhookApp.Type, live = false) =>
+  /**
+   * Save the actor and accounts a registration runs with before it reaches the provider, with
+   * the accounts' dependency rows, under this attempt's claim.
+   */
+  const recordRegistration = (
+    row: typeof StoredWebhook.Type,
+    claim: string,
+    accounts: SelectedAccounts,
+  ) =>
+    transaction(db, () =>
+      Effect.gen(function* () {
+        yield* query(() =>
+          db.updateMany("webhooks", {
+            where: (b) => b.and(b("id", "=", row.id), b("revision", "=", claim)),
+            set: { registeredActor: row.actor, registeredAccounts: accounts },
+          }),
+        );
+        const current = yield* read({ app: row.app, subscription: row.id });
+        if (current.revision !== claim) return yield* new WebhookConflict();
+        const existing = new Set(
+          (yield* query(() =>
+            db.findMany("webhookAccounts", {
+              select: ["account"],
+              where: (b) => b("subscription", "=", row.id),
+            }),
+          )).map((dependency) => String(dependency.account)),
+        );
+        for (const account of dependencies(row.sourceAccount, accounts))
+          if (!existing.has(account)) {
+            yield* storedAccount(db, account);
+            yield* query(() =>
+              db.create("webhookAccounts", {
+                id: `${row.id}/${account}`,
+                account,
+                subscription: row.id,
+              }),
+            );
+          }
+      }),
+    );
+  const invoke = (
+    row: typeof StoredWebhook.Type,
+    command: WebhookCommand,
+    known?: InvocationSnapshot,
+  ) =>
     Effect.gen(function* () {
-      const state = yield* snapshot(db, input);
+      const state = known ?? (yield* subscriptionState(row));
+      const context = yield* resolve(state, resolveAccount).pipe(
+        Effect.provideService(CurrentActor, state.actor),
+      );
+      return yield* call(row, command, state, context);
+    });
+  /** Run one webhook command of the app's code with resolved credentials. */
+  const call = (
+    row: typeof StoredWebhook.Type,
+    command: WebhookCommand,
+    state: InvocationSnapshot,
+    context: Effect.Success<ReturnType<typeof resolve>>,
+  ) =>
+    runtime
+      .webhook({
+        app: row.app,
+        build: state.deployment.build,
+        database: ownsDatabase(state.deployment.requirements),
+        ...context,
+        ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
+        command,
+      })
+      .pipe(
+        Effect.mapError((error) =>
+          Schema.is(ProviderError)(error)
+            ? // Registering, completing, removing and handling a webhook may change the service.
+              mayHaveWritten(AppProviderFailed, appProviderFailure(state, error))
+            : new WebhookFailed({
+                reason: command.operation === "webhook-handle" ? "delivery" : "definition",
+              }),
+        ),
+      );
+  /** Dashboard reads may reuse a recent evaluation; `live` evaluates the current build now. */
+  const definitions = (state: InvocationSnapshot, live = false) =>
+    Effect.gen(function* () {
       const failed = (error: unknown) =>
         Schema.is(ProviderError)(error)
           ? appProviderFailure(state, error)
@@ -126,7 +270,7 @@ export const makeWebhooks = (
         (context) =>
           runtime
             .webhook({
-              app: input.app,
+              app: state.app.id,
               build: state.deployment.build,
               database: ownsDatabase(state.deployment.requirements),
               ...context,
@@ -158,7 +302,9 @@ export const makeWebhooks = (
               (!remove && ["active", "setup-required", "disabled"].includes(row.status))
             )
               return row;
-            const manual = remove && (yield* decrypt(row)).setup !== undefined;
+            // A disabled subscription waits for a person to confirm its removal at the provider.
+            const manual =
+              remove && (row.status === "disabled" || (yield* decrypt(row)).setup !== undefined);
             const now = yield* Clock.currentTimeMillis;
             if (row.leaseUntil.getTime() > now) return yield* new WebhookConflict();
             yield* query(() =>
@@ -181,6 +327,8 @@ export const makeWebhooks = (
             if (row.revision !== claim || row.status === "disabled") return yield* metadata(row);
             const stopping = row.status === "stopping";
             // The intent/lease commits before network I/O. A lost response leaves recoverable state.
+            // Removal the registration's actor can no longer perform disables the subscription.
+            let refused = false;
             const work = Effect.gen(function* () {
               const saved = yield* decrypt(row);
               const common = {
@@ -191,12 +339,35 @@ export const makeWebhooks = (
                 subscriptionId: row.id,
                 sourceAccount: row.sourceAccount,
               };
-              const value = yield* invoke(
-                row,
-                stopping
-                  ? { operation: "webhook-unregister", ...common, state: saved.state }
-                  : { operation: "webhook-register", ...common },
-              );
+              let value: Effect.Success<ReturnType<typeof invoke>> | null = null;
+              if (stopping) {
+                // A registration that never started reached no provider: nothing to remove.
+                const registration = yield* registrationOf(row);
+                if (registration !== undefined) {
+                  const state = yield* removalState(row, registration);
+                  // The product can refuse before resolving or once a renewal settles; either is
+                  // lasting, unlike a storage failure, which the next attempt retries.
+                  const context = (yield* registrationUsable(state, registration))
+                    ? yield* resolveRemoval(state, resolveAccount).pipe(
+                        // The registration's actor, not the subscription's.
+                        Effect.provideService(CurrentActor, state.actor),
+                        Effect.catchTag("AccountUseRefused", () => Effect.succeed(undefined)),
+                      )
+                    : undefined;
+                  if (context === undefined) refused = true;
+                  else
+                    value = yield* call(
+                      row,
+                      { operation: "webhook-unregister", ...common, state: saved.state },
+                      state,
+                      context,
+                    );
+                }
+              } else {
+                const state = yield* subscriptionState(row);
+                yield* recordRegistration(row, claim, state.accounts);
+                value = yield* invoke(row, { operation: "webhook-register", ...common }, state);
+              }
               return yield* credentials.encrypt(
                 row.id,
                 Redacted.make({
@@ -223,7 +394,9 @@ export const makeWebhooks = (
                           : "register"
                         : null,
                       ...(Result.isSuccess(result)
-                        ? { status: stopping ? "stopped" : "active", encrypted: result.success }
+                        ? refused
+                          ? { status: "disabled", failure: null }
+                          : { status: stopping ? "stopped" : "active", encrypted: result.success }
                         : {}),
                     },
                   }),
@@ -254,6 +427,191 @@ export const makeWebhooks = (
               ).pipe(Effect.orDie),
       );
     }).pipe(Effect.withSpan("sdk.webhooks.reconcile"));
+  /**
+   * Save a subscription and attempt its registration. A caller's repeated key returns its saved
+   * subscription, and a stopped key stays stopped. A source's managed keys are derived from what it
+   * registers, so once its subscription for a key stopped, registering that key again starts a new
+   * one; the stopped subscription stays as history.
+   */
+  const create = (input: typeof ManagedWebhook.Type, managed: boolean) =>
+    Effect.gen(function* () {
+      yield* outsideTransaction;
+      // Only a source's managed subscription may have no actor: an app-account webhook.
+      const parsed = yield* Schema.decodeUnknownEffect(managed ? ManagedWebhook : CreateWebhook)(
+        input,
+      ).pipe(Effect.mapError(() => new RequestInvalid()));
+      const actor = parsed.actor ?? undefined;
+      if (origin === undefined) return yield* new WebhookFailed({ reason: "unavailable" });
+      const base = yield* Effect.try(() => new URL(origin)).pipe(
+        Effect.mapError(() => new WebhookFailed({ reason: "unavailable" })),
+      );
+      if (
+        !["https:", "http:"].includes(base.protocol) ||
+        base.username ||
+        base.password ||
+        base.pathname !== "/" ||
+        base.search ||
+        base.hash
+      )
+        return yield* new WebhookFailed({ reason: "unavailable" });
+      const app = yield* storedApp(db, parsed);
+      const deployment = yield* storedDeployment(db, app);
+      const sourceAccount = parsed.sourceAccount;
+      const state = yield* backgroundAccounts(db, lifecycle, {
+        app: app.id,
+        deployment: deployment.id,
+        actor,
+        source: sourceAccount,
+      }).pipe(
+        Effect.flatMap((accounts) =>
+          snapshot(db, { app: app.id, deployment: deployment.id, accounts }),
+        ),
+        Effect.provideService(CurrentActor, actor),
+      );
+      const context = yield* resolve(state, resolveAccount).pipe(
+        Effect.provideService(CurrentActor, actor),
+      );
+      const catalog = yield* runtime
+        .webhook({
+          app: parsed.app,
+          build: state.deployment.build,
+          database: ownsDatabase(state.deployment.requirements),
+          ...context,
+          command: { operation: "webhooks" },
+        })
+        .pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))),
+          Effect.mapError((error) =>
+            Schema.is(ProviderError)(error)
+              ? appProviderFailure(state, error)
+              : new WebhookFailed({ reason: "definition" }),
+          ),
+        );
+      const hook = catalog.find((hook) => hook.name === parsed.name);
+      if (hook === undefined) return yield* new WebhookFailed({ reason: "definition" });
+      // An app-account webhook runs without an actor; a user-account webhook, as its actor.
+      const required = Object.hasOwn(state.deployment.requirements.accounts, hook.account)
+        ? state.deployment.requirements.accounts[hook.account]
+        : undefined;
+      if (required === undefined || (required.scope === "app") !== (actor === undefined))
+        return yield* new WebhookFailed({ reason: "input" });
+      // The source must serve the definition's requirement.
+      const selected = Object.hasOwn(state.accounts, hook.account)
+        ? state.accounts[hook.account]
+        : undefined;
+      if (
+        !(typeof selected === "string"
+          ? selected === sourceAccount
+          : selected?.includes(sourceAccount))
+      )
+        return yield* new WebhookFailed({ reason: "input" });
+      const id = WebhookId.make(`whk_${yield* next}`);
+      const callbackUrl = new URL(`/api/webhooks/${parsed.app}/${id}`, base).href;
+      const secret = `${yield* next}${yield* next}`;
+      const config = yield* runtime
+        .webhook({
+          app: parsed.app,
+          build: state.deployment.build,
+          database: ownsDatabase(state.deployment.requirements),
+          ...context,
+          command: {
+            operation: "webhook-validate",
+            name: parsed.name,
+            config: parsed.config,
+            secret,
+            callbackUrl,
+            subscriptionId: id,
+            sourceAccount,
+          },
+        })
+        .pipe(Effect.mapError(() => new WebhookFailed({ reason: "input" })));
+      const encrypted = yield* credentials.encrypt(
+        id,
+        Redacted.make({
+          config,
+          secret,
+          state: null,
+          ...(hook.setup === undefined ? {} : { setup: hook.setup }),
+        }),
+      );
+      const revision = yield* next;
+      const createdAt = new Date(yield* Clock.currentTimeMillis);
+      const target = yield* transaction(db, () =>
+        Effect.gen(function* () {
+          // Serializes creation and app deletion without holding a lock across provider I/O.
+          yield* query(() =>
+            db.updateMany("apps", {
+              where: (b) => b("id", "=", state.app.id),
+              set: { createdAt: state.app.createdAt },
+            }),
+          );
+          const current = yield* storedApp(db, { app: state.app.id });
+          if (current.activeDeployment !== state.app.activeDeployment)
+            return yield* new WebhookConflict();
+          // At most one subscription per key is not stopped; stopped ones are history.
+          const keyed = yield* query(() =>
+            db.findMany("webhooks", {
+              where: (b) =>
+                b.and(
+                  b("app", "=", parsed.app),
+                  b("key", "=", parsed.key),
+                  actor === undefined ? b("actor", "is", null) : b("actor", "=", actor),
+                ),
+            }),
+          );
+          const existing =
+            keyed.find((row) => row.status !== "stopped") ?? (managed ? undefined : keyed[0]);
+          if (existing !== undefined) {
+            const row = yield* read({ app: parsed.app, subscription: existing.id });
+            const saved = yield* decrypt(row);
+            if (
+              row.name !== parsed.name ||
+              row.sourceAccount !== sourceAccount ||
+              !Schema.toEquivalence(Schema.Json)(saved.config, config)
+            )
+              return yield* new WebhookConflict();
+            return row.id;
+          }
+          const accountIds = dependencies(sourceAccount, null);
+          for (const account of accountIds) {
+            const currentAccount = yield* storedAccount(db, account);
+            yield* query(() =>
+              db.updateMany("accounts", {
+                where: (b) => b("id", "=", account),
+                set: { createdAt: currentAccount.createdAt },
+              }),
+            );
+            yield* storedAccount(db, account);
+          }
+          yield* query(() =>
+            db.create("webhooks", {
+              id,
+              app: parsed.app,
+              owner: state.app.owner,
+              actor: actor ?? null,
+              key: parsed.key,
+              deployment: state.deployment.id,
+              name: parsed.name,
+              sourceAccount,
+              callbackUrl,
+              accounts: {},
+              status: hook.setup === undefined ? "pending" : "setup-required",
+              revision,
+              leaseUntil: new Date(0),
+              failure: null,
+              encrypted,
+              createdAt,
+            }),
+          );
+          for (const account of accountIds)
+            yield* query(() =>
+              db.create("webhookAccounts", { id: `${id}/${account}`, account, subscription: id }),
+            );
+          return id;
+        }),
+      );
+      return yield* reconcile({ app: parsed.app, subscription: target });
+    }).pipe(Effect.withSpan("sdk.webhooks.create"));
   const webhooks = {
     get: (input: typeof WebhookTarget.Type) => read(input).pipe(Effect.flatMap(metadata)),
     confirmRemoval: (input: typeof WebhookTarget.Type) =>
@@ -261,8 +619,7 @@ export const makeWebhooks = (
         Effect.gen(function* () {
           const row = yield* read(input);
           if (row.status === "stopped") return yield* metadata(row);
-          if (row.status !== "disabled" || (yield* decrypt(row)).setup === undefined)
-            return yield* new WebhookConflict();
+          if (row.status !== "disabled") return yield* new WebhookConflict();
           const revision = yield* next;
           yield* query(() =>
             db.updateMany("webhooks", {
@@ -278,17 +635,14 @@ export const makeWebhooks = (
           return yield* metadata(current);
         }),
       ),
-    definitions: (input: typeof WebhookApp.Type) => definitions(input),
+    definitions: (input: typeof WebhookDefinitionsInput.Type) =>
+      snapshot(db, input).pipe(Effect.flatMap((state) => definitions(state))),
     list: (input: typeof WebhookApp.Type) =>
       Effect.gen(function* () {
         yield* storedApp(db, input);
         const rows = yield* query(() =>
           db.findMany("webhooks", {
-            where: (b) =>
-              b.and(
-                b("app", "=", input.app),
-                input.profile === undefined ? true : b("profile", "=", input.profile),
-              ),
+            where: (b) => b("app", "=", input.app),
             orderBy: ["id", "asc"],
           }),
         );
@@ -296,181 +650,7 @@ export const makeWebhooks = (
           Effect.mapError(() => new StorageError()),
         );
       }),
-    create: (input: typeof CreateWebhook.Type) =>
-      Effect.gen(function* () {
-        yield* outsideTransaction;
-        const parsed = yield* Schema.decodeUnknownEffect(CreateWebhook)(input).pipe(
-          Effect.mapError(() => new RequestInvalid()),
-        );
-        if (origin === undefined) return yield* new WebhookFailed({ reason: "unavailable" });
-        const base = yield* Effect.try(() => new URL(origin)).pipe(
-          Effect.mapError(() => new WebhookFailed({ reason: "unavailable" })),
-        );
-        if (
-          !["https:", "http:"].includes(base.protocol) ||
-          base.username ||
-          base.password ||
-          base.pathname !== "/" ||
-          base.search ||
-          base.hash
-        )
-          return yield* new WebhookFailed({ reason: "unavailable" });
-        const state = yield* snapshot(db, parsed);
-        const context = yield* resolve(state, resolveAccount, lifecycle);
-        const catalog = yield* runtime
-          .webhook({
-            app: parsed.app,
-            build: state.deployment.build,
-            database: ownsDatabase(state.deployment.requirements),
-            ...context,
-            command: { operation: "webhooks" },
-          })
-          .pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedWebhook))),
-            Effect.mapError((error) =>
-              Schema.is(ProviderError)(error)
-                ? appProviderFailure(state, error)
-                : new WebhookFailed({ reason: "definition" }),
-            ),
-          );
-        const hook = catalog.find((hook) => hook.name === parsed.name);
-        if (hook === undefined) return yield* new WebhookFailed({ reason: "definition" });
-        const selected = state.accounts[hook.account];
-        const sourceAccount =
-          parsed.sourceAccount ?? (typeof selected === "string" ? selected : undefined);
-        if (
-          sourceAccount === undefined ||
-          !(typeof selected === "string"
-            ? selected === sourceAccount
-            : selected?.includes(sourceAccount))
-        )
-          return yield* new WebhookFailed({ reason: "input" });
-        const id = WebhookId.make(`whk_${yield* next}`);
-        const callbackUrl = new URL(`/api/webhooks/${parsed.app}/${id}`, base).href;
-        const secret = `${yield* next}${yield* next}`;
-        const config = yield* runtime
-          .webhook({
-            app: parsed.app,
-            build: state.deployment.build,
-            database: ownsDatabase(state.deployment.requirements),
-            ...context,
-            command: {
-              operation: "webhook-validate",
-              name: parsed.name,
-              config: parsed.config,
-              secret,
-              callbackUrl,
-              subscriptionId: id,
-              sourceAccount,
-            },
-          })
-          .pipe(Effect.mapError(() => new WebhookFailed({ reason: "input" })));
-        const encrypted = yield* credentials.encrypt(
-          id,
-          Redacted.make({
-            config,
-            secret,
-            state: null,
-            ...(hook.setup === undefined ? {} : { setup: hook.setup }),
-          }),
-        );
-        const revision = yield* next;
-        const createdAt = new Date(yield* Clock.currentTimeMillis);
-        const target = yield* transaction(db, () =>
-          Effect.gen(function* () {
-            // Serializes creation and app deletion without holding a lock across provider I/O.
-            yield* query(() =>
-              db.updateMany("apps", {
-                where: (b) => b("id", "=", state.app.id),
-                set: { createdAt: state.app.createdAt },
-              }),
-            );
-            if (state.profile !== undefined) {
-              const profile = yield* storedProfile(db, {
-                app: state.app.id,
-                profile: state.profile.id,
-              });
-              if (
-                !profile.enabled ||
-                profile.revision !== state.profile.revision ||
-                profile.status === "removing" ||
-                profile.status === "removed"
-              )
-                return yield* new WebhookConflict();
-            }
-            const current = yield* storedApp(db, { app: state.app.id });
-            if (current.activeDeployment !== state.app.activeDeployment)
-              return yield* new WebhookConflict();
-            const existing = yield* query(() =>
-              db.findFirst("webhooks", {
-                where: (b) =>
-                  b.and(
-                    b("app", "=", parsed.app),
-                    b("key", "=", parsed.key),
-                    parsed.profile === undefined
-                      ? b("profile", "is", null)
-                      : b("profile", "=", parsed.profile),
-                  ),
-              }),
-            );
-            if (existing !== null) {
-              const row = yield* read({ app: parsed.app, subscription: existing.id });
-              const saved = yield* decrypt(row);
-              if (
-                row.name !== parsed.name ||
-                row.sourceAccount !== sourceAccount ||
-                !Schema.toEquivalence(Schema.Json)(saved.config, config)
-              )
-                return yield* new WebhookConflict();
-              return row.id;
-            }
-            const accountIds = [
-              ...new Set(
-                Object.values(state.accounts).flatMap((selected) =>
-                  typeof selected === "string" ? [selected] : [...selected],
-                ),
-              ),
-            ].sort();
-            for (const account of accountIds) {
-              const currentAccount = yield* storedAccount(db, account);
-              yield* query(() =>
-                db.updateMany("accounts", {
-                  where: (b) => b("id", "=", account),
-                  set: { createdAt: currentAccount.createdAt },
-                }),
-              );
-              yield* storedAccount(db, account);
-            }
-            yield* query(() =>
-              db.create("webhooks", {
-                id,
-                app: parsed.app,
-                owner: state.app.owner,
-                profile: parsed.profile ?? null,
-                profileRevision: state.profile?.revision ?? null,
-                key: parsed.key,
-                deployment: state.deployment.id,
-                name: parsed.name,
-                sourceAccount,
-                callbackUrl,
-                accounts: state.accounts,
-                status: hook.setup === undefined ? "pending" : "setup-required",
-                revision,
-                leaseUntil: new Date(0),
-                failure: null,
-                encrypted,
-                createdAt,
-              }),
-            );
-            for (const account of accountIds)
-              yield* query(() =>
-                db.create("webhookAccounts", { id: `${id}/${account}`, account, subscription: id }),
-              );
-            return id;
-          }),
-        );
-        return yield* reconcile({ app: parsed.app, subscription: target });
-      }).pipe(Effect.withSpan("sdk.webhooks.create")),
+    create: (input: typeof CreateWebhook.Type) => create(input, false),
     reconcile: (input: typeof WebhookTarget.Type) => reconcile(input),
     remove: (input: typeof WebhookTarget.Type) => reconcile(input, true),
     deliver: (input: typeof DeliverWebhook.Type) =>
@@ -482,19 +662,6 @@ export const makeWebhooks = (
         const row = yield* read(parsed);
         if (row.status === "stopping" || row.status === "disabled" || row.status === "stopped")
           return yield* new WebhookFailed({ reason: "inactive" });
-        if (row.profile !== null) {
-          const profile = yield* storedProfile(db, {
-            app: row.app,
-            profile: row.profile,
-          });
-          if (
-            !profile.enabled ||
-            profile.status === "removing" ||
-            profile.status === "removed" ||
-            profile.revision !== row.profileRevision
-          )
-            return yield* new WebhookFailed({ reason: "inactive" });
-        }
         const saved = yield* decrypt(row);
         const url = new URL(row.callbackUrl);
         url.search = new URL(parsed.request.url).search;
@@ -521,30 +688,71 @@ export const makeWebhooks = (
   return {
     webhooks,
     /** Reconciliation creates and removes upstream registrations from the current definitions. */
-    liveDefinitions: (input: typeof WebhookApp.Type) => definitions(input, true),
+    liveDefinitions: (state: InvocationSnapshot) => definitions(state, true),
+    /** Create a source's managed subscription; see `create`. */
+    createManaged: (input: typeof ManagedWebhook.Type) => create(input, true),
+    /**
+     * Point a subscription at its source's current actor. Callbacks resolve accounts at each
+     * delivery, so the upstream registration is unchanged.
+     */
+    retarget: (subscription: WebhookId, actor: string | null) =>
+      transaction(db, () =>
+        Effect.gen(function* () {
+          const row = yield* query(() =>
+            db.findFirst("webhooks", { where: (b) => b("id", "=", subscription) }),
+          );
+          if (row === null) return yield* new WebhookNotFound();
+          const current = yield* read({ app: row.app, subscription });
+          if (current.actor === actor) return;
+          yield* query(() =>
+            db.updateMany("webhooks", {
+              where: (b) => b("id", "=", subscription),
+              set: { actor, accounts: {} },
+            }),
+          );
+          if (current.status === "stopped") return;
+          yield* query(() =>
+            db.deleteMany("webhookAccounts", {
+              where: (b) => b("subscription", "=", subscription),
+            }),
+          );
+          for (const account of dependencies(current.sourceAccount, current.registeredAccounts))
+            yield* query(() =>
+              db.create("webhookAccounts", {
+                id: `${subscription}/${account}`,
+                account,
+                subscription,
+              }),
+            );
+        }),
+      ),
     webhookSetup: {
       read: (input: typeof WebhookTarget.Type) =>
         Effect.gen(function* () {
           const row = yield* read(input);
           const saved = yield* decrypt(row);
-          if (saved.setup === undefined) return yield* new WebhookFailed({ reason: "input" });
           const subscription = yield* metadata(row);
+          // A managed registration Executor could not remove waits for removal at the provider.
+          if (saved.setup === undefined && row.status !== "disabled")
+            return yield* new WebhookFailed({ reason: "input" });
           return yield* Schema.decodeUnknownEffect(Schema.toType(WebhookSetupView))(
-            row.status === "setup-required"
-              ? {
-                  step: "configure",
-                  subscription,
-                  revision: row.revision,
-                  instructions: saved.setup.instructions,
-                  stateSchema: saved.setup.stateSchema,
-                  signingSecret:
-                    saved.setup.signingSecret === "executor"
-                      ? { source: "executor", value: Redacted.make(saved.secret) }
-                      : { source: "provider" },
-                }
-              : row.status === "disabled"
-                ? { step: "remove", subscription, instructions: saved.setup.instructions }
-                : { step: "done", subscription },
+            saved.setup === undefined
+              ? { step: "remove", subscription, instructions: refusedRemoval }
+              : row.status === "setup-required"
+                ? {
+                    step: "configure",
+                    subscription,
+                    revision: row.revision,
+                    instructions: saved.setup.instructions,
+                    stateSchema: saved.setup.stateSchema,
+                    signingSecret:
+                      saved.setup.signingSecret === "executor"
+                        ? { source: "executor", value: Redacted.make(saved.secret) }
+                        : { source: "provider" },
+                  }
+                : row.status === "disabled"
+                  ? { step: "remove", subscription, instructions: saved.setup.instructions }
+                  : { step: "done", subscription },
           ).pipe(Effect.mapError(() => new StorageError()));
         }),
       complete: (input: typeof CompleteWebhookSetup.Type) =>

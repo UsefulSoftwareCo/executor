@@ -1,6 +1,12 @@
-/** Read current skill catalogs through the caller's authorized app and profile targets. */
-import { Effect } from "effect";
-import type { AppSkillCatalog } from "@executor-js/sdk/core";
+/** Read current skill catalogs through the caller's authorized apps and linked accounts. */
+import { Effect, Schema } from "effect";
+import {
+  AccountChoiceUnsupported,
+  AccountRequired,
+  resolveLinkedAccounts,
+  type App,
+  type AppSkillCatalog,
+} from "@executor-js/sdk/core";
 import type { McpBackend } from "../contracts/backend.ts";
 import { defaultMcpRuntimeLimits } from "../contracts/execute.ts";
 import {
@@ -8,7 +14,6 @@ import {
   SkillAccountRequired,
   SkillAppNotFound,
   SkillAppSlugAmbiguous,
-  SkillProfileRequired,
   type SkillsFailure,
   type SkillsInput,
   type SkillsResult,
@@ -22,9 +27,6 @@ const summaries = (catalog: AppSkillCatalog): readonly (typeof SkillSummary.Type
     app: catalog.app,
     deployment: catalog.deployment,
     revision: catalog.revision,
-    ...(catalog.profile === undefined
-      ? {}
-      : { profile: catalog.profile, profileRevision: catalog.profileRevision }),
   }));
 /** The agent reads why a read failed; the original failure reports as the same REST read would. */
 const failure = (error: Error) =>
@@ -35,7 +37,33 @@ const failure = (error: Error) =>
 const unavailable = <A extends object>(error: Error, entry: A) =>
   reportFailure(error).pipe(Effect.as({ ...entry, reason: diagnosticSummary(error) }));
 
-/** Resolve a slug only within authorized apps. Reference reads can pin the document's deployment. */
+type ListedApp = Pick<App, "id" | "name" | "slug" | "activeDeployment">;
+
+/**
+ * The accounts one app's skills are read with: the caller's linked accounts, as a tool call uses
+ * them. Skill text may depend on the account.
+ */
+const skillAccounts = <E extends Error>(
+  backend: McpBackend<E>,
+  app: ListedApp,
+  deployment: ListedApp["activeDeployment"],
+) =>
+  backend
+    .listAccounts({
+      app: app.id,
+      ...(deployment === null || deployment === app.activeDeployment ? {} : { deployment }),
+    })
+    .pipe(
+      Effect.flatMap((linked) =>
+        resolveLinkedAccounts({ app: app.id, deployment, appLinks: {}, userLinks: linked }),
+      ),
+    );
+
+/**
+ * Resolve a slug only within authorized apps. Reference reads can pin the document's deployment.
+ * A read that names accounts fails with `AccountChoiceUnsupported`, presented with its code and
+ * status: reads never choose them.
+ */
 export const skills = <E extends Error>(
   input: typeof SkillsInput.Type,
   backend: McpBackend<E>,
@@ -47,79 +75,56 @@ export const skills = <E extends Error>(
       const listed = yield* Effect.forEach(
         apps,
         (app) =>
-          backend.listTargets({ app: app.id }).pipe(
-            Effect.flatMap((targets) =>
-              Effect.forEach(
-                targets,
-                (target) =>
-                  backend
-                    .listSkills({
-                      app: app.id,
-                      ...(target.kind === "app"
-                        ? {}
-                        : { profile: target.id, expectedProfileRevision: target.revision }),
-                    })
-                    .pipe(
-                      Effect.map((catalog) => ({ skills: summaries(catalog), unavailable: [] })),
-                      Effect.catch((error) =>
-                        unavailable(error, {
-                          app: app.id,
-                          name: app.name,
-                          ...(target.kind === "profile" ? { profile: target.id } : {}),
-                        }).pipe(Effect.map((entry) => ({ skills: [], unavailable: [entry] }))),
-                      ),
-                    ),
-                { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
-              ),
+          skillAccounts(backend, app, app.activeDeployment).pipe(
+            Effect.flatMap((accounts) =>
+              // An index of every app's skills must not load each app to refresh it.
+              backend.listSkills({ app: app.id, accounts }, { refreshStale: false }),
+            ),
+            Effect.map((catalog) => ({ skills: summaries(catalog), unavailable: [] })),
+            // Most members never link accounts to most apps; those apps list no skills.
+            Effect.catchIf(Schema.is(AccountRequired), () =>
+              Effect.succeed({ skills: [], unavailable: [] }),
             ),
             Effect.catch((error) =>
               unavailable(error, { app: app.id, name: app.name }).pipe(
-                Effect.map((entry) => [{ skills: [], unavailable: [entry] }]),
+                Effect.map((entry) => ({ skills: [], unavailable: [entry] })),
               ),
             ),
           ),
         { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
       );
-      const results = listed.flat();
       return {
-        skills: results.flatMap((result) => result.skills),
-        unavailableApps: results.flatMap((result) => result.unavailable),
+        skills: listed.flatMap((result) => result.skills),
+        unavailableApps: listed.flatMap((result) => result.unavailable),
       };
     }
     const matches = apps.filter((app) => app.slug === input.app);
     const app = matches[0];
     if (app === undefined) return yield* new SkillAppNotFound({ app: input.app });
     if (matches.length !== 1) return yield* new SkillAppSlugAmbiguous({ app: input.app });
-    const targets = yield* backend.listTargets({ app: app.id }).pipe(Effect.catch(failure));
-    const target =
-      input.profile === undefined
-        ? (targets.find((target) => target.kind === "app") ??
-          (targets.length === 1 ? targets[0] : undefined))
-        : targets.find((target) => target.kind === "profile" && target.id === input.profile);
-    if (target === undefined) {
-      const profiles = targets.flatMap((target) => (target.kind === "profile" ? [target.id] : []));
-      return yield* profiles.length === 0
-        ? new SkillAccountRequired({ app: input.app })
-        : new SkillProfileRequired({ app: input.app, profiles });
-    }
-    const selection = {
-      deployment: input.deployment,
-      revision: input.revision,
-      ...(target.kind === "app"
-        ? {}
-        : {
-            profile: target.id,
-            expectedProfileRevision: input.expectedProfileRevision ?? target.revision,
-          }),
-    };
+    // Presented as execute presents it, so the agent reads its code and status, not only its text.
+    if (Object.hasOwn(input, "accounts"))
+      return yield* failure(new AccountChoiceUnsupported({ app: app.id }));
+    const slug = input.app;
+    const accounts = yield* skillAccounts(
+      backend,
+      app,
+      input.deployment ?? app.activeDeployment,
+    ).pipe(
+      Effect.catch((error): Effect.Effect<never, SkillAccountRequired | SkillAccessFailed> =>
+        Schema.is(AccountRequired)(error)
+          ? Effect.fail(new SkillAccountRequired({ app: slug, scope: error.scope }))
+          : failure(error),
+      ),
+    );
+    const selection = { accounts, deployment: input.deployment, revision: input.revision };
     if (input.name === undefined) {
       const catalog = yield* backend
         .listSkills({ app: app.id, ...selection })
         .pipe(Effect.catch(failure));
       return { skills: summaries(catalog) };
     }
-    const document = yield* backend
+    return yield* backend
       .readSkill({ app: app.id, name: input.name, ...selection, file: input.file })
       .pipe(Effect.catch(failure));
-    return document;
   });

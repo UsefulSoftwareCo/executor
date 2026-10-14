@@ -4,7 +4,7 @@
  * `events/list`, refuses new subscriptions, and stops the deliveries it already subscribed to.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { Api } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -12,6 +12,11 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { EventList, Granted, eventFixtures, secrets } from "../support/events.ts";
+
+const Execute = Schema.Struct({
+  status: Schema.Literal("completed"),
+  execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
+});
 
 layer(HostedLive, { excludeTestServices: true })("MCP event grants", (it) => {
   it.effect(
@@ -105,6 +110,28 @@ layer(HostedLive, { excludeTestServices: true })("MCP event grants", (it) => {
           ).toBe(200);
           expect(yield* listedWith(tokenOf(named))).toContain(name);
           yield* ok(Granted, yield* subscribe(tokenOf(named), "named"));
+          // The event grant can resolve and subscribe to the app, but it must not expose the app
+          // namespace to CodeMode's tool inventory when its tool selection is empty.
+          const eventOnlyResponse = (yield* rpcAs(tokenOf(named), "tools/call", {
+            name: "execute",
+            arguments: {
+              code: `const app = tools[${JSON.stringify(emitter.slug)}];
+let callable = true;
+try { await app({}); } catch { callable = false; }
+return { names: Object.keys(tools), callable };`,
+            },
+          })) as {
+            readonly result: { readonly structuredContent: unknown };
+          };
+          const eventOnly = yield* Schema.decodeUnknownEffect(Execute)(
+            eventOnlyResponse.result.structuredContent,
+          );
+          const eventOnlyValue = eventOnly.execution.value as {
+            callable: boolean;
+            names: ReadonlyArray<string>;
+          };
+          expect(eventOnlyValue.callable).toBe(false);
+          expect(eventOnlyValue.names).not.toContain(emitter.slug);
 
           // A grant that selects no events hides them and refuses subscribing, and narrowing can
           // never add them back.

@@ -1,12 +1,14 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { committedDocuments, recordAppOpening, screens } from "../support/app-open-timeline.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
+import { linkLocal, localLinks, unlinkLocal } from "../support/local-links.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 const appSchema = Schema.Struct({
@@ -21,8 +23,8 @@ const source = `import {defineApp,defineProvider,secrets,query,object,string, ro
 const service=defineProvider({name:"Launch fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})},
   async health({account}){if(account.fields.token==="rejected-launch-token")throw new ProviderError({reason:"unauthorized",status:401});
     if(account.fields.token==="down-launch-token")throw new ProviderError({reason:"unavailable",status:503});}});
-export const who=query({input:object({})},async ctx=>ctx.accounts.service.id);
-export default defineApp({accounts:{service}},{tools: router({ who })});`;
+export const who=query({input:object({})},async ctx=>ctx.user.accounts.service.id);
+export default defineApp({user: { accounts:{service} }},{tools: router({ who })});`;
 const files = (code: string) => [
   { path: "index.ts", content: code },
   {
@@ -47,6 +49,14 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
           target = yield* Target,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        // Agent calls carry the API key and no browser origin.
+        const agent: Session = {
+          ...session,
+          send: (method, path, data, extra = {}) => {
+            const { origin: _origin, ...rest } = extra;
+            return session.send(method, path, data, { ...rest, ...headers });
+          },
+        };
         const send = (method: "POST" | "GET" | "DELETE", path: string, data?: unknown) =>
           session.send(method, path, data, headers);
         const appName = `Launch ${randomUUID().slice(0, 8)}`;
@@ -64,28 +74,25 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         );
         const create = (label: string, token = "synthetic-launch-token") =>
           Effect.gen(function* () {
-            const account = yield* body(
-              Resource,
-              yield* send("POST", "/v1/accounts", {
-                owner: "local",
-                provider: app.requirements.accounts.service.provider,
+            // Connecting from the app links the account, replacing the one linked before.
+            const account = yield* connectLocalAccount(
+              agent,
+              {
+                app: app.id,
+                requirement: "service",
                 method: "key",
                 label,
                 fields: { token },
-              }),
+              },
+              headers,
             );
             owned.push(`/v1/accounts/${account.id}`);
-            const profile = yield* body(
-              Resource,
-              yield* send("POST", `/v1/apps/${app.id}/profiles`, {
-                owner: "local",
-                subject: "local",
-                name: label,
-                accounts: { service: account.id },
-                idempotencyKey: randomUUID(),
-              }),
-            );
-            return { account: account.id, profile: profile.id };
+            return account.id;
+          });
+        const remove = (account: string) =>
+          Effect.gen(function* () {
+            expect((yield* send("DELETE", `/v1/accounts/${account}`)).status).toBe(200);
+            owned.splice(owned.indexOf(`/v1/accounts/${account}`), 1);
           });
         const personal = yield* create("Personal");
         const { url } = yield* body(
@@ -102,14 +109,17 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
           page.getByRole("link", { name: "Open app", exact: true }).getAttribute("href"),
         );
         if (ui === null) return yield* Effect.die(new Error("Missing app URL"));
-        expect(new URL(ui).searchParams.get("profile")).toBe(personal.profile);
+        const appOrigin = new URL(ui).origin;
+        // The app link names no account; the app uses the account linked to it.
+        expect(new URL(ui).searchParams.has("accounts")).toBe(false);
         const { timeline } = yield* recordAppOpening(
           Effect.gen(function* () {
+            // Another deep link than the one opened below, which must load a new document.
             yield* browser.use("One account opens without a chooser", (page) =>
-              page.goto(new URL("/inbox?folder=unread#message", ui).href),
+              page.goto(new URL("/inbox?folder=all#message", ui).href),
             );
             yield* browser.use("Personal app data loads", (page) =>
-              page.locator("#identity").filter({ hasText: personal.account }).waitFor(),
+              page.locator("#identity").filter({ hasText: personal }).waitFor(),
             );
           }),
         );
@@ -120,7 +130,6 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
             .map((url) => url.pathname)
             .filter((path) => path.startsWith("/_executor/auth/")),
         ).toEqual([]);
-        const appOrigin = new URL(ui).origin;
         // Chromium maps *.localhost to loopback itself; Node relies on the OS resolver,
         // which does not on every platform. Local listens on 127.0.0.1.
         const appLoopback = new URL(ui);
@@ -161,68 +170,37 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         ]);
         expect(
           new URL(
-            yield* browser.use("Explicit local app context", (page) => Promise.resolve(page.url())),
-          ).searchParams.get("profile"),
-        ).toBe(personal.profile);
+            yield* browser.use("The single account page names no choice", (page) =>
+              Promise.resolve(page.url()),
+            ),
+          ).searchParams.has("accounts"),
+        ).toBe(false);
+        // Connecting another account from the app replaces the one it uses; the app opens
+        // straight away with it, keeping its deep link.
         const work = yield* create("Work");
-        yield* browser.use("Two accounts need a launch choice", (page) =>
-          page.goto(new URL("/inbox?folder=unread#message", ui).href),
-        );
-        yield* browser.use("Choose Work", (page) =>
-          page.getByRole("link", { name: "Work", exact: true }).click(),
-        );
-        yield* browser.use("Work app data loads", (page) =>
-          page.locator("#identity").filter({ hasText: work.account }).waitFor(),
+        expect(yield* localLinks(agent, app.id)).toEqual([work]);
+        yield* browser.use("The app opens with the newly linked account", (page) =>
+          page
+            .goto(new URL("/inbox?folder=unread#message", ui).href)
+            .then(() => page.locator("#identity").filter({ hasText: work }).waitFor()),
         );
         const launched = new URL(
-          yield* browser.use("Local deep link survives choice", (page) =>
-            Promise.resolve(page.url()),
-          ),
+          yield* browser.use("Read the opened page", (page) => Promise.resolve(page.url())),
         );
+        expect(launched.origin).toBe(appOrigin);
         expect(launched.pathname).toBe("/inbox");
         expect(launched.searchParams.get("folder")).toBe("unread");
+        expect(launched.searchParams.has("accounts")).toBe(false);
         expect(launched.hash).toBe("#message");
-        yield* browser.checkpoint("Local authored app has explicit account context");
-        const removed = yield* create("Removed");
-        yield* send("DELETE", `/v1/accounts/${removed.account}`);
-        owned.splice(owned.indexOf(`/v1/accounts/${removed.account}`), 1);
-        const rejected = yield* create("Rejected", "rejected-launch-token");
-        yield* send("POST", `/v1/accounts/${rejected.account}/health`, { apps: [app.id] });
-        yield* browser.use("Blocked profiles appear in the chooser", (page) =>
-          page.goto(new URL("/inbox", ui).href),
-        );
-        const choice = (name: string) =>
-          browser.use(`Read ${name} choice`, (page) =>
-            page
-              .getByRole("group", { name, exact: true })
-              .waitFor()
-              .then(() => page.getByRole("group", { name, exact: true }).innerText()),
-          );
-        expect(yield* choice("Removed")).toContain(
-          "Launch fixture account was removed or is no longer shared",
-        );
-        expect(yield* choice("Rejected")).toContain("Rejected: sign-in rejected at last check");
         expect(
-          yield* browser.use("Blocked profiles cannot open, ready ones can", (page) =>
-            page
-              .getByRole("link")
-              .filter({ hasText: /^(Personal|Work|Removed|Rejected)/ })
-              .allInnerTexts(),
+          yield* browser.use("No host account chooser was shown", (page) =>
+            page.getByRole("heading", { name: `Open ${appName}`, exact: true }).count(),
           ),
-        ).toEqual(["Personal", "Work"]);
-        const review = yield* browser.use("Read the rejected profile's account link", (page) =>
-          page
-            .getByRole("group", { name: "Rejected", exact: true })
-            .getByRole("link", { name: "Review accounts", exact: true })
-            .getAttribute("href"),
-        );
-        expect(review).toContain(`profile=${rejected.profile}`);
-        yield* browser.checkpoint("Blocked profiles explain why they cannot open");
-        const blocked = (profile: string) =>
+        ).toBe(0);
+        yield* browser.checkpoint("Local authored app opens with its linked account");
+        const blocked = (step: string) =>
           Effect.gen(function* () {
-            yield* browser.use("Open a blocked profile's app page", (page) =>
-              page.goto(new URL(`/inbox?profile=${profile}`, ui).href),
-            );
+            yield* browser.use(step, (page) => page.goto(new URL("/inbox", ui).href));
             yield* browser.use("A full page replaces the app", (page) =>
               page.getByRole("heading", { name: `${appName} can't open`, exact: true }).waitFor(),
             );
@@ -234,19 +212,35 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
               ]),
             );
           });
-        const [removedPage, removedFix, removedApp] = yield* blocked(removed.profile);
-        expect(removedPage).toContain("Launch fixture account was removed or is no longer shared");
-        expect(removedFix).toContain(`profile=${removed.profile}`);
-        expect(removedApp).toBe(0);
-        const [rejectedPage] = yield* blocked(rejected.profile);
+        const rejected = yield* create("Rejected", "rejected-launch-token");
+        yield* send("POST", `/v1/accounts/${rejected}/health`, { apps: [app.id] });
+        const [rejectedPage, rejectedFix, rejectedApp] = yield* blocked(
+          "Open the app with a rejected linked account",
+        );
         expect(rejectedPage).toContain("Rejected (Launch fixture): sign-in rejected at last check");
+        expect(rejectedFix).toContain(`/apps/${app.id}?view=accounts`);
+        expect(rejectedApp).toBe(0);
+        yield* browser.checkpoint("Blocked accounts explain why the app cannot open");
+        // With nothing linked, the page says what to link; the replaced accounts stay saved.
+        yield* unlinkLocal(agent, app.id, "service", rejected);
+        const [missingPage, missingFix, missingApp] = yield* blocked(
+          "Open the app with no linked account",
+        );
+        expect(missingPage).toContain("No Launch fixture account linked");
+        expect(missingFix).toContain(`/apps/${app.id}?view=accounts`);
+        expect(missingApp).toBe(0);
+        expect((yield* send("GET", `/v1/accounts/${work}`)).status).toBe(200);
+        // Removing the linked account removes its link too.
+        yield* linkLocal(agent, app.id, "service", work);
+        yield* remove(work);
+        expect(yield* localLinks(agent, app.id)).toEqual([]);
         const advisory = yield* create("Advisory", "down-launch-token");
-        yield* send("POST", `/v1/accounts/${advisory.account}/health`, { apps: [app.id] });
-        yield* browser.use("Open the advisory profile's app page", (page) =>
-          page.goto(new URL(`/inbox?profile=${advisory.profile}`, ui).href),
+        yield* send("POST", `/v1/accounts/${advisory}/health`, { apps: [app.id] });
+        yield* browser.use("Open the app with an advisory account", (page) =>
+          page.goto(new URL("/inbox", ui).href),
         );
         yield* browser.use("Advisory app data still loads", (page) =>
-          page.locator("#identity").filter({ hasText: advisory.account }).waitFor(),
+          page.locator("#identity").filter({ hasText: advisory }).waitFor(),
         );
         expect(
           yield* browser.use("Read the advisory card", (page) =>
@@ -270,7 +264,7 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
             files: files(
               source
                 .replace("accounts:{service}", "accounts:{}")
-                .replace("ctx.accounts.service.id", '"plain"'),
+                .replace("ctx.user.accounts.service.id", '"plain"'),
             ),
           }),
         );
@@ -288,10 +282,14 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         );
         expect(
           new URL(
-            yield* browser.use("Plain URL has no profile", (page) => Promise.resolve(page.url())),
-          ).searchParams.has("profile"),
+            yield* browser.use("Plain URL has no account choice", (page) =>
+              Promise.resolve(page.url()),
+            ),
+          ).searchParams.has("accounts"),
         ).toBe(false);
-        expect((yield* send("GET", `/v1/apps/${plain.app.id}/profiles`)).body).toEqual([]);
+        expect(
+          (yield* send("GET", `/dashboard/api/apps/${plain.app.id}/accounts/user`)).body,
+        ).toEqual([]);
       }),
     ),
   );

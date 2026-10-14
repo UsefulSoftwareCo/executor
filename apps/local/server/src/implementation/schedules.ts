@@ -8,19 +8,48 @@ import { DashboardApi } from "../contracts/dashboard.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import type { LocalAuth } from "./auth.ts";
 import { browserOnly } from "./dashboard.ts";
+import type { SqlClient } from "effect/sql";
+import { callerAccounts, localActor } from "./app-accounts.ts";
 
-/** Authentication is shared with dashboard routes; human decisions additionally require a browser cookie. */
-export const localScheduleHandlers = (executor: Executor, config: ServerConfig, auth: LocalAuth) =>
+/**
+ * Authentication is shared with dashboard routes; human decisions additionally require a browser
+ * cookie. The local subject has one copy of each declaration.
+ */
+export const localScheduleHandlers = (
+  executor: Executor,
+  sql: SqlClient.SqlClient,
+  config: ServerConfig,
+  auth: LocalAuth,
+) =>
   HttpApiBuilder.group(DashboardApi, "schedules", (handlers) =>
     handlers
-      .handle("list", ({ params, query }) => executor.schedules.list({ ...params, ...query }))
-      .handle("definitions", ({ params, query }) =>
-        executor.schedules.definitions({ ...params, ...query }),
+      .handle("list", ({ params }) => executor.schedules.list(params))
+      .handle("definitions", ({ params }) =>
+        executor.apps.get(params).pipe(
+          Effect.flatMap((app) => callerAccounts(sql, executor, app)),
+          Effect.flatMap((accounts) =>
+            executor.schedules.definitions({ ...params, accounts, actor: localActor }),
+          ),
+        ),
       )
-      .handle("configure", ({ params, payload }) =>
-        executor.schedules.configure({ ...params, ...payload, actor: "local" }),
+      // The app schedule has no actor; the SDK refuses a declaration of the other scope.
+      .handle("configure", ({ params, payload: { scope, ...settings } }) =>
+        executor.schedules.configure({
+          ...params,
+          ...settings,
+          ...(scope === "app" ? {} : { actor: localActor }),
+        }),
       )
-      .handle("runNow", ({ params, query }) => executor.schedules.runNow({ ...params, ...query }))
+      .handle("runNow", ({ params }) =>
+        executor.schedules
+          .copy({ ...params, actor: localActor })
+          .pipe(Effect.flatMap((copy) => executor.schedules.runNow({ ...params, copy: copy.id }))),
+      )
+      .handle("update", ({ params, payload }) =>
+        executor.schedules.update({ ...params, ...payload }),
+      )
+      .handle("runCopy", ({ params }) => executor.schedules.runNow(params))
+      .handle("remove", ({ params }) => executor.schedules.remove(params))
       .handle("runs", ({ query }) => executor.schedules.runs(query))
       .handle("approval", ({ params }) =>
         Effect.gen(function* () {

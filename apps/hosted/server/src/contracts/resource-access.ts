@@ -1,8 +1,7 @@
-import { Profile, ProfileId, ProfileErrors } from "@executor-js/sdk/core";
 import { ApiError } from "@executor-js/utils/api-error";
 import { RequiredAction } from "./authorization.ts";
 import { requireAccount } from "./account-grants.ts";
-/** Hosted sharing policy stays separate from SDK tenant ownership and saved bindings. */
+/** Hosted sharing policy stays separate from SDK tenant ownership and saved links. */
 import {
   App,
   Account,
@@ -10,6 +9,7 @@ import {
   Provider,
   AppId,
   AccountId,
+  AccountScope,
   AccountConnectionId,
   ProviderNotFound,
   StorageError,
@@ -17,7 +17,7 @@ import {
   AccountNotFound,
   AppNotFound,
 } from "@executor-js/sdk/core";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { Principal } from "./auth.ts";
 import { GroupId } from "./groups.ts";
@@ -75,18 +75,21 @@ export const ConnectionDestination = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("personal") }),
   Schema.Struct({ kind: Schema.Literal("shared"), audience: SharedAudience }),
 ]);
-/** Safe connection intent contains no credentials or OAuth tokens. */
+/**
+ * Safe connection intent contains no credentials or OAuth tokens. The target's scope is the
+ * requirement's when the connection started: completing a user requirement's links the account for
+ * its creator, an app requirement's links it for everyone. Connections saved before scopes are user
+ * ones.
+ */
 export const ConnectionAccess = Schema.Struct({
   connection: AccountConnectionId,
   creator: Principal.fields.userId,
   destination: ConnectionDestination,
-  target: Schema.NullOr(
-    Schema.Struct({
-      app: AppId,
-      requirement: Schema.NonEmptyString,
-      profile: ProfileId,
-    }).pipe(Schema.encodeKeys({ profile: "installation" })),
-  ),
+  target: Schema.Struct({
+    app: AppId,
+    requirement: Schema.NonEmptyString,
+    scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
+  }),
 });
 const accessConflicts = {
   changed: "Sharing changed since it was read. Read it again and reapply the edit.",
@@ -122,13 +125,17 @@ const errors = [
   AccountSelectionInvalid,
   AccountNotFound,
   AppNotFound,
-  ...ProfileErrors,
 ];
-/** Profiles belong to the caller; app metadata contains no account selections. */
+/** Linked accounts belong to the caller; app metadata contains no account selections. */
 export const ResourceDirectory = Schema.Struct({
   pendingApp: Schema.Boolean,
   apps: Schema.Array(
-    Schema.Struct({ app: App, access: AppAccess, profiles: Schema.Array(Profile) }),
+    Schema.Struct({
+      app: App,
+      access: AppAccess,
+      /** The accounts the caller linked to the app and may use; empty when they cannot use it. */
+      linkedAccounts: Schema.Array(AccountId),
+    }),
   ),
   accounts: Schema.Array(
     Schema.Struct({

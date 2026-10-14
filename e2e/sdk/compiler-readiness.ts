@@ -31,7 +31,7 @@ export class CompilerNotReady extends Schema.TaggedError<CompilerNotReady>()("Co
 }
 
 const source = `import { defineApp, object, query, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({ ping: query({ description: "Compiler readiness", input: object({}) }, async () => "ok") }),
 }));`;
 

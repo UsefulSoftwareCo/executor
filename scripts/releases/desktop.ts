@@ -3,13 +3,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import {
-  desktopUpdateFeed,
-  desktopUpdateFile,
-  nativePlatform,
-  platformArchive,
-  release,
-} from "./config.ts";
+import { desktopUpdateFeed, desktopUpdateFile, nativePlatform, release } from "./config.ts";
 import { developerIdMac, unsignedMac } from "./macos-signing.ts";
 import { installNodeRuntime } from "./node-runtime.ts";
 import { launcherAnalytics } from "./analytics.ts";
@@ -32,9 +26,11 @@ const build = Effect.gen(function* () {
   const stage = path.join(output, "desktop");
   const artifacts = path.join(output, "desktop-artifacts");
   const runtime = path.join(stage, "runtime");
-  const archive = path.join(output, platformArchive(target));
-  if (!(yield* fs.exists(archive)))
-    return yield* Effect.die(new Error("Build the matching CLI archive before the desktop."));
+  // The desktop runs the packaged runtime with its own Node; the npm archive holds the CLI's
+  // executable instead.
+  const packaged = path.join(output, "package");
+  if (!(yield* fs.exists(path.join(packaged, "runtime/desktop.mjs"))))
+    return yield* Effect.die(new Error("Build the matching CLI runtime before the desktop."));
   const run = (
     command: string,
     args: readonly string[],
@@ -71,19 +67,21 @@ const build = Effect.gen(function* () {
   // Rebuilding one version must not retain older installers or pre-stapling maps.
   if (yield* fs.exists(artifacts)) yield* fs.remove(artifacts, { recursive: true });
   yield* fs.makeDirectory(runtime, { recursive: true });
-  // Git Bash's GNU tar treats a Windows drive prefix in -f as a remote hostname.
-  yield* run(
-    "tar",
-    ["-xzf", path.basename(archive), "--strip-components", "1", "-C", "desktop/runtime"],
-    output,
-  );
+  yield* fs.copy(packaged, runtime, { overwrite: true });
   yield* installNodeRuntime(runtime);
+  // The backend restarts with each launch; Node's compile cache spares it recompiling the runtime.
+  // Node writes the cache only on an orderly exit, and on Windows the desktop's stop terminates
+  // the backend outright, so it is written once the runtime has loaded.
   yield* fs.writeFileString(
     path.join(runtime, "desktop-server.mjs"),
-    `import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
+    `import { flushCompileCache } from "node:module";
+import { enablePrivateCompileCache } from "./compile-cache.mjs";
+import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
 Object.assign(process.env, packagedRuntimeEnvironment(process.env));
 process.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};
-${yield* launcherAnalytics}await import("./runtime/desktop.mjs");
+${yield* launcherAnalytics}enablePrivateCompileCache();
+await import("./runtime/desktop.mjs");
+flushCompileCache();
 `,
   );
   yield* run("node", ["apps/local/desktop/scripts/build.mjs"], root);

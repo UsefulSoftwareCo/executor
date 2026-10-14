@@ -124,7 +124,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud site on the edge", (it) =>
               path: "index.ts",
               content: `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { wellKnownSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: () => wellKnownSkills({ url: ${JSON.stringify(`${deployment}${skillsIndex}`)}, cache: ctx.cache, fetch: ctx.fetch, signal: ctx.signal }) }),
 }));`,

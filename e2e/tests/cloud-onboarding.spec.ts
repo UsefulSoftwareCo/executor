@@ -22,7 +22,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         expect(yield* onboarding.suggestedTeamName).toBe(identity.companyName);
         expect(yield* onboarding.organizations).toEqual([]);
         const name = yield* onboarding.prepareTeam;
-        const team = yield* onboarding.confirmTeam(name);
+        const team = yield* onboarding.confirmTeam(name, "connect");
         const browser = yield* Browser;
         yield* onboarding.signOut;
         const list = yield* holdOrganizationEntry;
@@ -81,7 +81,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
           ),
         ).toBe(name);
         yield* browser.checkpoint("Team details retained for retry");
-        const team = yield* onboarding.confirmTeam(name);
+        const team = yield* onboarding.confirmTeam(name, "revisit");
         yield* browser.use("Existing members can revisit the setup URL", (page) =>
           page.goto("/create"),
         );

@@ -186,7 +186,7 @@ function DeleteDialogBody({
       submitLabel="Delete account"
       impact={
         <p className="text-[12px] leading-[1.5] text-muted-foreground">
-          These apps lose this account. Their other selected accounts stay connected.
+          These apps lose this account. Their other linked accounts stay linked.
         </p>
       }
       data={data}

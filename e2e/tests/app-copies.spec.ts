@@ -27,7 +27,7 @@ const App = Schema.Struct({
 const files = (message: string) => [
   {
     path: "index.ts",
-    content: `import {defineApp,object,query, router} from 'apps'; export default defineApp({accounts:{}},async()=>({tools: router({
+    content: `import {defineApp,object,query, router} from 'apps'; export default defineApp({},async()=>({tools: router({
   hello:query({input:object({})},async()=>${JSON.stringify(message)}),
 })}));`,
   },

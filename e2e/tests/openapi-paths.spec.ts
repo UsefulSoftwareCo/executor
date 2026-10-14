@@ -1,6 +1,5 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted } from "effect";
-import { randomUUID } from "node:crypto";
 import { openapiAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -12,6 +11,7 @@ import { Evidence } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { openapiPathUpstream } from "../support/openapi-path-upstream.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 layer(HostedLive, { excludeTestServices: true })("OpenAPI paths", (it) => {
   it.effect(scenarios.openapiPaths.title, (context) =>
@@ -39,19 +39,10 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI paths", (it) => {
         expect(imported.status, JSON.stringify(imported.body)).toBe(200);
         const app = yield* body(App, imported),
           path = `${prefix}/apps/${app.id}`;
-        const profile = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${path}/profiles`, {
-            accounts: { service: [] },
-            idempotencyKey: randomUUID(),
-          }),
-        );
+        // Connecting from the app links the account; the account array uses it.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const saved = yield* api.request(
           actors.owner,
@@ -67,7 +58,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI paths", (it) => {
         const account = yield* body(Resource, saved);
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile.id}`);
             yield* api.request(actors.owner, "DELETE", path);
             yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`);
           }).pipe(Effect.orDie),
@@ -108,7 +98,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI paths", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].projects[${JSON.stringify(tool)}](${JSON.stringify({ accountId: account.id, input: { path: { key } } })});`,
+                  code: `return await tools[${JSON.stringify(app.slug)}].projects[${JSON.stringify(tool)}](${JSON.stringify({ accountId: account.id, input: { path: { key } } })});`,
                 },
               },
               undefined,

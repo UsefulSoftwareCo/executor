@@ -1,11 +1,18 @@
 /**
- * Account checks run by the apps that select an account. Each app's active deployment runs its
- * provider's check with the account's current credentials; results are kept per account and app.
+ * Account checks run by the apps that use an account, as the product names them. Each app's active
+ * deployment runs its provider's check with the account's current credentials; results are kept
+ * per account and app.
  */
 import { Clock, Effect, Match, Option, Redacted, Result, Schema } from "effect";
-import { AccountInfo, HostOperationFailed, ProviderError } from "apps/contracts";
+import {
+  AccountInfo,
+  HostOperationFailed,
+  ProviderError,
+  type HostAccount,
+  type HostAccounts,
+} from "apps/contracts";
 import { AccountCheckStatus, type AccountHealth } from "../contracts/account.ts";
-import { SelectedAccounts, type App } from "../contracts/apps.ts";
+import type { AccountScope, App } from "../contracts/apps.ts";
 import type { Executor } from "../contracts/executor.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "../contracts/oauth.ts";
 import type { Runtime } from "../contracts/runtime.ts";
@@ -17,11 +24,16 @@ import {
   type OwnerId,
 } from "../contracts/shared.ts";
 import { AppNotFound } from "../contracts/apps.ts";
-import { grantedDefinition, validateFields } from "./provider.ts";
+import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
 import { StoredDeployment, type StoredAccount } from "../contracts/storage.ts";
 import { storedAccount } from "./accounts.ts";
 import { query, type Query } from "./database.ts";
 import type { makeOAuth } from "./oauth.ts";
+import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
+
+/** The one account an account check binds, in its requirement's scope. */
+const checkedAccounts = (scope: AccountScope, slot: string, account: HostAccount): HostAccounts =>
+  scope === "app" ? { app: { [slot]: account } } : { app: {}, user: { [slot]: account } };
 
 /**
  * A check answers an interactive request, so the whole check, including credential renewal and
@@ -39,7 +51,6 @@ const reportMillis = 1_000;
 
 type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolve" | "renewRejected">;
 type ListApps = (input: {
-  readonly account?: StoredAccount["id"];
   readonly owner?: OwnerId;
   readonly ids?: readonly AppId[];
 }) => Effect.Effect<readonly App[], StorageError>;
@@ -110,9 +121,10 @@ export const makeAccountHealth = (
   db: Query,
   runtime: Runtime,
   oauth: OAuth,
+  clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   listApps: ListApps,
 ) => {
-  /** One account's health from the apps that select it and its recorded checks. */
+  /** One account's health from the apps that use it and its recorded checks. */
   const project = (account: HealthAccount, apps: readonly App[], rows: readonly CheckRow[]) =>
     Effect.gen(function* () {
       const latest = rows
@@ -146,11 +158,11 @@ export const makeAccountHealth = (
       } satisfies AccountHealth;
     });
 
-  const report = (account: StoredAccount) =>
+  const report = (account: StoredAccount, ids: readonly AppId[]) =>
     Effect.gen(function* () {
-      // Apps are found by the profiles that select the account; their owner can differ from the
-      // account's, as in local, where apps belong to the host and accounts to its user.
-      const apps = yield* listApps({ account: account.id });
+      // The product names the apps; their owner can differ from the account's, as in local, where
+      // apps belong to the host and accounts to its user.
+      const apps = ids.length === 0 ? [] : yield* listApps({ ids });
       const rows = yield* query(() =>
         db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
       );
@@ -159,9 +171,10 @@ export const makeAccountHealth = (
 
   /**
    * Every account's health with a fixed number of reads, for account lists. An owner filter
-   * limits the accounts, profiles and apps read to that owner, as for a hosted organization.
+   * limits the accounts read to that owner, as for a hosted organization. `links` names the apps
+   * each account is linked to.
    */
-  const listHealth = (input: NonNullable<Parameters<Executor["accounts"]["listHealth"]>[0]> = {}) =>
+  const listHealth = (input: Parameters<Executor["accounts"]["listHealth"]>[0]) =>
     Effect.gen(function* () {
       const accounts = yield* query(() =>
         db.findMany("accounts", {
@@ -175,35 +188,13 @@ export const makeAccountHealth = (
       const rows = yield* query(() =>
         db.findMany("accountChecks", { where: (b) => b("account", "in", ids) }),
       );
-      const profiles = yield* query(() =>
-        db.findMany("profiles", {
-          select: ["app", "accounts"],
-          where: (b) =>
-            b.and(
-              input.owner === undefined ? true : b("owner", "=", input.owner),
-              b("status", "!=", "removed"),
-            ),
-        }),
-      );
-      const apps = yield* listApps(input.owner === undefined ? {} : { owner: input.owner });
-      const selections = profiles.map((profile) => ({
-        app: profile.app,
-        accounts: new Set(
-          Object.values(
-            Option.getOrElse(
-              Schema.decodeUnknownOption(SelectedAccounts)(profile.accounts),
-              () => ({}),
-            ),
-          ).flatMap((selection) => (typeof selection === "string" ? [selection] : selection)),
-        ),
-      }));
+      const linked = [...new Set(input.links.map((link) => link.app))];
+      const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
       return yield* Effect.forEach(accounts, (account) =>
         project(
           account,
           apps.filter((app) =>
-            selections.some(
-              (selection) => selection.app === app.id && selection.accounts.has(account.id),
-            ),
+            input.links.some((link) => link.app === app.id && link.account === account.id),
           ),
           rows.filter((row) => row.account === account.id),
         ),
@@ -226,35 +217,34 @@ export const makeAccountHealth = (
       const startedAt = yield* Clock.currentTimeMillis;
       const deadline = startedAt + checkMillis - reportMillis;
       const definition = target.required.definition;
-      const attempt = (fields: JsonObject) =>
+      // Each attempt binds the credential as resolved, so whether it is managed is read with its
+      // values, even if a reconnect replaced it since this check read the account.
+      const attempt = (credential: AccountCredential) =>
         runtime.checkAccount({
           app: app.id,
           build: deployment.build,
           requirement: target.slot,
           deadline,
-          accounts: Redacted.make({
-            [target.slot]: {
-              id: account.id,
-              provider: grantedDefinition(definition, account.allowedHosts),
-              method: account.method,
-              generation: account.credentialGeneration,
-              fields,
-            },
-          }),
+          accounts: Redacted.make(
+            checkedAccounts(
+              target.required.scope,
+              target.slot,
+              invocationAccount(account, definition, credential, clients),
+            ),
+          ),
         });
       const outcome = yield* Effect.gen(function* () {
-        const fields = yield* decodeFields(yield* oauth.resolve(account, definition));
-        const first = yield* attempt(fields).pipe(Effect.result);
+        const credential = yield* oauth.resolve(account, definition);
+        const first = yield* attempt(credential).pipe(Effect.result);
         if (Result.isSuccess(first)) return first.success;
         const refused = first.failure;
         if (!Schema.is(ProviderError)(refused) || refused.reason !== "unauthorized")
           return yield* Effect.fail(refused);
         // Renew once when the service refused the credentials, as tool calls do. Secrets accounts
         // and grants without a refresh token return the same fields, so there is nothing to retry.
-        const renewed = yield* decodeFields(
-          yield* oauth.renewRejected(account, definition, fields),
-        );
-        if (sameFields(renewed, fields)) return yield* Effect.fail(refused);
+        const fields = Redacted.value(credential.fields);
+        const renewed = yield* oauth.renewRejected({ kind: "check" }, account, definition, fields);
+        if (sameFields(Redacted.value(renewed.fields), fields)) return yield* Effect.fail(refused);
         return yield* attempt(renewed);
       }).pipe(Effect.timeout(checkMillis), Effect.result);
       const late = (yield* Clock.currentTimeMillis) >= deadline;
@@ -334,15 +324,15 @@ export const makeAccountHealth = (
           build: deployment.build,
           requirement: target.slot,
           deadline,
-          accounts: Redacted.make({
-            [target.slot]: {
+          accounts: Redacted.make(
+            checkedAccounts(target.required.scope, target.slot, {
               id: unsavedAccount,
               provider: target.required.definition,
               method: input.method,
               generation: 0,
               fields,
-            },
-          }),
+            }),
+          ),
         })
         .pipe(Effect.timeout(checkMillis), Effect.result);
       const late = (yield* Clock.currentTimeMillis) >= deadline;
@@ -363,21 +353,18 @@ export const makeAccountHealth = (
     listHealth,
     health: (input: Parameters<Executor["accounts"]["health"]>[0]) =>
       storedAccount(db, input.account, input.owner).pipe(
-        Effect.flatMap(report),
+        Effect.flatMap((account) => report(account, input.apps)),
         Effect.withSpan("sdk.accounts.health"),
       ),
     check: (input: Parameters<Executor["accounts"]["check"]>[0]) =>
       Effect.gen(function* () {
         const account = yield* storedAccount(db, input.account, input.owner);
-        const only = input.apps === undefined ? undefined : new Set<AppId>(input.apps);
-        const apps = (yield* listApps({ account: account.id })).filter(
-          (app) => only === undefined || only.has(app.id),
-        );
+        const apps = input.apps.length === 0 ? [] : yield* listApps({ ids: input.apps });
         yield* Effect.forEach(apps, (app) => checkApp(app, account), {
           concurrency: 4,
           discard: true,
         });
-        return yield* report(account);
+        return yield* report(account, input.apps);
       }).pipe(Effect.withSpan("sdk.accounts.check")),
   };
 };

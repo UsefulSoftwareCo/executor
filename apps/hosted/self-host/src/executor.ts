@@ -27,6 +27,7 @@ export const selfHostExecutor = (egress: HostEgress) =>
           path.resolve(directory, "workflow-engine"),
         ],
         allowPrivateAppFetch: yield* allowPrivateAppFetch,
+        encryptionKey: yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY"),
         ...Option.match(yield* npmRegistry, {
           onNone: () => ({}),
           onSome: (registry) => ({ npmRegistry: registry }),

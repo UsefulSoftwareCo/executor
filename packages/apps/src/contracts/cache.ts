@@ -53,7 +53,7 @@ export interface AppCache {
 export type AccountCredential<Credential extends object> =
   | ({ readonly account?: undefined } & { readonly [Field in keyof Credential]?: undefined })
   | ({
-      /** The selected account, as `accounts.<slot>` provides it. */
+      /** The selected account, as `ctx.app.accounts.<slot>` or `ctx.user.accounts.<slot>` provides it. */
       readonly account: { readonly id: string };
     } & Credential);
 

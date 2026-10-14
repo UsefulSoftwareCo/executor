@@ -1,8 +1,31 @@
 diff --git a/dist/codemode.d.ts b/dist/codemode.d.ts
-index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..fd7548c869cd8aa895d679975b730866e543e120 100644
+index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..961b4f9e4dfad063a5b7640e5392ef38c7dde651 100644
 --- a/dist/codemode.d.ts
 +++ b/dist/codemode.d.ts
-@@ -141,6 +141,8 @@ export type Result = typeof Result.Type;
+@@ -1,8 +1,8 @@
+ import { Effect, Schema } from "effect";
+-import { type Services, type ToolDescription, ToolRuntime } from "./tool-runtime.js";
++import { type Search, type Services, type ToolDescription, ToolRuntime } from "./tool-runtime.js";
+ import type { Tools } from "./tools.js";
+ /** A tool call admitted during an execution. */
+-export type { ToolCall, ToolCallEnded, ToolCallHooks, ToolCallStarted, ToolDescription } from "./tool-runtime.js";
++export type { Search, SearchPage, SearchRequest, ToolCall, ToolCallEnded, ToolCallHooks, ToolCallStarted, ToolDescription } from "./tool-runtime.js";
+ /** Signature-construction helpers for host-owned catalog instructions. */
+ export { searchSignature, toolExpression } from "./tool-runtime.js";
+ /** Resource budgets enforced independently during each CodeMode program execution. */
+@@ -37,6 +37,11 @@ export type ExecuteOptions<Provided extends Record<string, unknown> = {}> = {
+     onToolCallStart?: (call: ToolRuntime.ToolCallStarted) => Effect.Effect<void, never, Services<Provided>>;
+     /** Observes each admitted tool call as it succeeds, fails, or is interrupted. */
+     onToolCallEnd?: (call: ToolRuntime.ToolCallEnded) => Effect.Effect<void, never, Services<Provided>>;
++    /**
++     * Serves the program's global `search()` instead of the index of every tool's signature. It
++     * takes the built-in function's input and returns its page, which the runtime still validates.
++     */
++    search?: Search<Services<Provided>>;
+ };
+ /** A JSON value that can cross the confined interpreter boundary. */
+ export type DataValue = Schema.Json;
+@@ -141,6 +146,8 @@ export type Result = typeof Result.Type;
  export type Runtime<R = never> = {
      readonly catalog: () => ReadonlyArray<ToolDescription>;
      readonly execute: (code: string) => Effect.Effect<Result, never, R>;
@@ -34,6 +57,788 @@ index e17d5849420a0266e37bf14b7f0fc257ebce2818..aeb177171d6c924b02c4174edb767bc7
  import { ToolRuntime, type Services } from "../tool-runtime.js";
 -export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndex"]) => Effect.Effect<Result, never, Services<Provided>>;
 +export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndexOnUse"]) => Effect.Effect<Result, never, Services<Provided>>;
+diff --git a/dist/interpreter/execute.js b/dist/interpreter/execute.js
+index 3d7f507ef37117b1d3ca12a3fa1d9754abca4031..41edd0ae6527780c0c8d431b0965468d3ebc7799 100644
+--- a/dist/interpreter/execute.js
++++ b/dist/interpreter/execute.js
+@@ -21,7 +21,7 @@ export const executeWithLimits = (options, limits, searchIndex) => {
+         const tools = ToolRuntime.make((options.tools ?? {}), limits.maxToolCalls, searchIndex, {
+             onToolCallStart: options.onToolCallStart,
+             onToolCallEnd: options.onToolCallEnd,
+-        });
++        }, options.search);
+         const logs = [];
+         const logged = () => (logs.length > 0 ? { logs: [...logs] } : {});
+         // Set only after copy-out so timeouts cannot report invalid values as completed.
+@@ -30,17 +30,21 @@ export const executeWithLimits = (options, limits, searchIndex) => {
+             const program = parseProgram(options.code);
+             const promises = new PromiseRuntime(scope);
+             const interpreter = new Interpreter(tools.execute, tools.search, tools.keys, promises, logs);
+-            const value = yield* interpreter.run(program);
+-            const result = copyOut(copyIn(value, "Execution result"), "nullify");
+-            returned = { value: result, promises };
+-            const warnings = yield* promises.interrupt();
+-            return {
+-                ok: true,
+-                value: result,
+-                ...(warnings.length > 0 ? { warnings } : {}),
+-                ...logged(),
+-                toolCalls: tools.calls,
+-            };
++            // The program's main job holds the turn until its leftover jobs are interrupted.
++            return yield* Effect.gen(function* () {
++                yield* promises.turn.take;
++                const value = yield* interpreter.run(program);
++                const result = copyOut(copyIn(value, "Execution result"), "nullify");
++                returned = { value: result, promises };
++                const warnings = yield* promises.interrupt();
++                return {
++                    ok: true,
++                    value: result,
++                    ...(warnings.length > 0 ? { warnings } : {}),
++                    ...logged(),
++                    toolCalls: tools.calls,
++                };
++            }).pipe(Effect.ensuring(Effect.withFiber((fiber) => Effect.sync(() => promises.turn.release(fiber)))));
+         }), (scope, exit) => Scope.close(scope, exit));
+         const timeoutMs = limits.timeoutMs;
+         const operation = timeoutMs === undefined
+diff --git a/dist/interpreter/methods.d.ts b/dist/interpreter/methods.d.ts
+index db276e322e6eb9108c09dff9b5218bc4e29df616..d5b7dfca9c0020d63c828d776e044061411ec2d1 100644
+--- a/dist/interpreter/methods.d.ts
++++ b/dist/interpreter/methods.d.ts
+@@ -6,6 +6,8 @@ export type CallbackRunner<R> = {
+     readonly invokeFunction: (fn: CodeModeFunction, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>;
+     readonly invokeCallable: (callable: unknown, args: Array<unknown>, node: AstNode) => Effect.Effect<unknown, unknown, R>;
+     readonly settlePromise: (promise: CodeModePromise) => Effect.Effect<unknown, unknown, never>;
++    readonly suspend: <A, E>(wait: Effect.Effect<A, E>) => Effect.Effect<A, E>;
++    readonly leave: <A, E>(wait: Effect.Effect<A, E>) => Effect.Effect<A, E>;
+ };
+ export type SupportedCallback = CodeModeFunction | CoercionFunction | UriFunction | PromiseCapabilityFunction | GlobalMethodReference | JsonMethodReference | IntrinsicReference | ErrorConstructorReference | GlobalNamespace | PromiseNamespace;
+ export declare const isSupportedCallback: (value: unknown) => value is SupportedCallback;
+diff --git a/dist/interpreter/promises.d.ts b/dist/interpreter/promises.d.ts
+index 3c4016c3d1e0d7c2b2bf29382489e2957fe7cce2..51e241995cdbf2598a0283161b8db99dc8d0f6d2 100644
+--- a/dist/interpreter/promises.d.ts
++++ b/dist/interpreter/promises.d.ts
+@@ -1,21 +1,44 @@
+-import { Effect, Exit, Scope } from "effect";
++import { Effect, Exit, Fiber, Scope } from "effect";
+ import type { Diagnostic } from "../codemode.js";
+ import { type AstNode, InterpreterRuntimeError, PromiseInstanceMethodReference, PromiseMethodReference } from "./model.js";
+ import { type CallbackRunner } from "./methods.js";
+ import { CodeModePromise } from "../values.js";
+ import type { SyncIteratorRunner } from "./iterator.js";
++export declare class Turn {
++    private holder;
++    private readonly handbacks;
++    private first;
++    private last;
++    private nesting;
++    readonly take: Effect.Effect<void>;
++    release(fiber: Fiber.Fiber<unknown, unknown>): void;
++    suspend<A, E, R>(wait: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>;
++    leave<A, E, R>(wait: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>;
++    get depth(): number;
++    get room(): boolean;
++    overflow(): Effect.Effect<never>;
++    private lend;
++    handOff<A, E, R>(start: Effect.Effect<A, E, R>): Effect.Effect<void, E, R>;
++    park<A, E, R>(wait: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>;
++    fork<A, E, R>(effect: Effect.Effect<A, E, R>, scope: Scope.Scope, call?: boolean): Effect.Effect<Fiber.Fiber<A, E>, never, R>;
++    private handBack;
++    private nest;
++}
+ export declare class PromiseRuntime<R> {
+     private readonly scope;
++    readonly turn: Turn;
+     private readonly active;
+     private readonly ids;
+     private readonly observed;
+     private readonly failures;
+     private nextID;
+     constructor(scope: Scope.Scope);
+-    create(effect: Effect.Effect<unknown, unknown, R>): Effect.Effect<CodeModePromise, never, R>;
++    create(effect: Effect.Effect<unknown, unknown, R>, call?: boolean): Effect.Effect<CodeModePromise, never, R>;
++    createHost(effect: Effect.Effect<unknown, unknown, R>): Effect.Effect<CodeModePromise, never, R>;
++    private register;
+     markObserved(promise: CodeModePromise): void;
+     await(promise: CodeModePromise): Effect.Effect<Exit.Exit<unknown, unknown>>;
+-    fork(effect: Effect.Effect<unknown, unknown, R>): Effect.Effect<void, never, R>;
++    fork(effect: Effect.Effect<unknown, unknown, R>, call?: boolean): Effect.Effect<void, never, R>;
+     diagnostics(): Array<Diagnostic>;
+     interrupt(): Effect.Effect<Array<Diagnostic>>;
+ }
+diff --git a/dist/interpreter/promises.js b/dist/interpreter/promises.js
+index 996f9a5090879de5104b8ecb439ee15fecee6f40..55843d5d6d27b370a235d66e1a242ab274b03770 100644
+--- a/dist/interpreter/promises.js
++++ b/dist/interpreter/promises.js
+@@ -5,9 +5,212 @@ import { applyCollectionCallback, isSupportedCallback } from "./methods.js";
+ import { typeofValue } from "./references.js";
+ import { createAggregateErrorValue } from "../stdlib/value.js";
+ import { CodeModePromise } from "../values.js";
++// Program fibers that synchronous starts and handbacks may nest on the host stack. Deeper ones
++// start and resume through the scheduler, so deep recursion through async calls cannot overflow
++// the host stack while a fiber holds the turn.
++const MAX_NESTING = 100;
++// Program calls lent the turn by synchronous calls, as JavaScript's call stack holds them: async
++// function calls, generator steps (`next`, `return`, `throw`, also through `yield*` and loops) and
++// Promise combinators, which call an iterable's methods. Helper fibers that run no program code
++// before they suspend, such as an async generator's request or a reaction, do not count. Past this,
++// a call throws the RangeError a host stack overflow gave before fibers left the host stack, near
++// the depth where Node and workerd overflowed. Each level unwinds through a scheduler step, about a
++// millisecond in workerd, so a deeper limit would make runaway recursion slow to fail.
++const MAX_CALL_DEPTH = 2_000;
++/**
++ * The right to run program code. JavaScript runs one job at a time: code between two awaits
++ * finishes before another job starts. Program fibers share one isolate with the host, and Effect
++ * preempts a busy fiber so timeouts and host work still run, so only the fiber holding the turn
++ * may run program code. A synchronous call into another fiber (an async function's body up to its
++ * first await, a generator step) hands the turn to that fiber and gets it back when the callee
++ * suspends or ends. An await gives the turn to the next waiting job and queues to take it back.
++ * A promise resolved by program code settles in that call without waiting for the turn, and its
++ * reactions queue then, as in JavaScript. A combinator settles in a reaction job on the member that
++ * decides it, as in JavaScript, so it queues for the turn like any reaction and settles holding it.
++ */
++export class Turn {
++    holder;
++    // Callers waiting for a callee to hand the turn back, innermost last. Each records the program
++    // calls among its callee and the callees below it.
++    handbacks = [];
++    // Jobs waiting to take the turn, in the order they became ready: a linked queue, first to last.
++    first;
++    last;
++    nesting = 0;
++    // The current fiber takes the turn when it is free, after the jobs already waiting.
++    take = Effect.withFiber((fiber) => {
++        if (this.holder === undefined) {
++            this.holder = fiber;
++            return Effect.void;
++        }
++        return Effect.callback((resume) => {
++            const entry = { fiber, resume, next: undefined, removed: false };
++            if (this.last === undefined)
++                this.first = entry;
++            else
++                this.last.next = entry;
++            this.last = entry;
++            // Interrupted while waiting, or after the turn was granted but before it ran.
++            return Effect.sync(() => {
++                if (this.holder === fiber)
++                    this.release(fiber);
++                else
++                    entry.removed = true;
++            });
++        });
++    });
++    // Give up the turn, back to the innermost caller waiting for it or to the next waiting job.
++    release(fiber) {
++        if (this.holder !== fiber)
++            return;
++        const back = this.handbacks.pop();
++        if (back !== undefined) {
++            this.holder = back.fiber;
++            this.handBack(back);
++            return;
++        }
++        let next = this.first;
++        while (next !== undefined && next.removed)
++            next = next.next;
++        this.first = next?.next;
++        if (this.first === undefined)
++            this.last = undefined;
++        this.holder = next?.fiber;
++        // Resume in the scheduler, as a yield would: release can run inside another fiber's step.
++        if (next !== undefined)
++            next.fiber.currentDispatcher.scheduleTask(() => next.resume(Effect.void), 0);
++    }
++    // Wait without the turn, then queue for it like any job that became ready. An interrupted fiber
++    // stops without taking it.
++    suspend(wait) {
++        return Effect.uninterruptibleMask((restore) => Effect.withFiber((fiber) => {
++            this.release(fiber);
++            return Effect.flatMap(Effect.exit(restore(wait)), (exit) => Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
++                ? exit
++                : Effect.andThen(restore(this.take), exit));
++        }));
++    }
++    // Wait without the turn and finish without it, for work that only settles a promise.
++    leave(wait) {
++        return Effect.withFiber((fiber) => {
++            this.release(fiber);
++            return wait;
++        });
++    }
++    // Program calls in progress on the turn's synchronous chain.
++    get depth() {
++        return this.handbacks.length === 0 ? 0 : this.handbacks[this.handbacks.length - 1].depth;
++    }
++    // Whether another program call fits, for a caller that must check before it changes state.
++    get room() {
++        return this.depth < MAX_CALL_DEPTH;
++    }
++    overflow() {
++        return Effect.die(new RangeError("Maximum call stack size exceeded"));
++    }
++    // Lend the turn to a callee that hands it back to `fiber`; undefined past the depth limit.
++    lend(fiber, call) {
++        const depth = this.depth + (call ? 1 : 0);
++        if (depth > MAX_CALL_DEPTH)
++            return undefined;
++        const back = { fiber, returned: false, resume: undefined, depth };
++        this.handbacks.push(back);
++        return back;
++    }
++    // Run `start`, which wakes a fiber parked with `park`, and continue once it hands the turn back.
++    // The woken generator body runs a step, a program call.
++    handOff(start) {
++        return Effect.withFiber((fiber) => {
++            const back = this.lend(fiber, true);
++            if (back === undefined)
++                return this.overflow();
++            return Effect.andThen(this.nest(start), awaitHandback(back));
++        });
++    }
++    // Wait without the turn for a caller to hand it over with `handOff`.
++    park(wait) {
++        return Effect.uninterruptibleMask((restore) => Effect.withFiber((fiber) => {
++            this.release(fiber);
++            // The wake runs inside the caller's step; when that is deep, yield so the body continues
++            // on its own stack.
++            return Effect.tap(restore(wait), () => {
++                this.holder = fiber;
++                return this.nesting > MAX_NESTING ? Effect.yieldNow : Effect.void;
++            });
++        }));
++    }
++    // Fork a fiber that runs program code. It starts with the caller's turn and the caller continues
++    // once the fiber suspends or ends; the fiber gives up the turn whenever it ends. A `call` counts
++    // toward the depth limit and fails past it, before the fiber exists.
++    fork(effect, scope, call) {
++        return Effect.withFiber((caller) => {
++            const back = this.lend(caller, call);
++            if (back === undefined)
++                return this.overflow();
++            let started = false;
++            const body = Effect.withFiber((fiber) => {
++                started = true;
++                this.holder = fiber;
++                return effect;
++            });
++            const forked = this.nesting < MAX_NESTING
++                ? this.nest(Effect.forkIn(body, scope, { startImmediately: true }))
++                : Effect.forkIn(body, scope);
++            return Effect.flatMap(forked, (fiber) => {
++                fiber.addObserver(() => {
++                    if (started) {
++                        this.release(fiber);
++                        return;
++                    }
++                    // Forked into a closing scope: it never took the turn, so the caller keeps it.
++                    const index = this.handbacks.lastIndexOf(back);
++                    if (index >= 0)
++                        this.handbacks.splice(index, 1);
++                    this.handBack(back);
++                });
++                // A callee that suspends without blocking hands the turn back before forkIn returns.
++                return back.returned ? Effect.succeed(fiber) : Effect.as(awaitHandback(back), fiber);
++            });
++        });
++    }
++    handBack(back) {
++        back.returned = true;
++        const resume = back.resume;
++        if (resume === undefined)
++            return;
++        if (this.nesting >= MAX_NESTING) {
++            back.fiber.currentDispatcher.scheduleTask(() => resume(Effect.void), 0);
++            return;
++        }
++        this.nesting++;
++        try {
++            resume(Effect.void);
++        }
++        finally {
++            this.nesting--;
++        }
++    }
++    // Run `effect`, which can run another program fiber inside the current step, counting the nesting.
++    nest(effect) {
++        return Effect.suspend(() => {
++            this.nesting++;
++            return Effect.ensuring(effect, Effect.sync(() => {
++                this.nesting--;
++            }));
++        });
++    }
++}
++// The check runs when the caller suspends: it can be preempted after deciding to wait.
++const awaitHandback = (back) => Effect.callback((resume) => {
++    if (back.returned)
++        resume(Effect.void);
++    else
++        back.resume = resume;
++});
+ // Observation only controls rejection reporting; program completion interrupts all promise work.
+ export class PromiseRuntime {
+     scope;
++    turn = new Turn();
+     active = new Set();
+     ids = new WeakMap();
+     observed = new WeakSet();
+@@ -16,11 +219,19 @@ export class PromiseRuntime {
+     constructor(scope) {
+         this.scope = scope;
+     }
+-    create(effect) {
++    // Promises whose work runs program code. Host work, such as a tool call, uses `createHost`. A
++    // `call` (an async function call or a combinator) counts toward the call depth limit.
++    create(effect, call = false) {
++        return this.register((effect) => this.turn.fork(effect, this.scope, call), effect);
++    }
++    createHost(effect) {
++        return this.register((effect) => Effect.forkIn(effect, this.scope, { startImmediately: true }), effect);
++    }
++    register(fork, effect) {
+         return Effect.suspend(() => {
+             // Allocate before forking so reruns get distinct IDs and diagnostics retain creation order.
+             const id = this.nextID++;
+-            return Effect.map(Effect.forkIn(effect, this.scope, { startImmediately: true }), (fiber) => {
++            return Effect.map(fork(effect), (fiber) => {
+                 const promise = new CodeModePromise(fiber);
+                 this.active.add(promise);
+                 this.ids.set(promise, id);
+@@ -51,8 +262,8 @@ export class PromiseRuntime {
+     await(promise) {
+         return Fiber.await(promise.fiber);
+     }
+-    fork(effect) {
+-        return Effect.asVoid(Effect.forkIn(effect, this.scope, { startImmediately: true }));
++    fork(effect, call = false) {
++        return Effect.asVoid(this.turn.fork(effect, this.scope, call));
+     }
+     diagnostics() {
+         return [...this.failures].sort(([left], [right]) => left - right).map(([, failure]) => failure);
+@@ -81,7 +292,7 @@ export const resolvePromiseValue = (runner, value, node, own) => {
+         return Effect.succeed(value);
+     return Effect.gen(function* () {
+         // Promise resolution invokes a thenable's method in a later job.
+-        yield* Effect.yieldNow;
++        yield* runner.suspend(Effect.yieldNow);
+         const deferred = Deferred.makeUnsafe();
+         const resolve = new PromiseCapabilityFunction((result) => {
+             Deferred.doneUnsafe(deferred, Exit.succeed(result));
+@@ -95,7 +306,7 @@ export const resolvePromiseValue = (runner, value, node, own) => {
+                 return yield* Effect.failCause(executed.cause);
+             Deferred.doneUnsafe(deferred, Exit.fail(Cause.squash(executed.cause)));
+         }
+-        return yield* resolvePromiseValue(runner, yield* Deferred.await(deferred), node, own);
++        return yield* resolvePromiseValue(runner, yield* runner.leave(Deferred.await(deferred)), node, own);
+     });
+ };
+ export const resolvePromise = (runner, promises, value, node) => {
+@@ -114,6 +325,7 @@ export const invokePromiseMethod = (runner, promises, ref, args, node) => {
+     if (ref.name === "reject") {
+         return promises.create(Effect.fail(new ProgramThrow(args[0])));
+     }
++    // A combinator calls the iterable's methods before it suspends, so it counts as a call.
+     return promises.create(Effect.gen(function* () {
+         const cursor = yield* runner.syncIterator(args[0], node);
+         if (cursor === undefined) {
+@@ -129,31 +341,33 @@ export const invokePromiseMethod = (runner, promises, ref, args, node) => {
+             items.push(item);
+         }
+         if (ref.name === "all") {
+-            return yield* settleAfterTurn(Effect.all(items.map((item) => Effect.flatten(promises.await(item))), { concurrency: "unbounded" }));
++            return yield* settleAfterTurn(promises, Effect.all(items.map((item) => Effect.flatten(promises.await(item))), { concurrency: "unbounded" }));
+         }
+         if (ref.name === "allSettled") {
+-            const outcomes = [];
+-            for (const item of items) {
+-                const exit = yield* promises.await(item);
+-                if (Exit.isSuccess(exit)) {
+-                    outcomes.push(Object.assign(Object.create(null), { status: "fulfilled", value: exit.value }));
+-                    continue;
++            return yield* promises.turn.suspend(Effect.gen(function* () {
++                const outcomes = [];
++                for (const item of items) {
++                    const exit = yield* promises.await(item);
++                    if (Exit.isSuccess(exit)) {
++                        outcomes.push(Object.assign(Object.create(null), { status: "fulfilled", value: exit.value }));
++                        continue;
++                    }
++                    if (Cause.hasInterruptsOnly(exit.cause))
++                        return yield* Effect.failCause(exit.cause);
++                    outcomes.push(Object.assign(Object.create(null), {
++                        status: "rejected",
++                        reason: caughtErrorValue(Cause.squash(exit.cause)),
++                    }));
+                 }
+-                if (Cause.hasInterruptsOnly(exit.cause))
+-                    return yield* Effect.failCause(exit.cause);
+-                outcomes.push(Object.assign(Object.create(null), {
+-                    status: "rejected",
+-                    reason: caughtErrorValue(Cause.squash(exit.cause)),
+-                }));
+-            }
+-            yield* Effect.yieldNow;
+-            return outcomes;
++                yield* Effect.yieldNow;
++                return outcomes;
++            }));
+         }
+         if (ref.name === "race") {
+             if (items.length === 0) {
+                 throw new InterpreterRuntimeError("Promise.race([]) would never settle; provide at least one promise or value.", node);
+             }
+-            return yield* settleAfterTurn(Effect.flatten(Effect.raceAll(items.map((item) => promises.await(item)))));
++            return yield* settleAfterTurn(promises, Effect.flatten(Effect.raceAll(items.map((item) => promises.await(item)))));
+         }
+         const flipped = items.map((item) => Effect.flatMap(promises.await(item), (exit) => {
+             if (Exit.isSuccess(exit))
+@@ -162,8 +376,8 @@ export const invokePromiseMethod = (runner, promises, ref, args, node) => {
+                 return Effect.failCause(exit.cause);
+             return Effect.succeed(caughtErrorValue(Cause.squash(exit.cause)));
+         }));
+-        return yield* settleAfterTurn(Effect.all(flipped, { concurrency: "unbounded" }).pipe(Effect.flatMap((reasons) => Effect.fail(new ProgramThrow(createAggregateErrorValue(reasons, "All promises were rejected")))), Effect.catch((error) => error instanceof PromiseAnyFulfilled ? Effect.succeed(error.value) : Effect.fail(error))));
+-    }));
++        return yield* settleAfterTurn(promises, Effect.all(flipped, { concurrency: "unbounded" }).pipe(Effect.flatMap((reasons) => Effect.fail(new ProgramThrow(createAggregateErrorValue(reasons, "All promises were rejected")))), Effect.catch((error) => error instanceof PromiseAnyFulfilled ? Effect.succeed(error.value) : Effect.fail(error))));
++    }), true);
+ };
+ export const invokePromiseInstanceMethod = (runner, promises, ref, args, node) => {
+     const method = `Promise.prototype.${ref.name}`;
+@@ -182,7 +396,7 @@ export const constructPromise = (runner, promises, executor, node) => {
+     return Effect.gen(function* () {
+         const deferred = Deferred.makeUnsafe();
+         const box = {};
+-        const promise = yield* promises.create(Effect.flatMap(Deferred.await(deferred), (value) => resolvePromiseValue(runner, value, node, box)));
++        const promise = yield* promises.create(Effect.flatMap(promises.turn.leave(Deferred.await(deferred)), (value) => resolvePromiseValue(runner, value, node, box)));
+         box.promise = promise;
+         const resolve = new PromiseCapabilityFunction((value) => {
+             Deferred.doneUnsafe(deferred, Exit.succeed(value));
+@@ -200,7 +414,8 @@ export const constructPromise = (runner, promises, executor, node) => {
+     });
+ };
+ // Settle one reaction turn after the deciding member, after its existing reactions.
+-const settleAfterTurn = (body) => Effect.flatMap(Effect.exit(body), (exit) => Effect.andThen(Effect.yieldNow, exit));
++// That reaction is a job: it queues for the turn behind jobs ready before it and settles in it.
++const settleAfterTurn = (promises, body) => Effect.flatten(promises.turn.suspend(Effect.flatMap(Effect.exit(body), (exit) => Effect.as(Effect.yieldNow, exit))));
+ class PromiseAnyFulfilled {
+     value;
+     constructor(value) {
+@@ -216,13 +431,13 @@ const reactionHandler = (value, method, node) => {
+     return undefined;
+ };
+ // Teardown bypasses handlers; settled reactions yield once so handlers never run inline.
+-const reactionExit = (promises, source) => Effect.gen(function* () {
++const reactionExit = (promises, source) => promises.turn.suspend(Effect.gen(function* () {
+     const exit = yield* promises.await(source);
+     if (!Exit.isSuccess(exit) && Cause.hasInterruptsOnly(exit.cause))
+         return yield* Effect.failCause(exit.cause);
+     yield* Effect.yieldNow;
+     return exit;
+-});
++}));
+ const chainReaction = (runner, promises, source, onFulfilled, onRejected, method, node) => {
+     const box = {};
+     const body = Effect.gen(function* () {
+diff --git a/dist/interpreter/runtime.d.ts b/dist/interpreter/runtime.d.ts
+index bd1bc708017c1a30b0c81d37639b55ff12a2e3bc..3ad5894d77df91678f8c219bf913799a868e939f 100644
+--- a/dist/interpreter/runtime.d.ts
++++ b/dist/interpreter/runtime.d.ts
+@@ -11,11 +11,12 @@ export declare class Interpreter<R> {
+     private generatorState?;
+     private generatorAsync;
+     private readonly runner;
+-    constructor(executeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, invokeSearch: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, toolKeys: (path: ReadonlyArray<string>) => ReadonlyArray<string>, promises: PromiseRuntime<R>, logs?: Array<string>);
++    constructor(executeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, invokeSearch: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, toolKeys: (path: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>, unknown, R>, promises: PromiseRuntime<R>, logs?: Array<string>);
+     run(program: ProgramNode): Effect.Effect<unknown, unknown, R>;
+     private createToolCallPromise;
+     private createPromise;
+     private settlePromise;
++    private nextJob;
+     private evaluateStatement;
+     private evaluateBlock;
+     private createFunction;
+diff --git a/dist/interpreter/runtime.js b/dist/interpreter/runtime.js
+index 8c1b549d3da8c2287e330e63d7370cd3838e57df..3575409543fcdd2227e03decae2aa71a9ba58ceb 100644
+--- a/dist/interpreter/runtime.js
++++ b/dist/interpreter/runtime.js
+@@ -154,6 +154,8 @@ export class Interpreter {
+         invokeCallable: (callable, args, node) => this.invokeCallable(callable, args, node),
+         settlePromise: (promise) => this.settlePromise(promise),
+         syncIterator: (value, node) => this.syncIterator(value, node),
++        suspend: (wait) => this.promises.turn.suspend(wait),
++        leave: (wait) => this.promises.turn.leave(wait),
+     };
+     constructor(executeTool, invokeSearch, toolKeys, promises, logs = []) {
+         const globalScope = new Map();
+@@ -223,21 +225,26 @@ export class Interpreter {
+             return value;
+         }).pipe(Effect.ensuring(Effect.sync(() => self.scopes.pop())));
+     }
+-    // Fork at the call site so admission and hooks occur when the call is made.
++    // Fork at the call site so admission and hooks occur when the call is made. A tool call runs
++    // host code only, so it runs alongside program code without the turn.
+     createToolCallPromise(path, args) {
+-        return this.createPromise(Effect.suspend(() => this.executeTool(path, args)));
++        return this.promises.createHost(Effect.suspend(() => this.executeTool(path, args)));
+     }
+-    createPromise(effect) {
+-        return this.promises.create(effect);
++    createPromise(effect, call = false) {
++        return this.promises.create(effect, call);
+     }
+     // Fiber exits make settlement idempotent; yielding prevents inline continuation.
+     settlePromise(promise) {
+         const promises = this.promises;
+         return Effect.suspend(() => {
+             promises.markObserved(promise);
+-            return Effect.flatMap(promises.await(promise), (exit) => Effect.andThen(Effect.yieldNow, exit));
++            return Effect.flatten(promises.turn.suspend(Effect.flatMap(promises.await(promise), (exit) => Effect.as(Effect.yieldNow, exit))));
+         });
+     }
++    // End this job; the program continues in a later one, after the jobs already waiting.
++    nextJob() {
++        return this.promises.turn.suspend(Effect.yieldNow);
++    }
+     evaluateStatement(node) {
+         switch (node.type) {
+             case "ExpressionStatement":
+@@ -510,7 +517,7 @@ export class Interpreter {
+             const close = () => iterator
+                 ? self.closeIterator(iterator, node, awaiting)
+                 : awaiting
+-                    ? Effect.andThen(cursor?.close ?? Effect.void, Effect.yieldNow)
++                    ? Effect.andThen(cursor?.close ?? Effect.void, self.nextJob())
+                     : (cursor?.close ?? Effect.void);
+             let assignment;
+             if (left.type !== "VariableDeclaration" &&
+@@ -656,7 +663,7 @@ export class Interpreter {
+             const called = yield* Effect.exit(self.invokeCallable(iterator.next, [], node));
+             if (!Exit.isSuccess(called)) {
+                 if (awaiting)
+-                    yield* Effect.yieldNow;
++                    yield* self.nextJob();
+                 return yield* Effect.failCause(called.cause);
+             }
+             const captured = yield* Effect.exit(Effect.sync(() => {
+@@ -665,7 +672,7 @@ export class Interpreter {
+             }));
+             if (!Exit.isSuccess(captured)) {
+                 if (awaiting)
+-                    yield* Effect.yieldNow;
++                    yield* self.nextJob();
+                 return yield* Effect.failCause(captured.cause);
+             }
+             return {
+@@ -681,7 +688,7 @@ export class Interpreter {
+             ? new GeneratorMethodReference(iterator.iterator, "return")
+             : iterator.iterator.return;
+         if (close === undefined || close === null)
+-            return iterator.asynchronous || !awaiting ? Effect.void : Effect.yieldNow;
++            return iterator.asynchronous || !awaiting ? Effect.void : this.nextJob();
+         const self = this;
+         return Effect.gen(function* () {
+             const method = self.requireIteratorMethod(close, "Iterator return", node);
+@@ -692,13 +699,13 @@ export class Interpreter {
+             const called = yield* Effect.exit(self.invokeCallable(method, [], node));
+             if (!Exit.isSuccess(called)) {
+                 if (awaiting)
+-                    yield* Effect.yieldNow;
++                    yield* self.nextJob();
+                 return yield* Effect.failCause(called.cause);
+             }
+             const captured = yield* Effect.exit(Effect.sync(() => self.requireIteratorObject(called.value, "Iterator return() result", node).value));
+             if (!Exit.isSuccess(captured)) {
+                 if (awaiting)
+-                    yield* Effect.yieldNow;
++                    yield* self.nextJob();
+                 return yield* Effect.failCause(captured.cause);
+             }
+             if (awaiting)
+@@ -720,17 +727,18 @@ export class Interpreter {
+             return value;
+         throw new InterpreterRuntimeError(`${context} must be a function.`, node).as("TypeError");
+     }
++    // A tools reference's keys can load a lazy namespace, so every key list is an Effect.
+     enumerableKeys(value) {
+         if (value instanceof ToolReference) {
+-            return [...this.toolKeys(value.path)];
++            return Effect.map(this.toolKeys(value.path), (keys) => [...keys]);
+         }
+         if (Array.isArray(value)) {
+-            return Object.keys(value);
++            return Effect.succeed(Object.keys(value));
+         }
+         if (value !== null && typeof value === "object" && !isRuntimeReference(value)) {
+-            return Object.keys(value);
++            return Effect.succeed(Object.keys(value));
+         }
+-        return undefined;
++        return Effect.succeed(undefined);
+     }
+     evaluateForInStatement(node, labels) {
+         const left = getNode(node, "left");
+@@ -743,7 +751,7 @@ export class Interpreter {
+                 self.predeclarePattern(declared.pattern, declared.mutable, left);
+             const right = yield* self.evaluateExpression(getNode(node, "right"));
+             const body = getNode(node, "body");
+-            const keys = self.enumerableKeys(right);
++            const keys = yield* self.enumerableKeys(right);
+             if (keys === undefined) {
+                 throw new InterpreterRuntimeError("for...in requires a plain object, array, or tools reference. Use for...of for arrays/strings/Maps/Sets, or Object.keys(value) for a key list.", node);
+             }
+@@ -1592,7 +1600,7 @@ export class Interpreter {
+                 if (callable.namespace === "console")
+                     return self.invokeConsole(callable.name, args, node);
+                 if (callable.namespace === "Object" && args[0] instanceof ToolReference) {
+-                    return self.invokeObjectMethodOnTools(callable.name, args[0], node);
++                    return yield* self.invokeObjectMethodOnTools(callable.name, args[0], node);
+                 }
+                 if (callable.namespace === "Object" && objectMethodsPreservingIdentity.has(callable.name)) {
+                     if (callable.name === "fromEntries")
+@@ -1665,7 +1673,7 @@ export class Interpreter {
+     }
+     invokeObjectMethodOnTools(name, ref, node) {
+         if (name === "keys") {
+-            return boundedData(this.enumerableKeys(ref), "Object.keys result");
++            return Effect.map(this.enumerableKeys(ref), (keys) => boundedData(keys, "Object.keys result"));
+         }
+         throw new InterpreterRuntimeError(`Object.${name}(...) cannot read tool references: they are not plain data. Use Object.keys(tools) for names, or search({ query }) for signatures.`, node, "InvalidDataValue");
+     }
+@@ -1730,7 +1738,7 @@ export class Interpreter {
+             return run;
+         // The initial yield assigns the promise before the body can self-resolve.
+         const box = {};
+-        return Effect.map(this.createPromise(Effect.flatMap(run, (value) => resolvePromiseValue(invocation.runner, value, fn.body, box))), (promise) => {
++        return Effect.map(this.createPromise(Effect.flatMap(run, (value) => resolvePromiseValue(invocation.runner, value, fn.body, box)), true), (promise) => {
+             box.promise = promise;
+             return promise;
+         });
+@@ -1739,8 +1747,17 @@ export class Interpreter {
+         const state = { started: false, completed: false, draining: false, pending: [], pendingIndex: 0 };
+         invocation.generatorState = state;
+         invocation.generatorAsync = asynchronous;
+-        const generator = new CodeModeGenerator(asynchronous, (kind, value, node) => {
++        const turn = this.promises.turn;
++        // A request runs when its effect does: for an async generator, in the fiber of the promise
++        // `next()` returns.
++        const generator = new CodeModeGenerator(asynchronous, (kind, value, node) => Effect.suspend(() => {
+             const request = { kind, value, response: Deferred.makeUnsafe() };
++            // A body that ran on the caller's turn has answered or suspended when it hands the turn
++            // back. An answer still pending can only be an async generator's: its promise settles
++            // when the body answers, before the body takes the next request.
++            const answer = Effect.suspend(() => Deferred.isDoneUnsafe(request.response)
++                ? Deferred.await(request.response)
++                : turn.leave(Deferred.await(request.response)));
+             if (!asynchronous && state.active) {
+                 return Effect.fail(new InterpreterRuntimeError("Generator is already running.", node).as("TypeError"));
+             }
+@@ -1749,11 +1766,11 @@ export class Interpreter {
+                 state.completed = true;
+                 state.pending.push(request);
+                 if (state.draining)
+-                    return Deferred.await(request.response);
++                    return answer;
+                 state.draining = true;
+                 return Effect.andThen(this.promises.fork(invocation
+                     .completeGeneratorRequests(state, true)
+-                    .pipe(Effect.ensuring(Effect.sync(() => (state.draining = false))))), Deferred.await(request.response));
++                    .pipe(Effect.ensuring(Effect.sync(() => (state.draining = false))))), answer);
+             }
+             if (state.completed) {
+                 if (kind === "throw")
+@@ -1766,11 +1783,19 @@ export class Interpreter {
+                     return Effect.fail(new ProgramThrow(value));
+                 return Effect.succeed({ value, done: true });
+             }
++            // A step that runs the body is a program call. Past the depth limit it fails before it
++            // changes the generator, which stays as it was, as a call that overflows the stack never
++            // starts.
++            if ((state.available || !state.started) && !turn.room)
++                return turn.overflow();
+             state.pending.push(request);
+             if (state.available) {
++                // The body is parked waiting for a request: it runs this step on the caller's turn.
+                 const available = state.available;
+                 state.available = undefined;
+-                Deferred.doneUnsafe(available, Exit.succeed(undefined));
++                return Effect.andThen(turn.handOff(Effect.sync(() => {
++                    Deferred.doneUnsafe(available, Exit.succeed(undefined));
++                })), answer);
+             }
+             if (!state.started) {
+                 state.started = true;
+@@ -1789,10 +1814,10 @@ export class Interpreter {
+                     yield* invocation.completeGeneratorRequests(state, asynchronous);
+                     state.completed = true;
+                 });
+-                return Effect.andThen(this.promises.fork(body), Deferred.await(request.response));
++                return Effect.andThen(this.promises.fork(body, true), answer);
+             }
+-            return Deferred.await(request.response);
+-        });
++            return answer;
++        }));
+         return generator;
+     }
+     completeGeneratorRequests(state, asynchronous) {
+@@ -1820,7 +1845,7 @@ export class Interpreter {
+         if (next)
+             return Effect.succeed(next);
+         state.available = Deferred.makeUnsafe();
+-        return Effect.andThen(Deferred.await(state.available), Effect.sync(() => this.dequeueGeneratorRequest(state)));
++        return Effect.andThen(this.promises.turn.park(Deferred.await(state.available)), Effect.sync(() => this.dequeueGeneratorRequest(state)));
+     }
+     dequeueGeneratorRequest(state) {
+         const request = state.pending[state.pendingIndex];
+diff --git a/dist/namespace.d.ts b/dist/namespace.d.ts
+index e4640762c1139d5a864f966035446f5d890040f0..220d15700f5e0f2d4dbee3f5500875ccbf3cb86d 100644
+--- a/dist/namespace.d.ts
++++ b/dist/namespace.d.ts
+@@ -1,9 +1,21 @@
++import type { Effect } from "effect";
+ import type { Tools } from "./tools.js";
+ /** A tool namespace with optional model-visible metadata. */
+ export type Namespace<R = never> = {
+     readonly _tag: "CodeModeNamespace";
+     readonly description?: string;
+     readonly tools: Tools<R>;
++    /**
++     * Tools added when a program first reaches the namespace: calls one of its tools or lists its
++     * keys. `undefined` leaves no such namespace. Until then the catalog and the built-in search
++     * index hold only `tools`.
++     */
++    readonly load?: Effect.Effect<Tools<R> | undefined, unknown, R>;
++};
++/** Options for declaring a namespace whose tools are loaded when a program first reaches it. */
++export type LazyOptions<R = never> = {
++    readonly description?: string;
++    readonly load: Effect.Effect<Tools<R> | undefined, unknown, R>;
+ };
+ /** Options for declaring one CodeMode namespace. */
+ export type Options<R = never> = {
+@@ -13,3 +25,5 @@ export type Options<R = never> = {
+ export declare const isNamespace: <R = never>(value: Namespace<R> | Tools<R>) => value is Namespace<R>;
+ /** Declares a namespace when descriptions or other namespace metadata are needed. */
+ export declare const make: <R = never>(options: Options<R>) => Namespace<R>;
++/** Declares a namespace whose tools are loaded when a program first reaches it. */
++export declare const lazy: <R = never>(options: LazyOptions<R>) => Namespace<R>;
+diff --git a/dist/namespace.js b/dist/namespace.js
+index 93db2408fe35817f6d53add795822e91dadcedfd..e0e44b0e8c823133cc390d3a12d7b87873006236 100644
+--- a/dist/namespace.js
++++ b/dist/namespace.js
+@@ -5,3 +5,10 @@ export const make = (options) => ({
+     ...(options.description === undefined ? {} : { description: options.description }),
+     tools: options.tools,
+ });
++/** Declares a namespace whose tools are loaded when a program first reaches it. */
++export const lazy = (options) => ({
++    _tag: "CodeModeNamespace",
++    ...(options.description === undefined ? {} : { description: options.description }),
++    tools: {},
++    load: options.load,
++});
 diff --git a/dist/openapi/index.js b/dist/openapi/index.js
 index 1702476510e1019a2a2b6b7e14423c84a350e8c9..2425925a7bd394917d57f36b84e6f0fa29e5f79e 100644
 --- a/dist/openapi/index.js
@@ -85,10 +890,24 @@ index bc386d2cd78bffa1bd1f76bf98509183f61c57d1..483cc3fd953ab434bf0209462d9a88dd
 -import { HttpClient } from "effect/unstable/http";
 +import { HttpClient } from "effect/http";
 diff --git a/dist/tool-runtime.d.ts b/dist/tool-runtime.d.ts
-index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..e44130a9e6ee52aef45c5e9c84f4c91c6f1a8812 100644
+index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..98c08f773aeb548386a0b6d48ff26c72445d543c 100644
 --- a/dist/tool-runtime.d.ts
 +++ b/dist/tool-runtime.d.ts
-@@ -48,6 +48,10 @@ export declare const copyOut: (value: unknown, mode: CopyOutMode) => unknown;
+@@ -4,7 +4,12 @@ export type Services<T> = ServicesOf<T, []>;
+ type ServicesOf<T, Depth extends ReadonlyArray<unknown>> = Depth["length"] extends 8 ? never : T extends {
+     readonly _tag: "CodeModeTool";
+     readonly execute: (input: unknown) => Effect.Effect<unknown, unknown, infer R>;
+-} ? R : T extends object ? string extends keyof T ? ServicesOf<T[string], [...Depth, unknown]> : ServicesOf<T[keyof T], [...Depth, unknown]> : never;
++} ? R : T extends {
++    readonly _tag: "CodeModeNamespace";
++    readonly tools: infer N;
++} ? ServicesOf<N, [...Depth, unknown]> | (T extends {
++    readonly load: Effect.Effect<infer L, unknown, infer R>;
++} ? R | ServicesOf<L, [...Depth, unknown]> : never) : T extends object ? string extends keyof T ? ServicesOf<T[string], [...Depth, unknown]> : ServicesOf<T[keyof T], [...Depth, unknown]> : never;
+ export type ToolCall = {
+     readonly name: string;
+ };
+@@ -48,6 +53,10 @@ export declare const copyOut: (value: unknown, mode: CopyOutMode) => unknown;
  export type DiscoveryPlan = {
      readonly catalog: ReadonlyArray<ToolDescription>;
      readonly searchIndex: ReadonlyArray<SearchEntry>;
@@ -99,7 +918,7 @@ index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..e44130a9e6ee52aef45c5e9c84f4c91c
  };
  export type SearchEntry = {
      readonly description: ToolDescription;
-@@ -55,7 +59,7 @@ export type SearchEntry = {
+@@ -55,14 +64,31 @@ export type SearchEntry = {
  };
  /** Exact callable signature of the built-in `search` function, for host-owned instructions. */
  export declare const searchSignature: string;
@@ -108,18 +927,91 @@ index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..e44130a9e6ee52aef45c5e9c84f4c91c
  export declare const prepare: <R>(tools: Tools<R>) => DiscoveryPlan;
  export type ToolRuntime<R = never> = {
      readonly root: ToolReference;
-@@ -64,5 +68,5 @@ export type ToolRuntime<R = never> = {
+     readonly calls: Array<ToolCall>;
+     readonly execute: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>;
      readonly search: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>;
-     readonly keys: (path: ReadonlyArray<string>) => ReadonlyArray<string>;
+-    readonly keys: (path: ReadonlyArray<string>) => ReadonlyArray<string>;
++    readonly keys: (path: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>, unknown, R>;
  };
 -export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>) => ToolRuntime<R>;
-+export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: () => ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>) => ToolRuntime<R>;
++/** Input of the built-in `search` function, as its signature documents it. */
++export type SearchRequest = {
++    readonly query?: string;
++    readonly namespace?: string;
++    readonly limit?: number;
++    readonly offset?: number;
++};
++/** One page of the built-in `search` function's results, as its signature documents it. */
++export type SearchPage = {
++    readonly items: ReadonlyArray<ToolDescription>;
++    readonly remaining: number;
++    readonly next: {
++        readonly offset: number;
++    } | null;
++};
++/** A host's implementation of the built-in `search` function, in place of the program's index. */
++export type Search<R = never> = (input: SearchRequest) => Effect.Effect<SearchPage, unknown, R>;
++export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: () => ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>, search?: Search<R>) => ToolRuntime<R>;
  export * as ToolRuntime from "./tool-runtime.js";
 diff --git a/dist/tool-runtime.js b/dist/tool-runtime.js
-index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d87f8bb18 100644
+index f649a9a04eea271c852510a4deef6efa7b6252bc..3c24460cc7d5252af46590da8de9105c64b3f7ea 100644
 --- a/dist/tool-runtime.js
 +++ b/dist/tool-runtime.js
-@@ -227,18 +227,20 @@ const termForms = (term) => {
+@@ -172,29 +172,32 @@ export const copyOut = (value, mode) => {
+     }
+     return value;
+ };
++const insertTools = (node, group) => {
++    for (const [name, value] of Object.entries(group)) {
++        let current = node;
++        for (const segment of name.split(".")) {
++            if (segment === "")
++                throw new TypeError(`Tool name '${name}' contains an empty segment.`);
++            const child = current.children.get(segment) ?? { children: new Map() };
++            current.children.set(segment, child);
++            current = child;
++        }
++        if (isTool(value))
++            current.tool = value;
++        else if (isNamespace(value)) {
++            current.namespace = value;
++            // A lazy namespace's tools join the tree when a program first reaches it.
++            if (value.load !== undefined)
++                current.load = value.load;
++            insertTools(current, value.tools);
++        }
++        else
++            insertTools(current, value);
++    }
++};
+ const toolTrie = (tools) => {
+     const root = { children: new Map() };
+-    const insert = (node, group) => {
+-        for (const [name, value] of Object.entries(group)) {
+-            let current = node;
+-            for (const segment of name.split(".")) {
+-                if (segment === "")
+-                    throw new TypeError(`Tool name '${name}' contains an empty segment.`);
+-                const child = current.children.get(segment) ?? { children: new Map() };
+-                current.children.set(segment, child);
+-                current = child;
+-            }
+-            if (isTool(value))
+-                current.tool = value;
+-            else if (isNamespace(value)) {
+-                current.namespace = value;
+-                insert(current, value.tools);
+-            }
+-            else
+-                insert(current, value);
+-        }
+-    };
+-    insert(root, tools);
++    insertTools(root, tools);
+     return root;
+ };
+ const canonicalSegments = (path) => path.flatMap((segment) => segment.split("."));
+@@ -227,18 +230,20 @@ const termForms = (term) => {
          forms.push(term.slice(0, -1));
      return forms;
  };
@@ -142,7 +1034,7 @@ index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d
                  entry.description.path.startsWith(`${request.namespace}.`));
          const trimmed = query.trim();
          const pathQuery = trimmed.startsWith("tools.") ? trimmed.slice("tools.".length) : trimmed;
-@@ -276,7 +278,7 @@ const makeSearchTool = (searchIndex) => ({
+@@ -276,7 +281,7 @@ const makeSearchTool = (searchIndex) => ({
  });
  /** Exact callable signature of the built-in `search` function, for host-owned instructions. */
  export const searchSignature = (() => {
@@ -151,7 +1043,7 @@ index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d
      return `search(input: ${inputTypeScript(tool, true)}): ${outputTypeScript(tool, true)}`;
  })();
  const toSearchEntry = (visible) => ({
-@@ -290,12 +292,35 @@ const toSearchEntry = (visible) => ({
+@@ -290,40 +295,95 @@ const toSearchEntry = (visible) => ({
          .join("\n")
          .toLowerCase(),
  });
@@ -189,4 +1081,91 @@ index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d
 +        signaturesRendered: () => rendered,
      };
  };
- const lookup = (root, segments) => segments.reduce((node, segment) => node?.children.get(segment), root);
+-const lookup = (root, segments) => segments.reduce((node, segment) => node?.children.get(segment), root);
++// Load a lazy namespace once its node is reached. Fibers that reach it before the first load
++// finishes each run the load; the first to finish inserts its tools. A load without tools removes
++// the namespace, so it is unknown as if it had never been declared.
++const loadNode = (parent, segment, node) => node.load === undefined
++    ? Effect.void
++    : Effect.map(node.load, (tools) => {
++        if (node.load === undefined)
++            return;
++        node.load = undefined;
++        if (tools !== undefined)
++            insertTools(node, tools);
++        else if (node.tool === undefined && node.children.size === 0)
++            parent.children.delete(segment);
++    });
++// The node at a path, after loading every lazy namespace on the way to it and the node itself.
++const reach = (root, segments) => Effect.gen(function* () {
++    let node = root;
++    for (const segment of segments) {
++        const child = node.children.get(segment);
++        if (child === undefined)
++            return undefined;
++        yield* loadNode(node, segment, child);
++        const next = node.children.get(segment);
++        if (next === undefined)
++            return undefined;
++        node = next;
++    }
++    return node;
++});
+ const namespaceKeys = (root, path) => {
+     const segments = canonicalSegments(path);
+-    const node = lookup(root, segments);
+-    if (node === undefined) {
+-        throw new ToolRuntimeError("UnknownTool", `Unknown tool namespace '${segments.join(".")}'.`);
+-    }
+-    return Array.from(node.children.keys());
++    return Effect.map(reach(root, segments), (node) => {
++        if (node === undefined) {
++            throw new ToolRuntimeError("UnknownTool", `Unknown tool namespace '${segments.join(".")}'.`);
++        }
++        return Array.from(node.children.keys());
++    });
+ };
+ const resolve = (root, path) => {
+     const segments = canonicalSegments(path);
+-    const node = lookup(root, segments);
+-    if (node === undefined) {
+-        throw new ToolRuntimeError("UnknownTool", `Unknown tool '${segments.join(".")}'.`, [
+-            "The tool may have been removed or renamed. Use search to find available tools.",
+-        ]);
+-    }
+-    if (node.tool === undefined) {
+-        throw new ToolRuntimeError("UnknownTool", `Tool '${segments.join(".")}' is not callable.`);
+-    }
+-    return node.tool;
++    return Effect.map(reach(root, segments), (node) => {
++        if (node === undefined) {
++            throw new ToolRuntimeError("UnknownTool", `Unknown tool '${segments.join(".")}'.`, [
++                "The tool may have been removed or renamed. Use search to find available tools.",
++            ]);
++        }
++        if (node.tool === undefined) {
++            throw new ToolRuntimeError("UnknownTool", `Tool '${segments.join(".")}' is not callable.`);
++        }
++        return node.tool;
++    });
+ };
+-export const make = (tools, maxToolCalls, searchIndex, hooks) => {
++export const make = (tools, maxToolCalls, searchIndex, hooks, search) => {
+     const calls = [];
+     const root = toolTrie(tools);
+-    const searchTool = makeSearchTool(searchIndex);
++    // A host's search keeps the built-in function's input and output, so its signature holds.
++    const builtin = makeSearchTool(searchIndex);
++    const searchTool = search === undefined ? builtin : { ...builtin, execute: search };
+     const observeEnd = (effect, call) => {
+         const onEnd = hooks?.onToolCallEnd;
+         if (onEnd === undefined)
+@@ -383,7 +443,7 @@ export const make = (tools, maxToolCalls, searchIndex, hooks) => {
+         execute: (path, args) => Effect.gen(function* () {
+             const name = canonicalSegments(path).join(".");
+             const externalArgs = args.map((arg) => copyOut(copyIn(arg, `Arguments for tool '${name}'`), "json"));
+-            const tool = resolve(root, path);
++            const tool = yield* resolve(root, path);
+             return yield* executeTool(name, tool, externalArgs);
+         }),
+     };

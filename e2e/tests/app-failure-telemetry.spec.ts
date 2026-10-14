@@ -158,7 +158,7 @@ const source = (marker: string, status: number, rewritesTelemetry: boolean) => [
     content: `import { defineApp, query, object, string, jsonSchema, router, workflow, NonRetryableError } from "apps";
 ${failing(marker, status)}
 ${rewritesTelemetry ? hostile : ""}
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     thrown: query({ input: object({}) }, thrown),
     rejected: query({ input: object({}), output: string() }, async () => "reply-" + "rejected"),
@@ -212,8 +212,8 @@ const InputRejected = Schema.Struct({
   problems: Schema.Array(Schema.String),
   message: Schema.String,
 });
-const EvaluationFailed = Schema.Struct({
-  _tag: Schema.Literal("AppEvaluationFailed"),
+const ResultLost = Schema.Struct({
+  _tag: Schema.Literal("ToolCallFailed"),
   reason: Schema.String,
   message: Schema.String,
 });
@@ -467,13 +467,27 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             `The app threw ${marker} (${marker}): ${thrownMessage(marker)} Details: detail: "${marker}".`,
           );
         }
-        // A rejected call, a reply that fails decoding and a failure after the tool returned: the
-        // caller gets the generic failure.
-        for (const failed of [rejected, malformed, unanswered, rewrittenLog]) {
+        // A rejected call and a reply that fails decoding: the caller is told no usable result
+        // arrived, not that the app's tools could not load.
+        for (const failed of [rejected, malformed]) {
           expect(failed.response.status).toBe(502);
-          expect(yield* body(EvaluationFailed, failed.response)).toMatchObject({
-            reason: "App evaluation failed",
-            message: "Executor could not load this app’s tool definitions.",
+          expect(yield* body(ResultLost, failed.response)).toMatchObject({
+            reason: "Executor did not receive a usable result from this tool call.",
+            message:
+              "Executor did not receive a usable result from this tool call. No further failure detail is available.",
+          });
+          expect(JSON.stringify(failed.response.body)).not.toContain(marker);
+        }
+        // A failure after the tool returned, which the app's framework reports like an invalid
+        // declaration: the caller is told no usable result arrived, not that the app's tools
+        // could not load.
+        for (const failed of [unanswered, rewrittenLog]) {
+          expect(failed.response.status).toBe(502);
+          expect(yield* body(ResultLost, failed.response)).toMatchObject({
+            reason:
+              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
+            message:
+              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it. No further failure detail is available.",
           });
           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
         }
@@ -553,7 +567,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
                   ? "InputInvalid: The tool's input did not match its schema; the problems are not recorded"
                   : name === "workflowRun"
                     ? "WorkflowFailure: The workflow failed (execution); the app's error is not recorded"
-                    : "AppEvaluationFailed: Tools could not be loaded: the app's definition could not be evaluated";
+                    : "ToolCallFailed: The tool failed without further detail";
           expect(
             `${event?.attributes["exception.type"]}: ${event?.attributes["exception.message"]}`,
           ).toBe(description);
@@ -588,6 +602,8 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
                     "executor.upstream.wait_ms",
                     "executor.elicitation.wait_ms",
                     "executor.authored_ms",
+                    "executor.lease.wait_ms",
+                    "executor.background_ms",
                     "executor.overhead_ms",
                   ].includes(key),
               ),
@@ -611,6 +627,8 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           "executor.upstream.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.elicitation.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.authored_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.lease.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.background_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.overhead_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
         });
         expect(named(thrown.spans, "app.call")).toMatchObject([

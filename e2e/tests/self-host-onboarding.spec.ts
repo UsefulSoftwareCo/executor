@@ -3,7 +3,8 @@ import { Effect } from "effect";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { startFreshSelfHost } from "../support/managed-server.ts";
-import { Target } from "../support/platform.ts";
+import { authorizeBrowserMcp } from "../support/mcp-oauth.ts";
+import { Target, driver } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
@@ -41,8 +42,8 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Administrator setup opens the agent handoff", (page) =>
           page.waitForURL(`${origin}/setup/agent`),
         );
-        yield* browser.use("Agent instructions are visible", (page) =>
-          page.getByRole("heading", { name: "Continue in your agent", exact: true }).waitFor(),
+        yield* browser.use("The assistant choices are visible", (page) =>
+          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
         );
         expect(
           yield* browser.use("Onboarding stays outside the dashboard shell", (page) =>
@@ -50,8 +51,8 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
           ),
         ).toBe(0);
         yield* browser.use("Reload the handoff", (page) => page.reload());
-        yield* browser.use("Reload retains the agent instructions", (page) =>
-          page.getByRole("heading", { name: "Continue in your agent", exact: true }).waitFor(),
+        yield* browser.use("Reload retains the assistant choices", (page) =>
+          page.getByRole("heading", { name: "Connect your assistant", exact: true }).waitFor(),
         );
         yield* browser.checkpoint("Self-host administrator agent handoff");
         yield* browser.use("Use a phone viewport", (page) =>
@@ -64,6 +65,12 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Allow clipboard access", (page) =>
           page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
         );
+        yield* browser.use("Choose Claude", (page) =>
+          page.getByRole("button", { name: "Claude", exact: true }).click(),
+        );
+        yield* browser.use("Claude's guide replaces the choices", (page) =>
+          page.getByRole("heading", { name: "Add Executor to Claude", exact: true }).waitFor(),
+        );
         yield* browser.use("Copy the instance MCP URL", (page) =>
           page.getByRole("button", { name: "Copy MCP URL", exact: true }).click(),
         );
@@ -72,6 +79,28 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             page.evaluate(() => navigator.clipboard.readText()),
           ),
         ).toBe(`${origin}/mcp`);
+        yield* browser.use("Setup waits for Claude", (page) =>
+          page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+        );
+        // The assistant signs in from its own tab, so agent setup keeps its state.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* browser.omitNetworkTrace;
+            const tab = yield* Effect.acquireRelease(
+              browser.use("Open the assistant's sign-in tab", (page) => page.context().newPage()),
+              (tab) =>
+                driver("Close the assistant's sign-in tab", () => tab.close()).pipe(Effect.orDie),
+            );
+            yield* authorizeBrowserMcp(tab, origin, { client: "Self-host assistant" });
+            yield* browser.use("Return to agent setup", (page) => page.bringToFront());
+          }),
+        );
+        yield* browser.use("The new agent is detected", (page) =>
+          page.getByText("Approved for Self-host assistant", { exact: true }).waitFor(),
+        );
+        yield* browser.use("Continue to the first prompt", (page) =>
+          page.getByRole("button", { name: "Next: send your first prompt", exact: true }).click(),
+        );
         yield* browser.use("Copy the starter prompt", (page) =>
           page.getByRole("button", { name: "Copy starter prompt", exact: true }).click(),
         );
@@ -80,7 +109,7 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             page.evaluate(() => navigator.clipboard.readText()),
           ),
         ).toBe(
-          `Help me connect to Executor over MCP at ${origin}/mcp.\n\nRead the docs to understand the product at https://executor.sh/docs/, then help me get my first app set up.`,
+          `Use Executor, which I connected over MCP at ${origin}/mcp. If you cannot see its tools yet, connect to that server first.\n\nRead the docs to understand the product at https://executor.sh/docs/, then help me get my first app set up.`,
         );
         yield* browser.use("Open the dashboard when ready", (page) =>
           page.getByRole("link", { name: "Open dashboard", exact: false }).click(),

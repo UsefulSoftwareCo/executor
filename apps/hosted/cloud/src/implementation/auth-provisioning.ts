@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import { betterAuth } from "better-auth";
 import { provisionHostedOAuthResources } from "@executor-js/hosted-server";
 import { databaseUrl } from "@executor-js/hosted-server/database";
-import { HostedMigrationFailed } from "@executor-js/hosted-server/migrations";
+import { migrationFailed } from "@executor-js/hosted-server/migrations";
 import { Config, Effect, Redacted } from "effect";
 import { unavailableAuthEmail } from "../contracts/email.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "./auth-options.ts";
@@ -16,7 +16,7 @@ export const cloudAuthSetup = Effect.gen(function* () {
   const database = yield* Effect.acquireRelease(
     Effect.try({
       try: () => new Pool({ connectionString: Redacted.value(url), max: 2 }),
-      catch: () => new HostedMigrationFailed({ stage: "auth" }),
+      catch: migrationFailed("auth"),
     }),
     (pool) => Effect.promise(() => pool.end()),
   );
@@ -35,11 +35,11 @@ export const cloudAuthSetup = Effect.gen(function* () {
   };
   const context = Effect.tryPromise({
     try: () => betterAuth(options).$context,
-    catch: () => new HostedMigrationFailed({ stage: "auth" }),
+    catch: migrationFailed("auth"),
   });
   const provision = Effect.gen(function* () {
     yield* provisionHostedOAuthResources(origins, yield* context).pipe(
-      Effect.mapError(() => new HostedMigrationFailed({ stage: "auth" })),
+      Effect.mapError(migrationFailed("auth")),
     );
   });
   return { url, options, origins, context, provision };

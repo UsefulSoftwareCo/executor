@@ -1,41 +1,47 @@
-import { authorizeTarget } from "./authorization.ts";
-/** Product authority is checked for every read; profile and account checks precede factory evaluation. */
+import { authorizeApp } from "./authorization.ts";
+/** Product authority is checked for every read; app and account checks precede factory evaluation. */
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
-import type { AppSkillInputs } from "@executor-js/sdk/core";
+import type { AppSkillInputs, CatalogReadOptions } from "@executor-js/sdk/core";
 import { annotateSkillRead } from "@executor-js/app-templates/executor";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { currentOwner, selectedApp } from "./access.ts";
+import { currentOwner, selectedVersion } from "./access.ts";
 
-/** Read metadata under the request's explicit organization, using the selected account profile. */
-export const listAppSkills = (input: Omit<typeof AppSkillInputs.list.Type, "owner">) =>
+/**
+ * Check the app and resolve the caller's accounts under the request's explicit organization, for
+ * the requirements of the deployment the read pins, after its lineage check.
+ */
+const skillAccounts = (input: Pick<typeof AppSkillInputs.list.Type, "app" | "deployment">) =>
   Effect.gen(function* () {
-    yield* authorizeTarget(input.app, input.profile);
+    yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app, input.profile);
-    return yield* executor.skills.list({ ...input, owner });
+    const accounts = yield* selectedVersion(executor, owner, input);
+    return { owner, executor, accounts };
+  });
+/** Read metadata using the caller's accounts. */
+export const listAppSkills = (
+  input: Omit<typeof AppSkillInputs.list.Type, "owner">,
+  options?: CatalogReadOptions,
+) =>
+  Effect.gen(function* () {
+    const { owner, executor, accounts } = yield* skillAccounts(input);
+    return yield* executor.skills.list({ ...input, owner, accounts }, options);
   });
 /** Historical reads still require current access to the configured app and its code lineage. */
 export const readAppSkill = (input: Omit<typeof AppSkillInputs.read.Type, "owner">) =>
   Effect.gen(function* () {
-    yield* authorizeTarget(input.app, input.profile);
-    const owner = yield* currentOwner;
-    const executor = yield* Effect.flatten(HostedExecutor);
-    yield* selectedApp(executor, owner, input.app, input.profile);
-    return yield* executor.skills.read({ ...input, owner });
+    const { owner, executor, accounts } = yield* skillAccounts(input);
+    return yield* executor.skills.read({ ...input, owner, accounts });
   });
 /** Both hosted products mount these shared authenticated handlers. */
 export const hostedSkillHandlers = HttpApiBuilder.group(HostedApi, "skills", (handlers) =>
   handlers
     .handle("bundle", ({ params, query }) =>
       Effect.gen(function* () {
-        yield* authorizeTarget(params.app, query.profile);
-        const owner = yield* currentOwner;
-        const executor = yield* Effect.flatten(HostedExecutor);
-        yield* selectedApp(executor, owner, params.app, query.profile);
-        return yield* executor.skills.bundle({ app: params.app, ...query, owner });
+        const { owner, executor, accounts } = yield* skillAccounts({ app: params.app, ...query });
+        return yield* executor.skills.bundle({ app: params.app, ...query, owner, accounts });
       }),
     )
     .handle("list", ({ params, query }) => listAppSkills({ app: params.app, ...query }))

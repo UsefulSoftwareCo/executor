@@ -1,6 +1,6 @@
 /**
  * Builds what the e2e servers load: the staged `apps` package and its tarball, Motel, the workerd
- * host bundle and the two dashboards. Each step's outputs are cached under a hash of its inputs,
+ * host bundle, the two dashboards and the pinned npm archives the suite's registry serves. Each step's outputs are cached under a hash of its inputs,
  * so a rift that has not changed a step's inputs restores its outputs instead of building them.
  *
  * A step's inputs are the files git sees (tracked, or untracked and not ignored) in its
@@ -57,7 +57,7 @@ const steps: ReadonlyArray<Step> = [
     packages: ["packages/sdk"],
     files: ["scripts/build-test-runtime.ts"],
     after: [],
-    outputs: [".local/test-runtime/host.json"],
+    outputs: [".local/test-runtime/host.json", ".local/test-runtime/host.json.map"],
   },
   {
     name: "e2e:apps",
@@ -84,6 +84,16 @@ const steps: ReadonlyArray<Step> = [
     after: [],
     outputs: ["apps/local/web/dist"],
   },
+  {
+    // The packages scenarios install, pinned in e2e/npm-packages.json; see support/npm-registry.ts.
+    // The apps manifest names the MCP SDK version its roots include.
+    name: "e2e:npm",
+    command: ["bun", "run", "e2e:npm"],
+    packages: [],
+    files: ["scripts/e2e-npm-packages.ts", "e2e/npm-packages.json", "packages/apps/package.json"],
+    after: [],
+    outputs: [".local/test-runtime/npm"],
+  },
 ];
 
 /**
@@ -92,7 +102,10 @@ const steps: ReadonlyArray<Step> = [
  */
 const rootFiles = ["package.json", "bun.lock", "tsconfig.json", "patches", ".gitignore"];
 /** Environment variables the build configs read. */
-const buildEnv = /^(NODE_ENV|VITE_.*|HOSTED_API_URL|EXECUTOR_DESKTOP_DEV)$/;
+const buildEnv =
+  /^(NODE_ENV|VITE_.*|HOSTED_API_URL|EXECUTOR_DESKTOP_DEV|EXECUTOR_DASHBOARD_SOURCEMAP)$/;
+// The dashboards keep unreferenced source maps, which map the suite's browser coverage to source.
+process.env.EXECUTOR_DASHBOARD_SOURCEMAP = "hidden";
 /** Entries kept per step. Older ones are removed after a store. */
 const keep = 20;
 

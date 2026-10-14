@@ -15,7 +15,7 @@ import {
 import { formatSpec } from "./emulator.ts";
 import { openBrowser, type BrowserSession } from "./browser.ts";
 import { fixtureId, type AppReceipt, type OrgReceipt, type Receipt } from "./seed.ts";
-import { fixtureActors, stableUuid } from "./sessions.ts";
+import { fixtureActors } from "./sessions.ts";
 import type { StageControl } from "./stage.ts";
 import { appsManifest } from "../../support/apps-release.ts";
 
@@ -170,52 +170,29 @@ const apiRoutes: readonly (readonly [string, string, (o: OrgReceipt) => string])
   ["removal", "{org}/removal", (o) => `${org(o)}/removal`],
   ["scheduled-runs", "{org}/scheduled-runs", (o) => `${org(o)}/scheduled-runs`],
   ["app", "{app}", (o) => app(o)],
-  ["app.profiles", "{app}/profiles", (o) => `${app(o)}/profiles`],
+  ["app.accounts.app", "{app}/accounts/app", (o) => `${app(o)}/accounts/app`],
+  ["app.accounts.user", "{app}/accounts/user", (o) => `${app(o)}/accounts/user`],
   ["app.access", "{app}/access", (o) => `${app(o)}/access`],
   ["app.authoring", "{app}/authoring", (o) => `${app(o)}/authoring`],
   ["app.ui", "{app}/ui", (o) => `${app(o)}/ui`],
   ["app.webhooks", "{app}/webhooks", (o) => `${app(o)}/webhooks`],
-  [
-    "app.skills",
-    "{app}/skills?profile=",
-    (o) => `${app(o)}/skills?profile=${primaryApp(o).profile}`,
-  ],
-  [
-    "app.workflows",
-    "{app}/workflows?profile=",
-    (o) => `${app(o)}/workflows?profile=${primaryApp(o).profile}`,
-  ],
-  ["app.tools", "{app}/tools?profile=", (o) => `${app(o)}/tools?profile=${primaryApp(o).profile}`],
-  [
-    "app.tools.index",
-    "{app}/tools/index?profile=",
-    (o) => `${app(o)}/tools/index?profile=${primaryApp(o).profile}`,
-  ],
-  [
-    "app.tool",
-    "{app}/tools/{tool}?profile=",
-    (o) => `${app(o)}/tools/${probeTool(primaryApp(o))}?profile=${primaryApp(o).profile}`,
-  ],
+  ["app.skills", "{app}/skills", (o) => `${app(o)}/skills`],
+  ["app.workflows", "{app}/workflows", (o) => `${app(o)}/workflows`],
+  ["app.tools", "{app}/tools", (o) => `${app(o)}/tools`],
+  ["app.tools.index", "{app}/tools/index", (o) => `${app(o)}/tools/index`],
+  ["app.tool", "{app}/tools/{tool}", (o) => `${app(o)}/tools/${probeTool(primaryApp(o))}`],
   ["app.workspace", "{app}/workspace", (o) => `${app(o)}/workspace`],
   ["app.workspace.display", "{app}/workspace/display", (o) => `${app(o)}/workspace/display`],
   ["app.source", "{app}/source", (o) => `${app(o)}/source`],
   ["app.deployments", "{app}/deployments", (o) => `${app(o)}/deployments`],
   ["app.history", "{app}/history", (o) => `${app(o)}/history`],
-  [
-    "app.skill-bundle",
-    "{app}/skill-bundle?profile=",
-    (o) => `${app(o)}/skill-bundle?profile=${primaryApp(o).profile}`,
-  ],
+  ["app.skill-bundle", "{app}/skill-bundle", (o) => `${app(o)}/skill-bundle`],
   ["app.schedules", "{app}/schedules", (o) => `${app(o)}/schedules`],
-  [
-    "app.webhook-definitions",
-    "{app}/webhook-definitions?profile=",
-    (o) => `${app(o)}/webhook-definitions?profile=${primaryApp(o).profile}`,
-  ],
+  ["app.webhook-definitions", "{app}/webhook-definitions", (o) => `${app(o)}/webhook-definitions`],
   [
     "app.schedule-definitions",
-    "{app}/schedules/definitions?profile=",
-    (o) => `${app(o)}/schedules/definitions?profile=${primaryApp(o).profile}`,
+    "{app}/schedules/definitions",
+    (o) => `${app(o)}/schedules/definitions`,
   ],
   ["account", "{org}/accounts/{account}", (o) => `${org(o)}/accounts/${primaryAccount(o)}`],
   [
@@ -254,30 +231,25 @@ const apiScenarios: Scenario[] = apiRoutes.map(([name, shown, path]) => ({
 }));
 
 /**
- * App-detail tabs backed by app evaluation, on an account-bound MCP app from the org whose
+ * App-detail tabs backed by app evaluation, on an account-linked MCP app from the org whose
  * upstreams have production latency. The imported app's factory does not wait on its upstream,
  * so these reads measure evaluation of an app in that org, not a slow factory.
  */
 const slowOrg = "a8s";
 const slowApp = (o: OrgReceipt) =>
   o.apps.find((entry) => entry.kind === "mcp" && entry.accounts.length > 0) ?? primaryApp(o);
-const slowTabs: readonly (readonly [string, (o: OrgReceipt) => string])[] = [
-  ["skills", (o) => `skills?profile=${slowApp(o).profile}`],
-  ["skill-bundle", (o) => `skill-bundle?profile=${slowApp(o).profile}`],
-  ["workflows", (o) => `workflows?profile=${slowApp(o).profile}`],
-  ["webhook-definitions", (o) => `webhook-definitions?profile=${slowApp(o).profile}`],
-];
-const slowTabScenarios: Scenario[] = slowTabs.map(([name, path]) => ({
+const slowTabs = ["skills", "skill-bundle", "workflows", "webhook-definitions"] as const;
+const slowTabScenarios: Scenario[] = slowTabs.map((name) => ({
   id: `api.slow.app.${name}`,
   group: "api",
-  description: `GET {app}/${name} as owner (${slowOrg} org, account-bound imported MCP app; its factory does not await the upstream)`,
+  description: `GET {app}/${name} as owner (${slowOrg} org, account-linked imported MCP app; its factory does not await the upstream)`,
   target: "< 300 ms warm",
   warmup: 2,
   run: (target) =>
     target.owner(slowOrg).pipe(
       Effect.flatMap((client) => {
         const entry = target.org(slowOrg);
-        return client.request("GET", `${org(entry)}/apps/${slowApp(entry).id}/${path(entry)}`);
+        return client.request("GET", `${org(entry)}/apps/${slowApp(entry).id}/${name}`);
       }),
       Effect.map((response) => fromTimed(response)),
     ),
@@ -287,7 +259,7 @@ const slowTabScenarios: Scenario[] = slowTabs.map(([name, path]) => ({
  * An app whose factory awaits a remote catalog before it declares skills and workflows, as
  * generated catalogs do in production. The emulated document takes the production p50
  * discovery latency (512 ms) on every load. Its own fixture organization keeps it out of the
- * seeded orgs; setup (deploy, profile, account) runs once per target and is not measured.
+ * seeded orgs; setup (deploy, connect a linked account) runs once per target and is not measured.
  */
 const factoryOrg = "decl";
 const factoryAppName = "Perf slow factory";
@@ -296,8 +268,8 @@ const factorySource = (emulator: string) => {
   return `import {defineApp,defineProvider,secrets,query,workflow,object,string, router} from "apps";
 const service=defineProvider({name:"Slow catalog",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const noop=workflow({input:object({})},async()=>null);
-export default defineApp({accounts:{service}},async ctx=>{
-  const document=await (await ctx.fetch(${JSON.stringify(catalog)},{headers:{"x-api-key":ctx.accounts.service.fields.token}})).json();
+export default defineApp({user: { accounts:{service} }},async ctx=>{
+  const document=await (await ctx.fetch(${JSON.stringify(catalog)},{headers:{"x-api-key":ctx.user.accounts.service.fields.token}})).json();
   const operations=Object.keys(document.paths??{}).map(path=>path.split("/").pop());
   return {
     tools: router({ ping:query({input:object({})},async()=>"pong") }),
@@ -308,10 +280,10 @@ export default defineApp({accounts:{service}},async ctx=>{
 };
 const FactoryInventory = Schema.Struct({
   apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
-  profiles: Schema.Array(Schema.Struct({ id: Schema.String, app: Schema.String })),
+  links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
 });
 const Identified = Schema.Struct({ id: Schema.String });
-const prepared = new Map<string, { readonly path: string; readonly profile: string }>();
+const prepared = new Map<string, { readonly path: string }>();
 const slowFactory = (target: PerfTarget) =>
   Effect.gen(function* () {
     const { client, organization } = yield* target.fixtureOwner(
@@ -343,9 +315,9 @@ const slowFactory = (target: PerfTarget) =>
       .request("GET", `${root}/inventory`)
       .pipe(Effect.flatMap(ok("inventory")), decode(FactoryInventory));
     const existing = inventory.apps.find((entry) => entry.name === factoryAppName);
-    const existingProfile = inventory.profiles.find((entry) => entry.app === existing?.id);
-    if (existing !== undefined && existingProfile !== undefined) {
-      const value = { path: `${root}/apps/${existing.id}`, profile: existingProfile.id };
+    const linked = inventory.links.some((entry) => entry.app === existing?.id);
+    if (existing !== undefined && linked) {
+      const value = { path: `${root}/apps/${existing.id}` };
       prepared.set(target.label, value);
       return { client, ...value };
     }
@@ -361,16 +333,9 @@ const slowFactory = (target: PerfTarget) =>
         })
         .pipe(Effect.flatMap(ok("deploy slow factory")), decode(Identified)));
     const path = `${root}/apps/${deployed.id}`;
-    const profile = yield* client
-      .request("POST", `${path}/profiles`, {
-        accounts: {},
-        idempotencyKey: stableUuid(`${deployed.id}:profile`),
-      })
-      .pipe(Effect.flatMap(ok("slow factory profile")), decode(Identified));
+    // Connecting from the app links the new account to it, so calls need no account choice.
     const connection = yield* client
-      .request("POST", `${path}/connections`, {
-        profile: profile.id,
-        requirement: "service",
+      .request("POST", `${path}/accounts/user/service/connections`, {
         destination: { kind: "personal" },
       })
       .pipe(Effect.flatMap(ok("slow factory connection")), decode(Identified));
@@ -381,7 +346,7 @@ const slowFactory = (target: PerfTarget) =>
         fields: { token: "synthetic-perf-slowfactory" },
       })
       .pipe(Effect.flatMap(ok("slow factory account")));
-    const value = { path, profile: profile.id };
+    const value = { path };
     prepared.set(target.label, value);
     return { client, ...value };
   });
@@ -389,42 +354,36 @@ const factoryTabs = ["skills", "skill-bundle", "workflows"] as const;
 const factoryScenarios: Scenario[] = factoryTabs.map((name) => ({
   id: `api.factory.app.${name}`,
   group: "api",
-  description: `GET {app}/${name} as owner (${factoryOrg} org, account-bound app whose factory awaits a 512 ms remote catalog)`,
+  description: `GET {app}/${name} as owner (${factoryOrg} org, account-linked app whose factory awaits a 512 ms remote catalog)`,
   target: "< 300 ms warm",
   warmup: 2,
   run: (target) =>
     slowFactory(target).pipe(
-      Effect.flatMap((app) =>
-        app.client.request("GET", `${app.path}/${name}?profile=${app.profile}`),
-      ),
+      Effect.flatMap((app) => app.client.request("GET", `${app.path}/${name}`)),
       Effect.map((response) => fromTimed(response)),
     ),
 }));
 
 const actionScenarios: Scenario[] = [
   {
-    id: "action.profile.update",
+    id: "action.app-account.link",
     group: "action",
     description:
-      "PATCH a profile with its current account selection (revision read first, unmeasured)",
+      "PUT {app}/accounts/user/service/{account}: link an account the owner already linked (idempotent)",
     target: "< 300 ms warm",
     warmup: 2,
     run: (target) =>
       Effect.gen(function* () {
         const entry = target.org(dashboardOrg);
-        const selected = primaryApp(entry);
+        const account = primaryApp(entry).accounts[0];
+        if (account === undefined)
+          return yield* new PerfRequestFailed({
+            operation: "receipt",
+            detail: `${dashboardOrg} has no app with a linked account; seed it first`,
+          });
         const client = yield* target.owner(dashboardOrg);
-        const path = `${app(entry)}/profiles/${selected.profile}`;
-        const current = yield* client.request("GET", path);
-        const revision = Schema.decodeUnknownOption(Schema.Struct({ revision: Schema.Number }))(
-          current.body,
-        );
-        if (revision._tag === "None") return fromTimed(current);
         return fromTimed(
-          yield* client.request("PATCH", path, {
-            expectedRevision: revision.value.revision,
-            accounts: selected.accounts.length ? { service: selected.accounts } : {},
-          }),
+          yield* client.request("PUT", `${app(entry)}/accounts/user/service/${account}`),
         );
       }),
   },
@@ -446,8 +405,7 @@ const upstreamOf = (value: unknown): number | undefined => {
   return undefined;
 };
 
-const toolPath = (entry: AppReceipt) =>
-  `tools[${JSON.stringify(entry.slug)}].profiles[${JSON.stringify(entry.profile)}].${probeTool(entry)}`;
+const toolPath = (entry: AppReceipt) => `tools[${JSON.stringify(entry.slug)}].${probeTool(entry)}`;
 const toolInput = (entry: AppReceipt) =>
   entry.accounts.length > 0
     ? `{ accountId: ${JSON.stringify(entry.accounts[0])}, input: {} }`
@@ -633,7 +591,6 @@ const toolcallScenarios: Scenario[] = [
           "POST",
           `${org(entry)}/apps/${selected.id}/tools/call`,
           {
-            profile: selected.profile,
             tool: probeTool(selected),
             kind: "query",
             input: selected.accounts.length ? { accountId: selected.accounts[0], input: {} } : {},
@@ -667,7 +624,7 @@ const lifecycleSource = (marker: string) => [
   {
     path: "index.ts",
     content: `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
    ping: query({ description: "Perf lifecycle ping ${marker}", input: object({ value: string() }) }, async (_, input) => ({ value: input.value, marker: ${JSON.stringify(marker)} })),
  }) }));
 `,
@@ -903,13 +860,7 @@ const errApp = (target: PerfTarget, name: string) =>
     ),
   );
 const errTool = (target: PerfTarget, name: string) =>
-  errApp(target, name).pipe(
-    Effect.map((entry) =>
-      entry.profile === ""
-        ? `tools[${JSON.stringify(entry.slug)}].${probeTool(entry)}`
-        : `tools[${JSON.stringify(entry.slug)}].profiles[${JSON.stringify(entry.profile)}].${probeTool(entry)}`,
-    ),
-  );
+  errApp(target, name).pipe(Effect.map(toolPath));
 
 const failureScenarios: Scenario[] = [
   {
@@ -944,7 +895,7 @@ return "unreachable";`,
     id: "exec.unavailable.account",
     group: "mcp",
     description:
-      "Execute calling a tool of an app whose required account is not selected; the call must name the missing account",
+      "Execute calling a tool of an app with no account linked to its required account; the call must name the missing account",
     target: "fast, curated AccountRequired instead of UnknownTool",
     warmup: 1,
     run: (target) =>

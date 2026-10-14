@@ -1,11 +1,16 @@
-import { ProfileId } from "./shared.ts";
 import { ApiError } from "@executor-js/utils/api-error";
-import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Framework data operations. Product hosts authenticate and authorize the configured app. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { AppId, DeploymentId, Json, StorageError, CredentialsError } from "./shared.ts";
-import { AppNotFound, AppNotDeployed, AccountRequired, AccountSelectionInvalid } from "./apps.ts";
+import {
+  AppAccounts,
+  AppNotFound,
+  AppNotDeployed,
+  AccountRequired,
+  AccountChoiceUnsupported,
+  AccountSelectionInvalid,
+} from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
 import { DeploymentNotFound } from "./deployment.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
@@ -13,8 +18,7 @@ import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 /** Transportable invocation, independent of closures, credentials or server module imports. */
 export const AppDataInput = Schema.Struct({
   app: AppId,
-  profile: Schema.optional(ProfileId),
-  expectedProfileRevision: Schema.optional(ProfileRevision),
+  accounts: Schema.optional(AppAccounts),
   deployment: Schema.optional(DeploymentId),
   name: Schema.NonEmptyString,
   input: Json,
@@ -43,7 +47,6 @@ export const AppDataFailed = ApiError.define({
 export type AppDataFailed = typeof AppDataFailed.Type;
 
 const errors = [
-  ...ProfileErrors,
   StorageError,
   CredentialsError,
   AppNotFound,
@@ -51,6 +54,7 @@ const errors = [
   AccountNotFound,
   DeploymentNotFound,
   AccountRequired,
+  AccountChoiceUnsupported,
   AccountSelectionInvalid,
   OAuthReconnectRequired,
   OAuthRenewalFailed,

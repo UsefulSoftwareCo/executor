@@ -148,7 +148,7 @@ layer(HostedLive, { excludeTestServices: true })("Imported approvals", (it) => {
                   content: `
 import { defineApp, mutation, object, query, router, withApprovals } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: withApprovals(
     router({
       read: query({ input: object({}) }, async () => "read"),

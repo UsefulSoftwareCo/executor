@@ -13,6 +13,8 @@
   "/create/",
   "/create/agent",
   "/create/agent/",
+  "/device",
+  "/device/",
   "/email/unsubscribe",
   "/email/unsubscribe/",
   "/invite",
@@ -26,5 +28,7 @@
   "/mcp/authorize/",
   "/oauth/callback",
   "/oauth/callback/",
-  "/org/*"
+  "/org/*",
+  "/v1-import",
+  "/v1-import/"
 ]

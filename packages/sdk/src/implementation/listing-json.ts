@@ -5,16 +5,18 @@
  * once, and the listing in memory shares one object per distinct entry among its tools.
  */
 import { Effect, Schema } from "effect";
-import { ProfileRevision } from "../contracts/profiles.ts";
-import { DeploymentId, Json, type JsonObject, ProfileId } from "../contracts/shared.ts";
+import { AppAccounts } from "../contracts/apps.ts";
+import { DeploymentId, Json, type JsonObject } from "../contracts/shared.ts";
 import { Tool, ToolRouter } from "../contracts/tools.ts";
 import type { ToolListing } from "./listings.ts";
 
-const Catalog = Schema.Struct({
-  deployment: DeploymentId,
-  profile: Schema.optionalKey(ProfileId),
-  profileRevision: Schema.optionalKey(ProfileRevision),
-});
+/**
+ * What the listing was evaluated with. Texts kept before 4.0.13 named a profile instead of
+ * accounts; they are kept under declaration keys of that time, which no current read computes.
+ * Texts kept before account scopes named one flat record and fail to decode, so they are read
+ * as missing and evaluated again.
+ */
+const Catalog = Schema.Struct({ deployment: DeploymentId, accounts: AppAccounts });
 /** The schemas of a tool whose `$defs` entries can be shared. */
 const SchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
 type SchemaKey = typeof SchemaKey.Type;
@@ -23,13 +25,17 @@ type SchemaKey = typeof SchemaKey.Type;
  * in `definitions`. Format 1 texts have no `format` and fail to decode as it, and readers of
  * format 1 find no `items` here, so neither is ever mistaken for the other.
  */
+/** A tool as format 2 keeps it: each `$defs` entry of a schema `shared` names is a position. */
+export const StoredTool = Schema.Struct({
+  ...Tool.fields,
+  shared: Schema.optionalKey(Schema.Array(SchemaKey)),
+});
+export type StoredTool = typeof StoredTool.Type;
 const SharedListing = Schema.Struct({
   format: Schema.Literal(2),
   catalog: Catalog,
   definitions: Schema.Array(Json),
-  tools: Schema.Array(
-    Schema.Struct({ ...Tool.fields, shared: Schema.optionalKey(Schema.Array(SchemaKey)) }),
-  ),
+  tools: Schema.Array(StoredTool),
   routers: Schema.Array(ToolRouter),
 });
 /**
@@ -41,7 +47,6 @@ const UnsharedListing = Schema.Struct({
   items: Schema.Array(Tool),
   routers: Schema.Array(ToolRouter),
 });
-type StoredTool = (typeof SharedListing.Type)["tools"][number];
 const SharedListingJson = Schema.fromJsonString(SharedListing);
 const ListingJson = Schema.fromJsonString(Schema.Union([SharedListing, UnsharedListing]));
 
@@ -108,6 +113,12 @@ export const shareListing = (listing: ToolListing) => {
   };
   /** Buckets by a hash of their name and text length: names are the app's, of any length. */
   const known = new Map<number, Array<Bucket>>();
+  /**
+   * Definitions by object. A listing whose tools already share their definitions, such as a kept
+   * one, finds each copy here without encoding it again. An object is one JSON value, so its
+   * position serves every name it appears under.
+   */
+  const objects = new Map<Json, Interned>();
   const definitions: Array<Json> = [];
   let definitionChars = 0;
   let copies = 0;
@@ -119,6 +130,16 @@ export const shareListing = (listing: ToolListing) => {
   };
   /** The first definition with this name and JSON, and its index. */
   const intern = (name: string, definition: Json) => {
+    const same = typeof definition === "object" ? objects.get(definition) : undefined;
+    if (same !== undefined) {
+      copies += 1;
+      return same;
+    }
+    const found = internText(name, definition);
+    if (typeof definition === "object") objects.set(definition, found);
+    return found;
+  };
+  const internText = (name: string, definition: Json) => {
     const text = JSON.stringify(definition);
     // Each length seeds its own hash of the name.
     const key = hashText(name, seed ^ text.length);
@@ -190,16 +211,31 @@ export const shareListing = (listing: ToolListing) => {
           },
     );
   }
-  const chars = JSON.stringify(tools).length + definitionChars;
+  const stored: {
+    readonly definitions: ReadonlyArray<Json>;
+    readonly tools: ReadonlyArray<StoredTool>;
+  } = { definitions, tools };
+  // Counted when read: search rows share a listing without keeping its text.
+  let chars: number | undefined;
+  const counted = () => (chars ??= JSON.stringify(tools).length + definitionChars);
   return {
     listing: { ...listing, items },
     /** UTF-16 bytes of its tools' text, with each definition once, as `DeclarationLimits` counts. */
-    bytes: chars * 2,
+    get bytes() {
+      return counted() * 2;
+    },
+    /**
+     * The listing as format 2 keeps it: each distinct definition once, and the tools naming them
+     * by position, in the order of the listing's items.
+     */
+    stored,
     /** What sharing found, for the evaluation's span. */
-    sizes: {
-      "executor.listing.json_chars": chars,
-      "executor.listing.definitions": definitions.length,
-      "executor.listing.definition_copies": copies,
+    get sizes() {
+      return {
+        "executor.listing.json_chars": counted(),
+        "executor.listing.definitions": definitions.length,
+        "executor.listing.definition_copies": copies,
+      };
     },
     // Suspended: building a schema's encoding effect already encodes.
     json: Effect.suspend(() =>
@@ -212,6 +248,35 @@ export const shareListing = (listing: ToolListing) => {
       }),
     ),
   };
+};
+
+/**
+ * A format 2 tool with the definitions it names put back, or undefined when it names one
+ * `definition` does not have.
+ */
+export const restoreTool = (
+  { shared, ...tool }: StoredTool,
+  definition: (position: number) => Json | undefined,
+): Tool | undefined => {
+  const restore = (schema: JsonObject | undefined) => {
+    const own = definitionsOf(schema);
+    if (schema === undefined || own === undefined) return undefined;
+    const restored: Record<string, Json> = {};
+    for (const [name, at] of Object.entries(own)) {
+      const found = typeof at === "number" ? definition(at) : undefined;
+      if (found === undefined) return undefined;
+      put(restored, name, found);
+    }
+    return { ...schema, $defs: restored };
+  };
+  let item: Tool = tool;
+  for (const key of shared ?? []) {
+    const schema = restore(item[key]);
+    if (schema === undefined) return undefined;
+    item =
+      key === "inputSchema" ? { ...item, inputSchema: schema } : { ...item, outputSchema: schema };
+  }
+  return item;
 };
 
 /**
@@ -228,28 +293,10 @@ export const decodeListing = (json: string) =>
     ),
     Effect.flatMap((kept): Effect.Effect<ToolListing, ListingJsonInvalid> => {
       if (!("format" in kept)) return Effect.succeed(kept);
-      const restore = (schema: JsonObject | undefined) => {
-        const own = definitionsOf(schema);
-        if (schema === undefined || own === undefined) return undefined;
-        const restored: Record<string, Json> = {};
-        for (const [name, at] of Object.entries(own)) {
-          const definition = typeof at === "number" ? kept.definitions[at] : undefined;
-          if (definition === undefined) return undefined;
-          put(restored, name, definition);
-        }
-        return { ...schema, $defs: restored };
-      };
       const items: Array<Tool> = [];
-      for (const { shared, ...tool } of kept.tools) {
-        let item: Tool = tool;
-        for (const key of shared ?? []) {
-          const schema = restore(item[key]);
-          if (schema === undefined) return Effect.fail(new ListingJsonInvalid());
-          item =
-            key === "inputSchema"
-              ? { ...item, inputSchema: schema }
-              : { ...item, outputSchema: schema };
-        }
+      for (const tool of kept.tools) {
+        const item = restoreTool(tool, (at) => kept.definitions[at]);
+        if (item === undefined) return Effect.fail(new ListingJsonInvalid());
         items.push(item);
       }
       return Effect.succeed({ catalog: kept.catalog, items, routers: kept.routers });

@@ -460,7 +460,8 @@ const cachedCatalog = (
 const GitHubToken = Schema.String.check(Schema.isPattern(/^[\x21-\x7e]+$/u));
 
 const scopeMessages = {
-  "missing-account": "A GitHub token needs its account. Pass account: ctx.accounts.<slot> with it.",
+  "missing-account":
+    "A GitHub token needs its account. Pass account: ctx.user.accounts.<slot> or ctx.app.accounts.<slot> with it.",
   "unselected-account": "The GitHub account is not one of this app's selected accounts.",
 } satisfies Record<CatalogScopeProblem, string>;
 

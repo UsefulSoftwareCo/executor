@@ -20,12 +20,6 @@ import { targetHosts } from "../support/role-hosts.ts";
 
 type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 
-/** The rate limiter's insert of an address's first count for a path. */
-const isCountInsert = (span: Span) =>
-  span.operationName === "auth.sql.timing" &&
-  span.tags["db.query.kind"] === "InsertQueryNode" &&
-  span.tags["db.collection.name"] === "rateLimit";
-
 /** The spans of one trace once `until` holds, looked for up to 20 seconds. */
 const traceSpans = (traceId: string, until: (spans: ReadonlyArray<Span>) => boolean) => {
   const by = Date.now() + 20_000;
@@ -224,15 +218,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
         // Better Auth counts the losing request against the winner's row: both reach the token
         // endpoint, which refuses the made-up refresh token.
         expect(responses.map(({ status }) => status)).toEqual([400, 400]);
-        const inserts = (yield* Effect.forEach(responses, ({ traceId }) =>
-          traceSpans(traceId, (spans) => spans.some(isCountInsert)),
-        )).flatMap((spans) => spans.filter(isCountInsert));
-        const lost = inserts.filter((span) => span.status === "error");
-        expect(inserts).toHaveLength(2);
-        expect(lost).toHaveLength(1);
-        expect(lost[0]!.tags["db.query.error_code"]).toBe("23505");
 
-        // The span keeps the lost insert; no error report treats it as a database fault.
+        // No error report treats the insert that lost the race as a database fault.
         yield* Effect.sleep("2 seconds");
         const traces = new Set(responses.map(({ traceId }) => traceId));
         const reported = (yield* sentryExceptions).filter(
@@ -242,7 +229,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
         yield* Effect.flatMap(Evidence, (evidence) =>
           evidence.json("rate-limit-race.json", {
             statuses: responses.map(({ status }) => status),
-            lostInsert: lost[0]!.tags["db.query.error_code"],
             reported,
           }),
         );

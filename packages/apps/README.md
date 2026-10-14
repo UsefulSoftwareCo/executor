@@ -17,7 +17,7 @@ it. In this repository, `bun run pack` builds a local tarball.
 import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
 
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: await mcpRouter({
     url: "https://mcp.deepwiki.com/mcp",
     ...(signal === undefined ? {} : { signal }),
@@ -25,17 +25,15 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-| Import           | Helper                   | App dependency              |
-| ---------------- | ------------------------ | --------------------------- |
-| `apps/mcp`       | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
-| `apps/mcp/stdio` | `stdioRouter`            | `@modelcontextprotocol/sdk` |
-| `apps/graphql`   | `graphqlRouter`          | `graphql`                   |
-| `apps/openapi`   | `liveOpenapiRouter`      | None                        |
+| Import         | Helper                   | App dependency              |
+| -------------- | ------------------------ | --------------------------- |
+| `apps/mcp`     | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
+| `apps/graphql` | `graphqlRouter`          | `graphql`                   |
+| `apps/openapi` | `liveOpenapiRouter`      | None                        |
 
 MCP and GraphQL are optional peers. Subpath imports isolate their module graphs;
-optional peers keep unused libraries out of the dependency installation. The
-MCP HTTP entry point does not import the stdio process adapter. Stdio requires
-a host with process support.
+optional peers keep unused libraries out of the dependency installation. Apps
+reach MCP servers over HTTP; they cannot start local processes.
 
 `defineApp` declares behavior, not a name. Package identity lives in
 `package.json.name`; the host separately names each installed copy.
@@ -61,7 +59,7 @@ operation and shared schema before publishing the current revision. A warm call
 reads that revision and the requested operation's schema dependencies. It does
 not download, parse, or read the full catalog. `openapiRouter` remains the
 lower-level helper for already normalized metadata.
-`parameterDefaults` binds path, query or header values to the selected account.
+`parameterDefaults` binds path, query or header values to the account.
 Those parameters become optional and publish their value as the schema `default`;
 an explicit value still wins.
 
@@ -73,14 +71,31 @@ Accounts bind at execution time. Live documents cannot change credential
 placement or send credentials to another origin. Editing generated source and
 redeploying is required to change those static choices.
 
-Authenticated templates use `provider.many()` and `accountRouter` from `apps`:
+Requirements are declared by scope. `user: { accounts }` holds each caller's
+own accounts, read as `ctx.user.accounts`; `app: { accounts }` holds the app's
+own accounts, which people who can edit the app link for everyone, read as
+`ctx.app.accounts`. A requirement name is used once across both. Contexts of the
+`"app"` scope, such as `MutationContext<typeof requirements, "app">`, have no
+`user`: app schedules (`appCron`, `appInterval`), webhooks whose `account` is
+`{ app: "..." }` and the workflows they start run without a caller. App
+schedules also accept a mutation whose handler declares no parameters, unless
+the call passes explicit type arguments: their third, the context, defaults to
+the caller's. A
+handler that declares its context without a type gets the caller's, with
+`ctx.user`, as a tool's does; app schedules reject it. User
+schedules (`userCron`, `userInterval`) run once for each member who enables them,
+as them. `{ accounts }` requirements and `ctx.accounts` are removed.
+
+Authenticated templates use a `provider.many()` user requirement and
+`accountRouter` from `apps`. A factory also runs without a caller for app-scope
+work, so `ctx.user` may be undefined there:
 
 ```ts
 export default defineApp(
-  { accounts: { service: provider.many() } },
-  async ({ accounts, signal }) => ({
+  { user: { accounts: { service: provider.many() } } },
+  async ({ user, signal }) => ({
     tools: await accountRouter(
-      accounts.service,
+      user?.accounts.service ?? [],
       (account) =>
         mcpRouter({
           url: "https://example.com/mcp",
@@ -102,16 +117,16 @@ plus five minutes stale. Use `freshFor` / `staleFor` to change the windows, or
 `revalidate: true` to await a refresh. Tool results are never cached.
 
 Each combined tool takes `{ accountId, input }`. `input` keeps the upstream shape;
-`accountId` must identify a selected account that exposes that tool. Discovery
+`accountId` must identify one of the caller's accounts that exposes that tool. Discovery
 and validation remain specific to each account. An empty selection returns no
-tools. This helper also works with OpenAPI, GraphQL and stdio operations.
+tools. This helper also works with OpenAPI and GraphQL operations.
 
 Contracts live in `src/contracts/`; native operations live in `src/implementation/`.
 Promise conversion happens at the public entry points. `apps/mcp/effect` exposes
 the native HTTP discovery operation for host-side import probing.
 
 Helpers are ordinary app libraries. The SDK still builds and invokes one app
-model with the configured account selections; there is no protocol dispatcher.
+model with the accounts each operation runs with; there is no protocol dispatcher.
 Existing retained builds keep their bundled code until a new deployment.
 
 The packaged runtime uses host protocol 1. A package missing that runtime or using
@@ -225,7 +240,7 @@ private data; it also includes the current credential fingerprint. Use the
 shared cache for public metadata that is identical across accounts.
 
 ```ts
-const projects = await ctx.cache.forAccount(ctx.accounts.service).get({
+const projects = await ctx.cache.forAccount(ctx.user.accounts.service).get({
   key: ["projects", region],
   schema: array(object({ id: string(), name: string() })),
   freshFor: "1 minute",
@@ -266,8 +281,8 @@ mutation can be mounted at only one path.
 
 Protocol helpers return routers, so an app mounts several sources under keys.
 `mcpRouter` takes its title, description, icons and instructions from the
-server, and `liveOpenapiRouter` from the document's `info` and tags. `stdioRouter`,
-`openapiRouter` and `graphqlRouter` carry no source metadata. A nested router that fails to load is reported on its own catalog entry;
+server, and `liveOpenapiRouter` from the document's `info` and tags. `openapiRouter`
+and `graphqlRouter` carry no source metadata. A nested router that fails to load is reported on its own catalog entry;
 the app's other tools still load. The root failing fails discovery.
 
 `dynamicRouter({ list, resolve })` separates descriptions from executable
@@ -280,7 +295,7 @@ duplicate names.
 
 ```ts
 export default defineApp(
-  { accounts: {} },
+  {},
   {
     tools: dynamicRouter({
       list: async () => [

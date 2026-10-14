@@ -1,17 +1,16 @@
-import { ProfileId, ProfileConflict } from "@executor-js/sdk/core";
 /** Product host for private app pages. Identity comes from the hostname and app cookie, never request input. */
 import {
   Deployment,
   DeploymentId,
+  AccountNotFound,
   AccountRequired,
-  credentialsRejected,
-  profileAccountProblems,
+  AccountSelectionInvalid,
+  accountProblems,
+  invocationEntries,
+  type AppAccounts,
   OAuthReconnectRequired,
-  OwnerId,
-  type App,
   type AppId,
   type ExecutorDatabase,
-  type SelectedAccounts,
   type Executor,
   type Runtime,
 } from "@executor-js/sdk/core";
@@ -23,26 +22,32 @@ import {
   UiUnauthorized,
   type UiOperation,
 } from "apps/ui/contracts";
-import { appDocument, appAsset, appWatchScript } from "apps/ui/serving";
+import { appDocument, appAsset, appWatchScript, assetPath, storedAppFile } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
-import { Effect, Result, Schema, Stream } from "effect";
+import { Effect, Option, Result, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
+import { localOwner } from "./owners.ts";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { appSessionCookie } from "../contracts/app-ui.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import type { LocalAuth } from "./auth.ts";
 import { appRequest } from "./app-auth.ts";
-import { AppReturnPath, appPrivateHeaders as privateHeaders } from "apps/ui/auth";
+import { appPrivateHeaders as privateHeaders } from "apps/ui/auth";
+import type { SqlClient } from "effect/sql";
+import { callerAccounts } from "./app-accounts.ts";
 
 const failed = (reason: UiFailed["reason"] = "unavailable") => new UiFailed({ reason });
 const UiBuild = Schema.Struct({ id: DeploymentId, build: Deployment.fields.build });
-const accountIds = (accounts: SelectedAccounts) =>
-  Object.values(accounts).flatMap((value) => (typeof value === "string" ? [value] : value));
+/** Every account an operation's accounts use, in both scopes. */
+const accountIds = (accounts: AppAccounts) => [
+  ...new Set(invocationEntries(accounts).flatMap(([, ids]) => ids)),
+];
 
 /** Build app handlers and session middleware; the host composition registers their routes. */
 export const appUi = (
   executor: Executor,
+  sql: SqlClient.SqlClient,
   reactivity: ExecutorDatabase["reactivity"],
   runtime: Runtime,
   config: ServerConfig,
@@ -55,15 +60,13 @@ export const appUi = (
 ) => {
   const native = runtime;
   const current = (id: AppId) =>
-    executor.apps
-      .get({ app: id, owner: OwnerId.make("local") })
-      .pipe(Effect.mapError(() => failed()));
+    executor.apps.get({ app: id, owner: localOwner }).pipe(Effect.mapError(() => failed()));
   const deployment = (app: Effect.Success<ReturnType<typeof current>>, id = app.activeDeployment) =>
     Effect.gen(function* () {
       if (id === null) return yield* failed();
       const metadata = yield* executor.apps.deployment({
         app: app.id,
-        owner: OwnerId.make("local"),
+        owner: localOwner,
         deployment: id,
       });
       return UiBuild.make({ id: metadata.id, build: metadata.build });
@@ -76,6 +79,14 @@ export const appUi = (
     if (!valid) return yield* new UiUnauthorized();
     return yield* current(target.app);
   });
+  const operationFailure = (error: unknown) =>
+    Schema.is(AccountRequired)(error) ||
+    Schema.is(AccountNotFound)(error) ||
+    Schema.is(AccountSelectionInvalid)(error) ||
+    Schema.is(OAuthReconnectRequired)(error)
+      ? failed("account_required")
+      : failed("operation_failed");
+  /** Each call runs with the accounts linked to the app now. */
   const operation = (payload: typeof UiOperation.Type) =>
     Effect.gen(function* () {
       const app = yield* authorize;
@@ -83,24 +94,17 @@ export const appUi = (
         Effect.mapError(() => failed()),
       );
       if (app.activeDeployment !== pinned) return yield* new UiDeploymentChanged();
-      const profile = yield* Schema.decodeUnknownEffect(Schema.optional(ProfileId))(
-        payload.profile,
-      ).pipe(Effect.mapError(() => new UiForbidden()));
+      const accounts = yield* callerAccounts(sql, executor, app).pipe(
+        Effect.mapError(operationFailure),
+      );
       return {
         app: app.id,
         deployment: pinned,
-        profile,
-        expectedProfileRevision: payload.expectedProfileRevision,
+        accounts,
         name: payload.name,
         input: payload.input,
       };
     });
-  const operationFailure = (error: unknown) =>
-    Schema.is(ProfileConflict)(error) && error.reason === "revision"
-      ? new UiDeploymentChanged()
-      : Schema.is(AccountRequired)(error) || Schema.is(OAuthReconnectRequired)(error)
-        ? failed("account_required")
-        : failed("operation_failed");
   const safeOperation = <A, E>(effect: Effect.Effect<A, E>) =>
     effect.pipe(Effect.mapError(operationFailure));
   const uiHandlers = HttpApiBuilder.group(AppUiApi, "ui", (handlers) =>
@@ -153,7 +157,17 @@ export const appUi = (
   const readAsset = (build: Deployment["build"], path: string) =>
     native.asset === undefined
       ? Effect.succeed(undefined)
-      : native.asset({ build, path }).pipe(Effect.mapError(() => failed()));
+      : native.asset({ build, path }).pipe(
+          Effect.mapError(() => failed()),
+          Effect.map((asset) =>
+            asset === undefined || "body" in asset
+              ? asset
+              : storedAppFile(
+                  { contentType: asset.contentType, size: asset.size, etag: asset.object },
+                  (range) => asset.read(range).pipe(Effect.map((body) => Option.some({ body }))),
+                ),
+          ),
+        );
   const htmlResponse = Effect.catchTags({
     UiUnauthorized: () =>
       Effect.succeed(
@@ -197,112 +211,58 @@ export const appUi = (
       Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
     ).pipe(Effect.mapError(() => failed()));
     const version = yield* deployment(app, params.deployment);
-    const content = yield* readAsset(version.build, params["*"]);
-    return yield* appAsset(content, version.build, params["*"]);
+    const path = Option.getOrUndefined(assetPath(params["*"]));
+    if (path === undefined) return yield* appAsset(undefined, version.build, params["*"]);
+    return yield* appAsset(yield* readAsset(version.build, path), version.build, path);
   }).pipe(htmlResponse);
   const dashboard = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
-  /** The dashboard chooser for this app, returning to the page without its profile. */
-  const chooser = (app: AppId, page: URL) =>
-    Effect.gen(function* () {
-      const back = new URL(page);
-      back.searchParams.delete("profile");
-      const returnTo = yield* Schema.decodeUnknownEffect(AppReturnPath)(
-        back.pathname + back.search,
-      ).pipe(Effect.mapError(() => new UiForbidden()));
-      const url = new URL(`/apps/${app}/open`, dashboard);
-      url.searchParams.set("returnTo", returnTo);
-      return url.href;
-    });
-  /** Problems with the page profile's accounts, checked before the app renders. */
-  const accountNotice = (app: App, profile: ProfileId, accounts: SelectedAccounts, page: URL) =>
-    Effect.gen(function* () {
-      const found = yield* Effect.forEach(accountIds(accounts), (account) =>
-        Effect.all({
-          account: executor.accounts.get({ account }),
-          health: executor.accounts.health({ account }),
-        }).pipe(
-          Effect.map((entry) => [[account, entry] as const]),
-          Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
-          Effect.mapError(() => failed()),
-        ),
-      );
-      const problems = profileAccountProblems(app, accounts, new Map(found.flat()));
-      if (problems.length === 0) return undefined;
-      const fix = new URL(`/apps/${app.id}`, dashboard);
-      fix.searchParams.set("view", "accounts");
-      fix.searchParams.set("profile", profile);
-      return { app: app.name, problems, fix: fix.href, choose: yield* chooser(app.id, page) };
-    });
   const page = Effect.gen(function* () {
     // The app chose its pages' paths.
     yield* recordRoute("/:page");
     const app = yield* authorize;
     const { target } = yield* appRequest(config.port);
     const version = yield* deployment(app);
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const url = new URL(request.url, target.origin);
-    const requested = url.searchParams.get("profile");
-    const profile = yield* Schema.decodeUnknownEffect(Schema.optional(ProfileId))(
-      requested ?? undefined,
-    ).pipe(Effect.mapError(() => new UiForbidden()));
-    if (
-      profile === undefined &&
-      (request.headers["sec-fetch-mode"] === "navigate" ||
-        request.headers.accept?.includes("text/html")) &&
-      Object.keys(app.requirements.accounts).length > 0
-    ) {
-      const saved = yield* executor.apps.profiles
-        .list({ app: app.id, owner: app.owner, subject: "local" })
-        .pipe(Effect.mapError(() => failed()));
-      const candidates = saved.filter(
-        (item) =>
-          item.enabled &&
-          item.status !== "removed" &&
-          item.status !== "removing" &&
-          Object.keys(app.requirements.accounts).every((slot) =>
-            Object.hasOwn(item.accounts, slot),
-          ),
-      );
-      // A lone profile opens directly only when its accounts exist and none was rejected.
-      const usable = (accounts: SelectedAccounts) =>
-        Effect.forEach(accountIds(accounts), (account) =>
-          executor.accounts.health({ account }).pipe(
-            Effect.map((health) => !credentialsRejected(health, app.id)),
-            Effect.catchTag("AccountNotFound", () => Effect.succeed(false)),
-            Effect.mapError(() => failed()),
-          ),
-        ).pipe(Effect.map((results) => results.every(Boolean)));
-      const only = candidates[0];
-      if (candidates.length === 1 && only !== undefined && (yield* usable(only.accounts))) {
-        url.searchParams.set("profile", only.id);
-        return HttpServerResponse.redirect(url.href, { status: 302, headers: privateHeaders });
+    const fix = new URL(`/apps/${app.id}`, dashboard);
+    fix.searchParams.set("view", "accounts");
+    // The page runs with the app's linked accounts and the linked ones; a plain requirement with
+    // none shows what to connect.
+    const resolution = yield* callerAccounts(sql, executor, app).pipe(
+      Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
+      Effect.catchTag("AccountRequired", (error) =>
+        Effect.succeed({ kind: "missing" as const, slot: error.slot }),
+      ),
+      Effect.mapError(() => failed()),
+    );
+    const accountNotice = Effect.gen(function* () {
+      if (resolution.kind === "missing") {
+        const requirement = app.requirements.accounts[resolution.slot];
+        if (requirement === undefined) return yield* failed();
+        return {
+          app: app.name,
+          problems: [{ provider: requirement.definition.name, reason: "missing" as const }],
+          fix: fix.href,
+        };
       }
-      return HttpServerResponse.redirect(yield* chooser(app.id, url), {
-        status: 302,
-        headers: privateHeaders,
-      });
-    }
-    const selected =
-      profile === undefined
-        ? undefined
-        : yield* executor.apps.profiles
-            .get({ app: app.id, profile })
-            .pipe(Effect.mapError(() => new UiForbidden()));
-    if (
-      selected !== undefined &&
-      (!selected.enabled ||
-        selected.subject !== "local" ||
-        selected.status === "removed" ||
-        selected.status === "removing")
-    )
-      return yield* new UiForbidden();
+      const used = accountIds(resolution.accounts);
+      if (used.length === 0) return undefined;
+      const found = yield* Effect.forEach(used, (account) =>
+        Effect.all({
+          account: executor.accounts.get({ account }),
+          health: executor.accounts.health({ account, apps: [app.id] }),
+        }).pipe(
+          Effect.map((entry) => [[account, entry] as const]),
+          Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
+          Effect.mapError(() => failed()),
+        ),
+      );
+      const problems = accountProblems(app, resolution.accounts, new Map(found.flat()));
+      if (problems.length === 0) return undefined;
+      return { app: app.name, problems, fix: fix.href };
+    });
     return yield* appDocument({
-      profile: selected?.id,
-      expectedProfileRevision: selected?.revision,
-      accounts:
-        selected === undefined
-          ? undefined
-          : yield* accountNotice(app, selected.id, selected.accounts, url),
+      // The page names the user requirements' accounts, as hosted does; the app's stay with it.
+      accountIds: resolution.kind === "resolved" ? resolution.accounts.user : undefined,
+      accounts: yield* accountNotice,
       origin: target.origin,
       deployment: version.id,
       asset: (path) => readAsset(version.build, path),

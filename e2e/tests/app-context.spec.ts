@@ -1,4 +1,3 @@
-import { createProfile } from "../support/profiles.ts";
 /** Real hosted HTTP checks for separately declared handlers and their invocation-owned context. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schema } from "effect";
@@ -9,6 +8,7 @@ import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath, unlinkAccount } from "../support/app-accounts.ts";
 
 const files = [
   {
@@ -18,7 +18,7 @@ const files = [
 const service = defineProvider({ name: "Context fixture", auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
-export const requirements = { accounts: { service } };
+export const requirements = { user: { accounts: { service } } };
 export type QueryCtx = QueryContext<typeof requirements>;
 export type MutationCtx = MutationContext<typeof requirements>;
 export type WebhookCtx = WebhookContext<typeof requirements>;
@@ -34,8 +34,8 @@ export type WebhookCtx = WebhookContext<typeof requirements>;
     content: `import { query, mutation, object, string, type Webhook } from "apps";
 import type { QueryCtx, MutationCtx, WebhookCtx } from "./context.ts";
 const input = object({ body: string() });
-const source = (ctx: Pick<WebhookCtx, "accounts">) =>
-  ctx.accounts.service.fields.token === "synthetic-context-b" ? "second" : "first";
+const source = (ctx: Pick<WebhookCtx, "user">) =>
+  ctx.user.accounts.service.fields.token === "synthetic-context-b" ? "second" : "first";
 const insert = "INSERT INTO messages (body, source) VALUES (?, ?)";
 export const list = query({ input: object({}) }, async (ctx: QueryCtx) =>
   ctx.sql.exec("SELECT body, source FROM messages ORDER BY seq").toArray());
@@ -57,7 +57,7 @@ export const forbidden = query({ input }, async (ctx: QueryCtx, value) =>
   ctx.sql.exec(insert, value.body, "bad").toArray());
 const empty = object({});
 export const messages = {
-  account: "service", config: empty, state: empty,
+  account: { user: "service" }, config: empty, state: empty,
   async register(ctx) {
     if ("elicit" in ctx) throw new Error("Interactive webhook context");
     ctx.sql.exec(insert, "registered", source(ctx));
@@ -104,33 +104,29 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const name = `Context ${randomUUID().slice(0, 8)}`;
-        const created: { app?: string; account?: string; profile?: string } = {};
-        const settleProfile = (
-          expected:
-            | { readonly status: "ready"; readonly deployment: string }
-            | { readonly status: "removed" },
-        ) =>
+        const created: { app?: string; account?: string; linked?: boolean } = {};
+        /** Wait until the linked account's webhook source is ready on the deployment. */
+        const settleSource = (deployment: string) =>
           Effect.gen(function* () {
             const deadline = (yield* Clock.currentTimeMillis) + 15000;
             for (;;) {
               const response = yield* api.request(
                 actors.owner,
-                "POST",
-                `${prefix}/apps/${created.app}/profiles/${created.profile}/reconcile`,
+                "GET",
+                `${prefix}/apps/${created.app}/webhook-sources`,
               );
               expect(response.status).toBe(200);
-              const current = yield* body(
-                Schema.Struct({
-                  status: Schema.String,
-                  reconciledDeployment: Schema.NullOr(Schema.String),
-                }),
+              const current = (yield* body(
+                Schema.Array(
+                  Schema.Struct({
+                    account: Schema.String,
+                    status: Schema.String,
+                    reconciledDeployment: Schema.NullOr(Schema.String),
+                  }),
+                ),
                 response,
-              );
-              if (
-                current.status === expected.status &&
-                (expected.status === "removed" ||
-                  current.reconciledDeployment === expected.deployment)
-              )
+              )).find((source) => source.account === created.account);
+              if (current?.status === "ready" && current.reconciledDeployment === deployment)
                 return;
               expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(
                 deadline,
@@ -138,17 +134,32 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
               yield* Effect.sleep("100 millis");
             }
           });
+        /** Wait until unlinking the account has stopped its managed subscriptions. */
+        const settleRemoval = Effect.gen(function* () {
+          const deadline = (yield* Clock.currentTimeMillis) + 15000;
+          for (;;) {
+            const response = yield* api.request(
+              actors.owner,
+              "GET",
+              `${prefix}/apps/${created.app}/webhooks`,
+            );
+            expect(response.status).toBe(200);
+            const current = yield* body(Schema.Array(Subscription), response);
+            if (current.every((subscription) => subscription.status === "stopped")) return;
+            expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(deadline);
+            yield* Effect.sleep("100 millis");
+          }
+        });
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            if (created.profile) {
-              expect(
-                (yield* api.request(
-                  actors.owner,
-                  "DELETE",
-                  `${prefix}/apps/${created.app}/profiles/${created.profile}`,
-                )).status,
-              ).toBe(200);
-              yield* settleProfile({ status: "removed" });
+            if (created.linked && created.account) {
+              yield* unlinkAccount(
+                actors.owner,
+                `${prefix}/apps/${created.app}`,
+                "service",
+                created.account,
+              );
+              yield* settleRemoval;
             }
             if (created.app)
               expect(
@@ -172,13 +183,12 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         expect(deployed.status).toBe(200);
         const app = (yield* body(App, deployed)).id;
         created.app = app;
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app}`);
-        created.profile = profile.id;
+        // Connecting from the app links the account to it, so calls need no choice.
         const connection = yield* api.request(
           actors.owner,
           "POST",
-          `${prefix}/apps/${app}/connections`,
-          { requirement: "service", profile: profile.id },
+          connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+          {},
         );
         expect(connection.status).toBe(200);
         const submit = (id: string, token: string) =>
@@ -190,6 +200,7 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         const saved = yield* submit((yield* body(Resource, connection)).id, "synthetic-context-a");
         expect(saved.status).toBe(200);
         created.account = (yield* body(Resource, saved)).id;
+        created.linked = true;
         const kinds = {
           list: "query",
           forbidden: "query",
@@ -200,7 +211,6 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         } as const;
         const call = (tool: keyof typeof kinds, input: Record<string, string> = {}) =>
           api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
-            profile: profile.id,
             tool,
             kind: kinds[tool],
             input,
@@ -209,8 +219,8 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         const reconnected = yield* api.request(
           actors.owner,
           "POST",
-          `${prefix}/apps/${app}/connections`,
-          { requirement: "service", profile: profile.id, account: created.account },
+          connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+          { account: created.account },
         );
         expect(reconnected.status).toBe(200);
         expect(
@@ -226,8 +236,8 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           { body: "before", source: "first" },
           { body: "after", source: "second" },
         ]);
-        // Introduce the webhook only after the mutation assertions. Profile setup
-        // owns registration; racing it with manual registration creates two hooks.
+        // Introduce the webhook only after the mutation assertions. The linked account's webhook
+        // source owns registration; racing it with manual registration creates two hooks.
         const updated = yield* api.request(actors.owner, "POST", `${prefix}/apps/${app}/deploy`, {
           files: files.map((file) =>
             file.path === "index.ts"
@@ -246,14 +256,10 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           Schema.Struct({ activeDeployment: Schema.String }),
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${app}`),
         );
-        yield* settleProfile({ status: "ready", deployment: activeDeployment });
+        yield* settleSource(activeDeployment);
         const subscriptions = yield* body(
           Schema.Array(Subscription),
-          yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${app}/webhooks?profile=${profile.id}`,
-          ),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app}/webhooks`),
         );
         expect(subscriptions).toHaveLength(1);
         const subscription = subscriptions[0];

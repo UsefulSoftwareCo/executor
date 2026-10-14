@@ -13,7 +13,7 @@ async function github(context: WebhookCtx, path: string, init: RequestInit = {})
   return context.fetch(`https://api.github.com${path}`, {
     ...init,
     headers: {
-      Authorization: `Bearer ${context.accounts.github.fields.access_token}`,
+      Authorization: `Bearer ${context.user.accounts.github.fields.access_token}`,
       Accept: "application/vnd.github+json",
       "Content-Type": "application/json",
     },
@@ -34,7 +34,7 @@ async function findHook(context: WebhookCtx, path: string, callbackUrl: string) 
 
 /** Register with GitHub; read Gmail on verified delivery using the subscription's saved account IDs. */
 export const issueOpened = {
-  account: "github",
+  account: { user: "github" },
   config: Repository,
   state: Registration,
   register: async (context, { config, callbackUrl, secret }) => {

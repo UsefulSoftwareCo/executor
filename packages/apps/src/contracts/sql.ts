@@ -68,3 +68,9 @@ export const reservedTablePrefix = "_executor_";
 
 /** Where an app keeps its migrations: `0001_create_notes.sql`, applied in number order. */
 export const migrationsDirectory = "migrations";
+
+/**
+ * The most values one statement may bind. Durable Object SQLite sets `SQLITE_LIMIT_VARIABLE_NUMBER`
+ * to 100 on every host; `ctx.sql` checks it first so the error names the limit.
+ */
+export const sqlBindingsLimit = 100;

@@ -1,13 +1,16 @@
 /** Native operation declarations. SQL access is an optional invocation capability. */
 import type { Effect, Schema } from "effect";
 import type { Approval } from "./approval.ts";
-import type { BoundContext, AccountSlots } from "./app.ts";
+import type { EvaluationContext, ScopedSlots } from "./app.ts";
 import type { Sql, SqlReader } from "./sql.ts";
 import type { ToolAnnotations } from "./tools.ts";
 import type { JsonObject } from "./schema.ts";
 
-/** Host-bound operation capabilities; the author declaration refines accounts and storage. */
-export type OperationContext = BoundContext<AccountSlots> & {
+/**
+ * Host-bound operation capabilities; the author declaration refines accounts and storage. `user` is
+ * absent when the invocation has no caller.
+ */
+export type OperationContext = EvaluationContext<ScopedSlots> & {
   readonly sql?: SqlReader | Sql;
 };
 /** The host validates input, checks approval, then owns the transaction and output validation. */

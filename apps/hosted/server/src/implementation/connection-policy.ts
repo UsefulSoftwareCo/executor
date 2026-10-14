@@ -1,10 +1,9 @@
-import { HostedExecutor } from "../contracts/executor.ts";
-import { ownProfile, currentOwner } from "./access.ts";
 /** Pending connection ownership is persisted; knowing a connection ID grants no authority. */
 import {
   StorageError,
   type AccountConnection,
   type AccountConnectionId,
+  type AccountScope,
 } from "@executor-js/sdk/core";
 import { requireGroupSharing } from "./group-sharing.ts";
 import { Effect, Schema } from "effect";
@@ -34,20 +33,18 @@ export const checkDestination = (destination: typeof ConnectionDestination.Type)
 export const recordConnection = (
   connection: AccountConnection,
   destination: typeof ConnectionDestination.Type,
+  scope: AccountScope,
 ) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
     const sql = yield* policyDatabase;
-    const encodedTarget = yield* Schema.encodeEffect(ConnectionAccess.fields.target)(
-      connection.target === null
-        ? null
-        : {
-            app: connection.target.app,
-            requirement: connection.target.requirement,
-            profile: connection.target.profile,
-          },
+    const target = JSON.stringify(
+      yield* Schema.encodeEffect(ConnectionAccess.fields.target)({
+        app: connection.target.app,
+        requirement: connection.target.requirement,
+        scope,
+      }),
     );
-    const target = encodedTarget === null ? null : JSON.stringify(encodedTarget);
     yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* checkDestination(destination);
@@ -59,7 +56,10 @@ export const recordConnection = (
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/** Read current ownership and target management rights before every step, including OAuth return. */
+/**
+ * Read current ownership and target rights before every step, including OAuth return: use of the
+ * app for a user requirement, management of it for an app requirement, which links the account for everyone.
+ */
 export const connectionAccess = (connection: AccountConnectionId) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
@@ -70,17 +70,7 @@ export const connectionAccess = (connection: AccountConnectionId) =>
     and creator_id = ${actor.user}`;
     const access = (yield* Schema.decodeUnknownEffect(Schema.Array(ConnectionAccess))(rows))[0];
     if (access === undefined) return yield* new OrganizationForbidden();
-    if (access.target !== null) {
-      {
-        yield* requireAppAccess(access.target.app, "use");
-        yield* ownProfile(
-          yield* Effect.flatten(HostedExecutor),
-          yield* currentOwner,
-          access.target.app,
-          access.target.profile,
-        );
-      }
-    }
+    yield* requireAppAccess(access.target.app, access.target.scope === "app" ? "manage" : "use");
     yield* checkDestination(access.destination);
     return access;
   }).pipe(

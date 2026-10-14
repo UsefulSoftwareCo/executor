@@ -1,5 +1,6 @@
 /** Provider declarations use native Effect schemas. The trusted host interprets them. */
 import { Data, type Effect, Schema } from "effect";
+import type { Placement } from "./placement.ts";
 import { type AccountId, HttpUrl } from "./schema.ts";
 
 /**
@@ -17,6 +18,8 @@ export class SecretsMethod<Fields extends Schema.Decoder<unknown>> extends Data.
   readonly fields: Fields;
   /** Fields marked with `plain()` or `raw()`. */
   readonly exposure?: Readonly<Record<string, FieldExposure>>;
+  /** The only places the outbound network sends this method's secret fields; see `Placement`. */
+  readonly request?: readonly Placement[];
 }> {}
 
 /** How an OAuth client authenticates at the token endpoint; raw Basic is an explicit provider compatibility option. */
@@ -196,6 +199,8 @@ export class OAuth2Method<Response extends Schema.Decoder<unknown>> extends Data
   readonly response: Response;
   /** Response fields marked with `plain()` or `raw()`. */
   readonly exposure?: Readonly<Record<string, FieldExposure>>;
+  /** The only places the outbound network sends this method's secret fields; see `Placement`. */
+  readonly request?: readonly Placement[];
 }> {}
 
 /** Supported declarations; these acquire credentials rather than normalize them. */
@@ -285,12 +290,35 @@ export type AuthMethodData<Method> =
       ? Response["Type"]
       : never;
 
+/**
+ * Render an account's credential placements. Each renders the method's `request` with the fields
+ * app code holds, so a request built with them is one the outbound network accepts.
+ */
+export interface AccountRequest {
+  /**
+   * The headers the method's `request` places credentials in, by lowercase name. Spread them into
+   * a request's headers. Throws when the method declares no `request`.
+   */
+  headers(): Record<string, string>;
+  /**
+   * `input` with the query parameters the method's `request` places credentials in, replacing any
+   * of the same name. Throws when the method declares no `request`.
+   */
+  url(input: string | URL): string;
+}
+
 /** One account for these methods, discriminated by its author-chosen method name. */
 export type AccountOfMethods<Auth extends AuthMethods> = {
+  // One object type rather than an intersection with `AccountRequest`, so compiler errors about
+  // accounts print it as written.
   readonly [Method in keyof Auth & string]: {
     readonly id: AccountId;
     readonly method: Method;
     readonly fields: AuthMethodData<Auth[Method]>;
+    /** See `AccountRequest`. */
+    readonly headers: AccountRequest["headers"];
+    /** See `AccountRequest`. */
+    readonly url: AccountRequest["url"];
   };
 }[keyof Auth & string];
 

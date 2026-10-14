@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     "./site-origin": "./src/content/site-origin.ts",
+    "./site-visitor": "./src/content/site-visitor.ts",
     "./error-reporting": "./src/error-reporting.ts",
     "./script-assets": "./src/script-assets.ts"
   },
@@ -15,29 +16,29 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/react": "^6.0.5",
+    "@astrojs/react": "6.0.6",
     "@effect/atom-react": "4.0.1",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/ui": "workspace:*",
     "@sentry/browser": "10.75.0",
-    "@tailwindcss/vite": "^4.2.2",
-    "astro": "^7.3.2",
-    "clsx": "^2.1.1",
-    "cookie": "^2.0.1",
+    "@tailwindcss/vite": "4.3.3",
+    "astro": "7.3.3",
+    "clsx": "2.1.1",
+    "cookie": "2.0.1",
     "effect": "4.0.1",
-    "motion": "^12.38.0",
-    "posthog-js": "^1.372.5",
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5",
-    "react-tweet": "^3.3.0",
-    "tailwind-merge": "^3.5.0",
-    "tailwindcss": "^4.2.2"
+    "motion": "12.43.0",
+    "posthog-js": "1.434.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-tweet": "3.3.1",
+    "tailwind-merge": "3.7.0",
+    "tailwindcss": "4.3.3"
   },
   "devDependencies": {
     "@sentry/vite-plugin": "5.4.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3"
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0"
   },
   "engines": {
     "node": ">=22.12.0"

@@ -63,7 +63,7 @@ const files = [
   {
     path: "index.ts",
     content:
-      'import {defineApp,query,object, router} from "apps";export default defineApp({accounts:{}},{tools: router({ ping:query({input:object({})},async()=>"pong") })});',
+      'import {defineApp,query,object, router} from "apps";export default defineApp({},{tools: router({ ping:query({input:object({})},async()=>"pong") })});',
   },
   ...snippets,
   largeSnippet,

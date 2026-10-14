@@ -13,6 +13,7 @@ import {
   AppNotDeployed,
   AppSlugTaken,
   AppRequirements,
+  RetainedDeployment,
   type AppCopyOrigin,
   type AppCopySnapshot,
 } from "../contracts/apps.ts";
@@ -20,7 +21,6 @@ import { makeAppAuthoring } from "./app-authoring.ts";
 import {
   AppDeploymentChanged,
   Deployment,
-  DeploymentMetadata,
   DeploymentBuildFailed,
   BuildMemoryExceeded,
   DeploymentNotFound,
@@ -44,14 +44,29 @@ import {
 } from "../contracts/shared.ts";
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
+import { removeToolSearch } from "./tool-search-store.ts";
 import { identifyProvider } from "./provider.ts";
-import { SourceError, type AppSourceStorage, type RepositoryBackend } from "../contracts/source.ts";
+import {
+  CodeFiles,
+  SourceError,
+  splitSource,
+  type AppSourceStorage,
+  type RepositoryBackend,
+} from "../contracts/source.ts";
 import type { Registry } from "../contracts/registry.ts";
 import { resolvePublication } from "./registry.ts";
 
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { readDeploymentSource, writeDeploymentSource } from "./deployment-source.ts";
 import { readInitialSource, writeInitialSource } from "./initial-source.ts";
+import {
+  releasePublicFiles,
+  retainPublicFiles,
+  servedPath,
+  storeBytes,
+  writePublicManifest,
+  type StoredBytes,
+} from "./public-files.ts";
 
 type DeployInput = NonNullable<Parameters<Executor["apps"]["deploy"]>[0]>;
 
@@ -172,6 +187,12 @@ const projectedApp = (row: { readonly app: unknown; readonly deployment: unknown
     }),
   );
 
+/** The app `get` returns for a row read with its active deployment joined. */
+export const gotApp = (row: { readonly deployment: unknown }) => {
+  const { deployment, ...app } = row;
+  return projectedApp({ app, deployment });
+};
+
 /** Project an app without reading or decoding its retained source files. */
 function project(db: Query, app: StoredApp) {
   if (app.activeDeployment === null)
@@ -211,6 +232,15 @@ const appWriteFailure = (app: Pick<StoredApp, "owner" | "name" | "slug">) => (er
   return new StorageError();
 };
 /** Insert app identity while preserving name and derived-slug uniqueness errors. */
+/** A new active deployment re-registers the app's managed webhooks; removed sources keep removing. */
+const webhookSourcesPending = (db: Query, app: AppId) =>
+  query(() =>
+    db.updateMany("webhookSources", {
+      where: (b) => b.and(b("app", "=", app), b("status", "!=", "removing")),
+      set: { status: "pending", failure: null },
+    }),
+  );
+
 export const createApp = (db: Query, app: StoredApp) =>
   db.create("apps", app).pipe(Effect.mapError(appWriteFailure(app)));
 
@@ -226,7 +256,16 @@ export const makeApps = (
   lifecycle?: ResourceLifecycle,
 ) => {
   const authoring = makeAppAuthoring(db, sources, repositories, blobs, crypto, lifecycle);
-  const deploy = (input: DeployInput, copiedFrom: AppCopyOrigin | null = null) =>
+  /**
+   * `stored` reads the bytes of stored public files that a copy names from another app; an
+   * existing app's own stored files are read from its repository.
+   */
+  const deploy = (
+    input: DeployInput,
+    copiedFrom: AppCopyOrigin | null = null,
+    stored?: StoredBytes,
+    reserved?: AppId,
+  ) =>
     Effect.gen(function* () {
       // Reserve an order before building. Only successful promotions advance the other counter.
       const before =
@@ -279,38 +318,76 @@ export const makeApps = (
             }),
         ),
       );
-      const built = yield* runtime.build({ files }).pipe(
-        Effect.mapError((error) =>
-          Schema.is(BuildMemoryExceeded)(error)
-            ? error
-            : Schema.is(RuntimeProtocolUnsupported)(error)
-              ? new DeploymentBuildFailed({
-                  owner: input.owner,
-                  name: deployName,
-                  reason: `${error.message} Declare a supported apps version.`,
-                  message: `${error.message} Declare a supported apps version.`,
-                })
-              : Schema.is(RuntimeAppsDependencyMissing)(error)
+      const invalidSource = (message: string) =>
+        new DeploymentBuildFailed({
+          owner: input.owner,
+          name: deployName,
+          reason: message,
+          stage: "source",
+          message: `App build failed: ${message}`,
+        });
+      // Builds load only code; public files are copied to the host's store and served from there.
+      const split = splitSource(files);
+      const codeFiles = yield* Schema.decodeUnknownEffect(CodeFiles)(split.code).pipe(
+        Effect.mapError(() => invalidSource("the source files are invalid.")),
+      );
+      const built = yield* runtime
+        .build({
+          files: codeFiles,
+          public: split.public.map((file) => servedPath(file.path)),
+        })
+        .pipe(
+          Effect.mapError((error) =>
+            Schema.is(BuildMemoryExceeded)(error)
+              ? error
+              : Schema.is(RuntimeProtocolUnsupported)(error)
                 ? new DeploymentBuildFailed({
                     owner: input.owner,
                     name: deployName,
-                    reason: error.message,
-                    message: error.message,
+                    reason: `${error.message} Declare a supported apps version.`,
+                    message: `${error.message} Declare a supported apps version.`,
                   })
-                : deploymentBuildFailed(input.owner, deployName, error),
-        ),
-      );
-      const entries = yield* Effect.forEach(
-        Object.entries(built.requirements.accounts),
-        ([slot, value]) =>
-          identifyProvider(value.definition, crypto).pipe(
-            Effect.map((provider) => ({
-              slot,
-              provider,
-              cardinality: value.cardinality,
-              health: value.health,
-            })),
+                : Schema.is(RuntimeAppsDependencyMissing)(error)
+                  ? new DeploymentBuildFailed({
+                      owner: input.owner,
+                      name: deployName,
+                      reason: error.message,
+                      message: error.message,
+                    })
+                  : deploymentBuildFailed(input.owner, deployName, error),
           ),
+        );
+      // Each requirement records its scope; a name is used in one scope only.
+      const declared = [
+        ...Object.entries(built.requirements.accounts.app).map(
+          ([slot, value]) => [slot, "app" as const, value] as const,
+        ),
+        ...Object.entries(built.requirements.accounts.user).map(
+          ([slot, value]) => [slot, "user" as const, value] as const,
+        ),
+      ];
+      const repeated = declared.find(
+        ([slot], index) => declared.findIndex(([other]) => other === slot) !== index,
+      );
+      if (repeated !== undefined) {
+        const reason = `The requirement "${repeated[0]}" is declared as both an app and a user account.`;
+        return yield* new DeploymentBuildFailed({
+          owner: input.owner,
+          name: deployName,
+          reason,
+          message: reason,
+        });
+      }
+      const entries = yield* Effect.forEach(declared, ([slot, scope, value]) =>
+        identifyProvider(value.definition, crypto).pipe(
+          Effect.map((provider) => ({
+            slot,
+            scope,
+            provider,
+            cardinality: value.cardinality,
+            health: value.health,
+          })),
+        ),
       );
       const requirements: AppRequirements = {
         ...(built.requirements.capabilities === undefined
@@ -321,10 +398,12 @@ export const makeApps = (
           : { database: built.requirements.database }),
         ...(built.requirements.sql === true ? { sql: true as const } : {}),
         ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
+        ...(built.requirements.icons === undefined ? {} : { icons: built.requirements.icons }),
         accounts: Object.fromEntries(
-          entries.map(({ slot, provider, cardinality, health }) => [
+          entries.map(({ slot, scope, provider, cardinality, health }) => [
             slot,
             {
+              scope,
               provider: provider.id,
               definition: provider.definition,
               cardinality,
@@ -337,6 +416,7 @@ export const makeApps = (
       // before its migrations run. A failed migration fails the deploy before anything activates.
       const appId =
         before?.id ??
+        reserved ??
         AppId.make(
           `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
         );
@@ -363,6 +443,36 @@ export const makeApps = (
                 );
               }),
             );
+      const publicFiles = yield* retainPublicFiles(
+        blobs,
+        code,
+        split.public,
+        stored ?? (before === null ? undefined : ({ object }) => sources.blob(code, object)),
+      ).pipe(
+        Effect.catchTag(
+          "SourceError",
+          (error): Effect.Effect<never, DeploymentBuildFailed | StorageError> =>
+            error.reason === "limit"
+              ? Effect.fail(
+                  invalidSource(
+                    "the ui/public/ files exceed Executor's limits: at most 10,000 files, each at most 32 MB and 1 GB in total.",
+                  ),
+                )
+              : error.reason === "invalid-source"
+                ? Effect.fail(
+                    invalidSource(
+                      "a ui/public/ file cannot be read: public paths may not be index.html or under _executor/, and stored files must name blobs of the app's repository.",
+                    ),
+                  )
+                : Effect.fail(new StorageError()),
+        ),
+      );
+      if (publicFiles.manifest.length > 0)
+        yield* writePublicManifest(blobs, built.build, {
+          code,
+          files: publicFiles.manifest,
+        }).pipe(Effect.mapError(() => new StorageError()));
+      const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
       if (before !== null) yield* droppedMigrations(db, before.code);
       if (requirements.sql === true)
         yield* runtime.migrate({ app: appId, build: built.build }).pipe(
@@ -389,9 +499,9 @@ export const makeApps = (
         build: built.build,
         createdAt: new Date(yield* Clock.currentTimeMillis),
       };
-      yield* writeDeploymentSource(blobs, deployment.id, files);
+      yield* writeDeploymentSource(blobs, deployment.id, retainedFiles);
       // A new app owns an initial workspace independently of this immutable deployment.
-      if (before === null) yield* writeInitialSource(blobs, code, files);
+      if (before === null) yield* writeInitialSource(blobs, code, retainedFiles);
       return yield* transaction(db, (tx) =>
         Effect.gen(function* () {
           const row = yield* query(() =>
@@ -464,18 +574,7 @@ export const makeApps = (
                 set: { activeDeployment: deployment.id, activatedSequence: sequence },
               }),
             );
-          if (promote)
-            yield* query(() =>
-              tx.updateMany("profiles", {
-                where: (b) =>
-                  b.and(
-                    b("app", "=", app.id),
-                    b("status", "!=", "removed"),
-                    b("status", "!=", "removing"),
-                  ),
-                set: { status: "pending", failure: null },
-              }),
-            );
+          if (promote) yield* webhookSourcesPending(tx, app.id);
           const projected = promote
             ? { ...app, requirements }
             : yield* project(tx, { ...existing, ...app });
@@ -486,13 +585,27 @@ export const makeApps = (
         }),
       );
     }).pipe(Effect.withSpan("sdk.apps.deploy"));
-  const copy = (input: Parameters<Executor["apps"]["copy"]>[0]) =>
+  const copy = (
+    input: Parameters<Executor["apps"]["copy"]>[0],
+    reserved?: { readonly id: AppId; readonly save?: boolean | undefined },
+  ) =>
     Effect.gen(function* () {
       const from = input.from;
-      const snapshot: AppCopySnapshot =
+      const snapshot: AppCopySnapshot & { readonly stored?: StoredBytes } =
         typeof from !== "string"
           ? "package" in from
-            ? yield* resolvePublication(registry, from)
+            ? {
+                ...(yield* resolvePublication(registry, from)),
+                stored: yield* registry.files(from.package, from.commit).pipe(
+                  Effect.map(
+                    (read): StoredBytes =>
+                      ({ path }) =>
+                        read(path).pipe(
+                          Effect.mapError(() => new SourceError({ reason: "not-found" })),
+                        ),
+                  ),
+                ),
+              }
             : from
           : yield* Effect.gen(function* () {
               const parent = yield* storedApp(db, { app: from });
@@ -500,6 +613,7 @@ export const makeApps = (
                 const deployment = yield* storedDeployment(db, parent, parent.activeDeployment);
                 return {
                   files: yield* readDeploymentSource(blobs, deployment.id),
+                  stored: storeBytes(blobs, parent.code),
                   origin: {
                     reference: `app:${parent.id}`,
                     name: parent.name,
@@ -518,6 +632,10 @@ export const makeApps = (
               if (workspace === null) return yield* new SourceError({ reason: "not-found" });
               return {
                 files: workspace.files,
+                stored:
+                  parent.repository === null
+                    ? storeBytes(blobs, parent.code)
+                    : ({ object }: Parameters<StoredBytes>[0]) => sources.blob(parent.code, object),
                 origin: {
                   reference: `app:${parent.id}`,
                   name: parent.name,
@@ -527,14 +645,15 @@ export const makeApps = (
               };
             });
       const create = { owner: input.owner, name: input.name, files: snapshot.files };
-      return snapshot.activation === "deploy"
-        ? (yield* deploy(create, snapshot.origin)).app
-        : yield* authoring.create(create, snapshot.origin);
+      return snapshot.activation === "deploy" && reserved?.save !== true
+        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id)).app
+        : yield* authoring.create(create, snapshot.origin, snapshot.stored, reserved?.id);
     }).pipe(Effect.withSpan("sdk.apps.copy"));
   return {
     ...authoring,
     deploy: (input: DeployInput) => deploy(input),
-    copy,
+    copy: (input: Parameters<Executor["apps"]["copy"]>[0]) => copy(input),
+    copyAs: (input: Parameters<Executor["apps"]["copyAs"]>[0]) => copy(input, input),
     get: (input: Parameters<Executor["apps"]["get"]>[0]) =>
       Effect.gen(function* () {
         const row = yield* query(() =>
@@ -548,26 +667,10 @@ export const makeApps = (
           }),
         );
         if (row === null) return yield* new AppNotFound({ app: input.app });
-        const { deployment, ...app } = row;
-        return yield* projectedApp({ app, deployment });
+        return yield* gotApp(row);
       }).pipe(Effect.withSpan("sdk.apps.get")),
     list: (input: NonNullable<Parameters<Executor["apps"]["list"]>[0]> = {}) =>
       Effect.gen(function* () {
-        const account = input.account;
-        const installed =
-          account === undefined
-            ? []
-            : yield* query(() =>
-                db.findMany("profiles", {
-                  select: ["app"],
-                  where: (b) =>
-                    b.and(
-                      input.owner === undefined ? true : b("owner", "=", input.owner),
-                      b("status", "!=", "removed"),
-                      b("accounts", "json contains", account),
-                    ),
-                }),
-              );
         const rows = yield* query(() =>
           db.findMany("apps", {
             join: (b) => b.deployment({ select: ["requirements"] }),
@@ -577,13 +680,6 @@ export const makeApps = (
                 input.ids === undefined ? true : b("id", "in", input.ids),
                 input.name === undefined ? true : b("name", "=", input.name),
                 input.slug === undefined ? true : b("slug", "=", input.slug),
-                account === undefined
-                  ? true
-                  : b(
-                      "id",
-                      "in",
-                      installed.map((item) => item.app),
-                    ),
               ),
             orderBy: ["id", "asc"],
           }),
@@ -648,6 +744,7 @@ export const makeApps = (
               }),
             );
             if (run !== null) return yield* new AppWorkflowsActive({ app: app.id });
+            if (lifecycle) yield* lifecycle.appRemoving(app.id);
             yield* query(() =>
               tx.deleteMany("workflowRuns", { where: (b) => b("app", "=", app.id) }),
             );
@@ -684,15 +781,32 @@ export const makeApps = (
               tx.deleteMany("scheduledRuns", { where: (b) => b("app", "=", app.id) }),
             );
             yield* query(() => tx.deleteMany("schedules", { where: (b) => b("app", "=", app.id) }));
-            yield* query(() => tx.deleteMany("profiles", { where: (b) => b("app", "=", app.id) }));
+            yield* query(() =>
+              tx.deleteMany("webhookSources", { where: (b) => b("app", "=", app.id) }),
+            );
             yield* query(() =>
               tx.deleteMany("accountChecks", { where: (b) => b("app", "=", app.id) }),
             );
+            yield* removeToolSearch(tx, [app.id]);
             yield* query(() => tx.deleteMany("apps", { where: (b) => b("id", "=", app.id) }));
           }
-          return { app: input.app };
+          return { app: input.app, code: app === null ? null : AppCodeId.make(app.code) };
         }),
-      ).pipe(Effect.withSpan("sdk.apps.remove")),
+      ).pipe(
+        // The lineage's public files belong to no other app: release them once its row is gone.
+        // A failed release leaves files no deployment can serve; it does not undo the removal.
+        Effect.tap(({ code }) =>
+          code === null
+            ? Effect.void
+            : releasePublicFiles(blobs, code).pipe(
+                Effect.catch(() =>
+                  Effect.logWarning("Releasing a removed app's public files failed", { code }),
+                ),
+              ),
+        ),
+        Effect.map(({ app }) => ({ app })),
+        Effect.withSpan("sdk.apps.remove"),
+      ),
     activate: (input: Parameters<Executor["apps"]["activate"]>[0]) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {
@@ -720,17 +834,7 @@ export const makeApps = (
               },
             }),
           );
-          yield* query(() =>
-            tx.updateMany("profiles", {
-              where: (b) =>
-                b.and(
-                  b("app", "=", app.id),
-                  b("status", "!=", "removed"),
-                  b("status", "!=", "removing"),
-                ),
-              set: { status: "pending", failure: null },
-            }),
-          );
+          yield* webhookSourcesPending(tx, app.id);
           return {
             ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
             activeDeployment: deployment.id,
@@ -777,7 +881,7 @@ export const makeApps = (
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
         const version = yield* storedDeployment(db, app, input.deployment, input.deploymentOwner);
-        return yield* Schema.decodeUnknownEffect(DeploymentMetadata)(version).pipe(
+        return yield* Schema.decodeUnknownEffect(RetainedDeployment)(version).pipe(
           Effect.mapError(() => new StorageError()),
         );
       }).pipe(Effect.withSpan("sdk.apps.deployment")),

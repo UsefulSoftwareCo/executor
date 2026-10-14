@@ -184,7 +184,7 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Read private working source and its Git revision. Read this before editing. Returns exact source bytes, source permissions and authenticated clone metadata.",
+          "Read private working source and its Git revision. Read this before editing. Returns exact source text, source permissions and authenticated clone metadata. A file under ui/public/ that is not UTF-8 text, or does not fit beside the rest of the source, is listed as {path, object, size} without its bytes; send that entry back unchanged in a commit to keep the file, or clone the app to get it.",
         ),
         HttpApiEndpoint.get("sourceDisplay", "/apps/:app/workspace/display", {
           params: app,
@@ -214,7 +214,7 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Save the complete file list as a Git commit. Omitted files are removed. expected must match the revision read before editing. A commit does not deploy. Returns the new revision; the files are not echoed.",
+          'Save the complete file list as a Git commit. Omitted files are removed. Files under ui/public/ may be binary: send {path, content, encoding: "base64"}, or keep a listed {path, object, size} entry unchanged. Every other file is UTF-8 text. Push large public directories with Git instead. expected must match the revision read before editing. A commit does not deploy. Returns the new revision and `removed`: how many files this save removed and the first of their paths; the files are not echoed. If `removed.count > 0`, check it before deploying. A removed file stays at the `expected` revision: to keep it, commit again against the new revision with it. A file path cannot also be a folder (`a` and `a/b`); such a save fails with SourcePathConflict and saves nothing. Paths must be valid Unicode; a lone surrogate fails with SourcePathNotUnicode.',
         ),
         HttpApiEndpoint.post("deploy", "/apps/:app/deploy", {
           params: app,
@@ -253,7 +253,7 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Publish this Git commit as the current public app listing. package.json supplies a scoped name and optional description. Installs own their source copies; existing copies do not update. Git history, accounts, and app data stay private.",
+          "Publish this Git commit as the current public app listing. package.json supplies a name under the organization's current scope, such as @acme.executor.community/notes, and an optional description. Installs own their source copies; existing copies do not update. Git history, accounts, and app data stay private.",
         ),
         HttpApiEndpoint.get("history", "/apps/:app/history", {
           params: app,

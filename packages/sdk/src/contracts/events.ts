@@ -9,7 +9,7 @@
  */
 import { Effect, Redacted, Schema } from "effect";
 import { DeclaredEvent, EventName, EventFilterValue, type EmittedEvent } from "apps/contracts";
-import { AccountId, AppId, OwnerId, ProfileId, StorageError, CredentialsError } from "./shared.ts";
+import { AccountId, AppId, OwnerId, StorageError, CredentialsError } from "./shared.ts";
 
 /** Deterministic subscription identity: a digest of who subscribed, where to and to what. */
 export const EventSubscriptionId = Schema.String.pipe(
@@ -230,11 +230,11 @@ export interface EventDeliveryAuthority {
 }
 
 /**
- * What a subscriber's access allows for one delivery. `profiles` limits it to occurrences whose
- * accounts are all selected by those saved profiles, as a connection that runs only as them.
+ * What a subscriber's access allows for one delivery. `accounts` limits it to occurrences whose
+ * accounts are all among them, as a connection that runs only with those accounts.
  */
 export interface EventDeliveryScope {
-  readonly profiles?: readonly ProfileId[];
+  readonly accounts?: readonly AccountId[];
 }
 
 /** Host event options. Without them, subscribing fails with `EventsUnavailable`. */

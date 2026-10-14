@@ -18,7 +18,7 @@ export const McpClientLimits = Schema.Struct({
   cleanupTimeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type McpClientLimits = typeof McpClientLimits.Type;
-/** HTTP and stdio share discovery ceilings and the default provider timeout. */
+/** Discovery ceilings and the default provider timeout. */
 export const defaultMcpClientLimits = McpClientLimits.make({
   timeoutMs: 30_000,
   maxTimeoutMs: 300_000,
@@ -181,15 +181,3 @@ export class McpCredentialsUnverified extends Schema.TaggedError<McpCredentialsU
   "McpCredentialsUnverified",
   { anonymous: Schema.Union([Schema.Literal("answered"), McpError, ProviderError]) },
 ) {}
-
-/** Public process configuration. Credentials arrive through the selected account. */
-export const ProcessConfig = Schema.Struct({
-  command: Schema.NonEmptyString,
-  args: Schema.Array(Schema.String),
-  cwd: Schema.optional(Schema.String),
-  env: Schema.Record(Schema.String, Schema.String),
-  timeoutMs: Schema.Int.check(
-    Schema.isBetween({ minimum: 1, maximum: defaultMcpClientLimits.maxTimeoutMs }),
-  ),
-});
-export type ProcessConfig = typeof ProcessConfig.Type;

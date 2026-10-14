@@ -124,7 +124,7 @@ export function InventoryPageSkeleton({
         title={apps ? "Apps" : "Accounts"}
         description={
           apps
-            ? "Your installed apps and their selected accounts."
+            ? "Your installed apps and their linked accounts."
             : "Saved sign-ins, available to your apps."
         }
       >

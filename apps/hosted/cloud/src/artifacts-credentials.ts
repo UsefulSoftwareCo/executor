@@ -1,8 +1,10 @@
 /**
  * Private entry point for Artifacts token coordinators. A coordinator that wakes in a fresh isolate
- * loads and initializes only this Worker, not the API with its routes, auth and executor.
+ * loads and initializes only this Worker, not the API with its routes, auth and executor. It holds
+ * the stage's only Artifacts binding, so it also lists commit history, which Git cannot fetch
+ * without every file those commits hold.
  */
-import { AppCodeId, aesGcmCredentials } from "@executor-js/sdk/core";
+import { AppCodeId, SourceError, SourceFilePath, aesGcmCredentials } from "@executor-js/sdk/core";
 import { externalTrace, TraceContext, traceLinks } from "@executor-js/telemetry";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Clock, Effect, Layer, Option, Redacted, Schedule, Schema, Semaphore } from "effect";
@@ -31,6 +33,24 @@ const issued = Schema.Struct({
   scope: Schema.Literal("write"),
   expiresAt: Schema.String.check(Schema.makeFilter((value) => Number.isFinite(Date.parse(value)))),
 });
+/** The fields of the binding's commit metadata that history shows. */
+const listedCommit = Schema.Struct({
+  hash: Schema.String,
+  message: Schema.String,
+  author: Schema.Struct({ name: Schema.String }),
+  authoredAt: Schema.Number,
+});
+/** A tree entry as the binding returns it. */
+const treeEntry = Schema.Struct({
+  name: Schema.String,
+  mode: Schema.String,
+  hash: Schema.String,
+  type: Schema.String,
+});
+const commitTree = Schema.Struct({ hash: Schema.String, treeHash: Schema.String });
+const objectId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
+/** Blobs read at once: each is held only until its size, and bytes within budget, are taken. */
+const blobReads = 4;
 const pendingPreparation = Schema.Struct({
   repository: AppCodeId,
   trace: Schema.NullOr(TraceContext),
@@ -45,6 +65,20 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     const encryption = yield* aesGcmCredentials(yield* encryptionKey, crypto);
     const lock = yield* Semaphore.make(1);
+    const open = (repository: AppCodeId) =>
+      Effect.acquireRelease(
+        binding.get(repository).pipe(
+          Effect.retry({
+            while: (error) =>
+              error.message ===
+              `Repository "${repository}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
+            schedule: Schedule.spaced("5 seconds"),
+            times: 2,
+          }),
+          Effect.withSpan("source.repository.open"),
+        ),
+        (repo) => disposeRpc(repo.raw),
+      );
     const acquire = (repository: AppCodeId, rejectedGeneration: string | null) =>
       lock
         .withPermits(1)(
@@ -77,19 +111,7 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
                   return saved;
                 }
               }
-              const repo = yield* Effect.acquireRelease(
-                binding.get(repository).pipe(
-                  Effect.retry({
-                    while: (error) =>
-                      error.message ===
-                      `Repository "${repository}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
-                    schedule: Schedule.spaced("5 seconds"),
-                    times: 2,
-                  }),
-                  Effect.withSpan("source.repository.open"),
-                ),
-                (repo) => disposeRpc(repo.raw),
-              );
+              const repo = yield* open(repository);
               const result = yield* Effect.acquireRelease(
                 repo
                   .createToken("write", tokenLifetimeSeconds)
@@ -141,6 +163,161 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
             parent: Option.getOrUndefined(externalTrace(trace)),
           }),
           Effect.mapError(unavailable),
+        ),
+      history: (id: string, limit: number, trace: TraceContext | undefined) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
+            const repo = yield* open(repository);
+            // Commit metadata only, newest first along main's first-parent chain. An unresolved
+            // ref lists nothing, as a repository with no commits has no history.
+            const commits = yield* Effect.tryPromise({
+              try: () => repo.raw.log({ ref: "main", limit }),
+              catch: unavailable,
+            }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(listedCommit))));
+            yield* Effect.annotateCurrentSpan("source.history.commits", commits.length);
+            return commits.map((entry) => ({
+              commit: entry.hash,
+              author: entry.author.name,
+              message: entry.message.trim(),
+              timestamp: entry.authoredAt,
+            }));
+          }),
+        ).pipe(
+          Effect.mapError(unavailable),
+          Effect.withSpan("source.repository.history", {
+            parent: Option.getOrUndefined(externalTrace(trace)),
+          }),
+        ),
+      resolve: (id: string, ref: string, trace: TraceContext | undefined) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
+            const repo = yield* open(repository);
+            // A commit is read as given; a branch resolves to its head along the first-parent log.
+            const found = Schema.is(objectId)(ref)
+              ? yield* Effect.tryPromise({
+                  try: () => repo.raw.readCommit(ref),
+                  catch: unavailable,
+                }).pipe(Effect.map((commit) => (commit === null ? [] : [commit])))
+              : yield* Effect.tryPromise({
+                  try: () => repo.raw.log({ ref, limit: 1 }),
+                  catch: unavailable,
+                });
+            const [head] = yield* Schema.decodeUnknownEffect(Schema.Array(commitTree))(found);
+            return head === undefined ? null : { commit: head.hash, tree: head.treeHash };
+          }),
+        ).pipe(
+          Effect.mapError(unavailable),
+          Effect.withSpan("source.repository.resolve", {
+            parent: Option.getOrUndefined(externalTrace(trace)),
+          }),
+        ),
+      tree: (id: string, root: string, trace: TraceContext | undefined) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
+            const repo = yield* open(repository);
+            const files: Array<{ path: string; mode: string; type: string; object: string }> = [];
+            const walk = (hash: string, prefix: string): Effect.Effect<void, SourceError> =>
+              Effect.gen(function* () {
+                const entries = yield* Effect.tryPromise({
+                  try: () => repo.raw.readTree(hash),
+                  catch: unavailable,
+                }).pipe(
+                  Effect.flatMap(
+                    Schema.decodeUnknownEffect(Schema.NullOr(Schema.Array(treeEntry))),
+                  ),
+                  Effect.mapError(unavailable),
+                );
+                if (entries === null) return yield* unavailable();
+                for (const entry of entries) {
+                  if (entry.type === "tree") yield* walk(entry.hash, `${prefix}${entry.name}/`);
+                  else
+                    files.push({
+                      path: `${prefix}${entry.name}`,
+                      mode: entry.mode,
+                      type: entry.type,
+                      object: entry.hash,
+                    });
+                }
+              });
+            yield* walk(yield* Schema.decodeUnknownEffect(objectId)(root), "");
+            yield* Effect.annotateCurrentSpan("source.tree.files", files.length);
+            return files;
+          }),
+        ).pipe(
+          Effect.mapError(unavailable),
+          Effect.withSpan("source.repository.tree", {
+            parent: Option.getOrUndefined(externalTrace(trace)),
+          }),
+        ),
+      blobs: (
+        id: string,
+        objects: ReadonlyArray<string>,
+        mode: "sizes" | "bytes",
+        budget: number,
+        trace: TraceContext | undefined,
+      ) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
+            const ids = yield* Schema.decodeUnknownEffect(Schema.Array(objectId))(objects);
+            const repo = yield* open(repository);
+            // Each blob is held only while its size, and its bytes when asked for, are taken.
+            let total = 0;
+            return yield* Effect.forEach(
+              ids,
+              (object) =>
+                Effect.tryPromise({
+                  try: async () => {
+                    const blob = await repo.raw.readBlob(object);
+                    if (blob === null) return null;
+                    total += blob.size;
+                    if (mode === "sizes" || total > budget)
+                      return { object, size: blob.size, bytes: null };
+                    return {
+                      object,
+                      size: blob.size,
+                      bytes: new Uint8Array(await blob.arrayBuffer()),
+                    };
+                  },
+                  catch: unavailable,
+                }).pipe(
+                  Effect.flatMap((entry) =>
+                    entry === null ? Effect.fail(unavailable()) : Effect.succeed(entry),
+                  ),
+                ),
+              { concurrency: blobReads },
+            );
+          }),
+        ).pipe(
+          Effect.mapError(unavailable),
+          Effect.withSpan("source.repository.blobs", {
+            attributes: { "source.blobs.count": objects.length },
+            parent: Option.getOrUndefined(externalTrace(trace)),
+          }),
+        ),
+      file: (id: string, commit: string, path: string, trace: TraceContext | undefined) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
+            const ref = yield* Schema.decodeUnknownEffect(objectId)(commit);
+            const name = yield* Schema.decodeUnknownEffect(SourceFilePath)(path);
+            const repo = yield* open(repository);
+            return yield* Effect.tryPromise({
+              try: async () => {
+                const blob = await repo.raw.readFile({ ref, path: name });
+                return blob === null ? null : new Uint8Array(await blob.arrayBuffer());
+              },
+              catch: unavailable,
+            });
+          }),
+        ).pipe(
+          Effect.mapError(unavailable),
+          Effect.withSpan("source.repository.file", {
+            parent: Option.getOrUndefined(externalTrace(trace)),
+          }),
         ),
       create: (id: string, trace: TraceContext | undefined) =>
         Effect.scoped(

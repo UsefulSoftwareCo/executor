@@ -1,14 +1,6 @@
 import { RequiredAction } from "./authorization.ts";
 /** Authored app operations, scoped to an explicit hosted organization and configured app. */
-import {
-  ProfileId,
-  ProfileRevision,
-  AppDataErrors,
-  AppDataSnapshot,
-  AppId,
-  DeploymentId,
-  Json,
-} from "@executor-js/sdk/core";
+import { AppDataErrors, AppDataSnapshot, AppId, DeploymentId, Json } from "@executor-js/sdk/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import {
@@ -21,8 +13,6 @@ import { AuthenticationUnavailable, Unauthorized } from "./auth.ts";
 const params = { organization: OrganizationReference, app: AppId };
 const payload = Schema.Struct({
   deployment: Schema.optional(DeploymentId),
-  profile: Schema.optional(ProfileId),
-  expectedProfileRevision: Schema.optional(ProfileRevision),
   name: Schema.NonEmptyString,
   input: Json,
 });

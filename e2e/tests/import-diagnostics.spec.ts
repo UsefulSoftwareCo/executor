@@ -37,7 +37,7 @@ layer(HostedLive, { excludeTestServices: true })("Import diagnostics", (it) => {
         expect(failure.code).toBe("agent_setup_required");
         expect(failure.reason).toContain("add it with your agent");
 
-        const { execute, profile } = yield* frameworkSession;
+        const { execute, queries } = yield* frameworkSession;
         const discovered = yield* execute(
           'return await tools.search({query: "importCustom", limit: 10});',
         ).pipe(
@@ -49,9 +49,7 @@ layer(HostedLive, { excludeTestServices: true })("Import diagnostics", (it) => {
             ),
           ),
         );
-        const tool = discovered.items.find(
-          ({ path }) => path.includes(profile.id) && path.endsWith(".apps.importCustom"),
-        );
+        const tool = discovered.items.find(({ path }) => path === `${queries}.apps.importCustom`);
         if (tool === undefined) return yield* Effect.die("Management import tool missing");
         const outcome = yield* execute(`try {
           await ${tool.path}(${JSON.stringify({ path: { organization: actors.organization.id }, body: { source: { kind: "mcp", name: "MCP import diagnostics", url } } })});

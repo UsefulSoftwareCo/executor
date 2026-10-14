@@ -8,7 +8,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-const Settings = Schema.Struct({ actor: Schema.String });
+const Settings = Schema.Struct({ id: Schema.String, actor: Schema.String });
 const Runs = Schema.Array(
   Schema.Struct({
     id: Schema.String,
@@ -18,10 +18,10 @@ const Runs = Schema.Array(
   }),
 );
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
-const source = `import { defineApp, mutation, interval, object, router } from "apps";
+const source = `import { defineApp, mutation, userInterval, object, router } from "apps";
 import { always } from "apps/operations/approval";
 const work = mutation({ input: object({}), approval: always() }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({  tools: router({ work }), schedules: { review: interval({ minutes: 1 }, work, {}), creator: interval({ minutes: 1 }, work, {}) } }));`;
+export default defineApp({}, async () => ({  tools: router({ work }), schedules: { review: userInterval({ minutes: 1 }, work, {}), creator: userInterval({ minutes: 1 }, work, {}) } }));`;
 layer(HostedLive, { excludeTestServices: true })("Hosted schedules", (it) => {
   it.effect(scenarios.hostedSchedules.title, (context) =>
     withHostedCase(
@@ -108,18 +108,25 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedules", (it) => {
           approvalMode: "automatic",
         });
         expect(configured.status).toBe(200);
-        expect((yield* body(Settings, configured)).actor).toBeTruthy();
+        const creator = yield* body(Settings, configured);
+        expect(creator.actor).toBeTruthy();
+        // The admin's own copy, which the owner controls through its address.
+        const copy = `${path}/creator/copies/${creator.id}`;
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
             revision: shared.revision,
             audience: { kind: "private" },
           })).status,
         ).toBe(200);
-        expect((yield* api.request(actors.owner, "POST", `${path}/creator/run`)).status).toBe(200);
-        expect((yield* waitFor("creator", "failed")).failure).toBe("OrganizationForbidden");
-        expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/creator`, { enabled: false })).status,
-        ).toBe(200);
+        // The run would be the admin's, who can no longer use the app: it is refused, not started.
+        const refused = yield* api.request(actors.owner, "POST", `${copy}/run`);
+        expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+        expect(refused.body).toMatchObject({ _tag: "OrganizationForbidden" });
+        expect((yield* runs).some((row) => row.name === "creator")).toBe(false);
+        // The owner manages the app, so they may pause the admin's copy.
+        expect((yield* api.request(actors.owner, "PATCH", copy, { enabled: false })).status).toBe(
+          200,
+        );
       }),
     ),
   );

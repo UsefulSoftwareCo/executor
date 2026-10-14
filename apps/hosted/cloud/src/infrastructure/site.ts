@@ -36,6 +36,7 @@ export const cloudSite = Effect.gen(function* () {
         onNone: () => hosts.deployment,
         onSome: (roles) => roles.origins.api,
       }),
+      PUBLIC_EXECUTOR_COOKIE_DOMAIN: Option.getOrElse(hosts.sharedCookieDomain, () => ""),
       VITE_CHATGPT_SIGN_IN: String(Option.isSome(yield* chatGptSettings.pipe(Effect.orDie))),
     },
   });

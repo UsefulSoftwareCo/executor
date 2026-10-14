@@ -53,8 +53,9 @@ and do not import application implementations into tests. `bun run check` fails
 on any test outside `e2e/`.
 
 The one exception is the Go host in `apps/hosted/self-host/native`. Its
-`go test` suite covers timing races between the host's proxy and workerd that a
-real image cannot hit reliably, and CI runs it in the `self-host-native` job.
+`go test` suite covers timing races between the host's proxy and workerd, and
+response compression cases such as streamed chunks, that a real image cannot hit
+reliably. CI runs it in the `self-host-native` job.
 
 Tests are not sacred. Delete a scenario when it no longer proves behavior a user
 or public API caller depends on, or when other scenarios already cover it. Say
@@ -98,6 +99,14 @@ so move a patch with its dependency's version, or remove both. Git is stricter
 than Bun: after `bun patch --commit`, drop `.bun-tag-*` sections and sections
 whose `b/` path is outside the package, and keep `\ No newline at end of file`
 markers. Its fixtures are in `scripts/check-patches-fixtures.ts`.
+
+Pin every dependency to one exact version; `versions:check`
+(`scripts/check-exact-versions.ts`) fails on anything else, including in
+`overrides`, `resolutions` and `patchedDependencies` selectors. The only ranges
+are the peers `apps` publishes, listed in that script, and they must be plain
+npm comparator ranges such as `^16.11.0`. Its fixtures are in
+`scripts/check-exact-versions-fixtures.ts`. `bunfig.toml` makes `bun install`
+and `bun add` skip versions published less than a day ago.
 
 The typecheck runs `tsc-rs`, a Rust port of the TypeScript 7 compiler that is
 about twice as fast as Go's `tsc` here and has the Effect language service

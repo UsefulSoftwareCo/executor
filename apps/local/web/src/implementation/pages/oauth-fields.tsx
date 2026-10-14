@@ -11,7 +11,6 @@ import {
   oauthClientEntryReasons,
   type Account,
   type AppId,
-  type ProfileId,
   type Provider,
   type OAuthStartResult,
 } from "@executor-js/sdk";
@@ -44,7 +43,7 @@ export function AppOAuthFields({
 }: FieldsProps & {
   readonly app: AppId;
   readonly atoms: ReturnType<typeof appConnectionAtoms>;
-  readonly onSaved: (account: Account, profile: ProfileId) => void;
+  readonly onSaved: (account: Account) => void;
 }) {
   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
   const reconnect = props.account !== undefined;
@@ -54,10 +53,8 @@ export function AppOAuthFields({
       query={oauthSetupAtom({ provider: props.provider.id, method: props.method })}
       Failure={Failure}
       start={(client) => start({ method: props.method, ...client })}
-      onSaved={(account, started) => onSaved(account, started.profile)}
-      open={(authorizationUrl, started) =>
-        openOAuth(authorizationUrl, { app, profile: started.profile, reconnect })
-      }
+      onSaved={onSaved}
+      open={(authorizationUrl) => openOAuth(authorizationUrl, { app, reconnect })}
     />
   );
 }

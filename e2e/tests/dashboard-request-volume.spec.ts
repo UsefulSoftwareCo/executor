@@ -15,7 +15,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { batchedReads, batchPath, type BatchedRead } from "../support/read-batches.ts";
 
 /** Reads mounted on every app tab; each one used to repeat every five seconds. */
-const shared = ["app", "profiles", "inventory"] as const;
+const shared = ["app", "links", "inventory"] as const;
 const tabs = [
   "Accounts",
   "Tools",
@@ -29,6 +29,13 @@ const tabs = [
 /** Simulated idle time, advanced with the browser's clock in small steps. */
 const idleMinutes = 3;
 const step = 10_000;
+/**
+ * Advances past the 4-millisecond window in which the dashboard collects reads into one batch,
+ * well short of any poll interval and not a multiple of `step`, so the reads a visible page
+ * decided at the end of its idle time are sent before it hides. See `batchWindow` in
+ * packages/dashboard-start/src/implementation/batch-browser.ts.
+ */
+const flush = 1_000;
 /** Freshness allows periodic reconciliation, but no more than one read per 20 seconds idle. */
 const idleReadLimit = (idleMinutes * 60) / 20;
 
@@ -50,7 +57,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard request volume", (it
               path: "index.ts",
               content: `
 import { defineApp, mutation, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({ echo: mutation({ description: "Echo text", input: object({ text: string() }) },
     async (_, input) => input.text) })
 }));
@@ -74,7 +81,8 @@ export default defineApp({ accounts: {} }, async () => ({
           for (const reference of references) {
             const base = `/api/organizations/${reference}`;
             if (pathname === `${base}/apps/${app.id}`) return "app";
-            if (pathname === `${base}/apps/${app.id}/profiles`) return "profiles";
+            // The caller's links, which the page reconciles; app links are read on refresh only.
+            if (pathname === `${base}/apps/${app.id}/accounts/user`) return "links";
             if (pathname === `${base}/inventory`) return "inventory";
           }
           return undefined;
@@ -83,12 +91,16 @@ export default defineApp({ accounts: {} }, async () => ({
         const classifyRead = (read: BatchedRead): Kind | undefined => {
           if (read.group === "apps" && read.endpoint === "get" && read.params.app === app.id)
             return "app";
-          if (read.group === "profiles" && read.endpoint === "list" && read.params.app === app.id)
-            return "profiles";
+          if (
+            read.group === "appAccounts" &&
+            read.endpoint === "userList" &&
+            read.params.app === app.id
+          )
+            return "links";
           if (read.group === "organization" && read.endpoint === "inventory") return "inventory";
           return undefined;
         };
-        const reads = { app: 0, profiles: 0, inventory: 0 };
+        const reads = { app: 0, links: 0, inventory: 0 };
         /** The shell's organization list; it is not polled, so it reads only on return. */
         let organizationLists = 0;
         let inFlight = 0;
@@ -196,7 +208,26 @@ export default defineApp({ accounts: {} }, async () => ({
         for (const kind of shared)
           expect(navigation[kind], `${kind} during tab navigation`).toBe(0);
 
-        const visible = yield* measure("visible-idle", idle("Visible idle"));
+        // From here page time moves only when the scenario advances it, so a poll fires inside an
+        // idle step and never beside the visibility change. With the clock running on its own, a
+        // poll could fire just before the page hid, decide to read while visible, and send that
+        // read after the hidden count began.
+        yield* browser.use("Pause the page clock", (page) =>
+          page.evaluate(() => Date.now()).then((now) => page.clock.pauseAt(now + step)),
+        );
+        yield* settled;
+        const visible = yield* measure(
+          "visible-idle",
+          idle("Visible idle").pipe(
+            // A poll at the end of the last step has decided to read but not yet sent the read.
+            Effect.andThen(
+              browser.use("Send the reads the visible page started", (page) =>
+                page.clock.runFor(flush),
+              ),
+            ),
+            Effect.andThen(settled),
+          ),
+        );
         for (const kind of shared) {
           expect(visible[kind], `${kind} reconciles while visible`).toBeGreaterThan(0);
           expect(visible[kind], `${kind} reads while visible`).toBeLessThanOrEqual(idleReadLimit);
@@ -235,6 +266,8 @@ export default defineApp({ accounts: {} }, async () => ({
           );
         }
 
+        // The page clock runs on its own again; the hidden page still decides no read.
+        yield* browser.use("Resume the page clock", (page) => page.clock.resume());
         // Returning to the tab reconciles every shared read once.
         const returned = yield* measure(
           "return",

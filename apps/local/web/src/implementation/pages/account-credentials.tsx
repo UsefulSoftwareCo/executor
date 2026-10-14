@@ -1,37 +1,37 @@
 import type { DashboardAccountDetail } from "@executor-js/local-server/contracts";
-import type { AccountRequirement, AppId, Profile } from "@executor-js/sdk";
+import type { AccountRequirement, AccountScope, App } from "@executor-js/sdk";
 import { Button } from "@executor-js/ui/components/button";
 import { ProviderIcon } from "../components/common.tsx";
 import { AppAccountForm } from "./account-form.tsx";
 
 /**
- * Replace credentials from an app that selects the account. The form shows the app's declaration,
- * so it names the hosts the credentials reach. The account keeps its ID, name and selections.
+ * Replace credentials from an app that uses the account. The form shows the app's declaration,
+ * so it names the hosts the credentials reach. The account keeps its ID, name and links.
  */
 export function ReplaceCredentials({
   data: { account },
   app,
+  scope,
   slot,
   requirement,
-  profile,
   onPendingChange,
   onDone,
 }: {
   readonly data: DashboardAccountDetail;
-  readonly app: AppId;
+  readonly app: App;
+  readonly scope: AccountScope;
   readonly slot: string;
   readonly requirement: AccountRequirement;
-  readonly profile: Profile;
   readonly onPendingChange?: (pending: boolean) => void;
   readonly onDone: () => void;
 }) {
   return (
     <AppAccountForm
-      app={app}
+      app={app.id}
+      deployment={app.activeDeployment}
+      scope={scope}
       requirement={slot}
       provider={{ id: requirement.provider, definition: requirement.definition }}
-      profile={profile.id}
-      selection={profile.accounts}
       account={account}
       {...(onPendingChange ? { onPendingChange } : {})}
       header={

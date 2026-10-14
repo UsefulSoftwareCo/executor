@@ -6,8 +6,13 @@ import { APIError } from "better-auth/api";
 import { OrganizationId } from "@executor-js/hosted-server";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
-import { recordCloudSignup, recordCloudLogin } from "../implementation/product-analytics.ts";
+import {
+  clearSiteVisitorOnSignOut,
+  recordCloudSignup,
+  recordCloudLogin,
+} from "../implementation/product-analytics.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
+import { isOAuthProxyProduction } from "../implementation/oauth-proxy-settings.ts";
 import { Onboarding } from "../contracts/onboarding.ts";
 /** Native Alchemy auth binding for the HTTP Worker; MCP session objects use `mcp-auth.ts`. */
 import {
@@ -127,7 +132,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             ),
           ),
         ),
-      observation.refreshFamilyRevoked,
+      observation.refreshRejected,
     );
     const database = yield* AuthDatabase;
     const makeInstance = (secret: string) =>
@@ -288,7 +293,12 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     });
     const handler = observation
       .observe(requestHandler)
-      .pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
+      .pipe(
+        Effect.flatMap(
+          clearSiteVisitorOnSignOut(Option.getOrUndefined(settings.hosts.sharedCookieDomain)),
+        ),
+        Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
+      );
     return {
       browserSession: (headers: Headers) =>
         nativeCall((instance) =>
@@ -311,5 +321,14 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       resourceOrigins: settings.resourceOrigins,
       hosts: settings.hosts,
       cookiePrefix: cloudSessionCookiePrefix(settings.url),
+      // Production sends a stage's connected-account callback back to the stage's origin, when it
+      // trusts that origin as it does for the stage's social sign-ins.
+      returnsStageAccountCallback: (origin: string) =>
+        isOAuthProxyProduction(settings.hosts, settings.oauthProxy)
+          ? authContext.pipe(
+              Effect.map((context) => context.isTrustedOrigin(origin)),
+              Effect.provide(RuntimeContext.phantom),
+            )
+          : Effect.succeed(false),
     };
   });

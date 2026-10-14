@@ -9,14 +9,23 @@ import {
   PublicationReadiness,
   PublicationSnapshot,
   RegistryError,
+  packageLabel,
+  packageScope,
   publicPackageName,
   type PublicationReference,
   type Registry,
   type RegistryOptions,
   type RegistryStorage,
+  type StoredPublication,
 } from "../contracts/registry.ts";
 import { JsonObject } from "../contracts/shared.ts";
-import { SourceFiles, type AppSourceStorage } from "../contracts/source.ts";
+import {
+  SourceFiles,
+  isPublicSourcePath,
+  sourceFileBytes,
+  sourceText,
+  type AppSourceStorage,
+} from "../contracts/source.ts";
 import type { AppCopySnapshot } from "../contracts/apps.ts";
 import type { Query } from "./database.ts";
 import { storedApp } from "./apps.ts";
@@ -29,27 +38,24 @@ const invalid = (reason: typeof PublicationIssue.Type.reason, name: string | nul
 /** Parse the exact saved source that will be published without evaluating any app code. */
 const publicationSource = (files: SourceFiles) =>
   Effect.gen(function* () {
+    // Public files under ui/public/ are bounded by the source's own public limits; a listing
+    // reads them only when it is installed.
+    const code = files.filter((file) => !isPublicSourcePath(file.path));
     if (
-      files.length > 512 ||
-      files.reduce((size, file) => size + new TextEncoder().encode(file.content).length, 0) >
-        4 * 1024 * 1024
+      code.length > 512 ||
+      code.reduce((size, file) => size + sourceFileBytes(file), 0) > 4 * 1024 * 1024
     )
       return yield* invalid("limit");
     if (
-      files.some(
-        (file) =>
-          /(^|\/)(?:\.git|node_modules|\.env(?:\..*)?|\.npmrc|\.executor)(?:\/|$)/.test(
-            file.path,
-          ) ||
-          file.path === "executor.lock.json" ||
-          file.path.startsWith("__executor_deps/"),
+      files.some((file) =>
+        /(^|\/)(?:\.git|node_modules|\.env(?:\..*)?|\.npmrc|\.executor)(?:\/|$)/.test(file.path),
       )
     )
       return yield* invalid("invalid-source");
-    const file = files.find((file) => file.path === "package.json");
-    if (file === undefined) return yield* invalid("missing-manifest");
+    const content = sourceText(files, "package.json");
+    if (content === undefined) return yield* invalid("missing-manifest");
     const document = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
-      file.content,
+      content,
     ).pipe(Effect.mapError(() => invalid("invalid-json")));
     const name = document.name;
     if (name === undefined || name === "") return yield* invalid("missing-name");
@@ -59,12 +65,9 @@ const publicationSource = (files: SourceFiles) =>
         /^[a-z0-9][a-z0-9-]{0,62}$/.test(name) ? "unscoped-name" : "invalid-name",
         name,
       );
-    const manifest = yield* Schema.decodeUnknownEffect(PackageManifest)(document).pipe(
+    return yield* Schema.decodeUnknownEffect(PackageManifest)(document).pipe(
       Effect.mapError(() => invalid("invalid-metadata", name)),
     );
-    if (Object.keys(manifest.executor?.dependencies ?? {}).length > 0)
-      return yield* invalid("unsupported-dependencies", name);
-    return manifest;
   });
 
 /** Keep the established write error contract while previews expose the precise repair. */
@@ -76,7 +79,6 @@ const publicationFailure = (issue: PublicationIssue): RegistryError => {
       return new RegistryError({ reason: "conflict" });
     case "limit":
     case "invalid-source":
-    case "unsupported-dependencies":
       return new RegistryError({ reason: issue.reason });
     case "missing-manifest":
     case "invalid-json":
@@ -93,19 +95,41 @@ const storedRegistry = (
   storage: RegistryStorage,
   sources: AppSourceStorage,
   origin: string,
-): Registry => ({
-  origin,
-  list: storage.list,
-  snapshot: (name, commit) =>
+): Registry => {
+  /** The listing's retained source, only while it still selects this commit. */
+  const selected = (name: string, commit: string) =>
     Effect.gen(function* () {
       const row = yield* storage.get(name);
       if (row.publication.commit !== commit) return yield* new RegistryError({ reason: "changed" });
-      const files = yield* sources
-        .read(row.source)
-        .pipe(Effect.mapError(() => new RegistryError({ reason: "storage" })));
-      return PublicationSnapshot.make({ publication: row.publication, files });
-    }),
-});
+      return row;
+    });
+  // The retained snapshot's tree is the published commit's, so a path names only its files.
+  const read = (source: StoredPublication["source"]) => (path: string) =>
+    sources
+      .file(source, path)
+      .pipe(
+        Effect.mapError((error) =>
+          error.reason === "not-found"
+            ? new RegistryError({ reason: "not-found" })
+            : new RegistryError({ reason: "storage" }),
+        ),
+      );
+  return {
+    origin,
+    list: storage.list,
+    snapshot: (name, commit) =>
+      Effect.gen(function* () {
+        const row = yield* selected(name, commit);
+        const files = yield* sources
+          .read(row.source)
+          .pipe(Effect.mapError(() => new RegistryError({ reason: "storage" })));
+        return PublicationSnapshot.make({ publication: row.publication, files });
+      }),
+    file: (name, commit, path) =>
+      selected(name, commit).pipe(Effect.flatMap((row) => read(row.source)(path))),
+    files: (name, commit) => selected(name, commit).pipe(Effect.map((row) => read(row.source))),
+  };
+};
 
 /** Resolve reviewed public source for the shared copy operation. No app is created here. */
 export const resolvePublication = (
@@ -119,7 +143,8 @@ export const resolvePublication = (
     const manifest = yield* publicationSource(snapshot.files).pipe(
       Effect.mapError(publicationFailure),
     );
-    if (manifest.name !== input.package)
+    // The source keeps the name it was published under; its owner may have changed scope since.
+    if (packageLabel(manifest.name) !== packageLabel(input.package))
       return yield* new RegistryError({ reason: "invalid-source" });
     return {
       files: snapshot.files,
@@ -155,6 +180,7 @@ export const makeRegistry = (
   const registry: Executor["registry"] = {
     list: (input = {}) => reads.list(input.name),
     snapshot: (input) => reads.snapshot(input.name, input.commit),
+    file: (input) => reads.file(input.name, input.commit, input.path),
   };
   if (stored === undefined)
     return {
@@ -177,9 +203,9 @@ export const makeRegistry = (
   }) =>
     Effect.gen(function* () {
       const manifest = yield* publicationSource(input.files);
-      const scope = manifest.name.slice(1, manifest.name.indexOf("/"));
-      const owner = yield* storage.scopeOwner(scope);
-      if (owner === null ? scope !== input.namespace : owner !== input.owner)
+      // An owner publishes only under its current scope. Scopes are never claimed, so one the
+      // owner used before is free for its next holder.
+      if (packageScope(manifest.name) !== input.namespace)
         return yield* new PublicationIssue({ reason: "forbidden-scope", name: manifest.name });
       const existing = yield* storage.get(manifest.name).pipe(
         Effect.map(Option.some),
@@ -214,7 +240,13 @@ export const makeRegistry = (
             return PublicationReadiness.make({ status: "ready", manifest: checked.success });
           if (!Schema.is(PublicationIssue)(checked.failure))
             return yield* Effect.fail(checked.failure);
-          const initial = publicPackageName(input.namespace, app.name);
+          // A name under another scope keeps its label in the current one.
+          const initial = publicPackageName(
+            input.namespace,
+            checked.failure.reason === "forbidden-scope" && checked.failure.name !== null
+              ? checked.failure.name
+              : app.name,
+          );
           const suggested =
             checked.failure.reason === "name-taken" &&
             Option.isSome(initial) &&
@@ -237,7 +269,7 @@ export const makeRegistry = (
             Effect.catchTag("PublicationIssue", (issue) => Effect.fail(publicationFailure(issue))),
           );
           const source = yield* sources
-            .retain(app.code, files)
+            .retain(app.code, files, input.commit)
             .pipe(Effect.mapError(() => new RegistryError({ reason: "storage" })));
           return yield* storage.publish({
             name: manifest.name,

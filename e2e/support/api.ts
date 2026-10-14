@@ -200,7 +200,9 @@ export class Api extends Context.Service<Api, Sessions>()("e2e/Api") {
         session: clients.session,
         request: (actor, method, path, data, headers = {}) =>
           Effect.gen(function* () {
-            const traceId = randomBytes(16).toString("hex"),
+            // A caller's `traceparent` puts the request in that trace, as one client operation
+            // spanning several requests would; each request still gets its own span.
+            const traceId = headers.traceparent?.split("-")[1] ?? randomBytes(16).toString("hex"),
               spanId = randomBytes(8).toString("hex");
             yield* evidence.sending({
               method,

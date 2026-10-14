@@ -32,6 +32,8 @@ import { FailureDetail, UpstreamError } from "../failure.ts";
 import { AccountCheckResult, OAuth2Config } from "../provider.ts";
 import { ProviderError } from "../provider-error.ts";
 import { RouterIcon } from "../router.ts";
+import { AppIcons } from "../icons.ts";
+import { Placements } from "../placement.ts";
 import { OperationSchedule } from "../schedules.ts";
 import { AccountId, JsonObject, JsonValue } from "../schema.ts";
 import { AppSkillName, AppSkills } from "../skills.ts";
@@ -95,12 +97,22 @@ export const CredentialHost = Schema.String.check(
   ),
 );
 
-/** Field names an auth method exposes to app code. Every other string field is secret. */
+/**
+ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
+ * other string field is secret.
+ */
 const exposure = {
   /** Not secret: app code reads the real value and forms show it. */
   plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
   /** Secret, but app code reads the real value, for signing and similar uses. */
   raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+  /**
+   * The only places the outbound network substitutes this method's secret fields: whole header
+   * values and query parameters, each an exact template. Part of the provider's identity. In an
+   * invocation, an account's provider carries the placements granted to that account, which can
+   * be narrower than the app's declaration.
+   */
+  request: Schema.optionalKey(Placements),
 };
 
 /** Serializable authentication declarations interpreted by the trusted host. */
@@ -146,6 +158,22 @@ export const DeclaredProvider = Schema.Struct({
 /** Credential-free provider declaration; content matching remains host policy. */
 export type DeclaredProvider = typeof DeclaredProvider.Type;
 
+/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
+export const DeclaredAccountSlot = Schema.Struct({
+  definition: DeclaredProvider,
+  cardinality: Schema.Literals(["one", "many"]),
+  /**
+   * The slot's provider defines an account check. Kept beside the definition, not in it, so
+   * adding or editing a check never changes the provider's identity.
+   */
+  health: Schema.optionalKey(Schema.Literal(true)),
+});
+export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
+
+/** One scope's requirements, by name. */
+export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
+export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
+
 /** Account slots available without binding accounts or evaluating the app factory. */
 export const DeclaredRequirements = Schema.Struct({
   /** Protocol support of this retained framework build, not an author-declared requirement. */
@@ -165,29 +193,27 @@ export const DeclaredRequirements = Schema.Struct({
    * `sql` instead; the field remains so requirements read from older retained builds keep their meaning.
    */
   database: Schema.optionalKey(DatabaseSchema),
-  accounts: Schema.Record(
-    Schema.NonEmptyString,
-    Schema.Struct({
-      definition: DeclaredProvider,
-      cardinality: Schema.Literals(["one", "many"]),
-      /**
-       * The slot's provider defines an account check. Kept beside the definition, not in it, so
-       * adding or editing a check never changes the provider's identity.
-       */
-      health: Schema.optionalKey(Schema.Literal(true)),
-    }),
-  ),
+  /**
+   * Requirements by scope. `app` requirements are filled by the accounts the app's managers link for everyone,
+   * for every caller and for background work; `user` requirements by each caller's linked
+   * accounts. A name is used in one scope only. Bundles of protocol 12 and earlier declare user
+   * requirements only.
+   */
+  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
   /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
   sql: Schema.optionalKey(Schema.Literal(true)),
   /** The events the app declares, so a host lists them without evaluating the app. */
   events: Schema.optionalKey(DeclaredEvents),
+  /** The icons the app declares, so a host shows them without evaluating the app. */
+  icons: Schema.optionalKey(AppIcons),
 });
 /** Parsed declared account requirements. */
 export type DeclaredRequirements = typeof DeclaredRequirements.Type;
 
 /**
  * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
- * declares hosts, its secret string fields are sealed handles, not values.
+ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
+ * the hosts and placements granted to this account.
  */
 export const ResolvedAccount = Schema.Struct({
   id: AccountId,
@@ -203,11 +229,21 @@ export const ResolvedAccount = Schema.Struct({
 /** Parsed host account binding. */
 export type ResolvedAccount = typeof ResolvedAccount.Type;
 
-/** Full saved selection resolved by the trusted caller; [] differs from a missing slot. */
-export const ResolvedAccounts = Schema.Record(
+/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
+export const ResolvedAccountSlots = Schema.Record(
   Schema.NonEmptyString,
   Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
 );
+export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
+
+/**
+ * An invocation's accounts by scope, resolved by the trusted caller. `user` is absent for work
+ * without a caller, such as an app schedule or an app-account webhook: its context has no `user`.
+ */
+export const ResolvedAccounts = Schema.Struct({
+  app: ResolvedAccountSlots,
+  user: Schema.optionalKey(ResolvedAccountSlots),
+});
 /** Parsed host selections, kept redacted until native account binding. */
 export type ResolvedAccounts = typeof ResolvedAccounts.Type;
 
@@ -317,8 +353,8 @@ export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
 export const ToolKind = Schema.Literals(["query", "mutation"]);
 
 /**
- * Check one account for one declared slot. The invocation supplies only that slot, as a single
- * account even when the slot takes many. The app factory is not evaluated.
+ * Check one account for one declared slot. The invocation supplies only that slot, in its scope,
+ * as a single account even when the slot takes many. The app factory is not evaluated.
  */
 export const AccountCheckCommand = Schema.Struct({
   operation: Schema.Literal("account-check"),

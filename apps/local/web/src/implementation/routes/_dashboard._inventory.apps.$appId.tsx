@@ -20,7 +20,6 @@ function AppRoute() {
       id={appId}
       tab={search.view ?? (search.tool === undefined ? "overview" : "tools")}
       tool={search.tool}
-      profile={search.profile}
       overview={useOverview()}
     />
   );

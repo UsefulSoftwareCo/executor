@@ -12,6 +12,7 @@ import { type Atom, AsyncResult } from "effect/reactivity";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
+// oxlint-disable-next-line no-restricted-imports -- ResumeOrganization renders it only at /, which its navigation leaves; OrganizationEntry and OrganizationDestination read atoms, not the location
 import { Link, Navigate, useLocation, useMatches, useNavigate } from "@tanstack/react-router";
 import { Cause, Exit, Match, Option, Schema } from "effect";
 import { lastOrganizationAtom, sessionAtom } from "../../contracts/auth.ts";

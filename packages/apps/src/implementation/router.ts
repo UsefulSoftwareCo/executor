@@ -283,3 +283,61 @@ export const withApprovals = <Query, Mutation>(
         };
   return routerDeclaration(walk(native, ""));
 };
+
+/**
+ * Expose a protocol router's tools under other names, such as the names an earlier client used.
+ * `rename` receives each tool's name relative to this router and returns the name to expose, or
+ * undefined to leave the tool out. When two tools would share a name, the first listed keeps it.
+ * Calls and descriptions find a tool by its exposed name. Works on routers that discover their
+ * tools, such as `mcpRouter`, `graphqlRouter` and `liveOpenapiRouter`.
+ */
+export const renameTools = <Query, Mutation>(
+  source: RouterDeclaration<Query, Mutation>,
+  rename: (name: string) => string | undefined,
+): RouterDeclaration<Query, Mutation> => {
+  const native = nativeRouter(source);
+  if (native?.kind !== "dynamic") throw new Error("renameTools expects a protocol router");
+  /** Exposed name for each listed tool, first listed winning a shared name. */
+  const exposed = <T extends { readonly name: string }>(tools: readonly T[]) => {
+    const seen = new Set<string>();
+    return tools.flatMap((tool) => {
+      const name = rename(tool.name);
+      if (name === undefined || seen.has(name)) return [];
+      seen.add(name);
+      return [{ ...tool, name, source: tool.name }];
+    });
+  };
+  const listed = native.summaries ?? native.list;
+  /** The source name of an exposed name, read from the listing. */
+  const original = (name: string) =>
+    listed().pipe(Effect.map((tools) => exposed(tools).find((tool) => tool.name === name)?.source));
+  const strip = <T extends { readonly name: string; readonly source: string }>({
+    source: _source,
+    ...tool
+  }: T) => tool;
+  return routerDeclaration({
+    ...native,
+    list: () => native.list().pipe(Effect.map((tools) => exposed(tools).map(strip))),
+    ...(native.summaries === undefined
+      ? {}
+      : {
+          summaries: () => listed().pipe(Effect.map((tools) => exposed(tools).map(strip))),
+        }),
+    describe: (name) =>
+      original(name).pipe(
+        Effect.flatMap((found) =>
+          found === undefined
+            ? Effect.succeed(undefined)
+            : (native.describe?.(found) ??
+              native.list().pipe(Effect.map((tools) => tools.find((tool) => tool.name === found)))),
+        ),
+        Effect.map((tool) => (tool === undefined ? undefined : { ...tool, name })),
+      ),
+    resolve: (name) =>
+      original(name).pipe(
+        Effect.flatMap((found) =>
+          found === undefined ? Effect.succeed(undefined) : native.resolve(found),
+        ),
+      ),
+  });
+};

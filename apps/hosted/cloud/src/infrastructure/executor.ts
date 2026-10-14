@@ -2,7 +2,7 @@
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { makeRegistryStorage } from "@executor-js/app-registry";
-import { clientMetadataSetting, hostedOAuthClientName } from "@executor-js/hosted-server";
+import { firstPartyOAuthClients, hostedOAuthClientName } from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import {
   createExecutor,
@@ -17,6 +17,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Context, Effect, FiberSet, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { cachedDeploymentSources } from "../implementation/deployment-source-cache.ts";
+import { organizationPublishers } from "../implementation/publishers.ts";
 import type { AppSources } from "./source.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
 import { cloudBlobs } from "./blobs.ts";
@@ -25,8 +26,11 @@ import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
 import { cloudSecrets } from "./secrets.ts";
-import { cloudHosts, cloudOrigin, cloudResourceOrigins } from "./stage.ts";
-import { accountOAuthStatePrefix } from "../contracts/edge-paths.ts";
+import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
+import { cloudEmulators } from "./emulators.ts";
+import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
+import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
+import { cloudClientMetadata } from "./client-metadata.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
 /**
@@ -38,6 +42,20 @@ export const cloudEgress = Effect.gen(function* () {
   const policy = yield* urlPolicyConfig;
   const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
   return { policy, client } satisfies HostEgress;
+});
+
+/**
+ * The operator's OAuth clients whose credentials this stage has. Only an emulated Cloud, which E2E
+ * runs against, reads test client definitions. Production requires the GitHub App and fails the
+ * deploy without it.
+ */
+const cloudFirstPartyOAuthClients = Effect.gen(function* () {
+  const emulated = Option.isSome(yield* cloudEmulators);
+  const clients = yield* firstPartyOAuthClients({ testDefinitions: emulated });
+  const production = Option.getOrUndefined(yield* stageName) === productionStage;
+  if (production && !clients.some((client) => client.id === "github"))
+    return yield* Effect.die(new Error(missingFirstPartyGitHubClient));
+  return clients;
 });
 
 /**
@@ -58,11 +76,12 @@ export const cloudExecutor = Effect.fn(function* (
   // New app webhooks register on the canonical API origin (`api.` once it is canonical); every
   // origin keeps delivering, so existing subscriptions keep the URL they stored.
   const webhookOrigin = (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0];
-  const accountCallbacks = (yield* cloudHosts.pipe(Effect.orDie)).accountCallbacks;
+  const accountSignIns = yield* cloudAccountSignIns.pipe(Effect.orDie);
   const egress = yield* cloudEgress;
   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
-  const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
-  const makeRuntime = yield* cloudRuntime(origin);
+  const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
+  const firstPartyClients = yield* cloudFirstPartyOAuthClients.pipe(Effect.orDie);
+  const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
   // App storage, hosted permission checks and Better Auth share the event's client.
@@ -93,7 +112,8 @@ export const cloudExecutor = Effect.fn(function* (
         Effect.suspend(() =>
           closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
         );
-      return yield* createExecutor({
+      const lifecycle = yield* hostedResourceLifecycle.pipe(Effect.provideContext(services));
+      const executor = yield* createExecutor({
         database: storage,
         secret: key,
         origin,
@@ -102,19 +122,34 @@ export const cloudExecutor = Effect.fn(function* (
         blobs: yield* cachedDeploymentSources(origin, blobs),
         runtime: yield* makeRuntime,
         workflows,
-        registry: { storage: yield* makeRegistryStorage.pipe(Effect.provideContext(services)) },
-        hooks: yield* hostedResourceLifecycle.pipe(Effect.provideContext(services)),
+        registry: {
+          storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
+            Effect.provideContext(services),
+          ),
+        },
+        hooks: lifecycle.hooks,
         oauth: {
           httpClient: egress.client,
           clientName: hostedOAuthClientName,
           urlPolicy: egress.policy,
-          ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
-          // Entered clients saved before sign-ins moved to `executor.sh` keep the callback they name.
-          ...(Option.isSome(accountCallbacks)
-            ? { previousRedirectUris: accountCallbacks.value.previous }
+          // The document lists a callback on its own origin, which its sign-ins send.
+          ...(Option.isSome(clientMetadata)
+            ? {
+                clientMetadataUrl: clientMetadata.value.url,
+                clientMetadataRedirectUri: clientMetadata.value.redirectUri,
+              }
             : {}),
-          // v1's edge forwards `executor.sh/api/oauth/callback` to v2 by this state prefix.
-          statePrefix: accountOAuthStatePrefix,
+          // Entered clients saved before sign-ins moved to `executor.sh` keep the callback they name.
+          ...(Option.isSome(accountSignIns.callbacks)
+            ? {
+                previousRedirectUris: accountSignIns.callbacks.value.previous,
+                savedClientCallbacks: [accountSignIns.callbacks.value.current],
+              }
+            : {}),
+          // v1's edge forwards `executor.sh/api/oauth/callback` to v2 by this state prefix; a stage's
+          // also names the stage, which production sends the browser back to.
+          statePrefix: accountSignIns.statePrefix,
+          firstPartyClients,
         },
         cache: {
           // One store per isolate, shared by every executor built in it.
@@ -135,6 +170,8 @@ export const cloudExecutor = Effect.fn(function* (
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
       }).pipe(Effect.provide(BrowserCrypto.layer));
+      yield* lifecycle.attach(executor);
+      return executor;
     }).pipe(
       Effect.mapError(() => new StorageError()),
       Effect.withSpan("runtime.cloud.executor.initialize"),

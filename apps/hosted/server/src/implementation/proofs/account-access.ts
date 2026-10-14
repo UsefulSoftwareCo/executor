@@ -5,7 +5,8 @@
  * `as AccountProof` outside this directory.
  */
 import { AccountId } from "@executor-js/sdk/core";
-import { permitsApp } from "@executor-js/authorization";
+import { permittedAppIds } from "@executor-js/authorization";
+import { callerLinkedAccounts } from "../app-accounts.ts";
 import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, type HttpServerResponse } from "effect/http";
 import {
@@ -40,7 +41,7 @@ const policy = {
 
 /**
  * Check the current membership and the account's policy for `action`. An API token limited to
- * some apps also needs one of them, visible to its user, to use this account.
+ * some apps also needs one of them, visible to its user, that its user linked this account to.
  */
 const checkAccountAccess = (account: AccountId, action: AccountAction) =>
   Effect.gen(function* () {
@@ -51,12 +52,10 @@ const checkAccountAccess = (account: AccountId, action: AccountAction) =>
     const scope = yield* CurrentAuthorization;
     if (scope.tools.kind !== "all") {
       const executor = yield* Effect.flatten(HostedExecutor);
-      const apps = yield* executor.apps.list({ owner, account });
-      const reachable = yield* visibleAppsAs(
-        actor,
-        apps.filter((app) => permitsApp(scope, app.id)),
-      );
-      if (reachable.length === 0) return yield* new OrganizationForbidden();
+      const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(scope) });
+      const reachable = yield* visibleAppsAs(actor, apps);
+      const linked = yield* callerLinkedAccounts(reachable.map((app) => app.id));
+      if (!linked.some((entry) => entry.id === account)) return yield* new OrganizationForbidden();
     }
     return { owner, account, access };
   });

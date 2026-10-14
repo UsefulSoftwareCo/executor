@@ -123,7 +123,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
               path: "index.ts",
               content: `
 import { defineApp, mutation, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     echo: mutation({ description: "Echo text", input: object({ text: string() }) },
     async (_, input) => input.text),
@@ -236,7 +236,7 @@ export default defineApp({ accounts: {} }, async () => ({
               path: "index.ts",
               content: `
 import { defineApp, query, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({ ping: query({ description: "Ping" }, async () => "pong") })
 }));
 `,

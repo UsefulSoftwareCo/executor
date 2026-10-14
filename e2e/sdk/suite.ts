@@ -11,7 +11,8 @@ import {
 import { readEvidence, combineEvidenceReports } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
-import { localNpmRegistry } from "../support/npm-registry.ts";
+import { lockedNpmRegistry } from "../support/npm-registry.ts";
+import { publicCatalogs } from "../support/public-catalogs.ts";
 import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { RecordingPaceMs, Target } from "../support/platform.ts";
 import { roleHost } from "../support/role-hosts.ts";
@@ -245,7 +246,9 @@ export const runSuite = ({
                 Effect.gen(function* () {
                   // Products this run starts build apps against the checkout's own apps release.
                   const registry =
-                    target === "cloud" && !managedCloud ? undefined : yield* localNpmRegistry;
+                    target === "cloud" && !managedCloud ? undefined : yield* lockedNpmRegistry;
+                  // Self-host and local read these public catalogs; Cloud keeps its own registry.
+                  const catalogs = target === "cloud" ? undefined : yield* publicCatalogs;
                   // Production trusts the stage's browser origin, which it returns profiles to.
                   const productionDirectory = path.join(directory, "oauth-proxy-production");
                   if (Option.isSome(proxyProduction))
@@ -366,12 +369,18 @@ export const runSuite = ({
                           ...(process.env.E2E_WORKFLOW_HOLD_MS === undefined
                             ? {}
                             : { E2E_WORKFLOW_HOLD_MS: process.env.E2E_WORKFLOW_HOLD_MS }),
+                          ...(process.env.E2E_COVERAGE === undefined
+                            ? {}
+                            : { E2E_COVERAGE: process.env.E2E_COVERAGE }),
                           E2E_PREPARED_SCENARIOS: JSON.stringify(preparedScenarios),
                           E2E_TEST_NAME: name,
                           E2E_WORKERS: String(interactive || observeUI ? 1 : targetWorkers),
                           E2E_TARGET: target,
                           E2E_CLOUD_MODE: cloudMode,
                           ...(registry === undefined ? {} : { E2E_NPM_REGISTRY: registry.url }),
+                          ...(catalogs === undefined
+                            ? {}
+                            : { E2E_PUBLIC_CATALOGS: catalogs.origin }),
                           EXECUTOR_E2E_RUN: directory,
                           EXECUTOR_E2E_API_KEY: Redacted.value(apiKey),
                           E2E_FIXTURES:

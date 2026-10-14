@@ -1,18 +1,31 @@
 /** Account-bound webhook lifecycle. Register and unregister must be idempotent for subscriptionId. */
 import type { Effect, Schema } from "effect";
 import type { ManualWebhookSetup } from "./webhook-protocol.ts";
-import type { AccountSlots, BoundContext } from "./app.ts";
+import type { AccountScope, BoundContext, ScopedSlots } from "./app.ts";
 
-type SourceAccount<
-  Context extends Pick<BoundContext<AccountSlots>, "accounts" | "fetch" | "signal">,
-> = keyof Context["accounts"] & string;
-type SelectedAccount<
-  Context extends Pick<BoundContext<AccountSlots>, "accounts" | "fetch" | "signal">,
-> = {
-  [Slot in keyof Context["accounts"]]: Context["accounts"][Slot] extends readonly (infer Account)[]
+/** What every webhook context provides; a context with `user` serves user-account webhooks. */
+type HookContext = Pick<BoundContext<ScopedSlots, AccountScope>, "app" | "fetch" | "signal">;
+
+/**
+ * The accounts of the webhook's scope. A context with `user` names a user requirement; one of the
+ * `"app"` scope, which has no `user`, an app requirement.
+ */
+type ScopeAccounts<Context extends HookContext> = Context extends {
+  readonly user: { readonly accounts: infer Accounts };
+}
+  ? Accounts
+  : Context["app"]["accounts"];
+
+type SourceAccount<Context extends HookContext> = Context extends { readonly user: unknown }
+  ? { readonly user: keyof ScopeAccounts<Context> & string }
+  : { readonly app: keyof ScopeAccounts<Context> & string };
+type SelectedAccount<Context extends HookContext> = {
+  [
+    Slot in keyof ScopeAccounts<Context>
+  ]: ScopeAccounts<Context>[Slot] extends readonly (infer Account)[]
     ? Account
-    : Context["accounts"][Slot];
-}[keyof Context["accounts"]];
+    : ScopeAccounts<Context>[Slot];
+}[keyof ScopeAccounts<Context>];
 
 /**
  * Registration, delivery and cleanup share the selected accounts.
@@ -20,7 +33,7 @@ type SelectedAccount<
  * Register runs when enabling a subscription, not on every app evaluation.
  */
 interface WebhookLifecycle<
-  Context extends Pick<BoundContext<AccountSlots>, "accounts" | "fetch" | "signal">,
+  Context extends HookContext,
   Config extends Schema.Decoder<unknown>,
   State extends Schema.Decoder<unknown>,
   Error = unknown,
@@ -67,7 +80,7 @@ interface WebhookLifecycle<
 
 /** Manual subscriptions collect the state schema in a private browser form instead of invoking provider APIs. */
 export type Webhook<
-  Context extends Pick<BoundContext<AccountSlots>, "accounts" | "fetch" | "signal">,
+  Context extends HookContext,
   Config extends Schema.Decoder<unknown>,
   State extends Schema.Decoder<unknown>,
   Error = unknown,

@@ -1,9 +1,9 @@
 /**
  * An MCP tool call checks its access and reads its stored state before the app runs, and each
  * SQL statement is a network round trip from Cloud's session object to the database. The check
- * reads the app and profile, then checks membership with the app's and the selected accounts'
- * policies in one statement. The call then reads the app, profile and accounts it runs, after
- * that check, and rechecks the profile's subject with its accounts in one more statement. An
+ * reads the app, then checks membership with the app's policy and reads the caller's linked
+ * accounts in one statement. The call then reads the app and the accounts it runs, after that
+ * check, and rechecks the caller's use of the app with its accounts in one more statement. An
  * OAuth account's grant is read in one more. The statement count under `mcp.tool.call`, outside
  * the app's own runtime, is the regression guard.
  */
@@ -15,20 +15,20 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 
 const keySource = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Statement fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async ctx => ({
+export default defineApp({ user: { accounts: { service } } }, async ctx => ({
   tools: router({
-    token: query({ input: object({}), output: string() }, async () => ctx.accounts.service.fields.token),
+    token: query({ input: object({}), output: string() }, async () => ctx.user.accounts.service.fields.token),
   }),
 }));`;
 
@@ -38,14 +38,24 @@ const oauthSource = (
 const service = defineProvider({ name: "OAuth statement fixture", auth: {
   oauth: oauth2({ discover: ${JSON.stringify(discover)} })
 } });
-export default defineApp({ accounts: { service } }, async ctx => ({
+export default defineApp({ user: { accounts: { service } } }, async ctx => ({
   tools: router({
-    token: query({ input: object({}), output: string() }, async () => ctx.accounts.service.fields.access_token),
+    token: query({ input: object({}), output: string() }, async () => ctx.user.accounts.service.fields.access_token),
+  }),
+}));`;
+
+const unlinkedSource = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
+const service = defineProvider({ name: "Unlinked statement fixture", auth: {
+  key: secrets({ label: "API key", fields: object({ token: string() }) })
+} });
+export default defineApp({ user: { accounts: { service: service.many() } } }, async ctx => ({
+  tools: router({
+    token: query({ input: object({}), output: string() }, async () => "synthetic-unlinked-" + ctx.user.accounts.service.length),
   }),
 }));`;
 
 const accountlessSource = `import { defineApp, object, string, query, router } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ token: query({ input: object({}), output: string() }, async () => "synthetic-accountless") }),
 });`;
 
@@ -92,29 +102,22 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                 Effect.orDie,
               ),
             );
-            return { app, path, profile: yield* createProfile(actors.owner, path) };
+            return { app, path };
           });
-        const connection = (path: string, profile: string) =>
-          api
-            .request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile,
-            })
-            .pipe(
-              Effect.tap((pending) => Effect.sync(() => expect(pending.status).toBe(200))),
-              Effect.flatMap((pending) => body(Resource, pending)),
-            );
-        const selected = (path: string, profile: string, account: string) =>
+        // Connecting an account from the app links it for the owner.
+        const connection = (path: string) =>
+          api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}).pipe(
+            Effect.tap((pending) => Effect.sync(() => expect(pending.status).toBe(200))),
+            Effect.flatMap((pending) => body(Resource, pending)),
+          );
+        const linked = (path: string, account: string) =>
           Effect.gen(function* () {
             accounts.push(account);
-            expect(
-              (yield* selectProfileAccounts(actors.owner, path, profile, { service: account }))
-                .status,
-            ).toBe(200);
+            expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
           });
 
         const key = yield* deploy("Tool call statements", keySource);
-        const keyConnection = yield* connection(key.path, key.profile.id);
+        const keyConnection = yield* connection(key.path);
         const saved = yield* api.request(
           actors.owner,
           "POST",
@@ -122,13 +125,13 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
           { method: "key", label: "Synthetic", fields: { token: "synthetic-statements" } },
         );
         expect(saved.status).toBe(200);
-        yield* selected(key.path, key.profile.id, (yield* body(Resource, saved)).id);
+        yield* linked(key.path, (yield* body(Resource, saved)).id);
 
         const oauth = yield* deploy(
           "OAuth tool call statements",
           oauthSource(`${issuer.origin}/mcp`),
         );
-        const oauthConnection = yield* connection(oauth.path, oauth.profile.id);
+        const oauthConnection = yield* connection(oauth.path);
         const started = yield* api.request(
           actors.owner,
           "POST",
@@ -154,8 +157,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
           { callbackUrl },
         );
         expect(completed.status, JSON.stringify(completed.body)).toBe(200);
-        yield* selected(oauth.path, oauth.profile.id, (yield* body(Resource, completed)).id);
+        yield* linked(oauth.path, (yield* body(Resource, completed)).id);
 
+        const unlinked = yield* deploy("Unlinked tool call statements", unlinkedSource);
         const accountless = yield* deploy("Accountless tool call statements", accountlessSource);
 
         const created = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -170,18 +174,10 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
         );
         const client = yield* mcp.connect(token.key, "pat", { organization });
 
-        /** Call the tool, with the profile when given, and return the SQL made before the app ran. */
-        const statements = (
-          target: typeof key,
-          returned: string,
-          operation: string,
-          profile = true,
-        ) =>
+        /** Call the tool with the caller's linked accounts and return the SQL made before the app ran. */
+        const statements = (target: typeof key, returned: string, operation: string) =>
           Effect.gen(function* () {
-            const app = `tools[${JSON.stringify(target.app.slug)}]`;
-            const code = `return await ${
-              profile ? `${app}.profiles[${JSON.stringify(target.profile.id)}]` : app
-            }.token({})`;
+            const code = `return await tools[${JSON.stringify(target.app.slug)}].token({})`;
             const called = yield* client.use(operation, (client, signal) =>
               client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
             );
@@ -241,23 +237,22 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
         const keyCall = yield* statements(
           key,
           "synthetic-statements",
-          "Call a profile's tool with a key account",
+          "Call a tool with a linked key account",
         );
         const oauthCall = yield* statements(
           oauth,
           "synthetic-access-token",
-          "Call a profile's tool with an OAuth account",
+          "Call a tool with a linked OAuth account",
         );
         const emptyCall = yield* statements(
-          accountless,
-          "synthetic-accountless",
-          "Call a tool through a profile that selects no accounts",
+          unlinked,
+          "synthetic-unlinked-0",
+          "Call a tool whose requirement has no linked accounts",
         );
         const appCall = yield* statements(
           accountless,
           "synthetic-accountless",
-          "Call an app's tool without a profile",
-          false,
+          "Call a tool of an app without requirements",
         );
         yield* evidence.json("tool-call-statements.json", {
           key: keyCall,
@@ -267,20 +262,20 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
         });
         expect(
           keyCall.count,
-          "Authentication, the check's two reads, one access check, the call's three reads and one recheck",
-        ).toBe(8);
+          "Authentication, the check's read of the app, one access and links check, the call's two reads and one recheck",
+        ).toBe(6);
         expect(
           oauthCall.count,
           "The key account's statements and one read of the OAuth grant",
-        ).toBe(9);
-        expect(
-          emptyCall.count,
-          "Authentication, the check's two reads, one access check, the call's two reads and one recheck",
         ).toBe(7);
         expect(
+          emptyCall.count,
+          "Authentication, the check's read of the app, one access and links check, the call's read of the app and one recheck",
+        ).toBe(5);
+        expect(
           appCall.count,
-          "Authentication, the app's read, one access check and the call's read of the app",
-        ).toBe(4);
+          "Authentication, the check's read of the app, one access check, the call's read of the app and one recheck",
+        ).toBe(5);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

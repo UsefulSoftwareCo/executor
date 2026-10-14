@@ -4,6 +4,9 @@ import { release } from "../../scripts/releases/config.ts";
 /** Release snippets shared by the browser docs and Blume's Markdown output. */
 export const ReleaseCommandProduct = Schema.Literals([
   "cli",
+  "cli-script",
+  "cli-windows",
+  "cli-homebrew",
   "docker",
   "docker-channel",
   "docker-image",
@@ -13,8 +16,21 @@ export const ReleaseCommandProduct = Schema.Literals([
 /** Concrete instructions generated from the same identity as the published artifacts. */
 export const releaseCommands = {
   cli: {
-    description: `Requires Node ${release.minimumNodeVersion} or newer. Check that executor --version prints ${release.version} before starting. Supports macOS on Apple Silicon and Intel, Linux on ARM64 and x64, and Windows on x64.`,
-    command: `${release.npmInstall}\nexecutor --version\nexecutor`,
+    description: `With npm, on Node ${release.minimumNodeVersion} or newer. Executor carries its own runtime, so Node only starts it. Check that executor --version prints ${release.version} before starting. Supports macOS on Apple Silicon and Intel, Linux (glibc) on ARM64 and x64, and Windows on x64.`,
+    command: `${release.npmInstall} --include=optional\nexecutor --version\nexecutor`,
+  },
+  "cli-script": {
+    description:
+      "Without Node, on macOS or Linux: the script checks the download against the release's SHA256SUMS and links ~/.local/bin/executor.",
+    command: `curl -fsSL ${release.cloudOrigin}/docs/install.sh | sh\nexecutor --version\nexecutor`,
+  },
+  "cli-windows": {
+    description: "Without Node, on Windows, in PowerShell:",
+    command: `irm ${release.cloudOrigin}/docs/install.ps1 | iex`,
+  },
+  "cli-homebrew": {
+    description: "With Homebrew, on macOS or Linux:",
+    command: `brew install usefulsoftwareco/tap/${release.channel === "beta" ? "executor-beta" : "executor"}`,
   },
   docker: {
     description: `Use version ${release.version} on Linux AMD64 or ARM64:`,

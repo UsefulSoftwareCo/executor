@@ -18,7 +18,7 @@ export const report = workflow({ input: reportInput }, async (ctx: WorkflowCtx, 
             `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
             {
               headers: {
-                Authorization: `Bearer ${step.accounts.github.fields.token}`,
+                Authorization: `Bearer ${step.user.accounts.github.fields.token}`,
                 "User-Agent": "Executor reports",
                 Accept: "application/vnd.github+json",
               },

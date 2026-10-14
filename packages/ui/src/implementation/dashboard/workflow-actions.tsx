@@ -64,9 +64,7 @@ export function WorkflowStart<E>({
             value={input}
             disabled={pending}
             disabledReason={
-              editable
-                ? undefined
-                : "You need permission to manage this app or use your own profile to start workflows."
+              editable ? undefined : "You need permission to use this app to start workflows."
             }
             onChange={(event) => {
               setInput(event.target.value);
@@ -86,9 +84,7 @@ export function WorkflowStart<E>({
           variant="outline"
           disabled={pending}
           disabledReason={
-            editable
-              ? undefined
-              : "You need permission to manage this app or use your own profile to start workflows."
+            editable ? undefined : "You need permission to use this app to start workflows."
           }
         >
           {pending ? "Starting…" : "Start workflow"}
@@ -127,7 +123,7 @@ export function WorkflowTerminate<E>({
           disabledReason={
             editable
               ? undefined
-              : "You need permission to manage this app or own this run’s profile to stop it."
+              : "You need permission to manage this app or to have started this run to stop it."
           }
           onClick={() => stop()}
         >

@@ -1,5 +1,5 @@
 diff --git a/dist/PgClient.d.ts b/dist/PgClient.d.ts
-index 7fb7def..19c13fd 100644
+index 7fb7deff01dd84f56e94b472e6333d1b17986122..19c13fd49fc61f44f546586311fd6880c326064e 100644
 --- a/dist/PgClient.d.ts
 +++ b/dist/PgClient.d.ts
 @@ -77,6 +77,13 @@ export interface PgClientConfig {
@@ -16,8 +16,40 @@ index 7fb7def..19c13fd 100644
      readonly stream?: (() => Duplex) | undefined;
      /**
       * Overrides `startupParameters.application_name`, the URL's `application_name`,
+diff --git a/dist/PgClient.js b/dist/PgClient.js
+index 69086dea397ba44c2ba726c913a2b5dbf1cac136..ca72f3fe76c0d76de25b119d47a604f19ad643f4 100644
+--- a/dist/PgClient.js
++++ b/dist/PgClient.js
+@@ -31,13 +31,20 @@ export const PgClient = /*#__PURE__*/Context.Service("@effect/sql-pg/PgClient");
+  * @category constructors
+  * @since 4.0.0
+  */
+-export const make = options => Effect.flatMap(PgPool.make(options), pool => makeImpl({
+-  acquirer: Effect.map(pool.get, makeConnection),
+-  borrower: f => pool.use(connection => f(makeConnection(connection))),
+-  transactionAcquirer: Effect.map(pool.reserve, makeConnection),
+-  listenAcquirer: pool.reserve,
+-  config: options
+-}));
++export const make = options => Effect.flatMap(PgPool.make(options), pool => {
++  const borrow = f => pool.use(f);
++  const lease = f => pool.use(connection => f(makeConnection(connection)));
++  return makeImpl({
++    acquirer: Effect.map(pool.get, makeConnection),
++    // A multiplexed pool hands a statement that `PgConnection.pipelined` claims
++    // to its batch instead of leasing a connection for it; the batch leases one
++    // connection for all of them.
++    borrower: options.multiplex === true ? f => Effect.flatMap(PgConnection.PipelineCapture, capture => capture !== undefined && capture.claim() ? f(makeConnection(PgConnection.heldConnection(capture, borrow))) : lease(f)) : lease,
++    transactionAcquirer: Effect.map(pool.reserve, makeConnection),
++    listenAcquirer: pool.reserve,
++    config: options
++  });
++});
+ /**
+  * Creates a scoped PostgreSQL client backed by one connection.
+  *
 diff --git a/dist/PgConnection.d.ts b/dist/PgConnection.d.ts
-index 20ffe14..cef2894 100644
+index 20ffe147c475deec24664641d4e76fb99764c838..7aa4f0128c543d82513159f077895f223d582a09 100644
 --- a/dist/PgConnection.d.ts
 +++ b/dist/PgConnection.d.ts
 @@ -66,6 +66,13 @@ export interface Config {
@@ -34,7 +66,32 @@ index 20ffe14..cef2894 100644
      /**
       * Overrides `startupParameters.application_name`, the URL's `application_name`,
       * and the default `"@effect/sql-pg"`, in that order.
-@@ -207,7 +214,10 @@ export declare const PgConnection: Context.Service<PgConnection, PgConnection>;
+@@ -199,6 +206,24 @@ export interface PgConnection {
+  * @since 4.0.0
+  */
+ export declare const PgConnection: Context.Service<PgConnection, PgConnection>;
++/** Held-statement capture for {@link pipelined}; read by a multiplexed pool's borrower. Internal. */
++export declare const PipelineCapture: Context.Reference<unknown>;
++/** The connection a statement claimed by {@link pipelined} runs on. Internal. */
++export declare const heldConnection: (capture: unknown, borrow: unknown) => unknown;
++/**
++ * Runs `leaves` concurrently and sends the first statement of each in one socket write on one
++ * connection of a multiplexed pool: leaves before index `outside` first, each in its own implicit
++ * transaction, then the rest between `BEGIN <begin>` and `COMMIT`. A leaf's later statements, and
++ * statements outside a multiplexed pool, run as usual. Only statements on the first leaf's client
++ * share the batch: a leaf on another database client runs alone on that client, outside the
++ * snapshot, without an error. Leaves must not wait for one another. Returns each leaf's exit, in
++ * order; a batch that cannot get a connection fails each held statement, and its leaf's exit
++ * carries that error.
++ */
++export declare const pipelined: (
++  leaves: ReadonlyArray<Effect.Effect<unknown, unknown, never>>,
++  options?: { readonly outside?: number | undefined; readonly begin?: string | undefined }
++) => Effect.Effect<Array<import("effect/Exit").Exit<unknown, unknown>>>;
+ /**
+  * Connects and authenticates a single PostgreSQL session.
+  *
+@@ -207,7 +232,10 @@ export declare const PgConnection: Context.Service<PgConnection, PgConnection>;
   * Password resolution, transport, optional `SSLRequest`, startup, and
   * authentication run under `connectTimeout` (5 seconds by default). The effect
   * resolves when the backend sends `ReadyForQuery`. Closing the scope sends
@@ -47,10 +104,186 @@ index 20ffe14..cef2894 100644
   * Use `sslmode=require` or explicit `ssl: true` to require encryption.
   * Unix sockets and custom streams should set `ssl.servername` explicitly.
 diff --git a/dist/PgConnection.js b/dist/PgConnection.js
-index 2cb7481..acb2a41 100644
+index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..525606550c6193125fb28b3add12a3df4cf131aa 100644
 --- a/dist/PgConnection.js
 +++ b/dist/PgConnection.js
-@@ -61,22 +61,36 @@ export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConne
+@@ -5,6 +5,7 @@ import * as Deferred from "effect/Deferred";
+ import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
+ import * as Exit from "effect/Exit";
++import * as Fiber from "effect/Fiber";
+ import * as Queue from "effect/Queue";
+ import * as Redacted from "effect/Redacted";
+ import * as EffectResult from "effect/Result";
+@@ -45,6 +46,167 @@ const preparedCacheFor = config => {
+  * @since 4.0.0
+  */
+ export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConnection");
++/**
++ * What a statement gets when it reaches a leased connection that must take no new statement: a
++ * statement there is abandoned on the wire, a cancel is pending, or the connection is retired. The
++ * statement was never sent. A pool that leases connections exclusively (`multiplexConcurrency` 1)
++ * runs the `use` callback it came from again on a fresh lease, but only when nothing of that
++ * callback has been sent yet (`LeaseUse`); otherwise, and on a held connection (`PgPool` `held`),
++ * the statement fails with this error.
++ *
++ * @internal
++ */
++export const refusedStatement = /*#__PURE__*/new SqlError({
++  reason: /*#__PURE__*/new ConnectionError({
++    cause: /*#__PURE__*/new Error("The connection takes no new statements"),
++    message: "PgConnection: The connection takes no new statements",
++    operation: "query"
++  })
++});
++/**
++ * The `PgPool` `use` callback the current statements belong to, if any: whether any statement of
++ * it, or of a `use` nested in it, has been queued or sent. A pool reruns a callback whose
++ * statement was refused only while this is unset, so a callback is never run twice once it has
++ * sent anything.
++ *
++ * @internal
++ */
++export const CurrentLeaseUse = /*#__PURE__*/Context.Reference("@effect/sql-pg/PgConnection/CurrentLeaseUse", {
++  defaultValue: () => undefined
++});
++const markSent = use => {
++  for (let current = use; current !== undefined && !current.sent; current = current.parent) current.sent = true;
++};
++/**
++ * Set by {@link pipelined} on each of its leaves. A multiplexed pool's
++ * borrower asks it to `claim` a leaf's first statement; a claimed statement is
++ * held, without a pool lease, and leaves the client with the batch. Unset
++ * everywhere else.
++ */
++export const PipelineCapture = /*#__PURE__*/Context.Reference("@effect/sql-pg/PipelineCapture", {
++  defaultValue: () => undefined
++});
++/**
++ * The connection a claimed statement runs on, as the client sees it: running
++ * a statement hands it to the batch and waits for the batch's answer.
++ */
++export const heldConnection = (capture, borrow) => ({
++  query: (sql, params) => Effect.map(capture.submit(borrow, sql, params ?? emptyParams, true), takeResult),
++  queryValues: (sql, params) => Effect.map(capture.submit(borrow, sql, params ?? emptyParams, false), takeValues)
++});
++/**
++ * Runs `leaves` concurrently and sends the first statement of each in one
++ * socket write on one connection of a multiplexed pool.
++ *
++ * - A leaf's first statement is held, without a pool lease, until every leaf
++ *   has issued one or finished. The batch then borrows one connection, queues
++ *   all held statements on it contiguously under the connection's `owner`
++ *   permit, in leaf order, and flushes once. No other statement, and no
++ *   transaction, can be queued between them.
++ * - Leaves before index `outside` run first, each in its own implicit
++ *   transaction. With `begin`, the rest run between `BEGIN <begin>` and
++ *   `COMMIT`, queued in the same step, so they read one snapshot and the
++ *   connection never stays inside the transaction. If `BEGIN` fails, every
++ *   statement after it fails with that error rather than running outside the
++ *   snapshot. A statement that fails inside the transaction aborts it, so every
++ *   later one fails too.
++ * - A leaf's later statements, statements in a transaction, streams, and
++ *   clients without multiplexing run as usual.
++ * - The batch holds its lease until its last statement answers. If it cannot
++ *   borrow a connection, or the connection dies, every held statement fails
++ *   with that error: the leaves' exits carry it and the batch itself succeeds.
++ * - Only statements on the first leaf's client share the batch. A leaf on
++ *   another database client is sent alone on that client, with no `BEGIN`:
++ *   it runs outside the snapshot, without an error (the span counts these as
++ *   `db.pipeline.apart`). A leaf's first statement that does not go through
++ *   the pool's borrower (`reserve`, `withTransaction`) and every later
++ *   statement of a leaf also run outside the batch and its snapshot,
++ *   unrecorded.
++ *
++ * Leaves must be independent: a leaf that waits for another leaf before its
++ * first statement would wait for itself. Returns each leaf's exit, in order.
++ * The `sql.pipeline` span records how many statements went out and in how many
++ * socket writes.
++ */
++export const pipelined = (leaves, options = {}) => Effect.suspend(() => {
++  if (leaves.length === 0) return Effect.succeed([]);
++  const outside = options.outside ?? 0;
++  const items = [];
++  let waiting = leaves.length;
++  let released = false;
++  const release = Deferred.makeUnsafe();
++  const settle = () => {
++    waiting--;
++    if (waiting === 0) {
++      released = true;
++      Deferred.doneUnsafe(release, Exit.void);
++    }
++  };
++  const leaf = (effect, index) => {
++    let claimed = false;
++    let settled = false;
++    const once = () => {
++      if (settled) return;
++      settled = true;
++      settle();
++    };
++    const capture = {
++      claim: () => {
++        if (released || claimed) return false;
++        claimed = true;
++        return true;
++      },
++      submit: (borrow, sql, params, wantRows) => Effect.suspend(() => {
++        const deferred = Deferred.makeUnsafe();
++        items.push({ borrow, sql, params, wantRows, deferred, index });
++        once();
++        return Deferred.await(deferred);
++      })
++    };
++    return effect.pipe(Effect.provideService(PipelineCapture, capture), Effect.exit, Effect.ensuring(Effect.sync(once)));
++  };
++  const fail = (batch, cause) => Effect.sync(() => {
++    for (const item of batch) Deferred.doneUnsafe(item.deferred, Exit.failCause(cause));
++  });
++  const send = batch => Effect.gen(function* () {
++    const borrow = batch[0].borrow;
++    const together = batch.filter(item => item.borrow === borrow);
++    // Leaves on another client cannot share the connection: each goes alone.
++    const apart = batch.filter(item => item.borrow !== borrow);
++    const sent = yield* borrow(conn => Effect.flatMap(conn.pipelineBatch(together.filter(item => item.index < outside), together.filter(item => item.index >= outside), options.begin), entries => Effect.as(Effect.forEach(together, item => Effect.exit(Deferred.await(item.deferred)), {
++      discard: true
++    }), entries))).pipe(
++    // A batch that cannot borrow a connection, or whose connection dies, fails every held
++    // statement with that error; the leaves' exits carry it, and the batch itself still returns
++    // them, as its type says.
++    Effect.onError(cause => fail(together, cause)), Effect.catch(() => Effect.succeed([])));
++    yield* Effect.forEach(apart, item => item.borrow(conn => Effect.andThen(conn.pipelineBatch([item], [], undefined), Effect.exit(Deferred.await(item.deferred)))).pipe(Effect.onError(cause => fail([item], cause)), Effect.catch(() => Effect.void)), {
++      concurrency: "unbounded",
++      discard: true
++    });
++    yield* Effect.annotateCurrentSpan({
++      "db.pipeline.leaves": leaves.length,
++      "db.pipeline.statements": sent.length,
++      "db.pipeline.writes": new Set(sent.map(entry => entry.write)).size,
++      "db.pipeline.bytes": sent.reduce((total, entry) => total + entry.plan.frame.byteLength, 0),
++      "db.pipeline.apart": apart.length
++    });
++  }).pipe(Effect.withSpan("sql.pipeline", {
++    kind: "client"
++  }));
++  return Effect.gen(function* () {
++    const fibers = [];
++    for (let i = 0; i < leaves.length; i++) fibers.push(yield* Effect.forkChild(leaf(leaves[i], i)));
++    yield* Deferred.await(release);
++    if (items.length > 0) {
++      items.sort((a, b) => a.index - b.index);
++      yield* send(items);
++    }
++    const exits = [];
++    for (const fiber of fibers) exits.push(yield* Fiber.join(fiber));
++    return exits;
++  });
++});
+ /**
+  * Connects and authenticates a single PostgreSQL session.
+  *
+@@ -61,22 +223,46 @@ export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConne
   * @category constructors
   * @since 4.0.0
   */
@@ -84,7 +317,7 @@ index 2cb7481..acb2a41 100644
 +      }
 +    }));
 +    return new PgConnectionImpl(options, config, session, options.types);
-+  }), connection => Effect.sync(() => connection.closeUnsafe()), {
++  }), connection => connection.close, {
 +    interruptible: true
 +  }).pipe(Effect.timeoutOrElse({
 +    duration: config.connectTimeout,
@@ -100,10 +333,314 @@ index 2cb7481..acb2a41 100644
 +  const attempts = (number, previous) => number > retries ? attempt(number, previous) : Effect.catchIf(attempt(number, previous), error => error.isRetryable, error => attempts(number + 1, error));
 +  return attempts(1, undefined);
 +});
++/**
++ * How long a pool waits, after its holder gave a connection back, for statements written on it that
++ * nobody abandoned (in practice a batch's read-only `COMMIT`, which nobody awaits) before it cancels
++ * them and closes the connection as broken. Such a statement takes milliseconds and cannot wait on a
++ * lock, so it outlives this only on a socket that went silent without an error, where it would
++ * otherwise keep the connection checked out (and counted toward the pool's limit) indefinitely. 30 s
++ * is several thousand times its normal duration and longer than any statement the session objects
++ * await, so it never cuts a working statement short; it only bounds how long a dead socket is kept.
++ */
++const unawaitedSettleTimeoutMillis = 30_000;
  const abortDrainTimeoutMillis = 5000;
  const abortDrainGraceMillis = 10;
  /** PostgreSQL `query_canceled` SQLSTATE. */
-@@ -1051,7 +1065,7 @@ const drainAborted = (conn, timeoutMessage, abort) => {
+@@ -106,6 +292,7 @@ class PgConnectionImpl {
+   deadWith;
+   closed = false;
+   cancelPending = false;
++  retired = false;
+   channels = /*#__PURE__*/new Map();
+   retireHooks = /*#__PURE__*/new Set();
+   /** Queued but not yet written; drained into `pipelineInFlight` on flush. */
+@@ -114,7 +301,18 @@ class PgConnectionImpl {
+   pipelineInFlight = [];
+   pipelineHead = 0;
+   pipelineFlushScheduled = false;
++  /** Socket writes of pipelined statements so far; each entry records its own. */
++  writes = 0;
+   pipelineIdleWaiters = /*#__PURE__*/new Set();
++  /** Woken whenever a statement on the wire finishes, or the pipeline empties or dies. */
++  pipelineProgressWaiters = /*#__PURE__*/new Set();
++  /**
++   * Set by a pool that leases this connection to one holder at a time: then an abandoned
++   * statement leaves the connection to its holder to settle (`settle`) instead of retiring it.
++   */
++  exclusive = false;
++  /** How many `PgPool` holds have this connection. */
++  held = 0;
+   pinnedView;
+   [internalsKey];
+   constructor(config, resolved, session, registry) {
+@@ -130,7 +328,24 @@ class PgConnectionImpl {
+     this[internalsKey] = {
+       base: this,
+       deadError: () => this.deadWith,
+-      retireHooks: this.retireHooks
++      retireHooks: this.retireHooks,
++      retired: () => this.retired,
++      refusing: () => this.refusing(),
++      settle: Effect.suspend(() => this.settle),
++      setExclusive: () => {
++        this.exclusive = true;
++      },
++      hold: () => {
++        this.held++;
++        return () => {
++          this.held--;
++        };
++      },
++      held: () => this.held > 0,
++      idle: () => this.deadWith !== undefined || this.pipelineIsIdle(),
++      abandonOutstanding: () => {
++        for (const entry of this.outstanding()) entry.abandoned = true;
++      }
+     };
+     this.pinnedView = new PinnedPgConnection(this);
+     session.socket.on("data", this.onData);
+@@ -205,6 +420,7 @@ class PgConnectionImpl {
+     }
+   }
+   retire() {
++    this.retired = true;
+     if (this.closed) return;
+     for (const hook of this.retireHooks) hook();
+   }
+@@ -260,7 +476,20 @@ class PgConnectionImpl {
+   };
+   pipelineDepth = () => this.pipelineInFlight.length - this.pipelineHead;
+   pipelineIsIdle = () => this.pipelineDepth() === 0 && this.pipelinePending.length === 0;
++  notifyPipelineProgress = () => {
++    const waiters = Array.from(this.pipelineProgressWaiters);
++    this.pipelineProgressWaiters.clear();
++    for (const waiter of waiters) waiter();
++  };
++  /** Resolves once a statement on the wire finishes, or the pipeline empties or dies. */
++  waitPipelineProgress = /*#__PURE__*/Effect.callback(resume => {
++    if (this.deadWith !== undefined || this.pipelineIsIdle()) return resume(Effect.void);
++    const waiter = () => resume(Effect.void);
++    this.pipelineProgressWaiters.add(waiter);
++    return Effect.sync(() => this.pipelineProgressWaiters.delete(waiter));
++  });
+   notifyPipelineIdle = () => {
++    this.notifyPipelineProgress();
+     if (!this.pipelineIsIdle()) return;
+     this.consumer = undefined;
+     this.session.parser.readField = undefined;
+@@ -288,6 +517,7 @@ class PgConnectionImpl {
+       this.pipelineInFlight.length = 0;
+       this.pipelineHead = 0;
+     }
++    this.notifyPipelineProgress();
+   };
+   /** Writes everything queued since the last flush as one batch. */
+   flushPipeline = () => {
+@@ -317,6 +547,8 @@ class PgConnectionImpl {
+     }
+     if (wasEmpty) this.session.parser.readField = batch[0].machine.readField;
+     const frame = batch.length === 1 ? batch[0].plan.frame : concat(batch.map(entry => entry.plan.frame));
++    const write = ++this.writes;
++    for (const entry of batch) entry.write = write;
+     try {
+       this.session.socket.write(frame);
+     } catch (cause) {
+@@ -329,13 +561,88 @@ class PgConnectionImpl {
+     // A microtask is what lets fibers submitted in the same tick share a write.
+     queueMicrotask(this.flushPipeline);
+   };
++  /** Statements on the wire, oldest first, followed by those still queued. */
++  outstanding = () => [...this.pipelineInFlight.slice(this.pipelineHead), ...this.pipelinePending];
++  /** Whether a statement still on the wire was abandoned by its caller. */
++  abandonedOnWire = () => {
++    for (let index = this.pipelineHead; index < this.pipelineInFlight.length; index++) {
++      if (this.pipelineInFlight[index].abandoned) return true;
++    }
++    return false;
++  };
++  /**
++   * Whether a new statement must not be queued here: one on the wire was abandoned (anything
++   * queued behind it would wait for it), a cancel is pending (it could reach the new statement),
++   * or the connection is retired.
++   */
++  refusing = () => this.retired || this.cancelPending || this.abandonedOnWire();
++  /**
++   * A caller gave up on its statement. Still queued, it is dropped at the next flush. Already on
++   * the wire, it keeps running. On a connection leased to one holder at a time (`exclusive`), the
++   * connection takes no new statement while it runs (`refusing`), and the pool settles it before
++   * the connection goes back (`settle`): cancelled once nothing outstanding is awaited, then
++   * drained and kept, as a connection that runs one statement at a time does. On a connection
++   * shared by several holders, nothing tells who still awaits what, so it retires instead: the
++   * pool sends it no new statement and closes it once its last user is done, and when nothing
++   * left on the wire is awaited the backend is asked to cancel what remains.
++   */
++  abandon = entry => Effect.suspend(() => {
++    entry.abandoned = true;
++    if (this.exclusive || this.deadWith !== undefined || !this.pipelineInFlight.includes(entry, this.pipelineHead)) {
++      return Effect.void;
++    }
++    this.retire();
++    return this.outstanding().every(outstanding => outstanding.abandoned) ? this.cancel : Effect.void;
++  });
++  /**
++   * Makes the connection idle before its holder gives it back. Statements nobody abandoned (a
++   * batch's unawaited `COMMIT`) are waited for as a caller waits for its own statement on a
++   * connection that runs one at a time, up to `unawaitedSettleTimeoutMillis` (30 s): only then are
++   * they cancelled and the connection closed as broken (`Unawaited statement timed out`), since a
++   * cancel would hit them too. Once everything outstanding is abandoned, after the same short grace
++   * as an interrupted exclusive statement, the backend is asked to cancel the one running, again
++   * for each that follows, until the pipeline is empty. A cancel that arrives after its statement
++   * finished retires the connection (`cancelPending`), as without pipelining; then nothing more is
++   * sent and the pool closes it. If the cancelled statements have not drained
++   * `abortDrainTimeoutMillis` after the first cancel, the connection is closed as broken with
++   * main's `Query cancellation timed out`, as `drainAborted` does.
++   */
++  settle = /*#__PURE__*/Effect.suspend(() => {
++    if (this.deadWith !== undefined || this.pipelineIsIdle()) return Effect.void;
++    const finished = () => this.deadWith !== undefined || this.pipelineIsIdle() || this.retired;
++    const cancelling = Effect.suspend(() => finished() ? Effect.void : Effect.andThen(this.cancelPending ? this.waitPipelineProgress : Effect.andThen(this.cancel, this.waitPipelineProgress), cancelling));
++    const unabandoned = Effect.suspend(() => finished() || this.outstanding().every(entry => entry.abandoned) ? Effect.void : Effect.andThen(this.waitPipelineProgress, unabandoned));
++    const waiting = Effect.andThen(unabandoned.pipe(Effect.timeoutOrElse({
++      duration: Duration.millis(unawaitedSettleTimeoutMillis),
++      orElse: () => Effect.andThen(this.cancel, Effect.sync(() => this.fatal(connectionQueryError(new Error("Unawaited statement timed out"), "PgConnection: Unawaited statement timed out"))))
++    })), Effect.suspend(() => finished() ? Effect.void : cancelling.pipe(Effect.timeoutOrElse({
++      duration: Duration.millis(abortDrainTimeoutMillis),
++      orElse: () => Effect.sync(() => this.fatal(connectionQueryError(new Error("Query cancellation timed out"), "PgConnection: Query cancellation timed out")))
++    }))));
++    const grace = Effect.callback(resume => {
++      const timer = setTimeout(() => resume(Effect.void), abortDrainGraceMillis);
++      return Effect.sync(() => clearTimeout(timer));
++    });
++    return Effect.andThen(Effect.raceFirst(this.waitPipelineIdle, grace), waiting);
++  });
++  /**
++   * Closes the session. Statements still outstanding on a multiplexed
++   * connection have no caller left (a pool closes a connection once nobody
++   * holds it), so they are cancelled on the server first rather than left
++   * running there.
++   */
++  close = /*#__PURE__*/Effect.suspend(() => Effect.andThen(this.deadWith === undefined && !this.pipelineIsIdle() ? this.cancel : Effect.void, Effect.sync(() => this.closeUnsafe())));
+   /**
+    * One cycle on a multiplexed connection. The `owner` permit is only taken to
+    * queue the statement, so a pin still orders against submissions without
+    * serializing them.
+    */
+-  pipelineCycle = (sql, params, wantRows, cache) => Effect.flatMap(this.owner.withPermit(Effect.suspend(() => {
++  pipelineCycle = (sql, params, wantRows, cache) => Effect.flatMap(CurrentLeaseUse, use => this.pipelineQueue(sql, params, wantRows, cache, use));
++  pipelineQueue = (sql, params, wantRows, cache, use) => Effect.flatMap(this.owner.withPermit(Effect.suspend(() => {
+     if (this.deadWith !== undefined) return Effect.fail(this.deadWith);
++    // Checked where the statement is queued, so nothing slips in after an abandonment or a
++    // cancel; the statement has not been sent, so the pool can run it elsewhere.
++    if (this.exclusive && this.refusing()) return Effect.fail(refusedStatement);
+     let plan;
+     try {
+       plan = this.encodeQuery(sql, params, cache);
+@@ -352,15 +659,14 @@ class PgConnectionImpl {
+       abandoned: false
+     };
+     this.pipelinePending.push(entry);
++    markSent(use);
+     this.consumer = this.pipelineConsumer;
+     this.schedulePipelineFlush();
+     return Effect.succeed(entry);
+   })), entry => {
+-    const awaited = Deferred.await(entry.deferred).pipe(Effect.onInterrupt(() => Effect.sync(() => {
+-      entry.abandoned = true;
+-    })));
++    const awaited = Deferred.await(entry.deferred).pipe(Effect.onInterrupt(() => this.abandon(entry)));
+     if (cache === undefined || entry.plan.parses) return awaited;
+-    return retryStale(entry.plan, cache, awaited, () => this.pipelineCycle(sql, params, wantRows, undefined));
++    return retryStale(entry.plan, cache, awaited, () => this.pipelineQueue(sql, params, wantRows, undefined, use));
+   });
+   /**
+    * One extended-query cycle for a caller that shares the session with others:
+@@ -372,7 +678,10 @@ class PgConnectionImpl {
+    * Runs one cycle for a caller that owns the session. No wire permit is needed
+    * because competing pinned work and streams must acquire `owner` first.
+    */
+-  cycleOwned = (sql, params, wantRows, cache) => Effect.suspend(() => this.attempt(sql, params, wantRows, cache));
++  cycleOwned = (sql, params, wantRows, cache) => Effect.flatMap(CurrentLeaseUse, use => {
++    markSent(use);
++    return this.attempt(sql, params, wantRows, cache);
++  });
+   /**
+    * Runs one cycle. A reused statement the backend has since dropped, or whose
+    * plan no longer matches its columns, is parsed again on a second attempt;
+@@ -414,6 +723,73 @@ class PgConnectionImpl {
+     const cache = prepare ? this.prepared : undefined;
+     return this.multiplex ? this.pipelineCycle(sql, params, wantRows, cache) : this.owner.withPermit(this.cycleOwned(sql, params, wantRows, cache));
+   };
++  /**
++   * Queues a {@link pipelined} batch contiguously and schedules one flush:
++   * `outside` first, then `inside`, wrapped in `BEGIN <begin>` / `COMMIT` when
++   * `begin` is set. Everything is queued in one synchronous step under the
++   * `owner` permit, which every other submission and every `pin` takes first,
++   * so nothing can land between `BEGIN` and `COMMIT`. These entries are never
++   * abandoned: `COMMIT` always goes out once `BEGIN` has. Returns the entries.
++   *
++   * A batch with `BEGIN` refuses (a defect) unless a `PgPool.held` hold has the
++   * connection (`isHeld`): nobody awaits its `COMMIT`, and only a hold keeps
++   * the connection to the batch until `COMMIT` has answered, with no other
++   * caller's statement on it meanwhile. On a connection that takes no new
++   * statements (`refusing`), nothing is queued and every statement fails with
++   * `refusedStatement`, so no cancel meant for another statement can reach it.
++   */
++  pipelineBatch = (outside, inside, begin) => this.owner.withPermit(Effect.suspend(() => {
++    if (begin !== undefined && inside.length > 0 && this.held === 0) {
++      return Effect.die(new Error("PgConnection: a BEGIN … COMMIT batch must run inside PgPool.held"));
++    }
++    if (this.exclusive && this.refusing()) {
++      for (const item of [...outside, ...inside]) Deferred.doneUnsafe(item.deferred, Effect.fail(refusedStatement));
++      return Effect.succeed([]);
++    }
++    return Effect.sync(() => this.pipelineBatchUnsafe(outside, inside, begin));
++  }));
++  pipelineBatchUnsafe = (outside, inside, begin) => {
++    const entries = [];
++    let began;
++    const enqueue = (sql, params, wantRows, deferred, gated, onDone) => {
++      if (this.deadWith !== undefined) {
++        Deferred.doneUnsafe(deferred, Effect.fail(this.deadWith));
++        return false;
++      }
++      let plan;
++      try {
++        plan = this.encodeQuery(sql, params, undefined);
++      } catch (cause) {
++        Deferred.doneUnsafe(deferred, Effect.fail(queryError(cause, "PgConnection: Failed to encode query")));
++        return false;
++      }
++      let entry;
++      const machine = new QueryMachine(this, plan, wantRows, result => {
++        onDone?.(result);
++        // A statement behind a failed BEGIN would run outside the snapshot.
++        this.finishPipelineEntry(entry, gated && began !== undefined && Exit.isFailure(began) ? began : result);
++      });
++      entry = { plan, deferred, machine, abandoned: false, write: undefined };
++      this.pipelinePending.push(entry);
++      entries.push(entry);
++      return true;
++    };
++    for (const item of outside) enqueue(item.sql, item.params, item.wantRows, item.deferred, false);
++    const wrap = begin !== undefined && inside.length > 0;
++    if (wrap && !enqueue(`BEGIN ${begin}`, emptyParams, false, Deferred.makeUnsafe(), false, result => {
++      began = result;
++    })) {
++      for (const item of inside) Deferred.doneUnsafe(item.deferred, Effect.fail(this.deadWith ?? queryError(new Error("BEGIN could not be queued"), "PgConnection: BEGIN could not be queued")));
++      this.consumer = this.pipelineConsumer;
++      this.schedulePipelineFlush();
++      return entries;
++    }
++    for (const item of inside) enqueue(item.sql, item.params, item.wantRows, item.deferred, wrap);
++    if (wrap) enqueue("COMMIT", emptyParams, false, Deferred.makeUnsafe(), false);
++    this.consumer = this.pipelineConsumer;
++    this.schedulePipelineFlush();
++    return entries;
++  };
+   query = (sql, params, prepare = true) => Effect.map(this.run(sql, params ?? emptyParams, true, prepare), takeResult);
+   queryValues = (sql, params, prepare = true) => Effect.map(this.run(sql, params ?? emptyParams, false, prepare), takeValues);
+   stream = (sql, params) => streamRows(this, this.pin, sql, params ?? emptyParams);
+@@ -1051,7 +1427,7 @@ const drainAborted = (conn, timeoutMessage, abort) => {
    return Effect.andThen(Effect.raceFirst(Deferred.await(drained), grace), Effect.suspend(() => Deferred.isDoneUnsafe(drained) ? Effect.void : cancelAndDrain));
  };
  /** One cycle on a connection that carries a single statement at a time. */
@@ -112,7 +649,7 @@ index 2cb7481..acb2a41 100644
    if (conn.deadWith !== undefined) {
      resume(Effect.fail(conn.deadWith));
      return;
-@@ -1060,12 +1074,30 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
+@@ -1060,12 +1436,30 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
      conn.consumer = undefined;
      resume(effect);
    });
@@ -145,7 +682,7 @@ index 2cb7481..acb2a41 100644
    } catch (cause) {
      conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
    }
-@@ -1076,7 +1108,7 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
+@@ -1076,7 +1470,7 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
        onDrained();
      }));
    });
@@ -154,8 +691,331 @@ index 2cb7481..acb2a41 100644
  const emptyFields = [];
  /** Derives the per-column readers and the row constructor for a description. */
  const describe = (fields, registry) => {
+diff --git a/dist/PgPool.d.ts b/dist/PgPool.d.ts
+index 5a13d373d1b5a6f3a7e754b6970e5a8c5f122b89..172fc397947d89fdfd86d1a71039526e7adde410 100644
+--- a/dist/PgPool.d.ts
++++ b/dist/PgPool.d.ts
+@@ -80,6 +80,12 @@ export interface PgPool {
+      *
+      * For work that finishes with the effect that runs it. A lease that has to
+      * outlive its effect - a stream, a transaction - takes `get` or `reserve`.
++     *
++     * On a pool that leases connections exclusively, a statement the leased
++     * connection refuses was never sent (`refusedStatement`). Then `f` runs again
++     * on a fresh lease, but only if nothing of this run of `f` (nested `use`s
++     * included) had been queued or sent; otherwise, and inside {@link held}, the
++     * refusal fails `use`, so `f` never runs twice once it has sent anything.
+      */
+     readonly use: <A, E, R>(f: (connection: PgConnection.PgConnection) => Effect.Effect<A, E, R>) => Effect.Effect<A, E | SqlError, R>;
+     readonly invalidate: (connection: PgConnection.PgConnection) => Effect.Effect<void>;
+@@ -91,6 +97,75 @@ export interface PgPool {
+  * @since 4.0.0
+  */
+ export declare const PgPool: Context.Service<PgPool, PgPool>;
++/**
++ * One unit of work's claim on a multiplexed pool: the statements it has in flight at the same
++ * time share one connection, which carries nothing else meanwhile. See {@link grouped}.
++ *
++ * @category models
++ * @since 4.0.0
++ */
++export interface StatementGroup {
++    readonly leases: Map<object, unknown>;
++    /** Set by {@link held}: the group keeps its connection until it ends, and never moves. */
++    readonly held: boolean;
++}
++/**
++ * The group the current statements belong to, if any. Set by {@link grouped}.
++ *
++ * @category services
++ * @since 4.0.0
++ */
++export declare const CurrentStatementGroup: Context.Reference<StatementGroup | undefined>;
++/**
++ * Runs `effect` as one statement group. On a multiplexed pool, the statements it has in flight at
++ * the same time go out together on one connection that no other statement uses until they have
++ * all finished, so a statement of the group can only ever wait behind the group's own. The
++ * connection goes back to the pool whenever the group has no statement in flight. Transactions,
++ * streams and listeners inside the group still reserve a connection of their own. Without
++ * multiplexing every statement has a connection to itself anyway, and this changes nothing.
++ *
++ * @category combinators
++ * @since 4.0.0
++ */
++export declare const grouped: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
++/**
++ * Runs `effect` as one statement group that holds its connection: the first statement opens the
++ * lease and every later statement of `effect`, in any of its fibers, goes to that same connection
++ * or fails; none is ever moved to another connection, not even when the connection stops taking
++ * statements (an abandoned statement, a pending cancel, retirement). Groups and holds nested
++ * inside are part of the outer hold and stay on its connection. Transactions, streams and
++ * listeners inside it (`reserve`, `pin`) still take a connection of their own, as in any group.
++ *
++ * The connection carries nothing else meanwhile and goes back only when `effect` has ended and
++ * every statement written on it has finished, whether or not anyone awaited it, so work that
++ * pipelines statements nobody awaits (`BEGIN` … `COMMIT`) cannot release it early. A statement
++ * nobody abandoned is waited for up to 30 seconds after `effect` returned (such a statement takes
++ * milliseconds; only a socket that went silent outlives it), then cancelled, and the connection is
++ * closed as broken (`Unawaited statement timed out`). If `effect` is interrupted, every
++ * statement still outstanding on the connection is abandoned, then cancelled and drained before
++ * the connection goes back; if the cancelled statements have not drained 5 seconds after the
++ * first cancel, the connection is closed as broken (`Query cancellation timed out`). The settling
++ * runs after `effect` has returned, so neither `held` nor a statement of it waits for it.
++ *
++ * Only on a pool that leases connections exclusively (`multiplex` with `multiplexConcurrency` 1)
++ * does this hold anything, and only there is {@link isHeld} true for the connection; elsewhere it
++ * runs `effect` as {@link grouped} would and {@link isHeld} stays false, so a writer that needs a
++ * held connection refuses there.
++ *
++ * @category combinators
++ * @since 4.0.0
++ */
++export declare const held: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
++/**
++ * Whether `connection` is held by {@link held} right now. Code that writes statements nobody
++ * awaits, or relies on several statements sharing one connection, checks this first. Always false
++ * on a pool that does not lease connections exclusively, where another caller's statements can
++ * share the connection.
++ *
++ * @category guards
++ * @since 4.0.0
++ */
++export declare const isHeld: (connection: PgConnection.PgConnection) => boolean;
+ /**
+  * Creates a scoped PostgreSQL session pool.
+  *
+diff --git a/dist/PgPool.js b/dist/PgPool.js
+index 24adc65edc8cac2ef4ab8d5f98f809068acff574..6e3ec942ad922aa29765d26a9f91331e987ae55b 100644
+--- a/dist/PgPool.js
++++ b/dist/PgPool.js
+@@ -7,7 +7,11 @@ import * as Clock from "effect/Clock";
+ import * as Context from "effect/Context";
+ import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
++import * as Cause from "effect/Cause";
++import * as Deferred from "effect/Deferred";
++import * as Exit from "effect/Exit";
+ import * as Pool from "effect/Pool";
++import * as Scope from "effect/Scope";
+ import { connectionInternals } from "./internal/connection.js";
+ import * as PgConnection from "./PgConnection.js";
+ const defaultMultiplexConcurrency = 32;
+@@ -25,6 +29,80 @@ export const TypeId = "~@effect/sql-pg/PgPool";
+  * @since 4.0.0
+  */
+ export const PgPool = /*#__PURE__*/Context.Service("@effect/sql-pg/PgPool");
++/**
++ * The group the current statements belong to, if any. Set by {@link grouped}.
++ *
++ * @category services
++ * @since 4.0.0
++ */
++export const CurrentStatementGroup = /*#__PURE__*/Context.Reference("@effect/sql-pg/PgPool/CurrentStatementGroup", {
++  defaultValue: () => undefined
++});
++/**
++ * Runs `effect` as one statement group. On a multiplexed pool, the statements it has in flight at
++ * the same time go out together on one connection that no other statement uses until they have
++ * all finished, so a statement of the group can only ever wait behind the group's own. The
++ * connection goes back to the pool whenever the group has no statement in flight. Transactions,
++ * streams and listeners inside the group still reserve a connection of their own. Without
++ * multiplexing every statement has a connection to itself anyway, and this changes nothing.
++ *
++ * @category combinators
++ * @since 4.0.0
++ */
++export const grouped = effect => Effect.flatMap(CurrentStatementGroup, current =>
++// Inside a held group a nested group would move its statements off the held connection.
++current?.held === true ? effect : Effect.provideService(effect, CurrentStatementGroup, {
++  leases: new Map(),
++  held: false
++}));
++/**
++ * Runs `effect` as one statement group that holds its connection: the first statement opens the
++ * lease and every later statement of `effect`, in any of its fibers, goes to that same connection
++ * or fails; none is ever moved to another connection, not even when the connection stops taking
++ * statements (an abandoned statement, a pending cancel, retirement). Groups and holds nested
++ * inside are part of the outer hold and stay on its connection. Transactions, streams and
++ * listeners inside it (`reserve`, `pin`) still take a connection of their own, as in any group.
++ *
++ * The connection carries nothing else meanwhile and goes back only when `effect` has ended and
++ * every statement written on it has finished, whether or not anyone awaited it, so work that
++ * pipelines statements nobody awaits (`BEGIN` … `COMMIT`) cannot release it early. A statement
++ * nobody abandoned is waited for up to 30 seconds after `effect` returned (such a statement takes
++ * milliseconds; only a socket that went silent outlives it), then cancelled, and the connection is
++ * closed as broken (`Unawaited statement timed out`). If `effect` is interrupted, every
++ * statement still outstanding on the connection is abandoned, then cancelled and drained before
++ * the connection goes back; if the cancelled statements have not drained 5 seconds after the
++ * first cancel, the connection is closed as broken (`Query cancellation timed out`). The settling
++ * runs after `effect` has returned, so neither `held` nor a statement of it waits for it.
++ *
++ * Only on a pool that leases connections exclusively (`multiplex` with `multiplexConcurrency` 1)
++ * does this hold anything, and only there is {@link isHeld} true for the connection; elsewhere it
++ * runs `effect` as {@link grouped} would and {@link isHeld} stays false, so a writer that needs a
++ * held connection refuses there.
++ *
++ * @category combinators
++ * @since 4.0.0
++ */
++export const held = effect => Effect.flatMap(CurrentStatementGroup, current => {
++  // A hold inside a hold is part of it: a new group would lease a second connection.
++  if (current?.held === true) return effect;
++  const group = {
++    leases: new Map(),
++    held: true
++  };
++  return Effect.onExit(Effect.provideService(effect, CurrentStatementGroup, group), exit => Effect.forEach(Array.from(group.leases.values()), lease => lease.end?.(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)) ?? Effect.void, {
++    discard: true
++  }));
++});
++/**
++ * Whether `connection` is held by {@link held} right now. Code that writes statements nobody
++ * awaits, or relies on several statements sharing one connection, checks this first. Always false
++ * on a pool that does not lease connections exclusively, where another caller's statements can
++ * share the connection.
++ *
++ * @category guards
++ * @since 4.0.0
++ */
++export const isHeld = connection => connectionInternals(connection).held();
+ /**
+  * Creates a scoped PostgreSQL session pool.
+  *
+@@ -41,6 +119,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+   const clock = yield* Clock.Clock;
+   const runFork = Effect.runForkWith(yield* Effect.context());
+   const multiplex = options.multiplex ?? false;
++  const concurrency = multiplex ? Math.max(1, options.multiplexConcurrency ?? defaultMultiplexConcurrency) : 1;
++  // A multiplexed pool that leases each connection to one holder at a time: a holder's statements
++  // may pipeline, and nobody else's are on the connection, so the pool can tell when nobody awaits
++  // what is outstanding on it.
++  const exclusive = multiplex && concurrency === 1;
+   const connectionTTL = options.connectionTTL !== undefined ? Duration.toMillis(Duration.fromInputUnsafe(options.connectionTTL)) : undefined;
+   const deadConnections = new Set();
+   const createdAt = new WeakMap();
+@@ -61,13 +144,14 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+     // Pinning a shared session has to take it out of circulation, or a
+     // second checkout lands on the connection its own stream is holding.
+     if (multiplex) internals.reserve = Pool.reserve(pool, connection);
++    if (exclusive) internals.setExclusive();
+   }));
+   const maxConnections = options.maxConnections ?? 10;
+   pool = yield* Pool.makeWithTTL({
+     acquire,
+     min: options.minConnections ?? 0,
+     max: maxConnections,
+-    concurrency: multiplex ? Math.max(1, options.multiplexConcurrency ?? defaultMultiplexConcurrency) : 1,
++    concurrency,
+     timeToLive: options.idleTimeout ?? Duration.seconds(60),
+     timeToLiveStrategy: "usage"
+   });
+@@ -104,10 +188,103 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+   const get = Effect.suspend(() => deadConnections.size > 0 ? retry : Effect.flatMap(Pool.get(pool), connection => expired(connection) ? Effect.andThen(Pool.invalidate(pool, connection), retry) : Effect.succeed(connection)));
+   // `pin` reserves the pool item itself, so this needs no help.
+   const reserve = Effect.flatMap(get, connection => connection.pin);
++  // An exclusive lease goes back only once nothing is outstanding on its connection: what its
++  // holder abandoned is cancelled and drained, as an interrupted statement is on a connection that
++  // runs one at a time, and the connection is kept (`settle`).
++  const lent = exclusive ? Effect.tap(get, connection => Effect.addFinalizer(() => connectionInternals(connection).settle)) : get;
+   // `Pool.use` cannot pre-check a session. Use it only when no TTL applies and
+   // no connection awaits retirement. Checking inside its callback can deadlock
+   // a size-one pool while acquiring a replacement.
+-  const use = f => Effect.suspend(() => connectionTTL === undefined && deadConnections.size === 0 ? Pool.use(pool, f) : Effect.scoped(Effect.flatMap(get, f)));
++  const useAny = f => Effect.suspend(() => !exclusive && connectionTTL === undefined && deadConnections.size === 0 ? Pool.use(pool, f) : Effect.scoped(Effect.flatMap(lent, f)));
++  // Identifies this pool among the leases a group holds.
++  const groupKey = {};
++  // Closing an exclusive lease settles its connection first (`lent`). When something is still
++  // outstanding on it - a statement a sibling abandoned, an unawaited `COMMIT` - that runs in the
++  // background: whichever statement of the group released last already has its result and must
++  // not wait for another's drain. The connection stays checked out, and counts toward the pool's
++  // limit, until it has settled.
++  const closeLease = (group, lease) => Effect.suspend(() => {
++    if (group.leases.get(groupKey) === lease) group.leases.delete(groupKey);
++    const close = Scope.close(lease.scope, Exit.void);
++    if (exclusive && lease.opened !== undefined && !connectionInternals(lease.opened).idle()) {
++      runFork(close);
++      return Effect.void;
++    }
++    return close;
++  });
++  const releaseLease = (group, lease) => Effect.suspend(() => {
++    lease.refs--;
++    // A held group keeps its lease between statements; its end gives it back.
++    if (lease.refs > 0 || lease.end !== undefined) return Effect.void;
++    return closeLease(group, lease);
++  });
++  // The group's connection, opened by its first statement in flight; the others wait for it. A
++  // connection that takes no new statement (an abandoned statement on the wire, a pending cancel,
++  // retirement) is left to the statements still on it, and the next one takes a fresh lease;
++  // a held group's statements stay and fail instead. Every exit that does not hand the caller a
++  // connection gives its reference back.
++  // Only an exclusive pool can hold: elsewhere other callers share the connection.
++  const holds = group => exclusive && group.held;
++  const lease = group => Effect.suspend(() => {
++    const current = group.leases.get(groupKey);
++    if (current !== undefined) {
++      const opened = current.opened;
++      if (opened === undefined || holds(group) || !connectionInternals(opened).refusing()) {
++        current.refs++;
++        return Deferred.await(current.connection).pipe(Effect.onInterrupt(() => releaseLease(group, current)), Effect.flatMap(opened => {
++          if (opened !== undefined && Exit.isSuccess(opened)) return Effect.succeed([current, opened.value]);
++          // The opener failed to connect, or gave up first: then try again rather than inherit its fate.
++          return Effect.andThen(releaseLease(group, current), opened === undefined ? lease(group) : Effect.failCause(opened.cause));
++        }));
++      }
++      group.leases.delete(groupKey);
++    }
++    const opening = {
++      refs: 1,
++      scope: Scope.makeUnsafe(),
++      connection: Deferred.makeUnsafe(),
++      opened: undefined,
++      end: undefined
++    };
++    group.leases.set(groupKey, opening);
++    return Scope.provide(lent, opening.scope).pipe(Effect.onExit(exit => Effect.suspend(() => {
++      if (Exit.isSuccess(exit)) {
++        opening.opened = exit.value;
++        if (holds(group)) {
++          const internals = connectionInternals(exit.value);
++          const unhold = internals.hold();
++          let ended = false;
++          opening.end = interrupted => Effect.suspend(() => {
++            if (ended) return Effect.void;
++            ended = true;
++            unhold();
++            // Nobody is left to await what an interrupted holder wrote.
++            if (interrupted) internals.abandonOutstanding();
++            opening.end = undefined;
++            return opening.refs > 0 ? Effect.void : closeLease(group, opening);
++          });
++        }
++        return Deferred.succeed(opening.connection, exit);
++      }
++      if (group.leases.get(groupKey) === opening) group.leases.delete(groupKey);
++      const opened = Cause.hasInterruptsOnly(exit.cause) ? undefined : exit;
++      return Effect.andThen(Deferred.succeed(opening.connection, opened), releaseLease(group, opening));
++    })), Effect.map(connection => [opening, connection]));
++  });
++  // A statement refused where it was queued was never sent (`refusedStatement`). If nothing else
++  // of this run of `f` was sent either, `f` runs again on a fresh lease; once `f` has sent a
++  // statement, rerunning it would send that statement twice, so the refusal fails `f` instead. A
++  // held group's statement always fails instead of moving.
++  const use = f => Effect.flatMap(Effect.zip(CurrentStatementGroup, PgConnection.CurrentLeaseUse), ([group, parent]) => {
++    if (!exclusive && (group === undefined || !multiplex)) return useAny(f);
++    const run = {
++      sent: false,
++      parent
++    };
++    const rerun = error => error === PgConnection.refusedStatement && !run.sent && !(group !== undefined && holds(group));
++    const tracked = connection => Effect.provideService(f(connection), PgConnection.CurrentLeaseUse, run);
++    return Effect.catchIf(group === undefined ? useAny(tracked) : Effect.uninterruptibleMask(restore => Effect.flatMap(restore(lease(group)), ([leased, connection]) => Effect.ensuring(restore(tracked(connection)), releaseLease(group, leased)))), rerun, () => use(f));
++  });
+   const pgPool = {
+     [TypeId]: TypeId,
+     config: options,
 diff --git a/src/PgClient.ts b/src/PgClient.ts
-index 458df7f..1967c1e 100644
+index 458df7fb428d6851d307da883dca050df145f92b..6b3e66c7b95be450d1165bfdd53d3d88024a7566 100644
 --- a/src/PgClient.ts
 +++ b/src/PgClient.ts
 @@ -96,6 +96,13 @@ export interface PgClientConfig {
@@ -172,11 +1032,51 @@ index 458df7f..1967c1e 100644
  
    readonly stream?: (() => Duplex) | undefined
  
+@@ -167,14 +174,27 @@ export interface PgPoolConfig extends PgClientConfig {
+  * @since 4.0.0
+  */
+ export const make = (options: PgPoolConfig): Effect.Effect<PgClient, SqlError, Scope.Scope | Reactivity.Reactivity> =>
+-  Effect.flatMap(PgPool.make(options), (pool) =>
+-    makeImpl({
++  Effect.flatMap(PgPool.make(options), (pool) => {
++    const borrow: PgConnection.PipelineBorrow = (f) => pool.use(f)
++    const lease: Borrower = (f) => pool.use((connection) => f(makeConnection(connection)))
++    return makeImpl({
+       acquirer: Effect.map(pool.get, makeConnection),
+-      borrower: (f) => pool.use((connection) => f(makeConnection(connection))),
++      // A multiplexed pool hands a statement that `PgConnection.pipelined` claims
++      // to its batch instead of leasing a connection for it; the batch leases one
++      // connection for all of them.
++      borrower: options.multiplex === true
++        ? (f) =>
++          Effect.flatMap(PgConnection.PipelineCapture, (capture) =>
++            capture !== undefined && capture.claim()
++              // A held connection runs statements only; the client sends nothing else through it.
++              ? f(makeConnection(PgConnection.heldConnection(capture, borrow) as PgConnection.PgConnection))
++              : lease(f))
++        : lease,
+       transactionAcquirer: Effect.map(pool.reserve, makeConnection),
+       listenAcquirer: pool.reserve,
+       config: options
+-    }))
++    })
++  })
+ 
+ /**
+  * Creates a scoped PostgreSQL client backed by one connection.
 diff --git a/src/PgConnection.ts b/src/PgConnection.ts
-index 1b01a1d..0beae51 100644
+index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..d15162b49793c768c3f26a4459055458fbc81f9b 100644
 --- a/src/PgConnection.ts
 +++ b/src/PgConnection.ts
-@@ -95,6 +95,13 @@ export interface Config {
+@@ -16,6 +16,7 @@ import * as Deferred from "effect/Deferred"
+ import * as Duration from "effect/Duration"
+ import * as Effect from "effect/Effect"
+ import * as Exit from "effect/Exit"
++import * as Fiber from "effect/Fiber"
+ import * as Queue from "effect/Queue"
+ import * as Redacted from "effect/Redacted"
+ import * as EffectResult from "effect/Result"
+@@ -95,6 +96,13 @@ export interface Config {
     */
    readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined
    readonly connectTimeout?: Duration.Input | undefined
@@ -190,7 +1090,271 @@ index 1b01a1d..0beae51 100644
    /**
     * Overrides `startupParameters.application_name`, the URL's `application_name`,
     * and the default `"@effect/sql-pg"`, in that order.
-@@ -266,7 +273,10 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
+@@ -258,6 +266,263 @@ export interface PgConnection {
+  */
+ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConnection")
+ 
++/**
++ * What a statement gets when it reaches a leased connection that must take no new statement: a
++ * statement there is abandoned on the wire, a cancel is pending, or the connection is retired. The
++ * statement was never sent. A pool that leases connections exclusively (`multiplexConcurrency` 1)
++ * runs the `use` callback it came from again on a fresh lease, but only when nothing of that
++ * callback has been sent yet (`LeaseUse`); otherwise, and on a held connection (`PgPool` `held`),
++ * the statement fails with this error.
++ *
++ * @internal
++ */
++export const refusedStatement: SqlError = new SqlError({
++  reason: new ConnectionError({
++    cause: new Error("The connection takes no new statements"),
++    message: "PgConnection: The connection takes no new statements",
++    operation: "query"
++  })
++})
++
++/**
++ * One run of a `PgPool` `use` callback: whether any statement of it, or of a `use` nested in it,
++ * has been queued or sent. A pool reruns a callback whose statement was refused only while this
++ * is unset, so a callback is never run twice once it has sent anything.
++ *
++ * @internal
++ */
++export interface LeaseUse {
++  sent: boolean
++  readonly parent: LeaseUse | undefined
++}
++
++/**
++ * The `PgPool` `use` callback the current statements belong to, if any.
++ *
++ * @internal
++ */
++export const CurrentLeaseUse = Context.Reference<LeaseUse | undefined>(
++  "@effect/sql-pg/PgConnection/CurrentLeaseUse",
++  { defaultValue: () => undefined }
++)
++
++const markSent = (use: LeaseUse | undefined): void => {
++  for (let current = use; current !== undefined && !current.sent; current = current.parent) current.sent = true
++}
++
++/**
++ * Lends a connection of the pool a {@link pipelined} batch's statements came from, for as long as
++ * `f` runs.
++ *
++ * @internal
++ */
++export type PipelineBorrow = <A, E, R>(
++  f: (connection: PgConnection) => Effect.Effect<A, E, R>
++) => Effect.Effect<A, E | SqlError, R>
++
++/** A leaf's first statement, held for its {@link pipelined} batch. */
++interface HeldStatement {
++  readonly borrow: PipelineBorrow
++  readonly sql: string
++  readonly params: ReadonlyArray<unknown>
++  readonly wantRows: boolean
++  readonly deferred: Deferred.Deferred<QueryOutput, SqlError>
++  readonly index: number
++}
++
++/**
++ * What {@link pipelined} provides each leaf: `claim` takes the leaf's first statement for the batch
++ * (once, and only before the batch is sent); `submit` hands it over and waits for its answer.
++ *
++ * @internal
++ */
++export interface PipelineCaptureService {
++  readonly claim: () => boolean
++  readonly submit: (
++    borrow: PipelineBorrow,
++    sql: string,
++    params: ReadonlyArray<unknown>,
++    wantRows: boolean
++  ) => Effect.Effect<QueryOutput, SqlError>
++}
++
++/**
++ * Set by {@link pipelined} on each of its leaves. A multiplexed pool's
++ * borrower asks it to `claim` a leaf's first statement; a claimed statement is
++ * held, without a pool lease, and leaves the client with the batch. Unset
++ * everywhere else.
++ *
++ * @internal
++ */
++export const PipelineCapture = Context.Reference<PipelineCaptureService | undefined>(
++  "@effect/sql-pg/PipelineCapture",
++  { defaultValue: () => undefined }
++)
++
++/**
++ * The connection a claimed statement runs on, as the client sees it: running
++ * a statement hands it to the batch and waits for the batch's answer.
++ *
++ * @internal
++ */
++export const heldConnection = (
++  capture: PipelineCaptureService,
++  borrow: PipelineBorrow
++): Pick<PgConnection, "query" | "queryValues"> => ({
++  query: (sql, params) => Effect.map(capture.submit(borrow, sql, params ?? emptyParams, true), takeResult),
++  queryValues: (sql, params) => Effect.map(capture.submit(borrow, sql, params ?? emptyParams, false), takeValues)
++})
++
++/**
++ * Runs `leaves` concurrently and sends the first statement of each in one
++ * socket write on one connection of a multiplexed pool.
++ *
++ * - A leaf's first statement is held, without a pool lease, until every leaf
++ *   has issued one or finished. The batch then borrows one connection, queues
++ *   all held statements on it contiguously under the connection's `owner`
++ *   permit, in leaf order, and flushes once. No other statement, and no
++ *   transaction, can be queued between them.
++ * - Leaves before index `outside` run first, each in its own implicit
++ *   transaction. With `begin`, the rest run between `BEGIN <begin>` and
++ *   `COMMIT`, queued in the same step, so they read one snapshot and the
++ *   connection never stays inside the transaction. If `BEGIN` fails, every
++ *   statement after it fails with that error rather than running outside the
++ *   snapshot. A statement that fails inside the transaction aborts it, so every
++ *   later one fails too.
++ * - A leaf's later statements, statements in a transaction, streams, and
++ *   clients without multiplexing run as usual.
++ * - The batch holds its lease until its last statement answers. If it cannot
++ *   borrow a connection, or the connection dies, every held statement fails
++ *   with that error: the leaves' exits carry it and the batch itself succeeds.
++ * - Only statements on the first leaf's client share the batch. A leaf on
++ *   another database client is sent alone on that client, with no `BEGIN`:
++ *   it runs outside the snapshot, without an error (the span counts these as
++ *   `db.pipeline.apart`). A leaf's first statement that does not go through
++ *   the pool's borrower (`reserve`, `withTransaction`) and every later
++ *   statement of a leaf also run outside the batch and its snapshot,
++ *   unrecorded.
++ *
++ * Leaves must be independent: a leaf that waits for another leaf before its
++ * first statement would wait for itself. Returns each leaf's exit, in order.
++ * The `sql.pipeline` span records how many statements went out and in how many
++ * socket writes.
++ *
++ * @since 4.0.0
++ */
++export const pipelined = (
++  leaves: ReadonlyArray<Effect.Effect<unknown, unknown, never>>,
++  options: { readonly outside?: number | undefined; readonly begin?: string | undefined } = {}
++): Effect.Effect<Array<Exit.Exit<unknown, unknown>>> =>
++  Effect.suspend(() => {
++    if (leaves.length === 0) return Effect.succeed([])
++    const outside = options.outside ?? 0
++    const items: Array<HeldStatement> = []
++    let waiting = leaves.length
++    let released = false
++    const release = Deferred.makeUnsafe<void>()
++    const settle = (): void => {
++      waiting--
++      if (waiting === 0) {
++        released = true
++        Deferred.doneUnsafe(release, Exit.void)
++      }
++    }
++    const leaf = (effect: Effect.Effect<unknown, unknown, never>, index: number) => {
++      let claimed = false
++      let settled = false
++      const once = (): void => {
++        if (settled) return
++        settled = true
++        settle()
++      }
++      const capture: PipelineCaptureService = {
++        claim: () => {
++          if (released || claimed) return false
++          claimed = true
++          return true
++        },
++        submit: (borrow, sql, params, wantRows) =>
++          Effect.suspend(() => {
++            const deferred = Deferred.makeUnsafe<QueryOutput, SqlError>()
++            items.push({ borrow, sql, params, wantRows, deferred, index })
++            once()
++            return Deferred.await(deferred)
++          })
++      }
++      return effect.pipe(
++        Effect.provideService(PipelineCapture, capture),
++        Effect.exit,
++        Effect.ensuring(Effect.sync(once))
++      )
++    }
++    const fail = (batch: ReadonlyArray<HeldStatement>, cause: Cause.Cause<SqlError>) =>
++      Effect.sync(() => {
++        for (const item of batch) Deferred.doneUnsafe(item.deferred, Exit.failCause(cause))
++      })
++    // A pool lends the base connection (`PgConnectionImpl`), which queues the batch.
++    const impl = (connection: PgConnection): PgConnectionImpl => connection as PgConnectionImpl
++    const send = (batch: ReadonlyArray<HeldStatement>) =>
++      Effect.gen(function*() {
++        const borrow = batch[0].borrow
++        const together = batch.filter((item) => item.borrow === borrow)
++        // Leaves on another client cannot share the connection: each goes alone.
++        const apart = batch.filter((item) => item.borrow !== borrow)
++        const sent = yield* borrow((connection) =>
++          Effect.flatMap(
++            impl(connection).pipelineBatch(
++              together.filter((item) => item.index < outside),
++              together.filter((item) => item.index >= outside),
++              options.begin
++            ),
++            (entries) =>
++              Effect.as(
++                Effect.forEach(together, (item) => Effect.exit(Deferred.await(item.deferred)), { discard: true }),
++                entries
++              )
++          )
++        ).pipe(
++          // A batch that cannot borrow a connection, or whose connection dies, fails every held
++          // statement with that error; the leaves' exits carry it, and the batch itself still
++          // returns them, as its type says.
++          Effect.onError((cause) => fail(together, cause)),
++          Effect.catch(() => Effect.succeed<ReadonlyArray<PipelineEntry>>([]))
++        )
++        yield* Effect.forEach(
++          apart,
++          (item) =>
++            item.borrow((connection) =>
++              Effect.andThen(
++                impl(connection).pipelineBatch([item], [], undefined),
++                Effect.exit(Deferred.await(item.deferred))
++              )
++            ).pipe(
++              Effect.onError((cause) => fail([item], cause)),
++              Effect.catch(() => Effect.void)
++            ),
++          { concurrency: "unbounded", discard: true }
++        )
++        yield* Effect.annotateCurrentSpan({
++          "db.pipeline.leaves": leaves.length,
++          "db.pipeline.statements": sent.length,
++          "db.pipeline.writes": new Set(sent.map((entry) => entry.write)).size,
++          "db.pipeline.bytes": sent.reduce((total, entry) => total + entry.plan.frame.byteLength, 0),
++          "db.pipeline.apart": apart.length
++        })
++      }).pipe(Effect.withSpan("sql.pipeline", { kind: "client" }))
++    return Effect.gen(function*() {
++      const fibers: Array<Fiber.Fiber<Exit.Exit<unknown, unknown>>> = []
++      for (let i = 0; i < leaves.length; i++) fibers.push(yield* Effect.forkChild(leaf(leaves[i], i)))
++      yield* Deferred.await(release)
++      if (items.length > 0) {
++        items.sort((a, b) => a.index - b.index)
++        yield* send(items)
++      }
++      const exits: Array<Exit.Exit<unknown, unknown>> = []
++      for (const fiber of fibers) exits.push(yield* Fiber.join(fiber))
++      return exits
++    })
++  })
++
+ /**
+  * Connects and authenticates a single PostgreSQL session.
+  *
+@@ -266,7 +531,10 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
   * Password resolution, transport, optional `SSLRequest`, startup, and
   * authentication run under `connectTimeout` (5 seconds by default). The effect
   * resolves when the backend sends `ReadyForQuery`. Closing the scope sends
@@ -202,7 +1366,7 @@ index 1b01a1d..0beae51 100644
   *
   * Use `sslmode=require` or explicit `ssl: true` to require encryption.
   * Unix sockets and custom streams should set `ssl.servername` explicitly.
-@@ -275,30 +285,48 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
+@@ -275,30 +543,48 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
   * @since 4.0.0
   */
  export const make = (options: Config): Effect.Effect<PgConnection, SqlError, Scope.Scope> =>
@@ -239,7 +1403,7 @@ index 1b01a1d..0beae51 100644
 +          }))
 +          return new PgConnectionImpl(options, config, session, options.types)
 +        }),
-+        (connection) => Effect.sync(() => connection.closeUnsafe()),
++        (connection) => connection.close,
 +        { interruptible: true }
 +      ).pipe(
 +        Effect.timeoutOrElse({
@@ -274,7 +1438,423 @@ index 1b01a1d..0beae51 100644
  
  interface Session {
    readonly socket: Duplex
-@@ -1518,7 +1546,7 @@ const runQuery = (
+@@ -324,8 +610,20 @@ interface PipelineEntry {
+   readonly deferred: Deferred.Deferred<QueryOutput, SqlError>
+   readonly machine: QueryMachine
+   abandoned: boolean
++  /** Which socket write sent it (a {@link pipelined} batch's span counts them); unset until sent. */
++  write?: number | undefined
+ }
+ 
++/**
++ * How long a pool waits, after its holder gave a connection back, for statements written on it that
++ * nobody abandoned (in practice a batch's read-only `COMMIT`, which nobody awaits) before it cancels
++ * them and closes the connection as broken. Such a statement takes milliseconds and cannot wait on a
++ * lock, so it outlives this only on a socket that went silent without an error, where it would
++ * otherwise keep the connection checked out (and counted toward the pool's limit) indefinitely. 30 s
++ * is several thousand times its normal duration and longer than any statement the session objects
++ * await, so it never cuts a working statement short; it only bounds how long a dead socket is kept.
++ */
++const unawaitedSettleTimeoutMillis = 30_000
+ const abortDrainTimeoutMillis = 5000
+ const abortDrainGraceMillis = 10
+ /** PostgreSQL `query_canceled` SQLSTATE. */
+@@ -356,6 +654,7 @@ class PgConnectionImpl implements PgConnection {
+   deadWith: SqlError | undefined
+   closed = false
+   cancelPending = false
++  retired = false
+   readonly channels = new Map<string, Set<Queue.Queue<Notification, SqlError>>>()
+   readonly retireHooks = new Set<() => void>()
+   /** Queued but not yet written; drained into `pipelineInFlight` on flush. */
+@@ -364,7 +663,18 @@ class PgConnectionImpl implements PgConnection {
+   readonly pipelineInFlight: Array<PipelineEntry> = []
+   pipelineHead = 0
+   pipelineFlushScheduled = false
++  /** Socket writes of pipelined statements so far; each entry records its own. */
++  writes = 0
+   readonly pipelineIdleWaiters = new Set<() => void>()
++  /** Woken whenever a statement on the wire finishes, or the pipeline empties or dies. */
++  readonly pipelineProgressWaiters = new Set<() => void>()
++  /**
++   * Set by a pool that leases this connection to one holder at a time: then an abandoned
++   * statement leaves the connection to its holder to settle (`settle`) instead of retiring it.
++   */
++  exclusive = false
++  /** How many `PgPool` holds have this connection. */
++  held = 0
+   readonly pinnedView: PgConnection
+   readonly [internalsKey]: ConnectionInternals
+ 
+@@ -381,7 +691,24 @@ class PgConnectionImpl implements PgConnection {
+     this[internalsKey] = {
+       base: this,
+       deadError: () => this.deadWith,
+-      retireHooks: this.retireHooks
++      retireHooks: this.retireHooks,
++      retired: () => this.retired,
++      refusing: () => this.refusing(),
++      settle: Effect.suspend(() => this.settle),
++      setExclusive: () => {
++        this.exclusive = true
++      },
++      hold: () => {
++        this.held++
++        return () => {
++          this.held--
++        }
++      },
++      held: () => this.held > 0,
++      idle: () => this.deadWith !== undefined || this.pipelineIsIdle(),
++      abandonOutstanding: () => {
++        for (const entry of this.outstanding()) entry.abandoned = true
++      }
+     }
+     this.pinnedView = new PinnedPgConnection(this)
+     session.socket.on("data", this.onData)
+@@ -474,6 +801,7 @@ class PgConnectionImpl implements PgConnection {
+   }
+ 
+   private retire(): void {
++    this.retired = true
+     if (this.closed) return
+     for (const hook of this.retireHooks) hook()
+   }
+@@ -548,7 +876,22 @@ class PgConnectionImpl implements PgConnection {
+ 
+   private readonly pipelineIsIdle = (): boolean => this.pipelineDepth() === 0 && this.pipelinePending.length === 0
+ 
++  private readonly notifyPipelineProgress = (): void => {
++    const waiters = Array.from(this.pipelineProgressWaiters)
++    this.pipelineProgressWaiters.clear()
++    for (const waiter of waiters) waiter()
++  }
++
++  /** Resolves once a statement on the wire finishes, or the pipeline empties or dies. */
++  private readonly waitPipelineProgress: Effect.Effect<void> = Effect.callback((resume) => {
++    if (this.deadWith !== undefined || this.pipelineIsIdle()) return resume(Effect.void)
++    const waiter = () => resume(Effect.void)
++    this.pipelineProgressWaiters.add(waiter)
++    return Effect.sync(() => this.pipelineProgressWaiters.delete(waiter))
++  })
++
+   private readonly notifyPipelineIdle = (): void => {
++    this.notifyPipelineProgress()
+     if (!this.pipelineIsIdle()) return
+     this.consumer = undefined
+     this.session.parser.readField = undefined
+@@ -584,6 +927,7 @@ class PgConnectionImpl implements PgConnection {
+       this.pipelineInFlight.length = 0
+       this.pipelineHead = 0
+     }
++    this.notifyPipelineProgress()
+   }
+ 
+   /** Writes everything queued since the last flush as one batch. */
+@@ -616,6 +960,8 @@ class PgConnectionImpl implements PgConnection {
+     const frame = batch.length === 1
+       ? batch[0].plan.frame
+       : concat(batch.map((entry) => entry.plan.frame))
++    const write = ++this.writes
++    for (const entry of batch) entry.write = write
+     try {
+       this.session.socket.write(frame)
+     } catch (cause) {
+@@ -630,6 +976,128 @@ class PgConnectionImpl implements PgConnection {
+     queueMicrotask(this.flushPipeline)
+   }
+ 
++  /** Statements on the wire, oldest first, followed by those still queued. */
++  private readonly outstanding = (): Array<PipelineEntry> => [
++    ...this.pipelineInFlight.slice(this.pipelineHead),
++    ...this.pipelinePending
++  ]
++
++  /** Whether a statement still on the wire was abandoned by its caller. */
++  private readonly abandonedOnWire = (): boolean => {
++    for (let index = this.pipelineHead; index < this.pipelineInFlight.length; index++) {
++      if (this.pipelineInFlight[index].abandoned) return true
++    }
++    return false
++  }
++
++  /**
++   * Whether a new statement must not be queued here: one on the wire was abandoned (anything
++   * queued behind it would wait for it), a cancel is pending (it could reach the new statement),
++   * or the connection is retired.
++   */
++  private readonly refusing = (): boolean => this.retired || this.cancelPending || this.abandonedOnWire()
++
++  /**
++   * A caller gave up on its statement. Still queued, it is dropped at the next flush. Already on
++   * the wire, it keeps running. On a connection leased to one holder at a time (`exclusive`), the
++   * connection takes no new statement while it runs (`refusing`), and the pool settles it before
++   * the connection goes back (`settle`): cancelled once nothing outstanding is awaited, then
++   * drained and kept, as a connection that runs one statement at a time does. On a connection
++   * shared by several holders, nothing tells who still awaits what, so it retires instead: the
++   * pool sends it no new statement and closes it once its last user is done, and when nothing
++   * left on the wire is awaited the backend is asked to cancel what remains.
++   */
++  private readonly abandon = (entry: PipelineEntry): Effect.Effect<void> =>
++    Effect.suspend(() => {
++      entry.abandoned = true
++      if (
++        this.exclusive || this.deadWith !== undefined ||
++        !this.pipelineInFlight.includes(entry, this.pipelineHead)
++      ) {
++        return Effect.void
++      }
++      this.retire()
++      return this.outstanding().every((outstanding) => outstanding.abandoned) ? this.cancel : Effect.void
++    })
++
++  /**
++   * Makes the connection idle before its holder gives it back. Statements nobody abandoned (a
++   * batch's unawaited `COMMIT`) are waited for as a caller waits for its own statement on a
++   * connection that runs one at a time, up to `unawaitedSettleTimeoutMillis` (30 s): only then are
++   * they cancelled and the connection closed as broken (`Unawaited statement timed out`), since a
++   * cancel would hit them too. Once everything outstanding is abandoned, after the same short grace
++   * as an interrupted exclusive statement, the backend is asked to cancel the one running, again
++   * for each that follows, until the pipeline is empty. A cancel that arrives after its statement
++   * finished retires the connection (`cancelPending`), as without pipelining; then nothing more is
++   * sent and the pool closes it. If the cancelled statements have not drained
++   * `abortDrainTimeoutMillis` after the first cancel, the connection is closed as broken with
++   * main's `Query cancellation timed out`, as `drainAborted` does.
++   */
++  readonly settle: Effect.Effect<void> = Effect.suspend(() => {
++    if (this.deadWith !== undefined || this.pipelineIsIdle()) return Effect.void
++    const finished = () => this.deadWith !== undefined || this.pipelineIsIdle() || this.retired
++    const cancelling: Effect.Effect<void> = Effect.suspend(() =>
++      finished() ? Effect.void : Effect.andThen(
++        this.cancelPending ? this.waitPipelineProgress : Effect.andThen(this.cancel, this.waitPipelineProgress),
++        cancelling
++      )
++    )
++    const unabandoned: Effect.Effect<void> = Effect.suspend(() =>
++      finished() || this.outstanding().every((entry) => entry.abandoned)
++        ? Effect.void
++        : Effect.andThen(this.waitPipelineProgress, unabandoned)
++    )
++    const waiting: Effect.Effect<void> = Effect.andThen(
++      unabandoned.pipe(
++        Effect.timeoutOrElse({
++          duration: Duration.millis(unawaitedSettleTimeoutMillis),
++          orElse: () =>
++            Effect.andThen(
++              this.cancel,
++              Effect.sync(() =>
++                this.fatal(connectionQueryError(
++                  new Error("Unawaited statement timed out"),
++                  "PgConnection: Unawaited statement timed out"
++                ))
++              )
++            )
++        })
++      ),
++      Effect.suspend(() =>
++        finished() ? Effect.void : cancelling.pipe(
++          Effect.timeoutOrElse({
++            duration: Duration.millis(abortDrainTimeoutMillis),
++            orElse: () =>
++              Effect.sync(() =>
++                this.fatal(connectionQueryError(
++                  new Error("Query cancellation timed out"),
++                  "PgConnection: Query cancellation timed out"
++                ))
++              )
++          })
++        )
++      )
++    )
++    const grace = Effect.callback<void>((resume) => {
++      const timer = setTimeout(() => resume(Effect.void), abortDrainGraceMillis)
++      return Effect.sync(() => clearTimeout(timer))
++    })
++    return Effect.andThen(Effect.raceFirst(this.waitPipelineIdle, grace), waiting)
++  })
++
++  /**
++   * Closes the session. Statements still outstanding on a multiplexed
++   * connection have no caller left (a pool closes a connection once nobody
++   * holds it), so they are cancelled on the server first rather than left
++   * running there.
++   */
++  readonly close: Effect.Effect<void> = Effect.suspend(() =>
++    Effect.andThen(
++      this.deadWith === undefined && !this.pipelineIsIdle() ? this.cancel : Effect.void,
++      Effect.sync(() => this.closeUnsafe())
++    )
++  )
++
+   /**
+    * One cycle on a multiplexed connection. The `owner` permit is only taken to
+    * queue the statement, so a pin still orders against submissions without
+@@ -640,10 +1108,22 @@ class PgConnectionImpl implements PgConnection {
+     params: ReadonlyArray<unknown>,
+     wantRows: boolean,
+     cache: PreparedCache | undefined
++  ): Effect.Effect<QueryOutput, SqlError> =>
++    Effect.flatMap(CurrentLeaseUse, (use) => this.pipelineQueue(sql, params, wantRows, cache, use))
++
++  private readonly pipelineQueue = (
++    sql: string,
++    params: ReadonlyArray<unknown>,
++    wantRows: boolean,
++    cache: PreparedCache | undefined,
++    use: LeaseUse | undefined
+   ): Effect.Effect<QueryOutput, SqlError> =>
+     Effect.flatMap(
+       this.owner.withPermit(Effect.suspend(() => {
+         if (this.deadWith !== undefined) return Effect.fail(this.deadWith)
++        // Checked where the statement is queued, so nothing slips in after an abandonment or a
++        // cancel; the statement has not been sent, so the pool can run it elsewhere.
++        if (this.exclusive && this.refusing()) return Effect.fail(refusedStatement)
+         let plan: Plan
+         try {
+           plan = this.encodeQuery(sql, params, cache)
+@@ -655,20 +1135,17 @@ class PgConnectionImpl implements PgConnection {
+         const machine = new QueryMachine(this, plan, wantRows, (result) => this.finishPipelineEntry(entry, result))
+         entry = { plan, deferred, machine, abandoned: false }
+         this.pipelinePending.push(entry)
++        markSent(use)
+         this.consumer = this.pipelineConsumer
+         this.schedulePipelineFlush()
+         return Effect.succeed(entry)
+       })),
+       (entry) => {
+         const awaited = Deferred.await(entry.deferred).pipe(
+-          Effect.onInterrupt(() =>
+-            Effect.sync(() => {
+-              entry.abandoned = true
+-            })
+-          )
++          Effect.onInterrupt(() => this.abandon(entry))
+         )
+         if (cache === undefined || entry.plan.parses) return awaited
+-        return retryStale(entry.plan, cache, awaited, () => this.pipelineCycle(sql, params, wantRows, undefined))
++        return retryStale(entry.plan, cache, awaited, () => this.pipelineQueue(sql, params, wantRows, undefined, use))
+       }
+     )
+ 
+@@ -693,7 +1170,11 @@ class PgConnectionImpl implements PgConnection {
+     params: ReadonlyArray<unknown>,
+     wantRows: boolean,
+     cache: PreparedCache | undefined
+-  ): Effect.Effect<QueryOutput, SqlError> => Effect.suspend(() => this.attempt(sql, params, wantRows, cache))
++  ): Effect.Effect<QueryOutput, SqlError> =>
++    Effect.flatMap(CurrentLeaseUse, (use) => {
++      markSent(use)
++      return this.attempt(sql, params, wantRows, cache)
++    })
+ 
+   /**
+    * Runs one cycle. A reused statement the backend has since dropped, or whose
+@@ -764,6 +1245,104 @@ class PgConnectionImpl implements PgConnection {
+       : this.owner.withPermit(this.cycleOwned(sql, params, wantRows, cache))
+   }
+ 
++  /**
++   * Queues a {@link pipelined} batch contiguously and schedules one flush:
++   * `outside` first, then `inside`, wrapped in `BEGIN <begin>` / `COMMIT` when
++   * `begin` is set. Everything is queued in one synchronous step under the
++   * `owner` permit, which every other submission and every `pin` takes first,
++   * so nothing can land between `BEGIN` and `COMMIT`. These entries are never
++   * abandoned: `COMMIT` always goes out once `BEGIN` has. Returns the entries.
++   *
++   * A batch with `BEGIN` refuses (a defect) unless a `PgPool.held` hold has the
++   * connection (`isHeld`): nobody awaits its `COMMIT`, and only a hold keeps
++   * the connection to the batch until `COMMIT` has answered, with no other
++   * caller's statement on it meanwhile. On a connection that takes no new
++   * statements (`refusing`), nothing is queued and every statement fails with
++   * `refusedStatement`, so no cancel meant for another statement can reach it.
++   */
++  readonly pipelineBatch = (
++    outside: ReadonlyArray<HeldStatement>,
++    inside: ReadonlyArray<HeldStatement>,
++    begin: string | undefined
++  ): Effect.Effect<ReadonlyArray<PipelineEntry>> =>
++    this.owner.withPermit(Effect.suspend(() => {
++      if (begin !== undefined && inside.length > 0 && this.held === 0) {
++        return Effect.die(new Error("PgConnection: a BEGIN … COMMIT batch must run inside PgPool.held"))
++      }
++      if (this.exclusive && this.refusing()) {
++        for (const item of [...outside, ...inside]) Deferred.doneUnsafe(item.deferred, Effect.fail(refusedStatement))
++        return Effect.succeed([])
++      }
++      return Effect.sync(() => this.pipelineBatchUnsafe(outside, inside, begin))
++    }))
++
++  private readonly pipelineBatchUnsafe = (
++    outside: ReadonlyArray<HeldStatement>,
++    inside: ReadonlyArray<HeldStatement>,
++    begin: string | undefined
++  ): ReadonlyArray<PipelineEntry> => {
++    const entries: Array<PipelineEntry> = []
++    let began: Effect.Effect<QueryOutput, SqlError> | undefined
++    const enqueue = (
++      sql: string,
++      params: ReadonlyArray<unknown>,
++      wantRows: boolean,
++      deferred: Deferred.Deferred<QueryOutput, SqlError>,
++      gated: boolean,
++      onDone?: (result: Effect.Effect<QueryOutput, SqlError>) => void
++    ): boolean => {
++      if (this.deadWith !== undefined) {
++        Deferred.doneUnsafe(deferred, Effect.fail(this.deadWith))
++        return false
++      }
++      let plan: Plan
++      try {
++        plan = this.encodeQuery(sql, params, undefined)
++      } catch (cause) {
++        Deferred.doneUnsafe(deferred, Effect.fail(queryError(cause, "PgConnection: Failed to encode query")))
++        return false
++      }
++      let entry: PipelineEntry
++      const machine = new QueryMachine(this, plan, wantRows, (result) => {
++        onDone?.(result)
++        // A statement behind a failed BEGIN would run outside the snapshot.
++        this.finishPipelineEntry(
++          entry,
++          gated && began !== undefined && Exit.isExit(began) && Exit.isFailure(began) ? began : result
++        )
++      })
++      entry = { plan, deferred, machine, abandoned: false, write: undefined }
++      this.pipelinePending.push(entry)
++      entries.push(entry)
++      return true
++    }
++    for (const item of outside) enqueue(item.sql, item.params, item.wantRows, item.deferred, false)
++    const wrap = begin !== undefined && inside.length > 0
++    if (
++      wrap &&
++      !enqueue(`BEGIN ${begin}`, emptyParams, false, Deferred.makeUnsafe(), false, (result) => {
++        began = result
++      })
++    ) {
++      for (const item of inside) {
++        Deferred.doneUnsafe(
++          item.deferred,
++          Effect.fail(
++            this.deadWith ?? queryError(new Error("BEGIN could not be queued"), "PgConnection: BEGIN could not be queued")
++          )
++        )
++      }
++      this.consumer = this.pipelineConsumer
++      this.schedulePipelineFlush()
++      return entries
++    }
++    for (const item of inside) enqueue(item.sql, item.params, item.wantRows, item.deferred, wrap)
++    if (wrap) enqueue("COMMIT", emptyParams, false, Deferred.makeUnsafe(), false)
++    this.consumer = this.pipelineConsumer
++    this.schedulePipelineFlush()
++    return entries
++  }
++
+   readonly query = (sql: string, params?: ReadonlyArray<unknown>, prepare = true): Effect.Effect<Result, SqlError> =>
+     Effect.map(this.run(sql, params ?? emptyParams, true, prepare), takeResult)
+ 
+@@ -1518,7 +2097,7 @@ const runQuery = (
    plan: Plan,
    wantRows: boolean
  ): Effect.Effect<QueryOutput, SqlError> =>
@@ -283,7 +1863,7 @@ index 1b01a1d..0beae51 100644
      if (conn.deadWith !== undefined) {
        resume(Effect.fail(conn.deadWith))
        return
-@@ -1527,12 +1555,30 @@ const runQuery = (
+@@ -1527,12 +2106,30 @@ const runQuery = (
        conn.consumer = undefined
        resume(effect)
      })
@@ -316,7 +1896,7 @@ index 1b01a1d..0beae51 100644
      } catch (cause) {
        conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
      }
-@@ -1545,7 +1591,7 @@ const runQuery = (
+@@ -1545,7 +2142,7 @@ const runQuery = (
            onDrained()
          }))
      })
@@ -325,3 +1905,362 @@ index 1b01a1d..0beae51 100644
  
  /** Turns one decoded row into an object keyed by column name. */
  type RowBuilder = (rowValues: ReadonlyArray<unknown>) => Row
+diff --git a/src/PgPool.ts b/src/PgPool.ts
+index c3d75942c1c1e8a03b3876160a2830983af9113e..72200f290aeef967b4b38f65d014b2d4724f1840 100644
+--- a/src/PgPool.ts
++++ b/src/PgPool.ts
+@@ -7,8 +7,11 @@ import * as Clock from "effect/Clock"
+ import * as Context from "effect/Context"
+ import * as Duration from "effect/Duration"
+ import * as Effect from "effect/Effect"
++import * as Cause from "effect/Cause"
++import * as Deferred from "effect/Deferred"
++import * as Exit from "effect/Exit"
+ import * as Pool from "effect/Pool"
+-import type * as Scope from "effect/Scope"
++import * as Scope from "effect/Scope"
+ import type { SqlError } from "effect/sql/SqlError"
+ import { connectionInternals } from "./internal/connection.ts"
+ import * as PgConnection from "./PgConnection.ts"
+@@ -94,6 +97,12 @@ export interface PgPool {
+    *
+    * For work that finishes with the effect that runs it. A lease that has to
+    * outlive its effect - a stream, a transaction - takes `get` or `reserve`.
++   *
++   * On a pool that leases connections exclusively, a statement the leased
++   * connection refuses was never sent (`refusedStatement`). Then `f` runs again
++   * on a fresh lease, but only if nothing of this run of `f` (nested `use`s
++   * included) had been queued or sent; otherwise, and inside {@link held}, the
++   * refusal fails `use`, so `f` never runs twice once it has sent anything.
+    */
+   readonly use: <A, E, R>(
+     f: (connection: PgConnection.PgConnection) => Effect.Effect<A, E, R>
+@@ -109,6 +118,114 @@ export interface PgPool {
+  */
+ export const PgPool = Context.Service<PgPool>("@effect/sql-pg/PgPool")
+ 
++/**
++ * One unit of work's claim on a multiplexed pool: the statements it has in flight at the same
++ * time share one connection, which carries nothing else meanwhile. See {@link grouped}.
++ *
++ * @category models
++ * @since 4.0.0
++ */
++export interface StatementGroup {
++  readonly leases: Map<object, GroupLease>
++  /** Set by {@link held}: the group keeps its connection until it ends, and never moves. */
++  readonly held: boolean
++}
++
++interface GroupLease {
++  /** Statements of the group in flight on, or waiting for, this lease. */
++  refs: number
++  readonly scope: Scope.Closeable
++  /** How opening went; `undefined` when the opener gave up first and a waiter should try again. */
++  readonly connection: Deferred.Deferred<Exit.Exit<PgConnection.PgConnection, SqlError> | undefined>
++  /** Set once the lease has its connection. */
++  opened: PgConnection.PgConnection | undefined
++  /** A held group's end: gives the lease back once its statements are done. */
++  end: ((interrupted: boolean) => Effect.Effect<void>) | undefined
++}
++
++/**
++ * The group the current statements belong to, if any. Set by {@link grouped}.
++ *
++ * @category services
++ * @since 4.0.0
++ */
++export const CurrentStatementGroup = Context.Reference<StatementGroup | undefined>(
++  "@effect/sql-pg/PgPool/CurrentStatementGroup",
++  { defaultValue: () => undefined }
++)
++
++/**
++ * Runs `effect` as one statement group. On a multiplexed pool, the statements it has in flight at
++ * the same time go out together on one connection that no other statement uses until they have
++ * all finished, so a statement of the group can only ever wait behind the group's own. The
++ * connection goes back to the pool whenever the group has no statement in flight. Transactions,
++ * streams and listeners inside the group still reserve a connection of their own. Without
++ * multiplexing every statement has a connection to itself anyway, and this changes nothing.
++ *
++ * @category combinators
++ * @since 4.0.0
++ */
++export const grouped = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
++  Effect.flatMap(CurrentStatementGroup, (current) =>
++    // Inside a held group a nested group would move its statements off the held connection.
++    current?.held === true
++      ? effect
++      : Effect.provideService(effect, CurrentStatementGroup, { leases: new Map(), held: false }))
++
++/**
++ * Runs `effect` as one statement group that holds its connection: the first statement opens the
++ * lease and every later statement of `effect`, in any of its fibers, goes to that same connection
++ * or fails; none is ever moved to another connection, not even when the connection stops taking
++ * statements (an abandoned statement, a pending cancel, retirement). Groups and holds nested
++ * inside are part of the outer hold and stay on its connection. Transactions, streams and
++ * listeners inside it (`reserve`, `pin`) still take a connection of their own, as in any group.
++ *
++ * The connection carries nothing else meanwhile and goes back only when `effect` has ended and
++ * every statement written on it has finished, whether or not anyone awaited it, so work that
++ * pipelines statements nobody awaits (`BEGIN` … `COMMIT`) cannot release it early. A statement
++ * nobody abandoned is waited for up to 30 seconds after `effect` returned (such a statement takes
++ * milliseconds; only a socket that went silent outlives it), then cancelled, and the connection is
++ * closed as broken (`Unawaited statement timed out`). If `effect` is interrupted, every
++ * statement still outstanding on the connection is abandoned, then cancelled and drained before
++ * the connection goes back; if the cancelled statements have not drained 5 seconds after the
++ * first cancel, the connection is closed as broken (`Query cancellation timed out`). The settling
++ * runs after `effect` has returned, so neither `held` nor a statement of it waits for it.
++ *
++ * Only on a pool that leases connections exclusively (`multiplex` with `multiplexConcurrency` 1)
++ * does this hold anything, and only there is {@link isHeld} true for the connection; elsewhere it
++ * runs `effect` as {@link grouped} would and {@link isHeld} stays false, so a writer that needs a
++ * held connection refuses there.
++ *
++ * @category combinators
++ * @since 4.0.0
++ */
++export const held = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
++  Effect.flatMap(CurrentStatementGroup, (current) => {
++    // A hold inside a hold is part of it: a new group would lease a second connection.
++    if (current?.held === true) return effect
++    const group: StatementGroup = { leases: new Map(), held: true }
++    return Effect.onExit(
++      Effect.provideService(effect, CurrentStatementGroup, group),
++      (exit) =>
++        Effect.forEach(
++          Array.from(group.leases.values()),
++          (lease) => lease.end?.(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)) ?? Effect.void,
++          { discard: true }
++        )
++    )
++  })
++
++/**
++ * Whether `connection` is held by {@link held} right now. Code that writes statements nobody
++ * awaits, or relies on several statements sharing one connection, checks this first. Always false
++ * on a pool that does not lease connections exclusively, where another caller's statements can
++ * share the connection.
++ *
++ * @category guards
++ * @since 4.0.0
++ */
++export const isHeld = (connection: PgConnection.PgConnection): boolean => connectionInternals(connection).held()
++
+ /**
+  * Creates a scoped PostgreSQL session pool.
+  *
+@@ -126,6 +243,11 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+   const runFork = Effect.runForkWith(yield* Effect.context())
+ 
+   const multiplex = options.multiplex ?? false
++  const concurrency = multiplex ? Math.max(1, options.multiplexConcurrency ?? defaultMultiplexConcurrency) : 1
++  // A multiplexed pool that leases each connection to one holder at a time: a holder's statements
++  // may pipeline, and nobody else's are on the connection, so the pool can tell when nobody awaits
++  // what is outstanding on it.
++  const exclusive = multiplex && concurrency === 1
+   const connectionTTL = options.connectionTTL !== undefined
+     ? Duration.toMillis(Duration.fromInputUnsafe(options.connectionTTL))
+     : undefined
+@@ -150,6 +272,7 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+       // Pinning a shared session has to take it out of circulation, or a
+       // second checkout lands on the connection its own stream is holding.
+       if (multiplex) internals.reserve = Pool.reserve(pool, connection)
++      if (exclusive) internals.setExclusive()
+     }))
+ 
+   const maxConnections = options.maxConnections ?? 10
+@@ -157,9 +280,7 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+     acquire,
+     min: options.minConnections ?? 0,
+     max: maxConnections,
+-    concurrency: multiplex
+-      ? Math.max(1, options.multiplexConcurrency ?? defaultMultiplexConcurrency)
+-      : 1,
++    concurrency,
+     timeToLive: options.idleTimeout ?? Duration.seconds(60),
+     timeToLiveStrategy: "usage"
+   })
+@@ -204,16 +325,149 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+   // `pin` reserves the pool item itself, so this needs no help.
+   const reserve = Effect.flatMap(get, (connection) => connection.pin)
+ 
++  // An exclusive lease goes back only once nothing is outstanding on its connection: what its
++  // holder abandoned is cancelled and drained, as an interrupted statement is on a connection that
++  // runs one at a time, and the connection is kept (`settle`).
++  const lent: Effect.Effect<PgConnection.PgConnection, SqlError, Scope.Scope> = exclusive
++    ? Effect.tap(get, (connection) => Effect.addFinalizer(() => connectionInternals(connection).settle))
++    : get
++
+   // `Pool.use` cannot pre-check a session. Use it only when no TTL applies and
+   // no connection awaits retirement. Checking inside its callback can deadlock
+   // a size-one pool while acquiring a replacement.
+-  const use = <A, E, R>(
++  const useAny = <A, E, R>(
+     f: (connection: PgConnection.PgConnection) => Effect.Effect<A, E, R>
+   ): Effect.Effect<A, E | SqlError, R> =>
+     Effect.suspend(() =>
+-      connectionTTL === undefined && deadConnections.size === 0
++      !exclusive && connectionTTL === undefined && deadConnections.size === 0
+         ? Pool.use(pool, f)
+-        : Effect.scoped(Effect.flatMap(get, f))
++        : Effect.scoped(Effect.flatMap(lent, f))
++    )
++
++  // Identifies this pool among the leases a group holds.
++  const groupKey = {}
++
++  // Closing an exclusive lease settles its connection first (`lent`). When something is still
++  // outstanding on it - a statement a sibling abandoned, an unawaited `COMMIT` - that runs in the
++  // background: whichever statement of the group released last already has its result and must
++  // not wait for another's drain. The connection stays checked out, and counts toward the pool's
++  // limit, until it has settled.
++  const closeLease = (group: StatementGroup, lease: GroupLease): Effect.Effect<void> =>
++    Effect.suspend(() => {
++      if (group.leases.get(groupKey) === lease) group.leases.delete(groupKey)
++      const close = Scope.close(lease.scope, Exit.void)
++      if (exclusive && lease.opened !== undefined && !connectionInternals(lease.opened).idle()) {
++        runFork(close)
++        return Effect.void
++      }
++      return close
++    })
++
++  const releaseLease = (group: StatementGroup, lease: GroupLease): Effect.Effect<void> =>
++    Effect.suspend(() => {
++      lease.refs--
++      // A held group keeps its lease between statements; its end gives it back.
++      if (lease.refs > 0 || lease.end !== undefined) return Effect.void
++      return closeLease(group, lease)
++    })
++
++  // The group's connection, opened by its first statement in flight; the others wait for it. A
++  // connection that takes no new statement (an abandoned statement on the wire, a pending cancel,
++  // retirement) is left to the statements still on it, and the next one takes a fresh lease;
++  // a held group's statements stay and fail instead. Every exit that does not hand the caller a
++  // connection gives its reference back.
++  // Only an exclusive pool can hold: elsewhere other callers share the connection.
++  const holds = (group: StatementGroup): boolean => exclusive && group.held
++
++  const lease = (
++    group: StatementGroup
++  ): Effect.Effect<readonly [GroupLease, PgConnection.PgConnection], SqlError> =>
++    Effect.suspend(() => {
++      const current = group.leases.get(groupKey)
++      if (current !== undefined) {
++        const opened = current.opened
++        if (opened === undefined || holds(group) || !connectionInternals(opened).refusing()) {
++          current.refs++
++          return Deferred.await(current.connection).pipe(
++            Effect.onInterrupt(() => releaseLease(group, current)),
++            Effect.flatMap((opened) => {
++              if (opened !== undefined && Exit.isSuccess(opened)) return Effect.succeed([current, opened.value] as const)
++              // The opener failed to connect, or gave up first: then try again rather than inherit its fate.
++              return Effect.andThen(
++                releaseLease(group, current),
++                opened === undefined ? lease(group) : Effect.failCause(opened.cause)
++              )
++            })
++          )
++        }
++        group.leases.delete(groupKey)
++      }
++      const opening: GroupLease = {
++        refs: 1,
++        scope: Scope.makeUnsafe(),
++        connection: Deferred.makeUnsafe(),
++        opened: undefined,
++        end: undefined
++      }
++      group.leases.set(groupKey, opening)
++      return Scope.provide(lent, opening.scope).pipe(
++        Effect.onExit((exit) =>
++          Effect.suspend(() => {
++            if (Exit.isSuccess(exit)) {
++              opening.opened = exit.value
++              if (holds(group)) {
++                const internals = connectionInternals(exit.value)
++                const unhold = internals.hold()
++                let ended = false
++                opening.end = (interrupted) =>
++                  Effect.suspend(() => {
++                    if (ended) return Effect.void
++                    ended = true
++                    unhold()
++                    // Nobody is left to await what an interrupted holder wrote.
++                    if (interrupted) internals.abandonOutstanding()
++                    opening.end = undefined
++                    return opening.refs > 0 ? Effect.void : closeLease(group, opening)
++                  })
++              }
++              return Deferred.succeed(opening.connection, exit)
++            }
++            if (group.leases.get(groupKey) === opening) group.leases.delete(groupKey)
++            const opened = Cause.hasInterruptsOnly(exit.cause) ? undefined : exit
++            return Effect.andThen(Deferred.succeed(opening.connection, opened), releaseLease(group, opening))
++          })
++        ),
++        Effect.map((connection) => [opening, connection] as const)
++      )
++    })
++
++  // A statement refused where it was queued was never sent (`refusedStatement`). If nothing else
++  // of this run of `f` was sent either, `f` runs again on a fresh lease; once `f` has sent a
++  // statement, rerunning it would send that statement twice, so the refusal fails `f` instead. A
++  // held group's statement always fails instead of moving.
++  const use = <A, E, R>(
++    f: (connection: PgConnection.PgConnection) => Effect.Effect<A, E, R>
++  ): Effect.Effect<A, E | SqlError, R> =>
++    Effect.flatMap(
++      Effect.zip(CurrentStatementGroup, PgConnection.CurrentLeaseUse),
++      ([group, parent]): Effect.Effect<A, E | SqlError, R> => {
++        if (!exclusive && (group === undefined || !multiplex)) return useAny(f)
++        const run: PgConnection.LeaseUse = { sent: false, parent }
++        const rerun = (error: E | SqlError): error is SqlError =>
++          error === PgConnection.refusedStatement && !run.sent && !(group !== undefined && holds(group))
++        const tracked = (connection: PgConnection.PgConnection) =>
++          Effect.provideService(f(connection), PgConnection.CurrentLeaseUse, run)
++        return Effect.catchIf(
++          group === undefined
++            ? useAny(tracked)
++            : Effect.uninterruptibleMask((restore) =>
++              Effect.flatMap(restore(lease(group)), ([leased, connection]) =>
++                Effect.ensuring(restore(tracked(connection)), releaseLease(group, leased)))
++            ),
++          rerun,
++          () => use(f)
++        )
++      }
+     )
+ 
+   const pgPool: PgPool = {
+diff --git a/src/internal/connection.ts b/src/internal/connection.ts
+index a4fa268e7512601721b461d8dc78deea4799f87a..d926a12deb04fca3a1a1316837fd4d6b97e1153e 100644
+--- a/src/internal/connection.ts
++++ b/src/internal/connection.ts
+@@ -12,6 +12,25 @@ export interface ConnectionInternals {
+   readonly deadError: () => SqlError | undefined
+   /** Fired when a pool must stop reusing the connection. */
+   readonly retireHooks: Set<() => void>
++  /** Whether the retire hooks have fired: the connection must take no new statement. */
++  readonly retired: () => boolean
++  /** Whether a new statement would be refused (see `refusedStatement`). */
++  readonly refusing: () => boolean
++  /**
++   * Run by a pool before an exclusively leased connection goes back: waits for what nobody
++   * abandoned, cancels what everybody abandoned, and returns once the pipeline is empty.
++   */
++  readonly settle: Effect.Effect<void>
++  /** Marks the connection as leased to one holder at a time. */
++  readonly setExclusive: () => void
++  /** Records a `PgPool` hold; the returned function ends it. */
++  readonly hold: () => () => void
++  /** Whether a `PgPool` hold has the connection. */
++  readonly held: () => boolean
++  /** Whether nothing is outstanding on the connection (or it is dead), so settling has nothing to do. */
++  readonly idle: () => boolean
++  /** Marks every statement outstanding on the connection abandoned. */
++  readonly abandonOutstanding: () => void
+   /**
+    * Installed by a multiplexed pool so that pinning the session also takes it
+    * out of shared circulation for as long as the pin lasts. Every route to an

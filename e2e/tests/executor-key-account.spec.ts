@@ -1,4 +1,4 @@
-/** Default management keys are ordinary personal accounts bound to one profile per user. */
+/** Default management keys are ordinary personal accounts each user links to the common app. */
 import { holdTeamInstallation, InstallationDirectory } from "../support/team-installation.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema, Schedule } from "effect";
@@ -7,6 +7,15 @@ import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import {
+  connectionsPath,
+  linkAccount,
+  linkAccountResponse,
+  linkedAccountIds,
+  unlinkAccount,
+} from "../support/app-accounts.ts";
+import { saveAndDeploy } from "../support/app-authoring.ts";
+import { managementApp } from "../support/management-app.ts";
 import { openThroughBrowser } from "../support/in-app-navigation.ts";
 import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
 const App = Schema.Struct({
@@ -18,14 +27,10 @@ const App = Schema.Struct({
 });
 const Inventory = Schema.Struct({
   apps: Schema.Array(App),
+  links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
   accounts: Schema.Array(
     Schema.Struct({ id: Schema.String, method: Schema.String, label: Schema.String }),
   ),
-});
-const Profile = Schema.Struct({
-  id: Schema.String,
-  revision: Schema.Number,
-  accounts: Schema.Struct({ service: Schema.String }),
 });
 const Identity = Schema.Struct({ organization: Schema.String, role: Schema.String });
 layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it) => {
@@ -52,13 +57,13 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           const app = inventory.apps.find((app) => app.name === "Executor");
           if (app === undefined) return yield* Effect.die("Default Executor app missing");
           expect(app.accounts).toBeUndefined();
-          const profiles = yield* body(
-            Schema.Array(Profile),
-            yield* api.request(actor, "GET", `${prefix}/apps/${app.id}/profiles`),
-          );
-          const profile = profiles[0];
-          if (profile === undefined) return yield* Effect.die("Default profile missing");
-          const account = inventory.accounts.find((item) => item.id === profile.accounts.service);
+          const appPath = `${prefix}/apps/${app.id}`;
+          const linked = yield* linkedAccountIds(actor, appPath);
+          expect(linked).toHaveLength(1);
+          expect(inventory.links.filter((link) => link.app === app.id)).toEqual([
+            { app: app.id, account: linked[0] },
+          ]);
+          const account = inventory.accounts.find((item) => item.id === linked[0]);
           if (account === undefined) return yield* Effect.die("Managed account missing");
           expect(selectedAccounts).not.toContain(account.id);
           for (const previous of selectedAccounts)
@@ -66,11 +71,14 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           selectedAccounts.push(account.id);
 
           yield* browser.login(actor);
-          yield* browser.use("Open Executor with its default profile", (page) =>
+          yield* browser.use("Open Executor's accounts", (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
           );
-          yield* browser.use("The Accounts tab shows this user's managed account", (page) =>
-            page.getByRole("radio", { name: account.label, exact: true, checked: true }).waitFor(),
+          yield* browser.use("The Accounts tab shows this user's linked managed account", (page) =>
+            page
+              .getByRole("list", { name: "Executor accounts", exact: true })
+              .getByRole("radio", { name: account.label, exact: true, checked: true })
+              .waitFor(),
           );
           yield* browser.use("Return to the app list", (page) =>
             page.getByRole("link", { name: "Back to apps", exact: true }).click(),
@@ -87,50 +95,36 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           for (const view of ["available", "managed"]) {
             const directory = yield* body(
               Schema.Struct({
-                apps: Schema.Array(Schema.Struct({ app: App, profiles: Schema.Array(Profile) })),
+                apps: Schema.Array(
+                  Schema.Struct({ app: App, linkedAccounts: Schema.Array(Schema.String) }),
+                ),
               }),
               yield* api.request(actor, "GET", `${prefix}/resources?view=${view}`),
             );
             const entry = directory.apps.find((entry) => entry.app.id === app.id);
             expect(entry?.app.accounts).toBeUndefined();
-            expect(entry?.profiles.map((item) => item.id)).toEqual([profile.id]);
-            expect(entry?.profiles[0]?.accounts.service).toBe(account.id);
+            expect(entry?.linkedAccounts).toEqual([account.id]);
           }
           yield* Effect.scoped(
             Effect.gen(function* () {
-              const profilePath = `${prefix}/apps/${app.id}/profiles/${profile.id}`;
               yield* Effect.addFinalizer(() =>
-                Effect.gen(function* () {
-                  const current = yield* body(
-                    Schema.Struct({ revision: Schema.Number }),
-                    yield* api.request(actor, "GET", profilePath),
-                  );
-                  expect(
-                    (yield* api.request(actor, "PATCH", profilePath, {
-                      accounts: profile.accounts,
-                      expectedRevision: current.revision,
-                    })).status,
-                  ).toBe(200);
-                }).pipe(Effect.orDie),
+                linkAccount(actor, appPath, "service", account.id).pipe(Effect.orDie),
               );
               yield* browser.use("Reopen Executor from its card", (page) =>
                 page.getByRole("link", { name: "Open Executor", exact: true }).click(),
               );
-              yield* browser.use("Open the selected profile's accounts", (page) =>
+              yield* browser.use("Open the app's accounts", (page) =>
                 page
                   .getByRole("navigation", { name: "App navigation" })
                   .getByRole("link", { name: "Accounts", exact: true })
                   .click(),
               );
-              yield* browser.use(
-                "Remove the binding without disconnecting the saved account",
-                (page) =>
-                  page
-                    .getByRole("button", { name: `Manage ${account.label}`, exact: true })
-                    .click()
-                    .then(() =>
-                      page.getByRole("menuitem", { name: "Remove", exact: true }).click(),
-                    ),
+              yield* browser.use("Unlink the key without deleting the saved account", (page) =>
+                page
+                  .getByRole("list", { name: "Executor accounts", exact: true })
+                  .getByRole("button", { name: `Manage ${account.label}`, exact: true })
+                  .click()
+                  .then(() => page.getByRole("menuitem", { name: "Unlink", exact: true }).click()),
               );
               // No other app uses the managed key, so the page offers to delete it; keep it.
               yield* browser.use("Keep the managed account when offered its deletion", (page) =>
@@ -144,21 +138,27 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
                   .getByRole("dialog", { name: "Delete unused account?" })
                   .waitFor({ state: "hidden" }),
               );
-              yield* browser.use("Wait for the confirmed removal", (page) =>
+              // The kept account stays listed as one the user could link again, unselected.
+              yield* browser.use("Wait for the confirmed unlink", (page) =>
                 page
+                  .getByRole("list", { name: "Executor accounts", exact: true })
                   .getByRole("radio", { name: account.label, exact: true, checked: false })
                   .waitFor(),
               );
-              yield* browser.use("Return to the list after changing the profile", (page) =>
+              expect(yield* linkedAccountIds(actor, appPath)).toEqual([]);
+              expect(
+                (yield* api.request(actor, "GET", `${prefix}/accounts/${account.id}`)).status,
+              ).toBe(200);
+              yield* browser.use("Return to the list after unlinking", (page) =>
                 page.getByRole("link", { name: "Back to apps", exact: true }).click(),
               );
-              yield* browser.use("A genuinely missing binding still needs an account", (page) =>
+              yield* browser.use("A genuinely missing link still needs an account", (page) =>
                 page
                   .getByRole("link", { name: "Open Executor", exact: true })
                   .getByText("Needs account", { exact: true })
                   .waitFor(),
               );
-              yield* browser.checkpoint("Needs account only after removing the profile binding");
+              yield* browser.checkpoint("Needs account only after unlinking the managed key");
             }),
           );
         }
@@ -296,19 +296,15 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         if (!initial || !app) return yield* Effect.die("Default Executor app missing");
         expect(app.accounts).toBeUndefined();
         const path = `${prefix}/apps/${app.id}`;
-        const profile = (actor: Session) =>
+        const linkedKey = (actor: Session) =>
           Effect.gen(function* () {
-            const rows = yield* body(
-              Schema.Array(Profile),
-              yield* api.request(actor, "GET", `${path}/profiles`),
-            );
+            const rows = yield* linkedAccountIds(actor, path);
             expect(rows).toHaveLength(1);
             const row = rows[0];
-            if (!row) return yield* Effect.die("Default profile missing");
+            if (!row) return yield* Effect.die("Linked Executor key missing");
             return row;
           });
-        const own = yield* profile(actors.owner),
-          account = own.accounts.service;
+        const account = yield* linkedKey(actors.owner);
         expect(initial.accounts.find((item) => item.id === account)?.method).toBe("apiKey");
         const nativeKeys = yield* body(
           Schema.Struct({
@@ -335,23 +331,29 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             "My Executor key",
           );
         }
-        expect((yield* profile(actors.owner)).id).toBe(own.id);
+        expect(yield* linkedKey(actors.owner)).toBe(account);
         const [adminInventory, admin] = yield* Effect.all(
-          [read(actors.admin), profile(actors.admin)],
+          [read(actors.admin), linkedKey(actors.admin)],
           { concurrency: 2 },
         );
-        expect(admin.id).not.toBe(own.id);
-        expect(admin.accounts.service).not.toBe(account);
+        expect(admin).not.toBe(account);
         expect(adminInventory.accounts.some((item) => item.id === account)).toBe(false);
-        const call = (actor: Session, profile: string) =>
+        expect(adminInventory.links.filter((link) => link.app === app.id)).toEqual([
+          { app: app.id, account: admin },
+        ]);
+        const call = (actor: Session) =>
           api.request(actor, "POST", `${path}/tools/call`, {
-            profile,
             tool: "context.get",
             kind: "query",
             input: {},
           });
-        const [ownerCall, adminCall, deniedCall] = yield* Effect.all(
-          [call(actors.owner, own.id), call(actors.admin, admin.id), call(actors.admin, own.id)],
+        // Each user's call runs with their own linked key; another user's key cannot be linked.
+        const [ownerCall, adminCall, deniedLink] = yield* Effect.all(
+          [
+            call(actors.owner),
+            call(actors.admin),
+            linkAccountResponse(actors.admin, path, "service", account),
+          ],
           { concurrency: 3 },
         );
         expect(ownerCall.status, JSON.stringify(ownerCall.body)).toBe(200);
@@ -364,13 +366,13 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           organization: actors.organization.id,
           role: "admin",
         });
-        expect(deniedCall.status).toBe(403);
+        expect(deniedLink.status, JSON.stringify(deniedLink.body)).toBe(403);
+        expect(deniedLink.body).toMatchObject({ _tag: "OrganizationForbidden" });
+        expect(JSON.stringify(deniedLink.body)).not.toContain(account);
+        expect(yield* linkedKey(actors.admin)).toBe(admin);
         const connection = yield* body(
           Schema.Struct({ id: Schema.String }),
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            profile: own.id,
-            requirement: "service",
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const manual = yield* body(
           Schema.Struct({ id: Schema.String }),
@@ -385,24 +387,132 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
             },
           ),
         );
-        yield* read(actors.owner);
-        const chosen = yield* profile(actors.owner);
-        expect(chosen.accounts.service).toBe(manual.id);
+        // Connecting from the app links the manual key in place of the managed one, which stays
+        // saved; member setup on later reads neither links it again nor mints another.
+        const afterManual = yield* read(actors.owner);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([manual.id]);
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/profiles/${own.id}`, {
-            expectedRevision: chosen.revision,
-            accounts: { service: account },
-          })).status,
-        ).toBe(200);
+          afterManual.accounts.filter((item) => item.method === "apiKey").map((item) => item.id),
+        ).toEqual(expect.arrayContaining([account, manual.id]));
+        // Calls now run with the manual key, whose synthetic token the API refuses.
+        const manualCall = yield* call(actors.owner);
+        expect(manualCall.status, JSON.stringify(manualCall.body)).toBe(502);
+        expect(manualCall.body).toMatchObject({
+          _tag: "AppProviderFailed",
+          reason: "unauthorized",
+          status: 401,
+          account: { id: manual.id, label: "Manual key" },
+        });
+        // Linking the managed key again replaces the manual one.
+        yield* linkAccount(actors.owner, path, "service", account);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
+        const chosen = yield* call(actors.owner);
+        expect(chosen.status, JSON.stringify(chosen.body)).toBe(200);
+        expect(yield* body(Identity, chosen)).toEqual({
+          organization: actors.organization.id,
+          role: "owner",
+        });
         expect(
           (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${manual.id}`)).status,
         ).toBe(200);
-        const restored = yield* call(actors.owner, own.id);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
+        const restored = yield* call(actors.owner);
         expect(restored.status).toBe(200);
         expect(yield* body(Identity, restored)).toEqual({
           organization: actors.organization.id,
           role: "owner",
         });
+      }),
+    ),
+  );
+  it.effect(scenarios.executorKeyUnlinkSticks.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const { app, account } = yield* managementApp(actors.admin);
+        const path = `${prefix}/apps/${app.id}`;
+        const read = (actor: Session) =>
+          api.request(actor, "GET", `${prefix}/inventory`).pipe(
+            Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
+            Effect.flatMap((response) => body(Inventory, response)),
+          );
+        const managedKeys = api.request(actors.admin, "GET", "/api/auth/api-key/list").pipe(
+          Effect.flatMap((response) =>
+            body(
+              Schema.Struct({
+                apiKeys: Schema.Array(Schema.Struct({ name: Schema.NullOr(Schema.String) })),
+              }),
+              response,
+            ),
+          ),
+          Effect.map(
+            ({ apiKeys }) =>
+              apiKeys.filter((key) => key.name === "Executor app (created automatically)").length,
+          ),
+        );
+        expect(yield* managedKeys).toBe(1);
+        yield* unlinkAccount(actors.admin, path, "service", account);
+        // Member setup runs on every read; none of them may link the key again or mint another.
+        const unlinked = Effect.gen(function* () {
+          const inventories = yield* Effect.forEach([0, 1, 2, 3], () => read(actors.admin), {
+            concurrency: 4,
+          });
+          for (const inventory of inventories) {
+            expect(inventory.links.filter((link) => link.app === app.id)).toEqual([]);
+            expect(
+              inventory.accounts.filter((item) => item.method === "apiKey").map((item) => item.id),
+            ).toEqual([account]);
+          }
+          const directory = yield* body(
+            Schema.Struct({
+              apps: Schema.Array(
+                Schema.Struct({ app: App, linkedAccounts: Schema.Array(Schema.String) }),
+              ),
+            }),
+            yield* api.request(actors.admin, "GET", `${prefix}/resources`),
+          );
+          expect(directory.apps.find((entry) => entry.app.id === app.id)?.linkedAccounts).toEqual(
+            [],
+          );
+          expect(yield* linkedAccountIds(actors.admin, path)).toEqual([]);
+          expect(
+            (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${account}`)).status,
+          ).toBe(200);
+          expect(yield* managedKeys).toBe(1);
+          const call = yield* api.request(actors.admin, "POST", `${path}/tools/call`, {
+            tool: "context.get",
+            kind: "query",
+            input: {},
+          });
+          expect(call.status).toBe(409);
+          expect(call.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
+        });
+        yield* unlinked;
+        // A new deployment of the common app sends member setup past its fast path.
+        const original = yield* body(
+          Schema.Struct({
+            files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+          }),
+          yield* api.request(actors.owner, "GET", `${path}/source`),
+        );
+        yield* Effect.addFinalizer(() =>
+          saveAndDeploy(actors.owner, path, { files: original.files }).pipe(Effect.orDie),
+        );
+        const redeployed = yield* saveAndDeploy(actors.owner, path, {
+          files: original.files.map((file) =>
+            file.path === "index.ts"
+              ? { ...file, content: `${file.content}\n// Synthetic customization\n` }
+              : file,
+          ),
+        });
+        expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
+        yield* unlinked;
+        // Linking again is the member's own choice and works on the kept account.
+        yield* linkAccount(actors.admin, path, "service", account);
+        expect(yield* linkedAccountIds(actors.admin, path)).toEqual([account]);
       }),
     ),
   );

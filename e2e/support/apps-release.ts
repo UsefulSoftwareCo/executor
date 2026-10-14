@@ -48,3 +48,14 @@ export const declaredApps = (
         Option.getOrUndefined,
       );
 };
+
+/**
+ * A fixture's source as an `apps` release before host protocol 13 reads it: the caller's accounts
+ * without a scope, `{ accounts: { mail } }` and `ctx.accounts`. Fixtures that build one app for
+ * several releases write the current syntax and convert it for the older ones.
+ */
+export const unscopedAccounts = (source: string) =>
+  source
+    .replace(/\{ user: \{ accounts: (\{[^{}]*\}) \} \}/g, "{ accounts: $1 }")
+    .replace(/\{ user: \{ accounts \} \}/g, "{ accounts }")
+    .replace(/\.user\.accounts\b/g, ".accounts");

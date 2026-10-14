@@ -11,7 +11,6 @@ import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { createProfile } from "../support/profiles.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { outputContractProblems } from "../support/output-contract.ts";
@@ -114,7 +113,7 @@ const source = (docs: string, offline: string) => `
 import { defineApp, mutation, object, query, router, string } from "apps";
 import { mcpRouter } from "apps/mcp";
 import { liveOpenapiRouter } from "apps/openapi";
-export default defineApp({ accounts: {} }, async ({ signal, cache, fetch }) => ({
+export default defineApp({}, async ({ signal, cache, fetch }) => ({
   tools: router({
     health: query({ input: object({}) }, async () => "ok"),
     issues: router(
@@ -267,10 +266,8 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
         });
         expect(router("offline")?.error?._tag).toBe("McpError");
 
-        const profile = yield* createProfile(actors.owner, path);
         const call = (name: string, kind: "query" | "mutation", input: Schema.Json = {}) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: name,
             kind,
             input,
@@ -293,11 +290,7 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
         expect((yield* call("offline.anything", "query")).status).toBeGreaterThanOrEqual(400);
 
         // Reading a tool under the failed router reports the server's failure, not a missing tool.
-        const hidden = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/tools/offline.anything?profile=${profile.id}`,
-        );
+        const hidden = yield* api.request(actors.owner, "GET", `${path}/tools/offline.anything`);
         expect(hidden.status).not.toBe(404);
         expect(yield* body(Failure, hidden)).toMatchObject({ _tag: "AppEvaluationFailed" });
         expect((yield* body(Failure, hidden)).mcp).toBeDefined();
@@ -317,7 +310,7 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
         );
         const read = (name: string) =>
           api
-            .request(actors.owner, "GET", `${path}/skills/${name}?profile=${profile.id}`)
+            .request(actors.owner, "GET", `${path}/skills/${name}`)
             .pipe(Effect.flatMap((response) => body(Document, response)));
         expect((yield* read("tools-docs")).content).toContain(instructions);
         expect((yield* read("tools-issues")).content).toContain("Search before closing an issue.");
@@ -342,7 +335,7 @@ layer(HostedLive, { excludeTestServices: true })("App routers", (it) => {
                 path: "index.ts",
                 content: `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: await mcpRouter({ url: "http://127.0.0.1:9/mcp", signal }),
 }));`,
               },

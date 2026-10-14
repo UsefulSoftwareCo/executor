@@ -161,7 +161,7 @@ const main = Effect.scoped(
       CI: "true",
       ALCHEMY_HOME: localDevelopmentFiles.alchemyHome,
       NODE_ENV: "development",
-      // Local Worker and R2 need an account-shaped ID, never a real account.
+      // Local Worker, R2 and Hyperdrive need an account-shaped ID, never a real account.
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: secrets.betterAuthSecret,
@@ -174,7 +174,8 @@ const main = Effect.scoped(
       CLOUD_DEV_APP_UI_PORT: String(appUiPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appUiPort}`,
       EXECUTOR_EMULATORS: JSON.stringify(emulators.services),
-      // Accounts from earlier sessions skip the emulated v1 check; new sign-ups get it.
+      // The emulated v1 check runs only with a v1 database (V1_DATABASE_URL), which local
+      // development does not start. When one is set, accounts from earlier sessions skip it.
       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
     });
 

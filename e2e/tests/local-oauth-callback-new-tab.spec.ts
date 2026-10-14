@@ -10,7 +10,6 @@ import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { oauthInteropIssuer } from "../support/oauth-interop-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -50,7 +49,7 @@ layer(TestLive, { excludeTestServices: true })("Local OAuth callback in a new ta
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Link service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
             },
             appsManifest,
           ],
@@ -65,15 +64,11 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
               yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-          owner: "local",
-          subject: "local",
-        });
         const link = yield* body(
           Link,
           yield* api.request(agent, "POST", "/account-connect/api/requests", {
             owner: "local",
-            target: { app: app.id, profile: profile.id, requirement: "service" },
+            target: { app: app.id, requirement: "service" },
           }),
         );
         const pairing = yield* body(

@@ -10,13 +10,21 @@ interface Props {
   description: string;
   current?: "home" | "pricing" | "blog" | "docs" | "apps";
   scroll?: "page" | "content";
+  footer?: boolean;
   noindex?: boolean;
 }
-const { title, description, current = "home", scroll = "page", noindex = false } = Astro.props;
+const {
+  title,
+  description,
+  current = "home",
+  scroll = "page",
+  footer = true,
+  noindex = false,
+} = Astro.props;
 ---
 
 <Layout title={title} description={description} noindex={noindex}>
-  <RailFrame current={current} scroll={scroll}>
+  <RailFrame current={current} scroll={scroll} footer={footer}>
     <slot name="banner" slot="banner" />
     <slot name="sidebar" slot="sidebar" />
     <slot />

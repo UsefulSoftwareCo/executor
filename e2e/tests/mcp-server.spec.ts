@@ -28,7 +28,7 @@ const refusal = (message: string) => ({
   error: {
     // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
     code: -32600,
-    message: `GrantForbidden (HTTP 403): ${message}`,
+    message: `GrantForbidden (HTTP 403): ${message} Retryable (unchanged call): no.`,
     data: { code: "GrantForbidden", status: 403 },
   },
 });
@@ -83,8 +83,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           client.listTools(),
         );
         expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+          "call",
+          "describe",
           "execute",
           "resume",
+          "search",
           "skills",
         ]);
         yield* evidence.json(
@@ -196,8 +199,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           client.listTools(),
         );
         expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+          "call",
+          "describe",
           "execute",
           "resume",
+          "search",
           "skills",
         ]);
         // The default is the plain URL's model mode only, not every approval mode.
@@ -242,8 +248,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
               client.listTools(),
             );
             expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
+              "call",
+              "describe",
               "execute",
               "resume",
+              "search",
               "skills",
             ]);
           }),
@@ -361,28 +370,40 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         });
         expect(created).toMatchObject({ status: 200 });
         const undeployed = yield* body(App, created);
-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-          name: `Needs account ${randomUUID().slice(0, 8)}`,
-          files: [
-            {
-              path: "skills/connect/SKILL.md",
-              content: "---\nname: connect\ndescription: Needs an account.\n---\nConnected.\n",
-            },
-            {
-              path: "index.ts",
-              content: `
+        // A plain requirement needs one linked account. A many() requirement uses every linked
+        // account, so with none it reads as an empty set rather than a missing account.
+        const deployAccountApp = (name: string, requirement: string) =>
+          Effect.gen(function* () {
+            const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+              name: `${name} ${randomUUID().slice(0, 8)}`,
+              files: [
+                {
+                  path: "skills/connect/SKILL.md",
+                  content: "---\nname: connect\ndescription: Needs an account.\n---\nConnected.\n",
+                },
+                {
+                  path: "index.ts",
+                  content: `
 import { defineApp, defineProvider, secrets, object, string, router } from "apps";
 const provider=defineProvider({name:"Skills account",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-export default defineApp({ accounts: { service: provider.many() } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service: ${requirement} } } }, async () => ({ tools: router({}) }));
 `,
-            },
-            appsManifest,
+                },
+                appsManifest,
+              ],
+            });
+            expect(deployed).toMatchObject({ status: 200 });
+            return yield* body(App, deployed);
+          });
+        const [needsAccount, manyAccounts] = yield* Effect.all(
+          [
+            deployAccountApp("Needs account", "provider"),
+            deployAccountApp("Many accounts", "provider.many()"),
           ],
-        });
-        expect(deployed).toMatchObject({ status: 200 });
-        const needsAccount = yield* body(App, deployed);
+          { concurrency: 2 },
+        );
         yield* Effect.addFinalizer(() =>
-          Effect.forEach([undeployed, needsAccount], (removed) =>
+          Effect.forEach([undeployed, needsAccount, manyAccounts], (removed) =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${removed.id}`),
           ).pipe(Effect.orDie),
         );
@@ -403,6 +424,12 @@ export default defineApp({ accounts: { service: provider.many() } }, async () =>
         expect(partialIndex.skills.some((entry) => entry.app.id === app.id)).toBe(true);
         expect(partialIndex.skills.some((entry) => entry.app.id === guide.app.id)).toBe(true);
         expect(partialIndex.unavailableApps.map((entry) => entry.app)).toContain(undeployed.id);
+        expect(partialIndex.skills.some((entry) => entry.app.id === needsAccount.id)).toBe(false);
+        expect(
+          partialIndex.skills
+            .filter((entry) => entry.app.id === manyAccounts.id)
+            .map((entry) => entry.name),
+        ).toEqual(["connect"]);
         const accountless = yield* client.use(
           "Reading an account-less app's skills explains the missing account",
           (client, signal) =>
@@ -414,9 +441,22 @@ export default defineApp({ accounts: { service: provider.many() } }, async () =>
         expect(accountless.content).toEqual([
           expect.objectContaining({
             type: "text",
-            text: `${needsAccount.slug} needs a connected account before its skills can be read. Connect one through Executor's account connection tool, then retry.`,
+            text: `${needsAccount.slug} needs a linked account before its skills can be read. Connect one through Executor's account connection tool, or link one on the app's Accounts page, then retry.`,
           }),
         ]);
+        const emptySet = yield* client.use(
+          "A many() app with no linked accounts reads its skills",
+          (client, signal) =>
+            client.callTool(
+              { name: "skills", arguments: { app: manyAccounts.slug, name: "connect" } },
+              undefined,
+              { signal },
+            ),
+        );
+        expect(emptySet.isError).not.toBe(true);
+        expect(
+          (yield* Schema.decodeUnknownEffect(skillDocument)(emptySet.structuredContent)).content,
+        ).toContain("Connected.");
         const skill = yield* client.use("Read a deployed app skill through MCP", (client, signal) =>
           client.callTool(
             { name: "skills", arguments: { app: app.slug, name: "echo" } },

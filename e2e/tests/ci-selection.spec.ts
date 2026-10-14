@@ -20,6 +20,8 @@ const jobs = [
   "cloud-domains",
   "cloud-workers",
   "cloud-locks",
+  "cloud-batch",
+  "cloud-autumn",
   "cloud-isolate",
   "cloud-rate-limit",
   "cloud-rollback",
@@ -301,8 +303,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     Effect.gen(function* () {
       const run = yield* select({});
       expect(run.exitCode).toBe(0);
-      expect(Object.keys(run.outputs).sort()).toEqual([...jobs, ...runnerOutputs].sort());
+      expect(Object.keys(run.outputs).sort()).toEqual([...jobs, ...runnerOutputs, "full"].sort());
       for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
+      expect(run.outputs.full).toBe("true");
       expect(run.summary).toContain("Full suite: this run is not for a pull request.");
     }),
   );
@@ -351,25 +354,46 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
           const runners = cloudRunners(run.outputs);
           expect(runners.map(({ name }) => name)).toEqual([
-            "cloud, cloud-isolate",
-            "cloud-workers, cloud-locks, cloud-rollback",
+            "cloud, cloud-autumn, cloud-isolate",
+            "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
             "cloud-product, cloud-domains, cloud-rate-limit, cloud-oauth-proxy-preview",
           ]);
-          // Each Cloud job's pattern is on exactly one runner, unchanged, and empty on the others.
+          // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
+          // runs it unchanged, except cloud-product past what one local Cloud holds: its local
+          // Clouds together run exactly the scenarios its pattern does, each once, and keep each
+          // spec file's scenarios on one.
           for (const job of cloudJobs) {
             const values = runners.map((runner) => runner[job]);
-            expect(
-              values.filter((value) => value === run.outputs[job]),
-              job,
-            ).toHaveLength(1);
             expect(
               values.filter((value) => value === ""),
               job,
             ).toHaveLength(runners.length - 1);
+            const value = values.find((value) => value !== "");
+            if (value === run.outputs[job]) continue;
+            expect(job).toBe("cloud-product");
+            const parts = (value ?? "").split("\n");
+            const full = new RegExp(run.outputs[job]!);
+            const partOf = new Map<string, number>();
+            let count = 0;
+            for (const scenario of Object.values(scenarios)) {
+              const cloud = scenario.targets.cloud;
+              if (cloud.status !== "scheduled") continue;
+              if ("runtime" in cloud && cloud.runtime !== "managed") continue;
+              const matched = parts.flatMap((pattern, index) =>
+                new RegExp(pattern).test(scenario.title) ? [index] : [],
+              );
+              expect(matched.length, scenario.title).toBe(full.test(scenario.title) ? 1 : 0);
+              if (matched.length === 0) continue;
+              count++;
+              expect(partOf.get(scenario.file) ?? matched[0], scenario.file).toBe(matched[0]);
+              partOf.set(scenario.file, matched[0]!);
+            }
+            expect(count).toBeGreaterThan(30);
+            expect(parts).toHaveLength(Math.ceil(count / 30));
           }
         }
         expect(main.summary).toMatch(
-          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-rollback\) \|/,
+          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-rollback\) \|/,
         );
 
         // A selection runs each job on one runner, and starts only the Cloud runners it needs.
@@ -511,7 +535,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(links.summary).not.toContain("Changed spec files these jobs do not run");
       expect(links.log).not.toContain("::warning");
 
-      // Two of its scenarios need a deployed stage, and one runs on no CI path at all.
+      // Three of its scenarios need a deployed stage, and one runs on no CI path at all.
       expect(compiler.exitCode, compiler.log).toBe(0);
       expect(compiler.outputs["cloud-product"]).toContain(
         "Cloud compiler installs imported packages",
@@ -520,9 +544,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(compiler.outputs.cloud).toContain("Cloud deploys fail promptly");
       for (const job of ["cloud", "cloud-product"]) {
         expect(compiler.outputs[job]).not.toContain("Concurrent Cloud deploys");
+        expect(compiler.outputs[job]).not.toContain("Cloud catalog installs Axiom");
         expect(compiler.outputs[job]).not.toContain("memory failures");
       }
       for (const title of [
+        "Cloud catalog installs Axiom through the browser and reaches account setup",
         "Concurrent Cloud deploys that install npm packages all compile",
         "Cloud builds keep large UI files out of the server bundle",
       ]) {
@@ -532,7 +558,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(compiler.summary).toContain(`- cloud-compiler.spec.ts: ${title}`);
       }
       expect(compiler.summary).toContain(
-        "bun run e2e:deployed --test-name '^(?:Concurrent Cloud deploys that install npm packages all compile|Cloud builds keep large UI files out of the server bundle)$'",
+        "bun run e2e:deployed --test-name '^(?:Cloud catalog installs Axiom through the browser and reaches account setup|Concurrent Cloud deploys that install npm packages all compile|Cloud builds keep large UI files out of the server bundle)$'",
       );
       expect(compiler.log).not.toContain('"Cloud compiler memory failures');
 
@@ -543,6 +569,62 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(all.outputs.cloud).not.toContain("Cloud product links");
     }),
+  );
+
+  it.effect(
+    "changed scenarios past what one local Cloud holds run in cloud-product on local Clouds of their own, split by spec file",
+    () =>
+      Effect.gen(function* () {
+        // Each file's scenarios otherwise run only on deployed Cloud after merge.
+        const files = [
+          "app-ui.spec.ts",
+          "workflows.spec.ts",
+          "webhook-source-handover.spec.ts",
+          "mcp-execute-failures.spec.ts",
+          "hosted-app-accounts.spec.ts",
+          "hosted-account-scheduling.spec.ts",
+          "app-account-links.spec.ts",
+          "pat-mcp.spec.ts",
+          "hosted-schedule-browser.spec.ts",
+          "mcp-connections.spec.ts",
+          "mcp-server.spec.ts",
+          "hosted-shared.spec.ts",
+          "credential-hosts.spec.ts",
+        ];
+        const run = yield* select({
+          body: block("none"),
+          changed: files.map((file) => `e2e/tests/${file}`),
+        });
+        expect(run.exitCode, run.log).toBe(0);
+        /** The titles an exact pattern of the selector's matches. */
+        const titlesOf = (pattern: string) => {
+          expect(pattern).toMatch(/^\^\(\?:.*\)\$$/);
+          return pattern
+            .slice(4, -2)
+            .split(/(?<!\\)\|/)
+            .map((title) => title.replace(/\\(.)/g, "$1"));
+        };
+        const selected = titlesOf(run.outputs["cloud-product"]!);
+        // More than one local Cloud holds, so the case is not vacuous.
+        expect(selected.length).toBeGreaterThan(30);
+        const fileOf = new Map(Object.values(scenarios).map((s) => [s.title, s.file]));
+        const runner = cloudRunners(run.outputs).find((entry) => entry["cloud-product"] !== "");
+        const parts = runner!["cloud-product"]!.split("\n").map(titlesOf);
+        expect(parts).toHaveLength(Math.ceil(selected.length / 30));
+        // Every selected scenario runs once, and a spec file's scenarios share one local Cloud.
+        expect(parts.flat().sort()).toEqual([...selected].sort());
+        const partOfFile = new Map<string, number>();
+        parts.forEach((part, index) => {
+          for (const title of part) {
+            const file = fileOf.get(title)!;
+            expect(partOfFile.get(file) ?? index, file).toBe(index);
+            partOfFile.set(file, index);
+          }
+        });
+        expect(run.summary).toContain(
+          `| cloud-product | ${selected.length} | e2e-cloud (cloud-product), ${parts.length} local Clouds split by spec file |`,
+        );
+      }),
   );
 
   it.effect("naming a spec file only deployed Cloud runs says where it runs", () =>
@@ -619,16 +701,16 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   it.effect("an exception no longer needed fails until it is removed", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      // The self-host job stops excluding the flaky profile picker scenario.
+      // The self-host job stops excluding the Claude Code scenario, which needs a model API key.
       const selection = (yield* fs.readFileString("e2e/ci-selection.ts")).replace(
-        "|${flakyProfilePicker}",
-        "",
+        "pattern: `^(?!.*(?:${claude}|",
+        "pattern: `^(?!.*(?:",
       );
       const root = yield* fixture({ "e2e/ci-selection.ts": selection });
       const run = yield* select({ root });
       expect(run.exitCode, run.log).toBe(1);
       expect(run.log).toContain(
-        "- scenarios.profilePicker (profile-picker.spec.ts) on self-host is in notRunInCi, but the self-host job runs it.",
+        "- scenarios.mcp (claude-mcp.spec.ts) on self-host is in notRunInCi, but the self-host job runs it.",
       );
     }).pipe(Effect.scoped),
   );
@@ -838,8 +920,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(none.exitCode).toBe(0);
       for (const job of [...jobs, ...runnerOutputs]) expect(none.outputs[job], job).toBe("");
+      expect(none.outputs.full).toBe("false");
       expect(all.exitCode).toBe(0);
       for (const job of [...jobs, ...runnerOutputs]) expect(all.outputs[job], job).not.toBe("");
+      expect(all.outputs.full).toBe("true");
       expect(all.summary).toContain("Full suite: changes the lockfile");
       expect(bareAll.exitCode).toBe(1);
       expect(skip.exitCode).toBe(0);
@@ -1010,6 +1094,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-domains",
         "cloud-workers",
         "cloud-locks",
+        "cloud-batch",
+        "cloud-autumn",
         "cloud-isolate",
         "cloud-rate-limit",
         "cloud-rollback",

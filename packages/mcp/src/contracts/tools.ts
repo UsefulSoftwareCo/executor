@@ -1,26 +1,54 @@
 /** Compose the public MCP surface from its area contracts. */
 import type { Effect } from "effect";
-import { Toolkit } from "effect/ai";
+import { type McpServer, Toolkit } from "effect/ai";
 import type { BrowserDelivery } from "./browser.ts";
-import { BrowserExecuteTool, BrowserResumeTool } from "./browser-tools.ts";
+import { BrowserCallTool, BrowserExecuteTool, BrowserResumeTool } from "./browser-tools.ts";
 import type { McpBackend } from "./backend.ts";
+import type { ElicitationMode } from "./elicitation.ts";
 import {
+  CallTool,
+  DescribeTool,
   ExecuteTool,
+  NativeCallTool,
   NativeExecuteTool,
   ResumeTool,
+  SearchTool,
   type McpLimits,
   type ExecutionRejected,
 } from "./execute.ts";
 import { SkillsTool, type SkillDocument } from "./skills.ts";
 
-/** Public MCP tools and their handler requirements. Declaring them performs no I/O. */
-export const McpToolkit = Toolkit.make(ExecuteTool, ResumeTool, SkillsTool);
+/**
+ * Public MCP tools and their handler requirements. Declaring them performs no I/O. Search,
+ * describe and call expose the catalog a program reaches, so simple work needs no program.
+ */
+export const McpToolkit = Toolkit.make(
+  SkillsTool,
+  SearchTool,
+  DescribeTool,
+  CallTool,
+  ExecuteTool,
+  ResumeTool,
+);
 
 /** Native-mode clients answer prompts directly and cannot submit model-side resume decisions. */
-export const NativeMcpToolkit = Toolkit.make(NativeExecuteTool, SkillsTool);
+export const NativeMcpToolkit = Toolkit.make(
+  SkillsTool,
+  SearchTool,
+  DescribeTool,
+  NativeCallTool,
+  NativeExecuteTool,
+);
 
 /** Browser mode exposes a collector-only resume tool. */
-export const BrowserMcpToolkit = Toolkit.make(BrowserExecuteTool, BrowserResumeTool, SkillsTool);
+export const BrowserMcpToolkit = Toolkit.make(
+  SkillsTool,
+  SearchTool,
+  DescribeTool,
+  BrowserCallTool,
+  BrowserExecuteTool,
+  BrowserResumeTool,
+);
 
 /** Hosts supply authorized operations and documentation I/O. */
 export interface McpOptions {
@@ -38,4 +66,10 @@ export interface McpOptions {
    * own skills; any other app's skill names are customer data and stay out of telemetry.
    */
   readonly annotateSkillRead: (document: typeof SkillDocument.Type) => Effect.Effect<void>;
+  /**
+   * Keeps each mode's protocol sessions beyond the host's memory, so a client continues its
+   * session after the host restarts. A session belongs to the mode it was opened in. Without
+   * one, a restart forgets every session and clients initialize again.
+   */
+  readonly sessions?: (mode: ElicitationMode) => McpServer.SessionStore;
 }

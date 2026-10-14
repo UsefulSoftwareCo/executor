@@ -11,8 +11,8 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const App = Schema.Struct({
@@ -70,10 +70,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
         const prefix = `/api/organizations/${actors.organization.id}`;
         const standard = {
           scopes: ["read"],
-          includeIdToken: false,
-          idTokenAlgorithms: ["ES256"],
-          idTokenAlgorithm: "ES256",
-          idTokenIssuer: null,
           tokenError: null,
           authorizeError: null,
           callbackIssuer: null,
@@ -142,13 +138,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
             );
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -370,24 +367,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
           yield* evidence.json(`${rejection.name.toLowerCase().replaceAll(" ", "-")}.json`, failed);
         }
 
-        // An ID token from another issuer names the claim that failed, never its value.
-        {
-          const started = yield* begin("ID token issuer", {
-            scopes: ["openid", "read"],
-            includeIdToken: true,
-            idTokenIssuer: "https://wrong-issuer.invalid/PRIVATE_ISSUER",
-          });
-          const failed = yield* complete(started.connection, started.callback);
-          expect(tags(failed, "oauth.exchange")).toMatchObject({
-            "oauth.error.code": "OAUTH_JWT_CLAIM_COMPARISON_FAILED",
-            "oauth.error.detail": "jwt_claim_mismatch",
-            "oauth.error.claim": "iss",
-            "oauth.response.content_type": "application/json",
-          });
-          assertPrivate(failed, started.secrets);
-          yield* evidence.json("id-token-issuer.json", failed);
-        }
-
         // Each rejected callback records the part of the response that failed.
         {
           const started = yield* begin("Callback checks", {});
@@ -470,7 +449,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2 } from "apps";
 const service=defineProvider({name:"Path service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/v1/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({}));`,
               },
               appsManifest,
             ],
@@ -524,7 +503,7 @@ export default defineApp({accounts:{service}},async()=>({}));`,
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Unusable metadata service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
               },
               appsManifest,
             ],

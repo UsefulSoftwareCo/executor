@@ -7,6 +7,11 @@ import { WorkflowBackendState } from "../contracts/workflow-runtime.ts";
 import { RuntimeProtocolFailed } from "../contracts/runtime.ts";
 import type { WorkerdAppApi } from "../contracts/workerd-host.ts";
 import type { BlobStorage } from "../contracts/blobs.ts";
+import {
+  EvaluatedCommandJson,
+  EvaluatedReplyJson,
+  type EvaluatedCommand,
+} from "@executor-js/app-data/evaluated";
 import { connectedWorkerdApps } from "./workerd-client.ts";
 
 const failed = () => new RuntimeProtocolFailed();
@@ -116,5 +121,20 @@ export const bindingWorkerdApps = (options: {
       Effect.flatMap(Schema.decodeUnknownEffect(WorkflowBackendState)),
       Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: true })),
     );
-  return connectedWorkerdApps(options.blobs, { rpc, changes, backend });
+  const evaluated = (app: string, command: EvaluatedCommand) =>
+    Schema.encodeEffect(EvaluatedCommandJson)(command).pipe(
+      Effect.flatMap((body) =>
+        Effect.tryPromise(async () => {
+          const response = await options.binding.fetch(
+            `http://apps.internal/evaluated?app=${encodeURIComponent(app)}`,
+            { method: "POST", headers, body },
+          );
+          if (response.status !== 200) throw new Error("Evaluated request failed");
+          return response.text();
+        }),
+      ),
+      Effect.flatMap(Schema.decodeUnknownEffect(EvaluatedReplyJson)),
+      Effect.mapError(failed),
+    );
+  return connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend });
 };

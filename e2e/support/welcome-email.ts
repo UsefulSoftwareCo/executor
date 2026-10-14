@@ -1,5 +1,16 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Context, Effect, FileSystem, Layer, Ref, Schedule, Schema } from "effect";
+import {
+  Config,
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Redacted,
+  Ref,
+  Schedule,
+  Schema,
+} from "effect";
+import { Base64Url } from "effect/encoding";
 import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 class WelcomeTestFailed extends Schema.TaggedError<WelcomeTestFailed>()("WelcomeTestFailed", {
@@ -10,6 +21,9 @@ const make = Effect.gen(function* () {
   const origin = yield* Config.String("WELCOME_TEST_ORIGIN");
   const worker = yield* Config.String("WELCOME_TEST_WORKER_ORIGIN");
   const log = yield* Config.String("WELCOME_TEST_MAIL_LOG");
+  // The local mail capture records no headers, so the test signs the List-Unsubscribe
+  // token itself, in the same versioned format the Worker verifies, with the stage's secret.
+  const authSecret = yield* Config.Redacted("WELCOME_TEST_AUTH_SECRET");
   if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(origin) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(worker))
     return yield* new WelcomeTestFailed({ operation: "Require an isolated loopback cloud host" });
   const fs = yield* FileSystem.FileSystem;
@@ -53,6 +67,41 @@ const make = Effect.gen(function* () {
         }),
       );
     });
+  /** The browser link and token a welcome's List-Unsubscribe header carries for the signed-in user. */
+  const links = (recipient: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const response = yield* client.get(`${origin}/api/auth/get-session`, {
+          headers: { origin },
+        });
+        const session = yield* response.json.pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
+            ),
+          ),
+        );
+        const key = yield* Effect.promise(() =>
+          crypto.subtle.importKey(
+            "raw",
+            new TextEncoder().encode(Redacted.value(authSecret)),
+            { name: "HMAC", hash: "SHA-256" },
+            false,
+            ["sign"],
+          ),
+        );
+        const signed = JSON.stringify([
+          "executor.optional-email.unsubscribe.v1",
+          session.user.id,
+          recipient.trim().toLowerCase(),
+        ]);
+        const signature = yield* Effect.promise(() =>
+          crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signed)),
+        );
+        const token = `${Base64Url.encode(session.user.id)}.${Base64Url.encode(new Uint8Array(signature))}`;
+        return { browser: `${origin}/email/unsubscribe#${token}`, token };
+      }),
+    ).pipe(Effect.mapError(() => new WelcomeTestFailed({ operation: "Sign unsubscribe token" })));
   /** The latest code of a flow: a new email's first code is a sign-up code. */
   const code = (recipient: string, flow: "sign-in" | "sign-up", count = 1) =>
     messages(recipient, `Your Executor ${flow} code`).pipe(
@@ -66,7 +115,7 @@ const make = Effect.gen(function* () {
       Effect.retry({ times: 20, schedule: Schedule.spaced("100 millis") }),
     );
   const welcome = (recipient: string) =>
-    messages(recipient, "welcome to executor").pipe(
+    messages(recipient, "Welcome to Executor").pipe(
       Effect.flatMap((mail) =>
         mail.length > 0
           ? Effect.succeed(mail)
@@ -113,7 +162,7 @@ const make = Effect.gen(function* () {
         return { status: response.status, location: response.headers.location };
       }),
     ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
-  return { request, messages, code, welcome, tick, preference, origin };
+  return { request, messages, code, welcome, links, tick, preference, origin };
 });
 
 /** Read only this dev host's captured messages and exercise its real auth and cron endpoints. */

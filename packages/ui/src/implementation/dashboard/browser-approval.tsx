@@ -37,6 +37,9 @@ const defaults = (request: PendingInteraction) =>
       ],
     ),
   );
+/** Executor accepted the answer, so the form must not offer it again. */
+const unreadableReply =
+  "Executor received your answer, but this page could not read its reply. If you approved, the tool may have run and made changes. Reload the page, and check before running it again.";
 const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
   const error = Cause.squash(cause);
   return error instanceof ToolRunApprovalRefused
@@ -48,6 +51,7 @@ const failureMessage = (cause: Cause.Cause<BrowserApprovalFailure>) => {
           Match.when("invalid-answer", () => "Check the form fields and try again."),
           Match.when("unavailable", () => "This request is no longer available."),
           Match.when("network", () => "Cannot reach Executor. Try again."),
+          Match.when("reply-unreadable", () => unreadableReply),
           Match.exhaustive,
         )
       : "Cannot load this request. Try again.";
@@ -56,6 +60,11 @@ const refusal = (cause: Cause.Cause<BrowserApprovalFailure>) => {
   const error = Cause.squash(cause);
   return error instanceof ToolRunApprovalRefused ? error : undefined;
 };
+const replyUnreadable = (cause: Cause.Cause<BrowserApprovalFailure>) => {
+  const error = Cause.squash(cause);
+  return error instanceof BrowserApprovalFailed && error.reason === "reply-unreadable";
+};
+type Outcome = "answered" | "unavailable" | "reply-unreadable";
 
 /** Authentication is provided by the product; the server independently checks every read and answer. */
 export function BrowserApprovalPage({ atoms }: { readonly atoms: BrowserApprovalAtoms }) {
@@ -126,18 +135,24 @@ function ApprovalResult({
   status,
   completion,
 }: {
-  readonly status: "answered" | "unavailable";
+  readonly status: Outcome;
   readonly completion?: ReactNode;
 }) {
   return (
     <>
       <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
-        {status === "answered" ? "Response saved" : "Request no longer available"}
+        {status === "answered"
+          ? "Response saved"
+          : status === "unavailable"
+            ? "Request no longer available"
+            : "Answer sent"}
       </h1>
       <p className="mt-3 text-sm text-muted-foreground">
         {status === "answered"
           ? (completion ?? "You can return to your agent.")
-          : "This request has expired, was handled, or is no longer running."}
+          : status === "unavailable"
+            ? "This request has expired, was handled, or is no longer running."
+            : unreadableReply}
       </p>
     </>
   );
@@ -155,7 +170,7 @@ function ApprovalForm({
 }) {
   const [values, setValues] = useState(() => defaults(request));
   const [persist, setPersist] = useState("");
-  const [saved, setSaved] = useState<"answered" | "unavailable">();
+  const [saved, setSaved] = useState<Outcome>();
   const [error, setError] = useState<string>();
   const submit = useAtomSet(atoms.answer, { mode: "promiseExit" });
   const sending = useAtomValue(atoms.answer).waiting;
@@ -201,6 +216,7 @@ function ApprovalForm({
         : { action };
     const result = await submit(response);
     if (Exit.isSuccess(result)) setSaved(result.value.status);
+    else if (replyUnreadable(result.cause)) setSaved("reply-unreadable");
     else setError(failureMessage(result.cause));
   };
   if (saved !== undefined) return <ApprovalResult status={saved} completion={completion} />;
@@ -222,7 +238,11 @@ function ApprovalForm({
         </h1>
       </header>
       <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-4 font-sans text-sm">
-        {request.elicitation.message}
+        {/* An approval shows the exact call it runs. Its saved prompt, which MCP clients are
+            sent, shortens long arguments. */}
+        {request.status === "approval-required"
+          ? `Approve ${tool}?\n\nArguments:\n${JSON.stringify(request.invocation.input, null, 2)}`
+          : request.elicitation.message}
       </pre>
       {Object.entries(schema.properties).map(([name, field]) => (
         <label key={name} className="block space-y-2 text-sm font-medium">

@@ -18,7 +18,7 @@ it.live(
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* workflowServer(`import { defineApp, workflow, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   workflows: {
     deadline: workflow({ input: object({}) }, async (ctx) => {
       const before = await ctx.step.do("before", async () => Date.now() + 30_000);
@@ -52,7 +52,7 @@ it.live(
     Effect.scoped(
       Effect.gen(function* () {
         const server = yield* workflowServer(`import { defineApp, workflow, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   workflows: {
     halted: workflow({ input: object({}) }, async (ctx) => {
       await ctx.step.do("before", async () => Date.now());

@@ -16,16 +16,20 @@ export function HostedEntry({
   title,
   description,
   children,
+  wide = false,
 }: {
   readonly title: string;
   readonly description?: string;
   readonly children: ReactNode;
+  /** Room for a long review, such as an import preview. */
+  readonly wide?: boolean;
 }) {
   const heading = useId();
+  const width = wide ? "max-w-[760px]" : "max-w-[560px]";
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center p-6">
       <section
-        className="w-full max-w-[560px] rounded-2xl border bg-card p-10 max-[600px]:p-6"
+        className={`w-full ${width} rounded-2xl border bg-card p-10 max-[600px]:p-6`}
         aria-labelledby={heading}
       >
         <div className="mb-8 flex items-center gap-2 font-mono text-[15px]">
@@ -40,7 +44,7 @@ export function HostedEntry({
         )}
         <div className="mt-6">{children}</div>
       </section>
-      <div className="mt-[18px] w-full max-w-[560px]">
+      <div className={`mt-[18px] w-full ${width}`}>
         <SessionMenu signOutLabel="Sign out" />
       </div>
     </main>
@@ -108,7 +112,7 @@ export function DashboardEntryPending({
 export function OrganizationLookupError({ retry }: { readonly retry: () => void }) {
   return (
     <PageFrame>
-      <PageHeader title="Apps" description="Your installed apps and their selected accounts." />
+      <PageHeader title="Apps" description="Your installed apps and their linked accounts." />
       <div role="alert" className="space-y-3 rounded-lg border p-4 text-sm">
         <h2 className="font-medium">Unable to load your organizations</h2>
         <p>Try again to open your workspace.</p>

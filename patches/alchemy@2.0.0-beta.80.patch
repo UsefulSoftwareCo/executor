@@ -132,6 +132,78 @@ index 42ce8028d052e3ad7b1916557dc34d9bb1f63fea..dedbdda5ba67840b3e6113d433c4ffc1
          }));
      }).pipe(
      // The "Handler does not export a fetch()" window is a property of
+diff --git a/lib/Cloudflare/Hyperdrive/Connection.js b/lib/Cloudflare/Hyperdrive/Connection.js
+index 286c278..22f93e4 100644
+--- a/lib/Cloudflare/Hyperdrive/Connection.js
++++ b/lib/Cloudflare/Hyperdrive/Connection.js
+@@ -4,7 +4,7 @@ import * as Option from "effect/Option";
+ import * as Redacted from "effect/Redacted";
+ import * as Schedule from "effect/Schedule";
+ import * as Stream from "effect/Stream";
+-import { isResolved } from "../../Diff.js";
++import { deepEqual, isResolved } from "../../Diff.js";
+ import * as ProviderLayer from "../../Local/ProviderLayer.js";
+ import { createPhysicalName } from "../../PhysicalName.js";
+ import * as Provider from "../../Provider.js";
+@@ -130,7 +130,7 @@ export const ProviderLive = () => Provider.succeed(Connection, {
+         }
+         return undefined;
+     }),
+-    reconcile: Effect.fn(function* ({ id, news, output }) {
++    reconcile: Effect.fn(function* ({ id, news, olds, output }) {
+         const { accountId } = yield* yield* CloudflareEnvironment;
+         const name = output?.name ?? (yield* createConfigName(id, news.name));
+         const requestBody = {
+@@ -139,6 +139,26 @@ export const ProviderLive = () => Provider.succeed(Connection, {
+             mtls: news.mtls,
+             originConnectionLimit: news.originConnectionLimit,
+         };
++        // Every update opens a new origin pool and leaves the old one open
++        // until it idles out, so an unchanged config must not be re-sent
++        // (alchemy-run/alchemy#1807). The password is write-only: compare it
++        // with the previous props, which state already holds, and compare the
++        // readable fields with the live config so drift is still corrected.
++        if (output?.hyperdriveId && olds !== undefined && deepEqual(requestBodyOf(olds), requestBody)) {
++            const live = yield* hyperdrive
++                .getConfig({ accountId: output.accountId, hyperdriveId: output.hyperdriveId })
++                .pipe(Effect.catchTag("HyperdriveConfigNotFound", () => Effect.succeed(undefined)));
++            if (live !== undefined && liveConfigMatches(live, news)) {
++                return {
++                    hyperdriveId: live.id,
++                    name: live.name,
++                    accountId: output.accountId,
++                    origin: news.origin,
++                    mtls: news.mtls ?? {},
++                    dev: news.dev,
++                };
++            }
++        }
+         // Observe + ensure. When we know the hyperdriveId we go straight
+         // to update; otherwise we createConfig and fall back to "find by
+         // name then update" if Cloudflare reports the name is already in
+@@ -239,6 +259,22 @@ const findByName = (name) => Effect.gen(function* () {
+     return yield* hyperdrive.listConfigs.items({ accountId }).pipe(Stream.filter((c) => c.name === name), Stream.runHead, Effect.map(Option.getOrUndefined));
+ });
+ export const defaultPort = (scheme) => scheme === "mysql" ? 3306 : 5432;
++const requestBodyOf = (props) => ({
++    origin: toRequestOrigin(props.origin),
++    caching: props.caching,
++    mtls: props.mtls,
++    originConnectionLimit: props.originConnectionLimit,
++});
++/** Desired fields the API reads back; unset fields keep whatever Cloudflare chose. */
++const subsetMatches = (desired, live) => Object.entries(desired ?? {}).every(([key, value]) => value === undefined || live?.[key] === value);
++const liveConfigMatches = (live, props) => {
++    const { password: _password, accessClientSecret: _secret, ...origin } = toRequestOrigin(props.origin);
++    return (subsetMatches(origin, live.origin) &&
++        subsetMatches(props.caching, live.caching) &&
++        subsetMatches(props.mtls, live.mtls) &&
++        (props.originConnectionLimit === undefined ||
++            live.originConnectionLimit === props.originConnectionLimit));
++};
+ const unwrap = (v) => Redacted.isRedacted(v) ? Redacted.value(v) : v;
+ /**
+  * Build the request body shape that the distilled `createConfig`/`updateConfig`
 diff --git a/lib/Cloudflare/Providers.d.ts b/lib/Cloudflare/Providers.d.ts
 index f3e7aacfc9f0a9effecdd5db82ed93ed80e933ce..1358c49090d74eb3876ef1acf724326e81c6ad9d 100644
 --- a/lib/Cloudflare/Providers.d.ts
@@ -622,6 +694,94 @@ index 4e8378e0ee295d63ad7df0b62de62edee566acca..2cdca36bff63b0d1fdd7fd0c4b1d447d
          }),
        );
      }).pipe(
+diff --git a/src/Cloudflare/Hyperdrive/Connection.ts b/src/Cloudflare/Hyperdrive/Connection.ts
+index 8b1d760..f771cd6 100644
+--- a/src/Cloudflare/Hyperdrive/Connection.ts
++++ b/src/Cloudflare/Hyperdrive/Connection.ts
+@@ -5,7 +5,7 @@ import * as Redacted from "effect/Redacted";
+ import * as Schedule from "effect/Schedule";
+ import * as Stream from "effect/Stream";
+ 
+-import { isResolved } from "../../Diff.ts";
++import { deepEqual, isResolved } from "../../Diff.ts";
+ import * as ProviderLayer from "../../Local/ProviderLayer.ts";
+ import { createPhysicalName } from "../../PhysicalName.ts";
+ import * as Provider from "../../Provider.ts";
+@@ -261,7 +261,7 @@ export const ProviderLive = () =>
+       }
+       return undefined;
+     }),
+-    reconcile: Effect.fn(function* ({ id, news, output }) {
++    reconcile: Effect.fn(function* ({ id, news, olds, output }) {
+       const { accountId } = yield* yield* CloudflareEnvironment;
+       const name = output?.name ?? (yield* createConfigName(id, news.name));
+ 
+@@ -272,6 +272,27 @@ export const ProviderLive = () =>
+         originConnectionLimit: news.originConnectionLimit,
+       };
+ 
++      // Every update opens a new origin pool and leaves the old one open
++      // until it idles out, so an unchanged config must not be re-sent
++      // (alchemy-run/alchemy#1807). The password is write-only: compare it
++      // with the previous props, which state already holds, and compare the
++      // readable fields with the live config so drift is still corrected.
++      if (output?.hyperdriveId && olds !== undefined && deepEqual(requestBodyOf(olds), requestBody)) {
++        const live = yield* hyperdrive
++          .getConfig({ accountId: output.accountId, hyperdriveId: output.hyperdriveId })
++          .pipe(Effect.catchTag("HyperdriveConfigNotFound", () => Effect.succeed(undefined)));
++        if (live !== undefined && liveConfigMatches(live, news)) {
++          return {
++            hyperdriveId: live.id,
++            name: live.name,
++            accountId: output.accountId,
++            origin: news.origin,
++            mtls: news.mtls ?? {},
++            dev: news.dev,
++          };
++        }
++      }
++
+       // Observe + ensure. When we know the hyperdriveId we go straight
+       // to update; otherwise we createConfig and fall back to "find by
+       // name then update" if Cloudflare reports the name is already in
+@@ -393,6 +414,37 @@ const findByName = (name: string) =>
+ export const defaultPort = (scheme: Scheme): number =>
+   scheme === "mysql" ? 3306 : 5432;
+ 
++const requestBodyOf = (props: Props) => ({
++  origin: toRequestOrigin(props.origin),
++  caching: props.caching,
++  mtls: props.mtls,
++  originConnectionLimit: props.originConnectionLimit,
++});
++
++/** Desired fields the API reads back; unset fields keep whatever Cloudflare chose. */
++const subsetMatches = (
++  desired: Record<string, unknown> | undefined,
++  live: Record<string, unknown> | null | undefined,
++) =>
++  Object.entries(desired ?? {}).every(
++    ([key, value]) => value === undefined || live?.[key] === value,
++  );
++
++const liveConfigMatches = (
++  live: hyperdrive.GetConfigResponse,
++  props: Props,
++): boolean => {
++  const { password: _password, accessClientSecret: _secret, ...origin } =
++    toRequestOrigin(props.origin) as Record<string, unknown>;
++  return (
++    subsetMatches(origin, live.origin as Record<string, unknown>) &&
++    subsetMatches(props.caching, live.caching as Record<string, unknown> | null) &&
++    subsetMatches(props.mtls, live.mtls as Record<string, unknown> | null) &&
++    (props.originConnectionLimit === undefined ||
++      live.originConnectionLimit === props.originConnectionLimit)
++  );
++};
++
+ const unwrap = (v: string | Redacted.Redacted<string>): string =>
+   Redacted.isRedacted(v) ? Redacted.value(v) : v;
+ 
 diff --git a/src/Cloudflare/Providers.ts b/src/Cloudflare/Providers.ts
 index 1db2c4b09ad3cf4929cda741294fb19996798130..ab1c872fd5379b756b65d8ffb415b15c5c12d6f1 100644
 --- a/src/Cloudflare/Providers.ts

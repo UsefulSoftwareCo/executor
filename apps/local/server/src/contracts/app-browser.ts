@@ -1,4 +1,4 @@
-/** Paired dashboard reads for app skills under the selected profile. */
+/** Paired dashboard reads for app skills, with the app's linked accounts. */
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   AppId,
@@ -13,12 +13,13 @@ import {
 
 const params = { app: AppId };
 const prefix = "/dashboard/api/apps/:app";
+const { accounts: _accounts, ...query } = SkillSelection;
 /** The containing API supplies DashboardAccess to every endpoint. */
 export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
   .add(
     HttpApiEndpoint.get("skillBundle", `${prefix}/skill-bundle`, {
       params,
-      query: SkillSelection,
+      query,
       success: AppSkillBundle,
       error: AppSkillErrors,
     }),
@@ -26,7 +27,7 @@ export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
   .add(
     HttpApiEndpoint.get("skills", `${prefix}/skills`, {
       params,
-      query: SkillSelection,
+      query,
       success: AppSkillCatalog,
       error: AppSkillErrors,
     }),
@@ -34,10 +35,7 @@ export const DashboardAppBrowser = HttpApiGroup.make("appBrowser")
   .add(
     HttpApiEndpoint.get("skill", `${prefix}/skills/:name`, {
       params: { ...params, name: AppSkillInputs.read.fields.name },
-      query: {
-        ...SkillSelection,
-        file: AppSkillInputs.read.fields.file,
-      },
+      query: { ...query, file: AppSkillInputs.read.fields.file },
       success: AppSkillDocument,
       error: [...AppSkillErrors, AppSkillNotFound],
     }),

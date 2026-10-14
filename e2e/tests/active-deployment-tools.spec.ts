@@ -29,7 +29,7 @@ const source = (version: number) => [
     content: `
 import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({accounts:{}}, async()=>({tools: router({
+export default defineApp({}, async()=>({tools: router({
   guarded: mutation({input:object({})${version === 2 ? ",approval:always()" : ""}},async()=>({version:${version}})),
   review: mutation({input:object({}),approval:always()},async()=>({version:${version}}))
   ${version === 1 ? ",retired:mutation({input:object({})},async()=>({version:1}))" : ""},
@@ -248,13 +248,17 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
           (yield* resume(pending.requestId)).structuredContent,
         );
         expect(resumed.execution).toEqual({ ok: true, value: { version: 1 } });
-        const racedResult = yield* Schema.decodeUnknownEffect(Completed)(
+        // The program's next call runs on the promoted deployment, under its approval policy, not
+        // the one the program listed the app from.
+        const racedNext = yield* Schema.decodeUnknownEffect(Pending)(
           (yield* resume(racedPending.requestId)).structuredContent,
         );
         expect(
-          racedResult.execution.ok,
-          "A catalog pin cannot authorize another new call after promotion",
-        ).toBe(false);
+          (yield* Schema.decodeUnknownEffect(Completed)(
+            (yield* resume(racedNext.requestId)).structuredContent,
+          )).execution,
+          "A catalog listed before promotion cannot authorize another new call",
+        ).toEqual({ ok: true, value: { version: 2 } });
         const fresh = yield* Schema.decodeUnknownEffect(Pending)(
           (yield* execute()).structuredContent,
         );

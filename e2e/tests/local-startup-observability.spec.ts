@@ -7,6 +7,7 @@ import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
+import { localEntryCommand } from "../support/local-entry.ts";
 
 layer(TestLive, { excludeTestServices: true })("Local startup diagnostics", (it) => {
   it.effect(scenarios.localStartupObservability.title, (context) =>
@@ -21,8 +22,8 @@ layer(TestLive, { excludeTestServices: true })("Local startup diagnostics", (it)
           Config.option,
         );
         const command = Option.isSome(packagedEntry)
-          ? [packagedEntry.value, "serve"]
-          : ["apps/local/server/src/main.ts"];
+          ? localEntryCommand(packagedEntry.value, ["serve"])
+          : { command: "node", args: ["apps/local/server/src/main.ts"] };
         for (const stage of ["listen", "storage", "runtime"] as const) {
           const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-startup-" });
           const secret = randomBytes(32).toString("hex");
@@ -32,7 +33,7 @@ layer(TestLive, { excludeTestServices: true })("Local startup diagnostics", (it)
               "synthetic invalid resource",
             );
           const child = yield* processes.spawn(
-            ChildProcess.make("node", command, {
+            ChildProcess.make(command.command, command.args, {
               extendEnv: false,
               env: {
                 PATH: process.env.PATH ?? "",

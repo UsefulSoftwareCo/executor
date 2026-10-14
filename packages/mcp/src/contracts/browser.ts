@@ -1,7 +1,12 @@
 /** Browser delivery data. URLs locate an interaction; hosts must authorize every read and answer. */
 import { Schema, type Effect } from "effect";
 import { ElicitationResponse } from "apps/contracts";
-import { ApprovalRequestId, Json, ToolResumeResult } from "@executor-js/sdk/core";
+import {
+  ApprovalRequestId,
+  Json,
+  ToolResumeResult,
+  ToolResumeResultReceived,
+} from "@executor-js/sdk/core";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";
 export { InteractionId, PendingInteraction, ElicitationResponseInvalid, ElicitationResponse };
@@ -50,6 +55,12 @@ export const BrowserToolRunAnswer = Schema.Union([
   Schema.Struct({ status: Schema.Literal("unavailable") }),
 ]);
 export type BrowserToolRunAnswer = typeof BrowserToolRunAnswer.Type;
+/** The answer as a dashboard receives it, possibly from the previous release's server. */
+export const BrowserToolRunAnswerReceived = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("answered"), result: ToolResumeResultReceived }),
+  Schema.Struct({ status: Schema.Literal("unavailable") }),
+]);
+export type BrowserToolRunAnswerReceived = typeof BrowserToolRunAnswerReceived.Type;
 /**
  * A dashboard reviews only requests issued by the signed-in person's own run from it. Approvals from
  * MCP, schedules, API calls or another person's run are answered only in the flow that issued them.

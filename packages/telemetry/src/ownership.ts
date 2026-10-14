@@ -3,7 +3,9 @@
  * starts work for someone other than its caller declares the owner with `ownedBy`; any other span
  * works for whoever its parent works for. Each instant then belongs to the innermost boundary in
  * progress, so Executor's work inside an upstream session stays Executor's, and an app's callback
- * inside Executor's cache stays the app's.
+ * inside Executor's cache stays the app's. Background work is the exception: everything inside it
+ * is background, and it runs beside its caller rather than inside it. It takes no instant from the
+ * caller's window; how long it ran within the window is reported beside the division.
  *
  * Workers clocks advance only on I/O, so durations are comparable within one isolate and not across
  * isolates: each isolate measures its own part, and the spans that already bracket the work define
@@ -12,10 +14,11 @@
 import { Clock, Context, Effect, type Exit, Option, Tracer } from "effect";
 
 /**
- * Executor's own work; the app's authored code; waiting on an upstream provider; or waiting on a
- * person's answer.
+ * Executor's own work; the app's authored code; waiting on an upstream provider; waiting on a
+ * person's answer; waiting on another call that holds the lease to load a cache entry; or work
+ * handed to the background, such as refreshing a stale cache entry, that no caller waits on.
  */
-export type Owner = "executor" | "app" | "upstream" | "person";
+export type Owner = "executor" | "app" | "upstream" | "person" | "lease" | "background";
 
 /** The attribute that shows a boundary's owner in the trace; the telemetry tracer sets it. */
 export const ownerAttribute = "executor.owner";
@@ -90,27 +93,43 @@ interface Boundary {
 /**
  * When work runs in several branches at once, each instant goes to the first owner here with a
  * branch in progress. Executor's work counts wherever it runs, and a person's answer outweighs the
- * upstream request that waits on it.
+ * upstream request that waits on it. Waiting, on a provider or on another call's lease, outweighs
+ * the authored code that awaits it, whose own span stays open meanwhile. Background work is not
+ * here: it never takes an instant.
  */
-const concurrent: readonly Owner[] = ["executor", "person", "upstream", "app"];
+const concurrent: readonly Owner[] = ["executor", "person", "upstream", "lease", "app"];
+
+const noTime = (): Record<Owner, number> => ({
+  executor: 0,
+  app: 0,
+  upstream: 0,
+  person: 0,
+  lease: 0,
+  background: 0,
+});
 
 /**
  * Divide a window that starts at `origin`, whose own work is `owner`'s, among owners. At each
  * instant, the work in progress is the innermost span of each branch: a span with no child still
  * open. Its owner takes the instant. With nothing open inside the window, `owner` takes it. Spans
  * are counted as they open and end, in constant time each, and only spans still open are kept.
+ * `background` is not part of the division: it is how long background work was in progress.
  */
 export const makeOwnershipAccounting = (origin: bigint, owner: Owner) => {
-  const totals: Record<Owner, number> = { executor: 0, app: 0, upstream: 0, person: 0 };
+  const totals = noTime();
   // Innermost spans in progress, by owner.
-  const innermost: Record<Owner, number> = { executor: 0, app: 0, upstream: 0, person: 0 };
+  const innermost = noTime();
   const boundaries = new WeakMap<Tracer.AnySpan, Boundary>();
   let reached = origin;
   let done = false;
+  // Background spans in progress. They take no part in the division.
+  let background = 0;
   const advance = (time: bigint) => {
     if (time <= reached) return;
     const current = concurrent.find((candidate) => innermost[candidate] > 0) ?? owner;
-    totals[current] += Number(time - reached) / 1_000_000;
+    const elapsed = Number(time - reached) / 1_000_000;
+    totals[current] += elapsed;
+    if (background > 0) totals.background += elapsed;
     reached = time;
   };
   /** The closest span still open around `boundary`; a span's children outlive it in its parent. */
@@ -121,12 +140,20 @@ export const makeOwnershipAccounting = (origin: bigint, owner: Owner) => {
     return found;
   };
   const opened = (boundary: Boundary) => {
+    if (boundary.owner === "background") {
+      background += 1;
+      return;
+    }
     const parent = enclosing(boundary);
     if (parent !== undefined && parent.children++ === 0) innermost[parent.owner] -= 1;
     innermost[boundary.owner] += 1;
   };
   const closed = (boundary: Boundary) => {
     boundary.open = false;
+    if (boundary.owner === "background") {
+      background -= 1;
+      return;
+    }
     if (boundary.children === 0) innermost[boundary.owner] -= 1;
     const parent = enclosing(boundary);
     if (parent === undefined) return;
@@ -140,9 +167,12 @@ export const makeOwnershipAccounting = (origin: bigint, owner: Owner) => {
       if (done) return span;
       const parent = Option.getOrUndefined(options.parent);
       const enclosingBoundary = parent === undefined ? undefined : boundaries.get(parent);
+      const inBackground = enclosingBoundary?.owner === "background";
+      const declared = inBackground ? "background" : declaredOwner(options.annotations);
       const boundary: Boundary = {
-        owner: declaredOwner(options.annotations) ?? enclosingBoundary?.owner ?? owner,
-        parent: enclosingBoundary,
+        owner: declared ?? enclosingBoundary?.owner ?? owner,
+        // Background work runs beside its caller, which stays innermost meanwhile.
+        parent: declared === "background" ? undefined : enclosingBoundary,
         open: true,
         children: 0,
       };

@@ -8,7 +8,12 @@ import {
   pricingTiers,
   tagline,
   introduction,
+  taglineBuild,
+  heroSubhead,
   homepageStory,
+  gmailLadder,
+  moreExamples,
+  differences,
   appParts,
   appDefinition,
 } from "../content/site-copy";
@@ -65,7 +70,29 @@ const body = `# Executor
 
 ${machineSummaries.map(([label, href]) => `- [${label}](${href})`).join("\n")}
 
+${taglineBuild}
+
 ${introduction}
+
+${heroSubhead}
+
+## ${homepageStory.everything.title}
+
+${homepageStory.everything.body}
+
+## ${homepageStory.connected.title}
+
+${homepageStory.connected.body}
+
+## ${homepageStory.build.title}
+
+${homepageStory.build.body}
+
+${gmailLadder.map(({ piece, prompt, result }, i) => `${i + 1}. **${piece}:** "${prompt}" ${result}`).join("\n")}
+
+${homepageStory.more.title}:
+
+${moreExamples.map(({ prompt, pieces, result }) => `- "${prompt}" ${result} (${pieces.join(", ")})`).join("\n")}
 
 ## ${homepageStory.apps.title}
 
@@ -73,23 +100,9 @@ ${appDefinition}
 
 ${appParts.map(({ title, body }) => `- **${title}:** ${body}`).join("\n")}
 
-## ${homepageStory.start.title}
+## What it is, and isn't
 
-${homepageStory.start.body}
-
-Start with an existing MCP or API, a skill, or custom code written by your agent.
-
-## ${homepageStory.build.title}
-
-${homepageStory.build.body}
-
-Example: "${homepageStory.build.prompt}" Your agent builds a reusable tool that combines PostHog and GitHub.
-
-## ${homepageStory.automate.title}
-
-${homepageStory.automate.body}
-
-Example: "${homepageStory.automate.prompt}"
+${differences.map(({ question, answer }) => `### ${question}\n\n${answer}`).join("\n\n")}
 
 ## ${appStructure.title}
 

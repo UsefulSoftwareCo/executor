@@ -3,7 +3,7 @@
  * JavaScript, so a host whose every uploaded module costs startup time runs this elsewhere.
  */
 import { Effect, Exit, Layer, Schema } from "effect";
-import type { SourceFile } from "@executor-js/sdk/core";
+import type { SourceTextFile } from "@executor-js/sdk/core";
 import { SourceFormatter } from "../contracts/source-display.ts";
 
 class SourceFormatUnavailable extends Schema.TaggedError<SourceFormatUnavailable>()(
@@ -29,7 +29,7 @@ const applyEdits = (
   parts.push(text.slice(position));
   return parts.join("");
 };
-const formatFile = Effect.fn("source.display.format")(function* (file: SourceFile) {
+const formatFile = Effect.fn("source.display.format")(function* (file: SourceTextFile) {
   if (file.path.endsWith(".json")) {
     if (Exit.isFailure(jsonSource(file.content))) return file;
     const json = yield* Effect.promise(() => import("jsonc-parser"));
@@ -69,7 +69,7 @@ const formatFile = Effect.fn("source.display.format")(function* (file: SourceFil
 });
 
 /** Format files in order, one at a time, so parser memory stays bounded by the largest file. */
-export const formatSources = (files: ReadonlyArray<SourceFile>) =>
+export const formatSources = (files: ReadonlyArray<SourceTextFile>) =>
   Effect.forEach(files, formatFile);
 
 /** Format in this process. */

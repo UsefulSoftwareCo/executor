@@ -5,7 +5,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +31,22 @@ import (
 	"syscall"
 	"time"
 )
+
+// memoryPressureMiB is where workerd starts collecting garbage in every isolate: 60% of the
+// container's cgroup v2 memory limit, leaving room below the limit for a collection to take
+// effect before the kernel reclaims or kills. Zero, which turns the check off, when the limit
+// file is missing or says "max".
+func memoryPressureMiB(limitFile string) uint64 {
+	limit, err := os.ReadFile(limitFile)
+	if err != nil {
+		return 0
+	}
+	limitBytes, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return limitBytes / 1024 / 1024 * 60 / 100
+}
 
 func setting(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
@@ -300,13 +318,9 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
 		command := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, input.Args...)...)
-		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + b.temporary, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
-		for name, value := range input.Environment {
-			if !strings.HasPrefix(name, "GIT_") && !strings.HasPrefix(name, "CONTENT_") && !strings.HasPrefix(name, "REQUEST_") && name != "PATH_INFO" && name != "QUERY_STRING" && name != "REMOTE_USER" && name != "SERVER_PROTOCOL" {
-				http.Error(w, "Invalid Git environment", 400)
-				return
-			}
-			command.Env = append(command.Env, name+"="+value)
+		if !b.gitEnvironment(command, input.Environment) {
+			http.Error(w, "Invalid Git environment", 400)
+			return
 		}
 		command.Stdin = bytes.NewReader(input.Input)
 		command.Stderr = io.Discard
@@ -331,6 +345,51 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Code   int    `json:"code"`
 			Output []byte `json:"output"`
 		}{code, output.Bytes()})
+	case "/git/http-backend":
+		// One Git HTTP request, streamed both ways so neither the pack nor a clone is held
+		// in memory. The request's own context ends the process when the client goes away.
+		var environment map[string]string
+		if err := json.Unmarshal([]byte(r.Header.Get("executor-git-environment")), &environment); err != nil {
+			http.Error(w, "Invalid host request", 400)
+			return
+		}
+		command := exec.CommandContext(r.Context(), "git", "-c", "core.hooksPath=/dev/null", "http-backend")
+		if !b.gitEnvironment(command, environment) {
+			http.Error(w, "Invalid Git environment", 400)
+			return
+		}
+		command.Stdin = r.Body
+		command.Stderr = io.Discard
+		output, err := command.StdoutPipe()
+		if err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		// Git may write progress before it has read the whole push.
+		controller := http.NewResponseController(w)
+		if err := controller.EnableFullDuplex(); err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		if err := command.Start(); err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		w.Header().Set("content-type", "application/octet-stream")
+		buffer := make([]byte, 64<<10)
+		for {
+			read, err := output.Read(buffer)
+			if read > 0 {
+				if _, err := w.Write(buffer[:read]); err != nil {
+					break
+				}
+				controller.Flush()
+			}
+			if err != nil {
+				break
+			}
+		}
+		command.Wait()
 	case "/git/directory":
 		var input struct {
 			Path string `json:"path"`
@@ -380,6 +439,18 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// Git runs with a fixed environment plus the CGI and Git variables a request names.
+func (b *bridge) gitEnvironment(command *exec.Cmd, environment map[string]string) bool {
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + b.temporary, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	for name, value := range environment {
+		if !strings.HasPrefix(name, "GIT_") && !strings.HasPrefix(name, "CONTENT_") && !strings.HasPrefix(name, "REQUEST_") && name != "PATH_INFO" && name != "QUERY_STRING" && name != "REMOTE_USER" && name != "SERVER_PROTOCOL" && name != "HTTP_CONTENT_ENCODING" {
+			return false
+		}
+		command.Env = append(command.Env, name+"="+value)
+	}
+	return true
 }
 
 type limitedOutput struct {
@@ -514,6 +585,17 @@ func serve(mode string) error {
 		appWorkers = strconv.Itoa(number)
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APP_WORKERS@@"), []byte(appWorkers))
+	// Seconds an idle app Worker stays loaded; zero turns idle unloading off, null keeps the default.
+	appWorkerIdle := "null"
+	if value := values["EXECUTOR_APP_WORKER_IDLE_SECONDS"]; value != "" {
+		number, err := strconv.Atoi(value)
+		if err != nil || number < 0 {
+			return errors.New("EXECUTOR_APP_WORKER_IDLE_SECONDS must be a non-negative integer")
+		}
+		appWorkerIdle = strconv.Itoa(number)
+	}
+	config = bytes.ReplaceAll(config, []byte("@@APP_WORKER_IDLE_SECONDS@@"), []byte(appWorkerIdle))
+	config = bytes.ReplaceAll(config, []byte("@@MEMORY_PRESSURE_MB@@"), []byte(strconv.FormatUint(memoryPressureMiB("/sys/fs/cgroup/memory.max"), 10)))
 	config = bytes.ReplaceAll(config, []byte("@@SELF_ORIGIN@@"), []byte(strconv.Quote(values["BETTER_AUTH_URL"])))
 	// App builds install packages from this registry; empty selects the public registry.
 	registry := values["EXECUTOR_NPM_REGISTRY"]
@@ -574,7 +656,11 @@ func serve(mode string) error {
 	configureChild(command)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary}
+	// The apps Worker seals credential handles with a secret derived from the encryption key, so
+	// handles survive a restart and no one else knows it. It reaches workerd only in its
+	// environment, never in the configuration file. Handles sealed under the constant earlier
+	// images used are refused after the upgrade; apps get new ones on their next invocation.
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary, "EXECUTOR_CREDENTIAL_HANDLE_SECRET=" + credentialHandleSecret(values["EXECUTOR_ENCRYPTION_KEY"])}
 	for _, name := range []string{"SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if value := os.Getenv(name); value != "" {
 			command.Env = append(command.Env, name+"="+value)
@@ -640,7 +726,7 @@ func serve(mode string) error {
 		<-stopped
 		return err
 	}
-	public := &http.Server{Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
+	public := &http.Server{Handler: publicHandler(proxy), ReadHeaderTimeout: 10 * time.Second}
 	defer public.Close()
 	go func() { serverError <- public.Serve(publicListener) }()
 	signals := make(chan os.Signal, 1)
@@ -663,6 +749,30 @@ func serve(mode string) error {
 		command.Process.Kill()
 		return <-stopped
 	}
+}
+
+// publicHandler serves the public listener. fullDuplex sits outside the compressor so it reaches
+// the connection's own writer; Git's streamed requests and responses pass through unencoded.
+func publicHandler(proxy http.Handler) http.Handler {
+	return fullDuplex(compressedHandler(proxy))
+}
+
+// fullDuplex lets a response start before its request body is read. A Git push streams its
+// pack through to git http-backend, which answers with headers first; without this, Go stops
+// reading an HTTP/1 request body once the response starts and the push is cut short.
+func fullDuplex(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NewResponseController(w).EnableFullDuplex()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// credentialHandleSecret derives the apps Worker's credential handle secret from the instance's
+// encryption key, as the Node host does: HMAC-SHA256 of a fixed label, in hex.
+func credentialHandleSecret(encryptionKey string) string {
+	mac := hmac.New(sha256.New, []byte(encryptionKey))
+	mac.Write([]byte("executor credential handles"))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // workerd serves HTTP with kj's default HttpServerSettings; its pipelineTimeout

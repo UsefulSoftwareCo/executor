@@ -1,5 +1,5 @@
 import { Context, Schema, type Effect } from "effect";
-import { DeploymentMetadata, SourceFilePath, type SourceFile } from "@executor-js/sdk/core";
+import { DeploymentMetadata, SourceFilePath, type SourceTextFile } from "@executor-js/sdk/core";
 
 /**
  * Formats source text for display only; stored source is never rewritten. A file the formatter
@@ -10,7 +10,9 @@ export class SourceFormatter extends Context.Service<
   SourceFormatter,
   {
     /** Every given file, in order, with display-formatted contents. */
-    readonly format: (files: ReadonlyArray<SourceFile>) => Effect.Effect<ReadonlyArray<SourceFile>>;
+    readonly format: (
+      files: ReadonlyArray<SourceTextFile>,
+    ) => Effect.Effect<ReadonlyArray<SourceTextFile>>;
   }
 >()("app-management/SourceFormatter") {}
 
@@ -31,19 +33,24 @@ export const sourceDisplayInlineLimits = {
 /** UTF-8 size of the stored file, before display formatting. */
 export const SourceFileBytes = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
-/** One read-only file with display-formatted text. Stored source is never rewritten. */
+/**
+ * One read-only file with display-formatted text. Stored source is never rewritten. A public file
+ * that is not UTF-8 text, or is stored by its blob, has no text and is marked `binary`.
+ */
 export const SourceDisplayFile = Schema.Struct({
   path: SourceFilePath,
   size: SourceFileBytes,
-  content: Schema.String,
+  content: Schema.optionalKey(Schema.String),
+  binary: Schema.optionalKey(Schema.Literal(true)),
 });
 export type SourceDisplayFile = typeof SourceDisplayFile.Type;
 
-/** A listed file. content is absent when the file exceeds the inline budget. */
+/** A listed file. content is absent when the file exceeds the inline budget or is binary. */
 export const SourceDisplayEntry = Schema.Struct({
   path: SourceFilePath,
   size: SourceFileBytes,
   content: Schema.optionalKey(Schema.String),
+  binary: Schema.optionalKey(Schema.Literal(true)),
 });
 export type SourceDisplayEntry = typeof SourceDisplayEntry.Type;
 

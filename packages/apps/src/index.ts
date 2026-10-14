@@ -7,7 +7,8 @@ export { CacheError } from "@executor-js/app-cache/contracts";
  * exposes ordinary declarations, schema helpers and Promise operations.
  */
 import { Effect, type Schema as EffectSchema } from "effect";
-import type { WebhookContext } from "./contracts/context.ts";
+import type { AppRequirements, WebhookContext } from "./contracts/context.ts";
+import type { AccountScope } from "./contracts/app.ts";
 import { type JsonResponse as NativeResponse, ResponseDecodeError } from "./contracts/http.ts";
 import {
   OAuth2AccessToken as NativeAccessToken,
@@ -20,6 +21,19 @@ import type { Webhook as NativeWebhook } from "./contracts/webhooks.ts";
 import { type PromiseMethods } from "./implementation/authoring.ts";
 import { decodeJson as decodeJsonEffect } from "./implementation/http.ts";
 import { oauth2 as oauth2Effect, secrets as nativeSecrets } from "./implementation/provider.ts";
+import {
+  declarePlacements,
+  query as queryPlacement,
+  type PlacementInput,
+  type RequestPlacements,
+} from "./implementation/placement.ts";
+import type { Placement } from "./contracts/placement.ts";
+import type { QueryContext as NativeQueryContext } from "./contracts/context.ts";
+import {
+  query as operationQuery,
+  type AnyContext,
+  type OperationOptions,
+} from "./implementation/operations.ts";
 import {
   decoderOf,
   fieldExposure,
@@ -36,7 +50,13 @@ import {
 const isFields = (value: unknown): value is Fields =>
   typeof value === "object" && value !== null && Object.values(value).every(isSchema);
 
-export { type JsonObject, type JsonValue, ValidationError } from "./contracts/schema.ts";
+export {
+  DeclarationInvalid,
+  type DeclarationIssue,
+  type JsonObject,
+  type JsonValue,
+  ValidationError,
+} from "./contracts/schema.ts";
 export {
   type Fields,
   type Infer,
@@ -70,11 +90,26 @@ export {
   type ReservedAuthorizationParam,
 } from "./contracts/provider.ts";
 export { defineProvider, type ProviderOptions } from "./implementation/provider.ts";
+export {
+  base64,
+  basic,
+  bearer,
+  header,
+  t,
+  type FieldRef,
+  type FieldRefs,
+  type PlacementInput,
+  type PlacementValue,
+  type RequestPlacements,
+} from "./implementation/placement.ts";
+export type { Placement };
+export type { AccountRequest } from "./contracts/provider.ts";
 export { accountRouter } from "./implementation/account-router.ts";
 export {
   router,
   dynamicRouter,
   withApprovals,
+  renameTools,
   type OperationChild,
   type OperationDeclaration,
   type RouterDeclaration,
@@ -82,6 +117,7 @@ export {
   type RouterOptions,
 } from "./implementation/router.ts";
 export type { RouterIcon } from "./contracts/router.ts";
+export type { AppIcon } from "./contracts/icons.ts";
 export { dynamicSkills } from "./implementation/dynamic-skills.ts";
 export type { HostedTool as OperationDescription } from "./contracts/host.ts";
 
@@ -111,6 +147,34 @@ const exposureOf = (schema: Schema<unknown, boolean>) => {
   const marked = "fields" in schema && isFields(schema.fields) ? fieldExposure(schema.fields) : {};
   return Object.keys(marked).length === 0 ? {} : { exposure: marked };
 };
+
+/** The field names of an object schema; the default OAuth projection has only its access token. */
+const fieldNames = (schema: Schema<unknown, boolean>): readonly string[] =>
+  "fields" in schema && isFields(schema.fields)
+    ? Object.keys(schema.fields)
+    : schema === OAuth2AccessToken
+      ? ["access_token"]
+      : [];
+
+/** A method's placements, declared once from its `request` callback. */
+const placementsOf = (
+  method: string,
+  schema: Schema<unknown, boolean>,
+  request: RequestPlacements<string> | undefined,
+) =>
+  request === undefined
+    ? {}
+    : {
+        request: declarePlacements(
+          method,
+          fieldNames(schema),
+          exposureOf(schema).exposure,
+          request,
+        ),
+      };
+
+/** The names of an object schema's fields, which a method's `request` can reference. */
+type FieldNameOf<S> = S extends ObjectSchema<infer F> ? keyof F & string : never;
 /** Default OAuth fields visible to app code. Host-only grants and clients stay private. */
 export const OAuth2AccessToken = wrap(NativeAccessToken, false);
 
@@ -127,41 +191,66 @@ type WithoutReservedParams<Config> = Config extends unknown
     : Config
   : never;
 
-/** Declare a secrets method without requiring an Effect schema from the author. */
+/**
+ * Declare a secrets method without requiring an Effect schema from the author. `request` says
+ * where its secret fields may be sent, such as `({ token }) => bearer(token)`; it runs once, here.
+ */
 export const secrets = <const F extends Fields>(options: {
   readonly label: string;
   readonly fields: ObjectSchema<F>;
+  readonly request?: RequestPlacements<keyof F & string>;
 }): SecretsMethod<ObjectSchema<F>> =>
   nativeSecrets({
     label: options.label,
     fields: accountDecoder(options.fields),
     ...exposureOf(options.fields),
+    // SAFETY: the callback receives references named by the schema's own keys.
+    ...placementsOf(
+      `"${options.label}"`,
+      options.fields,
+      options.request as RequestPlacements<string> | undefined,
+    ),
   });
 
 /**
  * Declare OAuth discovery/endpoints and an optional app-visible response projection.
  * `authorizationParams` adds service-defined sign-in parameters; a declared `authorizationUrl`
  * keeps its own query. Neither can set host-owned parameters, and each parameter appears once.
+ * `request` says where the projected secret fields may be sent, such as
+ * `({ access_token }) => bearer(access_token)`; it runs once, here.
  */
-export function oauth2(options: OAuth2Config): OAuth2Method<typeof OAuth2AccessToken>;
+export function oauth2(
+  options: OAuth2Config & {
+    readonly request?: RequestPlacements<"access_token">;
+  },
+): OAuth2Method<typeof OAuth2AccessToken>;
 export function oauth2<Response extends Schema<unknown, boolean>>(
   options: OAuth2Config & {
     readonly response: Response;
+    readonly request?: RequestPlacements<FieldNameOf<Response>>;
   },
 ): OAuth2Method<Response>;
 export function oauth2(
   options: OAuth2Config & {
     readonly response?: Schema<unknown, boolean>;
+    readonly request?: unknown;
   },
 ): OAuth2Method<Schema<unknown, boolean>> {
-  const { response = OAuth2AccessToken, ...config } = options;
+  const { response = OAuth2AccessToken, request, ...config } = options;
   return Effect.runSync(
-    oauth2Effect(config, accountDecoder(response), exposureOf(response).exposure),
+    oauth2Effect(
+      config,
+      accountDecoder(response),
+      exposureOf(response).exposure,
+      // SAFETY: the callback receives references named by the response projection's own keys.
+      placementsOf("OAuth", response, request as RequestPlacements<string> | undefined).request,
+    ),
   );
 }
 
-export type { AccountSlots } from "./contracts/app.ts";
+export type { AccountScope, AccountSlots, WebhookAccount } from "./contracts/app.ts";
 export type {
+  AnyScopeMutationContext,
   AppRequirements,
   AppContext,
   QueryContext,
@@ -180,8 +269,13 @@ type AuthorWebhook<Member, Config, State> = Member extends object
     }
   : never;
 /** Author lifecycle methods use async functions and share native decoded context/state types. */
+/**
+ * A webhook's context names its source account's scope: one with `user` serves a user requirement
+ * (`account: { user: "x" }`), one of the `"app"` scope an app requirement (`account: { app: "x" }`)
+ * and runs without a caller.
+ */
 export type Webhook<
-  Context extends WebhookContext,
+  Context extends WebhookContext<AppRequirements, AccountScope>,
   Config extends Schema<unknown, boolean>,
   State extends Schema<unknown, boolean>,
 > = AuthorWebhook<
@@ -229,14 +323,30 @@ export type {
   SqlValue,
 } from "./contracts/sql.ts";
 
+/**
+ * `query(options, run)` declares a read operation. `query(name, value)` inside a method's
+ * `request` places a credential in a query parameter, such as `query("key", key)`.
+ */
+export function query(name: string, value: PlacementInput): Placement;
+export function query<Input, Output, Context extends AnyContext = NativeQueryContext>(
+  options: OperationOptions<Input, Output>,
+  run: (context: Context, input: Input) => Promise<Output>,
+): ReturnType<typeof operationQuery<Input, Output, Context>>;
+export function query(first: unknown, second: unknown): unknown {
+  if (typeof first === "string") return queryPlacement(first, second);
+  // SAFETY: the operation overload's signature types both arguments; this only dispatches on `first`.
+  return operationQuery(...([first, second] as Parameters<typeof operationQuery>));
+}
+
 export {
-  query,
   mutation,
   withApproval,
   toolAnnotations,
+  type Approved,
   type Operation,
   type OperationOptions,
 } from "./implementation/operations.ts";
+
 export type { OperationContext } from "./contracts/operations.ts";
 
 export { workflow, type Workflow, type WorkflowDeclaration } from "./implementation/workflows.ts";
@@ -251,6 +361,12 @@ export {
   type WorkflowReads,
   type WorkflowControls,
 } from "./contracts/workflows.ts";
-export { interval, cron, type ScheduleDeclaration } from "./implementation/schedules.ts";
+export {
+  appCron,
+  appInterval,
+  userCron,
+  userInterval,
+  type ScheduleDeclaration,
+} from "./implementation/schedules.ts";
 
 export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";

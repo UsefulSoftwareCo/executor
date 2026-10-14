@@ -13,7 +13,7 @@ export const appBrowserFiles = [
   {
     path: "index.ts",
     content: `import { defineApp, string, query, workflow, object, router } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ hello: query({ input: object({}) }, async () => "Hello") }),
   workflows: {
     report: workflow({ description: "Prepare a small report", input: object({}), output: object({ message: string() }) }, async (ctx) => ctx.step.do("compose", async () => ({ message: "Report ready" }))),

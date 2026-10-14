@@ -20,7 +20,6 @@ const SkillIndex = Schema.Struct({
     Schema.Struct({
       name: Schema.String,
       app: Schema.Struct({ id: Schema.String, slug: Schema.String }),
-      profile: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -36,8 +35,7 @@ type Connection = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["co
 const customerFiles = (marker: string) => [
   {
     path: "index.ts",
-    content:
-      'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, async () => ({}));',
+    content: 'import { defineApp } from "apps"; export default defineApp({}, async () => ({}));',
   },
   {
     path: "skills/executor/SKILL.md",
@@ -167,8 +165,8 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
         const guide = listed.skills.find(
           (skill) => skill.name === "executor" && skill.app.id !== customer.id,
         );
-        if (guide?.profile === undefined)
-          return yield* Effect.die("The Executor app's entry skill must name its profile");
+        if (guide === undefined)
+          return yield* Effect.die("The Executor app's entry skill must be listed");
         const privateValues = [marker, customer.slug];
 
         // The Executor app's own skill is named by skill and file.
@@ -197,11 +195,8 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
                 tags["executor.product.operation"] === "read",
             );
           });
-        const ownViaApi = yield* viaApi(
-          guide.app.id,
-          "app-authoring",
-          new URLSearchParams({ profile: guide.profile }).toString(),
-        );
+        // The Executor app's skills read with its linked accounts; none needs choosing.
+        const ownViaApi = yield* viaApi(guide.app.id, "app-authoring", "");
         expect(ownViaApi).toMatchObject(executorRead("app-authoring", "SKILL.md"));
         const theirsViaApi = yield* viaApi(customer.id, "executor", "file=feedback.md");
         expectCustomerRead(theirsViaApi, privateValues);
@@ -263,8 +258,8 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
         const guide = listed.skills.find(
           (skill) => skill.name === "executor" && skill.app.id !== customer.id,
         );
-        if (guide?.profile === undefined)
-          return yield* Effect.die("The Executor app's entry skill must name its profile");
+        if (guide === undefined)
+          return yield* Effect.die("The Executor app's entry skill must be listed");
         const privateValues = [marker, customer.slug];
 
         const own = yield* skills.read(guide.app.slug, "executor", "feedback.md");
@@ -290,11 +285,8 @@ layer(HostedLive, { excludeTestServices: true })("Skill read telemetry", (it) =>
               Object.hasOwn(tags, "executor.skill.operation"),
             );
           });
-        const ownViaApi = yield* viaApi(
-          guide.app.id,
-          "app-authoring",
-          new URLSearchParams({ profile: guide.profile }).toString(),
-        );
+        // The Executor app's skills read with its linked accounts; none needs choosing.
+        const ownViaApi = yield* viaApi(guide.app.id, "app-authoring", "");
         expect(ownViaApi).toMatchObject(executorRead("app-authoring", "SKILL.md"));
         const theirsViaApi = yield* viaApi(customer.id, "executor", "file=feedback.md");
         expectCustomerRead(theirsViaApi, privateValues);

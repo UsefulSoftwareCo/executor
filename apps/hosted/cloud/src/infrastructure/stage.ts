@@ -309,6 +309,12 @@ export interface CloudHosts {
   readonly passkey: { readonly rpId: string; readonly origin: string };
   /** Absent without role hosts, where the host's own or configured callback applies. */
   readonly accountCallbacks: Option.Option<AccountCallbacks>;
+  /**
+   * The `Domain` of cookies the edge and the browser origin share: the site's anonymous visitor
+   * identity, set on `executor.sh` and read when that visitor signs up on `app.`. None without
+   * role hosts or under `localhost`, where each host keeps its own.
+   */
+  readonly sharedCookieDomain: Option.Option<string>;
 }
 
 /** The host layout of a deployment at `deployment`, with its browser origin setting. */
@@ -341,6 +347,9 @@ export const cloudHostsAt = (deployment: string) =>
         }),
       }),
       accountCallbacks: accountCallbacksFor(deployment, roles),
+      sharedCookieDomain: Option.flatMap(roles, (r) =>
+        isLoopbackHostname(r.domain) ? Option.none() : Option.some(r.domain),
+      ),
     } satisfies CloudHosts;
   });
 

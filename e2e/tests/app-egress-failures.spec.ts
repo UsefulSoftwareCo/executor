@@ -65,7 +65,7 @@ const Answered = Schema.Struct({
 const fetchApp = `import { defineApp, object, string, query, router } from "apps";
 const answer = async (response) => ({ status: response.status, unreachable: response.headers.get("x-executor-unreachable"), text: await response.text() });
 const input = { input: object({ url: string() }) };
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     global: query(input, async (_ctx, { url }) => answer(await fetch(url))),
     fetched: query(input, async (ctx, { url }) => answer(await ctx.fetch(url))),

@@ -23,6 +23,8 @@ export const cloudflareRepositories = (
     head: (id, branch) => Effect.flatMap(backend, (git) => git.head(id, branch)),
     read: (id, ref) => Effect.flatMap(backend, (git) => git.read(id, ref)),
     commit: (input) => Effect.flatMap(backend, (git) => git.commit(input)),
+    blob: (id, object) => Effect.flatMap(backend, (git) => git.blob(id, object)),
+    file: (id, commit, path) => Effect.flatMap(backend, (git) => git.file(id, commit, path)),
     request: (id, request) => Effect.flatMap(backend, (git) => git.request(id, request)),
   };
 };

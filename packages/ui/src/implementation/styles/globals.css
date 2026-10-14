@@ -2,21 +2,23 @@
 @import "tw-animate-css";
 @source "../components";
 @source "../../../../devtools/src";
+@source "../../../../dashboard-start/src/implementation/build-change-notice.tsx";
 
-/* Executor's product tokens and bundled Geist faces. */
+/* Executor's product tokens and bundled Geist faces. Dashboards preload the faces; a face that
+   misses the first paint is not swapped in, so late fonts never move text. */
 @font-face {
   font-family: Geist;
   src: url("./fonts/geist-sans.woff2") format("woff2");
   font-weight: 100 900;
   font-style: normal;
-  font-display: swap;
+  font-display: optional;
 }
 @font-face {
   font-family: "Geist Mono";
   src: url("./fonts/geist-mono.woff2") format("woff2");
   font-weight: 100 900;
   font-style: normal;
-  font-display: swap;
+  font-display: optional;
 }
 @theme inline {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;

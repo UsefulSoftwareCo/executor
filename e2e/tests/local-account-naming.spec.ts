@@ -14,7 +14,7 @@ import {
 } from "../support/name-account.ts";
 import { Target } from "../support/platform.ts";
 import { oauthRecoveryIssuer } from "../support/oauth-recovery-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { linkedChoice } from "../support/account-choices.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -62,7 +62,7 @@ import { defineApp, defineProvider, secrets, object, string, router } from "apps
 const service = defineProvider({ name: "Local naming fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service: service.many() } } }, async () => ({ tools: router({}) }));
 `,
               },
               appsManifest,
@@ -72,6 +72,8 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         );
         expect(deployed.status).toBe(200);
         const { app } = yield* body(Published, deployed);
+        // A many() requirement uses every linked account, so each account connected from the app
+        // stays linked beside the others.
         const provider = app.requirements.accounts.service.provider;
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
@@ -90,13 +92,6 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             Effect.flatMap((response) => body(Detail, response)),
             Effect.map((detail) => detail.account.label),
           );
-        // Account selection connects into an existing profile, as it does once an app is in use.
-        const profile = yield* createProfile(
-          agent,
-          `/v1/apps/${app.id}`,
-          { owner: "local", subject: "local" },
-          headers,
-        );
         // Every dashboard connection fills an app requirement.
         const add = (label?: string) =>
           Effect.gen(function* () {
@@ -104,10 +99,8 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
               Account,
               yield* session.send(
                 "POST",
-                `/dashboard/api/apps/${app.id}/accounts`,
+                `/dashboard/api/apps/${app.id}/accounts/user/service/connections`,
                 {
-                  profile: profile.id,
-                  requirement: "service",
                   method: "key",
                   ...(label === undefined ? {} : { label }),
                   fields: { token: "synthetic-local-naming-token" },
@@ -135,6 +128,23 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           ],
           ["POST", `/dashboard/api/accounts/${accounts[0]}/oauth/start`, {}],
           ["POST", "/dashboard/api/accounts/oauth/start", { provider, method: "key" }],
+          // Nor can an agent save or replace credentials through the API: they go through a
+          // connection link the user completes.
+          [
+            "POST",
+            "/v1/accounts",
+            {
+              owner: "local",
+              provider,
+              method: "key",
+              fields: { token: "synthetic-local-naming-token" },
+            },
+          ],
+          [
+            "PUT",
+            `/v1/accounts/${accounts[0]}/credentials`,
+            { fields: { token: "synthetic-local-naming-token" } },
+          ],
         ] as const)
           expect((yield* session.send(method, path, payload, headers)).status, path).toBe(404);
         expect(
@@ -198,7 +208,8 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             page.waitForResponse(
               (response) =>
                 response.request().method() === "POST" &&
-                new URL(response.url()).pathname === `/dashboard/api/apps/${app.id}/accounts`,
+                new URL(response.url()).pathname ===
+                  `/dashboard/api/apps/${app.id}/accounts/user/service/connections`,
             ),
             connect.getByRole("button", { name: "Add account", exact: true }).click(),
           ]).then(([response]) => response.json() as Promise<unknown>),
@@ -225,16 +236,20 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         yield* browser.use("Save the dialog account's name", (page) =>
           nameConnectedAccount(page, "Dialog key"),
         );
-        // Saving a new account from the app chooses it in place.
-        yield* browser.use("The app chooses the renamed account", (page) =>
-          page.getByRole("radio", { name: "Dialog key", exact: true, checked: true }).waitFor(),
+        // An account connected from the app is linked to it, listed in place under its new name.
+        yield* browser.use("The app lists the renamed account as linked", (page) =>
+          linkedChoice(
+            page.getByRole("region", { name: "Local naming fixture", exact: true }),
+            "Local naming fixture",
+            "Dialog key",
+          ).waitFor(),
         );
         expect(yield* savedLabel(fromDialog.id)).toBe("Dialog key");
-        yield* browser.checkpoint("Named account selected for the app");
+        yield* browser.checkpoint("Named account linked to the app");
 
-        // Every account row keeps its menu in view, not only the selected one or on hover.
+        // Every linked account row keeps its menu in view, not only on hover.
         expect(
-          yield* browser.use("Unselected accounts show their menu without hover", (page) =>
+          yield* browser.use("Other linked accounts show their menu without hover", (page) =>
             page.mouse
               .move(0, 0)
               .then(() =>
@@ -245,7 +260,8 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           ),
         ).toBe("1");
         expect(
-          yield* browser.use("An unselected account's menu cannot remove it", (page) =>
+          // A linked account's menu edits it or unlinks it from the app; none deletes the account.
+          yield* browser.use("Another linked account's menu edits or unlinks it", (page) =>
             page
               .getByRole("button", { name: "Manage Supplied name", exact: true })
               .click()
@@ -262,14 +278,14 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
               )
               .then(() => page.getByRole("menuitem").allTextContents()),
           ),
-        ).toEqual(["Edit details", "Update credentials"]);
-        yield* browser.checkpoint("Unselected account menu");
-        yield* browser.use("Close the unselected account's menu", (page) =>
+        ).toEqual(["Edit details", "Update credentials", "Unlink"]);
+        yield* browser.checkpoint("Another linked account's menu");
+        yield* browser.use("Close the other account's menu", (page) =>
           page.keyboard.press("Escape"),
         );
 
-        // An unselected account's menu opens the same dialogs as a selected one.
-        const edit = yield* browser.use("Edit an unselected account's details", (page) =>
+        // Every linked account's menu opens the same dialogs.
+        const edit = yield* browser.use("Edit another linked account's details", (page) =>
           page
             .getByRole("button", { name: "Manage Supplied name", exact: true })
             .click()
@@ -277,15 +293,15 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             .then(() => page.getByRole("dialog", { name: "Edit account", exact: true }))
             .then((dialog) => dialog.waitFor({ state: "visible" }).then(() => dialog)),
         );
-        yield* browser.checkpoint("Edit details from an unselected account");
+        yield* browser.checkpoint("Edit details from another linked account");
         yield* browser.use("Cancel editing the details", () =>
           edit
             .getByRole("button", { name: "Cancel", exact: true })
             .click()
             .then(() => edit.waitFor({ state: "hidden" })),
         );
-        const unselectedCredentials = yield* browser.use(
-          "Update an unselected account's credentials",
+        const otherCredentials = yield* browser.use(
+          "Update another linked account's credentials",
           (page) =>
             page
               .getByRole("button", { name: "Manage Supplied name", exact: true })
@@ -301,15 +317,15 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
                   .then(() => dialog),
               ),
         );
-        yield* browser.checkpoint("Update credentials from an unselected account");
+        yield* browser.checkpoint("Update credentials from another linked account");
         yield* browser.use("Close the credentials dialog", () =>
-          unselectedCredentials
+          otherCredentials
             .getByRole("button", { name: "Close", exact: true })
             .click()
-            .then(() => unselectedCredentials.waitFor({ state: "hidden" })),
+            .then(() => otherCredentials.waitFor({ state: "hidden" })),
         );
 
-        // Credentials are replaced from the app that selects the account, through its menu.
+        // Credentials are replaced from an app the account is linked to, through its menu.
         yield* browser.use("Update the named account's credentials", (page) =>
           page
             .getByRole("button", { name: "Manage Dialog key", exact: true })
@@ -330,7 +346,8 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             page.waitForResponse(
               (response) =>
                 response.request().method() === "POST" &&
-                new URL(response.url()).pathname === `/dashboard/api/apps/${app.id}/accounts`,
+                new URL(response.url()).pathname ===
+                  `/dashboard/api/apps/${app.id}/accounts/user/service/connections`,
             ),
             replace.getByRole("button", { name: "Save credentials", exact: true }).click(),
           ]).then(([response]) => response.json() as Promise<unknown>),
@@ -340,7 +357,11 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           replace
             .waitFor({ state: "hidden" })
             .then(() =>
-              page.getByRole("radio", { name: "Dialog key", exact: true, checked: true }).waitFor(),
+              linkedChoice(
+                page.getByRole("region", { name: "Local naming fixture", exact: true }),
+                "Local naming fixture",
+                "Dialog key",
+              ).waitFor(),
             ),
         );
         expect(
@@ -375,7 +396,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Sample service",auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin)},scopes:["reports:read"]})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
               },
               appsManifest,
             ],
@@ -434,10 +455,7 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         const returned = yield* browser.use("Return to the app to name the account", (page) =>
           page
             .waitForURL(
-              (url) =>
-                url.pathname === appPath &&
-                url.searchParams.get("view") === "accounts" &&
-                url.searchParams.has("profile"),
+              (url) => url.pathname === appPath && url.searchParams.get("view") === "accounts",
             )
             .then(() => accountNamePrompt(page))
             .then(() =>
@@ -447,16 +465,26 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
                 })
                 .waitFor({ state: "visible" }),
             )
-            .then(() => accountNameField(page).inputValue()),
+            .then(() =>
+              accountNameField(page)
+                .inputValue()
+                .then((name) => ({ name, url: new URL(page.url()) })),
+            ),
         );
-        expect(returned).toBe("Default");
+        expect(returned.name).toBe("Default");
+        // The return names only the app's accounts view and carries no other state.
+        expect([...returned.url.searchParams.keys()]).toEqual(["view"]);
         yield* browser.checkpoint("Name a local OAuth account after sign-in returns");
         yield* browser.use("Name the OAuth account", (page) =>
           nameConnectedAccount(page, "Local reports"),
         );
-        // Completing the app's connection selected the account; nothing binds it afterwards.
-        yield* browser.use("The app selects the named account", (page) =>
-          page.getByRole("radio", { name: "Local reports", exact: true, checked: true }).waitFor(),
+        // Completing the app's connection linked the account; nothing links it afterwards.
+        yield* browser.use("The app lists the named account as linked", (page) =>
+          linkedChoice(
+            page.getByRole("region", { name: "Sample service", exact: true }),
+            "Sample service",
+            "Local reports",
+          ).waitFor(),
         );
         expect(yield* savedLabel(account)).toBe("Local reports");
 
@@ -482,9 +510,11 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
               (url) => url.pathname === appPath && url.searchParams.get("view") === "accounts",
             )
             .then(() =>
-              page
-                .getByRole("radio", { name: "Local reports", exact: true, checked: true })
-                .waitFor(),
+              linkedChoice(
+                page.getByRole("region", { name: "Sample service", exact: true }),
+                "Sample service",
+                "Local reports",
+              ).waitFor(),
             ),
         );
         expect(

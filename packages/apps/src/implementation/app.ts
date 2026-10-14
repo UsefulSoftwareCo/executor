@@ -3,12 +3,18 @@ import { Effect, Schema as EffectSchema } from "effect";
 import { JsonValue } from "../contracts/schema.ts";
 import { ScheduleTiming } from "../contracts/schedules.ts";
 import type { ScheduleDeclaration } from "./schedules.ts";
-import type { App as NativeApp, AppDefinition as NativeDefinition } from "../contracts/app.ts";
+import type {
+  App as NativeApp,
+  AccountScope,
+  AccountSlots,
+  AppDefinition as NativeDefinition,
+  EvaluationContext,
+} from "../contracts/app.ts";
 import type {
   AppRequirements,
-  AppContext,
   QueryContext,
   MutationContext,
+  RequirementSlots,
   WebhookContext,
 } from "../contracts/context.ts";
 import { fromPromise, method, type PromiseMethods } from "./authoring.ts";
@@ -19,29 +25,73 @@ import { declaredOperations, nativeRouter, type RouterDeclaration } from "./rout
 import { decoderOf, isSchema, type Schema } from "./schema.ts";
 import { nativeEvent } from "./events.ts";
 import type { AppEvent } from "../contracts/events.ts";
+import { appIconsProblem } from "../contracts/icons.ts";
 
-type PromiseCatalog<Catalog> =
-  Catalog extends Readonly<Record<string, object>>
-    ? {
-        readonly [Name in keyof Catalog]: {
-          readonly [Key in keyof Catalog[Name]]: Key extends "config" | "state"
-            ? Schema<unknown, boolean>
-            : PromiseMethods<Catalog[Name]>[Key];
-        };
-      }
-    : Catalog;
+/** One native webhook definition with the given handler context. */
+type NativeWebhook<Context> = NonNullable<NativeDefinition<Context>["webhooks"]>[string];
+
+/** A webhook as authors write it: Promise handlers, author schemas and its source requirement. */
+type AuthorWebhook<Context, Account> = {
+  readonly [Key in keyof NativeWebhook<Context>]: Key extends "config" | "state"
+    ? Schema<unknown, boolean>
+    : Key extends "account"
+      ? Account
+      : PromiseMethods<NativeWebhook<Context>>[Key];
+};
+
+/**
+ * A user-account webhook gets the caller-shaped context; an app-account webhook runs without a
+ * caller, so its context has no `user`.
+ */
+type AuthorWebhooks<Requirements extends AppRequirements> = Readonly<
+  Record<
+    string,
+    | AuthorWebhook<
+        WebhookContext<Requirements>,
+        { readonly user: keyof RequirementSlots<Requirements>["user"] & string }
+      >
+    | AuthorWebhook<
+        WebhookContext<Requirements, "app">,
+        { readonly app: keyof RequirementSlots<Requirements>["app"] & string }
+      >
+  >
+>;
+
+/**
+ * User schedules run as each member who enables them; app schedules run without a caller, so their
+ * mutation takes a context of the `"app"` scope.
+ */
+type AuthorSchedules<Requirements extends AppRequirements> = Readonly<
+  Record<
+    string,
+    | ScheduleDeclaration<MutationContext<Requirements>, "user">
+    | ScheduleDeclaration<MutationContext<Requirements, "app">, "app">
+  >
+>;
+
+/**
+ * A run started by a caller binds its accounts; one started without a caller, such as by an app
+ * schedule, has no `user`, so its workflow declares a context of the `"app"` scope.
+ */
+type AuthorWorkflows<Requirements extends AppRequirements> = Readonly<
+  Record<
+    string,
+    | WorkflowDeclaration<WorkflowContext<Requirements>>
+    | WorkflowDeclaration<WorkflowContext<Requirements, "app">>
+  >
+>;
 
 /** Author definition projected from native capabilities. Excluding callable objects keeps
  * factories from being inferred as definitions and preserves contextual handler inference. */
 export type AppDefinition<Requirements extends AppRequirements> = {
   readonly [Key in keyof NativeDefinition<WebhookContext<Requirements>>]: Key extends "workflows"
-    ? Readonly<Record<string, WorkflowDeclaration<WorkflowContext<Requirements>>>>
+    ? AuthorWorkflows<Requirements>
     : Key extends "schedules"
-      ? Readonly<Record<string, ScheduleDeclaration<MutationContext<Requirements>>>>
+      ? AuthorSchedules<Requirements>
       : Key extends "tools"
         ? RouterDeclaration<QueryContext<Requirements>, MutationContext<Requirements>>
         : Key extends "webhooks"
-          ? PromiseCatalog<NonNullable<NativeDefinition<WebhookContext<Requirements>>[Key]>>
+          ? AuthorWebhooks<Requirements>
           : NativeDefinition<WebhookContext<Requirements>>[Key];
 } & {
   readonly name?: never;
@@ -49,6 +99,10 @@ export type AppDefinition<Requirements extends AppRequirements> = {
   readonly mutations?: never;
   readonly call?: never;
 };
+
+/** A webhook context as the host builds it: an app-account hook's has no `user`. */
+type HostWebhookContext = WebhookContext<AppRequirements, AccountScope> &
+  Partial<Pick<WebhookContext, "user">>;
 
 /** Adapt operation and webhook catalogs without evaluating their handlers. */
 export type EffectDefinition<Def> = {
@@ -59,7 +113,7 @@ export type EffectDefinition<Def> = {
       : Key extends "schedules"
         ? NonNullable<NativeDefinition<unknown>["schedules"]>
         : Key extends "webhooks"
-          ? NonNullable<NativeDefinition<WebhookContext>["webhooks"]>
+          ? NonNullable<NativeDefinition<HostWebhookContext>["webhooks"]>
           : Key extends "skills"
             ? NonNullable<NativeDefinition<unknown>["skills"]>
             : Key extends "dynamicSkills"
@@ -80,10 +134,18 @@ export interface App<
   Requirements extends AppRequirements,
   Def extends AppDefinition<Requirements>,
 > {
-  readonly [InternalApp]: NativeApp<Requirements["accounts"], EffectDefinition<Def>>;
-  readonly accounts: Requirements["accounts"];
-  readonly evaluate: (context: AppContext<Requirements>) => Promise<Def>;
+  readonly [InternalApp]: NativeApp<RequirementSlots<Requirements>, EffectDefinition<Def>>;
+  readonly accounts: RequirementSlots<Requirements>;
+  readonly evaluate: (context: AppFactoryContext<Requirements>) => Promise<Def>;
 }
+
+/**
+ * What a dynamic definition's factory receives. App-scope work, such as an app schedule, evaluates
+ * the app without a caller, so `user` is absent then.
+ */
+export type AppFactoryContext<Requirements extends AppRequirements> = EvaluationContext<
+  RequirementSlots<Requirements>
+>;
 
 /** Retrieve the same declaration for an Effect host. No evaluation or I/O occurs. */
 export const toEffectApp = <
@@ -91,7 +153,7 @@ export const toEffectApp = <
   Def extends AppDefinition<Requirements>,
 >(
   app: App<Requirements, Def>,
-): NativeApp<Requirements["accounts"], EffectDefinition<Def>> => app[InternalApp];
+): NativeApp<RequirementSlots<Requirements>, EffectDefinition<Def>> => app[InternalApp];
 
 /** Source written before routers (protocols 1 to 3) declares `queries` and `mutations` catalogs. */
 function rejectCatalogs(definition: object) {
@@ -178,9 +240,12 @@ function adaptDefinition<
               );
               if (match === undefined)
                 throw new Error("A schedule must reference a mutation in this app's tools");
+              if (schedule.scope === "app" && match.operation.approval !== undefined)
+                throw new Error("An app schedule must reference a mutation without an approval");
               return [
                 name,
                 {
+                  ...(schedule.scope === "app" ? { scope: "app" as const } : {}),
                   timing: EffectSchema.decodeUnknownSync(ScheduleTiming)(schedule.timing),
                   input: EffectSchema.decodeUnknownSync(JsonValue)(schedule.input),
                   tool: match.name,
@@ -201,6 +266,28 @@ function adaptDefinition<
   } as EffectDefinition<Def>;
 }
 
+/**
+ * Each scope's requirements, checked once: the removed `accounts` key fails, and a requirement name
+ * is used in one scope only, so a host can name a requirement without its scope.
+ */
+function scopedSlots<Requirements extends AppRequirements>(
+  requirements: Requirements,
+): RequirementSlots<Requirements> {
+  if ("accounts" in requirements)
+    throw new TypeError(
+      "Declare account requirements by scope: user: { accounts } for each caller's accounts, app: { accounts } for the app's own",
+    );
+  const app: AccountSlots = requirements.app?.accounts ?? {};
+  const user: AccountSlots = requirements.user?.accounts ?? {};
+  for (const name of Object.keys(app))
+    if (Object.hasOwn(user, name))
+      throw new TypeError(
+        `The requirement ${JSON.stringify(name)} is declared as both an app and a user account; name them differently`,
+      );
+  // SAFETY: each scope is the declaration's own slots, or none when the app declares none in it.
+  return { app, user } as RequirementSlots<Requirements>;
+}
+
 /** Assemble app behavior. Package names belong in package.json; hosts name installed copies. */
 export const defineApp = <
   const Requirements extends AppRequirements,
@@ -209,8 +296,9 @@ export const defineApp = <
   requirements: Requirements,
   definition:
     | (Def & AppDefinition<Requirements>)
-    | ((context: AppContext<Requirements>) => Promise<Def & AppDefinition<Requirements>>),
+    | ((context: AppFactoryContext<Requirements>) => Promise<Def & AppDefinition<Requirements>>),
 ): App<Requirements, Def> => {
+  const accounts = scopedSlots(requirements);
   // A static definition is checked when the module loads, so such source fails its build.
   if (typeof definition !== "function") rejectCatalogs(definition);
   const evaluate = typeof definition === "function" ? definition : async () => definition;
@@ -228,9 +316,17 @@ export const defineApp = <
             return [name, native];
           }),
         );
-  const native: NativeApp<Requirements["accounts"], EffectDefinition<Def>> = {
-    accounts: requirements.accounts,
+  // Icons are read at build without evaluating the app, so invalid ones fail its build here.
+  const iconsProblem =
+    requirements.icons === undefined ? undefined : appIconsProblem(requirements.icons);
+  if (iconsProblem !== undefined)
+    throw new TypeError(`The app's icons are invalid: ${iconsProblem}`);
+  const native: NativeApp<RequirementSlots<Requirements>, EffectDefinition<Def>> = {
+    accounts,
     ...(events === undefined ? {} : { events }),
+    ...(requirements.icons === undefined || requirements.icons.length === 0
+      ? {}
+      : { icons: requirements.icons }),
     evaluate: (context) =>
       factory(context).pipe(Effect.map((value) => adaptDefinition<Requirements, Def>(value))),
   };

@@ -1,6 +1,8 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
-import { refreshProfiles } from "./profiles.ts";
+import { refreshAppLinks } from "./app-accounts.ts";
+import { discoveryTarget, refreshAppDiscovery } from "./app-discovery.ts";
+import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
 import { acknowledgeResourceAccount, resourceDirectoryAtom } from "./resource-access.ts";
 import { protectedQuery } from "./protected-query.ts";
 /** Account queries remain independent across organizations, including OAuth returns. */
@@ -36,31 +38,53 @@ const updateAccount = Atom.family((key: AccountKey) =>
     ),
   ),
 );
-const checkAccount = Atom.family((key: AccountKey) =>
-  HostedClient.runtime.fn((_: void, get) =>
-    Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
-      Effect.tap((health) =>
-        Effect.sync(() => {
-          acknowledge(get, accountAtom(key), (data) => ({ ...data, health }));
-          // The account list reads the resource directory; reload it for the recorded results.
-          get.refresh(resourceDirectoryAtom(key.organization));
-          get.refresh(resourceDirectoryAtom(key.organization, "managed"));
-          acknowledge(get, inventoryAtom(key.organization), (data) => ({
-            ...data,
-            accounts: data.accounts.map((current) =>
-              current.id === key.account ? { ...current, health } : current,
-            ),
-          }));
-        }),
-      ),
+/** Run the checks of the apps this member can use and show the results where accounts are listed. */
+const runCheck = (get: Atom.FnContext, key: AccountKey) =>
+  Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
+    Effect.tap((health) =>
+      Effect.sync(() => {
+        acknowledge(get, accountAtom(key), (data) => ({ ...data, health }));
+        // The account list reads the resource directory; reload it for the recorded results.
+        get.refresh(resourceDirectoryAtom(key.organization));
+        get.refresh(resourceDirectoryAtom(key.organization, "managed"));
+        acknowledge(get, inventoryAtom(key.organization), (data) => ({
+          ...data,
+          accounts: data.accounts.map((current) =>
+            current.id === key.account ? { ...current, health } : current,
+          ),
+        }));
+      }),
     ),
-  ),
+  );
+const checkAccount = Atom.family((key: AccountKey) =>
+  HostedClient.runtime.fn((_: void, get) => runCheck(get, key)),
 );
 /** Run the checks of the apps this member can use; the account query shows the results. */
 export const checkAccountAtom = (key: {
   organization: OrganizationReference;
   account: AccountId;
 }) => checkAccount(new AccountKey(key));
+class AppAccountKey extends Data.Class<{
+  readonly organization: OrganizationReference;
+  readonly app: AppId;
+  readonly account: AccountId;
+}> {}
+const checkAppAccount = Atom.family((key: AppAccountKey) =>
+  HostedClient.runtime.fn((_: void, get) =>
+    runCheck(get, new AccountKey({ organization: key.organization, account: key.account })).pipe(
+      // The app's Accounts tab shows each linked account's health from the app's links.
+      Effect.tap(() =>
+        Effect.sync(() => refreshAppLinks(get, { organization: key.organization, app: key.app })),
+      ),
+    ),
+  ),
+);
+/** Check an account from one app's accounts, whose links then show the results. */
+export const checkAppAccountAtom = (key: {
+  organization: OrganizationReference;
+  app: AppId;
+  account: AccountId;
+}) => checkAppAccount(new AppAccountKey(key));
 /**
  * A new account waiting to be named. The organization layout shows the prompt, so page refreshes
  * after saving, and the OAuth return navigation, cannot dismiss it.
@@ -130,23 +154,16 @@ function refreshCredentialDependents(
 ) {
   const inventory = AsyncResult.value(get(inventoryAtom(organization)));
   if (Option.isSome(inventory))
-    for (const profile of inventory.value.profiles) {
-      if (
-        Object.values(profile.accounts).some((selection) =>
-          typeof selection === "string" ? selection === account : selection.includes(account),
-        )
-      ) {
-        refreshProfiles(get, { organization, app: profile.app });
-        get.refresh(
-          toolsAtom({
-            organization,
-            app: profile.app,
-            profile: profile.id,
-            expectedProfileRevision: profile.revision,
-          }),
-        );
+    for (const app of inventory.value.apps)
+      if (linkedAccountIds(inventory.value.links, app.id).includes(account)) {
+        refreshAppLinks(get, {
+          organization,
+          app: app.id,
+          requirements: app.requirements.accounts,
+        });
+        get.refresh(toolsAtom({ organization, app: app.id }));
+        refreshAppDiscovery(get, discoveryTarget(organization, app));
       }
-    }
 }
 
 /**

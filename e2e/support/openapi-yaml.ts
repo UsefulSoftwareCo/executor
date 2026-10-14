@@ -8,7 +8,6 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
-import { createProfile } from "./profiles.ts";
 import { appsManifest } from "./apps-release.ts";
 
 /** Operations share a parameter and a schema through YAML anchors. */
@@ -101,7 +100,7 @@ export const openapiYamlFixture = Effect.gen(function* () {
           {
             path: "index.ts",
             content: `import { defineApp } from 'apps'; import { liveOpenapiRouter } from 'apps/openapi';
-export default defineApp({accounts:{}}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
+export default defineApp({}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
  source:{url:${JSON.stringify(`${origin}/${document}.yaml`)}}, allowedOrigin:${JSON.stringify(origin)},
  securitySchemes:{}, methods:{}, oauth:[]
 }) }));`,
@@ -114,9 +113,8 @@ export default defineApp({accounts:{}}, async ctx => ({ tools: liveOpenapiRouter
       yield* Effect.addFinalizer(() =>
         api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
       );
-      const profile = yield* createProfile(actors.owner, path);
       return {
-        tools: api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`),
+        tools: api.request(actors.owner, "GET", `${path}/tools`),
       };
     });
   return { deploy };

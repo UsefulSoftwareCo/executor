@@ -9,10 +9,12 @@ import {
 import {
   Cause,
   Clock,
+  Config,
   Console,
   Context,
   Effect,
   Exit,
+  FileSystem,
   Layer,
   Redacted,
   Result,
@@ -121,6 +123,49 @@ export class Browser extends Context.Service<
       yield* driver("route batched reads through test routes", () =>
         splitRoutedReads(context, targetHosts(target).browser),
       );
+      // `E2E_COVERAGE=1` records the JavaScript coverage of every page Chromium opens, from its first
+      // script, for `e2e/coverage.ts` to map to the dashboards' sources.
+      const fs = yield* FileSystem.FileSystem;
+      const coverage =
+        (yield* Config.Boolean("E2E_COVERAGE").pipe(Config.withDefault(false))) &&
+        target.scenarioId !== undefined &&
+        browser.browserType().name() === "chromium"
+          ? `${target.evidenceDirectory ?? target.directory}/coverage/${target.scenarioId}`
+          : undefined;
+      const profiling = new Map<Page, Promise<void>>();
+      if (coverage !== undefined)
+        context.on("page", (opened) =>
+          profiling.set(
+            opened,
+            opened.coverage.startJSCoverage({ resetOnNavigation: false }).catch(() => {
+              profiling.delete(opened);
+            }),
+          ),
+        );
+      const saveCoverage = Effect.gen(function* () {
+        if (coverage === undefined) return;
+        yield* fs.makeDirectory(`${coverage}/browser`, { recursive: true });
+        if (!(yield* fs.exists(`${coverage}/scenario.json`)))
+          yield* fs.writeFileString(
+            `${coverage}/scenario.json`,
+            JSON.stringify({ target: target.metadata.target, title: target.scenarioLabel }),
+          );
+        let index = 0;
+        for (const [opened, started] of profiling) {
+          if (opened.isClosed()) continue;
+          const entries = yield* driver("read browser coverage", () =>
+            started.then(() => opened.coverage.stopJSCoverage()),
+          );
+          yield* fs.writeFileString(
+            `${coverage}/browser/browser-${index++}.json`,
+            JSON.stringify(
+              entries
+                .filter(({ url }) => /^https?:/.test(url))
+                .map(({ url, functions }) => ({ url, functions })),
+            ),
+          );
+        }
+      });
       // Register cleanup immediately, before trace/page setup can fail.
       yield* Effect.addFinalizer((exit) =>
         Effect.gen(function* () {
@@ -146,6 +191,8 @@ export class Browser extends Context.Service<
             yield* evidence.artifact("Playwright trace", "application/zip", "trace.zip");
           }
           const video = page?.video();
+          // Coverage is evidence about the suite, not the scenario; it never fails one.
+          yield* saveCoverage.pipe(Effect.ignore);
           yield* driver("close browser context", () => context.close()).pipe(Effect.orDie);
           yield* driver("collect sanitized resource failures", () =>
             Promise.all(failureReads),
@@ -171,6 +218,11 @@ export class Browser extends Context.Service<
           const started = yield* Clock.currentTimeMillis;
           page = yield* driver("open browser page", () => context.newPage());
           const current = page;
+          // Profile from the page's first script.
+          yield* driver(
+            "start browser coverage",
+            () => profiling.get(current) ?? Promise.resolve(),
+          );
           const capture = yield* captureUIObservations(current, evidence, scope, target);
           const focus = yield* recording.open({
             kind: "browser",

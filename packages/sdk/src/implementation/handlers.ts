@@ -7,23 +7,6 @@ import type { Executor } from "../contracts/executor.ts";
 /** Mount the SDK contract with one supplied executor; the host provides transport and access control. */
 export const executorHandlers = (executor: Executor) =>
   Layer.mergeAll(
-    HttpApiBuilder.group(ExecutorApi, "appProfiles", (handlers) =>
-      handlers
-        .handle("create", ({ params, payload }) =>
-          executor.apps.profiles.create({ ...params, ...payload }),
-        )
-        .handle("get", ({ params, query }) => executor.apps.profiles.get({ ...params, ...query }))
-        .handle("list", ({ params, query }) => executor.apps.profiles.list({ ...params, ...query }))
-        .handle("listMany", ({ payload }) => executor.apps.profiles.listMany(payload))
-        .handle("update", ({ params, payload }) =>
-          executor.apps.profiles.update({ ...params, ...payload }),
-        )
-        .handle("setEnabled", ({ params, payload }) =>
-          executor.apps.profiles.setEnabled({ ...params, ...payload }),
-        )
-        .handle("reconcile", ({ params }) => executor.apps.profiles.reconcile(params))
-        .handle("remove", ({ params }) => executor.apps.profiles.remove(params)),
-    ),
     HttpApiBuilder.group(ExecutorApi, "skills", (handlers) =>
       handlers
         .handle("bundle", ({ params, query }) => executor.skills.bundle({ ...params, ...query }))
@@ -39,9 +22,14 @@ export const executorHandlers = (executor: Executor) =>
         .handle("configure", ({ params, payload }) =>
           executor.schedules.configure({ ...params, ...payload }),
         )
+        .handle("copy", ({ params, query }) => executor.schedules.copy({ ...params, ...query }))
+        .handle("update", ({ params, payload }) =>
+          executor.schedules.update({ ...params, ...payload }),
+        )
         .handle("runNow", ({ params, payload }) =>
           executor.schedules.runNow({ ...params, ...payload }),
         )
+        .handle("remove", ({ params, query }) => executor.schedules.remove({ ...params, ...query }))
         .handle("runs", ({ query }) => executor.schedules.runs(query))
         .handle("approval", ({ params, query }) =>
           executor.schedules.approval({ ...params, ...query }),
@@ -52,21 +40,20 @@ export const executorHandlers = (executor: Executor) =>
     ),
     HttpApiBuilder.group(ExecutorApi, "accounts", (handlers) =>
       handlers
-        .handle("add", ({ payload }) => executor.accounts.add(payload))
         .handle("update", ({ params, query, payload }) =>
           executor.accounts.update({ ...params, ...query, ...payload }),
         )
         .handle("provider", ({ params, query }) =>
           executor.accounts.provider({ ...params, ...query }),
         )
-        .handle("replaceCredentials", ({ params, query, payload }) =>
-          executor.accounts.replaceCredentials({ ...params, ...query, ...payload }),
-        )
         .handle("remove", ({ params, query }) => executor.accounts.remove({ ...params, ...query }))
         .handle("signIn", ({ params, query }) => executor.accounts.signIn({ ...params, ...query }))
         .handle("providers", ({ query }) => executor.accounts.providers(query))
         .handle("get", ({ params, query }) => executor.accounts.get({ ...params, ...query }))
         .handle("health", ({ params, query }) => executor.accounts.health({ ...params, ...query }))
+        .handle("revocation", ({ params, query }) =>
+          executor.accounts.revocation({ ...params, ...query }),
+        )
         .handle("listHealth", ({ query }) => executor.accounts.listHealth(query))
         .handle("check", ({ params, query, payload }) =>
           executor.accounts.check({ ...params, ...query, ...payload }),
@@ -88,6 +75,19 @@ export const executorHandlers = (executor: Executor) =>
         .handle("findOAuth", ({ payload }) => executor.accountConnections.findOAuth(payload))
         .handle("completeOAuth", ({ payload }) =>
           executor.accountConnections.completeOAuth(payload),
+        ),
+    ),
+    HttpApiBuilder.group(ExecutorApi, "oauthClients", (handlers) =>
+      handlers
+        .handle("register", ({ payload }) => executor.oauthClients.register(payload))
+        .handle("list", ({ query }) => executor.oauthClients.list(query))
+        .handle("issuers", ({ query }) => executor.oauthClients.issuers(query))
+        .handle("get", ({ params, query }) => executor.oauthClients.get({ ...params, ...query }))
+        .handle("update", ({ params, payload }) =>
+          executor.oauthClients.update({ ...params, ...payload }),
+        )
+        .handle("remove", ({ params, query }) =>
+          executor.oauthClients.remove({ ...params, ...query }),
         ),
     ),
     HttpApiBuilder.group(ExecutorApi, "apps", (handlers) =>
@@ -136,7 +136,8 @@ export const executorHandlers = (executor: Executor) =>
     HttpApiBuilder.group(ExecutorApi, "registry", (handlers) =>
       handlers
         .handle("list", ({ query }) => executor.registry.list(query))
-        .handle("snapshot", ({ query }) => executor.registry.snapshot(query)),
+        .handle("snapshot", ({ query }) => executor.registry.snapshot(query))
+        .handle("file", ({ query }) => executor.registry.file(query)),
     ),
     HttpApiBuilder.group(ExecutorApi, "owners", (handlers) =>
       handlers
@@ -169,12 +170,18 @@ export const executorHandlers = (executor: Executor) =>
         .handle("definitions", ({ params, query }) =>
           executor.webhooks.definitions({ ...params, ...query }),
         )
-        .handle("list", ({ params, query }) => executor.webhooks.list({ ...params, ...query }))
+        .handle("list", ({ params }) => executor.webhooks.list(params))
         .handle("create", ({ params, payload }) =>
           executor.webhooks.create({ ...params, ...payload }),
         )
         .handle("reconcile", ({ params }) => executor.webhooks.reconcile(params))
         .handle("remove", ({ params }) => executor.webhooks.remove(params))
+        .handle("sources", ({ params }) => executor.webhooks.sources(params))
+        .handle("link", ({ params, payload }) => executor.webhooks.link({ ...params, ...payload }))
+        .handle("configureSource", ({ params, payload }) =>
+          executor.webhooks.configureSource({ ...params, ...payload }),
+        )
+        .handle("unlink", ({ params }) => executor.webhooks.unlink(params))
         .handle("deliver", ({ params, payload }) =>
           executor.webhooks.deliver({ ...params, ...payload }),
         ),

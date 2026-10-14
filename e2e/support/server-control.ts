@@ -51,7 +51,7 @@ export const controlRequest = (path: string, expectedStatus: number, body?: unkn
   });
 
 /**
- * Stop, start, restart or kill the product, advance its stopped clock, set its data-step mode or
+ * Stop, start, restart or kill the product, advance its clock, set its data-step mode or
  * turn on an operator setting for its next start.
  */
 export const serverControl = (

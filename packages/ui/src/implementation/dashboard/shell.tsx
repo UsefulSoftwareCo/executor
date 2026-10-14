@@ -71,6 +71,7 @@ export function DashboardShell({
   navigation,
   banner,
   support,
+  notice,
   footer,
   children,
 }: {
@@ -82,6 +83,8 @@ export function DashboardShell({
   readonly banner?: ReactNode;
   /** A product-owned way to reach the team, shown with the resource links. */
   readonly support?: ReactNode;
+  /** A small product-owned card above the resource links; the icon rail hides it. */
+  readonly notice?: ReactNode;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
 }) {
@@ -129,7 +132,10 @@ export function DashboardShell({
           {brand}
         </div>
         <nav aria-label="Main navigation">{navigation}</nav>
-        <div className="sidebar-utilities mt-auto [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
+        {notice && !collapsed && <div className="sidebar-notice mt-auto pt-4 pb-3">{notice}</div>}
+        <div
+          className={`sidebar-utilities ${notice && !collapsed ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
+        >
           <ResourceLinks docsUrl={docsUrl} support={support} />
           {footer}
         </div>
@@ -163,6 +169,7 @@ export function DashboardShell({
           <DialogTitle className="sr-only">Menu</DialogTitle>
           <div className="mx-auto mb-2 h-1 w-9 rounded-full bg-border" aria-hidden />
           <nav aria-label="Main navigation">{navigation}</nav>
+          {notice && <div className="sidebar-notice mt-3">{notice}</div>}
           <div className="sidebar-utilities mt-3 [padding:12px_0_0] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
             <ResourceLinks docsUrl={docsUrl} support={support} />
             {footer}

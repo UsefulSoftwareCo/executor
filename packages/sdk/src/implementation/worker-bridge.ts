@@ -1,12 +1,23 @@
 import { retireMethod } from "@executor-js/app-data/worker-bundle";
 import type { SourceFile } from "../contracts/deployment.ts";
+import { asciiJson } from "./ascii-json.ts";
 
 /**
  * The text files a server entry retains as `ctx.files`. `ui/` is the browser app: the host serves
  * it as compiled assets, and embedding it would make every build parse it as one string literal.
  */
-const serverFiles = (files: readonly SourceFile[]) =>
-  JSON.stringify(files.filter((file) => !file.path.startsWith("ui/")));
+export const serverFiles = <File extends SourceFile>(files: readonly File[]) =>
+  files.filter((file) => !file.path.startsWith("ui/"));
+/**
+ * The Worker module that holds `ctx.files`, beside the bundle rather than in it. The compiler never
+ * reads the file text: a large file, such as an OpenAPI document, would otherwise be parsed and
+ * printed again as one string literal. JSON source modules read their text from it. It is written
+ * in ASCII, so one non-ASCII character in any file cannot double the memory of the whole module;
+ * the escapes evaluate to each file's exact text.
+ */
+export const serverFilesModule = "__executor_files.js";
+export const serverFilesSource = (files: readonly SourceFile[]) =>
+  `export default ${asciiJson(JSON.stringify(serverFiles(files)))};`;
 /**
  * The retained server entry for every protocol so far. It imports the framework's host module as a
  * namespace and uses only what protocol 1 guarantees, so it links against every protocol-1 framework. Optional
@@ -14,11 +25,11 @@ const serverFiles = (files: readonly SourceFile[]) =>
  * 0.0.1-beta.0, and the invocation bridges skip caching when a build has no `cacheSession`.
  * `isolatedClock` first shipped in apps 0.0.1-beta.46; without it they report no dispatch time.
  */
-export const appBridge = (files: readonly SourceFile[]) => `
+export const appBridge = `
 import app from "./index.ts";
 import * as host from "apps/host";
+import files from "./${serverFilesModule}";
 const handler = host.createIsolatedAppHandler(app);
-const files = ${serverFiles(files)};
 export default {
   cacheSession: host.isolatedCacheSession,
   clock: host.isolatedClock,
@@ -46,7 +57,7 @@ export const nodeAppEntry = (protocol: number) => (files: readonly SourceFile[])
     'import * as host from "apps/host";',
     `export const protocol = ${protocol};`,
     "const handler = host.createAppHandler(app);",
-    `const files = ${serverFiles(files)};`,
+    `const files = ${JSON.stringify(serverFiles(files))};`,
     // Redacted owns a private store per Effect instance. Decode on
     // the host side and re-wrap with the selected app framework.
     "export default (request, context, accounts) => handler(request, { ...context, ...host.hostContext(accounts, context.approval), files });",

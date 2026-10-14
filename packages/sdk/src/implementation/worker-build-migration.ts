@@ -7,6 +7,7 @@
  * This module owns its own copy of the inlined schema: it is migration code, and stays after the
  * runtime reader of inlined builds is removed.
  */
+import { sourceText } from "../contracts/source.ts";
 import { Effect, Option, Schema } from "effect";
 import { type BlobKey, BlobStore } from "../contracts/blobs.ts";
 import { UiAsset } from "../contracts/runtime.ts";
@@ -86,9 +87,9 @@ const Manifest = Schema.fromJsonString(
 const declaredApps = (deployment: DeploymentId) =>
   Effect.gen(function* () {
     const files = yield* readDeploymentSource(yield* BlobStore, deployment);
-    const manifest = files.find((file) => file.path === "package.json");
+    const manifest = sourceText(files, "package.json");
     if (manifest === undefined) return undefined;
-    const declared = Schema.decodeUnknownOption(Manifest)(manifest.content).pipe(
+    const declared = Schema.decodeUnknownOption(Manifest)(manifest).pipe(
       Option.map((value) => value.dependencies?.apps),
       Option.getOrUndefined,
     );

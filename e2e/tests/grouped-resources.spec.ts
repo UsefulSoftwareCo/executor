@@ -7,22 +7,35 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+import {
+  connectionsPath,
+  linkedAccountIds,
+  unlinkAccount,
+  unlinkAccountResponse,
+} from "../support/app-accounts.ts";
+import {
+  removeAppWhenStopped,
+  settleWebhookSources,
+  settleWebhookSubscriptions,
+  sourcesAre,
+  webhookSubscriptions,
+} from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 const fixture = `import {defineApp,defineProvider,secrets,query,workflow,object,string, router} from "apps";
 const service=defineProvider({name:"Resources fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-const capture=workflow({input:object({body:string()})},async(ctx,input)=>ctx.step.do("capture",async step=>({account:step.accounts.service.id,body:input.body})));
+const capture=workflow({input:object({body:string()})},async(ctx,input)=>ctx.step.do("capture",async step=>({account:step.user.accounts.service.id,body:input.body})));
 const hold=workflow({input:object({})},async ctx=>{await ctx.step.sleep("hold","5 minutes");return "done";});
-const incoming={account:"service",config:object({channel:string()}),state:object({}),register:async()=>({}),unregister:async()=>{},handle:async()=>new Response(null,{status:204})};
-export default defineApp({accounts:{service}},{tools: router({
-  identity:query({input:object({})},async ctx=>ctx.accounts.service.id),
+const incoming={account:{ user: "service" },config:object({channel:string()}),state:object({}),register:async()=>({}),unregister:async()=>{},handle:async()=>new Response(null,{status:204})};
+export default defineApp({user: { accounts:{service} }},{tools: router({
+  identity:query({input:object({})},async ctx=>ctx.user.accounts.service.id),
 }),workflows:{capture,hold},webhooks:{incoming}});`;
-const Profile = Schema.Struct({
+const Run = Schema.Struct({
   id: Schema.String,
-  revision: Schema.Number,
+  workflow: Schema.String,
   status: Schema.String,
-  enabled: Schema.Boolean,
+  output: Schema.optional(Schema.Unknown),
 });
 
 layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
@@ -42,76 +55,76 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
           }),
         );
         const path = `${prefix}/apps/${app.id}`;
-        const created: { account: string; profile: string }[] = [];
+        const created: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            for (const item of created)
-              yield* api.request(actors.owner, "DELETE", `${path}/profiles/${item.profile}`);
-            yield* api.request(actors.owner, "DELETE", path);
-            for (const item of created)
-              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${item.account}`);
+            for (const account of created)
+              yield* unlinkAccountResponse(actors.owner, path, "service", account);
+            yield* removeAppWhenStopped(actors.owner, path);
+            for (const account of created)
+              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        for (const label of ["Personal", "Work"]) {
-          const profile = yield* body(
-            Resource,
-            yield* api.request(actors.owner, "POST", `${path}/profiles`, {
-              name: label,
-              accounts: {},
-              webhookConfig: { incoming: { channel: "updates" } },
-              idempotencyKey: randomUUID(),
-            }),
-          );
-          const connection = yield* body(
-            Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              profile: profile.id,
-              requirement: "service",
-            }),
-          );
-          const account = yield* body(
-            Resource,
-            yield* api.request(
-              actors.owner,
-              "POST",
-              `${prefix}/connections/${connection.id}/submit`,
-              { method: "key", label, fields: { token: "synthetic-resource-token" } },
-            ),
-          );
-          created.push({ profile: profile.id, account: account.id });
-          const deadline = (yield* Clock.currentTimeMillis) + 30000;
-          for (;;) {
-            const setup = yield* body(
-              Profile,
-              yield* api.request(actors.owner, "POST", `${path}/profiles/${profile.id}/reconcile`),
-            );
-            if (setup.status === "ready") break;
-            expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
-            expect(setup.status).not.toBe("failed");
-            yield* Effect.sleep("100 millis");
-          }
-        }
-        const [personal, work] = created;
-        if (!personal || !work) return yield* Effect.die(new Error("Missing fixture accounts"));
-        yield* browser.login(actors.owner);
-        const choose = (label: string) =>
+        const connect = (label: string) =>
           Effect.gen(function* () {
-            yield* browser.use(`Choose ${label}`, (page) =>
-              page.getByRole("button", { name: "Choose profile", exact: true }).click(),
+            const connection = yield* body(
+              Resource,
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(path, "user", "service"),
+                {},
+              ),
             );
-            yield* browser.use(`Choose ${label}`, (page) =>
-              page.getByRole("menuitemradio", { name: label, exact: true }).click(),
+            const account = yield* body(
+              Resource,
+              yield* api.request(
+                actors.owner,
+                "POST",
+                `${prefix}/connections/${connection.id}/submit`,
+                { method: "key", label, fields: { token: "synthetic-resource-token" } },
+              ),
             );
+            created.push(account.id);
+            return account.id;
           });
-        yield* browser.use("Open selected workflows", (page) =>
-          page.goto(
-            `/org/${actors.organization.slug}/apps/${app.id}?view=workflows&profile=${personal.profile}`,
-          ),
+        const personal = yield* connect("Personal");
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([personal]);
+        const settle = (expected: Parameters<typeof sourcesAre>[0]) =>
+          settleWebhookSources(actors.owner, path, sourcesAre(expected));
+        const subscriptions = webhookSubscriptions(actors.owner, path);
+        // The linked account becomes the app's webhook source; registration waits for configuration.
+        const needsConfiguration = { status: "needs-setup", failure: "configuration" };
+        const ready = { status: "ready", failure: null };
+        yield* settle({ [personal]: needsConfiguration });
+        const waitForRun = (id: string) =>
+          Effect.gen(function* () {
+            const deadline = (yield* Clock.currentTimeMillis) + 30000;
+            for (;;) {
+              const run = yield* body(
+                Run,
+                yield* api.request(actors.owner, "GET", `${path}/workflow-runs/${id}`),
+              );
+              if (run.status !== "queued" && run.status !== "running") return run;
+              expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
+              yield* Effect.sleep("100 millis");
+            }
+          });
+        const startCapture = (input: string, extra: Record<string, unknown> = {}) =>
+          api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+            workflow: "capture",
+            input: { body: input },
+            key: randomUUID(),
+            ...extra,
+          });
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open workflows", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=workflows`),
         );
-        yield* browser.use("Open Personal workflow", (page) =>
+        yield* browser.use("Open the capture workflow", (page) =>
           page.getByRole("button", { name: "capture", exact: true }).click(),
         );
-        yield* browser.use("Edit the selected workflow input", (page) =>
+        yield* browser.use("Edit the workflow input", (page) =>
           page
             .getByRole("textbox", { name: "capture input", exact: true })
             .fill('{"body":"kept draft"}'),
@@ -121,12 +134,11 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
             (org) => `/api/organizations/${org}/apps/${app.id}/workflows`,
           ),
           "undeclared",
-          { query: { profile: personal.profile } },
         );
         yield* refreshVisiblePage;
         yield* held.requested;
         yield* held.release;
-        yield* browser.use("The selected workflow failure is visible", (page) =>
+        yield* browser.use("The workflow discovery failure is visible", (page) =>
           page.getByText("Unable to complete this request", { exact: true }).waitFor(),
         );
         expect(
@@ -134,10 +146,10 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
             page.getByRole("textbox", { name: "capture input", exact: true }).inputValue(),
           ),
         ).toBe('{"body":"kept draft"}');
-        yield* browser.use("Retry the selected workflow discovery", (page) =>
+        yield* browser.use("Retry the workflow discovery", (page) =>
           page.getByRole("button", { name: "Retry", exact: true }).click(),
         );
-        yield* browser.use("Start Personal workflow", (page) =>
+        yield* browser.use("Start the capture workflow", (page) =>
           page.getByRole("button", { name: "Start workflow", exact: true }).click(),
         );
         yield* browser.use("Personal completion appears", (page) =>
@@ -147,113 +159,159 @@ layer(HostedLive, { excludeTestServices: true })("Grouped resources", (it) => {
           page.getByRole("button", { name: "View capture run: Complete", exact: true }).click(),
         );
         expect(
-          yield* browser.use("Run used Personal", (page) =>
+          yield* browser.use("Run used the linked Personal account", (page) =>
             page.getByRole("region", { name: "Workflow run details", exact: true }).textContent(),
           ),
-        ).toContain(personal.account);
-        yield* choose("Work");
-        yield* browser.use("Work workflows are ready", (page) =>
-          page.getByRole("button", { name: "capture", exact: true }).waitFor(),
-        );
-        expect(
-          yield* browser.use("Work does not inherit Personal history", (page) =>
-            page.getByRole("button", { name: /^View capture run:/ }).count(),
-          ),
-        ).toBe(0);
-        yield* browser.use("Open waiting Work workflow", (page) =>
+        ).toContain(personal);
+        yield* browser.use("Open the waiting hold workflow", (page) =>
           page.getByRole("button", { name: "hold", exact: true }).click(),
         );
-        yield* browser.use("Start Work workflow", (page) =>
+        yield* browser.use("Start the hold workflow", (page) =>
           page.getByRole("button", { name: "Start workflow", exact: true }).click(),
         );
-        yield* browser.use("Open Work run controls", (page) =>
+        yield* browser.use("Open hold run controls", (page) =>
           page.getByRole("button", { name: /^View hold run:/ }).click(),
         );
-        yield* browser.use("Terminate Work", (page) =>
+        yield* browser.use("Terminate the hold run", (page) =>
           page.getByRole("button", { name: "Terminate run", exact: true }).click(),
         );
-        yield* browser.use("Work is terminated", (page) =>
+        yield* browser.use("The hold run is terminated", (page) =>
           page.getByRole("button", { name: "View hold run: Terminated", exact: true }).waitFor(),
         );
-        yield* browser.checkpoint("Independent workflow starts, results and termination");
-        yield* browser.use("Open selected webhooks", (page) =>
+        yield* browser.checkpoint(
+          "Workflow starts, results and termination with the linked account",
+        );
+        yield* browser.use("Open webhooks", (page) =>
           page
             .getByRole("navigation", { name: "App navigation" })
             .getByRole("link", { name: "Webhooks", exact: true })
             .click(),
         );
-        for (const label of ["Personal", "Work"]) {
-          yield* choose(label);
-          yield* browser.use(`${label} webhook is active`, (page) =>
-            page.getByText("active", { exact: true }).waitFor(),
-          );
-        }
-        yield* browser.use("Open Work configuration", (page) =>
-          page.locator("summary").filter({ hasText: "Webhook configuration" }).click(),
-        );
-        yield* browser.use("Change Work webhook config", (page) =>
-          page
-            .getByRole("textbox", { name: "Webhook configuration", exact: true })
-            .fill('{"incoming":{"channel":"changed"}}'),
-        );
-        yield* browser.use("Save Work config", (page) =>
-          Promise.all([
-            page.waitForResponse(
-              (response) =>
-                response.url().includes(`/profiles/${work.profile}`) &&
-                response.request().method() === "PATCH" &&
-                response.status() === 200,
-            ),
-            page.getByRole("button", { name: "Save webhook configuration", exact: true }).click(),
-          ]),
-        );
-        const personalHooks = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/webhooks?profile=${personal.profile}`,
-        );
-        expect(personalHooks.status).toBe(200);
-        const workSetup = yield* body(
-          Profile,
-          yield* api.request(actors.owner, "GET", `${path}/profiles/${work.profile}`),
-        );
+        const configure = (label: string, config: string) =>
+          Effect.gen(function* () {
+            const editor = `Webhook configuration for ${label}`;
+            yield* browser.use(`A missing ${label} configuration opens its editor`, (page) =>
+              page.getByRole("textbox", { name: editor, exact: true }).waitFor(),
+            );
+            yield* browser.use(`Change ${label} webhook config`, (page) =>
+              page.getByRole("textbox", { name: editor, exact: true }).fill(config),
+            );
+            yield* browser.use(`Save ${label} config`, (page) =>
+              Promise.all([
+                page.waitForResponse(
+                  (response) =>
+                    response.url().includes("/webhook-sources/") &&
+                    response.url().endsWith("/config") &&
+                    response.request().method() === "PUT" &&
+                    response.status() === 200,
+                ),
+                page
+                  .getByRole("textbox", { name: editor, exact: true })
+                  .locator("xpath=ancestor::form")
+                  .getByRole("button", { name: "Save webhook configuration", exact: true })
+                  .click(),
+              ]),
+            );
+          });
+        yield* configure("Personal", '{"incoming":{"channel":"updates"}}');
+        yield* settle({ [personal]: ready });
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/profiles/${work.profile}/enabled`, {
-            expectedRevision: workSetup.revision,
-            enabled: false,
-          })).status,
+          (yield* subscriptions)
+            .filter((hook) => hook.status === "active")
+            .map((hook) => [hook.name, hook.sourceAccount]),
+        ).toEqual([["incoming", personal]]);
+        yield* browser.checkpoint("The linked account configures its own webhook");
+        // The service requirement is plain, so connecting Work replaces Personal in the app.
+        // Personal stays saved; its webhook source stops and Work's waits for configuration.
+        const work = yield* connect("Work");
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([work]);
+        expect(
+          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${personal}`)).status,
         ).toBe(200);
-        yield* browser.use("Reload disabled webhook history", (page) => page.reload());
-        yield* Effect.gen(function* () {
-          yield* browser.use("Disabled Work stays selected", (page) =>
-            page.getByRole("button", { name: "Choose profile", exact: true }).click(),
-          );
-          expect(
-            yield* browser.use("Disabled Work stays selected", (page) =>
-              page
-                .getByRole("menuitemradio", { name: "Work Disabled", exact: true })
-                .getAttribute("aria-checked"),
-            ),
-          ).toBe("true");
-          yield* browser.use("Disabled Work stays selected", (page) =>
-            page.getByRole("menuitemradio", { name: "Work Disabled", exact: true }).press("Escape"),
-          );
+        yield* settle({ [work]: needsConfiguration });
+        const replaced = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
+          hooks.every((hook) => hook.sourceAccount !== personal || hook.status === "stopped"),
+        );
+        expect(replaced.filter((hook) => hook.status === "active")).toEqual([]);
+        // Starts run with the linked account. An `accounts` field chooses nothing: the start still
+        // runs as Work, never as the unlinked Personal account.
+        const workCapture = yield* startCapture("work", { accounts: { service: [personal] } });
+        expect(workCapture.status, JSON.stringify(workCapture.body)).toBe(200);
+        expect(yield* waitForRun((yield* body(Run, workCapture)).id)).toMatchObject({
+          status: "complete",
+          output: { account: work, body: "work" },
         });
-        yield* browser.use("Open disabled workflow history", (page) =>
+        yield* browser.use("Reload webhooks for the new link", (page) => page.reload());
+        yield* configure("Work", '{"incoming":{"channel":"changed"}}');
+        yield* settle({ [work]: ready });
+        const active = (yield* subscriptions).filter((hook) => hook.status === "active");
+        expect(active.map((hook) => [hook.name, hook.sourceAccount])).toEqual([["incoming", work]]);
+        expect(
+          yield* browser.use("The replaced Personal source is no longer listed", (page) =>
+            page
+              .locator("summary")
+              .filter({ hasText: "Webhook configuration for Personal" })
+              .count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("The replacing account configures its own webhook");
+        // Runs started with the replaced Personal account stay in the history.
+        yield* browser.use("Open workflow history after replacing", (page) =>
           page
             .getByRole("navigation", { name: "App navigation" })
             .getByRole("link", { name: "Workflows", exact: true })
             .click(),
         );
-        yield* browser.use("Terminated Work history survives disable", (page) =>
+        yield* browser.use("Terminated history survives replacing", (page) =>
           page.getByRole("button", { name: "View hold run: Terminated", exact: true }).waitFor(),
         );
-        expect(
-          yield* browser.use("Disabled Work cannot start workflows", (page) =>
-            page.getByRole("button", { name: "Start workflow", exact: true }).count(),
-          ),
-        ).toBe(0);
-        yield* browser.checkpoint("Disabled account keeps resource history");
+        yield* browser.use("Completed history survives replacing", (page) =>
+          page
+            .getByRole("button", { name: "View capture run: Complete", exact: true })
+            .first()
+            .waitFor(),
+        );
+        yield* browser.checkpoint("Replaced account keeps resource history");
+        const runs = Effect.gen(function* () {
+          const listed = yield* api.request(actors.owner, "GET", `${path}/workflow-runs`);
+          expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+          return (yield* body(Schema.Struct({ items: Schema.Array(Run) }), listed)).items;
+        });
+        const history = (yield* runs).map((run) => [run.workflow, run.status]).sort();
+        expect(history).toEqual(
+          [
+            ["capture", "complete"],
+            ["capture", "complete"],
+            ["hold", "terminated"],
+          ].sort(),
+        );
+        // Unlinking keeps the account and its history but stops its webhook source; starts then
+        // need an account linked again.
+        yield* unlinkAccount(actors.owner, path, "service", work);
+        yield* settle({});
+        const after = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
+          hooks.every((hook) => hook.status === "stopped"),
+        );
+        expect([...new Set(after.map((hook) => hook.sourceAccount))].sort()).toEqual(
+          [personal, work].sort(),
+        );
+        expect((yield* api.request(actors.owner, "GET", `${prefix}/accounts/${work}`)).status).toBe(
+          200,
+        );
+        const unlinkedStart = yield* startCapture("unlinked");
+        expect(unlinkedStart.status, JSON.stringify(unlinkedStart.body)).toBe(409);
+        expect(unlinkedStart.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
+        expect((yield* runs).map((run) => [run.workflow, run.status]).sort()).toEqual(history);
+        // The unlink happened through the API, so the open page reloads to read the links again.
+        yield* browser.use("Open workflows after unlinking", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=workflows`),
+        );
+        yield* browser.use("Workflows ask for an account to be linked", (page) =>
+          page
+            .getByText("Link an account in Accounts to start using this app.", { exact: true })
+            .waitFor(),
+        );
+        yield* browser.checkpoint("Unlinked app asks for an account");
       }),
     ),
   );

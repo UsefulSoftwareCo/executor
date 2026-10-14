@@ -14,7 +14,7 @@ import {
 } from "@executor-js/mcp-auth";
 import { makeAuthDatabase } from "@executor-js/mcp-auth/node-database";
 import type { ConnectionId, ConnectionPolicy } from "@executor-js/mcp-auth/connections";
-import { pgliteLayer } from "fumadb-effect/pglite";
+import { localDatabase } from "./storage.ts";
 import {
   Effect,
   Layer,
@@ -30,6 +30,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { routeTemplates } from "@executor-js/telemetry";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ServerConfig } from "../contracts/config.ts";
+import { convertProfileTargets, type ProfileAccount } from "./mcp-auth-profiles.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";
 
 /** Invalid credentials never fall back to browser cookies or administrative authority. */
@@ -59,8 +60,16 @@ const failure = (error: unknown) =>
     ? new LocalMcpUnauthorized()
     : new LocalMcpAuthUnavailable();
 
-/** Own the provider, database, and internal session in the local server scope. */
-export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, crypto: Crypto) =>
+/**
+ * Own the provider, database, and internal session in the local server scope. `profiles` reads
+ * the executor database's profile accounts for the one-time conversion of saved targets.
+ */
+export const makeLocalMcpOAuth = <E>(
+  config: ServerConfig,
+  pairing: LocalAuth,
+  crypto: Crypto,
+  profiles: Effect.Effect<ReadonlyArray<ProfileAccount>, E>,
+) =>
   Effect.gen(function* () {
     const origin = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
     const fs = yield* FileSystem.FileSystem,
@@ -68,7 +77,7 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
     const directory = path.join(config.directory, "mcp-auth.pglite");
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
     yield* fs.chmod(directory, 0o700);
-    const databaseContext = yield* Layer.build(pgliteLayer({ dataDir: directory }));
+    const databaseContext = yield* Layer.build(localDatabase(directory));
     const db = yield* makeAuthDatabase.pipe(Effect.provideContext(databaseContext));
     // Separate signing material from encryption use; no generated or fallback secret.
     const secret = yield* Effect.promise(async () => {
@@ -87,6 +96,8 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
       issuer: `${origin}/api/auth`,
       scopes: ["mcp", "offline_access"],
       resources: mcpOAuthResources([origin]),
+      // Local has no device verification page; its clients open a browser on the same machine.
+      deviceAuthorization: false,
       selectResource: (_ctx, _userId, required) =>
         required === undefined || required === "local"
           ? Effect.succeed("local")
@@ -115,6 +126,10 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
       },
       catch: () => new LocalMcpAuthUnavailable(),
     });
+    yield* convertProfileTargets(profiles).pipe(
+      Effect.provideContext(databaseContext),
+      Effect.mapError(() => new LocalMcpAuthUnavailable()),
+    );
     const auth = betterAuth(options);
     const context = yield* Effect.tryPromise({
       try: () => auth.$context,

@@ -5,11 +5,12 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -19,7 +20,6 @@ const Executed = Schema.Struct({
   execution: Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown) }),
 });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const Runs = Schema.Array(
   Schema.Struct({
     id: Schema.String,
@@ -53,7 +53,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth scheduled renewal", (it)
             files: [
               {
                 path: "index.ts",
-                content: `import { defineApp, defineProvider, oauth2, query, mutation, object, interval, router, ProviderError } from "apps";
+                content: `import { defineApp, defineProvider, oauth2, query, mutation, object, userInterval, router, ProviderError } from "apps";
 import { always } from "apps/operations/approval";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
 async function call(fetch, account, method) {
@@ -61,15 +61,15 @@ async function call(fetch, account, method) {
   if (response.status === 401) throw new ProviderError({ reason: "unauthorized", status: 401, accountId: account.id });
   return await response.json();
 }
-export default defineApp({ accounts: { service } }, async ({ accounts }) => {
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => {
   const write = mutation({ input: object({}) }, async ({ fetch }) => call(fetch, accounts.service, "POST"));
   const reviewedWrite = mutation({ input: object({}), approval: always() }, async ({ fetch }) => call(fetch, accounts.service, "POST"));
   const reviewedRead = query({ input: object({}), approval: always() }, async ({ fetch }) => call(fetch, accounts.service, "GET"));
   return {
     tools: router({ reviewedRead, write, reviewedWrite }),
     schedules: {
-      write: interval({ minutes: 1 }, write, {}),
-      reviewedWrite: interval({ minutes: 1 }, reviewedWrite, {}),
+      write: userInterval({ minutes: 1 }, write, {}),
+      reviewedWrite: userInterval({ minutes: 1 }, reviewedWrite, {}),
     },
   };
 });`,
@@ -83,13 +83,9 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => {
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, path);
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
           );
           const started = yield* api.request(
             actors.owner,
@@ -122,17 +118,11 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => {
               .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
               .pipe(Effect.orDie),
           );
-          yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
-            Effect.flatMap((response) =>
-              body(SetupStatus, response).pipe(
-                Effect.flatMap((current) =>
-                  current.status === "ready"
-                    ? Effect.void
-                    : Effect.fail(new Error(`Profile setup: ${JSON.stringify(response.body)}`)),
-                ),
-              ),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+          // Linking the account sets it up as the app's webhook source in the background, which
+          // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
+          // the call the scenario makes.
+          yield* settleWebhookSources(actors.owner, path, (sources) =>
+            sources.some((source) => source.account === account.id && source.status !== "pending"),
           );
 
           const runs = api
@@ -148,7 +138,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => {
               const ran = yield* api.request(
                 actors.owner,
                 "POST",
-                `${path}/schedules/${schedule}/run?profile=${profile.id}`,
+                `${path}/schedules/${schedule}/run`,
               );
               expect(ran.status, JSON.stringify(ran.body)).toBe(200);
               return yield* runs.pipe(
@@ -168,7 +158,6 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => {
             Effect.acquireUseRelease(
               api
                 .request(actors.owner, "PATCH", `${path}/schedules/${schedule}`, {
-                  profile: profile.id,
                   enabled: true,
                   approvalMode: "automatic",
                 })
@@ -183,7 +172,6 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => {
               () =>
                 api
                   .request(actors.owner, "PATCH", `${path}/schedules/${schedule}`, {
-                    profile: profile.id,
                     enabled: false,
                   })
                   .pipe(Effect.orDie),
@@ -263,7 +251,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => {
                 {
                   name: "execute",
                   arguments: {
-                    code: `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].reviewedRead({});`,
+                    code: `return await tools[${JSON.stringify(app.slug)}].reviewedRead({});`,
                   },
                 },
                 undefined,

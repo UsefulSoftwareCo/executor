@@ -1,20 +1,14 @@
-import type { AppId, SelectedAccounts } from "@executor-js/sdk";
-import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
-import { profileMutations } from "../../contracts/profiles.ts";
+import type { AppId } from "@executor-js/sdk";
 import { AsyncResult } from "effect/reactivity";
 import { Failure } from "../components/common.tsx";
 import { useAtomValue } from "@effect/atom-react";
-import {
-  AccountNotFound,
-  OAuthReconnectRequired,
-  type App,
-  type ProfileId,
-  type Profile,
-} from "@executor-js/sdk";
+import { AccountNotFound, OAuthReconnectRequired, type App } from "@executor-js/sdk";
 import type { DashboardAccount } from "@executor-js/local-server/contracts";
 import { Cause, Option, Schema } from "effect";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
-import { ToolRunner, toolRunContext } from "@executor-js/ui/dashboard/tool-runner";
+import { runningAs, ToolRunner } from "@executor-js/ui/dashboard/tool-runner";
+import type { RequirementAccounts } from "@executor-js/ui/contracts/app-accounts";
+import { emptyManyRequirements } from "@executor-js/ui/contracts/dashboard";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Key01Icon } from "@hugeicons/core-free-icons";
 import {
@@ -24,44 +18,38 @@ import {
   toolCatalogAtom,
   toolRunApprovalAtoms,
 } from "../../contracts/api.ts";
-import {
-  appToolReadiness,
-  accountSetupFailure,
-  unfilledAccountSlots,
-} from "../../contracts/dashboard.ts";
+import { appToolReadiness, accountSetupFailure } from "../../contracts/dashboard.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { Link, useNavigate } from "@tanstack/react-router";
 
 interface AppToolsProps {
   readonly app: App;
-  readonly selection: SelectedAccounts;
-  readonly accounts: ReadonlyArray<DashboardAccount>;
+  /** The app's requirements with their linked accounts. */
+  readonly requirements: readonly RequirementAccounts<DashboardAccount>[];
   readonly selected: string | undefined;
-  readonly profile?: ProfileId | undefined;
-  readonly revision?: number | undefined;
-  /** The selected profile's name in the page's profile picker. */
-  readonly label: string;
 }
 
 function AccountSetup({
   app,
-  profile,
   disconnected,
-}: Pick<AppToolsProps, "app" | "accounts" | "profile"> & { readonly disconnected: boolean }) {
+}: {
+  readonly app: App;
+  readonly disconnected: boolean;
+}) {
   return (
     <div className="app-account-setup flex items-center gap-3.5 p-[22px] border border-border rounded-[8px] [&_>_svg]:text-muted-foreground [&_>_svg]:shrink-0 [&_>_div]:flex-1 [&_>_div]:min-w-0 [&_h2]:text-[14px] [&_h2]:font-medium [&_p]:text-[13px] [&_p]:text-muted-foreground [&_p]:mt-1 [&_>_[data-slot='button']]:shrink-0 max-[740px]:flex-wrap max-[740px]:p-[18px] max-[740px]:[&_>_div]:basis-[calc(100%_-_32px)] max-[740px]:[&_>_[data-slot='button']]:ml-8">
       <HugeiconsIcon icon={Key01Icon} strokeWidth={2} size={18} aria-hidden />
       <div>
-        <h2>{disconnected ? "Account disconnected" : "Choose an account"}</h2>
+        <h2>{disconnected ? "Account disconnected" : "Connect an account"}</h2>
         <p>
           {disconnected
-            ? "Connect or choose an account to use this app again."
-            : "Connect or choose an account to load this app’s tools."}
+            ? "Connect an account to use this app again."
+            : "Connect an account to load this app’s tools."}
         </p>
       </div>
       <Button asChild>
-        <Link to="/apps/$appId" params={{ appId: app.id }} search={{ view: "accounts", profile }}>
-          Choose accounts
+        <Link to="/apps/$appId" params={{ appId: app.id }} search={{ view: "accounts" }}>
+          View accounts
         </Link>
       </Button>
     </div>
@@ -69,8 +57,8 @@ function AccountSetup({
 }
 
 /** Incomplete account setup is a product state; do not start tool discovery until it is resolved. */
-function SingleAppTools(props: AppToolsProps) {
-  const readiness = appToolReadiness(props.app, props.selection, props.accounts);
+export function AppTools(props: AppToolsProps) {
+  const readiness = appToolReadiness(props.app, props.requirements);
   switch (readiness.state) {
     case "not-deployed":
       return (
@@ -78,27 +66,16 @@ function SingleAppTools(props: AppToolsProps) {
           Deploy this app to load its tools.
         </EmptyStatePanel>
       );
-    case "selection":
-      return (
-        <AccountSetup
-          {...props}
-          disconnected={readiness.issues.some((issue) => issue.reason === "disconnected")}
-        />
-      );
+    case "missing":
+      return <AccountSetup app={props.app} disconnected={false} />;
     case "reconnect":
       return (
-        <AccountReconnect
-          app={props.app.id}
-          profile={props.profile}
-          accounts={readiness.accounts}
-          status="Needs sign-in"
-        />
+        <AccountReconnect app={props.app.id} accounts={readiness.accounts} status="Needs sign-in" />
       );
     case "rejected":
       return (
         <AccountReconnect
           app={props.app.id}
-          profile={props.profile}
           accounts={readiness.accounts}
           status="Sign-in rejected"
         />
@@ -117,12 +94,10 @@ function SingleAppTools(props: AppToolsProps) {
 /** An expired sign-in is an account action, not an empty tool browser or retryable request. */
 function AccountReconnect({
   app,
-  profile,
   accounts,
   status,
 }: {
   readonly app: AppId;
-  readonly profile: ProfileId | undefined;
   readonly accounts: ReadonlyArray<DashboardAccount>;
   readonly status: string;
 }) {
@@ -144,7 +119,7 @@ function AccountReconnect({
             <p>Sign in again to load tools.</p>
           </div>
           <Button asChild>
-            <Link to="/apps/$appId" params={{ appId: app }} search={{ view: "accounts", profile }}>
+            <Link to="/apps/$appId" params={{ appId: app }} search={{ view: "accounts" }}>
               Reconnect
             </Link>
           </Button>
@@ -155,35 +130,14 @@ function AccountReconnect({
 }
 
 /** Browse the complete live tool catalog with a stable, separate schema inspector. */
-function LiveAppTools({
-  app,
-  accounts,
-  selected,
-  profile,
-  revision,
-  selection,
-  label,
-}: AppToolsProps) {
+function LiveAppTools({ app, requirements, selected }: AppToolsProps) {
   const navigate = useNavigate();
-  const catalog = {
-    app: app.id,
-    profile,
-    revision,
-    deployment: app.activeDeployment,
-    accounts: JSON.stringify(selection),
-  };
+  const catalog = { app: app.id, deployment: app.activeDeployment };
   const atom = toolsAtom(catalog);
   const result = useAtomValue(atom);
   const setup = AsyncResult.isFailure(result) ? accountSetupFailure(result.cause) : Option.none();
   if (Option.isSome(setup))
-    return (
-      <AccountSetup
-        app={app}
-        profile={profile}
-        accounts={accounts}
-        disconnected={Schema.is(AccountNotFound)(setup.value)}
-      />
-    );
+    return <AccountSetup app={app} disconnected={Schema.is(AccountNotFound)(setup.value)} />;
   const failure = AsyncResult.isFailure(result)
     ? Cause.findErrorOption(result.cause)
     : Option.none();
@@ -191,34 +145,29 @@ function LiveAppTools({
     ? Option.filter(failure, Schema.is(OAuthReconnectRequired))
     : Option.none();
   if (Option.isSome(reconnect)) {
-    const account = accounts.find((account) => account.id === reconnect.value.account);
+    const account = requirements
+      .flatMap((entry) => entry.linked)
+      .find((account) => account.id === reconnect.value.account);
     if (account !== undefined)
-      return (
-        <AccountReconnect
-          app={app.id}
-          profile={profile}
-          accounts={[account]}
-          status="Needs sign-in"
-        />
-      );
+      return <AccountReconnect app={app.id} accounts={[account]} status="Needs sign-in" />;
   }
   return (
     <ToolBrowser
       Failure={Failure}
-      key={`${app.id}:${app.activeDeployment}:${profile}:${revision}:${JSON.stringify(selection)}`}
+      key={`${app.id}:${app.activeDeployment}`}
       query={toolCatalogAtom(catalog)}
       detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
       selected={selected}
       empty={
-        unfilledAccountSlots(app, selection).length > 0 ? (
-          <AccountSetup app={app} profile={profile} accounts={accounts} disconnected={false} />
+        emptyManyRequirements(requirements).length > 0 ? (
+          <AccountSetup app={app} disconnected={false} />
         ) : undefined
       }
       onSelect={(tool) => {
         void navigate({
           to: "/apps/$appId",
           params: { appId: app.id },
-          search: { view: "tools", tool, profile },
+          search: { view: "tools", tool },
         });
       }}
       renderAction={(tool) => (
@@ -227,8 +176,6 @@ function LiveAppTools({
           tool={tool.name}
           call={callToolAtom({
             app: app.id,
-            profile,
-            expectedProfileRevision: revision,
             deployment: app.activeDeployment ?? undefined,
             tool: tool.name,
             kind: tool.readOnly === true ? "query" : "mutation",
@@ -236,42 +183,11 @@ function LiveAppTools({
           approval={(requestId) => toolRunApprovalAtoms({ app: app.id, requestId })}
           detail={toolDetailAtom({ ...catalog, tool: tool.name })}
           Failure={Failure}
-          context={profile === undefined ? undefined : toolRunContext(label, selection, accounts)}
+          accounts={runningAs(requirements)}
         />
       )}
     />
   );
 }
 
-/** The page selects the profile; tools stay in the normal catalog and inspector. */
-export function AppTools({
-  profile,
-  ...props
-}: Omit<AppToolsProps, "profile" | "revision" | "selection"> & {
-  readonly profile: Profile | undefined;
-}) {
-  if (profile?.enabled === false || profile?.status === "removing")
-    return (
-      <p className="p-5 text-sm text-muted-foreground">
-        This profile is disabled. Enable it from the profile menu to use its tools.
-      </p>
-    );
-  return (
-    <>
-      {profile && (
-        <ProfileStatus
-          profile={profile}
-          retry={profileMutations({ app: props.app.id, profile: profile.id }).reconcile}
-          Failure={Failure}
-        />
-      )}
-      <SingleAppTools
-        {...props}
-        selection={profile?.accounts ?? {}}
-        profile={profile?.id}
-        revision={profile?.revision}
-      />
-    </>
-  );
-}
 import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";

@@ -37,3 +37,10 @@ export const revalidated = <A extends Atom.Atom<AsyncResult.AsyncResult<unknown,
     revalidateOnFocus: "always",
     focusSignal: pageFocus,
   });
+
+/**
+ * Read a live subscription again on every return to a visible page, the same refresh `revalidated`
+ * gives a plain read. Its own updates still arrive as they happen; it is not retained after its last
+ * view closes.
+ */
+export const refreshedOnFocus = Atom.makeRefreshOnSignal(pageFocus);

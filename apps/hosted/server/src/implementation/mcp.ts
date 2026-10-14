@@ -5,32 +5,41 @@ import {
   traceProductRead,
 } from "../contracts/product-analytics.ts";
 import { McpSchema } from "effect/ai";
-import { authorizeTool, authorizeApp } from "./authorization.ts";
-import { permittedAppIds } from "@executor-js/authorization";
+import { authorizeApp, authorizeSavedTool, authorizeTool } from "./authorization.ts";
+import { callerLinkedAccounts, linkedAccounts } from "./app-accounts.ts";
+import { GrantForbidden, untargetedLinkRefusal } from "@executor-js/mcp-auth";
+import {
+  permittedAppIds,
+  permittedToolAppIds,
+  requiresToolMetadata,
+} from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
-import { visibleApps, visibleAccounts, requireAppAccess } from "./resource-policy.ts";
+import { policyDatabase, visibleApps, requireAppAccess } from "./resource-policy.ts";
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
-import { appTargets, type McpBackend } from "@executor-js/mcp";
+import type { McpBackend } from "@executor-js/mcp";
 import {
+  AccountRequired,
   AppNotFound,
   ElicitationFailed,
   EventNotFound,
+  InvocationSelection,
+  linkedRequirements,
   type AppId,
   type ToolInvocationOptions,
 } from "@executor-js/sdk/core";
-import { Context, Effect, Option } from "effect";
+import { Context, Effect, Option, Schema } from "effect";
 import {
+  checkedToolCall,
   currentOwner,
-  selectedApp,
   selectedActiveDeployment,
-  ownProfile,
   checkInvocationAccounts,
+  SelectionReadAhead,
 } from "./access.ts";
-import { HostedExecutor } from "../contracts/executor.ts";
+import { ConcurrentStatements, HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { CurrentMcpGrant } from "../contracts/mcp.ts";
-import { listTools } from "./tools.ts";
+import { listTools, searchableTools, searchTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
 /**
@@ -76,15 +85,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
         Effect.provideContext(context),
       );
     });
-  // Resolve account labels once per request, even when target discovery fans out.
-  // These records never authorize a tool call; selectedApp and SDK lifecycle checks do.
-  const discoveryAccounts = yield* Effect.cached(
-    Effect.flatMap(sdk, (executor) =>
-      executor.accounts.list({ owner: organization.owner }).pipe(Effect.flatMap(visibleAccounts)),
-    ).pipe(Effect.provideContext(context)),
-  );
-  // A single metadata snapshot feeds this request's catalog. Inspection still
-  // verifies the selected profile revision and current app/account permissions.
+  // A single metadata snapshot feeds this request's catalog. Each call still checks the app and
+  // resolves the caller's accounts again.
   const discoveryApps = yield* Effect.cached(
     Effect.flatMap(sdk, (executor) =>
       executor.apps
@@ -92,18 +94,53 @@ export const hostedMcpBackend = Effect.gen(function* () {
         .pipe(Effect.flatMap(visibleApps)),
     ).pipe(Effect.provideContext(context)),
   );
-  const discoveryProfiles = yield* Effect.cached(
-    Effect.gen(function* () {
-      if (user === undefined) return yield* new OrganizationForbidden();
-      const apps = yield* discoveryApps;
-      const executor = yield* sdk;
-      return yield* executor.apps.profiles.listMany({
-        apps: apps.map((app) => app.id),
-        owner: organization.owner,
-        subject: user,
-      });
-    }).pipe(Effect.provideContext(context)),
+  const discoveryToolApps = yield* Effect.cached(
+    Effect.flatMap(sdk, (executor) =>
+      executor.apps
+        .list({ ids: permittedToolAppIds(policy), owner: organization.owner })
+        .pipe(Effect.flatMap(visibleApps)),
+    ).pipe(Effect.provideContext(context)),
   );
+  // Resolve linked account labels once per request, even when discovery fans out over apps.
+  const discoveryAccounts = yield* Effect.cached(
+    Effect.flatMap(discoveryApps, (apps) => callerLinkedAccounts(apps.map((app) => app.id))).pipe(
+      Effect.provideContext(context),
+    ),
+  );
+  /**
+   * An operation resolves the caller's links narrowed to the grant's targets, so a plain user
+   * requirement whose links the grant does not target fails as `AccountRequired`. When the caller
+   * did link an account for it, the grant refused that account: report that instead.
+   */
+  const explained = (error: AccountRequired) =>
+    Effect.gen(function* () {
+      if (error.scope !== "user" || user === undefined) return error;
+      const { requirements } = yield* (yield* sdk).apps.deployment({
+        owner: organization.owner,
+        app: error.app,
+        deployment: error.deployment,
+      });
+      const linked = linkedRequirements(
+        requirements.accounts,
+        "user",
+        (yield* linkedAccounts(yield* policyDatabase, { subject: user, apps: [error.app] })).map(
+          (link) => ({ requirement: link.requirement, account: link }),
+        ),
+      );
+      const requirement = linked[error.slot];
+      const refusal =
+        requirement === undefined
+          ? undefined
+          : untargetedLinkRefusal(policy, error.app, { [error.slot]: requirement });
+      return refusal === undefined ? error : new GrantForbidden({ refusal });
+    }).pipe(Effect.provideContext(context));
+  const grantRefusal = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+    work.pipe(
+      Effect.catchIf(
+        (error: E) => Schema.is(AccountRequired)(error),
+        (error) => Effect.flatMap(explained(error), Effect.fail),
+      ),
+    );
   /** Event subscriptions belong to the request's grant and act for its user. */
   const subscriber = Effect.gen(function* () {
     if (grant === undefined || user === undefined) return yield* new OrganizationForbidden();
@@ -147,33 +184,31 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const { principal } = yield* subscriber;
         yield* (yield* sdk).events.unsubscribe({ ...key, principal });
       }).pipe((work) => observe("unsubscribeEvent", work)),
-    listSkills: (input) => observe("listSkills", listAppSkills(input), "read"),
-    readSkill: (input) => observe("readSkill", readAppSkill(input), "read"),
+    listSkills: (input, options) =>
+      observe("listSkills", grantRefusal(listAppSkills(input, options)), "read"),
+    readSkill: (input) => observe("readSkill", grantRefusal(readAppSkill(input)), "read"),
     authorizeElicitation: (input) =>
       Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* sdk;
-        yield* selectedApp(executor, owner, input.app, input.profile);
+        const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
         // A tool whose permission cannot be confirmed cannot receive input.
-        yield* authorizeTool(input).pipe(
+        yield* authorizeTool({ ...input, deployment, accounts }).pipe(
           Effect.mapError(() => new ElicitationFailed({ reason: "forbidden" })),
         );
-        if (input.profile !== undefined && input.expectedProfileRevision !== undefined) {
-          const profile = yield* ownProfile(executor, owner, input.app, input.profile);
-          if (profile.revision !== input.expectedProfileRevision)
-            return yield* new ElicitationFailed({ reason: "forbidden" });
-        }
       }).pipe(
         (work) => observe("authorizeElicitation", work),
         Effect.catchTags({
           OrganizationForbidden: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           AppNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
-          AccountNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
+          AccountRequired: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
+          AppNotDeployed: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
+          DeploymentNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           StorageError: () => Effect.fail(new ElicitationFailed({ reason: "transport" })),
         }),
       ),
     listApps: (input = {}) =>
-      discoveryApps.pipe(
+      (input.toolsOnly ? discoveryToolApps : discoveryApps).pipe(
         Effect.map((apps) => {
           if (input.ids === undefined) return apps;
           const requested = new Set(input.ids);
@@ -181,31 +216,61 @@ export const hostedMcpBackend = Effect.gen(function* () {
         }),
         (work) => observe("listApps", work, "read"),
       ),
-    listTargets: (input) =>
+    listAccounts: (input) =>
       Effect.gen(function* () {
         yield* authorizeApp(input.app);
         yield* requireAppAccess(input.app, "use");
         const app = (yield* discoveryApps).find((app) => app.id === input.app);
         if (app === undefined) return yield* new AppNotFound({ app: input.app });
-        const profiles = (yield* discoveryProfiles).filter((profile) => profile.app === input.app);
-        const accounts = yield* discoveryAccounts;
-        return appTargets(app, profiles, accounts);
-      }).pipe((work) => observe("listTargets", work, "read")),
-    listTools: (input, options) => observe("listTools", listTools(input, options), "read"),
+        // A read pinned to a retained deployment resolves that deployment's requirements.
+        const requirements =
+          input.deployment === undefined || input.deployment === app.activeDeployment
+            ? app.requirements
+            : (yield* (yield* sdk).apps.deployment({
+                owner: organization.owner,
+                app: app.id,
+                deployment: input.deployment,
+              })).requirements;
+        return linkedRequirements(
+          requirements.accounts,
+          "user",
+          (yield* discoveryAccounts)
+            .filter((account) => account.app === app.id)
+            .map((link) => ({ requirement: link.requirement, account: link })),
+        );
+      }).pipe((work) => observe("listAccounts", work, "read")),
+    listTools: (input, options) =>
+      observe("listTools", grantRefusal(listTools(input, options)), "read"),
+    searchableTools: (input, options) =>
+      observe("searchableTools", grantRefusal(searchableTools(input, options)), "read"),
+    searchTools: (input) => observe("searchTools", searchTools(input), "read"),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* sdk;
-        const deployment = yield* selectedActiveDeployment(executor, owner, input);
-        yield* authorizeTool({ ...input, deployment });
-        return yield* executor.tools.call({ ...input, deployment }, options);
-      }).pipe((work) => observe("callTool", work)),
+        // Under a read-only rule the grant check evaluates the app before the call reaches here,
+        // so an app read made beside authentication would be older than that evaluation.
+        const ahead = yield* SelectionReadAhead;
+        const read =
+          ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
+        const { deployment, accounts, kind } = yield* checkedToolCall(
+          executor,
+          owner,
+          input,
+          (selected, described) => authorizeTool({ ...input, ...selected }, described),
+          read,
+        );
+        const call = executor.tools.call({ ...input, deployment, accounts, kind }, options);
+        // The check has finished: the call may read its state and recheck its accounts at once.
+        return yield* (yield* ConcurrentStatements) !== undefined
+          ? call.pipe(
+              Effect.provideService(InvocationSelection, { app: input.app, owner, accounts }),
+            )
+          : call;
+      }).pipe(grantRefusal, (work) => observe("callTool", work)),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
-        yield* authorizeTool({
-          ...request.invocation,
-          expectedProfileRevision: request.invocation.profileRevision,
-        });
+        yield* authorizeSavedTool(request.invocation);
         const owner = yield* currentOwner;
         yield* requireAppAccess(request.invocation.app, "use");
         const executor = yield* sdk;

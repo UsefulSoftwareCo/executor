@@ -41,11 +41,15 @@ A new app whose source and history start from another app and can change
 independently. Its accounts and data are separate.
 
 **Package name**:
-The scoped name used to discover a public app listing.
+The scoped name used to discover a public app listing, such as
+`@acme.executor.community/notes`. Its label, `notes`, identifies the listing
+within its publisher.
 
 **Publisher scope**:
-An organization's publishing namespace. Existing ownership survives changes to
-the organization's name or address.
+An organization's publishing namespace, `<slug>.executor.community`. It follows
+the organization's current slug and is never claimed: a rename moves every
+listing to the new scope, and the old one is free for the next organization
+that takes the slug.
 
 **Publication**:
 A public listing pointing to one selected Git commit. Republishing changes the
@@ -54,7 +58,7 @@ listing; unpublishing removes it. Installed copies remain independent.
 **Public app installation**:
 Copy a reviewed publication's source into a new owned app and deploy it. It has
 its own Git repository, account selections and app data. Upstream changes do not
-update it. Executor app-to-app package dependencies are deferred.
+update it.
 
 **App code**:
 The authored program and revision history behind configured copies.
@@ -65,8 +69,26 @@ changes the running code, not stored app data. Configured copies can select
 deployments from the same code lineage.
 
 **Account slot**:
-An app-wide named requirement. A provider requires one account; provider.many()
-accepts zero or more. Selected account IDs are saved on the configured app.
+An app-wide named requirement, in one scope. A provider requires one account;
+provider.many() accepts zero or more. A name is used once across both scopes.
+
+**User account**:
+An account filling a user requirement (`ctx.user.accounts`): linked by each
+caller for themselves.
+
+**App account**:
+An account filling an app requirement (`ctx.app.accounts`): linked for everyone
+by people who can edit the app, and used through the app by every caller and
+its background work.
+
+**App link**:
+One `(app, requirement, account)` with no subject, set by someone who can edit
+the app and use the account. It fills an app requirement for everyone.
+
+**User link**:
+One `(app, requirement, account)` for one member, set by that member. It fills a
+user requirement for their calls. A plain requirement keeps one link per scope
+(and member): linking another replaces it. `.many()` keeps every link.
 
 **Owner**:
 The opaque product identity to which an account, configured app or deployment

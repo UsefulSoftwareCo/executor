@@ -8,12 +8,14 @@ import {
   type GetAccountConnection,
 } from "../contracts/account-connection.ts";
 import type { Account } from "../contracts/account.ts";
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { StorageError } from "../contracts/shared.ts";
 import { StoredConnectionState, StoredConnectionTarget } from "../contracts/storage.ts";
 import { applyConnectionTarget } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-const StoredState = Schema.toCodecJson(StoredConnectionState);
+/** A stored connection's state, as `readConnection` reads it with the stored target. */
+export const StoredState = Schema.toCodecJson(StoredConnectionState);
 const encodeState = Schema.encodeSync(StoredState);
 const RecordedFailure = Schema.toCodecJson(AccountConnectionFailure);
 const encodeFailure = Schema.encodeSync(RecordedFailure);
@@ -44,9 +46,9 @@ export const readConnection = (db: Query, input: typeof GetAccountConnection.Typ
     const stored = yield* Schema.decodeUnknownEffect(StoredState)(row.state).pipe(
       Effect.mapError(() => new StorageError()),
     );
-    const target = yield* Schema.decodeUnknownEffect(Schema.NullOr(StoredConnectionTarget))(
-      row.target,
-    ).pipe(Effect.mapError(() => new StorageError()));
+    const target = yield* Schema.decodeUnknownEffect(StoredConnectionTarget)(row.target).pipe(
+      Effect.mapError(() => new StorageError()),
+    );
     const now = yield* Clock.currentTimeMillis;
     // An expired request keeps the failure that ended its latest sign-in.
     const state: AccountConnectionState =
@@ -94,10 +96,21 @@ export const openConnection = (db: Query, input: typeof GetAccountConnection.Typ
  * Commit with the account write, never as a later, independently failing update. `claimed` is the
  * row `lockConnection` returned in this transaction. Writers claim the row first, so it is current.
  */
-export const finishConnection = (db: Query, claimed: ConnectionRow, account: Account) =>
+export const finishConnection = (
+  db: Query,
+  claimed: ConnectionRow,
+  account: Account,
+  lifecycle: ResourceLifecycle | undefined,
+) =>
   Effect.gen(function* () {
-    if (claimed.target !== null)
-      yield* applyConnectionTarget(db, claimed.target, claimed.provider, account);
+    yield* applyConnectionTarget(
+      db,
+      claimed.id,
+      claimed.target,
+      claimed.provider,
+      account,
+      lifecycle,
+    );
     yield* query(() =>
       db.updateMany("accountConnections", {
         where: (b) => b("id", "=", claimed.id),

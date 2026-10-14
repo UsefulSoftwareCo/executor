@@ -1,10 +1,9 @@
 /** Pure interaction contracts shared by MCP transports and browser clients. */
 import { Schema } from "effect";
 import {
+  AppAccounts,
   AppId,
   ApprovalRequestId,
-  ProfileId,
-  ProfileRevision,
   ToolName,
   ToolPending,
 } from "@executor-js/sdk/core";
@@ -18,14 +17,13 @@ export const ElicitationRequestId = Schema.String.pipe(
 export const InteractionId = Schema.Union([ApprovalRequestId, ElicitationRequestId]);
 export type InteractionId = typeof InteractionId.Type;
 /**
- * The running call that asked. A call without a profile, such as one to an account-free app,
- * omits both profile keys: pending interactions are MCP results, and JSON has no undefined.
+ * The running call that asked. A call without accounts, such as one to an account-free app, omits
+ * the accounts key: pending interactions are MCP results, and JSON has no undefined.
  */
 export const InteractionTool = Schema.Struct({
   app: AppId,
   tool: ToolName,
-  profile: Schema.optionalKey(ProfileId),
-  expectedProfileRevision: Schema.optionalKey(ProfileRevision),
+  accounts: Schema.optionalKey(AppAccounts),
 });
 export type InteractionTool = typeof InteractionTool.Type;
 /** A question from an already-running tool. It is not a new tool invocation or a stored approval. */

@@ -4,31 +4,84 @@ import { Atom } from "effect/reactivity";
 import { useOptionalDashboard } from "./context.tsx";
 import { useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import { faviconUrl } from "../../contracts/icons.ts";
+import {
+  appIconSources,
+  catalogIconSources,
+  faviconUrl,
+  noCatalogIcons,
+  type AppIconSources,
+  type CatalogIcons,
+} from "../../contracts/icons.ts";
+import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+import type { App, ProviderDefinition } from "@executor-js/sdk";
+import type { CatalogIcon } from "@executor-js/catalog/contracts";
 import { Input } from "@executor-js/ui/components/input";
 import { cn } from "@executor-js/ui/lib/utils";
-const noDomains = Atom.make(new Map<string, string | null>());
-/** Share the old product's domain-derived logos and retain a neutral fallback on image failure. */
+import { Skeleton } from "../components/skeleton.tsx";
+const noIcons = Atom.make(noCatalogIcons);
+
+/** The dashboard's catalog icons, or none outside a dashboard. */
+const useCatalogIcons = (): CatalogIcons => {
+  const dashboard = useOptionalDashboard();
+  return useAtomValue(dashboard ? dashboard.catalogIcons : noIcons);
+};
+
+/**
+ * An app's own icons: those it declares on `defineApp`, else those of the catalog entry it was
+ * installed from, matched by package. `pending` while that catalog entry may still arrive.
+ */
+export function useAppIconSources(app: App | undefined): {
+  readonly sources: AppIconSources | null;
+  readonly pending: boolean;
+} {
+  const catalog = useCatalogIcons();
+  if (app === undefined) return { sources: null, pending: false };
+  const declared = appIconSources(app.requirements.icons);
+  if (declared !== null) return { sources: declared, pending: false };
+  const origin = app.copiedFrom?.name;
+  if (origin === undefined) return { sources: null, pending: false };
+  return {
+    sources: catalogIconSources(catalog.byPackage.get(origin)),
+    pending: !catalog.settled,
+  };
+}
+
+/**
+ * An app's own icons when given or known to the catalog by name, otherwise the old product's
+ * domain-derived logo, with a neutral fallback on image failure. While an own icon may still
+ * arrive, the tile shows the loading skeleton instead of a domain logo that would then be replaced.
+ */
 export function ProviderIcon({
   name,
   url,
+  icons,
   large = false,
+  declared = null,
+  pending = false,
 }: {
   readonly name: string;
   readonly url?: string | null | undefined;
+  readonly icons?: readonly CatalogIcon[] | undefined;
   readonly large?: boolean;
+  /** An app's own icon, shown before the domain logo. */
+  readonly declared?: AppIconSources | null;
+  /** The app's own icon is still loading. */
+  readonly pending?: boolean;
 }) {
-  const dashboard = useOptionalDashboard();
-  const domains = useAtomValue(dashboard ? dashboard.iconDomains : noDomains);
+  const catalogIcons = useCatalogIcons();
   const [failed, setFailed] = useState<readonly string[]>([]);
   const normalized = name.toLowerCase().trim();
   const size = large ? 24 : 17;
-  const domain =
-    url ??
-    domains.get(normalized) ??
-    (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
+  const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
+  const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
   const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, size);
-  const icon = source !== null && !failed.includes(source) ? source : null;
+  const sources = declared ?? catalogIconSources(catalog);
+  const waiting = sources === null && (pending || (icons === undefined && !catalogIcons.settled));
+  const own = sources !== null && !failed.includes(sources.light) ? sources : null;
+  const icon =
+    own === null && !waiting && source !== null && !failed.includes(source) ? source : null;
+  const fail = (key: string) => () =>
+    setFailed((current) => (current.includes(key) ? current : [...current, key]));
   return (
     <span
       className={cn(
@@ -38,21 +91,94 @@ export function ProviderIcon({
       )}
       aria-hidden
     >
-      {icon ? (
+      {own ? (
+        // The browser picks the variant for the color scheme, so the server renders the same
+        // markup. A srcset ends a URL at whitespace, which a data URI may hold escaped.
+        <picture className="contents">
+          {own.dark !== own.light && (
+            <source
+              media="(prefers-color-scheme: dark)"
+              srcSet={own.dark.replace(/\s/gu, encodeURIComponent)}
+            />
+          )}
+          <img
+            src={own.light}
+            alt=""
+            width={size}
+            height={size}
+            referrerPolicy="no-referrer"
+            data-icon="app"
+            onError={fail(own.light)}
+          />
+        </picture>
+      ) : icon ? (
         <img
           src={icon}
           alt=""
           width={size}
           height={size}
           referrerPolicy="no-referrer"
-          onError={() =>
-            setFailed((current) => (current.includes(icon) ? current : [...current, icon]))
-          }
+          onError={fail(icon)}
         />
+      ) : waiting ? (
+        <Skeleton className="size-full rounded-[inherit]" data-icon="loading" />
       ) : (
         <HugeiconsIcon icon={PackageIcon} aria-hidden size={large ? 23 : 17} strokeWidth={1.5} />
       )}
     </span>
+  );
+}
+
+/**
+ * The app's own icon (see `useAppIconSources`), or its first provider's logo when it has none.
+ */
+export function AppIcon({
+  app,
+  name,
+  large = false,
+}: {
+  readonly app: App | undefined;
+  /** Shown for the fallback when the app is unavailable. */
+  readonly name?: string;
+  readonly large?: boolean;
+}) {
+  const provider = app && Object.values(app.requirements.accounts)[0]?.definition;
+  const { sources, pending } = useAppIconSources(app);
+  return (
+    <ProviderIcon
+      name={provider?.name ?? app?.name ?? name ?? "App"}
+      url={providerDisplayUrl(provider)}
+      large={large}
+      declared={sources}
+      pending={pending}
+    />
+  );
+}
+
+/**
+ * A provider row inside an app. An app with one provider is that provider's product, so the row
+ * shows the app's own icon; an app combining several providers shows each one's logo.
+ */
+export function AppProviderIcon({
+  app,
+  provider,
+  large = false,
+}: {
+  readonly app: App;
+  readonly provider: ProviderDefinition;
+  readonly large?: boolean;
+}) {
+  const { sources, pending } = useAppIconSources(app);
+  const single =
+    new Set(Object.values(app.requirements.accounts).map((slot) => slot.definition.name)).size ===
+    1;
+  return (
+    <ProviderIcon
+      name={provider.name}
+      url={providerDisplayUrl(provider)}
+      large={large}
+      {...(single ? { declared: sources, pending } : {})}
+    />
   );
 }
 

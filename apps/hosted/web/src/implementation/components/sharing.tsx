@@ -27,6 +27,8 @@ import { useOrganizationRoute } from "./organization.tsx";
 
 type AudienceInputProps = {
   readonly groups: readonly Group[];
+  /** What the audience may use, when not the app or account itself, such as "this client". */
+  readonly subject?: string | undefined;
   readonly disabled?: boolean;
   readonly disabledReason?: string | undefined;
   readonly error?: string | undefined;
@@ -45,7 +47,13 @@ type AudienceInputProps = {
       readonly onChange: (value: typeof SharedAudience.Type) => void;
     }
 );
-/** Controlled sharing fields can be used in Settings and before authenticating a new team account. */
+/** A group audience needs at least one group; the same rule applies when editing and creating. */
+export const audienceError = (value: typeof AppAudience.Type) =>
+  value.kind === "groups" && !value.groups.length ? "Choose at least one group." : undefined;
+/**
+ * Controlled sharing fields can be used in Settings, before authenticating a new team account,
+ * and in forms that create a resource with its audience.
+ */
 export function AudienceInput(props: AudienceInputProps) {
   const id = useId();
   const value = props.value;
@@ -57,7 +65,7 @@ export function AudienceInput(props: AudienceInputProps) {
       tabIndex={-1}
     >
       <label htmlFor={id} className="block text-sm font-medium">
-        Who can use {props.mode === "app" ? "this app" : "this account"}?
+        Who can use {props.subject ?? (props.mode === "app" ? "this app" : "this account")}?
       </label>
       <Select
         value={value.kind}
@@ -201,6 +209,7 @@ export function SharingFailure({
 }
 type SharingProps = {
   readonly disabledReason?: string | undefined;
+  readonly subject?: string | undefined;
   readonly groups: readonly Group[];
   readonly revision: typeof AccessRevision.Type;
 } & (
@@ -271,18 +280,11 @@ export function SharingEditor(props: SharingProps) {
         await form.handleSubmit();
       }}
     >
-      <form.Field
-        name="audience"
-        validators={{
-          onChange: ({ value }) =>
-            value.kind === "groups" && !value.groups.length
-              ? "Choose at least one group."
-              : undefined,
-        }}
-      >
+      <form.Field name="audience" validators={{ onChange: ({ value }) => audienceError(value) }}>
         {(field) => {
           const common = {
             groups: props.groups,
+            subject: props.subject,
             disabled: pending,
             disabledReason: props.disabledReason,
             onBlur: field.handleBlur,

@@ -110,7 +110,7 @@ layer(Layer.mergeAll(FetchHttpClient.layer), { excludeTestServices: true })(
           Effect.retry({ times: 20, schedule: Schedule.spaced("250 millis") }),
         );
         expect(
-          (yield* messages).filter((mail) => mail.subject === "welcome to executor"),
+          (yield* messages).filter((mail) => mail.subject === "Welcome to Executor"),
         ).toHaveLength(0);
         yield* post("/api/auth/sign-in/email-otp", {
           email,
@@ -119,12 +119,12 @@ layer(Layer.mergeAll(FetchHttpClient.layer), { excludeTestServices: true })(
         });
         const welcomed = yield* messages.pipe(
           Effect.filterOrFail(
-            (mail) => mail.some((message) => message.subject === "welcome to executor"),
+            (mail) => mail.some((message) => message.subject === "Welcome to Executor"),
             () => new EmailIsolationFailed(),
           ),
           Effect.retry({ times: 40, schedule: Schedule.spaced("500 millis") }),
         );
-        expect(welcomed.filter((mail) => mail.subject === "welcome to executor")).toHaveLength(1);
+        expect(welcomed.filter((mail) => mail.subject === "Welcome to Executor")).toHaveLength(1);
       }),
     );
   },

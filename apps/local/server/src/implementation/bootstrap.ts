@@ -14,12 +14,18 @@ import {
 } from "effect";
 import { Hex } from "effect/encoding";
 import { lock } from "proper-lockfile";
-import { config, keyStorageConfig, type KeyStorage } from "../contracts/config.ts";
+import {
+  config,
+  dataDirectoryConfig,
+  keyStorageConfig,
+  type KeyStorage,
+} from "../contracts/config.ts";
 import {
   LocalConfigurationReason,
   LocalCredentialService,
   LocalInstallation as Installation,
 } from "../contracts/auth.ts";
+import { desktopPairing } from "../contracts/startup.ts";
 
 /** Safe startup instructions. Key values are never displayed; native error text is sanitized. */
 export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurationError>()(
@@ -197,13 +203,100 @@ const credentialEntry = (id: string) =>
     });
   });
 
+const decodeKeys = Schema.decodeUnknownEffect(Schema.fromJsonString(Keys));
+const encodeKeys = Schema.encodeEffect(Schema.fromJsonString(Keys));
+
+/** One directory's files and any supplied keys, read before anything touches the directory. */
+const dataDirectory = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const directory = path.resolve(yield* dataDirectoryConfig);
+  return {
+    directory,
+    marker: path.join(directory, "installation.json"),
+    keyFile: path.join(directory, "keys.json"),
+    explicitApi: yield* Config.Redacted("EXECUTOR_API_KEY").pipe(Config.option),
+    explicitEncryption: yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY").pipe(Config.option),
+  };
+});
+
+/** A directory's installation record. */
+const decodeInstallation = (marker: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs
+      .readFileString(marker)
+      .pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Installation))),
+        Effect.mapError(invalid),
+      );
+  });
+
+/** The directory's installation record, or none when nothing has started with it. */
+const readInstallation = (marker: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return (yield* fs.exists(marker))
+      ? Option.some(yield* decodeInstallation(marker))
+      : Option.none<typeof Installation.Type>();
+  });
+
+/** A directory's keys.json. */
+const readKeyFile = (keyFile: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* fs.readFileString(keyFile).pipe(Effect.flatMap(decodeKeys));
+  }).pipe(Effect.mapError((error) => keyFileUnusable(keyFile, error)));
+
+/** One installation's OS credential entry and the keys saved in it, if any. */
+const readCredential = (platform: string, id: string) =>
+  Effect.gen(function* () {
+    const entry = yield* credentialEntry(id);
+    const stored = yield* Effect.tryPromise({
+      try: (signal) => entry.getPassword(signal),
+      catch: classify(platform),
+    });
+    return { entry, stored: stored ?? undefined };
+  });
+
+const credentialMissing = () =>
+  new LocalConfigurationError({
+    reason: "credential-missing",
+    message:
+      "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
+  });
+
+/** Keys saved in an existing installation's OS credential, which is never replaced when missing. */
+const storedKeys = (stored: string | undefined) =>
+  stored === undefined
+    ? Effect.fail(credentialMissing())
+    : decodeKeys(stored).pipe(Effect.mapError(invalid));
+
+/** The text for an OS credential store that refused a later read or write. */
+const refusedAgain = (reason: string) =>
+  `Access to the OS credential store was denied, or the store is locked (${reason}). Allow access or unlock the store, then try again.`;
+
+/** This directory's server configuration with its resolved keys in place of the environment's. */
+const configure = (directory: string, keys: typeof Keys.Type) =>
+  Effect.gen(function* () {
+    const base = yield* ConfigProvider.ConfigProvider;
+    return yield* config.pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromUnknown({
+          EXECUTOR_DATA_DIR: directory,
+          EXECUTOR_API_KEY: Redacted.value(keys.apiKey),
+          EXECUTOR_ENCRYPTION_KEY: Redacted.value(keys.encryptionKey),
+        }).pipe(ConfigProvider.orElse(base)),
+      ),
+    );
+  });
+
 /** Resolve one profile's keys. Existing data never causes a new credential to be generated. */
 export const localConfiguration = (platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const base = yield* ConfigProvider.ConfigProvider;
       // Read before touching the directory, so an invalid value changes nothing.
       const keyStorage = yield* keyStorageConfig.pipe(
         Effect.mapError(
@@ -215,14 +308,7 @@ export const localConfiguration = (platform: string) =>
             }),
         ),
       );
-      const directory = path.resolve(
-        yield* Config.String("EXECUTOR_DATA_DIR").pipe(Config.withDefault(".local/executor")),
-      );
-      const marker = path.join(directory, "installation.json");
-      const explicitApi = yield* Config.Redacted("EXECUTOR_API_KEY").pipe(Config.option);
-      const explicitEncryption = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY").pipe(
-        Config.option,
-      );
+      const { directory, marker, keyFile, explicitApi, explicitEncryption } = yield* dataDirectory;
 
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       yield* lockDirectory(
@@ -235,7 +321,8 @@ export const localConfiguration = (platform: string) =>
         (name) => fs.exists(path.join(directory, name)),
       );
       const existing = databases.some(Boolean);
-      const savedMarker = yield* fs.exists(marker);
+      const saved = yield* readInstallation(marker);
+      const savedMarker = Option.isSome(saved);
       const explicit = Option.isSome(explicitApi) || Option.isSome(explicitEncryption);
       if (!explicit && !savedMarker && existing)
         return yield* new LocalConfigurationError({
@@ -243,36 +330,18 @@ export const localConfiguration = (platform: string) =>
           message:
             "Existing Executor data has no installation record. Supply its original EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY, or restore installation.json and its matching OS credential or key file. No new keys were created.",
         });
-      const installation = savedMarker
-        ? yield* fs
-            .readFileString(marker)
-            .pipe(
-              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Installation))),
-              Effect.mapError(invalid),
-            )
-        : Installation.make({
-            version: 1,
-            id: crypto.randomUUID(),
-            state: explicit ? "external" : "pending",
-          });
-
-      const keyFile = path.join(directory, "keys.json");
+      const installation = Option.getOrElse(saved, () =>
+        Installation.make({
+          version: 1,
+          id: crypto.randomUUID(),
+          state: explicit ? "external" : "pending",
+        }),
+      );
 
       const writeFile = (destination: string, contents: string) =>
         writeAtomically(platform, directory, destination, contents);
       const writeMarker = (state: typeof Installation.Type.state) =>
         writeFile(marker, JSON.stringify({ ...installation, state }));
-      const configure = (keys: typeof Keys.Type) =>
-        config.pipe(
-          Effect.provideService(
-            ConfigProvider.ConfigProvider,
-            ConfigProvider.fromUnknown({
-              EXECUTOR_DATA_DIR: directory,
-              EXECUTOR_API_KEY: Redacted.value(keys.apiKey),
-              EXECUTOR_ENCRYPTION_KEY: Redacted.value(keys.encryptionKey),
-            }).pipe(ConfigProvider.orElse(base)),
-          ),
-        );
       if (explicit) {
         if (Option.isSome(keyStorage))
           return yield* new LocalConfigurationError({
@@ -301,10 +370,6 @@ export const localConfiguration = (platform: string) =>
           message:
             "This directory uses supplied keys. Set its original EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY. No replacement keys were created.",
         });
-      const readKeyFile = fs.readFileString(keyFile).pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Keys))),
-        Effect.mapError((error) => keyFileUnusable(keyFile, error)),
-      );
       // Only a directory that has never held keys may choose the key file. Once a
       // record says "ready" or data exists, the credential store stays mandatory.
       const firstStart = installation.state === "pending" && !existing;
@@ -315,23 +380,24 @@ export const localConfiguration = (platform: string) =>
         installation.state === "file" || interrupted ? "file" : firstStart ? undefined : "os";
       if (Option.isSome(keyStorage) && kept !== undefined && keyStorage.value !== kept)
         return yield* mismatch(keyStorage.value, kept);
-      if (installation.state === "file") return yield* configure(yield* readKeyFile);
+      if (installation.state === "file")
+        return yield* configure(directory, yield* readKeyFile(keyFile));
       if (!savedMarker) yield* writeMarker("pending");
       if (interrupted) {
-        const keys = yield* readKeyFile;
+        const keys = yield* readKeyFile(keyFile);
         yield* writeMarker("file");
-        return yield* configure(keys);
+        return yield* configure(directory, keys);
       }
 
       const generated = () => Keys.make({ apiKey: randomKey(), encryptionKey: randomKey() });
       const saveKeyFile = (notice: string) =>
         Effect.gen(function* () {
           const keys = generated();
-          yield* writeFile(keyFile, yield* Schema.encodeEffect(Schema.fromJsonString(Keys))(keys));
+          yield* writeFile(keyFile, yield* encodeKeys(keys));
           yield* writeMarker("file");
           // stdout is the desktop readiness protocol; this notice belongs on stderr.
           yield* Console.error(`${notice}${keyFile}`);
-          return yield* configure(keys);
+          return yield* configure(directory, keys);
         });
       if (Option.contains(keyStorage, "file"))
         return yield* saveKeyFile("EXECUTOR_KEY_STORAGE=file; keys saved to ");
@@ -344,38 +410,24 @@ export const localConfiguration = (platform: string) =>
             ? saveKeyFile("OS credential store not found; keys saved to ")
             : Effect.fail(unavailable(failure.reason, firstStart));
 
-      const store = yield* Effect.gen(function* () {
-        const entry = yield* credentialEntry(installation.id);
-        const stored = yield* Effect.tryPromise({
-          try: (signal) => entry.getPassword(signal),
-          catch: classify(platform),
-        });
-        return { entry, stored };
-      }).pipe(Effect.result);
+      const store = yield* readCredential(platform, installation.id).pipe(Effect.result);
       if (Result.isFailure(store)) return yield* storeFailed(store.failure);
       const { entry, stored } = store.success;
-      if (stored !== undefined && stored !== null) {
-        const keys = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Keys))(stored).pipe(
-          Effect.mapError(invalid),
-        );
+      if (stored !== undefined) {
+        const keys = yield* storedKeys(stored);
         if (installation.state === "pending") yield* writeMarker("ready");
-        return yield* configure(keys);
+        return yield* configure(directory, keys);
       }
-      if (!firstStart)
-        return yield* new LocalConfigurationError({
-          reason: "credential-missing",
-          message:
-            "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
-        });
+      if (!firstStart) return yield* credentialMissing();
       const keys = generated();
-      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(Keys))(keys);
-      const saved = yield* Effect.tryPromise({
+      const encoded = yield* encodeKeys(keys);
+      const written = yield* Effect.tryPromise({
         try: (signal) => entry.setPassword(encoded, signal),
         catch: classify(platform),
       }).pipe(Effect.result);
-      if (Result.isFailure(saved)) return yield* storeFailed(saved.failure);
+      if (Result.isFailure(written)) return yield* storeFailed(written.failure);
       yield* writeMarker("ready");
-      return yield* configure(keys);
+      return yield* configure(directory, keys);
     }),
   ).pipe(
     Effect.catchTag("PlatformError", () =>
@@ -384,6 +436,57 @@ export const localConfiguration = (platform: string) =>
           reason: "io",
           message:
             "Executor could not read or write its installation record. Check the data directory permissions and available disk space. Existing keys have not been replaced.",
+        }),
+      ),
+    ),
+  );
+
+/**
+ * Read the API key a client of one directory's running server sends, such as `executor pair`.
+ * Unlike `localConfiguration` it never creates the directory, a record or keys, and takes no
+ * lock: every bootstrap write is atomic and saves keys before the record that names them.
+ * A supplied EXECUTOR_API_KEY is sent instead of the saved key. Clients never need the
+ * encryption key, which protects the server's stored credentials.
+ */
+export const savedApiKey = (platform: string) =>
+  Effect.gen(function* () {
+    const { directory, marker, keyFile, explicitApi } = yield* dataDirectory;
+    if (Option.isSome(explicitApi))
+      return { directory, apiKey: explicitApi.value, keys: "supplied" as const };
+    const installation = yield* readInstallation(marker);
+    if (Option.isNone(installation) || installation.value.state === "pending")
+      return yield* new LocalConfigurationError({
+        reason: "credential-missing",
+        message: `${directory} has no saved keys. Start Executor with this data directory first, or set EXECUTOR_DATA_DIR to the folder the running server uses. ${desktopPairing} No keys were created.`,
+      });
+    const { id, state } = installation.value;
+    if (state === "external")
+      return yield* new LocalConfigurationError({
+        reason: "credential-missing",
+        message: `${directory} uses supplied keys, which Executor never saves. Set EXECUTOR_API_KEY to the key its server started with. No keys were created.`,
+      });
+    const keys =
+      state === "file"
+        ? yield* readKeyFile(keyFile)
+        : yield* readCredential(platform, id).pipe(
+            Effect.mapError((failure) =>
+              failure.kind === "denied"
+                ? new LocalConfigurationError({
+                    reason: "credential-denied",
+                    message: `${refusedAgain(failure.reason)} Nothing was changed.`,
+                  })
+                : unavailable(failure.reason, false),
+            ),
+            Effect.flatMap(({ stored }) => storedKeys(stored)),
+          );
+    return { directory, apiKey: keys.apiKey, keys: "saved" as const };
+  }).pipe(
+    Effect.catchTag("PlatformError", () =>
+      Effect.fail(
+        new LocalConfigurationError({
+          reason: "io",
+          message:
+            "Executor could not read its installation record or key file. Check the data directory permissions. Nothing was changed.",
         }),
       ),
     ),
@@ -401,21 +504,13 @@ const unchanged = (reason: LocalConfigurationReason, message: string) =>
 export const rotateApiKey = (platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = path.resolve(
-        yield* Config.String("EXECUTOR_DATA_DIR").pipe(Config.withDefault(".local/executor")),
-      );
-      const explicitApi = yield* Config.Redacted("EXECUTOR_API_KEY").pipe(Config.option);
-      const explicitEncryption = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY").pipe(
-        Config.option,
-      );
+      const { directory, marker, keyFile, explicitApi, explicitEncryption } = yield* dataDirectory;
       if (Option.isSome(explicitApi) || Option.isSome(explicitEncryption))
         return yield* unchanged(
           "misconfigured",
           "Supplied EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY are never stored. Change EXECUTOR_API_KEY where you set it.",
         );
-      const marker = path.join(directory, "installation.json");
+      const fs = yield* FileSystem.FileSystem;
       if (!(yield* fs.exists(marker)))
         return yield* unchanged(
           "credential-missing",
@@ -425,13 +520,7 @@ export const rotateApiKey = (platform: string) =>
         directory,
         "Executor is starting with this data directory. Try again once it has started. The API key was not changed.",
       );
-      const installation = yield* fs
-        .readFileString(marker)
-        .pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Installation))),
-          Effect.mapError(invalid),
-        );
-      const encode = Schema.encodeEffect(Schema.fromJsonString(Keys));
+      const installation = yield* decodeInstallation(marker);
       const rotated = (keys: typeof Keys.Type) =>
         Keys.make({ apiKey: randomKey(), encryptionKey: keys.encryptionKey });
       switch (installation.state) {
@@ -446,37 +535,19 @@ export const rotateApiKey = (platform: string) =>
             "This directory has not finished its first start. Start Executor once to create its keys.",
           );
         case "file": {
-          const keyFile = path.join(directory, "keys.json");
-          const keys = yield* fs.readFileString(keyFile).pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Keys))),
-            Effect.mapError((error) => keyFileUnusable(keyFile, error)),
-          );
-          yield* writeAtomically(platform, directory, keyFile, yield* encode(rotated(keys)));
+          const keys = yield* readKeyFile(keyFile);
+          yield* writeAtomically(platform, directory, keyFile, yield* encodeKeys(rotated(keys)));
           return;
         }
         case "ready": {
           const storeFailed = (failure: StoreFailure) =>
             failure.kind === "denied"
-              ? unchanged(
-                  "credential-denied",
-                  `Access to the OS credential store was denied, or the store is locked (${failure.reason}). Allow access or unlock the store, then try again.`,
-                )
+              ? unchanged("credential-denied", refusedAgain(failure.reason))
               : unavailable(failure.reason, false);
-          const entry = yield* credentialEntry(installation.id).pipe(Effect.mapError(storeFailed));
-          const stored = yield* Effect.tryPromise({
-            try: (signal) => entry.getPassword(signal),
-            catch: classify(platform),
-          }).pipe(Effect.mapError(storeFailed));
-          if (stored === undefined || stored === null)
-            return yield* new LocalConfigurationError({
-              reason: "credential-missing",
-              message:
-                "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
-            });
-          const keys = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Keys))(stored).pipe(
-            Effect.mapError(invalid),
+          const { entry, stored } = yield* readCredential(platform, installation.id).pipe(
+            Effect.mapError(storeFailed),
           );
-          const encoded = yield* encode(rotated(keys));
+          const encoded = yield* encodeKeys(rotated(yield* storedKeys(stored)));
           yield* Effect.tryPromise({
             try: (signal) => entry.setPassword(encoded, signal),
             catch: classify(platform),

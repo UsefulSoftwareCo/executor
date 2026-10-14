@@ -4,6 +4,7 @@ import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { JsonObject, JsonValue } from "./schema.ts";
 import { FailureMessage, FailureName } from "./failure.ts";
 import type { AppContext, AppRequirements, QueryContext, MutationContext } from "./context.ts";
+import type { AccountScope } from "./app.ts";
 import type { Operation } from "../implementation/operations.ts";
 import type { HostContext } from "./host.ts";
 
@@ -115,7 +116,6 @@ export const HostedWorkflow = Schema.Struct({
 export type HostedWorkflow = typeof HostedWorkflow.Type;
 
 const runFields = {
-  profile: Schema.optionalKey(Schema.NonEmptyString),
   id: WorkflowRunId,
   app: Schema.NonEmptyString,
   deployment: Schema.NonEmptyString,
@@ -163,35 +163,41 @@ export interface WorkflowControls extends WorkflowReads {
   }) => Promise<WorkflowRun>;
   readonly terminate: (input: { readonly run: string }) => Promise<WorkflowRun>;
 }
-/** External steps get fresh credentials and cancellation, without storage or live elicitation. */
-export type WorkflowStepContext<Requirements extends AppRequirements = AppRequirements> = Omit<
-  AppContext<Requirements>,
-  "elicit" | "workflows"
-> & {
+/**
+ * External steps get fresh credentials and cancellation, without storage or live elicitation. A run
+ * started by app-scope work, such as an app schedule, has the `"app"` scope: no `user`.
+ */
+export type WorkflowStepContext<
+  Requirements extends AppRequirements = AppRequirements,
+  Scope extends AccountScope = "user",
+> = Omit<AppContext<Requirements, Scope>, "elicit" | "workflows"> & {
   readonly runId: WorkflowRunId;
   readonly stepId: string;
   readonly idempotencyKey: string;
 };
 /** Explicit durable boundaries; database access passes through registered app operations. */
-export interface WorkflowStep<Requirements extends AppRequirements = AppRequirements> {
+export interface WorkflowStep<
+  Requirements extends AppRequirements = AppRequirements,
+  Scope extends AccountScope = "user",
+> {
   do<Output>(
     name: string,
-    run: (context: WorkflowStepContext<Requirements>) => Promise<Output>,
+    run: (context: WorkflowStepContext<Requirements, Scope>) => Promise<Output>,
   ): Promise<Output>;
   do<Output>(
     name: string,
     options: WorkflowStepOptions,
-    run: (context: WorkflowStepContext<Requirements>) => Promise<Output>,
+    run: (context: WorkflowStepContext<Requirements, Scope>) => Promise<Output>,
   ): Promise<Output>;
   runQuery<Input, Output>(
     name: string,
-    operation: Operation<Input, Output, "query", QueryContext<Requirements>>,
+    operation: Operation<Input, Output, "query", QueryContext<Requirements, Scope>>,
     input: NoInfer<Input>,
     options?: WorkflowStepOptions,
   ): Promise<Output>;
   runMutation<Input, Output>(
     name: string,
-    operation: Operation<Input, Output, "mutation", MutationContext<Requirements>>,
+    operation: Operation<Input, Output, "mutation", MutationContext<Requirements, Scope>>,
     input: NoInfer<Input>,
     options?: WorkflowStepOptions,
   ): Promise<Output>;
@@ -199,9 +205,12 @@ export interface WorkflowStep<Requirements extends AppRequirements = AppRequirem
   readonly sleepUntil: (name: string, timestamp: number | Date) => Promise<void>;
 }
 /** The orchestration body gets no account, database or interactive capabilities. */
-export interface WorkflowContext<Requirements extends AppRequirements = AppRequirements> {
+export interface WorkflowContext<
+  Requirements extends AppRequirements = AppRequirements,
+  Scope extends AccountScope = "user",
+> {
   readonly runId: WorkflowRunId;
-  readonly step: WorkflowStep<Requirements>;
+  readonly step: WorkflowStep<Requirements, Scope>;
 }
 /** Framework-owned native declaration; only the callback crosses the author Promise boundary. */
 export interface AppWorkflow<Input = unknown, Output = unknown> {

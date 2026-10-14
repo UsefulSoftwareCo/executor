@@ -75,7 +75,7 @@ const patFixture = Effect.gen(function* () {
         content: `
 import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({  tools: router({
+export default defineApp({}, async () => ({  tools: router({
     echo: mutation({ description: "Echo receipt", input: object({}) }, async () => ({ receipt: ${JSON.stringify(receipt)} })),
   approved: mutation({ description: "Requires approval", input: object({}), approval: always() }, async () => ({ receipt: ${JSON.stringify(receipt)} })),
   }) }));`,
@@ -137,7 +137,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
               // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
               error: {
                 code: -32600,
-                message: `${code} (HTTP 403): ${message}`,
+                message: `${code} (HTTP 403): ${message} Retryable (unchanged call): no.`,
                 data: { code, status: 403 },
               },
             });
@@ -256,8 +256,8 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
           Effect.gen(function* () {
             const admin = yield* create(actors.admin);
             const adminClient = yield* mcp.connect(admin.key, "pat-role-change", { organization });
-            const { profile } = yield* managementApp(actors.admin);
-            const inspect = `return await tools.executor.profiles[${JSON.stringify(profile.id)}].appManagement.source(${JSON.stringify({ path: { organization, app: app.id } })})`;
+            yield* managementApp(actors.admin);
+            const inspect = `return await tools.executor.appManagement.source(${JSON.stringify({ path: { organization, app: app.id } })})`;
             const before = yield* adminClient.use(
               "An admin PAT can inspect app source",
               (client, signal) =>
@@ -584,7 +584,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
               content: `
 import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({  tools: router({
+export default defineApp({}, async () => ({  tools: router({
   approved: mutation({ description: "Requires approval", input: object({}), approval: always() }, async () => ({ receipt: ${JSON.stringify(receipt)} })),
   }) }));`,
             },

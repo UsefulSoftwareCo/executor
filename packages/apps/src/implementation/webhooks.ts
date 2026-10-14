@@ -1,14 +1,14 @@
 /** Native webhook dispatch. The author verifies signatures before parsing or performing side effects. */
 import { Cause, Effect, Schema, Stream } from "effect";
 import { Base64 } from "effect/encoding";
-import type { AppDefinition } from "../contracts/app.ts";
+import type { AppDefinition, ScopedSlots, WebhookAccount } from "../contracts/app.ts";
 import {
   HostDeclarationInvalid,
   HostInputInvalid,
   HostOperationFailed,
   HostOperationNotFound,
+  HostAccountsInvalid,
   HostOutputInvalid,
-  type ResolvedAccounts,
 } from "../contracts/host.ts";
 import {
   defaultWebhookTransportLimits,
@@ -21,23 +21,41 @@ import { JsonObject, JsonValue } from "../contracts/schema.ts";
 import { importedJsonSchema } from "./schema.ts";
 import { appCode } from "./authoring.ts";
 
+const withoutUser = <Context extends object>({
+  user: _user,
+  ...context
+}: Context & { readonly user?: unknown }) => context;
+
 const safe = <A, E>(work: () => Effect.Effect<A, unknown>, error: E) =>
   Effect.suspend(work).pipe(
     Effect.catchCause((cause) =>
       Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.fail(error),
     ),
   );
-/** Run one hook with freshly bound context. No credentials or raw failures enter the response envelope. */
+/** A webhook's source requirement and its scope. */
+const sourceRequirement = (account: WebhookAccount) =>
+  "app" in account
+    ? { scope: "app" as const, name: account.app }
+    : { scope: "user" as const, name: account.user };
+
+type ScopeAccounts = { readonly accounts: Readonly<Record<string, unknown>> };
+
+/**
+ * Run one hook with freshly bound context. No credentials or raw failures enter the response
+ * envelope. An app-account hook runs without a caller: its context has no `user`, whatever the
+ * invocation bound.
+ */
 export const dispatchWebhook = <
   Context extends {
     readonly signal?: AbortSignal;
-    readonly accounts: Readonly<Record<string, unknown>>;
+    readonly app: ScopeAccounts;
+    readonly user?: ScopeAccounts;
   },
 >(
   definition: AppDefinition<Context>,
   command: WebhookCommand,
   context: Context,
-  accounts: ResolvedAccounts,
+  slots: ScopedSlots,
 ) =>
   Effect.gen(function* () {
     const hooks = definition.webhooks ?? {};
@@ -46,7 +64,8 @@ export const dispatchWebhook = <
         safe(
           () =>
             Effect.gen(function* () {
-              if (!Object.hasOwn(accounts, hook.account))
+              const source = sourceRequirement(hook.account);
+              if (!Object.hasOwn(slots[source.scope], source.name))
                 return yield* new HostDeclarationInvalid();
               const describe = (schema: Schema.Decoder<unknown>) => {
                 const imported = importedJsonSchema(schema);
@@ -71,9 +90,10 @@ export const dispatchWebhook = <
                       ...(yield* Schema.decodeUnknownEffect(ManualWebhookSetup)(hook.setup)),
                       stateSchema: yield* describe(hook.state),
                     };
+              // Requirement names are unique across scopes, so the name alone names the source.
               return yield* Schema.decodeUnknownEffect(HostedWebhook)({
                 name,
-                account: hook.account,
+                account: source.name,
                 configSchema,
                 ...(setup === undefined ? {} : { setup }),
               });
@@ -84,19 +104,22 @@ export const dispatchWebhook = <
     }
     const hook = Object.hasOwn(hooks, command.name) ? hooks[command.name] : undefined;
     if (hook === undefined) return yield* new HostOperationNotFound();
-    const selected = accounts[hook.account];
-    const source = Array.isArray(selected)
-      ? selected.find((account) => account.id === command.sourceAccount)
-      : selected;
-    if (source === undefined || source.id !== command.sourceAccount)
-      return yield* new HostInputInvalid();
-    const bound = context.accounts[hook.account];
-    const account = Array.isArray(bound)
-      ? bound.find(
-          (value) =>
-            typeof value === "object" && value !== null && "id" in value && value.id === source.id,
-        )
-      : bound;
+    const source = sourceRequirement(hook.account);
+    const scope = source.scope === "app" ? context.app : context.user;
+    if (scope === undefined) return yield* new HostAccountsInvalid();
+    const bound = Object.hasOwn(scope.accounts, source.name)
+      ? scope.accounts[source.name]
+      : undefined;
+    const account = (Array.isArray(bound) ? bound : [bound]).find(
+      (value: unknown) =>
+        typeof value === "object" &&
+        value !== null &&
+        "id" in value &&
+        value.id === command.sourceAccount,
+    );
+    if (account === undefined) return yield* new HostInputInvalid();
+    // SAFETY: the same context without `user`, which an app-account hook's declared context lacks.
+    const hookContext = source.scope === "app" ? (withoutUser(context) as Context) : context;
     const config = yield* safe(
       () => Schema.decodeUnknownEffect(hook.config)(command.config),
       new HostInputInvalid(),
@@ -118,7 +141,7 @@ export const dispatchWebhook = <
     const invoke = (
       callback: (context: Context, input: never) => Effect.Effect<unknown, unknown>,
       value: unknown,
-    ) => safe(() => callback(context, value as never), new HostOperationFailed());
+    ) => safe(() => callback(hookContext, value as never), new HostOperationFailed());
     if (command.operation === "webhook-complete") {
       if (hook.setup === undefined) return yield* new HostInputInvalid();
       return yield* safe(

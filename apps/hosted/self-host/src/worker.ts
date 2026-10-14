@@ -11,6 +11,7 @@ import { telemetryConfig, telemetryLayer } from "@executor-js/telemetry";
 import { CurrentTelemetryClient } from "@executor-js/telemetry/transport";
 import { urlPolicyConfig } from "@executor-js/utils/url-policy";
 import {
+  Cause,
   Config,
   ConfigProvider,
   Context,
@@ -28,6 +29,7 @@ import {
   HttpServer,
   HttpServerRequest,
 } from "effect/http";
+import { FirstPartyOAuthClientsInvalid } from "@executor-js/hosted-server";
 import { selfHostDatabaseSchema } from "./implementation/database-schema.ts";
 import {
   selfHostExecutorServices,
@@ -73,15 +75,31 @@ interface Environment {
   readonly APPS: Fetcher;
 }
 
+/**
+ * The native host did not answer with its configuration; keeps its status or the request's cause.
+ * A body that is not a record of strings keeps neither, because parse errors quote its values.
+ */
+class HostConfigurationUnavailable extends Schema.TaggedError<HostConfigurationUnavailable>()(
+  "HostConfigurationUnavailable",
+  { status: Schema.optionalKey(Schema.Int), cause: Schema.optionalKey(Schema.Defect()) },
+) {}
+
 const configuration = (native: HttpBinding) =>
   Effect.tryPromise({
-    try: async () => {
-      const response = await native.fetch(new Request("http://native.internal/configuration"));
-      if (!response.ok) throw new Error("Cannot read host configuration");
-      return response.json();
-    },
-    catch: () => new Error("Cannot read host configuration"),
-  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.String))));
+    try: () => native.fetch(new Request("http://native.internal/configuration")),
+    catch: (cause) => new HostConfigurationUnavailable({ cause }),
+  }).pipe(
+    Effect.filterOrFail(
+      (response) => response.ok,
+      (response) => new HostConfigurationUnavailable({ status: response.status }),
+    ),
+    Effect.flatMap((response) =>
+      Effect.tryPromise(() => response.json()).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.String))),
+        Effect.mapError(() => new HostConfigurationUnavailable({})),
+      ),
+    ),
+  );
 
 const prepare = (state: DurableObjectState, env: Environment) =>
   Effect.gen(function* () {
@@ -217,23 +235,36 @@ export class ExecutorProduct extends DurableObject<Environment> implements Produ
   }
   async #open() {
     const scope = Scope.makeUnsafe();
+    // Invalid operator settings say which setting and field, never a value, so they are reported
+    // as they are; any other failure keeps the storage report. Both keep the whole failure, with
+    // every concurrent failure, defect and interruption, as the cause.
+    let settings: string | undefined;
+    let failure: unknown;
     try {
       const config = await Effect.runPromise(configuration(this.#env.NATIVE));
-      const product = await Effect.runPromise(
+      const opened = await Effect.runPromiseExit(
         prepare(this.#state, this.#env).pipe(
           Effect.provideService(Scope.Scope, scope),
           Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))),
           Effect.provide(FetchHttpClient.layer),
         ),
       );
-      await this.#state.storage.setAlarm(Date.now() + 30_000);
-      return product;
-    } catch {
-      await Effect.runPromise(Scope.close(scope, Exit.void));
-      throw new Error(
-        "Executor product storage could not open. The original PostgreSQL directory has been preserved.",
-      );
+      if (Exit.isSuccess(opened)) {
+        await this.#state.storage.setAlarm(Date.now() + 30_000);
+        return opened.value;
+      }
+      const squashed = Cause.squash(opened.cause);
+      if (Schema.is(FirstPartyOAuthClientsInvalid)(squashed)) settings = squashed.message;
+      failure = opened.cause;
+    } catch (error) {
+      failure = error;
     }
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw new Error(
+      settings ??
+        "Executor product storage could not open. The original PostgreSQL directory has been preserved.",
+      { cause: failure },
+    );
   }
   /** Dispatch the existing authenticated product routes. */
   async fetch(request: Request): Promise<Response> {

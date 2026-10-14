@@ -324,7 +324,8 @@ export const compileOpenApiDocument = (
   inputDocument: JsonObject,
   options: {
     readonly baseUrl?: string;
-    readonly allowedOrigin?: string;
+    /** The origins operations may address; every other operation is left out. */
+    readonly allowedOrigin?: string | readonly string[];
     /** Inserted between every operation's server and path; see `prefixParameters`. */
     readonly pathPrefix?: string;
     readonly securitySchemes?: Readonly<Record<string, JsonObject>>;
@@ -705,7 +706,24 @@ export const compileOpenApiDocument = (
             });
             if (request.required) required.push("body");
           }
-          const security = operation.security ?? spec.security ?? fallback ?? [];
+          const requirements = operation.security ?? spec.security ?? fallback ?? [];
+          // An alternative naming a scheme securitySchemes does not declare can never be met. It is
+          // ignored, so it neither hides another alternative nor reaches the request. When every
+          // alternative is ignored, the operation is left out rather than made public.
+          const security = requirements.filter((requirement) =>
+            Object.keys(requirement).every((key) => Object.hasOwn(schemes, key)),
+          );
+          if (security.length === 0 && requirements.length > 0) {
+            const undeclared = [
+              ...new Set(
+                requirements.flatMap(Object.keys).filter((key) => !Object.hasOwn(schemes, key)),
+              ),
+            ];
+            fail(
+              "auth_method",
+              `Every security requirement names a scheme securitySchemes does not declare: ${undeclared.map((key) => JSON.stringify(key)).join(", ")}. Declare and fill every scheme in one complete alternative (securitySchemes plus methods or oauth).`,
+            );
+          }
           for (const requirement of security) {
             const keys = Object.keys(requirement).sort();
             if (!keys.length) continue;
@@ -759,14 +777,9 @@ export const compileOpenApiDocument = (
               baseUrl,
               openapi: spec.openapi,
               securitySchemes: Object.fromEntries(
-                [...new Set(security.flatMap(Object.keys))].map((key) => [
-                  key,
-                  schemes[key] ??
-                    fail(
-                      "auth_method",
-                      `A security requirement names ${JSON.stringify(key)}, which securitySchemes does not declare.`,
-                    ),
-                ]),
+                Object.entries(schemes).filter(([key]) =>
+                  security.some((requirement) => Object.hasOwn(requirement, key)),
+                ),
               ),
               request: {
                 parameters: [...parameters.values()].map(({ parameter }) => parameter),
@@ -810,10 +823,11 @@ export const compileOpenApiDocument = (
           });
         }
       }
-      // Every credential-bearing operation of one app addresses one origin, so an account's key
-      // never reaches a second host. The origin most operations use is pinned; on a tie the
-      // document server's origin wins, then the first origin seen. A document server that every
-      // operation overrides is never called, so it cannot outvote them.
+      // Every credential-bearing operation of one app addresses an origin the app allows, so an
+      // account's key never reaches a host it did not choose. Without `allowedOrigin`, the origin
+      // most operations use is pinned; on a tie the document server's origin wins, then the first
+      // origin seen. A document server that every operation overrides is never called, so it
+      // cannot outvote them.
       const counts = new Map<string, number>();
       for (const { operation } of built) {
         const origin = new URL(operation.baseUrl).origin;
@@ -826,26 +840,33 @@ export const compileOpenApiDocument = (
       } catch (error) {
         if (!(error instanceof TemplateError)) throw error;
       }
-      let pinnedOrigin: string | undefined = options.allowedOrigin;
-      for (const [origin, count] of options.allowedOrigin === undefined ? counts : []) {
-        const best = pinnedOrigin === undefined ? 0 : (counts.get(pinnedOrigin) ?? 0);
-        if (count > best || (count === best && origin === documentOrigin)) pinnedOrigin = origin;
+      const allowed =
+        options.allowedOrigin === undefined
+          ? undefined
+          : typeof options.allowedOrigin === "string"
+            ? [options.allowedOrigin]
+            : options.allowedOrigin;
+      let mostUsed: string | undefined;
+      for (const [origin, count] of allowed === undefined ? counts : []) {
+        const best = mostUsed === undefined ? 0 : (counts.get(mostUsed) ?? 0);
+        if (count > best || (count === best && origin === documentOrigin)) mostUsed = origin;
       }
-      // Operations on the pinned origin, each with its declaration.
+      const pinnedOrigins = new Set(allowed ?? (mostUsed === undefined ? [] : [mostUsed]));
+      // Operations on a pinned origin, each with its declaration.
       const imported: {
         operation: GeneratedOperation;
         declared: (typeof built)[number]["declared"];
       }[] = [];
       for (const { operation, methods: operationMethods, declared } of built) {
         const origin = new URL(operation.baseUrl).origin;
-        if (origin !== pinnedOrigin) {
+        if (!pinnedOrigins.has(origin)) {
           skipped.push({
             ...declared,
             code: "multiple_hosts",
             reason:
-              options.allowedOrigin === undefined
-                ? `Its server origin ${origin} differs from ${pinnedOrigin ?? "the origin"} most operations use.`
-                : `Its server origin ${origin} is not allowedOrigin ${options.allowedOrigin}.`,
+              allowed === undefined
+                ? `Its server origin ${origin} differs from ${mostUsed ?? "the origin"} most operations use.`
+                : `Its server origin ${origin} is not allowedOrigin ${allowed.join(", ")}.`,
           });
           continue;
         }
@@ -856,10 +877,10 @@ export const compileOpenApiDocument = (
       if (!operations.length) {
         const left = inDefinitionOrder(skipped);
         // When the allowed origin is no operation's, say which origins the operations use.
-        if (options.allowedOrigin !== undefined && built.length > 0)
+        if (allowed !== undefined && built.length > 0)
           throw new TemplateError({
             code: "no_supported_operations",
-            reason: `allowedOrigin ${options.allowedOrigin} is not the origin of any operation. They resolve to ${[...counts.keys()].join(", ")}. Set allowedOrigin to the origin that receives the account's credentials, or set baseUrl.`,
+            reason: `allowedOrigin ${allowed.join(", ")} is not the origin of any operation. They resolve to ${[...counts.keys()].join(", ")}. Set allowedOrigin to the origin that receives the account's credentials, or set baseUrl.`,
             skipped: left,
             origins: [...counts.keys()],
           });
@@ -948,7 +969,7 @@ export const compileOpenApiDocument = (
         secrets: [...methods.values()],
         oauth,
         schemes,
-        pinnedOrigin,
+        pinnedOrigins: [...pinnedOrigins],
         fallback,
       };
     },

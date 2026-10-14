@@ -1,4 +1,5 @@
 /** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
+import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import { recordRoute } from "@executor-js/telemetry";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 import {
@@ -32,7 +33,8 @@ type EventName =
   | "feedback_submitted"
   | "cloud_signup_completed"
   | "cloud_login_completed"
-  | "analytics_events_dropped";
+  | "analytics_events_dropped"
+  | "$identify";
 type Properties = Readonly<Record<string, string | number | boolean>>;
 interface Event {
   readonly event: EventName;
@@ -48,16 +50,46 @@ const Analytics = Context.Reference<{
 
 /** Called only after Better Auth creates a new verified user, never on returning sign-in. */
 export const recordCloudSignup = (userId: string) =>
-  Effect.flatMap(Analytics, (analytics) =>
-    Effect.sync(() =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const visitor = readSiteVisitor(request.headers.cookie ?? "");
+    const analytics = yield* Analytics;
+    // Link the site visit that led here, so marketing attribution reaches the new account.
+    if (visitor !== undefined)
       analytics.add({
-        event: "cloud_signup_completed",
+        event: "$identify",
         distinct_id: userId,
         timestamp: new Date().toISOString(),
-        properties: {},
-      }),
-    ),
-  );
+        properties: { $anon_distinct_id: visitor },
+      });
+    analytics.add({
+      event: "cloud_signup_completed",
+      distinct_id: userId,
+      timestamp: new Date().toISOString(),
+      properties: {},
+    });
+  });
+
+/** Prevent a later user on a shared browser from inheriting an identified site visitor. */
+export const clearSiteVisitorOnSignOut =
+  (cookieDomain?: string) => (response: HttpServerResponse.HttpServerResponse) =>
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      if (
+        request.method !== "POST" ||
+        new URL(request.url, "http://localhost").pathname !== "/api/auth/sign-out" ||
+        response.status < 200 ||
+        response.status >= 300
+      )
+        return response;
+      return yield* response.pipe(
+        HttpServerResponse.expireCookie(siteVisitorCookie, {
+          path: "/",
+          ...(cookieDomain === undefined ? {} : { domain: cookieDomain }),
+        }),
+        Effect.orDie,
+      );
+    });
 
 /** Count successful session creation without recording login credentials or callback URLs. */
 export const recordCloudLogin = (userId: string) =>

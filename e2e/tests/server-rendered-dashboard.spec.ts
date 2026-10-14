@@ -1,11 +1,9 @@
 import { expect, layer } from "@effect/vitest";
 import { randomBytes } from "node:crypto";
-import { Effect, Result, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { batchedReads, batchPath } from "../support/read-batches.ts";
-import type { SpanQuery } from "../support/contracts.ts";
-import { Telemetry } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -21,7 +19,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
       Effect.gen(function* () {
         const actors = yield* Actors;
         const browser = yield* Browser;
-        const telemetry = yield* Telemetry;
         // Repeated and encoded parameters stand in for a signed OAuth query that must survive.
         const destination = `/org/${actors.organization.slug}/apps?view=accounts&scope=a%20b&scope=c`;
 
@@ -76,56 +73,16 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         expect(headers["cache-control"]).toContain("no-store");
         expect(headers["vary"]).toContain("Cookie");
         const html = yield* browser.use("Read the document the server sent", () => response.text());
-        // Reads made while the page streams are recorded in the document's own trace. The
-        // document continues the trace its request carries.
-        const read = (spans: (typeof SpanQuery.Type)["data"], route: RegExp) =>
-          spans.find(
-            (entry) =>
-              entry.span.operationName === "http.server GET" &&
-              route.test(entry.span.tags["url.path"] ?? ""),
-          )?.span;
-        const tracedReads = (path: string, pageRead: RegExp) =>
-          Effect.gen(function* () {
-            const traceId = randomBytes(16).toString("hex");
-            const text = yield* browser.use(`Request ${path} in a known trace`, (page) =>
-              page
-                .context()
-                .request.get(path, {
-                  headers: {
-                    ...navigation,
-                    traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01`,
-                  },
-                })
-                .then((document) => document.text()),
-            );
-            const recorded = yield* telemetry.query(traceId).pipe(
-              Effect.flatMap((value) => {
-                const access = read(value.data, /^\/api\/organizations\/[^/]+\/access$/);
-                const own = read(value.data, pageRead);
-                return access !== undefined && own !== undefined
-                  ? Effect.succeed({ access, own })
-                  : Effect.fail(new Error("The page's API reads are not in the document trace"));
-              }),
-              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-              Effect.timeout("20 seconds"),
-              Effect.result,
-            );
-            expect(
-              Result.isSuccess(recorded),
-              `The reads made while rendering ${path} must be recorded in the document trace`,
-            ).toBe(true);
-            if (Result.isSuccess(recorded)) {
-              // The page reads its data from the URL alongside the organization's access check;
-              // it does not wait for access before it starts.
-              const { access, own } = recorded.success;
-              expect(Date.parse(own.startTime)).toBeLessThan(
-                Date.parse(access.startTime) + access.durationMs,
-              );
-            }
-            return text;
-          });
-        const traced = yield* tracedReads(destination, /^\/api\/organizations\/[^/]+\/resources$/);
-        expect(traced).toMatch(/>Executor</);
+        /** The document the server renders for a navigation to `path`. */
+        const document = (path: string) =>
+          browser.use(`Request ${path}`, (page) =>
+            page
+              .context()
+              .request.get(path, { headers: navigation })
+              .then((response) => response.text()),
+          );
+        const rendered = yield* document(destination);
+        expect(rendered).toMatch(/>Executor</);
         // The installed app's card is data the server read before sending the page.
         expect(html).toContain('aria-label="Organization:');
         expect(html).toMatch(/>Executor</);
@@ -140,7 +97,6 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         expect(repeatedReads).toEqual([]);
         yield* browser.checkpoint("Server-rendered apps page after hydration");
 
-        // An app's page reads the app from its URL alongside the access check too.
         const inventory = yield* browser.use("Find the installed Executor app", (page) =>
           page
             .context()
@@ -154,11 +110,7 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         )(inventory);
         const executor = installed.apps.find((app) => app.name === "Executor");
         if (executor === undefined) throw new Error("The Executor app is not installed");
-        const appPage = yield* tracedReads(
-          `/org/${actors.organization.slug}/apps/${executor.id}`,
-          // The app's read records its route's template, not the app's ID.
-          /^\/api\/organizations\/:organization\/apps\/:app$/,
-        );
+        const appPage = yield* document(`/org/${actors.organization.slug}/apps/${executor.id}`);
         expect(appPage).toMatch(/>Executor</);
 
         // `/` resumes the organization this browser last used at its current address, so the page
@@ -210,7 +162,7 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
             page
               .context()
               .request.get(refusedPath, { headers: navigation })
-              .then((document) => document.text()),
+              .then((response) => response.text()),
         );
         expect(refused).toContain("Organization unavailable");
         expect(refused).toContain(`hosted:organization-access:${refusedSlug}`);

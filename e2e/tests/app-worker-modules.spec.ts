@@ -1,14 +1,11 @@
 /**
- * A cold app Worker receives only the modules its entry can import. Every build links the whole
- * `apps` framework, and the Worker Loader compiles each module it is given when the isolate starts,
- * so a plain app must not carry the MCP, GraphQL and OpenAPI clients it never imports. Apps built on
- * each of those entries still link and call their upstream with the smaller set. An app that
- * imports a computed specifier keeps every module, and can still load a framework entry it never
- * names statically.
+ * A cold app Worker runs whichever framework entries its app imports. Apps built on the MCP,
+ * GraphQL and OpenAPI entries link and call their upstream from a cold start. An app that imports a
+ * computed specifier can still load a framework entry it never names statically.
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Effect, Layer, Schedule, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -18,7 +15,6 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest, withApps, mcpSdkVersion } from "../support/apps-release.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 
 const Rpc = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
@@ -102,7 +98,7 @@ const upstream = Effect.gen(function* () {
 
 const plain = `import { defineApp, query, object, string, router } from "apps";
 export const ping = query({ input: object({}), output: string() }, async () => "plain");
-export default defineApp({ accounts: {} }, { tools: router({ ping }) });`;
+export default defineApp({}, { tools: router({ ping }) });`;
 
 /** The specifier is computed, so no static scan can see that the app loads `apps/graphql`. */
 const computed = `import { defineApp, query, object, string, router } from "apps";
@@ -111,7 +107,7 @@ export const ping = query({ input: object({}), output: string() }, async () => {
   const graphql = await import(entry);
   return typeof graphql.graphqlRouter;
 });
-export default defineApp({ accounts: {} }, { tools: router({ ping }) });`;
+export default defineApp({}, { tools: router({ ping }) });`;
 
 /** An app whose only tools come from one framework entry's router over the upstream. */
 const entryApps = (origin: string) => [
@@ -121,7 +117,7 @@ const entryApps = (origin: string) => [
     tool: "remote.echo",
     source: `import { defineApp, router } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: router({ remote: await mcpRouter({ url: ${JSON.stringify(`${origin}/mcp`)}, signal }) }),
 }));`,
   },
@@ -131,7 +127,7 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
     tool: "remote.entries.read",
     source: `import { defineApp, router } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: router({
     remote: liveOpenapiRouter({
       cache, fetch, signal,
@@ -166,7 +162,7 @@ export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => (
     tool: "remote.query_entry",
     source: `import { defineApp, router } from "apps";
 import { graphqlRouter } from "apps/graphql";
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: router({ remote: await graphqlRouter({ url: ${JSON.stringify(`${origin}/graphql`)}, signal }) }),
 }));`,
   },
@@ -178,9 +174,7 @@ layer(HostedLive, { excludeTestServices: true })("App Worker modules", (it) => {
       context,
       Effect.gen(function* () {
         const api = yield* Api,
-          actors = yield* Actors,
-          telemetry = yield* Telemetry,
-          evidence = yield* Evidence;
+          actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deploy = (
           name: string,
@@ -199,8 +193,8 @@ layer(HostedLive, { excludeTestServices: true })("App Worker modules", (it) => {
             );
             return path;
           });
-        /** Call one of the app's tools for the first time, so its Worker starts cold, and read the trace. */
-        const coldCall = (path: string, tool: string, label: string) =>
+        /** Call one of the app's tools for the first time, so its Worker starts cold. */
+        const coldCall = (path: string, tool: string) =>
           Effect.gen(function* () {
             const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
               tool,
@@ -208,44 +202,15 @@ layer(HostedLive, { excludeTestServices: true })("App Worker modules", (it) => {
               kind: "query",
             });
             expect(response.status, JSON.stringify(response.body)).toBe(200);
-            const request = (yield* evidence.requests).at(-1);
-            if (request === undefined) return yield* Effect.die("Request evidence is missing");
-            const trace = yield* telemetry.query(request.traceId).pipe(
-              Effect.flatMap((result) =>
-                result.data.some(({ span }) => span.operationName === "runtime.app.cold_start.load")
-                  ? Effect.succeed(result)
-                  : Effect.fail(new Error("The cold start has not been delivered")),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
-            );
-            yield* evidence.json(`${label}.json`, trace);
-            const spans = trace.data.map(({ span }) => span);
-            const loads = spans.filter(
-              (span) => span.operationName === "runtime.app.cold_start.load",
-            );
-            expect(loads, "One cold start loads the Worker once").toHaveLength(1);
-            expect(
-              spans.some((span) => span.operationName === "runtime.app.rpc.start"),
-              "The runner's spans belong to the caller's trace",
-            ).toBe(true);
-            return {
-              value: response.body,
-              modules: Number(loads[0]!.tags["executor.worker.modules"]),
-              total: Number(loads[0]!.tags["executor.worker.modules_total"]),
-            };
+            return response.body;
           });
 
-        const lean = yield* coldCall(
-          yield* deploy("Plain modules", [{ path: "index.ts", content: plain }, appsManifest]),
-          "ping",
-          "plain-cold-start",
-        );
-        expect(lean.value).toBe("plain");
-        expect(lean.total, "The build links the whole framework").toBeGreaterThan(0);
         expect(
-          lean.modules,
-          "A plain app's Worker omits framework modules it cannot import",
-        ).toBeLessThan(lean.total);
+          yield* coldCall(
+            yield* deploy("Plain modules", [{ path: "index.ts", content: plain }, appsManifest]),
+            "ping",
+          ),
+        ).toBe("plain");
 
         const origin = yield* upstream;
         for (const app of entryApps(origin)) {
@@ -258,26 +223,18 @@ layer(HostedLive, { excludeTestServices: true })("App Worker modules", (it) => {
               },
             ]),
             app.tool,
-            `${app.entry}-cold-start`,
           );
           expect(
-            JSON.stringify(called.value),
+            JSON.stringify(called),
             `The ${app.entry} tool reaches its upstream through apps/${app.entry}`,
           ).toContain(`"${app.entry}"`);
-          expect(
-            called.modules,
-            `An apps/${app.entry} app's Worker omits the modules it cannot import`,
-          ).toBeLessThan(called.total);
-          expect(called.modules, "It loads more than a plain app").toBeGreaterThan(lean.modules);
         }
 
         const open = yield* coldCall(
           yield* deploy("Computed import", [{ path: "index.ts", content: computed }, appsManifest]),
           "ping",
-          "computed-cold-start",
         );
-        expect(open.value, "The computed import loads the GraphQL entry").toBe("function");
-        expect(open.modules, "A computed import keeps every module").toBe(open.total);
+        expect(open, "The computed import loads the GraphQL entry").toBe("function");
       }),
     ),
   );

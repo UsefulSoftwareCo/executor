@@ -1,5 +1,5 @@
 /** Product permission policies, independent of credentials, OAuth and approval delivery. */
-import { AppId, ProfileId, ToolName } from "@executor-js/sdk/core";
+import { AccountId, AppId, ToolName, type ToolSearchScope } from "@executor-js/sdk/core";
 import { Match, Schema } from "effect";
 
 /** Product operations; roles still bound the authority granted by any of these actions. */
@@ -25,15 +25,20 @@ export const EventScope = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("selected"), names: Schema.Array(Schema.NonEmptyString) }),
 ]);
 export type EventScope = typeof EventScope.Type;
-/** How an app may run: the account-free app itself, or one of the caller's saved profiles. */
+/**
+ * How an app may run: without the caller's accounts (`app`), or with one of them. An account target
+ * permits operations that use that account; it never grants use of the account. Accounts bound to
+ * the app are never targets: app access authorizes them, so an operation that uses only the app's
+ * accounts needs the `app` target.
+ */
 export const RunTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("app") }),
-  Schema.Struct({ kind: Schema.Literal("profile"), id: ProfileId }),
+  Schema.Struct({ kind: Schema.Literal("account"), id: AccountId }),
 ]);
 export type RunTarget = typeof RunTarget.Type;
 /**
  * Explicit app-wide permission includes future tools; selected names never do.
- * Omitted targets leave the caller's own profiles unrestricted; listed targets are exact.
+ * Omitted targets leave the caller's own accounts unrestricted; listed targets are exact.
  */
 export const AppPermission = Schema.Struct({
   app: AppId,
@@ -65,11 +70,15 @@ export interface ToolIdentity {
   readonly name: ToolName;
   readonly readOnly?: boolean | undefined;
 }
-/** One invocation: the app, how it runs (omitted profile is the account-free app) and the tool. */
+/**
+ * One invocation: the app, the tool and every one of the caller's accounts the operation uses, not
+ * the accounts bound to the app. One permission entry must permit both the tool and that whole
+ * account set.
+ */
 export interface ToolRequest {
   readonly app: AppId;
-  readonly profile?: ProfileId | undefined;
   readonly tool: ToolIdentity;
+  readonly accounts: readonly AccountId[];
 }
 /** Browser/full-consent policy. It never bypasses live organization or role checks. */
 export const fullAuthority: AuthorizationPolicy = {
@@ -106,6 +115,12 @@ export const selectsApp = (selection: ToolSelection, app: AppId) =>
       (scopeGrantsAny(item.tools) || eventsGrantAny(item.events)) &&
       permissionTargets(item),
   );
+/** An app is in the tool inventory only when its permission grants at least one tool. */
+export const selectsToolApp = (selection: ToolSelection, app: AppId) =>
+  selection.kind === "all" ||
+  selection.apps.some(
+    (item) => item.app === app && scopeGrantsAny(item.tools) && permissionTargets(item),
+  );
 const scopeSelects = (tools: ToolScope, tool: ToolIdentity) =>
   Match.value(tools).pipe(
     Match.when({ kind: "all" }, () => true),
@@ -113,50 +128,152 @@ const scopeSelects = (tools: ToolScope, tool: ToolIdentity) =>
     Match.when({ kind: "selected" }, ({ names }) => names.includes(tool.name)),
     Match.exhaustive,
   );
+/** App discovery uses the same selection as execution. */
+export const permitsApp = (policy: AuthorizationPolicy, app: AppId) =>
+  permitsAction(policy, "discover") && selectsApp(policy.tools, app);
 const sameTarget = (a: RunTarget, b: RunTarget) =>
-  a.kind === "app" ? b.kind === "app" : b.kind === "profile" && a.id === b.id;
-const targetSelects = (item: AppPermission, profile: ProfileId | undefined) => {
-  if (item.targets === undefined) return true;
-  const target: RunTarget =
-    profile === undefined ? { kind: "app" } : { kind: "profile", id: profile };
-  return item.targets.some((allowed) => sameTarget(allowed, target));
-};
-/** Omitted profile means the account-free app target. A listed target set is exact. */
-export const selectsTarget = (
+  a.kind === "app" ? b.kind === "app" : b.kind === "account" && a.id === b.id;
+/**
+ * The targets the selection permits for an app: undefined when an entry leaves them unrestricted,
+ * otherwise every entry's listed targets together. Use it only to narrow which accounts a caller
+ * sees; an operation's accounts are checked against one entry by {@link permitsAccounts} and
+ * {@link permitsTool}.
+ */
+export const permittedTargets = (
   selection: ToolSelection,
   app: AppId,
-  profile: ProfileId | undefined,
-) =>
-  selection.kind === "all" ||
-  selection.apps.some(
-    (item) => item.app === app && scopeGrantsAny(item.tools) && targetSelects(item, profile),
-  );
+): { readonly app: boolean; readonly accounts: ReadonlySet<AccountId> } | undefined => {
+  if (selection.kind === "all") return undefined;
+  const entries = selection.apps.filter((item) => item.app === app && scopeGrantsAny(item.tools));
+  if (entries.some((item) => item.targets === undefined)) return undefined;
+  const targets = entries.flatMap((item) => item.targets ?? []);
+  return {
+    app: targets.some((target) => target.kind === "app"),
+    accounts: new Set(targets.flatMap((target) => (target.kind === "account" ? [target.id] : []))),
+  };
+};
 /**
- * Tool names are exact identifiers, never patterns; read-only rules need the live flag.
- * The same permission entry must allow both the target and the tool.
+ * Each entry for an app that grants a tool through a target, as a policy of its own with the same
+ * actions, so what each entry permits can be read separately. Undefined when the selection grants
+ * every app, which no entry narrows.
  */
-export const selectsTool = (selection: ToolSelection, request: ToolRequest) =>
-  selection.kind === "all" ||
-  selection.apps.some(
+export const appEntryPolicies = (
+  policy: AuthorizationPolicy,
+  app: AppId,
+): readonly AuthorizationPolicy[] | undefined =>
+  policy.tools.kind === "all"
+    ? undefined
+    : policy.tools.apps
+        .filter((item) => item.app === app && scopeGrantsAny(item.tools) && permissionTargets(item))
+        .map((item) => ({ actions: policy.actions, tools: { kind: "tools", apps: [item] } }));
+/**
+ * One entry permits an operation using exactly these of the caller's accounts: none needs the `app`
+ * target, otherwise every account must be listed. Omitted targets permit any accounts.
+ */
+const entryPermitsAccounts = (item: AppPermission, accounts: readonly AccountId[]) => {
+  if (item.targets === undefined) return true;
+  const targets = item.targets;
+  return accounts.length === 0
+    ? targets.some((target) => target.kind === "app")
+    : accounts.every((account) =>
+        targets.some((target) => target.kind === "account" && target.id === account),
+      );
+};
+/**
+ * An operation using these of the caller's accounts may run when one entry for the app grants a
+ * tool and permits the whole account set. Entries are never combined. Pass only the caller's own
+ * accounts; accounts bound to the app follow app access.
+ */
+export const permitsAccounts = (
+  policy: AuthorizationPolicy,
+  app: AppId,
+  accounts: readonly AccountId[],
+) =>
+  permitsApp(policy, app) &&
+  (policy.tools.kind === "all" ||
+    policy.tools.apps.some(
+      (item) =>
+        item.app === app && scopeGrantsAny(item.tools) && entryPermitsAccounts(item, accounts),
+    ));
+/**
+ * How a selection permits one invocation, or undefined when it does not: one entry must select the
+ * tool and permit every account the operation uses. Tool names are exact identifiers, never
+ * patterns; read-only rules need the live flag. `any` when an entry selects the tool by name or
+ * selects all the app's tools; `query` when only a read-only rule does, which permits the call
+ * only as a query, so a tool whose kind differs when it runs is refused there.
+ */
+export const toolPermission = (
+  selection: ToolSelection,
+  request: ToolRequest,
+): "any" | "query" | undefined => {
+  if (selection.kind === "all") return "any";
+  const entries = selection.apps.filter(
     (item) =>
       item.app === request.app &&
-      targetSelects(item, request.profile) &&
+      entryPermitsAccounts(item, request.accounts) &&
       scopeSelects(item.tools, request.tool),
   );
+  if (entries.length === 0) return undefined;
+  return entries.some((item) => item.tools.kind !== "readOnly") ? "any" : "query";
+};
+/** Whether one entry selects the tool and permits every account; see {@link toolPermission}. */
+export const selectsTool = (selection: ToolSelection, request: ToolRequest) =>
+  toolPermission(selection, request) !== undefined;
+/**
+ * Discovery lists a tool when some entry for its app selects it through at least one target. The
+ * listing's accounts do not narrow it: a call chooses its accounts, and {@link permitsTool} checks
+ * them with the tool against one entry.
+ */
+export const discoversTool = (
+  policy: AuthorizationPolicy,
+  request: { readonly app: AppId; readonly tool: ToolIdentity },
+) =>
+  permitsAction(policy, "discover") &&
+  (policy.tools.kind === "all" ||
+    policy.tools.apps.some(
+      (item) =>
+        item.app === request.app &&
+        permissionTargets(item) &&
+        scopeSelects(item.tools, request.tool),
+    ));
+/**
+ * The tools of one app a policy lets the caller discover, as a search scope, or undefined when it
+ * permits every tool. A tool is in the scope exactly when {@link discoversTool} lists it: some
+ * entry for the app permits it through at least one target, read-only or by name. Like discovery,
+ * the listing's accounts do not narrow it.
+ */
+export const discoverableTools = (
+  policy: AuthorizationPolicy,
+  app: AppId,
+): ToolSearchScope | undefined => {
+  if (!permitsAction(policy, "discover")) return { readOnly: false, names: [] };
+  if (policy.tools.kind === "all") return undefined;
+  const entries = policy.tools.apps.filter((item) => item.app === app && permissionTargets(item));
+  if (entries.some((item) => item.tools.kind === "all")) return undefined;
+  return {
+    readOnly: entries.some((item) => item.tools.kind === "readOnly"),
+    names: [
+      ...new Set(
+        entries.flatMap((item) => (item.tools.kind === "selected" ? item.tools.names : [])),
+      ),
+    ],
+  };
+};
 /** Only a read-only rule needs the live catalog to decide; exact names and all-tools do not. */
 export const requiresToolMetadata = (selection: ToolSelection, app: AppId) =>
   selection.kind === "tools" &&
   selection.apps.some((item) => item.app === app && item.tools.kind === "readOnly");
 /**
  * Where one of an app's events may reach a grant, or undefined when it may not. `{}` reaches it
- * from any of the app's occurrences; `profiles` limits it to occurrences whose accounts those
- * profiles select, as a grant that runs the app only as them. An account-free target adds none.
+ * from any of the app's occurrences; `accounts` limits it to occurrences whose accounts are all
+ * among the listed account targets, as a grant that runs the app only with them. An account-free
+ * target adds none.
  */
 export const eventAccess = (
   policy: AuthorizationPolicy,
   app: AppId,
   event: string,
-): { readonly profiles?: readonly ProfileId[] } | undefined => {
+): { readonly accounts?: readonly AccountId[] } | undefined => {
   if (!permitsAction(policy, "run")) return undefined;
   if (policy.tools.kind === "all") return {};
   const entries = policy.tools.apps.filter(
@@ -170,36 +287,36 @@ export const eventAccess = (
   if (entries.length === 0) return undefined;
   if (entries.some((item) => item.targets === undefined)) return {};
   return {
-    profiles: entries.flatMap((item) =>
-      (item.targets ?? []).flatMap((target) => (target.kind === "profile" ? [target.id] : [])),
-    ),
+    accounts: [
+      ...new Set(
+        entries.flatMap((item) =>
+          (item.targets ?? []).flatMap((target) => (target.kind === "account" ? [target.id] : [])),
+        ),
+      ),
+    ],
   };
 };
 /** Whether a grant may list and subscribe to one of an app's events. */
 export const permitsEvent = (policy: AuthorizationPolicy, app: AppId, event: string) =>
   eventAccess(policy, app, event) !== undefined;
-/** App discovery uses the same selection as execution. */
-export const permitsApp = (policy: AuthorizationPolicy, app: AppId) =>
-  permitsAction(policy, "discover") && selectsApp(policy.tools, app);
-/** Discovery and execution share one tool identity check, with distinct operation authority. */
-export const permitsTool = (
-  policy: AuthorizationPolicy,
-  request: ToolRequest,
-  action: "discover" | "run" = "run",
-) => permitsAction(policy, action) && selectsTool(policy.tools, request);
+/** Running a tool needs the run action and one entry permitting the tool and its accounts. */
+export const permitsTool = (policy: AuthorizationPolicy, request: ToolRequest) =>
+  runPermission(policy, request) !== undefined;
+/**
+ * How a policy permits running a tool, as {@link toolPermission} decides, or undefined when it
+ * does not. Under `query` the call must run as a query.
+ */
+export const runPermission = (policy: AuthorizationPolicy, request: ToolRequest) =>
+  permitsAction(policy, "run") ? toolPermission(policy.tools, request) : undefined;
 /**
  * A router is visible when one entry for its app and target permits every tool of the app, or
  * permits a tool inside it: one the selection names, or, under a read-only rule, a read-only tool
  * the catalog lists under it. A router that failed to list its tools therefore stays hidden unless
- * the selection names a tool under its path.
+ * the selection names a tool under its path. Like {@link discoversTool}, accounts do not narrow it.
  */
 export const permitsRouter = (
   policy: AuthorizationPolicy,
-  request: {
-    readonly app: AppId;
-    readonly profile?: ProfileId | undefined;
-    readonly path: string;
-  },
+  request: { readonly app: AppId; readonly path: string },
   tools: readonly ToolIdentity[],
   action: "discover" | "run" = "discover",
 ) => {
@@ -210,7 +327,7 @@ export const permitsRouter = (
       policy.tools.apps.some(
         (item) =>
           item.app === request.app &&
-          targetSelects(item, request.profile) &&
+          permissionTargets(item) &&
           Match.value(item.tools).pipe(
             Match.when({ kind: "all" }, () => true),
             Match.when({ kind: "readOnly" }, () =>
@@ -222,12 +339,6 @@ export const permitsRouter = (
       ))
   );
 };
-/** A profile or the account-free app may run only when the selection lists it for that app. */
-export const permitsTarget = (
-  policy: AuthorizationPolicy,
-  app: AppId,
-  profile: ProfileId | undefined,
-) => permitsAction(policy, "discover") && selectsTarget(policy.tools, app, profile);
 const targetsSubset = (
   previous: readonly RunTarget[] | undefined,
   next: readonly RunTarget[] | undefined,
@@ -283,6 +394,28 @@ export const permittedAppIds = (
           .filter(
             (item) =>
               selectsApp(policy.tools, item.app) &&
+              (requested === undefined || requested.includes(item.app)),
+          )
+          .map((item) => item.app),
+      ),
+    ]),
+    Match.exhaustive,
+  );
+};
+/** App IDs for tool discovery and execution; event-only grants stay in the event inventory. */
+export const permittedToolAppIds = (
+  policy: AuthorizationPolicy,
+  requested?: readonly AppId[],
+): readonly AppId[] | undefined => {
+  if (!permitsAction(policy, "discover")) return [];
+  return Match.value(policy.tools).pipe(
+    Match.when({ kind: "all" }, () => requested),
+    Match.when({ kind: "tools" }, ({ apps }) => [
+      ...new Set(
+        apps
+          .filter(
+            (item) =>
+              selectsToolApp(policy.tools, item.app) &&
               (requested === undefined || requested.includes(item.app)),
           )
           .map((item) => item.app),

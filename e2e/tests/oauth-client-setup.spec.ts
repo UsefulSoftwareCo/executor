@@ -1,4 +1,3 @@
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,6 +10,7 @@ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const AppProvider = Schema.Struct({
   ...App.fields,
@@ -18,7 +18,10 @@ const AppProvider = Schema.Struct({
     accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
   }),
 });
-const Setup = Schema.Struct({ mode: Schema.Literals(["automatic", "saved", "client-required"]) });
+const Setup = Schema.Struct({
+  mode: Schema.Literals(["automatic", "client-required"]),
+  clients: Schema.Array(Schema.Unknown),
+});
 
 layer(HostedLive, { excludeTestServices: true })("OAuth client setup", (it) => {
   it.effect(scenarios.oauthClientSetup.title, (context) =>
@@ -39,7 +42,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client setup", (it) => {
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin + "/mcp")}})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
                 },
                 appsManifest,
               ],
@@ -60,21 +63,25 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             expect(response.status).toBe(200);
             expect(
               Object.keys(yield* body(Schema.Record(Schema.String, Schema.Unknown), response)),
-            ).toEqual(["mode", "scopes", "grant", "tokenEndpointAuthMethod"]);
-            return yield* body(Setup, response);
+            ).toEqual(["mode", "scopes", "grant", "issuer", "tokenEndpointAuthMethod", "clients"]);
+            const setup = yield* body(Setup, response);
+            // No one registered a client for its server, so none is offered.
+            expect(setup.clients).toEqual([]);
+            return setup;
           });
         expect((yield* inspect(provider)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(0);
         expect((yield* api.request(actors.member, "GET", setupPath(provider))).status).toBe(403);
         const start = (target: typeof AppProvider.Type) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${target.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${target.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${target.id}`, "user", "service"),
+                {},
+              ),
             );
             return yield* api.request(
               actors.owner,
@@ -86,18 +93,29 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect((yield* start(app)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ registration: false });
-        expect((yield* inspect(provider)).mode).toBe("saved");
+        // The organization's automatic client still signs in without registering again.
+        expect((yield* inspect(provider)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ scopes: ["write"] });
         expect((yield* inspect(provider)).mode).toBe("client-required");
         yield* issuer.configure({ scopes: ["read"] });
         const expired = yield* deploy("Expired setup fixture");
-        yield* issuer.configure({ registration: true, expiresAt: 1 });
+        // Another app that signs in at the same server with the same callback and scopes finds
+        // the organization's registered client: the provider is not part of what it was
+        // registered for.
+        expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
+          "automatic",
+        );
+        expect((yield* issuer.metrics).registrations).toBe(1);
+        // A client registered for other scopes whose secret has expired is never automatic.
+        yield* issuer.configure({ scopes: ["write"], registration: true, expiresAt: 1 });
         expect((yield* start(expired)).status).toBe(200);
+        expect((yield* issuer.metrics).registrations).toBe(2);
         yield* issuer.configure({ registration: false });
         expect((yield* inspect(expired.requirements.accounts.service.provider)).mode).toBe(
           "client-required",
         );
+        yield* issuer.configure({ scopes: ["read"] });
         yield* issuer.configure({ discovery: "unavailable" });
         expect((yield* api.request(actors.owner, "GET", setupPath(provider))).status).toBe(422);
         yield* issuer.configure({ discovery: "available" });

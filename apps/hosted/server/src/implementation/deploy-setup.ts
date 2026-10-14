@@ -1,4 +1,4 @@
-/** Activating a deployment wakes profile setup at the shared hosted Executor boundary. */
+/** Activating a deployment wakes webhook source reconciliation at the shared hosted Executor boundary. */
 import type { Executor } from "@executor-js/sdk/core";
 import { Effect, Option } from "effect";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
@@ -12,18 +12,18 @@ import { ScheduleWakeup } from "../contracts/schedules.ts";
 const wake = Effect.serviceOption(ScheduleWakeup).pipe(
   Effect.flatMap(
     Option.match({
-      onNone: () => Effect.logError("A deploy committed with no profile setup wake"),
+      onNone: () => Effect.logError("A deploy committed with no webhook source wake"),
       onSome: (wake) => wake,
     }),
   ),
 );
 
 /**
- * A deployment activated over an existing app leaves every profile of the app pending until setup
- * re-registers its webhooks and schedules, so each deploy and activation through this executor
- * wakes setup as profile writes do; polling stays the recovery path. A new app has no profiles yet,
- * and a deploy that a newer one overtook activates nothing. Member setup deploys the default
- * Executor app through its own executor and wakes setup itself.
+ * A deployment activated over an existing app leaves every webhook source of the app pending until
+ * reconciliation re-registers its subscriptions on the new deployment, so each deploy and
+ * activation through this executor wakes it as linking an account does; polling stays the recovery
+ * path. A new app has no sources yet, and a deploy that a newer one overtook activates nothing.
+ * Member setup deploys the default Executor app through its own executor and wakes it itself.
  */
 export const withDeploySetupWake = (executor: Executor): Executor => ({
   ...executor,

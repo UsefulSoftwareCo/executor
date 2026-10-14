@@ -1,6 +1,6 @@
 ---
 name: code-mode
-description: Call Executor app tools from execute. Search and signatures, slugs and profiles, unavailable apps, account connections, approvals and resume, limits and errors.
+description: Call Executor app tools from execute. Search and signatures, slugs and accounts, unavailable apps, account connections, approvals and resume, limits and errors.
 ---
 
 # Code mode
@@ -10,10 +10,14 @@ are async functions under `tools`. One program can call several tools, combine
 their results and return a small value, so large results never pass through
 your context.
 
-The interpreter has no imports, `fetch`, `process`, filesystem or timers. A
-tool call is its only way out. Use `await` and `Promise.all` for independent
-calls. `console.log` output comes back in `logs`. Write JavaScript; TypeScript
-syntax is not portable across Executor hosts.
+The interpreter has no imports, `fetch`, `process` or filesystem, no timers
+(`setTimeout`, `setInterval`, `queueMicrotask`), and no `btoa`, `atob`,
+`TextEncoder`, `TextDecoder` or `globalThis`. A tool
+call is its only way out. Use `await` and `Promise.all` for independent calls.
+As in JavaScript, code between two awaits runs without interruption, so
+concurrent async functions can update shared variables. `console.log` output
+comes back in `logs`. Write JavaScript; TypeScript syntax is not portable across
+Executor hosts.
 
 ## Find tools and read signatures
 
@@ -24,10 +28,9 @@ return await tools.search({ query: "send email", namespace: "gmail", limit: 5 })
 `tools.search({ query?, namespace?, limit?, offset? })` returns one page of
 ranked matches. Each item in `items` has the exact callable `path`, the first
 line of its `description` and its `input` type on one line. A longer input type
-is cut and marked `inputTruncated: true`. A tool that several profiles expose
-with the same signature is one item, and `alsoAt` lists its other paths.
-`namespaces` lists each app, profile and titled router on the page once, with
-the profile's account labels, instead of repeating them in every item.
+is cut and marked `inputTruncated: true`. `namespaces` lists each app and titled
+router on the page once, with the app's linked account labels, instead of
+repeating them in every item.
 
 `namespace` is an app slug, such as `gmail`, or a namespace inside it. Without
 it, search loads and searches every app, which is slower. A page holds at most
@@ -55,15 +58,16 @@ tool takes one object. Tools generated from an API put route parameters under
 Prefer a narrow namespace and a small limit over broad searches, and return
 only the fields you need. Call paths exactly as returned.
 
-## Slugs and profiles
+## Slugs and accounts
 
-Every app has a slug, which is its namespace: `tools.<slug>`. An app without
-accounts exposes `tools.<slug>.<tool>`. An app with accounts exposes one
-namespace per account profile, `tools.<slug>.profiles["<profile-id>"].<tool>`;
-the profile selects which saved accounts its tools use. Search results list
-each profile and its accounts in `namespaces`. Use the one the user means and
-ask when it is unclear. The `skills` tool takes the same slug as `app`, and
-needs `profile` when an app has several.
+Every app has a slug, which is its namespace: `tools.<slug>.<tool>`. Calls run
+with the accounts the user linked to the app: one for each plain requirement,
+and every linked account for a `.many()` requirement. Search results list each
+app and its linked accounts in `namespaces`. Calls never choose accounts; an
+input with `$accounts` fails with `AccountChoiceUnsupported`. A plain
+requirement with no linked account fails with `AccountRequired`. To use a
+different account, the user links it in the app's Accounts tab, which replaces
+the one before. The `skills` tool takes the same slug as `app`.
 
 Each execution discovers apps when the program or a search first reaches
 them. After deploying or reconfiguring an app, or connecting an account, start
@@ -71,15 +75,15 @@ a new `execute` to see the change.
 
 ## Unavailable apps
 
-Every completed result lists `unavailableApps`: apps, profiles or routers that
+Every completed result lists `unavailableApps`: apps or routers that
 could not expose tools in this execution, each with a `reason`. Other apps keep
 working. Search leaves out an unavailable app's tools, `describe` reports their
 paths in `missing`, and calling one fails with that reason. An app that needs
-an account and has no profile is listed only once a search or `describe` names
-it; a call into it fails with that reason.
+an account and has none linked for you is listed only once a search or
+`describe` names it; a call into it fails with that reason.
 
-- `AppProfileRequired`: the app needs an account and you have no enabled
-  profile. Connect an account (below), then start a new execution.
+- `AppAccountRequired`: the app needs an account and none is linked to it for
+  you. Connect an account (below), then start a new execution.
 - `AppDiscoveryTimedOut`: the app did not list its tools in time. Discovery
   waits about 10 seconds, then stops once listings make no progress for 5
   seconds. A listing that was still running continues in the background, so
@@ -94,8 +98,12 @@ Never ask the user to paste secrets into chat, never put credentials in tool
 arguments or source, and never search their files for tokens. The Executor app
 (slug `executor`) issues a secure browser link instead:
 
-- Local: `accountConnect.issue`, then `accountConnections.get` to check it.
-- Hosted: `accounts.connect`, then `accounts.connection` to check it. Hosted
+- Local: `appAccounts.userConnect` (or `appAccounts.appConnect` for the
+  app's own requirement), naming the app and requirement in `path`, then
+  `accountConnections.get` to check it.
+- Hosted: `appAccounts.userConnect` (or `appAccounts.appConnect` for the
+  app's own requirement, if you can edit the app), naming the requirement in
+  `path`, then `accounts.connection` to check it. Hosted
   management calls need the organization: call `context.get({})` first and pass
   its `organization` as `path.organization`. For an OAuth sign-in,
   `accounts.oauthSetup` lists the scopes it will request; tell the user.
@@ -126,9 +134,30 @@ question. How you answer depends on the connection's mode:
 `resume` continues the same program and returns its next pause or its result.
 Declining makes that call fail inside the program. Never run the program's
 source again to continue it: earlier calls may already have taken effect.
-`unavailable` means the request expired, was already answered or was lost when
-the server restarted. `busy` means another `resume` is advancing the program;
-wait for it.
+`busy` means another `resume` is advancing the program; wait for it.
+
+When a resume does not give the result you expected:
+
+- `status: "unavailable"` has a `reason` and a `message`. `answered`: another
+  `resume` already claimed the request; its call may still be running and its
+  result goes only to that resume, so check that response and do not resume
+  again. `expired`: nobody answered within 15 minutes. `ended`: the program was
+  cancelled or timed out. `not-found`: the request belongs to another grant or
+  scoped connection, was forgotten after a while, or was lost when the server
+  restarted. In model mode, a new MCP session on the same grant can still
+  answer its requests.
+- An accepted call that then fails returns that call's own error, such as
+  `ToolCallFailed`, the same as without approval; follow its `recovery`. Some,
+  such as an account that no longer resolves, fail before the tool runs.
+- `response.code` `ApprovalUnavailable` means Executor did not resume the saved
+  call for this answer; its message says why. If another answer already claimed
+  it, that call may have run or still be running. The app or its accounts
+  changing is one reason; Executor's storage failing while it checked them is
+  another, and does not mean anything changed.
+
+Code can run before a tool asks for approval, so in every case read current
+state before calling again, and do not blame the service unless its own error
+says so.
 
 ## Limits
 
@@ -141,15 +170,21 @@ These are the defaults. The source limit is fixed; a host can change the others.
   fields, a count, or one page.
 - Tool calls: 100 per execution.
 - Time: 5 minutes per execution, including discovery. Time spent waiting for
-  the user does not count.
+  the user does not count. Execute returns when the program ends or pauses for
+  approval or input. An MCP client may give up sooner, often after 60 seconds,
+  and cancel the program. Split long work into several executions.
 
 ## Read results and errors
 
 A completed result has `execution.ok`. On success, `execution.value` holds what
 the program returned. On failure, `execution.error` has a `kind`, a `message`,
-and for Executor errors a `response` with `code`, `status`, `message` and
-`recovery`. `recovery.action` is for the user; `recovery.instructions` are for
-you. `toolCalls` lists every call in order with its `outcome`.
+and for Executor errors a `response` with `code`, `status`, `message`,
+`recovery` and `retryable`. `recovery.action` is for the user;
+`recovery.instructions` are for you. `retryable` means an unchanged repeat may
+help and is considered safe. It does not guarantee success. Correcting input,
+configuration or access may allow a new attempt even when `retryable` is false.
+Never rerun an entire `execute` program merely to retry one failed tool.
+`toolCalls` lists every call in order with its `outcome`.
 
 - `ParseError`, `UnsupportedSyntax`: fix the program; `location` points at it.
 - `UnknownTool`: the path is wrong, its app did not load, or the app was
@@ -162,7 +197,8 @@ you. `toolCalls` lists every call in order with its `outcome`.
   executions.
 
 Calls with outcome `success` took effect, and `interrupted` calls may have.
-Effects are never rolled back. Read the current state before retrying a write.
+Effects are never rolled back. When Executor could not confirm a failed write's
+outcome, its recovery says so: do not repeat it automatically.
 Inside a program, a caught tool error's `message` is the same JSON as
 `response`, so a program can handle expected failures itself.
 

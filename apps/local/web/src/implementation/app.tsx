@@ -23,6 +23,7 @@ import { LocalDashboard } from "./dashboard-bindings.tsx";
 import { DashboardShell } from "@executor-js/ui/dashboard/shell";
 import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
 import { NameAccountDialog } from "./pages/name-account-dialog.tsx";
+import { OwnerMigrationBanner } from "./owner-migration.tsx";
 
 /** Finish pairing and session checks before mounting any dashboard data consumers. */
 export function AuthenticationGate({
@@ -190,6 +191,7 @@ function Dashboard() {
           <Failure cause={result.cause} retry={refresh} />
         </div>
       )}
+      <OwnerMigrationBanner />
       <Outlet />
       <NameAccountDialog />
     </DashboardShell>

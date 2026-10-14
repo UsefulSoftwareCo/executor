@@ -1,18 +1,18 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
 /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
-import { Schema } from "effect";
+import { type Effect, Schema } from "effect";
 import { StorageError, CredentialsError } from "./shared.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountInfo } from "apps/contracts";
 import type { UiAccountProblem } from "apps/ui/contracts";
-import type { App, SelectedAccounts } from "./apps.ts";
+import type { App, AppAccounts } from "./apps.ts";
 import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
 import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
 
 /**
  * An independently owned account for one provider method. Several configured
- * apps can select this same ID. Metadata never includes tokens, submitted
+ * apps can use this same ID. Metadata never includes tokens, submitted
  * fields, OAuth client secrets, or refresh material.
  */
 export const Account = Schema.Struct({
@@ -45,7 +45,7 @@ export const AccountCheckStatus = Schema.Literals([
 ]);
 export type AccountCheckStatus = typeof AccountCheckStatus.Type;
 
-/** One app that selects the account, and its latest check. */
+/** One app that uses the account, and its latest check. */
 export const AccountAppHealth = Schema.Struct({
   app: AppId,
   /** The app's active deployment defines a check for this account's provider. */
@@ -67,7 +67,8 @@ export const AccountAppHealth = Schema.Struct({
 export type AccountAppHealth = typeof AccountAppHealth.Type;
 
 /**
- * Checks of an account by the apps that select it. An account no app selects has no checks.
+ * Checks of an account by the apps that use it, as the product names them. An account no app uses
+ * has no checks.
  * `info` is the upstream identity from the most recent passing check that reported one; it is
  * kept when later checks fail. It never replaces the account's own label.
  */
@@ -89,32 +90,32 @@ export const credentialsRejected = (health: AccountHealth, app: AppId) =>
   );
 
 /**
- * Problems with a profile's selected accounts, from stored state. `found` holds the selected
- * accounts the caller may use; any other selected account was removed or is no longer shared.
+ * Problems with the accounts chosen for an app page, from stored state. `found` holds the chosen
+ * accounts the caller may use; any other chosen account was removed or is no longer shared.
  */
-export const profileAccountProblems = (
+export const accountProblems = (
   app: App,
-  selection: SelectedAccounts,
+  chosen: AppAccounts,
   found: ReadonlyMap<string, { readonly account: Account; readonly health: AccountHealth }>,
 ): UiAccountProblem[] =>
   Object.entries(app.requirements.accounts).flatMap(([slot, requirement]): UiAccountProblem[] => {
     const provider = requirement.definition.name;
-    const selected = selection[slot];
-    if (selected === undefined) return [{ provider, reason: "missing" }];
-    if ((requirement.cardinality === "one") !== (typeof selected === "string"))
+    const named = requirement.scope === "app" ? chosen.app : chosen.user;
+    const selected = named !== undefined && Object.hasOwn(named, slot) ? named[slot] : undefined;
+    if (selected === undefined || (requirement.cardinality === "one" && selected.length === 0))
+      return [{ provider, reason: "missing" }];
+    if (requirement.cardinality === "one" && selected.length > 1)
       return [{ provider, reason: "incompatible" }];
-    return (typeof selected === "string" ? [selected] : selected).flatMap(
-      (id): UiAccountProblem[] => {
-        const entry = found.get(id);
-        if (entry === undefined) return [{ provider, reason: "removed" }];
-        if (entry.account.provider !== requirement.provider)
-          return [{ provider, reason: "incompatible" }];
-        const check = entry.health.apps.find((item) => item.app === app.id)?.check;
-        return check === undefined || check === null || !check.current || check.status === "healthy"
-          ? []
-          : [{ provider, account: entry.account.label, reason: check.status }];
-      },
-    );
+    return selected.flatMap((id): UiAccountProblem[] => {
+      const entry = found.get(id);
+      if (entry === undefined) return [{ provider, reason: "removed" }];
+      if (entry.account.provider !== requirement.provider)
+        return [{ provider, reason: "incompatible" }];
+      const check = entry.health.apps.find((item) => item.app === app.id)?.check;
+      return check === undefined || check === null || !check.current || check.status === "healthy"
+        ? []
+        : [{ provider, account: entry.account.label, reason: check.status }];
+    });
   });
 
 /** A check of credentials before they are saved; nothing is recorded. */
@@ -159,8 +160,11 @@ export const AccountFieldsInvalid = ApiError.define({
 });
 export type AccountFieldsInvalid = typeof AccountFieldsInvalid.Type;
 
-/** Canonical decoded inputs shared by HTTP contracts and the Promise facade. */
-export const AccountInputs = {
+/**
+ * Host-only credential writes. Users and agents save credentials through an app's connection
+ * request; products use these for accounts they provision themselves, such as their own API access.
+ */
+export const ManagedAccountInputs = {
   add: Schema.Struct({
     owner: OwnerId,
     provider: ProviderId,
@@ -171,15 +175,42 @@ export const AccountInputs = {
     description: Schema.optional(Schema.NullOr(Schema.String)),
     fields: AccountFieldsInput,
   }),
-  get: Schema.Struct({ account: AccountId, owner: Schema.optional(OwnerId) }),
-  /** `clear` drops the account from every profile selection, leaving those profiles pending. */
-  remove: Schema.Struct({
+  /** Replace every field of a secrets-method account, keeping its ID and selections. */
+  replaceCredentials: Schema.Struct({
     account: AccountId,
     owner: Schema.optional(OwnerId),
-    bindings: Schema.optional(Schema.Literals(["keep", "clear"])),
+    fields: AccountFieldsInput,
   }),
-  providers: Schema.Struct({ owner: Schema.optional(OwnerId) }),
-  list: Schema.Struct({ provider: Schema.optional(ProviderId), owner: Schema.optional(OwnerId) }),
+};
+
+/** Host-only: not part of the HTTP API or the Promise SDK. */
+export interface ManagedAccounts {
+  readonly add: (
+    input: typeof ManagedAccountInputs.add.Type,
+  ) => Effect.Effect<
+    Account,
+    StorageError | CredentialsError | ProviderNotFound | AuthMethodInvalid | AccountFieldsInvalid
+  >;
+  readonly replaceCredentials: (
+    input: typeof ManagedAccountInputs.replaceCredentials.Type,
+  ) => Effect.Effect<
+    Account,
+    | StorageError
+    | CredentialsError
+    | AccountNotFound
+    | ProviderNotFound
+    | AuthMethodInvalid
+    | AccountFieldsInvalid
+  >;
+}
+
+/** Canonical decoded inputs shared by HTTP contracts and the Promise facade. */
+export const AccountInputs = {
+  get: Schema.Struct({ account: AccountId, owner: Schema.optional(OwnerId) }),
+  /** The owner bounds the read: provider definitions are shared, so only those its accounts use. */
+  providers: Schema.Struct({ owner: OwnerId }),
+  /** The owner bounds the read to one partition; there is no listing across owners. */
+  list: Schema.Struct({ provider: Schema.optional(ProviderId), owner: OwnerId }),
   /** Change only the supplied fields. A null description removes it. */
   update: Schema.Struct({
     account: AccountId,
@@ -187,20 +218,36 @@ export const AccountInputs = {
     label: Schema.optional(Schema.String),
     description: Schema.optional(Schema.NullOr(Schema.String)),
   }),
-  replaceCredentials: Schema.Struct({
+  /** The apps the product links the account to; their checks are reported. */
+  health: Schema.Struct({
     account: AccountId,
     owner: Schema.optional(OwnerId),
-    fields: AccountFieldsInput,
+    apps: Schema.Array(AppId),
   }),
-  listHealth: Schema.Struct({ owner: Schema.optional(OwnerId) }),
+  /** Every account of the owner, each with the apps the product links it to. */
+  listHealth: Schema.Struct({
+    owner: Schema.optional(OwnerId),
+    links: Schema.Array(Schema.Struct({ account: AccountId, app: AppId })),
+  }),
+  /** Run the checks of these apps, the ones the product links the account to. */
   check: Schema.Struct({
     account: AccountId,
     owner: Schema.optional(OwnerId),
-    /** Check only these apps; otherwise every app that selects the account and can check it. */
-    apps: Schema.optional(Schema.Array(AppId)),
+    apps: Schema.Array(AppId),
   }),
 };
 const accountParams = { account: AccountInputs.get.fields.account };
+
+/**
+ * What deleting an account does at its service. `automatic`: Executor asks the service to revoke
+ * the account's grant (RFC 7009) once the deletion commits, best effort. `manual`: the service
+ * offers no revocation Executor can use, or the account has no OAuth grant, so access ends only
+ * when the person removes it at the service.
+ */
+export const AccountRevocation = Schema.Struct({
+  revocation: Schema.Literals(["automatic", "manual"]),
+});
+export type AccountRevocation = typeof AccountRevocation.Type;
 const ownerQuery = { owner: AccountInputs.get.fields.owner };
 
 /**
@@ -244,22 +291,6 @@ export type AccountSignIn = typeof AccountSignIn.Type;
 
 export const AccountsGroup = HttpApiGroup.make("accounts")
   .add(
-    HttpApiEndpoint.post("add", "/v1/accounts", {
-      payload: AccountInputs.add,
-      success: Account,
-      error: [
-        StorageError,
-        CredentialsError,
-        ProviderNotFound,
-        AuthMethodInvalid,
-        AccountFieldsInvalid,
-      ],
-    }).annotate(
-      OpenApi.Description,
-      "Save an account using its provider reference and named secrets method. Fields must match the provider schema. An optional description tells agents what the account is for. Returns metadata only. For user-supplied credentials, use the product browser connection link so secrets never pass through the agent.",
-    ),
-  )
-  .add(
     HttpApiEndpoint.patch("update", "/v1/accounts/:account", {
       params: accountParams,
       query: ownerQuery,
@@ -271,37 +302,18 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       error: [StorageError, AccountNotFound],
     }).annotate(
       OpenApi.Description,
-      "Rename a saved account or change its description. Only supplied fields change; a null description removes it. Agents read the label and description to choose between accounts. Its ID, credentials and profile selections stay the same.",
-    ),
-  )
-  .add(
-    HttpApiEndpoint.put("replaceCredentials", "/v1/accounts/:account/credentials", {
-      params: accountParams,
-      query: ownerQuery,
-      payload: Schema.Struct({ fields: AccountInputs.replaceCredentials.fields.fields }),
-      success: Account,
-      error: [
-        StorageError,
-        CredentialsError,
-        AccountNotFound,
-        ProviderNotFound,
-        AuthMethodInvalid,
-        AccountFieldsInvalid,
-      ],
-    }).annotate(
-      OpenApi.Description,
-      "Replace all fields of a saved API-key account using its provider and method schema. All apps selecting this account use the new credentials. Returns metadata only. Use a browser connection link to collect user-supplied credentials.",
+      "Rename a saved account or change its description. Only supplied fields change; a null description removes it. Agents read the label and description to choose between accounts. Its ID, credentials and app links stay the same.",
     ),
   )
   .add(
     HttpApiEndpoint.delete("remove", "/v1/accounts/:account", {
       params: accountParams,
-      query: { ...ownerQuery, bindings: AccountInputs.remove.fields.bindings },
+      query: ownerQuery,
       success: Schema.Struct({ account: AccountId }),
       error: [StorageError, AccountWebhooksActive, AccountWorkflowsActive],
     }).annotate(
       OpenApi.Description,
-      "Delete a saved account and its local credentials. Inspect affected profile selections and confirm the intended account first. Does not revoke access at the provider. To stop using the account in only one app, update that profile selection instead.",
+      "Delete a saved account and its local credentials. Inspect the apps it is linked to and confirm the intended account first. When the service supports revocation, also asks it to revoke the account's OAuth grant after the deletion, best effort; accounts.revocation reports whether it will. To stop using the account in only one app, unlink it from that app instead.",
     ),
   )
   .add(
@@ -326,12 +338,27 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.get("health", "/v1/accounts/:account/health", {
       params: accountParams,
-      query: ownerQuery,
+      query: {
+        ...ownerQuery,
+        // A JSON query value preserves [] instead of dropping it as an absent query parameter.
+        apps: Schema.fromJsonString(AccountInputs.health.fields.apps),
+      },
       success: AccountHealth,
       error: [StorageError, AccountNotFound],
     }).annotate(
       OpenApi.Description,
-      "Read each selecting app's latest check of an account and the identity the checks reported. Does not run a check.",
+      "Read the named apps' latest checks of an account and the identity the checks reported. Does not run a check.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("revocation", "/v1/accounts/:account/revocation", {
+      params: accountParams,
+      query: ownerQuery,
+      success: AccountRevocation,
+      error: [StorageError, CredentialsError, AccountNotFound],
+    }).annotate(
+      OpenApi.Description,
+      "Report whether deleting an account also asks its service to revoke access, so a person can be told before they delete it. Does not contact the service.",
     ),
   )
   .add(
@@ -343,17 +370,20 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       error: [StorageError, AccountNotFound],
     }).annotate(
       OpenApi.Description,
-      "Run the provider checks of the apps that select this account, using its current credentials. Each app's check is a safe read defined in its source. Apps without a check stay unchecked. A passing check verifies only what that app's check tests.",
+      "Run the provider checks of the named apps for this account, using its current credentials. Each app's check is a safe read defined in its source. Apps without a check stay unchecked. A passing check verifies only what that app's check tests.",
     ),
   )
   .add(
     HttpApiEndpoint.get("listHealth", "/v1/account-health", {
-      query: { owner: Schema.optional(OwnerId) },
+      query: {
+        owner: Schema.optional(OwnerId),
+        links: Schema.fromJsonString(AccountInputs.listHealth.fields.links),
+      },
       success: Schema.Array(AccountHealth),
       error: StorageError,
     }).annotate(
       OpenApi.Description,
-      "Read the latest checks and reported identity of every account, optionally for one owner. Does not run checks.",
+      "Read the latest checks and reported identity of every account, optionally for one owner, with the apps each is linked to. Does not run checks.",
     ),
   )
   .add(
@@ -363,7 +393,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       error: StorageError,
     }).annotate(
       OpenApi.Description,
-      "List saved account metadata, optionally filtered by owner or provider. Credentials are never returned.",
+      "List one owner's saved account metadata, optionally filtered by provider. Credentials are never returned.",
     ),
   )
   .add(
@@ -382,8 +412,5 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       query: AccountInputs.providers.fields,
       success: Schema.Array(Provider),
       error: StorageError,
-    }).annotate(
-      OpenApi.Description,
-      "Provider definitions known to this executor, optionally limited to those with saved accounts for an owner.",
-    ),
+    }).annotate(OpenApi.Description, "Provider definitions of an owner's saved accounts."),
   );

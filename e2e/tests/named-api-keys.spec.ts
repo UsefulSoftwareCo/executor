@@ -27,7 +27,7 @@ const source = [
     content: `
 import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({  tools: router({
+export default defineApp({}, async () => ({  tools: router({
     echo: mutation({ description: "Return a receipt", input: object({}) }, async () => ({ receipt: "pat-ok" })),
   approved: mutation({ description: "Needs approval", input: object({}), approval: always() }, async () => ({ receipt: "should-not-run" })),
   }) }));`,
@@ -229,12 +229,12 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
             expect(yield* body(Schema.Struct({ _tag: Schema.String }), approved)).toEqual({
               _tag: "ToolApprovalRequired",
             });
-            const { app: executor, profile } = yield* managementApp(actors.owner);
+            const { app: executor } = yield* managementApp(actors.owner);
             const context = yield* api.request(
               anonymous,
               "POST",
               `${prefix}/apps/${executor.id}/tools/call`,
-              { tool: "context.get", kind: "query", profile: profile.id, input: {} },
+              { tool: "context.get", kind: "query", input: {} },
               headers(owner.key),
             );
             expect(context.status).toBe(200);
@@ -331,9 +331,23 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
               List,
               yield* api.request(actors.owner, "GET", `${lifecycle}/list?offset=0`),
             );
-            expect(list.apiKeys.find((key) => key.id === other.id)?.lastRequest).toBeTypeOf(
-              "string",
+            const recorded = list.apiKeys.find((key) => key.id === other.id)?.lastRequest;
+            expect(recorded).toBeTypeOf("string");
+            // Use is recorded to the minute: another request at once leaves the record unchanged.
+            expect(
+              (yield* api.request(
+                anonymous,
+                "GET",
+                `${prefix}/inventory`,
+                undefined,
+                headers(other.key),
+              )).status,
+            ).toBe(200);
+            const again = yield* body(
+              List,
+              yield* api.request(actors.owner, "GET", `${lifecycle}/list?offset=0`),
             );
+            expect(again.apiKeys.find((key) => key.id === other.id)?.lastRequest).toBe(recorded);
           }),
         );
         yield* browser.omitNetworkTrace;

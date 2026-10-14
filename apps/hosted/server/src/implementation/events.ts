@@ -115,7 +115,7 @@ export const hostedEventAuthority =
         yield* requireAccountAccessAs(actor, account, "use").pipe(
           Effect.catchTag("OrganizationForbidden", () => Effect.fail(new EventNotVisible())),
         );
-      // A grant limited to some profiles receives only occurrences from their accounts.
+      // A grant limited to some accounts receives only occurrences that use no others.
       return access;
     }).pipe(
       Effect.provideService(GroupDatabase, database.pipe(Effect.orDie)),

@@ -1,7 +1,7 @@
 /**
  * A self-host or local process keeps at most its configured number of app Workers loaded, however
- * many apps and account selections are called. Each Worker is named by app, build and account
- * selection; an authored module reports a per-isolate identifier from module state, so a Worker
+ * many apps and accounts are called. Each Worker is named by app, build and the accounts a call
+ * uses; an authored module reports a per-isolate identifier from module state, so a Worker
  * the runtime unloaded and loaded again reports a new identifier and no earlier calls.
  */
 import { expect, layer } from "@effect/vitest";
@@ -12,19 +12,28 @@ import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import {
+  connectionsPath,
+  connectLocalAccount,
+  linkAccount,
+  linkedAccountIds,
+} from "../support/app-accounts.ts";
+import { linkLocal } from "../support/local-links.ts";
 import { requestGate } from "../support/request-gate.ts";
 import { appsManifest, databaseFiles } from "../support/apps-release.ts";
-import { appWorkerBudgetLimit as limit, scenarios } from "../test-plan.ts";
+import { appWorkerBudgetLimit as limit, appWorkerIdleSeconds, scenarios } from "../test-plan.ts";
 
-/** Apps and account selections beyond the limit: two apps with three accounts each. */
+/** Apps and accounts beyond the limit: two apps with three accounts each. */
 const beyondLimit = { apps: 2, accountsPerApp: 3, database: false };
 /**
  * Apps with databases beyond the limit, each running its queries in its own data facet. A tool
- * call of such an app loads its facet and its app Worker, so it takes two of the limit's slots.
+ * call of such an app takes its kind from the kept tool listing, so it loads only its facet and
+ * takes one of the limit's slots. The first call of each selection also evaluates that listing in
+ * the app Worker; the sweeps after it would leave room for only half as many recent selections if
+ * a call loaded the app Worker as well.
  */
 const facetsBeyondLimit = { apps: limit + 2, accountsPerApp: 1, database: true };
-const facetCallWorkers = 2;
+const facetCallWorkers = 1;
 
 const Observation = Schema.Struct({
   isolate: Schema.String,
@@ -43,7 +52,10 @@ const App = Schema.Struct({
   }),
 });
 const HostedApp = Schema.Struct({ id: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
+const SourceStatus = Schema.Struct({ account: Schema.String, status: Schema.String });
+const Inventory = Schema.Struct({
+  apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+});
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   value: Schema.Json,
@@ -73,13 +85,13 @@ let isolate;
 let calls = 0;
 let held;
 let dropped;
-export default defineApp({ accounts: { service } }, {
+export default defineApp({ user: { accounts: { service } } }, {
   tools: router({
     probe: query({ input: object({ gate: string().optional() }) }, async (ctx, input) => {
       isolate ??= crypto.randomUUID();
       calls++;
       if (input.gate !== undefined) await (await fetch(input.gate)).text();
-      return { isolate, calls, token: ctx.accounts.service.fields.token };
+      return { isolate, calls, token: ctx.user.accounts.service.fields.token };
     }),
     seed: query({ input: object({}) }, async (ctx) => {
       for (const key of ["first", "second"])
@@ -132,12 +144,57 @@ interface Selection {
   readonly query: (name: string, input?: object) => Effect.Effect<unknown, unknown, never>;
 }
 
-/** Self-host: apps, accounts and profiles through one organization's routes. */
+/**
+ * Wait until the organization's own setup stops calling app Workers. Once the actors join, member
+ * setup installs the default Executor app and links a managed key to it for the owner and for the
+ * admin. Each link sets that key up as the app's webhook source, which calls the app's Workers in
+ * the background. They count against the same limit as the scenario's Workers and unload whichever
+ * of those is idle, so the scenario starts once both sources are set up.
+ */
+const organizationSetUp = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const prefix = `/api/organizations/${actors.organization.id}`;
+  for (const actor of [actors.owner, actors.admin]) {
+    const status = yield* api.request(actor, "GET", `${prefix}/inventory`).pipe(
+      Effect.flatMap((response) => body(Inventory, response)),
+      Effect.flatMap((inventory) => {
+        const app = inventory.apps.find((app) => app.name === "Executor");
+        return app === undefined
+          ? Effect.fail(new Error("The default Executor app is not installed yet"))
+          : Effect.succeed(`${prefix}/apps/${app.id}`);
+      }),
+      Effect.flatMap((path) =>
+        Effect.gen(function* () {
+          const [key] = yield* linkedAccountIds(actor, path);
+          if (key === undefined)
+            return yield* Effect.fail(new Error("The managed key is not linked yet"));
+          const sources = yield* body(
+            Schema.Array(SourceStatus),
+            yield* api.request(actor, "GET", `${path}/webhook-sources`),
+          );
+          const source = sources.find((source) => source.account === key);
+          return source === undefined || source.status === "pending"
+            ? yield* Effect.fail(new Error("The managed key's webhook source has not been set up"))
+            : source.status;
+        }),
+      ),
+      Effect.retry({
+        schedule: Schedule.spaced("200 millis"),
+        times: 100,
+      }),
+    );
+    expect(status, "the managed key's webhook source was set up").toBe("ready");
+  }
+});
+
+/** Self-host: apps and the accounts connected from them through one organization's routes. */
 const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors;
     const prefix = `/api/organizations/${actors.organization.id}`;
+    yield* organizationSetUp;
     const selections: Selection[] = [];
     for (let index = 0; index < apps; index++) {
       const name = `Worker budget ${index} ${randomUUID().slice(0, 8)}`;
@@ -157,11 +214,13 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const path = `${prefix}/apps/${app.id}`;
       for (let account = 0; account < accountsPerApp; account++) {
         const token = `synthetic-budget-${index}-${account}`;
-        const profile = yield* createProfile(actors.owner, path);
-        const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        });
+        // Connecting from the app links the new account to it for the owner.
+        const pending = yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(path, "user", "service"),
+          {},
+        );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const saved = yield* api.request(
           actors.owner,
@@ -174,26 +233,37 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/accounts/${created}`).pipe(Effect.orDie),
         );
-        // Profile setup discovers the app in the background; wait so it is done before the calls.
-        yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
-          Effect.flatMap((response) => body(SetupStatus, response)),
+        // Linking sets the account up as a webhook source in the background, which discovers the
+        // app; wait so it is done before the calls.
+        const setup = api.request(actors.owner, "GET", `${path}/webhook-sources`).pipe(
+          Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
+          Effect.map((sources) => sources.find((source) => source.account === created)?.status),
           Effect.flatMap((current) =>
-            current.status !== "pending"
+            current !== undefined && current !== "pending"
               ? Effect.void
-              : Effect.fail(new Error("Profile setup has not finished")),
+              : Effect.fail(new Error("Webhook source setup has not finished")),
           ),
           Effect.retry({
             schedule: Schedule.spaced("200 millis"),
             times: 100,
           }),
         );
+        yield* setup;
+        // Calls cannot choose accounts: a call uses the account linked to the app, and linking
+        // another replaces it. Link this selection's account, which changes nothing when it is
+        // linked already, and wait for its webhook source as above.
         const query = (name: string, input: object = {}) =>
-          api
-            .request(actors.owner, "POST", `${path}/tools/call`, {
-              profile: profile.id,
-              tool: name,
-              input,
-            })
+          linkAccount(actors.owner, path, "service", created)
+            .pipe(
+              Effect.provideService(Api, api),
+              Effect.andThen(setup),
+              Effect.andThen(
+                api.request(actors.owner, "POST", `${path}/tools/call`, {
+                  tool: name,
+                  input,
+                }),
+              ),
+            )
             .pipe(
               Effect.tap((response) =>
                 Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
@@ -214,7 +284,7 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
     return selections;
   });
 
-/** Local: apps, accounts and profiles through the agent API. */
+/** Local: apps and accounts through the agent API, each account linked to its app before a call. */
 const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -230,7 +300,7 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
         });
       },
     };
-    const owner = "worker-budget-e2e";
+    const owner = "local";
     const selections: Selection[] = [];
     for (let index = 0; index < apps; index++) {
       const name = `Worker budget ${index} ${randomUUID().slice(0, 8)}`;
@@ -247,7 +317,7 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const { app } = yield* body(App, deployed);
       const path = `/v1/apps/${app.id}`;
       const accounts: string[] = [];
-      // Remove the app before the accounts its profiles select.
+      // Remove the app before the accounts linked to it.
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           expect((yield* api.request(agent, "DELETE", path)).status).toBe(200);
@@ -259,48 +329,51 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
       );
       for (let account = 0; account < accountsPerApp; account++) {
         const token = `synthetic-budget-${index}-${account}`;
-        const created = yield* api.request(agent, "POST", "/v1/accounts", {
-          owner,
-          provider: app.requirements.accounts.service.provider,
+        // Connecting the account from the app links it there.
+        const connected = yield* connectLocalAccount(agent, {
+          app: app.id,
+          requirement: "service",
           method: "key",
           label: name,
           fields: { token },
         });
-        expect(created.status, JSON.stringify(created.body)).toBe(200);
-        const id = (yield* body(Resource, created)).id;
+        const id = connected.id;
         accounts.push(id);
-        const profile = yield* createProfile(agent, path, {
-          owner,
-          subject: "local",
-        });
-        expect(
-          (yield* selectProfileAccounts(agent, path, profile.id, {
-            service: id,
-          })).status,
-        ).toBe(200);
-        // Profile setup calls the selection's Worker in the background. Wait until it is done, so
-        // its calls cannot change which Workers were used most recently while the scenario runs.
-        const setup = yield* api.request(agent, "GET", `${path}/profiles/${profile.id}`).pipe(
-          Effect.flatMap((response) => body(SetupStatus, response)),
+        // Connecting from the app sets the account up as the app's webhook source, which calls its
+        // Worker in the background. Wait until it is done, so its calls cannot change which Workers
+        // were used most recently while the scenario runs.
+        const setup = api.request(agent, "GET", `${path}/webhook-sources`).pipe(
+          Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
+          Effect.map((sources) => sources.find((source) => source.account === id)?.status),
           Effect.flatMap((current) =>
-            current.status !== "pending"
-              ? Effect.succeed(current.status)
-              : Effect.fail(new Error("Profile setup has not finished")),
+            current !== undefined && current !== "pending"
+              ? Effect.succeed(current)
+              : Effect.fail(new Error("Webhook source setup has not finished")),
           ),
           Effect.retry({
             schedule: Schedule.spaced("200 millis"),
             times: 100,
           }),
         );
-        expect(setup, `profile setup of app ${index} account ${account}`).toBe("ready");
+        expect(yield* setup, `webhook source setup of app ${index} account ${account}`).toBe(
+          "ready",
+        );
+        // Calls cannot choose accounts: a call uses the account linked to the app, and linking
+        // another replaces it. Link this selection's account, which changes nothing when it is
+        // linked already, and wait for its webhook source as above.
         const query = (name: string, input: object = {}) =>
-          api
-            .request(agent, "POST", "/v1/tools/call", {
-              app: app.id,
-              profile: profile.id,
-              tool: name,
-              input,
-            })
+          linkLocal(agent, app.id, "service", id)
+            .pipe(
+              Effect.provideService(Api, api),
+              Effect.andThen(setup),
+              Effect.andThen(
+                api.request(agent, "POST", "/v1/tools/call", {
+                  app: app.id,
+                  tool: name,
+                  input,
+                }),
+              ),
+            )
             .pipe(
               Effect.tap((response) =>
                 Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
@@ -333,7 +406,7 @@ const observe = (selection: Selection, gate?: string) =>
     );
 
 /**
- * More apps and account selections than the limit: after every selection has been called, a
+ * More apps and accounts than the limit: after every selection has been called, a
  * sweep over all of them finds at most `limit` still loaded, the most recently used ones stay
  * loaded, and every Worker that was unloaded loads again with the right credential. A call that
  * loads `workersPerCall` Workers leaves room for `limit / workersPerCall` recent selections.
@@ -448,9 +521,10 @@ const releaseKeptPastItsLimit = (selections: ReadonlyArray<Selection>) =>
 const replacedFacets = { apps: 1, accountsPerApp: 2, database: true };
 
 /**
- * An app with a database runs one data facet at a time. When a call selects other accounts, the
- * facet it replaces is unloaded rather than kept for the rest of the process, so selecting the
- * first accounts again starts a fresh Worker with its own credential.
+ * An app with a database runs one data facet at a time. When a call uses other accounts, because
+ * another was linked in place of the first, the facet it replaces is unloaded rather than kept for
+ * the rest of the process, so linking the first account again starts a fresh Worker with its own
+ * credential.
  */
 const replacedFacetUnloaded = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
@@ -473,8 +547,8 @@ const supervisorEvicted = "20 seconds";
 
 /**
  * The runtime evicts an idle data supervisor but keeps the facet Workers it loaded. Calls that
- * alternate account selections with the supervisor evicted in between still unload each replaced
- * facet, so the app keeps one facet Worker rather than one per account selection ever used.
+ * alternate accounts with the supervisor evicted in between still unload each replaced facet, so
+ * the app keeps one facet Worker rather than one per account ever used.
  */
 const replacedFacetUnloadedAfterEviction = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
@@ -493,6 +567,47 @@ const replacedFacetUnloadedAfterEviction = (selections: ReadonlyArray<Selection>
     const otherAgain = yield* observe(second);
     expect(otherAgain.isolate, "the second facet was unloaded as well").not.toBe(other.isolate);
     expect(otherAgain.calls).toBe(1);
+  });
+
+/** One app with two accounts, one called and left idle and one kept busy, and an app with a database. */
+const idleWorkers = { apps: 1, accountsPerApp: 2, database: false };
+const idleFacet = { apps: 1, accountsPerApp: 1, database: true };
+/** Longer than the idle time, with room for the sweep to unload what expired. */
+const idleLongEnough = `${appWorkerIdleSeconds * 2 + 2} seconds` as const;
+
+/**
+ * Below the limit, an app Worker and a data facet left idle for the configured idle time are
+ * unloaded while the scenario makes no requests, so the next call starts a fresh isolate. A Worker
+ * with a call in flight for longer than the idle time stays loaded, and so does one released just
+ * now.
+ */
+const idleUnloaded = (workers: ReadonlyArray<Selection>, facets: ReadonlyArray<Selection>) =>
+  Effect.gen(function* () {
+    const [idle, busy] = workers as [Selection, Selection];
+    const [facet] = facets as [Selection];
+    const idleBefore = yield* observe(idle);
+    const facetBefore = yield* observe(facet);
+    const busyBefore = yield* observe(busy);
+    const gate = yield* requestGate;
+    const pending = yield* observe(busy, `${gate.origin}/wait`).pipe(Effect.forkChild);
+    yield* gate.arrived;
+    // No requests reach the product while the idle time passes; only the busy call is in flight.
+    yield* Effect.sleep(idleLongEnough);
+    yield* gate.release;
+    const during = yield* Fiber.join(pending);
+    expect(during.isolate, "the Worker with a call in flight stayed loaded").toBe(
+      busyBefore.isolate,
+    );
+    expect(during.calls).toBe(busyBefore.calls + 1);
+    const after = yield* observe(busy);
+    expect(after.isolate, "a Worker released just now stays loaded").toBe(busyBefore.isolate);
+    expect(after.calls).toBe(during.calls + 1);
+    const idleAgain = yield* observe(idle);
+    expect(idleAgain.isolate, "the idle Worker was unloaded").not.toBe(idleBefore.isolate);
+    expect(idleAgain.calls).toBe(1);
+    const facetAgain = yield* observe(facet);
+    expect(facetAgain.isolate, "the idle data facet was unloaded").not.toBe(facetBefore.isolate);
+    expect(facetAgain.calls).toBe(1);
   });
 
 /** One app with one account, with or without a database. */
@@ -532,6 +647,19 @@ layer(HostedLive, { excludeTestServices: true })("App Worker budget", (it) => {
         Effect.gen(function* () {
           yield* hostedSelections(collectedWorker).pipe(Effect.flatMap(garbageCollected));
           yield* hostedSelections(collectedFacet).pipe(Effect.flatMap(garbageCollected));
+        }),
+      ),
+    { timeout: 120_000 },
+  );
+  it.effect(
+    scenarios.appWorkerIdleUnloaded.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const workers = yield* hostedSelections(idleWorkers);
+          const facets = yield* hostedSelections(idleFacet);
+          yield* idleUnloaded(workers, facets);
         }),
       ),
     { timeout: 120_000 },

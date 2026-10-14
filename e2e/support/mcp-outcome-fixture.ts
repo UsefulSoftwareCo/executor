@@ -1,7 +1,7 @@
 /** A synthetic upstream MCP endpoint, using only the public JSON-RPC wire contract. */
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Effect, Layer, Schema } from "effect";
+import { Deferred, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const Rpc = Schema.Struct({
@@ -14,6 +14,7 @@ export const slowUpstreamMs = 400;
 
 /** Return a real listener owned by the current test scope; no application services are replaced. */
 export const mcpOutcomeFixture = Effect.gen(function* () {
+  const arrived = yield* Deferred.make<void>();
   const handler = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const rpc = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rpc)));
@@ -51,6 +52,17 @@ export const mcpOutcomeFixture = Effect.gen(function* () {
           "GET",
           "/slow",
           Effect.sleep(`${slowUpstreamMs} millis`).pipe(Effect.as(HttpServerResponse.text("ok"))),
+        ),
+        // One call announces it is running; another waits for that before it answers.
+        HttpRouter.add(
+          "GET",
+          "/arrived",
+          Deferred.succeed(arrived, undefined).pipe(Effect.as(HttpServerResponse.text("ok"))),
+        ),
+        HttpRouter.add(
+          "GET",
+          "/after-arrival",
+          Deferred.await(arrived).pipe(Effect.as(HttpServerResponse.text("ok"))),
         ),
       ),
       { disableLogger: true, disableListenLog: true },

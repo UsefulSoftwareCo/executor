@@ -11,7 +11,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -37,7 +37,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth authorization parameters
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Parameterized OAuth",auth:{oauth:oauth2(${JSON.stringify(config)})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
               },
               appsManifest,
             ],
@@ -50,13 +50,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
             );
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -76,7 +77,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             expect(url.searchParams.get("state")).toMatch(/.{16,}/);
             expect(url.searchParams.get("code_challenge")).toMatch(/.{32,}/);
             expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-            return { url, connection: connection.id, profile: profile.id, app: app.id };
+            return { url, connection: connection.id, app: app.id };
           });
 
         const discovered = yield* start({
@@ -133,13 +134,9 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
-        expect(
-          (yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${discovered.app}/profiles/${discovered.profile}`,
-          )).body,
-        ).toMatchObject({ accounts: { service: account.id } });
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${discovered.app}`)).toEqual([
+          account.id,
+        ]);
 
         // Linear reads comma-separated scopes. The declared separator joins them on the sign-in
         // request, which the service receives as sent; registration keeps RFC 7591's spaces.

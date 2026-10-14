@@ -13,7 +13,7 @@ import apps from "apps/package.json" with { type: "json" };
 
 const me = OwnerId.make("app-user-me");
 
-/** Deploy one configured app, create an account, select it, and call the tool. */
+/** Deploy one configured app, connect an account for it, and call the tool. */
 export async function vercelProjectsReport(executor: Executor) {
   const source = await Effect.runPromise(
     FileSystem.FileSystem.use((fs) =>
@@ -30,33 +30,31 @@ export async function vercelProjectsReport(executor: Executor) {
   });
 
   // Runtime metadata has dynamic slot names; check the expected slot exists.
-  const vercel = app.requirements.accounts.vercel;
-  if (vercel === undefined) throw new Error("This app must declare a vercel account");
+  if (app.requirements.accounts.vercel === undefined)
+    throw new Error("This app must declare a vercel account");
 
-  const account = await executor.accounts.add({
+  // Every account is connected for an app requirement. Completing the request saves the
+  // account; calls then name it. Products give users the request as a browser link.
+  const connection = await executor.accountConnections.create({
     owner: me,
-    provider: vercel.provider,
+    target: { app: app.id, requirement: "vercel" },
+  });
+  const account = await executor.accountConnections.submit({
+    connection: connection.id,
     method: "apiKey",
     label: "Work Vercel",
     fields: { token: "vercel_tok_synthetic_example_only" },
   });
 
-  const profile = await executor.apps.profiles.create({
-    owner: me,
-    subject: "me",
-    idempotencyKey: "work",
-    app: app.id,
-    accounts: { vercel: account.id },
-  });
-
   const projects = await executor.tools.call({
     app: app.id,
-    profile: profile.id,
+    // Each call names its accounts; the product decides which ones the caller may use.
+    accounts: { app: {}, user: { vercel: [account.id] } },
     tool: ToolName.make("listProjects"),
     kind: "query",
     input: {},
   });
-  return { app, profile, account, projects };
+  return { app, account, projects };
 }
 
 /** Local/remote parity; neither function starts work until called. */

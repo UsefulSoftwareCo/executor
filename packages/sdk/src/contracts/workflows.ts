@@ -1,6 +1,4 @@
-import { DeploymentId, OwnerId, ProfileId } from "./shared.ts";
-import { SelectedAccounts } from "./apps.ts";
-import { ProfileErrors, ProfileRevision } from "./profiles.ts";
+import { DeploymentId, OwnerId } from "./shared.ts";
 /** App-scoped workflow discovery and run management share one HTTP contract. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -14,17 +12,27 @@ import {
   WorkflowValue,
 } from "apps/contracts";
 import { AppId, StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
-import { AppNotDeployed, AppNotFound, AccountRequired, AccountSelectionInvalid } from "./apps.ts";
+import {
+  AppAccounts,
+  AppAccountsQuery,
+  AppNotDeployed,
+  AppNotFound,
+  AccountRequired,
+  AccountChoiceUnsupported,
+  AccountSelectionInvalid,
+} from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
 import { DeploymentNotFound } from "./deployment.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 
 export { HostedWorkflow, WorkflowRun, WorkflowRunId, WorkflowRunPage, WorkflowFailure };
-/** Start keys deduplicate retries within one configured app. */
+/**
+ * Start keys deduplicate retries within one configured app and actor. The run keeps the accounts it
+ * starts with and the current actor, whose access its later steps are checked against.
+ */
 export const StartWorkflow = Schema.Struct({
   app: AppId,
-  profile: Schema.optional(ProfileId),
-  expectedProfileRevision: Schema.optional(ProfileRevision),
+  accounts: Schema.optional(AppAccounts),
   deployment: Schema.optional(DeploymentId),
   workflow: WorkflowName,
   input: WorkflowValue,
@@ -32,22 +40,24 @@ export const StartWorkflow = Schema.Struct({
 });
 /** Runs are addressed within their configured app, never globally by ID alone. */
 export const WorkflowTarget = Schema.Struct({ app: AppId, run: WorkflowRunId });
-/** What a retained run pinned when it started: the accounts it may use and its profile. */
+/**
+ * What a retained run pinned when it started: its actor and the accounts it may use, by the scope
+ * each requirement had on the run's pinned deployment. A run started without a caller names no
+ * `user`.
+ */
 export const PinnedWorkflowRun = Schema.Struct({
-  accounts: SelectedAccounts,
-  profile: Schema.NullOr(ProfileId),
+  accounts: AppAccounts,
+  actor: Schema.NullOr(Schema.NonEmptyString),
 });
 export type PinnedWorkflowRun = typeof PinnedWorkflowRun.Type;
 /** Bounded definition and history reads preserve product-owned authorization. */
 export const WorkflowApp = Schema.Struct({
   app: AppId,
-  profile: Schema.optional(ProfileId),
-  expectedProfileRevision: Schema.optional(ProfileRevision),
+  accounts: Schema.optional(AppAccounts),
   deployment: Schema.optional(DeploymentId),
 });
 export const ListWorkflowRuns = Schema.Struct({
   app: AppId,
-  profile: Schema.optional(ProfileId),
   workflow: Schema.optional(WorkflowName),
   /** Only the run started with this idempotency key, if it was retained. */
   key: Schema.optional(Schema.NonEmptyString.check(Schema.isMaxLength(128))),
@@ -58,7 +68,6 @@ export const ListWorkflowRuns = Schema.Struct({
 });
 /** Expected failures remain safe and typed at every serving boundary. */
 export const WorkflowErrors = [
-  ...ProfileErrors,
   StorageError,
   CredentialsError,
   RequestInvalid,
@@ -66,6 +75,7 @@ export const WorkflowErrors = [
   AppNotDeployed,
   AccountNotFound,
   AccountRequired,
+  AccountChoiceUnsupported,
   AccountSelectionInvalid,
   DeploymentNotFound,
   OAuthReconnectRequired,
@@ -78,13 +88,7 @@ const path = "/v1/apps/:app/workflow-runs";
 export const AppWorkflowsGroup = HttpApiGroup.make("appWorkflows").add(
   HttpApiEndpoint.get("list", "/v1/apps/:app/workflows", {
     params: { app: AppId },
-    query: {
-      profile: Schema.optional(ProfileId),
-      deployment: Schema.optional(DeploymentId),
-      expectedProfileRevision: Schema.optional(
-        Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
-      ),
-    },
+    query: { accounts: AppAccountsQuery, deployment: Schema.optional(DeploymentId) },
     success: Schema.Array(HostedWorkflow),
     error: WorkflowErrors,
   }),

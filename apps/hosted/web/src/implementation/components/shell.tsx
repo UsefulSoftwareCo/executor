@@ -7,12 +7,14 @@ export function DashboardShell({
   navigation,
   banner,
   support,
+  notice,
   children,
   allowCreateOrganization = true,
 }: {
   readonly navigation: ReactNode;
   readonly banner?: ReactNode;
   readonly support?: ReactNode;
+  readonly notice?: ReactNode;
   readonly children: ReactNode;
   readonly allowCreateOrganization?: boolean;
 }) {
@@ -24,6 +26,7 @@ export function DashboardShell({
       navigation={navigation}
       banner={banner}
       support={support}
+      notice={notice}
     >
       {children}
     </DashboardFrame>

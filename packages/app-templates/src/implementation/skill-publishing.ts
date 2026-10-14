@@ -1,6 +1,6 @@
 /** Publish an explicitly supplied set of public skill documents using the standard directory index. */
 import { prepareAppSkills } from "@executor-js/sdk/skill-source";
-import { SourceFiles, type SourceFile } from "@executor-js/sdk/core";
+import { SourceFiles, type SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import { Crypto, Effect, Layer } from "effect";
 import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";

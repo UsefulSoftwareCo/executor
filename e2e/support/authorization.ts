@@ -65,7 +65,7 @@ export const authorizationFixture = (audience: "api" | "mcp") =>
               path: "index.ts",
               content: `
 import { defineApp, mutation, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({  tools: router({
+export default defineApp({}, async () => ({  tools: router({
     echo: mutation({ description: "Allowed echo", input: object({ message: string() }) }, async (_, input) => ({ message: input.message, receipt: ${JSON.stringify(receipt)} })),
   later: mutation({ description: "Added after consent", input: object({ message: string() }) }, async () => ({ forbidden: "later" })),
   }) }));`,

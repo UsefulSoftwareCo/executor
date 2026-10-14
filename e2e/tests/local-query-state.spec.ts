@@ -1,10 +1,10 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { Resource } from "../support/contracts.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -19,6 +19,14 @@ layer(TestLive, { excludeTestServices: true })("Local query state", (it) => {
         const target = yield* Target;
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        // Agent calls carry the API key and no browser origin.
+        const agent: Session = {
+          ...session,
+          send: (method, path, data, extra = {}) => {
+            const { origin: _origin, ...rest } = extra;
+            return session.send(method, path, data, { ...rest, ...headers });
+          },
+        };
         const deployed = yield* session.send(
           "POST",
           "/v1/apps/deploy",
@@ -33,7 +41,7 @@ import { defineApp, defineProvider, secrets, object, string } from "apps";
 const service = defineProvider({ name: "Draft test service", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({  }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({  }));
 `,
               },
               appsManifest,
@@ -64,20 +72,17 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
         );
         const addAccount = (label: string) =>
           Effect.gen(function* () {
-            const response = yield* session.send(
-              "POST",
-              "/v1/accounts",
+            const account = yield* connectLocalAccount(
+              agent,
               {
-                owner: app.owner,
-                provider: app.requirements.accounts.service.provider,
+                app: app.id,
+                requirement: "service",
                 method: "key",
                 label,
                 fields: { token: "synthetic-local-draft-token" },
               },
               headers,
             );
-            expect(response.status).toBe(200);
-            const account = yield* body(Resource, response);
             owned.push(`/v1/accounts/${account.id}`);
             return account;
           });
@@ -153,6 +158,7 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
         yield* browser.use("Open the app's accounts", (page) =>
           page.goto(`/apps/${app.id}?view=accounts`),
         );
+        // The linked account fills the plain requirement, so connecting another replaces it.
         yield* browser.use("Start connecting another account", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );

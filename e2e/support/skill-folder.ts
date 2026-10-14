@@ -40,7 +40,7 @@ export const skillFolderFixture = Effect.gen(function* () {
         files: [
           {
             path: "index.ts",
-            content: `import { defineApp } from "apps";\n${imports}\nexport default defineApp({ accounts: {} }, async (ctx) => (${definition}));`,
+            content: `import { defineApp } from "apps";\n${imports}\nexport default defineApp({}, async (ctx) => (${definition}));`,
           },
           ...files,
           appsManifest,

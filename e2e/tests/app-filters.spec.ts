@@ -30,7 +30,7 @@ layer(HostedLive, { excludeTestServices: true })("App filters", (it) => {
                 {
                   path: "index.ts",
                   content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({ status: query({ input: object({}) }, async () => "ready") }) });`,
+export default defineApp({}, { tools: router({ status: query({ input: object({}) }, async () => "ready") }) });`,
                 },
                 appsManifest,
               ],

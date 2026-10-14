@@ -15,15 +15,15 @@ The SDK runtime does not dispatch on a protocol or depend on this package.
 
 The product decides that a server qualifies before calling the generator; see
 `@executor-js/catalog`. Every other service, including OpenAPI and GraphQL APIs,
-MCP servers that need API keys, and local processes, is written by the user's
-agent with the app-authoring skill and the `apps/openapi`, `apps/graphql`,
-`apps/mcp` and `apps/mcp/stdio` helpers. Nothing here guesses a service's
+and MCP servers that need API keys, is written by the user's agent with the
+app-authoring skill and the `apps/openapi`, `apps/graphql` and `apps/mcp`
+helpers. Nothing here guesses a service's
 authentication from catalog hints.
 
 Generated source includes `package.json` with an npm-safe name derived from the
 import name. An explicit scoped name is preserved. Hosted import flows add the
-authenticated organization’s handle before saving these files:
-`@organization/app-name`. The manifest declares the exact `apps` release this host
+authenticated organization’s publishing scope before saving these files:
+`@organization.executor.community/app-name`. The manifest declares the exact `apps` release this host
 ships (`packages/apps/package.json`) and `@modelcontextprotocol/sdk` at the version
 that release is built with. Every app declares `apps`; see
 [publishing apps](../../notes/apps-publishing.md#framework-selection).

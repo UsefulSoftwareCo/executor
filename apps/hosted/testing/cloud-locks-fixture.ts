@@ -6,15 +6,17 @@
  * connection, outside that transaction; `{"release": true}` commits; `{"signal": {"pid", "stop"}}`
  * stops (`true`) or resumes (`false`) one database backend process, so its connection stops
  * answering, as a stalled server or network would. Resuming a backend the fixture did not stop
- * does nothing. Closing stdin rolls back what is still held and resumes every backend still
- * stopped, as does any other exit of the fixture.
+ * does nothing. `{"connections": false}` makes the database refuse new connections (`true` allows
+ * them again), as a server that cannot be reached would; open connections, the fixture's own
+ * included, stay. Closing stdin rolls back what is still held, resumes every backend still
+ * stopped and allows connections again, as does any other exit of the fixture.
  * Never installed in the HTTP server; scenarios must scope their statements to rows they created
  * and signal only backends serving their own requests.
  */
 import { createInterface } from "node:readline";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Pool, type PoolClient } from "pg";
+import { Client, Pool, type PoolClient } from "pg";
 import { Config, Effect, FileSystem, Redacted, Schema } from "effect";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -32,6 +34,7 @@ const Instruction = Schema.fromJsonString(
     Schema.Struct({ run: Statement }),
     Schema.Struct({ release: Schema.Literal(true) }),
     Schema.Struct({ signal: Schema.Struct({ pid: Schema.Int, stop: Schema.Boolean }) }),
+    Schema.Struct({ connections: Schema.Boolean }),
   ]),
 );
 const Container = Schema.fromJsonString(
@@ -119,6 +122,27 @@ const command = Command.make("cloud-locks-fixture", {
               ).then(() => pids.clear()),
             ),
         );
+        // A database's own connections cannot change whether it takes connections: the switch is
+        // made from the server's maintenance database.
+        const target = new URL(Redacted.value(database));
+        const name = decodeURIComponent(target.pathname.slice(1));
+        const maintenance = new URL(target.toString());
+        maintenance.pathname = "/postgres";
+        const allowConnections = async (allow: boolean) => {
+          const client = new Client({ connectionString: maintenance.toString() });
+          await client.connect();
+          try {
+            await client.query(
+              `alter database ${client.escapeIdentifier(name)} with allow_connections ${allow}`,
+            );
+          } finally {
+            await client.end();
+          }
+        };
+        const refusing = yield* Effect.acquireRelease(
+          Effect.sync(() => ({ now: false })),
+          (state) => (state.now ? Effect.promise(() => allowConnections(true)) : Effect.void),
+        );
         const decode = Schema.decodeUnknownSync(Instruction);
         yield* Effect.promise(async () => {
           let open = false;
@@ -133,6 +157,9 @@ const command = Command.make("cloud-locks-fixture", {
               rows = await run(holder, instruction.hold);
             } else if ("run" in instruction) {
               rows = await run(pool, instruction.run);
+            } else if ("connections" in instruction) {
+              await allowConnections(instruction.connections);
+              refusing.now = !instruction.connections;
             } else if ("signal" in instruction) {
               const { pid, stop } = instruction.signal;
               if (stop) {

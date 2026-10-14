@@ -1,6 +1,8 @@
 /**
  * A database failure while verifying an API key is an outage, not a bad key. MCP and the API
  * answer 503 so agents retry instead of discarding a working key; a refused key still gets 401.
+ * Requests that verify one key together contend for its row: all succeed, and the key's use is
+ * recorded once.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
@@ -15,14 +17,23 @@ import { Target } from "../support/platform.ts";
 
 const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
 
-/** Fail or restore PostgreSQL writes to one key's row in the local database. */
-const storageFault = (key: string, fault: "install" | "remove") =>
+const Fault = Schema.Struct({
+  fault: Schema.Literals(["install", "slow", "remove"]),
+  writes: Schema.optional(Schema.Number),
+});
+
+/** Fail, slow or restore PostgreSQL writes to one key's row in the local database. */
+const storageFault = (key: string, fault: "install" | "slow" | "remove") =>
   Effect.gen(function* () {
     const target = yield* Target,
       evidence = yield* Evidence;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const output = yield* evidence.step(
-      fault === "install" ? "Fail the key's database writes" : "Restore the key's database writes",
+      {
+        install: "Fail the key's database writes",
+        slow: "Slow and count the key's database writes",
+        remove: "Restore the key's database writes",
+      }[fault],
       processes.string(
         ChildProcess.make(
           "node",
@@ -39,9 +50,9 @@ const storageFault = (key: string, fault: "install" | "remove") =>
         ),
       ),
     );
-    yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Struct({ fault: Schema.Literal(fault) })),
-    )(output);
+    const result = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Fault))(output);
+    expect(result.fault).toBe(fault);
+    return result;
   });
 
 layer(HostedLive, { excludeTestServices: true })("API key storage outage", (it) => {
@@ -124,6 +135,62 @@ layer(HostedLive, { excludeTestServices: true })("API key storage outage", (it) 
         yield* storageFault(key.id, "remove");
         expect((yield* mcp(key.key)).status, "The key opens MCP again").toBe(200);
         expect((yield* inventory(key.key)).status, "The key reads the API again").toBe(200);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.apiKeyConcurrentUse.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const anonymous = yield* api.session();
+        const organization = actors.organization.id;
+        const key = yield* body(
+          Key,
+          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+            name: "Concurrent use",
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+            .pipe(Effect.orDie),
+        );
+        const inventory = api.request(
+          anonymous,
+          "GET",
+          `/api/organizations/${organization}/inventory`,
+          undefined,
+          { authorization: `Bearer ${Redacted.value(key.key)}` },
+        );
+
+        // The key's use is unrecorded and its first write holds the row, so every request
+        // below reads the key before that write commits.
+        yield* storageFault(key.id, "slow");
+        yield* Effect.addFinalizer(() => storageFault(key.id, "remove").pipe(Effect.orDie));
+        const statuses = yield* Effect.all(
+          Array.from({ length: 4 }, () => inventory),
+          {
+            concurrency: "unbounded",
+          },
+        );
+        expect(
+          statuses.map((response) => response.status),
+          "Every request with the key succeeds",
+        ).toEqual([200, 200, 200, 200]);
+        const restored = yield* storageFault(key.id, "remove");
+        expect(restored.writes, "The key's use is recorded once").toBe(1);
+        const keys = yield* body(
+          Schema.Struct({
+            apiKeys: Schema.Array(
+              Schema.Struct({ id: Schema.String, lastRequest: Schema.NullOr(Schema.String) }),
+            ),
+          }),
+          yield* api.request(actors.owner, "GET", "/api/auth/api-key/list?offset=0"),
+        );
+        expect(keys.apiKeys.find((item) => item.id === key.id)?.lastRequest).toBeTypeOf("string");
       }),
     ),
   );

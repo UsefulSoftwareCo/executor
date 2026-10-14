@@ -1,5 +1,6 @@
 /** Local identity/session adapter for the shared app-origin authentication protocol. */
-import { OwnerId, type Executor } from "@executor-js/sdk/core";
+import { type Executor } from "@executor-js/sdk/core";
+import { localOwner } from "./owners.ts";
 import {
   AppReturnPath,
   AppSignInCallback,
@@ -12,7 +13,7 @@ import {
   type AppSignInFailure,
 } from "apps/ui/auth";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
-import { Clock, Effect, Option, Redacted, Ref, Schema, Semaphore } from "effect";
+import { Clock, Effect, Option, Redacted, Ref, Result, Schema, Semaphore } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { appFromHost, appOrigin, appSessionCookie } from "../contracts/app-ui.ts";
 import { PairingRejected, type AppSessionTarget, type SessionHash } from "../contracts/auth.ts";
@@ -84,7 +85,7 @@ export const appAuthentication = (
     const dashboardOrigin = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
     /** The app must exist and be deployed; the page itself reports a deployment without a UI. */
     const usable = (target: AppSessionTarget) =>
-      executor.apps.get({ app: target.app, owner: OwnerId.make("local") }).pipe(
+      executor.apps.get({ app: target.app, owner: localOwner }).pipe(
         Effect.flatMap((app) =>
           app.activeDeployment === null ? Effect.fail(unavailable()) : Effect.void,
         ),
@@ -218,9 +219,12 @@ export const appAuthentication = (
         : Schema.is(UiForbidden)(error)
           ? "forbidden"
           : "unavailable";
+    const failed = (error: UiUnauthorized | UiForbidden | UiFailed) =>
+      appRedirect(`/app-auth?${new URLSearchParams({ failure: failure(error) })}`);
     /**
      * The dashboard's `/app-auth` resolves on the server when the browser sends its login. Only a
      * missing request, a failure or an unpaired browser renders the page and its pairing gate.
+     * A session store that cannot be read is a failure, not an unpaired browser.
      */
     const signIn = <E, R>(page: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
       Effect.gen(function* () {
@@ -228,9 +232,11 @@ export const appAuthentication = (
         const url = new URL(request.url, dashboardOrigin);
         const id = Schema.decodeUnknownOption(AppSignInId)(url.searchParams.get("request"));
         if (Option.isNone(id)) return yield* page;
-        const parent = yield* auth
+        const identified = yield* auth
           .identify(request.cookies[sessionCookie(config)])
-          .pipe(Effect.orElseSucceed(() => undefined));
+          .pipe(Effect.result);
+        if (Result.isFailure(identified)) return failed(unavailable());
+        const parent = identified.success;
         if (parent === undefined) {
           // The strict dashboard cookie is withheld when the app's site redirects here. A
           // same-origin refresh sends it; if the browser is not paired, the page asks to pair.
@@ -249,11 +255,7 @@ export const appAuthentication = (
         }
         return yield* approve(id.value, parent).pipe(
           Effect.map(appRedirect),
-          Effect.catch((error) =>
-            Effect.succeed(
-              appRedirect(`/app-auth?${new URLSearchParams({ failure: failure(error) })}`),
-            ),
-          ),
+          Effect.catch((error) => Effect.succeed(failed(error))),
         );
       });
     return { begin, callback, signIn };

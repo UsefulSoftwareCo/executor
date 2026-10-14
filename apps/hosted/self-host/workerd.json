@@ -1,0 +1,14 @@
+{
+  "repository": "UsefulSoftwareCo/workerd",
+  "release": "v1.20260918.1-executor.caf569c512",
+  "assets": {
+    "linux-64": {
+      "name": "workerd-linux-64.gz",
+      "sha256": "c5dfbfbe188f30fcd128aa8318e3fdcefcd76d211da61a1bf8fb2fea032048c0"
+    },
+    "linux-arm64": {
+      "name": "workerd-linux-arm64.gz",
+      "sha256": "b02c76c0425f32570eb114eea6a3cfce176b79710c8aaf6bc48c23b2d7f2b53f"
+    }
+  }
+}

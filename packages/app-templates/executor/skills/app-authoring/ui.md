@@ -24,7 +24,7 @@ use that split only when you supply the required base styles yourself.
 For hosted apps, discover and call `appUi.location` after deployment:
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].appUi.location({
+return await tools.executor.appUi.location({
   path: { organization: "<approved-organization-id>", app: "<app-id>" },
 });
 ```
@@ -33,9 +33,10 @@ The response is
 `{ status: "ready", url: "https://<app-slug>.<org-slug>.executor.website" }`
 on Executor Cloud. Self-host uses its configured app domain. Use the returned
 URL rather than constructing one. Before the first deployment it fails with
-`AppNotDeployed`. `url: null` with `status: "unavailable"` means the app has no
-UI or the host has no app domain configured; `"pending"` and `"failed"` report
-the setup of the team's app domain. Deployment builds and activates the UI;
+`AppNotDeployed`. `status: "unavailable"` has `url: null` and a `reason`:
+`"no_ui"` when the deployment has no UI, as for tool-only apps, or
+`"no_app_domain"` when the host has no app domain. `"pending"` and `"failed"`
+report the setup of the team's app domain. Deployment builds and activates the UI;
 there is no separate publish step. Give the URL to the user to open in a
 browser. The browser completes sign-in using their Executor session. MCP
 credentials do not grant a browser session. A `403` response alone does not
@@ -66,10 +67,18 @@ public sharing are not part of this version.
 An app has one page, `ui/index.html`. Build further screens as React routes:
 any path without a dot serves that page. App responses send
 `Content-Security-Policy: frame-ancestors 'none'`, so no page can be framed,
-not even in an `<iframe>` on the app's own origin. `ui/public/` serves `.js`,
-`.css`, `.svg`, `.json`, `.map` and `.woff2` files with their types and every
-other file, `.html` included, as `text/plain`, so a second HTML file shows as
-source text rather than a page.
+not even in an `<iframe>` on the app's own origin.
+
+`ui/public/` files are served at the page's origin exactly as they are, with
+their content types: scripts, styles, JSON, web manifests, images, fonts, audio,
+video, `.wasm` (`application/wasm`), `.glb` models and `.html` pages among
+them. Unknown extensions are `application/octet-stream`. They may be binary.
+`ui/index.html` may load a prebuilt script or stylesheet from `ui/public/`
+directly, such as `<script type="module" src="/assets/index.js">`; it is
+served as it is, not compiled. A compiled file may not take the path of a
+public file. Public files support byte ranges and revalidate against their
+content, so media seeks and unchanged files are cheap. Each deployment serves
+its own files; activating an older deployment serves its files again.
 
 ## Hook result
 

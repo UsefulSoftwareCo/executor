@@ -11,7 +11,6 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -70,7 +69,7 @@ layer(TestLive, { excludeTestServices: true })("Local OAuth renewal interruption
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     read: query({ input: object({}) }, async ({ fetch }) => ({ service: await (await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json() })),
   }),
@@ -89,15 +88,11 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
               yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-          owner: "local",
-          subject: "local",
-        });
         const link = yield* body(
           Link,
           yield* api.request(agent, "POST", "/account-connect/api/requests", {
             owner: "local",
-            target: { app: app.id, profile: profile.id, requirement: "service" },
+            target: { app: app.id, requirement: "service" },
           }),
         );
         const grant = {
@@ -130,15 +125,16 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           { ...grant, callbackUrl },
         );
         expect(completed.status, JSON.stringify(completed.body)).toBe(200);
-        account = (yield* body(Resource, completed)).id;
-        const accountPath = `/dashboard/api/accounts/${account}`;
+        const connected = (yield* body(Resource, completed)).id;
+        account = connected;
+        const accountPath = `/dashboard/api/accounts/${connected}`;
+        // Connecting from the app linked the account; calls use it without naming it.
         const signIn = api
           .request(agent, "GET", accountPath)
           .pipe(Effect.flatMap((response) => body(Detail, response)));
 
         const read = api.request(agent, "POST", "/v1/tools/call", {
           app: app.id,
-          profile: profile.id,
           tool: "read",
           input: {},
         });
@@ -156,9 +152,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         yield* issuer.configure({ hold: "refresh-unprocessed" });
         const before = yield* issuer.metrics;
         const interrupted = yield* Effect.forkChild(
-          api
-            .request(agent, "GET", `/v1/apps/${app.id}/workflows?profile=${profile.id}`)
-            .pipe(Effect.exit),
+          api.request(agent, "GET", `/v1/apps/${app.id}/workflows`).pipe(Effect.exit),
         );
         yield* issuer.metrics.pipe(
           Effect.flatMap((current) =>

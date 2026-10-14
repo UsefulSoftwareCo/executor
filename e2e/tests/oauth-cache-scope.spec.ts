@@ -1,6 +1,6 @@
 /** Account cache scopes survive token renewal and start empty after a reconnect. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
@@ -8,12 +8,12 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const App = Schema.Struct({ id: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Cached = Schema.Struct({ value: Schema.String, tokenChecked: Schema.Boolean });
 
@@ -37,7 +37,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth cache scope", (it) => {
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, query, object, string, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts, cache }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts }, cache }) => ({
   tools: router({
     cached: query({ input: object({}) }, async ({ fetch }) => {
       // Present the current token so every call exercises the renewal the host performed.
@@ -88,13 +88,14 @@ export default defineApp({ accounts: { service } }, async ({ accounts, cache }) 
             return yield* body(Resource, completed);
           });
 
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         const account = yield* signIn(connection.id);
         yield* Effect.addFinalizer(() =>
@@ -102,18 +103,12 @@ export default defineApp({ accounts: { service } }, async ({ accounts, cache }) 
             .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
-        // Background profile setup resolves the account; let it finish before counting renewals.
-        yield* api
-          .request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile.id}`)
-          .pipe(
-            Effect.flatMap((response) => body(SetupStatus, response)),
-            Effect.flatMap((current) =>
-              current.status !== "pending"
-                ? Effect.void
-                : Effect.fail(new Error("Profile setup has not finished")),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-          );
+        // Linking the account sets it up as the app's webhook source in the background, which
+        // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
+        // the call the scenario makes.
+        yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
+          sources.some((source) => source.account === account.id && source.status !== "pending"),
+        );
 
         const refreshes = issuer.metrics.pipe(Effect.map((metrics) => metrics.refreshes));
         const call = Effect.gen(function* () {
@@ -121,7 +116,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts, cache }) 
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            { profile: profile.id, tool: "cached", input: {} },
+            { tool: "cached", input: {} },
           );
           expect(response.status, JSON.stringify(response.body)).toBe(200);
           const result = yield* body(Cached, response);
@@ -142,11 +137,14 @@ export default defineApp({ accounts: { service } }, async ({ accounts, cache }) 
         // Reconnecting may sign in as someone else upstream, so the account starts a new scope.
         const reconnect = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-            account: account.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {
+              account: account.id,
+            },
+          ),
         );
         expect((yield* signIn(reconnect.id)).id).toBe(account.id);
         const afterReconnect = yield* call;

@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { createProfile } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { BaseUrl, emulatorRequest } from "../support/emulators.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -28,7 +28,8 @@ export const SeedReceipt = Schema.Struct({
       id: Schema.String,
       slug: Schema.String,
       name: Schema.String,
-      profile: Schema.String,
+      /** The account choice for calls: the owner links the primary account to every app. */
+      accounts: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     }),
   ),
   accounts: Schema.Array(Schema.String),
@@ -42,10 +43,10 @@ const source = (
 ) => `import {defineApp,defineProvider,secrets,query,mutation,object,string,array, router} from "apps";
 const service=defineProvider({name:"Scenario GitHub",auth:{token:secrets({label:"GitHub token",fields:object({token:string()})})}});
 const record=object({key:string(),title:string(),status:string(),body:string()});
-export default defineApp({accounts:{service},sql:true},{
+export default defineApp({user: { accounts:{service} },sql:true},{
   tools: router({
     summary:query({input:object({})},async({sql})=>{const rows=sql.exec("SELECT key, status FROM records").toArray();return {count:rows.length,open:rows.filter(r=>r.status==="open").length,closed:rows.filter(r=>r.status==="closed").length,keys:rows.map(r=>r.key).sort()};}),
-    repository:query({input:object({})},async ctx=>{const response=await fetch(${JSON.stringify(`${origin}/repos/${owner}/operations`)},{headers:{authorization:"Bearer "+ctx.accounts.service.fields.token}});if(!response.ok)throw new Error("Provider returned "+response.status);const repo=await response.json();return {name:repo.name,private:repo.private,owner:repo.owner.login};}),
+    repository:query({input:object({})},async ctx=>{const response=await fetch(${JSON.stringify(`${origin}/repos/${owner}/operations`)},{headers:{authorization:"Bearer "+ctx.user.accounts.service.fields.token}});if(!response.ok)throw new Error("Provider returned "+response.status);const repo=await response.json();return {name:repo.name,private:repo.private,owner:repo.owner.login};}),
     seed:mutation({input:object({records:array(record)})},async({sql},input)=>sql.transaction(tx=>{for(const row of input.records)tx.exec("INSERT INTO records (key, title, status, body) VALUES (?, ?, ?, ?)",row.key,row.title,row.status,row.body);return {inserted:input.records.length};})),
   })
 });`;
@@ -150,13 +151,15 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
       (token, index) =>
         Effect.gen(function* () {
           const actor = index % 2 === 0 ? actors.owner : actors.admin;
-          const profile = yield* createProfile(actor, `${prefix}/apps/${first.id}`);
+          // Connecting from the app links the new account to it for the connecting actor.
           const connection = yield* body(
             Resource,
-            yield* api.request(actor, "POST", `${prefix}/apps/${first.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actor,
+              "POST",
+              connectionsPath(`${prefix}/apps/${first.id}`, "user", "service"),
+              {},
+            ),
           );
           const saved = yield* body(
             Resource,
@@ -166,28 +169,22 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
               fields: { token: Redacted.value(token) },
             }),
           );
-          return { account: saved.id, profile: profile.id };
+          return saved.id;
         }),
       { concurrency: 16 },
     );
     const primary = connections[0];
     if (primary === undefined)
       return yield* Effect.die(new Error("The data shape requires at least one account"));
+    const accounts = { service: [primary] };
     const configure = Effect.forEach(
       apps,
-      (app, index) =>
+      (app) =>
         Effect.gen(function* () {
-          const profile =
-            index === 0
-              ? { id: primary.profile }
-              : yield* body(
-                  Resource,
-                  yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/profiles`, {
-                    idempotencyKey: randomBytes(16).toString("hex"),
-                    accounts: { service: primary.account },
-                  }),
-                );
-          return { ...app, profile: profile.id };
+          // Each connection replaced the connecting actor's earlier link to the first app, so every
+          // app, the first included, links the primary account.
+          yield* linkAccount(actors.owner, `${prefix}/apps/${app.id}`, "service", primary);
+          return { ...app, accounts };
         }),
       { concurrency: 4 },
     );
@@ -208,7 +205,7 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
             "POST",
             `${prefix}/apps/${first.id}/tools/call`,
             {
-              profile: primary.profile,
+              accounts,
               tool: "seed",
               kind: "mutation",
               input: { records: rows.slice(offset, offset + 250) },
@@ -292,7 +289,7 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
     return SeedReceipt.make({
       shape,
       apps: configured,
-      accounts: connections.map((entry) => entry.account),
+      accounts: connections,
       groups: groups.map((entry) => entry.id),
       provider: { origin: created.providerBaseUrl, repository: `${login}/operations` },
     });

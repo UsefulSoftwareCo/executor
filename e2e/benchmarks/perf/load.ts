@@ -83,7 +83,7 @@ export const loadReads: readonly (readonly [string, (o: OrgReceipt) => string])[
   ["api.apps", (o) => `${org(o)}/apps`],
   ["api.access", (o) => `${org(o)}/access`],
   ["api.app", (o) => app(o)],
-  ["api.app.profiles", (o) => `${app(o)}/profiles`],
+  ["api.app.accounts", (o) => `${app(o)}/accounts`],
   ["api.app.access", (o) => `${app(o)}/access`],
   ["api.account", (o) => `${org(o)}/accounts/${primaryAccount(o)}`],
   ["api.scheduled-runs", (o) => `${org(o)}/scheduled-runs`],
@@ -99,10 +99,10 @@ export const loadReads: readonly (readonly [string, (o: OrgReceipt) => string])[
 const scheduledAppName = "Perf scheduled runs";
 /** Enough schedules for one per loop; their hourly interval keeps them from running on their own. */
 const scheduleNames = Array.from({ length: 16 }, (_, index) => `s${index + 1}`);
-const scheduledSource = `import { defineApp, mutation, interval, object, router } from "apps";
+const scheduledSource = `import { defineApp, mutation, userInterval, object, router } from "apps";
 const tick = mutation({ input: object({}) }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ tick }), schedules: { ${scheduleNames
-  .map((name) => `${name}: interval({ minutes: 60 }, tick, {})`)
+export default defineApp({}, async () => ({ tools: router({ tick }), schedules: { ${scheduleNames
+  .map((name) => `${name}: userInterval({ minutes: 60 }, tick, {})`)
   .join(", ")} } }));`;
 const ScheduledInventory = Schema.Struct({
   apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
@@ -291,7 +291,6 @@ export const runLoad = (target: PerfTarget, config: LoadConfig) =>
           yield* target.owner("call").pipe(
             Effect.flatMap((client) =>
               client.request("POST", `${org(entry)}/apps/${selected.id}/tools/call`, {
-                profile: selected.profile,
                 tool: "list_account_0000",
                 kind: "query",
                 input: {},

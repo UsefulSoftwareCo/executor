@@ -21,6 +21,6 @@ export const localEventAuthority =
             subscription.event,
           );
           if (access === undefined) return yield* new EventAccessRevoked();
-          // A grant limited to some profiles receives only occurrences from their accounts.
+          // A grant limited to some accounts receives only occurrences from those accounts.
           return access;
         });

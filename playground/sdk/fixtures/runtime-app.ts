@@ -33,8 +33,11 @@ const Catalog = object({ names: array(string()), label: string() });
 const Input = object({ count: number().default(2), suffix: string().optional() });
 
 export default defineApp(
-  { accounts: { service, extras: service.many() } },
-  async ({ accounts }) => {
+  { user: { accounts: { service, extras: service.many() } } },
+  async ({ user }) => {
+    // The fixture has no app-scope work, so it is only evaluated for a caller.
+    if (user === undefined) return {};
+    const { accounts } = user;
     const response = await fetch(`${accounts.service.fields.endpoint}/catalog`, {
       headers: { authorization: `Bearer ${accounts.service.fields.token}` },
     });

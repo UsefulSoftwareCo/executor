@@ -124,8 +124,13 @@ export interface EventEmitter<Events extends Readonly<Record<string, AnyEventDec
 /** One invocation's buffer. The handler reads `emitted` only after the invocation succeeds. */
 export const makeEmitter = (input: {
   readonly events: Readonly<Record<string, AppEvent>>;
-  /** Every account ID bound to this invocation. */
+  /** Every account ID bound to this invocation, which an emit may name. */
   readonly accounts: readonly string[];
+  /**
+   * The caller's account IDs. An emit that names no account is attributed to the only one, if
+   * there is exactly one. App accounts never count: they are bound to every call.
+   */
+  readonly attributable: readonly string[];
   /** The webhook's source account, which an emit names by default. */
   readonly sourceAccount?: string;
   readonly emitted: EmittedEvent[];
@@ -145,9 +150,9 @@ export const makeEmitter = (input: {
     const account =
       options.account ??
       input.sourceAccount ??
-      (input.accounts.length === 1 ? input.accounts[0] : undefined) ??
+      (input.attributable.length === 1 ? input.attributable[0] : undefined) ??
       null;
-    if (account === null && input.accounts.length > 1)
+    if (account === null && input.attributable.length > 1)
       throw new TypeError(
         "This invocation has several accounts; name the one the event came from with { account }",
       );

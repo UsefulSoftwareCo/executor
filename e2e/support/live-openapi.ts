@@ -8,11 +8,18 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
-import { createProfile } from "./profiles.ts";
 import { appsManifest } from "./apps-release.ts";
 
-/** Omit staleFor to use the framework default stale-while-revalidate window. */
-export const liveOpenapiFixture = (freshFor: number, options: { staleFor?: number } = {}) =>
+/**
+ * Omit staleFor to use the framework default stale-while-revalidate window. With `retiring`, the
+ * first document also has `/legacy`, which a published document drops and whose route then answers
+ * 404, and every document has `/missing`, whose item never exists: it answers 404 with a body that
+ * repeats the request's credential, which no failure may show.
+ */
+export const liveOpenapiFixture = (
+  freshFor: number,
+  options: { staleFor?: number; retiring?: boolean } = {},
+) =>
   Effect.gen(function* () {
     let version = 1;
     let downloads = 0;
@@ -61,6 +68,28 @@ export const liveOpenapiFixture = (freshFor: number, options: { staleFor?: numbe
                   },
                 },
               },
+              ...(options.retiring !== true
+                ? {}
+                : {
+                    "/missing": {
+                      get: {
+                        operationId: "items_get",
+                        tags: ["Items"],
+                        responses: { "200": { description: "OK" } },
+                      },
+                    },
+                    ...(version === 1
+                      ? {
+                          "/legacy": {
+                            get: {
+                              operationId: "legacy_list",
+                              tags: ["Legacy"],
+                              responses: { "200": { description: "OK" } },
+                            },
+                          },
+                        }
+                      : {}),
+                  }),
               ...(version === 1
                 ? {}
                 : {
@@ -99,8 +128,35 @@ export const liveOpenapiFixture = (freshFor: number, options: { staleFor?: numbe
         }),
       ),
     );
+    const retiring = Layer.mergeAll(
+      HttpRouter.add(
+        "GET",
+        "/legacy",
+        Effect.sync(() => {
+          calls++;
+          return version === 1
+            ? HttpServerResponse.jsonUnsafe({ legacy: true })
+            : HttpServerResponse.text("404 page not found", { status: 404 });
+        }),
+      ),
+      HttpRouter.add(
+        "GET",
+        "/missing",
+        Effect.gen(function* () {
+          calls++;
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          return HttpServerResponse.jsonUnsafe(
+            { detail: `No item for token ${request.headers["x-token"] ?? "none"}` },
+            { status: 404 },
+          );
+        }),
+      ),
+    );
     const services = yield* Layer.build(
-      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+      HttpRouter.serve(options.retiring === true ? Layer.merge(routes, retiring) : routes, {
+        disableLogger: true,
+        disableListenLog: true,
+      }).pipe(
         Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
       ),
     );
@@ -111,7 +167,7 @@ export const liveOpenapiFixture = (freshFor: number, options: { staleFor?: numbe
       {
         path: "index.ts",
         content: `import { defineApp } from 'apps'; import { liveOpenapiRouter } from 'apps/openapi';
-export default defineApp({accounts:{}}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
+export default defineApp({}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
  source:{url:${JSON.stringify(origin + "/openapi.json")}}, allowedOrigin:${JSON.stringify(origin)}, freshFor:${freshFor},${options.staleFor === undefined ? "" : ` staleFor:${options.staleFor},`}
  securitySchemes:{token:{type:'apiKey',in:'header',name:'x-token'}}, methods:{apiKey:[{scheme:'token',field:'token',part:'value',prefix:''}]}, oauth:[],
  account:{method:'apiKey',fields:{token:'synthetic-live-key'}}
@@ -130,24 +186,19 @@ export default defineApp({accounts:{}}, async ctx => ({ tools: liveOpenapiRouter
     const app = (yield* body(App, deployed)).id;
     const path = `${prefix}/${app}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    const profile = yield* createProfile(actors.owner, path);
-    const callTool = (tool: string, value: string) =>
-      api.request(actors.owner, "POST", `${path}/tools/call`, {
-        profile: profile.id,
-        tool,
-        // Every operation in this document is a GET.
-        kind: "query",
-        input: { query: { value } },
-      });
+    // Every operation in this document is a GET.
+    const invoke = (tool: string, input: unknown) =>
+      api.request(actors.owner, "POST", `${path}/tools/call`, { tool, kind: "query", input });
+    const callTool = (tool: string, value: string) => invoke(tool, { query: { value } });
     /** Call `/echo` by its grouped tool name, `echoes.<name>`. */
     const call = (name: string, value: string) => callTool(`echoes.${name}`, value);
     return {
       api,
       actors,
       path,
-      profile,
       call,
       callTool,
+      invoke,
       downloads: Effect.sync(() => downloads),
       calls: Effect.sync(() => calls),
       publish: Effect.sync(() => {

@@ -8,7 +8,7 @@ import { query, defineApp, object, router, string } from "apps";
 const Greet = object({ name: string().default("world") });
 
 export default defineApp(
-  { accounts: {} },
+  {},
   {
     tools: router({
       greet: query(
@@ -34,6 +34,31 @@ The schema helpers are `object`, `string`, `number`, `boolean`, `array`,
 `.default(value)` for defaults. `Infer<typeof Input>` gives the parsed input
 type. `object` strips undeclared properties. `decodeJson(response, schema)`
 checks HTTP status and parses a JSON response.
+
+## Give the app an icon
+
+Declare `icons` beside the account requirements. The dashboard shows them on the app's card
+and page, choosing the `light` or `dark` variant for the color scheme; an icon
+without `theme` suits both. The build records them, so they show without
+evaluating the app or listing its tools:
+
+```ts
+export default defineApp(
+  {
+    icons: [
+      { src: "data:image/svg+xml;base64,PHN2Zy...", mimeType: "image/svg+xml", theme: "light" },
+      { src: "https://example.com/logo-dark.png", mimeType: "image/png", theme: "dark" },
+    ],
+  },
+  async () => ({ tools: router({/* ... */}) }),
+);
+```
+
+Each entry is `{ src, mimeType?, sizes?, theme? }`. `src` is a base64
+`data:image/svg+xml`, `image/png`, `image/webp` or `image/jpeg` URI, or an
+`https:` URL. Declare at most 8 icons, together at most 32 KiB of JSON.
+Anything else fails the build at its declaration stage. Icons are not part of
+a published listing.
 
 ## Group tools with routers
 
@@ -95,7 +120,7 @@ skills are read:
 import { defineApp, dynamicSkills } from "apps";
 import { githubSkills } from "apps/skills";
 
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   dynamicSkills: dynamicSkills({
     list: () =>
       githubSkills({
@@ -139,14 +164,15 @@ const github = defineProvider({
   auth: { token: secrets({ label: "Token", fields: object({ token: string() }) }) },
 });
 
-export default defineApp({ accounts: { github } }, async (ctx) => ({
+// One token is linked for everyone, so every member reads the same skills.
+export default defineApp({ app: { accounts: { github } } }, async (ctx) => ({
   dynamicSkills: dynamicSkills({
     list: () =>
       githubSkills({
         repo: "example-org/private-skills",
         path: "skills",
-        account: ctx.accounts.github,
-        token: ctx.accounts.github.fields.token,
+        account: ctx.app.accounts.github,
+        token: ctx.app.accounts.github.fields.token,
         fetch: ctx.fetch,
         signal: ctx.signal,
         cache: ctx.cache,
@@ -183,15 +209,13 @@ runtime; it never reads host files. All sources use one parser. Only selected fo
 parsed, when the skills load. Invalid selected folders fail the read.
 
 The MCP `skills` tool lists summaries with `{}` or `{app: "installed-slug"}`.
-Read with `{app, profile, name: "triage"}`. Reuse the returned `deployment`,
-`profile`, `profileRevision` (as `expectedProfileRevision`) and `revision` when
-reading a reference with `file`. Deployment pins code; revision detects remote
+Read with `{app, name: "triage"}`. Reuse the returned `deployment` and
+`revision` when reading a reference with `file`. Deployment pins code; revision detects remote
 content changes. A changed revision requires a fresh read. The dashboard bundle
 keeps its documents and references together in one response.
 
-Skill reads evaluate the factory, call `dynamicSkills.list` and require the
-selected accounts. Current app,
-profile and account access is checked. Use an account-free app for instructions
+Skill reads evaluate the factory, call `dynamicSkills.list` and require a
+linked account for each requirement. Current app and account access is checked. Use an account-free app for instructions
 that must be readable before setup. The Executor app loads this guide through the
 same public helper; discover its slug with `skills({})`.
 
@@ -252,8 +276,8 @@ accepted content against the form. Handle decline/cancel in tool code. The same
 tool continues with its local state intact. This works in native or model mode, or with an SDK
 host that supplies a delivery handler. The capability is unavailable during
 factory evaluation/discovery and after the invocation closes. An earlier tool
-policy approval never auto-answers these requests. Upstream MCP form elicitation uses this same path automatically for HTTP and
-stdio tools. URL-mode input is not yet supported.
+policy approval never auto-answers these requests. Upstream MCP form elicitation uses this same path automatically for MCP
+tools. URL-mode input is not yet supported.
 
 With `/mcp?elicitation_mode=browser`, pending requests include `approvalUrl`. Show
 that link to the user, then call `resume({ requestId })` with no response. The user
@@ -273,6 +297,21 @@ request. Pass `stale: "revalidate"` to await the load past `freshFor` instead of
 serving the old value; the loader can `read(key, schema)` the old value to confirm
 it cheaply. Errors are not cached. `invalidate(key)` also fences pending loaders.
 
+The cache keeps an entry at most 7 days. A longer `freshFor` plus `staleFor`,
+or a longer `write` retention, is shortened to 7 days, taking `staleFor` first.
+A call that exceeds another limit fails with `CacheError` and code `capacity`,
+and the message names the limit:
+
+| Limit                     | Value                                 |
+| ------------------------- | ------------------------------------- |
+| Key, as canonical JSON    | 8,192 bytes                           |
+| Value, as JSON            | 2,000,000 bytes                       |
+| One `readMany` or `write` | 128 entries and 8,000,000 bytes       |
+| The app's whole cache     | 100,000 entries and 128,000,000 bytes |
+
+A `load` has 90 seconds. A caller waits at most 10 seconds for another caller's
+load of the same key, then loads for itself without storing the result.
+
 Use `dynamicRouter({ list, resolve })` for large or remote catalogs. List tool
 metadata separately from resolving one query or mutation. `accountRouter`
 preserves lazy resolution. Resolving a tool does not require listing all tools.
@@ -285,7 +324,7 @@ router's title, description and instructions.
 
 ```ts
 export default defineApp(
-  { accounts: {} },
+  {},
   {
     tools: dynamicRouter({
       list: async () => [

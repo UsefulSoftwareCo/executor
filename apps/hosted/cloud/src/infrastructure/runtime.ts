@@ -15,6 +15,7 @@ import {
   assembleWorkerBundle,
   declarationFailed,
   remoteAppRunner,
+  runsInFacet,
 } from "@executor-js/sdk/workerd";
 import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
@@ -27,6 +28,7 @@ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { CloudCompileResult } from "../contracts/builds.ts";
 import { AppCompiler } from "./compiler.ts";
 import { AppData } from "./app-data-worker.ts";
+import type { AppDataSupervisor } from "./app-data.ts";
 import {
   loadCloudBuildRecord,
   loadCloudFramework,
@@ -85,8 +87,18 @@ const NativeNamespace = Schema.declare(
     typeof value.getByName === "function",
 );
 
+/**
+ * What a supervisor's `run` answers: the call's encoded result. The Durable Object bridge answers a
+ * method its object does not define with `undefined`, before and instead of running anything, so
+ * `undefined` comes only from an AppData deployment older than `run`.
+ */
+const SupervisorRun = Schema.UndefinedOr(Schema.String);
+
 /** Native Alchemy bindings are resolved once; actual work belongs to the current invocation. */
-export const cloudRuntime = Effect.fn(function* (origin: string) {
+export const cloudRuntime = Effect.fn(function* (
+  origin: string,
+  databases: Cloudflare.DurableObject<AppDataSupervisor>,
+) {
   const compiler = yield* Cloudflare.Workers.bindWorker(AppCompiler);
   const appData = yield* Cloudflare.Workers.bindWorker(AppData);
   const environment = yield* Cloudflare.WorkerEnvironment;
@@ -96,6 +108,36 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
       invoke: (invocation, capabilities) => appData.invoke(invocation, capabilities),
       declare: (bundle, headers) => appData.declare(bundle, headers),
     });
+    /**
+     * A call that uses the app's database runs in the app's data facet, which only its supervisor
+     * can reach, so it goes to the supervisor directly, which runs its runner. Through the shared
+     * runner it would wait for a runner isolate to start only to forward the call there.
+     *
+     * An AppData deployment from before `run` (a partial deploy, or AppData rolled back alone)
+     * answers `undefined` without running anything (see `SupervisorRun`); only then does the call
+     * take the shared runner, which every AppData deployment serves. A failure is never retried
+     * there: it may have run part of the call.
+     */
+    const supervised = (app: string) =>
+      remoteAppRunner({
+        invoke: (invocation, capabilities) =>
+          databases
+            .getByName(app)
+            .run(invocation, capabilities)
+            .pipe(
+              Effect.provide(RuntimeContext.phantom),
+              Effect.flatMap(Schema.decodeUnknownEffect(SupervisorRun)),
+              Effect.flatMap((reply) =>
+                reply === undefined
+                  ? Effect.annotateCurrentSpan(
+                      "executor.runner.fallback",
+                      "supervisor-without-run",
+                    ).pipe(Effect.andThen(appData.invoke(invocation, capabilities)))
+                  : Effect.succeed(reply),
+              ),
+            ),
+        declare: (bundle, headers) => appData.declare(bundle, headers),
+      });
     // Cache writes run in this event scope, bounded when it closes.
     const warming = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
@@ -115,12 +157,18 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
     const runtime = yield* appRuntime({
       name: "runtime.cloud",
       loadBuild: load,
-      invoke: (invocation, capabilities) => withActor(runner.invoke(invocation, capabilities)),
-      build: ({ files }) =>
+      invoke: (invocation, capabilities) =>
+        withActor(
+          (runsInFacet(invocation) ? supervised(invocation.app) : runner).invoke(
+            invocation,
+            capabilities,
+          ),
+        ),
+      build: ({ files, public: publicPaths = [] }) =>
         withActor(
           Effect.gen(function* () {
             const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
-            const result = yield* compiler.compile(files, headers).pipe(
+            const result = yield* compiler.compile(files, publicPaths, headers).pipe(
               Effect.timeoutOrElse({
                 duration: compilerDeadline,
                 orElse: () => compilerDidNotAnswer,

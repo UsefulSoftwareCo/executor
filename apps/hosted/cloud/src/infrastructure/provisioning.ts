@@ -36,7 +36,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
     const domains = yield* AppDomainCoordinator.from(AppDomainController);
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
     const analytics = yield* cloudAnalytics;
-    // Default installation and member setup save profiles; wake their setup once committed. A
+    // Default installation and member setup link accounts; wake webhook sources once committed. A
     // workflow step is not placed, so it must not be the coordinator's first caller: it asks the
     // placed handler to, in a step of its own that is retried until the handler has woken it.
     const jobs = yield* cloudBackgroundJobs;
@@ -95,7 +95,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
                       }),
                 ),
               );
-            // After every successful provisioning, not only an attempt that saved profiles: an
+            // After every successful provisioning, not only an attempt that linked accounts: an
             // earlier attempt may have committed them and failed later, and its retry finds
             // nothing left to do. A wake with nothing to set up is one empty pass.
             yield* step

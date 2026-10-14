@@ -25,8 +25,7 @@ layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) =>
           files: [
             {
               path: "index.ts",
-              content:
-                'import { defineApp } from "apps"; export default defineApp({ accounts: {} }, {});',
+              content: 'import { defineApp } from "apps"; export default defineApp({}, {});',
             },
             { path: "ui/index.html", content: "<!doctype html><h1>Domain ready</h1>" },
             appsManifest,

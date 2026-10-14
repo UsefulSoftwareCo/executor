@@ -15,7 +15,7 @@ const github = defineProvider({
 });
 /** Shared requirements determine each handler's capabilities. */
 export const requirements = {
-  accounts: { github },
+  user: { accounts: { github } },
 };
 export type QueryCtx = QueryContext<typeof requirements>;
 export type MutationCtx = MutationContext<typeof requirements>;

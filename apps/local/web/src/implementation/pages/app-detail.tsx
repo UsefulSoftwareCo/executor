@@ -1,34 +1,33 @@
 import { AppResources } from "./app-resources.tsx";
-import { useEffect, useState } from "react";
+import { useState, type ReactNode } from "react";
 import { AppAccounts } from "./app-accounts.tsx";
-import { ProfileResources } from "@executor-js/ui/dashboard/profile-resources";
 import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
 import {
   AppOverviewEntries,
   AppWorkflowPreview,
 } from "@executor-js/ui/dashboard/app-overview-entries";
 import { appBrowserBindings } from "../../contracts/app-browser.ts";
-import {
-  profilesAtom,
-  accountSelectionAtom,
-  profileMutations,
-  profileWebhooksAtom,
-} from "../../contracts/profiles.ts";
-import { accountContexts, selectedAccountContext } from "@executor-js/ui/dashboard/account-group";
-import { SetupDialog } from "@executor-js/ui/dashboard/setup-dialog";
-import { ProfilePicker } from "@executor-js/ui/dashboard/profile-picker";
-import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
 import { AppSchedules } from "@executor-js/ui/dashboard/schedules";
 import { scheduleBindings } from "../../contracts/schedules.ts";
-import { QueryResult, QueryView, useQuery } from "@executor-js/ui/dashboard/context";
+import { allResults, QueryResult, QueryView, useQuery } from "@executor-js/ui/dashboard/context";
+import {
+  missingRequirements,
+  requirementAccounts,
+  type RequirementLink,
+} from "@executor-js/ui/contracts/app-accounts";
 import { useAtomSet } from "@effect/atom-react";
-import type { App, AppId, ProfileId } from "@executor-js/sdk";
-import type { DashboardOverview } from "@executor-js/local-server/contracts";
+import type { App, AppId } from "@executor-js/sdk";
+import type {
+  AppAccountLink,
+  DashboardAccount,
+  DashboardOverview,
+} from "@executor-js/local-server/contracts";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { Data, Option } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { appAtom, toolsAtom } from "../../contracts/api.ts";
+import { appLinksAtom, userLinksAtom } from "../../contracts/app-accounts.ts";
 import { renameAppAtom, acknowledgeApp } from "../../contracts/apps.ts";
 import { Link, useBlocker, useNavigate } from "@tanstack/react-router";
 import { Failure } from "../components/common.tsx";
@@ -48,17 +47,10 @@ import {
 } from "@executor-js/ui/dashboard/app-overview";
 import { appManagement } from "../../contracts/app-management.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
-import {
-  accountSelectionIssues,
-  unfilledAccountSlots,
-  type AppView,
-} from "@executor-js/ui/contracts/dashboard";
+import { emptyManyRequirements, type AppView } from "@executor-js/ui/contracts/dashboard";
 class PreviewKey extends Data.Class<{
   readonly app: AppId;
   readonly deployment: App["activeDeployment"];
-  readonly accounts: string;
-  readonly profile?: ProfileId | undefined;
-  readonly revision?: number | undefined;
 }> {}
 const overviewToolsAtom = Atom.family((key: PreviewKey) =>
   Atom.map(
@@ -67,19 +59,42 @@ const overviewToolsAtom = Atom.family((key: PreviewKey) =>
   ),
 );
 
-/** One selected profile supplies runtime bindings across the app page. */
+/** Views that read only the app. The others also read its linked accounts. */
+const appWideViews: ReadonlySet<AppView> = new Set([
+  "settings",
+  "deployments",
+  "source",
+  "history",
+]);
+
+/** Links with their checks by this app, over the live inventory's sign-in details. */
+const withSummaries = (
+  links: readonly AppAccountLink[],
+  accounts: readonly DashboardAccount[],
+): readonly RequirementLink<DashboardAccount>[] =>
+  links.flatMap((link) => {
+    const summary = accounts.find((item) => item.id === link.account.id);
+    return summary === undefined
+      ? []
+      : [
+          {
+            requirement: link.requirement,
+            account: link.health === undefined ? summary : { ...summary, health: link.health },
+          },
+        ];
+  });
+
+/** Views that run app code use the accounts linked to the app. */
 export function AppDetailPage({
   id,
   tab,
   tool,
   overview,
-  profile,
 }: {
   readonly id: AppId;
   readonly tab: AppView;
   readonly tool: string | undefined;
   readonly overview: DashboardOverview;
-  readonly profile?: ProfileId | undefined;
 }) {
   const navigate = useNavigate();
   const [skillDirty, setSkillDirty] = useState(false);
@@ -88,65 +103,24 @@ export function AppDetailPage({
     enableBeforeUnload: skillDirty,
   });
   const query = useQuery(appAtom(id));
+  const appLinks = useQuery(appLinksAtom(id));
+  const userLinks = useQuery(userLinksAtom(id));
   const app = Option.isSome(query.data)
     ? query.data.value.app
     : overview.apps.find((item) => item.id === id);
-  const setups = useQuery(profilesAtom({ app: id }));
-  const [setupRequest, setSetupRequest] = useState<string>();
-  const inventoryData = overview;
-  const choices =
-    app && inventoryData && Option.isSome(setups.data)
-      ? accountContexts(app, setups.data.value, true)
-      : [];
-  const selected = selectedAccountContext(choices, profile);
-  const selectedId = selected?.profile?.id;
-  const personal = app !== undefined && Object.keys(app.requirements.accounts).length > 0;
-  useEffect(() => {
-    if (profile === undefined && selectedId !== undefined) {
-      void navigate({
-        to: "/apps/$appId",
-        params: { appId: id },
-        search: { view: tab, tool, profile: selectedId },
-        replace: true,
-      });
-    }
-  }, [profile, selectedId, navigate, id, tab, tool]);
-  const select = (selectedProfile: ProfileId | undefined, nextView: AppView = tab) => {
-    void navigate({
-      to: "/apps/$appId",
-      params: { appId: id },
-      search: { view: nextView, profile: selectedProfile },
-    });
-  };
-  const empty = (
+  const missing = (forEveryone: boolean) => (
     <div className="space-y-3 p-5 text-sm text-muted-foreground">
       <p>
-        {profile !== undefined
-          ? "This profile is unavailable. Choose another profile in Accounts."
-          : "Choose accounts in Accounts to start using this app."}
+        {forEveryone
+          ? "This app needs an account linked for everyone. Link one under App accounts in Accounts."
+          : "Connect an account in Accounts to start using this app."}
       </p>
-      <Button variant="outline" size="sm" onClick={() => select(undefined, "accounts")}>
-        Go to Accounts
+      <Button variant="outline" size="sm" asChild>
+        <Link to="/apps/$appId" params={{ appId: id }} search={{ view: "accounts" }}>
+          Go to Accounts
+        </Link>
       </Button>
     </div>
-  );
-  const setupActions = app && selected?.profile && (
-    <ProfileResources
-      key={selected.key}
-      profile={selected.profile}
-      label={selected.label}
-      update={profileMutations({ app: id, profile: selected.profile.id }).update}
-      hooks={profileWebhooksAtom({
-        app: id,
-        profile: selected.profile.id,
-      })}
-      Failure={Failure}
-      setupLink={(hook) => (
-        <Button variant="outline" size="sm" asChild>
-          <a href={`/webhooks/${app.id}/${hook.id}`}>Complete setup</a>
-        </Button>
-      )}
-    />
   );
   const pending = <AppDetailLoading view={tab} app={app} selectedTool={tool} />;
   return (
@@ -161,286 +135,212 @@ export function AppDetailPage({
           Apps
         </Link>
       }
-      setupPicker={
-        choices.length > 1 && (
-          <ProfilePicker
-            contexts={choices}
-            selected={selected}
-            onSelect={(context) => select(context.profile?.id)}
-            management={
-              selected?.profile
-                ? {
-                    setEnabled: profileMutations({
-                      app: selected.app.id,
-                      profile: selected.profile.id,
-                    }).setEnabled,
-                    remove: profileMutations({
-                      app: selected.app.id,
-                      profile: selected.profile.id,
-                    }).remove,
-                    Failure: Failure,
-                    onRemoved: () => select(undefined, "accounts"),
-                  }
-                : undefined
-            }
-          />
+      actions={
+        Option.isSome(query.data) &&
+        query.data.value.uiUrl !== null && (
+          <Button variant="outline" asChild>
+            <a href={query.data.value.uiUrl} target="_blank" rel="noopener noreferrer">
+              Open app{" "}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={14} />
+            </a>
+          </Button>
         )
       }
-      actions={
-        <>
-          {Option.isSome(query.data) &&
-            query.data.value.uiUrl !== null &&
-            selected !== undefined && (
-              <Button variant="outline" asChild>
-                <a
-                  href={
-                    selectedId === undefined
-                      ? query.data.value.uiUrl
-                      : new URL(
-                          `?profile=${encodeURIComponent(selectedId)}`,
-                          query.data.value.uiUrl,
-                        ).href
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Open app{" "}
-                  <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={14} />
-                </a>
-              </Button>
-            )}
-        </>
-      }
     >
-      {setupRequest && app && inventoryData && (
-        <SetupDialog
-          key={setupRequest}
-          app={app}
-          mutation={accountSelectionAtom({
-            app: app.id,
-            target: { kind: "new", request: setupRequest },
+      {appWideViews.has(tab) ? (
+        <QueryResult
+          result={query.result}
+          Failure={Failure}
+          retry={query.refresh}
+          pending={pending}
+        >
+          {(current) => {
+            if (tab === "settings")
+              return (
+                <AppSettings
+                  app={current.app}
+                  copyAction={
+                    <CopyApp
+                      key={current.app.id}
+                      Failure={Failure}
+                      app={current.app}
+                      atoms={appManagement}
+                      onApp={acknowledgeApp}
+                      onCopied={(copy) =>
+                        navigate({
+                          to: "/apps/$appId",
+                          params: { appId: copy.id },
+                          search: { view: "source" },
+                        })
+                      }
+                    />
+                  }
+                  renameAction={current.canDelete && <AppRename app={current.app} />}
+                  deleteAction={
+                    current.canDelete && (
+                      <Button variant="destructive" size="sm" asChild>
+                        <Link to="/apps/$appId/delete" params={{ appId: id }}>
+                          Delete app
+                        </Link>
+                      </Button>
+                    )
+                  }
+                  notice={
+                    !current.canDelete &&
+                    "This app is managed by Executor and cannot be renamed or deleted."
+                  }
+                />
+              );
+            if (tab === "deployments") return <AppDeployments data={current} />;
+            return <AppSource data={current} view={tab === "history" ? "history" : "source"} />;
+          }}
+        </QueryResult>
+      ) : (
+        <QueryResult
+          result={allResults({
+            current: query.result,
+            appRows: appLinks.result,
+            userRows: userLinks.result,
           })}
           Failure={Failure}
-          onClose={() => setSetupRequest(undefined)}
-          onSaved={(saved) => select(saved.id, "accounts")}
-        />
-      )}
-      <QueryResult result={query.result} Failure={Failure} retry={query.refresh} pending={pending}>
-        {(current) => {
-          if (tab === "settings")
-            return (
-              <AppSettings
-                app={current.app}
-                copyAction={
-                  <CopyApp
-                    key={current.app.id}
-                    Failure={Failure}
-                    app={current.app}
-                    atoms={appManagement}
-                    onApp={acknowledgeApp}
-                    onCopied={(copy) =>
-                      navigate({
-                        to: "/apps/$appId",
-                        params: { appId: copy.id },
-                        search: { view: "source" },
-                      })
-                    }
-                  />
-                }
-                renameAction={current.canDelete && <AppRename app={current.app} />}
-                deleteAction={
-                  current.canDelete && (
-                    <Button variant="destructive" size="sm" asChild>
-                      <Link to="/apps/$appId/delete" params={{ appId: id }}>
-                        Delete app
-                      </Link>
-                    </Button>
-                  )
-                }
-                notice={
-                  !current.canDelete &&
-                  "This app is managed by Executor and cannot be renamed or deleted."
-                }
-              />
+          retry={() => {
+            query.refresh();
+            appLinks.refresh();
+            userLinks.refresh();
+          }}
+          pending={pending}
+        >
+          {({ current, appRows, userRows }) => {
+            const linked = {
+              app: withSummaries(appRows, overview.accounts),
+              user: withSummaries(userRows, overview.accounts),
+            };
+            const requirements = requirementAccounts(current.app, linked);
+            const deployment = String(current.app.activeDeployment);
+            const ready = missingRequirements(requirements).length === 0;
+            const gate = (children: ReactNode) =>
+              ready
+                ? children
+                : missing(
+                    missingRequirements(requirements).some(
+                      (entry) => entry.requirement.scope === "app",
+                    ),
+                  );
+            if (tab === "skills")
+              return gate(
+                <AppSkills
+                  canEdit
+                  app={current.app}
+                  bindings={appBrowserBindings(current.app)}
+                  Failure={Failure}
+                  editing={{
+                    atoms: appManagement,
+                    onApp: acknowledgeApp,
+                    onDirty: setSkillDirty,
+                  }}
+                />,
+              );
+            if (tab === "tools")
+              return gate(
+                <AppTools app={current.app} requirements={requirements} selected={tool} />,
+              );
+            if (tab === "workflows")
+              return gate(<AppResources app={current.app} view="workflows" />);
+            if (tab === "webhooks") return <AppResources app={current.app} view="webhooks" />;
+            if (tab === "schedules") {
+              return (
+                <AppSchedules
+                  app={current.app}
+                  canEdit
+                  actor={undefined}
+                  bindings={scheduleBindings({ app: current.app.id })}
+                  Failure={Failure}
+                />
+              );
+            }
+            const previewEmpty = (
+              <p className="py-5 text-sm text-muted-foreground">
+                Connect an account in Accounts to load this preview.
+              </p>
             );
-          if (tab === "deployments") return <AppDeployments data={current} />;
-          if (tab === "source" || tab === "history") return <AppSource data={current} view={tab} />;
-          return (
-            <QueryResult
-              result={setups.result}
-              Failure={Failure}
-              retry={setups.refresh}
-              pending={pending}
-            >
-              {(entries) => {
-                const contexts = accountContexts(current.app, entries);
-                const previewContexts = contexts.filter(
-                  (context) =>
-                    accountSelectionIssues(context.app, context.accounts, overview.accounts)
-                      .length === 0,
-                );
-                const previewEmpty =
-                  contexts.length > 0 ? (
-                    <p className="py-5 text-sm text-muted-foreground">
-                      Finish account setup in Accounts to load this preview.
-                    </p>
-                  ) : (
-                    empty
-                  );
-                const context = selectedAccountContext(
-                  accountContexts(current.app, entries, true),
-                  profile,
-                );
-                if (tab === "skills")
-                  return context === undefined ? (
-                    empty
-                  ) : (
-                    <AppSkills
-                      key={context.key}
-                      canEdit
+            if (tab === "overview")
+              return (
+                <AppOverview
+                  app={current.app}
+                  entries={
+                    <AppOverviewEntries
                       app={current.app}
-                      bindings={appBrowserBindings(current.app, context.profile)}
-                      Failure={Failure}
-                      editing={{
-                        atoms: appManagement,
-                        onApp: acknowledgeApp,
-                        onDirty: setSkillDirty,
-                      }}
-                    />
-                  );
-                if (tab === "tools")
-                  return context === undefined ? (
-                    empty
-                  ) : (
-                    <AppTools
-                      key={context.key}
-                      app={context.app}
-                      profile={context.profile}
-                      label={context.label}
-                      accounts={overview.accounts}
-                      selected={tool}
-                    />
-                  );
-                if (tab === "workflows" || tab === "webhooks")
-                  return context === undefined ? (
-                    empty
-                  ) : (
-                    <AppResources key={context.key} context={context} view={tab} editable />
-                  );
-                if (tab === "schedules")
-                  return context === undefined ? (
-                    empty
-                  ) : (
-                    <AppSchedules
-                      app={current.app}
-                      canEdit
-                      key={context.key}
-                      enabled={context.profile?.enabled !== false}
-                      bindings={scheduleBindings(
-                        { app: current.app.id, profile: context.profile?.id },
-                        context.profile?.enabled !== false,
-                      )}
-                      Failure={Failure}
-                    />
-                  );
-                if (tab === "overview")
-                  return (
-                    <AppOverview
-                      app={current.app}
-                      entries={
-                        <AppOverviewEntries
-                          app={current.app}
-                          bindings={appBrowserBindings(current.app, context?.profile)}
-                          workflows={
-                            <AppWorkflowPreview
-                              empty={previewEmpty}
-                              Failure={Failure}
-                              sources={previewContexts.map((context) => ({
-                                key: context.key,
-                                query: appBrowserBindings(context.app, context.profile).workflows,
-                              }))}
-                            />
-                          }
-                          Failure={Failure}
-                        />
-                      }
-                      accounts={
-                        <AppOverviewAccounts
-                          app={current.app}
-                          contexts={contexts}
-                          accounts={overview.accounts}
-                        />
-                      }
-                      tools={
-                        <AppOverviewTools
-                          app={current.app}
-                          Failure={Failure}
+                      bindings={appBrowserBindings(current.app)}
+                      workflows={
+                        <AppWorkflowPreview
                           empty={previewEmpty}
-                          accountsNeeded={previewContexts.every(
-                            (context) =>
-                              unfilledAccountSlots(context.app, context.accounts).length > 0,
-                          )}
-                          sources={previewContexts.map((context) => ({
-                            key: context.key,
-                            query: overviewToolsAtom(
-                              new PreviewKey({
-                                app: id,
-                                deployment: current.app.activeDeployment,
-                                accounts: JSON.stringify(context.accounts),
-                                profile: context.profile?.id,
-                                revision: context.profile?.revision,
-                              }),
-                            ),
-                          }))}
+                          Failure={Failure}
+                          sources={
+                            ready
+                              ? [
+                                  {
+                                    key: deployment,
+                                    query: appBrowserBindings(current.app).workflows,
+                                  },
+                                ]
+                              : []
+                          }
                         />
                       }
-                      source={
-                        <QueryView
-                          query={appManagement.authoring(id)}
-                          Failure={Failure}
-                          pending={<OverviewCardLoading label="Loading source preview" />}
-                        >
-                          {(source) => <AppOverviewSource source={source} />}
-                        </QueryView>
-                      }
+                      Failure={Failure}
                     />
-                  );
-                return context === undefined && profile !== undefined ? (
-                  empty
-                ) : (
-                  <div className="max-w-3xl space-y-4 p-5 max-[740px]:p-4">
-                    <AppAccounts
-                      // Siblings below key on the same profile; a shared key would leave the
-                      // previous profile's accounts mounted after switching.
-                      key={`accounts:${context?.key ?? "default"}`}
+                  }
+                  accounts={<AppOverviewAccounts app={current.app} requirements={requirements} />}
+                  tools={
+                    <AppOverviewTools
                       app={current.app}
-                      profile={context?.profile}
-                      data={overview}
-                      onSelected={(id) => select(id, "accounts")}
-                      onCreateProfile={
-                        personal ? () => setSetupRequest(crypto.randomUUID()) : undefined
+                      Failure={Failure}
+                      empty={previewEmpty}
+                      accountsNeeded={
+                        emptyManyRequirements(requirements).length === requirements.length &&
+                        requirements.length > 0
+                      }
+                      sources={
+                        ready
+                          ? [
+                              {
+                                key: deployment,
+                                query: overviewToolsAtom(
+                                  new PreviewKey({
+                                    app: id,
+                                    deployment: current.app.activeDeployment,
+                                  }),
+                                ),
+                              },
+                            ]
+                          : []
                       }
                     />
-                    {context?.profile && (
-                      <ProfileStatus
-                        profile={context.profile}
-                        retry={
-                          profileMutations({
-                            app: current.app.id,
-                            profile: context.profile.id,
-                          }).reconcile
-                        }
-                        Failure={Failure}
-                      />
-                    )}
-                    {setupActions}
-                  </div>
-                );
-              }}
-            </QueryResult>
-          );
-        }}
-      </QueryResult>
+                  }
+                  source={
+                    <QueryView
+                      query={appManagement.authoring(id)}
+                      Failure={Failure}
+                      pending={<OverviewCardLoading label="Loading source preview" />}
+                    >
+                      {(source) => <AppOverviewSource source={source} />}
+                    </QueryView>
+                  }
+                />
+              );
+            return (
+              <div className="max-w-3xl space-y-4 p-5 max-[740px]:p-4">
+                <AppAccounts
+                  app={current.app}
+                  appLinks={linked.app}
+                  userLinks={linked.user}
+                  accounts={overview.accounts}
+                />
+              </div>
+            );
+          }}
+        </QueryResult>
+      )}
     </AppDetailLayout>
   );
 }

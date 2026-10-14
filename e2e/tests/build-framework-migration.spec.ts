@@ -31,10 +31,11 @@ const current = (marker: string): Files => [
     path: "index.ts",
     content: `import { defineApp, query, object, string, router } from "apps";
 export const ping = query({ input: object({}), output: string() }, async () => ${JSON.stringify(marker)});
-export default defineApp({ accounts: {} }, { tools: router({ ping }) });`,
+export default defineApp({}, { tools: router({ ping }) });`,
   },
   appsManifest,
 ];
+// app-user-accounts: keep, as source of an earlier `apps` release.
 const older = (marker: string): Files => [
   {
     path: "index.ts",

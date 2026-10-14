@@ -4,7 +4,7 @@ export const durabilityFiles = [
   {
     path: "index.ts",
     content: `import { defineApp, workflow, query, mutation, object, string, number, router } from "apps";
-const requirements = { accounts: {} };
+const requirements = {};
 const insert = (tx, label) => {
   const id = crypto.randomUUID();
   tx.exec("INSERT INTO events (id, label) VALUES (?, ?)", id, label);

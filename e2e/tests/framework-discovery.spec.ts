@@ -82,7 +82,7 @@ layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => 
       Effect.gen(function* () {
         const actors = yield* Actors,
           evidence = yield* Evidence;
-        const { client, execute, queries, profile } = yield* frameworkSession;
+        const { client, execute, queries } = yield* frameworkSession;
         // These public reads share no results. Start them together while keeping
         // each real MCP request and its live catalog evaluation.
         const [discovered, imported, current, found, entry, guide] = yield* Effect.all(
@@ -147,12 +147,10 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
           }),
         )(discovered);
         expect(
-          tools.found.items.some(
-            (item) => item.path.endsWith(".framework.describe") && item.path.includes(profile.id),
-          ),
+          tools.found.items.some((item) => item.path === `${queries}.framework.describe`),
         ).toBe(true);
         const search = tools.described.items.find(
-          (item) => item.path.endsWith(".framework.search") && item.path.includes(profile.id),
+          (item) => item.path === `${queries}.framework.search`,
         );
         expect(search?.signature).toContain("remaining: number");
         expect(search?.signature).toContain("digest: string");

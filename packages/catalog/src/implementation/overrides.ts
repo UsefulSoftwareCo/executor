@@ -1,5 +1,4 @@
-/** Product defaults overlay registry entries and custom MCP URLs without adding competing rows. */
-import type { CatalogEntry } from "../contracts/catalog.ts";
+/** Product defaults for custom MCP URLs. */
 
 /**
  * Servers that hide their tools behind a wrapper unless asked. Executor already provides code
@@ -23,13 +22,4 @@ export const applyMcpUrlDefaults = (href: string): string => {
     changed = true;
   }
   return changed ? url.href : href;
-};
-
-/** Keep the original URL as the OAuth discovery target so provider identity is unchanged. */
-export const applyCatalogOverride = (entry: CatalogEntry): CatalogEntry => {
-  if (entry.kind !== "mcp" || entry.connectUrl === undefined) return entry;
-  const original = entry.connectUrl;
-  const connectUrl = applyMcpUrlDefaults(original);
-  if (connectUrl === original) return entry;
-  return { ...entry, connectUrl, oauthDiscoveryUrl: entry.oauthDiscoveryUrl ?? original };
 };

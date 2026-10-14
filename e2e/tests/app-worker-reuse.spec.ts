@@ -1,6 +1,6 @@
 /**
- * An app's runtime Worker is identified by its code and account selection, never by credential
- * values or workflow runs. Each authored module reports a per-isolate identifier from module
+ * An app's runtime Worker is identified by its code and the accounts a call uses, never by the
+ * caller, credential values or workflow runs. Each authored module reports a per-isolate identifier from module
  * state, so a Worker that the runtime loaded again shows up as a new identifier.
  */
 import { expect, layer } from "@effect/vitest";
@@ -15,7 +15,7 @@ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { appBuildLoads, latestRequestBuildLoads, unreadableBuild } from "../support/build-loads.ts";
 import { Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import {
   expectFacetLoadsOnlyAtColdStarts,
   expectIsolatedAccounts,
@@ -38,7 +38,7 @@ const rotations = 25;
 const interleaved = 16;
 const App = Schema.Struct({ id: Schema.String });
 const Viewer = Schema.Struct({ userId: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
+const SourceStatus = Schema.Struct({ account: Schema.String, status: Schema.String });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Run = Schema.Struct({
   id: Schema.String,
@@ -63,29 +63,32 @@ const scenario = Effect.gen(function* () {
       );
       return app;
     });
-  /** Wait until background profile setup has resolved the profile's accounts. */
-  const settled = (app: string, profile: string) =>
-    api.request(actors.owner, "GET", `${prefix}/apps/${app}/profiles/${profile}`).pipe(
-      Effect.flatMap((response) => body(SetupStatus, response)),
+  /** The webhook source status of a linked account, which its background setup settles. */
+  const status = (app: string, account: string) =>
+    api.request(actors.owner, "GET", `${prefix}/apps/${app}/webhook-sources`).pipe(
+      Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
+      Effect.map((sources) => sources.find((source) => source.account === account)?.status),
+    );
+  /** Wait until linking the account has finished its background webhook source setup. */
+  const settled = (app: string, account: string) =>
+    status(app, account).pipe(
       Effect.flatMap((current) =>
-        current.status !== "pending"
-          ? Effect.void
-          : Effect.fail(new Error("Profile setup has not finished")),
+        current !== undefined && current !== "pending"
+          ? Effect.succeed(current)
+          : Effect.fail(new Error("Webhook source setup has not finished")),
       ),
       Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
     );
-  const observe = (app: string, profile: string) =>
+  /**
+   * One call with the actor's linked account. The app's one requirement is plain, so connecting or
+   * linking another account replaces the link and the call uses the account linked last.
+   */
+  const observe = (app: string, actor = actors.owner) =>
     Effect.gen(function* () {
-      const response = yield* api.request(
-        actors.owner,
-        "POST",
-        `${prefix}/apps/${app}/tools/call`,
-        {
-          profile,
-          tool: "probe",
-          input: {},
-        },
-      );
+      const response = yield* api.request(actor, "POST", `${prefix}/apps/${app}/tools/call`, {
+        tool: "probe",
+        input: {},
+      });
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(Observation, response);
     });
@@ -93,13 +96,18 @@ const scenario = Effect.gen(function* () {
     Effect.addFinalizer(() =>
       api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
     );
-  return { api, actors, prefix, deploy, settled, observe, removeAccount };
+  /** Link the owner's `account` in place of the app's linked one, once its webhook source is set up. */
+  const link = (app: string, account: string) =>
+    linkAccount(actors.owner, `${prefix}/apps/${app}`, "service", account).pipe(
+      Effect.andThen(settled(app, account)),
+    );
+  return { api, actors, prefix, deploy, settled, observe, removeAccount, link };
 });
 
 /** An observer app with a key account, whose saved credential can be replaced in place. */
 const keyApp = (options: { readonly database: boolean; readonly resource: string | null }) =>
   Effect.gen(function* () {
-    const { api, actors, prefix, deploy, settled, observe, removeAccount } = yield* scenario;
+    const { api, actors, prefix, deploy, settled, observe, removeAccount, link } = yield* scenario;
     const name = `Worker reuse ${randomUUID().slice(0, 8)}`;
     const app = yield* deploy(name, [
       { path: "index.ts", content: observerApp({ name, ...options }) },
@@ -120,39 +128,45 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
           ),
           Effect.flatMap((saved) => body(Resource, saved)),
         );
-    const connect = (token: string, options: { readonly settle: boolean } = { settle: true }) =>
+    /** Connect a new account from the app, which links it for the owner. */
+    const connect = (
+      token: string,
+      options: { readonly settle?: boolean; readonly shared?: boolean } = {},
+    ) =>
       Effect.gen(function* () {
-        const profile = yield* createProfile(actors.owner, path);
-        const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        });
+        const pending = yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(path, "user", "service"),
+          options.shared === true
+            ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
+            : {},
+        );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const account = (yield* submit((yield* body(Resource, pending)).id, token)).id;
         yield* removeAccount(account);
-        if (options.settle) yield* settled(app.id, profile.id);
-        return { profile: profile.id, account };
+        if (options.settle !== false) yield* settled(app.id, account);
+        return account;
       });
     /** Replace the saved credential of the same account, as a user's key rotation does. */
-    const rotate = (
-      selected: { readonly profile: string; readonly account: string },
-      token: string,
-    ) =>
+    const rotate = (account: string, token: string) =>
       Effect.gen(function* () {
-        const { profile, account } = selected;
-        const reconnect = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-          requirement: "service",
-          profile,
-          account,
-        });
+        // Connecting from the app with an existing account replaces its credentials.
+        const reconnect = yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(path, "user", "service"),
+          {
+            account,
+          },
+        );
         expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(200);
         expect((yield* submit((yield* body(Resource, reconnect)).id, token)).id).toBe(account);
       });
-    /** Start one workflow run and wait for the observation it returns. */
-    const run = (profile: string) =>
+    /** Start one workflow run with the actor's linked account and wait for its observation. */
+    const run = (actor = actors.owner) =>
       Effect.gen(function* () {
-        const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
-          profile,
+        const started = yield* api.request(actor, "POST", `${path}/workflow-runs`, {
           workflow: "probe",
           input: {},
           key: randomUUID(),
@@ -161,7 +175,7 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
         const { id } = yield* body(Run, started);
         const deadline = (yield* Clock.currentTimeMillis) + 30_000;
         while (true) {
-          const response = yield* api.request(actors.owner, "GET", `${path}/workflow-runs/${id}`);
+          const response = yield* api.request(actor, "GET", `${path}/workflow-runs/${id}`);
           expect(response.status).toBe(200);
           const current = yield* body(Run, response);
           if (current.status === "complete")
@@ -173,18 +187,34 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
           yield* Effect.sleep("100 millis");
         }
       });
-    /** Another profile that selects an existing account, so both share one app Worker. */
+    /** Share the app with everyone, and have the member link an account shared with them. */
     const share = (account: string) =>
       Effect.gen(function* () {
-        const profile = yield* createProfile(actors.owner, path);
-        const selected = yield* selectProfileAccounts(actors.owner, path, profile.id, {
-          service: account,
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${path}/access`),
+        );
+        const shared = yield* api.request(actors.owner, "PATCH", `${path}/access`, {
+          revision: access.revision,
+          audience: { kind: "everyone" },
         });
-        expect(selected.status, JSON.stringify(selected.body)).toBe(200);
-        yield* settled(app.id, profile.id);
-        return profile.id;
+        expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+        yield* linkAccount(actors.member, path, "service", account);
+        return actors.member;
       });
-    return { app, name, connect, share, rotate, observe, run, settled };
+    /** Save the account's webhook source configuration again, which sets the source up anew. */
+    const reconfigure = (account: string) =>
+      Effect.gen(function* () {
+        const saved = yield* api.request(
+          actors.owner,
+          "PUT",
+          `${path}/webhook-sources/${account}/config`,
+          { config: {} },
+        );
+        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+        return yield* settled(app.id, account);
+      });
+    return { app, name, connect, share, reconfigure, rotate, observe, run, settled, link };
   });
 
 layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
@@ -192,17 +222,17 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { app, connect, rotate, observe } = yield* keyApp({
+        const { app, connect, rotate, observe, link } = yield* keyApp({
           database: true,
           resource: null,
         });
         const first = yield* connect("synthetic-rotation-0");
-        const observed = [yield* observe(app.id, first.profile)];
+        const observed = [yield* observe(app.id)];
         expect(observed[0]).toMatchObject({ previous: null, token: "synthetic-rotation-0" });
         for (let round = 1; round <= rotations; round++) {
           const token = `synthetic-rotation-${round}`;
           yield* rotate(first, token);
-          const current = yield* observe(app.id, first.profile);
+          const current = yield* observe(app.id);
           // Every call receives the current credential, never one captured by an earlier call.
           expect(current.token).toBe(token);
           observed.push(current);
@@ -213,12 +243,14 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           observed.map((_, index) => observed[0]!.calls + index),
         );
 
-        // Another account's calls run in another Worker, with no module state from the first.
-        const second = yield* connect("synthetic-other-account");
-        const other = yield* observe(app.id, second.profile);
+        // Another account, connected in place of the first, runs in another Worker, with no
+        // module state from the first.
+        yield* connect("synthetic-other-account");
+        const other = yield* observe(app.id);
         expect(other).toMatchObject({ previous: null, token: "synthetic-other-account" });
         expect(other.isolate).not.toBe(observed[0]!.isolate);
-        const back = yield* observe(app.id, first.profile);
+        yield* link(app.id, first);
+        const back = yield* observe(app.id);
         if ((yield* Target).metadata.target === "cloud") {
           // Returning to the first account resumes its loaded Worker and its module state.
           expect(back).toMatchObject({
@@ -228,7 +260,7 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           });
         } else {
           // Self-host unloads the data facet another account replaced, so memory does not grow
-          // with the account selections ever used: the first account loads a fresh one.
+          // with the accounts ever used: the first account loads a fresh one.
           expect(back).toMatchObject({ previous: null, token: `synthetic-rotation-${rotations}` });
           expect(back.isolate).not.toBe(observed[0]!.isolate);
         }
@@ -241,11 +273,11 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
       context,
       Effect.gen(function* () {
         const { app, connect, run } = yield* keyApp({ database: true, resource: null });
-        const first = yield* connect("synthetic-workflow-token");
+        yield* connect("synthetic-workflow-token");
         // Each workflow run receives its own run capability without loading another Worker.
         const runs = yield* Effect.forEach(
           Array.from({ length: rounds }, (_, index) => index),
-          () => run(first.profile),
+          () => run(),
           { concurrency: 5 },
         );
         for (const run of runs) {
@@ -253,7 +285,7 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
           expect(run.token).toBe("synthetic-workflow-token");
         }
         expect(new Set(runs.map((run) => run.isolate)).size).toBe(1);
-        // The runs share one app Worker, and profile setup starts the data facet; each loaded the
+        // The runs share one app Worker, and webhook source setup starts the data facet; each loaded the
         // build once. A workflow cold start records its load under the Worker name the runtime
         // loads it by, so it adds no second Worker runtime.
         const loads = yield* appBuildLoads(app.id);
@@ -274,24 +306,26 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
       context,
       Effect.gen(function* () {
         const issuer = yield* oauthSetupIssuer;
-        const { app, connect, observe, run } = yield* keyApp({
+        const { app, connect, share, observe, run, link } = yield* keyApp({
           database: false,
           resource: `${issuer.origin}/resource`,
         });
-        const [first, second] = yield* Effect.all(
-          [connect("synthetic-shared-first"), connect("synthetic-shared-second")],
-          { concurrency: 2 },
-        );
+        // A member links only one account per plain requirement, so the second account runs for
+        // another member: the owner shares it, and links the first again in its place.
+        const first = yield* connect("synthetic-shared-first");
+        const second = yield* connect("synthetic-shared-second", { shared: true });
+        const member = yield* share(second);
+        const { owner } = yield* Actors;
+        yield* link(app.id, first);
         // Each self-host call has its own session context and each run its own workflow instance,
         // so every observation after an account's first uses a Worker loaded by a finished context.
-        const alternate = (profile: string, workflowFirst: boolean) =>
+        const alternate = (actor: typeof member, workflowFirst: boolean) =>
           Effect.forEach(
             Array.from({ length: interleaved }, (_, index) => index),
-            (index) =>
-              (index % 2 === 0) === workflowFirst ? run(profile) : observe(app.id, profile),
+            (index) => ((index % 2 === 0) === workflowFirst ? run(actor) : observe(app.id, actor)),
           );
         const [firstObserved, secondObserved] = yield* Effect.all(
-          [alternate(first.profile, true), alternate(second.profile, false)],
+          [alternate(owner, true), alternate(member, false)],
           { concurrency: 2 },
         );
         for (const [observed, token] of [
@@ -318,7 +352,8 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, deploy, settled, observe, removeAccount } = yield* scenario;
+        const { api, actors, prefix, deploy, settled, observe, removeAccount, link } =
+          yield* scenario;
         const http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         // Tokens issued inside the host's 30-second renewal window renew on every call. As with
@@ -331,8 +366,8 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
             content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
 ${observer(null)}
-export default defineApp({ accounts: { service } }, {
-  tools: router({ probe: query({ input: object({}) }, async (ctx) => observe(ctx.accounts.service.fields.access_token)) }),
+export default defineApp({ user: { accounts: { service } } }, {
+  tools: router({ probe: query({ input: object({}) }, async (ctx) => observe(ctx.user.accounts.service.fields.access_token)) }),
 });`,
           },
           appsManifest,
@@ -340,13 +375,14 @@ export default defineApp({ accounts: { service } }, {
         const path = `${prefix}/apps/${app.id}`;
         const connect = (label: string) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, path);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${path}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(path, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -375,8 +411,8 @@ export default defineApp({ accounts: { service } }, {
             expect(completed.status, JSON.stringify(completed.body)).toBe(200);
             const account = yield* body(Resource, completed);
             yield* removeAccount(account.id);
-            yield* settled(app.id, profile.id);
-            return { profile: profile.id, account: account.id };
+            yield* settled(app.id, account.id);
+            return account.id;
           });
         const refreshes = issuer.metrics.pipe(Effect.map((metrics) => metrics.refreshes));
 
@@ -384,7 +420,7 @@ export default defineApp({ accounts: { service } }, {
         const observed: Array<typeof Observation.Type> = [];
         for (let round = 0; round < rounds; round++) {
           const generation = (yield* refreshes) + 1;
-          const current = yield* observe(app.id, first.profile);
+          const current = yield* observe(app.id);
           // Each call renews the grant once, with the latest refresh token, and presents the result.
           expect(yield* refreshes).toBe(generation);
           expect(current.token).toBe(`synthetic-refreshed-token-${generation}`);
@@ -396,12 +432,14 @@ export default defineApp({ accounts: { service } }, {
           observed.map((_, index) => observed[0]!.calls + index),
         );
 
-        // A different account's grant never reaches the first account's module state.
-        const second = yield* connect("Synthetic other account");
-        const other = yield* observe(app.id, second.profile);
+        // A different account's grant, connected in place of the first, never reaches the first
+        // account's module state.
+        yield* connect("Synthetic other account");
+        const other = yield* observe(app.id);
         expect(other.previous).toBeNull();
         expect(other.isolate).not.toBe(observed[0]!.isolate);
-        const back = yield* observe(app.id, first.profile);
+        yield* link(app.id, first);
+        const back = yield* observe(app.id);
         expect(back.isolate).toBe(observed[0]!.isolate);
         expect(back.previous).toBe(observed.at(-1)!.token);
       }),
@@ -411,33 +449,25 @@ export default defineApp({ accounts: { service } }, {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix } = yield* scenario;
         for (const database of [true, false]) {
-          const { app, name, connect, share, observe, run, settled } = yield* keyApp({
+          const { app, name, connect, reconfigure, observe, run, settled } = yield* keyApp({
             database,
             resource: null,
           });
-          const path = `${prefix}/apps/${app.id}`;
-          const status = (profile: string) =>
-            api
-              .request(actors.owner, "GET", `${path}/profiles/${profile}`)
-              .pipe(Effect.flatMap((response) => body(SetupStatus, response)));
-          // Profile setup reads the app's webhook definitions, which cold-starts the data facet of
-          // an app with a database and the app Worker otherwise. The account is selected while the
-          // build is unreadable, so that first cold start of its runtime cannot load the build.
+          // Webhook source setup reads the app's webhook definitions, which cold-starts the data
+          // facet of an app with a database and the app Worker otherwise. The account is linked
+          // while the build is unreadable, so that first cold start of its runtime cannot load it.
           const token = `synthetic-cold-start-${database}`;
           const restore = yield* unreadableBuild(name);
-          const failed = yield* connect(token, { settle: false });
-          yield* settled(app.id, failed.profile);
-          expect((yield* status(failed.profile)).status).toBe("failed");
+          const account = yield* connect(token, { settle: false });
+          expect(yield* settled(app.id, account)).toBe("failed");
           yield* restore;
-          // Once the build is readable, another profile selecting the same account is set up. Its
-          // setup cold-starts the same runtime by the same name, which loads the build rather than
-          // keeping the failed cold start for the rest of the runtime's life.
-          const profile = yield* share(failed.account);
-          expect((yield* status(profile)).status).toBe("ready");
-          const observed = [yield* observe(app.id, profile)];
-          for (let round = 0; round < 3; round++) observed.push(yield* observe(app.id, profile));
+          // Once the build is readable, the source is set up again. Its setup cold-starts the same
+          // runtime by the same name, which loads the build rather than keeping the failed cold
+          // start for the rest of the runtime's life.
+          expect(yield* reconfigure(account)).toBe("ready");
+          const observed = [yield* observe(app.id)];
+          for (let round = 0; round < 3; round++) observed.push(yield* observe(app.id));
           expect(observed[0]).toMatchObject({ previous: null, token });
           expect(new Set(observed.map((entry) => entry.isolate)).size).toBe(1);
           expect(observed.map((entry) => entry.calls)).toEqual(
@@ -445,7 +475,7 @@ export default defineApp({ accounts: { service } }, {
           );
           if (!database) {
             // Workflow runs share the recovered Worker.
-            const workflow = yield* run(profile);
+            const workflow = yield* run();
             expect(workflow).toMatchObject({ isolate: observed[0]!.isolate, token });
           }
         }
@@ -463,11 +493,11 @@ export default defineApp({ accounts: { service } }, {
         Effect.gen(function* () {
           for (const database of [true, false]) {
             const { app, connect, share, observe } = yield* keyApp({ database, resource: null });
-            const first = yield* connect("synthetic-loads");
+            const first = yield* connect("synthetic-loads", { shared: true });
             const calls: Array<{ observation: typeof Observation.Type; loads: number }> = [];
             const call = (round: number) =>
               Effect.gen(function* () {
-                const observation = yield* observe(app.id, first.profile);
+                const observation = yield* observe(app.id);
                 calls.push({
                   observation,
                   loads: yield* latestRequestBuildLoads(`${database}-${round}`),
@@ -476,8 +506,10 @@ export default defineApp({ accounts: { service } }, {
             for (let round = 0; round < loadRounds; round++) yield* call(round);
             expectOneLoadPerColdStart(calls);
 
-            // A profile that selects the same account shares its loaded Worker and loads nothing.
-            const shared = yield* observe(app.id, yield* share(first.account));
+            // Another member who links the same shared account shares its loaded Worker and loads
+            // nothing: the Worker belongs to the accounts a call uses, not to its caller.
+            const member = yield* share(first);
+            const shared = yield* observe(app.id, member);
             expect(shared).toMatchObject({
               isolate: calls[0]!.observation.isolate,
               previous: "synthetic-loads",
@@ -485,17 +517,18 @@ export default defineApp({ accounts: { service } }, {
             });
             expect(yield* latestRequestBuildLoads(`${database}-shared`)).toBe(0);
 
-            // Another account's Worker never sees the first account's credential.
-            const second = yield* connect("synthetic-loads-other");
+            // Another account's Worker never sees the first account's credential. The owner
+            // connects it in place of the first, which the member still uses.
+            yield* connect("synthetic-loads-other");
             const [firstCalls, secondCalls] = yield* Effect.all(
               [
-                Effect.forEach(Array.from({ length: 6 }), () => observe(app.id, first.profile)),
-                Effect.forEach(Array.from({ length: 6 }), () => observe(app.id, second.profile)),
+                Effect.forEach(Array.from({ length: 6 }), () => observe(app.id, member)),
+                Effect.forEach(Array.from({ length: 6 }), () => observe(app.id)),
               ],
               { concurrency: 2 },
             );
             // Self-host unloads the data facet a call of the other account replaced, so memory does
-            // not grow with the account selections ever used: alternating calls start fresh facets.
+            // not grow with the accounts ever used: alternating calls start fresh facets.
             // Cloud keeps each account's facet Worker loaded.
             const replacesFacets = database && (yield* Target).metadata.target !== "cloud";
             if (replacesFacets)
@@ -543,8 +576,8 @@ export default defineApp({ accounts: { service } }, {
             .pipe(Effect.flatMap((response) => body(Viewer, response)));
           for (const database of [true, false]) {
             const { app, connect, observe } = yield* keyApp({ database, resource: null });
-            const { profile } = yield* connect("synthetic-attribution");
-            yield* observe(app.id, profile);
+            yield* connect("synthetic-attribution");
+            yield* observe(app.id);
             // Each call's invocation names the Worker it ran in and the caller it ran for.
             const identities = yield* telemetry
               .spans("runtime.app.invoke", {

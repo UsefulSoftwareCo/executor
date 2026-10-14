@@ -25,7 +25,7 @@ type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 const delayMs = 3000;
 
 const timingAppSource = `import { defineApp, query, object, string, number, boolean, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text" },
     async (_ctx, { text }) => ({ text })),
   wait: query({ input: object({ ms: number() }), output: object({ done: boolean() }), description: "Answer after a delay" },
@@ -280,8 +280,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           expect(alone?.object, "Nothing else was being answered on the object").toBe(0);
 
           // The call's spans name its organization by opaque ID, so their latency can be split by
-          // organization. Each authentication says whether it opened a database connection; the
-          // gateway's Worker event opens its own.
+          // organization. Each authentication says whether it opened a database connection. The
+          // call is inside a session, so the gateway routes it by its session id and neither
+          // authenticates nor connects; the object authenticates it.
           const attributed = yield* telemetry.query(aloneCall?.trace ?? "").pipe(
             Effect.map((result) => result.data.map(({ span }) => span)),
             Effect.flatMap((spans) =>
@@ -312,12 +313,15 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             "Each authentication says whether it opened a connection",
           ).toEqual(authentications.map(() => expect.stringMatching(/^(true|false)$/)));
           const gateway = spansNamed("mcp.session.forward")[0];
+          expect(gateway?.tags["executor.mcp.route"]).toBe("session");
           expect(
-            authentications
-              .filter((span) => span.parentSpanId === gateway?.parentSpanId)
-              .map((span) => span.tags["db.connect.opened"]),
-            "The gateway's event opens a connection to authenticate",
-          ).toEqual(["true"]);
+            authentications.filter((span) => span.parentSpanId === gateway?.parentSpanId),
+            "The gateway authenticates no request inside a session",
+          ).toEqual([]);
+          expect(
+            spansNamed("sql.connect").filter((span) => span.parentSpanId === gateway?.parentSpanId),
+            "The gateway opens no database connection for it",
+          ).toEqual([]);
           // The call's tool rechecks its grant on the session object, which the warm-up above and
           // this call's own request have already connected. Nothing else runs on the object, so
           // no other call's connection is counted either.

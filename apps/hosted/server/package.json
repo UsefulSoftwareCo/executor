@@ -6,11 +6,13 @@
   "exports": {
     ".": "./src/index.ts",
     "./api-keys": "./src/contracts/api-keys.ts",
+    "./auth": "./src/contracts/auth.ts",
     "./contracts": "./src/contracts/api.ts",
     "./mcp/browser": "./src/contracts/mcp-browser.ts",
     "./organization": "./src/contracts/organization.ts",
     "./groups": "./src/contracts/groups.ts",
     "./resource-access": "./src/contracts/resource-access.ts",
+    "./oauth-clients": "./src/contracts/oauth-clients.ts",
     "./database": "./src/implementation/database.ts",
     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
     "./events": "./src/implementation/events.ts",

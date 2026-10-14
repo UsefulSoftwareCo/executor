@@ -1,5 +1,6 @@
-import { HostedProfiles } from "./profiles.ts";
+import { HostedAppAccounts } from "./app-accounts.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
+import { HostedOAuthClients } from "./oauth-clients.ts";
 import { HostedSchedules } from "./schedules.ts";
 import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
@@ -33,7 +34,7 @@ import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
 import { HostedFeedback } from "./feedback.ts";
 
-/** Process liveness only; this does not probe integrations.sh or future storage. */
+/** Process liveness only; this does not probe the app catalog or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
 
 /** The Effect snapshot's OpenAPI types omit OAuth2; hosted documents retain that standard scheme explicitly. */
@@ -162,7 +163,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
 /** Common API contract; each host extends it with its own groups. */
 export const HostedApi = HttpApi.make("executor-hosted")
   .add(
-    HostedProfiles,
+    HostedAppAccounts,
     HostedWebhookSetup,
     HostedWebhooks,
     HostedWorkflows,
@@ -175,6 +176,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedOrganization,
     HostedGroups,
     HostedResourceAccess,
+    HostedOAuthClients,
     HostedAppData,
     HostedMcpConnections,
     HostedFeedback,

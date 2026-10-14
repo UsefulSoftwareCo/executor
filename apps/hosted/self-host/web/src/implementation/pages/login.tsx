@@ -48,7 +48,8 @@ export function SelfHostLoginPage({ redirect, error: callbackError }: LoginProps
     return (
       <ContinueAfterSignIn
         redirect={
-          submittedKind === "setup" && new URL(redirect, page.origin).pathname !== "/mcp/authorize"
+          submittedKind === "setup" &&
+          !["/mcp/authorize", "/device"].includes(new URL(redirect, page.origin).pathname)
             ? "/setup/agent"
             : submittedKind === "invite"
               ? "/"

@@ -21,20 +21,37 @@ import type { SqlClient } from "effect/sql";
 import {
   ConnectionReservations,
   type OpenedConnections,
-  cloudDatabaseConnection,
   cloudDatabasePool,
+  cloudDirectDatabaseConnection,
 } from "./database.ts";
 
 /**
  * An object closes its connections this long after its last call ends. PgBouncer pools in
- * transaction mode, so an idle client connection holds no Postgres backend meanwhile.
+ * transaction mode, so an idle client connection holds no Postgres backend meanwhile; it counts
+ * only toward PgBouncer's client limit (notes/database-pool.md).
+ *
+ * A new connection costs a TLS login of about 70 ms on the next call's critical path. MCP clients
+ * often pause longer than 30 seconds between tool calls, so a shorter window reconnects on most
+ * of their calls after a pause. Cloudflare keeps an idle Durable Object in memory for 70–140 s
+ * after its last request, and the window's open socket and timer keep it there until the window
+ * closes, so a window much longer than that would mostly hold objects in memory (billed duration)
+ * for calls that rarely come.
  */
-const idleWindow = Duration.seconds(30);
+const idleWindow = Duration.seconds(120);
 
 /**
  * Connections one object may hold, shared by the executor and Better Auth: enough that a
  * transaction in one MCP operation does not stall every other operation of the session. The
  * pool opens them on demand. See notes/database-pool.md for the resulting PgBouncer client total.
+ *
+ * The pool groups statements (`statementGroups`): the statements one MCP tool call has in flight
+ * at the same time share one connection and go out in one write, so its independent reads cost one
+ * round trip together. A connection carries one group's statements at a time, so a statement that
+ * is slow in the database only ever delays its own group's; the rest of the request (discovery
+ * listings, skill reads) is ungrouped and takes a connection per statement, as before grouping.
+ * A statement its caller gave up on is cancelled, drained and its connection kept before the
+ * connection goes back, as without grouping. A transaction, a stream and Better Auth's checkout
+ * each reserve a connection of their own.
  */
 export const objectConnectionLimit = 4;
 
@@ -94,7 +111,7 @@ const applicationName = (owner: string) => `executor ${owner}`.slice(0, 63);
  * has no teardown hook for evicted objects; eviction drops their sockets.
  */
 export const cloudObjectDatabase = Effect.gen(function* () {
-  const connection = yield* cloudDatabaseConnection;
+  const connection = yield* cloudDirectDatabaseConnection;
   return Effect.fn(function* (owner: string) {
     // Owned by the object for its whole life; only windows are ever closed.
     const root = Scope.makeUnsafe();
@@ -138,6 +155,7 @@ export const cloudObjectDatabase = Effect.gen(function* () {
             maxConnections: objectConnectionLimit,
             idleTimeout: idleWindow,
             applicationName: applicationName(owner),
+            statementGroups: true,
           }),
           scope,
         ).pipe(

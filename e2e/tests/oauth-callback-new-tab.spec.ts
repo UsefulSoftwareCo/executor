@@ -11,9 +11,9 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthInteropIssuer } from "../support/oauth-interop-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -42,7 +42,7 @@ const pendingSignIn = Effect.gen(function* () {
         path: "index.ts",
         content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Link service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
       },
       appsManifest,
     ],
@@ -52,13 +52,14 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
   yield* Effect.addFinalizer(() =>
     api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
   );
-  const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
   const connection = yield* body(
     Resource,
-    yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-      requirement: "service",
-      profile: profile.id,
-    }),
+    yield* api.request(
+      actors.owner,
+      "POST",
+      connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+      {},
+    ),
   );
   const started = yield* api.request(
     actors.owner,

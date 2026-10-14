@@ -12,6 +12,7 @@ import { frameworkSession } from "../support/framework.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { readAdvice, unknownOutcomeRecovery } from "../support/write-outcome.ts";
 
 const BuildFailed = Schema.Struct({
   _tag: Schema.Literal("DeploymentBuildFailed"),
@@ -47,6 +48,7 @@ const ExecutionFailed = Schema.Struct({
         recovery: Schema.optional(
           Schema.Struct({ action: Schema.String, instructions: Schema.String }),
         ),
+        retryable: Schema.Boolean,
       }),
     }),
   }),
@@ -58,11 +60,16 @@ const appMarker = "conversation.id is required";
 const operationApp = [
   {
     path: "index.ts",
-    content: `import { defineApp, string, query, mutation, object, router } from "apps";
+    content: `import { CacheError, defineApp, string, query, mutation, object, router } from "apps";
 class ConversationMissing extends Error { override name = "ConversationMissing"; }
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     fail: query({ input: object({}) }, async () => { throw new ConversationMissing(${JSON.stringify(appMarker)}); }),
+    cacheUnavailable: query({ input: object({}) }, async () => { throw new CacheError({ reason: "unavailable" }); }),
+    cacheOverLimit: query({ input: object({}) }, async (ctx) => {
+      await ctx.cache.write([{ key: "x".repeat(9000), value: true }], "1 minute");
+      return true;
+    }),
     failWrite: mutation({ input: object({}) }, async (ctx) =>
       ctx.sql.transaction((tx) => {
         tx.exec("INSERT INTO items (label) VALUES ('rolled back')");
@@ -99,7 +106,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure details", (it) => 
           {
             path: "index.ts",
             content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({ broken: ) }) });`,
+export default defineApp({}, { tools: router({ broken: ) }) });`,
           },
         ]);
         yield* evidence.json("compile-failure.json", compile.body);
@@ -107,9 +114,9 @@ export default defineApp({ accounts: {} }, { tools: router({ broken: ) }) });`,
         const compiled = yield* body(BuildFailed, compile);
         expect(compiled).toMatchObject({
           stage: "compile",
-          location: { file: "index.ts", line: 2, column: 70 },
+          location: { file: "index.ts", line: 2, column: 56 },
         });
-        expect(compiled.message).toContain('index.ts:2:70: Unexpected ")"');
+        expect(compiled.message).toContain('index.ts:2:56: Unexpected ")"');
 
         // Columns count UTF-16 code units, as editors do, after non-ASCII text on the same line:
         // "é" is one unit and "🙂" two, though they take two and four bytes.
@@ -117,7 +124,7 @@ export default defineApp({ accounts: {} }, { tools: router({ broken: ) }) });`,
           {
             path: "index.ts",
             content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({ "café 🙂": ) }) });`,
+export default defineApp({}, { tools: router({ "café 🙂": ) }) });`,
           },
         ]);
         yield* evidence.json("unicode-compile-failure.json", unicode.body);
@@ -125,9 +132,9 @@ export default defineApp({ accounts: {} }, { tools: router({ "café 🙂": ) }) 
         const counted = yield* body(BuildFailed, unicode);
         expect(counted).toMatchObject({
           stage: "compile",
-          location: { file: "index.ts", line: 2, column: 73 },
+          location: { file: "index.ts", line: 2, column: 59 },
         });
-        expect(counted.message).toContain('index.ts:2:73: Unexpected ")"');
+        expect(counted.message).toContain('index.ts:2:59: Unexpected ")"');
 
         // An import that no deployed file satisfies fails where it is written.
         const missing = yield* deploy([
@@ -135,7 +142,7 @@ export default defineApp({ accounts: {} }, { tools: router({ "café 🙂": ) }) 
             path: "index.ts",
             content: `import { defineApp, router } from "apps";
 import { value } from "./not-there.ts";
-export default defineApp({ accounts: {} }, { tools: router({ value }) });`,
+export default defineApp({}, { tools: router({ value }) });`,
           },
         ]);
         yield* evidence.json("missing-module-failure.json", missing.body);
@@ -147,6 +154,27 @@ export default defineApp({ accounts: {} }, { tools: router({ value }) });`,
         });
         expect(unloaded.message).toContain('index.ts:2:23: Cannot find "./not-there.ts"');
 
+        // An imported JSON file that is not JSON fails at its first invalid character.
+        const json = yield* deploy([
+          {
+            path: "index.ts",
+            content: `import { defineApp, query, object, router } from "apps";
+import settings from "./settings.json";
+export default defineApp({}, { tools: router({
+  settings: query({ input: object({}) }, async () => settings),
+}) });`,
+          },
+          { path: "settings.json", content: '{\n  "name": "synthetic",\n  "items": [1, 2,]\n}' },
+        ]);
+        yield* evidence.json("invalid-json-failure.json", json.body);
+        expect(json.status).toBe(422);
+        const parsed = yield* body(BuildFailed, json);
+        expect(parsed).toMatchObject({
+          stage: "compile",
+          location: { file: "settings.json", line: 3, column: 18 },
+        });
+        expect(parsed.message).toContain("settings.json:3:18: Invalid JSON");
+
         // A declaration that throws while the Worker loads is located in its own file, and a
         // value passed where a schema belongs is named.
         const invalid = yield* deploy([
@@ -154,7 +182,7 @@ export default defineApp({ accounts: {} }, { tools: router({ value }) });`,
             path: "index.ts",
             content: `import { defineApp } from "apps";
 import { tools } from "./lib/tools.js";
-export default defineApp({ accounts: {} }, { tools });`,
+export default defineApp({}, { tools });`,
           },
           {
             path: "lib/tools.ts",
@@ -175,13 +203,59 @@ export const tools = router({
         expect(located.message).toContain("Call it, as in string().");
         expect(located.message).toContain("at lib/tools.ts:3:26");
 
+        // An OAuth declaration that does not match its schema names the failing option and why,
+        // leaving out the forms the author did not mean (here, discovery's missing `discover`).
+        const oauth = yield* deploy([
+          {
+            path: "index.ts",
+            content: `import { defineApp, defineProvider, oauth2 } from "apps";
+const service = defineProvider({ name: "Synthetic", auth: { oauth: oauth2({
+  authorizationUrl: "https://auth.example.test/authorize?scope=everything",
+  tokenUrl: "https://auth.example.test/token",
+  scopes: [],
+}) } });
+export default defineApp({ user: { accounts: { service } } }, {});`,
+          },
+        ]);
+        yield* evidence.json("invalid-oauth-declaration-failure.json", oauth.body);
+        expect(oauth.status).toBe(422);
+        const oauthFailure = yield* body(BuildFailed, oauth);
+        expect(oauthFailure.stage).toBe("declaration");
+        expect(oauthFailure.message).toContain(
+          "DeclarationInvalid: The oauth2() declaration is invalid. authorizationUrl: authorizationUrl cannot set protocol parameters: scope.",
+        );
+        expect(oauthFailure.message).not.toContain("discover");
+
+        // A client credentials declaration is read as one, so the option it lacks is named rather
+        // than the authorization code forms' objections to its grant.
+        const machine = yield* deploy([
+          {
+            path: "index.ts",
+            content: `import { defineApp, defineProvider, oauth2 } from "apps";
+const service = defineProvider({ name: "Synthetic", auth: { oauth: oauth2({
+  grant: "client_credentials",
+  tokenUrl: "https://auth.example.test/token",
+  scopes: [],
+}) } });
+export default defineApp({ user: { accounts: { service } } }, {});`,
+          },
+        ]);
+        yield* evidence.json("incomplete-oauth-declaration-failure.json", machine.body);
+        expect(machine.status).toBe(422);
+        const machineFailure = yield* body(BuildFailed, machine);
+        expect(machineFailure.stage).toBe("declaration");
+        expect(machineFailure.message).toContain(
+          "DeclarationInvalid: The oauth2() declaration is invalid. tokenEndpointAuthMethod: Missing key",
+        );
+        expect(machineFailure.message).not.toContain("grant");
+
         // An app that throws while its module loads reports its own message at declaration.
         const declaration = yield* deploy([
           {
             path: "index.ts",
             content: `import { defineApp } from "apps";
 throw new Error(${JSON.stringify(declarationMarker)});
-export default defineApp({ accounts: {} }, {});`,
+export default defineApp({}, {});`,
           },
         ]);
         yield* evidence.json("declaration-failure.json", declaration.body);
@@ -196,7 +270,7 @@ export default defineApp({ accounts: {} }, {});`,
             path: "index.ts",
             content: `import { defineApp } from "apps";
 throw Object.freeze(new TypeError(${JSON.stringify(declarationMarker)}));
-export default defineApp({ accounts: {} }, {});`,
+export default defineApp({}, {});`,
           },
         ]);
         yield* evidence.json("frozen-declaration-failure.json", frozen.body);
@@ -211,27 +285,25 @@ export default defineApp({ accounts: {} }, {});`,
         expect(kept.message).not.toContain("read only");
 
         // The Executor app's deploy tool carries the same detail to an MCP caller.
-        const { client, profile } = yield* frameworkSession;
+        const { client, queries } = yield* frameworkSession;
         const deployed = yield* client.use("Deploy a failing app through MCP", (client, signal) =>
           client.callTool(
             {
               name: "execute",
               arguments: {
-                code: `return await tools.executor.profiles[${JSON.stringify(profile.id)}].apps.deploy(${JSON.stringify(
-                  {
-                    path: { organization: actors.organization.id },
-                    body: {
-                      name: `MCP build failure ${randomUUID().slice(0, 8)}`,
-                      files: [
-                        {
-                          path: "index.ts",
-                          content: `import { defineApp } from "apps";\nthrow new Error(${JSON.stringify(declarationMarker)});\nexport default defineApp({ accounts: {} }, {});`,
-                        },
-                        appsManifest,
-                      ],
-                    },
+                code: `return await ${queries}.apps.deploy(${JSON.stringify({
+                  path: { organization: actors.organization.id },
+                  body: {
+                    name: `MCP build failure ${randomUUID().slice(0, 8)}`,
+                    files: [
+                      {
+                        path: "index.ts",
+                        content: `import { defineApp } from "apps";\nthrow new Error(${JSON.stringify(declarationMarker)});\nexport default defineApp({}, {});`,
+                      },
+                      appsManifest,
+                    ],
                   },
-                )});`,
+                })});`,
               },
             },
             undefined,
@@ -285,6 +357,31 @@ export default defineApp({ accounts: {} }, {});`,
         const mutation = yield* body(ToolFailed, yield* call("failWrite", "mutation"));
         expect(mutation.failure).toMatchObject({ source: "app", errorName: "TypeError" });
 
+        // A cache that was unavailable for the operation, as when another load took over its
+        // lease, is temporary; a request over the cache's limits fails the same way again.
+        const unavailable = yield* call("cacheUnavailable", "query");
+        expect(unavailable.body).toMatchObject({
+          _tag: "ToolCallFailed",
+          failure: {
+            source: "storage",
+            errorName: "CacheError",
+            code: "unavailable",
+            message: "The app cache was not available for this operation.",
+          },
+          recovery: {
+            action:
+              "Retry once after a short wait. If it fails again, report that the app’s storage is failing.",
+          },
+        });
+        const overLimit = yield* call("cacheOverLimit", "query");
+        expect(overLimit.body).toMatchObject({
+          _tag: "ToolCallFailed",
+          failure: { source: "storage", errorName: "CacheError", code: "capacity" },
+          recovery: {
+            action: "Change the operation to stay within the storage rule or limit it names.",
+          },
+        });
+
         // MCP callers receive the same message with recovery guidance.
         const { client } = yield* frameworkSession;
         const executed = yield* client.use("Call a failing app query", (client, signal) =>
@@ -303,12 +400,74 @@ export default defineApp({ accounts: {} }, {});`,
         const failure = (yield* Schema.decodeUnknownEffect(ExecutionFailed)(
           executed.structuredContent,
         )).execution.error;
+        // Executor cannot tell whether the app's error is temporary, so a read may be tried once more.
         expect(failure.response).toMatchObject({
           code: "ToolCallFailed",
           message: `The app threw ConversationMissing: ${appMarker}`,
-          recovery: { action: "Fix the input or the app code that threw this error, then retry." },
+          recovery: {
+            action:
+              "Read the error to determine whether input, app code, configuration or Executor needs attention.",
+            instructions:
+              "This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
+          },
+          retryable: true,
         });
         expect(failure.message).toContain(appMarker);
+        expect(failure.message).toMatch(/ Retryable \(unchanged call\): yes\.$/);
+        const cacheRetryable = (tool: string) =>
+          client
+            .use(`Call the app query ${tool}`, (client, signal) =>
+              client.callTool(
+                {
+                  name: "execute",
+                  arguments: {
+                    code: `return await tools[${JSON.stringify(app.slug)}].${tool}({});`,
+                  },
+                },
+                undefined,
+                { signal },
+              ),
+            )
+            .pipe(
+              Effect.flatMap((executed) =>
+                Schema.decodeUnknownEffect(ExecutionFailed)(executed.structuredContent),
+              ),
+              Effect.map(({ execution }) => execution.error.response.retryable),
+            );
+        expect(yield* cacheRetryable("cacheUnavailable")).toBe(true);
+        expect(yield* cacheRetryable("cacheOverLimit")).toBe(false);
+
+        // A mutation's error may follow changes it made outside app data, so the agent is told
+        // not to repeat it automatically; the cause's advice for a read follows only as a quote.
+        const wrote = yield* client.use("Call a failing app mutation", (client, signal) =>
+          client.callTool(
+            {
+              name: "execute",
+              arguments: {
+                code: `return await tools[${JSON.stringify(app.slug)}].failWrite({});`,
+              },
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        yield* evidence.json("mcp-mutation-failure.json", wrote.structuredContent);
+        const written = (yield* Schema.decodeUnknownEffect(ExecutionFailed)(
+          wrote.structuredContent,
+        )).execution.error;
+        expect(written.response).toMatchObject({
+          code: "ToolCallFailed",
+          message: `The app threw TypeError: ${appMarker}`,
+          retryable: false,
+        });
+        expect(written.response.recovery).toEqual(
+          unknownOutcomeRecovery(
+            readAdvice(
+              "Read the error to determine whether input, app code, configuration or Executor needs attention. This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
+            ),
+          ),
+        );
+        expect(written.message).toMatch(/ Retryable \(unchanged call\): no\.$/);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

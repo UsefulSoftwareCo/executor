@@ -37,7 +37,7 @@ export const saveAndDeploy = (
 /** deploy.md's minimal app: this `index.ts` beside a `package.json` that pins the host's apps. */
 export const helloIndex = `import { defineApp, object, query, router } from "apps";
 
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     hello: query({ description: "Say hello", input: object({}) }, async () => ({ message: "Hello" })),
   }),

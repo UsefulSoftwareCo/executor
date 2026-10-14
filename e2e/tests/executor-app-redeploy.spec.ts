@@ -2,21 +2,21 @@
  * `apps` releases up to beta.9 refreshed cached values with the invocation's `fetch`, so dynamic
  * catalogs such as the Executor app's skills only refreshed when the entry expired. The one-off
  * `5_redeploy_pre_beta10_executor_apps` data step redeploys Executor apps still built on such a
- * release, with only their pin moved to this host's release. Self-host runs it at startup; this
- * scenario starts the product with data steps held in report mode and deploys Executor-shaped
- * apps (one account slot, a provider named `Executor`) on the published beta.9: one untouched,
- * one whose `main` holds an earlier deployment's source, one whose `main` holds the running source
- * under only the framework pin an earlier data step committed before member setup deployed the
- * template over it, one with that pin and another dependency, one whose `main` holds an earlier
- * deployment's source under only that pin before a later deploy replaced it, the same with another
- * edit, one with an edit on `main`, and one on beta.10, beside an app with another provider on
- * beta.9. The untouched app is recorded as the organization's default Executor app. A report start
- * writes nothing; an apply start redeploys the four eligible apps with every other file byte for
- * byte, keeps their account and records the default's new deployment; and a later start changes
- * nothing.
+ * release, with only their pin moved to beta.84, a protocol 12 release that still builds their source.
+ * Self-host runs it at startup; this scenario starts the product with data steps held in report
+ * mode and deploys Executor-shaped apps (one account slot, a provider named `Executor`) on the
+ * published beta.9: one untouched, one whose `main` holds an earlier deployment's source, one whose
+ * `main` holds the running source under only the framework pin an earlier data step committed
+ * before member setup deployed the template over it, one with that pin and another dependency, one
+ * whose `main` holds an earlier deployment's source under only that pin before a later deploy
+ * replaced it, the same with another edit, one with an edit on `main`, and one on beta.10, beside
+ * an app with another provider on beta.9. The untouched app is recorded as the organization's
+ * default Executor app. A report start writes nothing; an apply start redeploys the four eligible
+ * apps with every other file byte for byte, keeps their account and records the default's new
+ * deployment; and a later start changes nothing.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
@@ -26,21 +26,24 @@ import { Target } from "../support/platform.ts";
 import { Committed, Workspace } from "../support/app-authoring.ts";
 import { serverControl } from "../support/server-control.ts";
 import { dataStepSummaries, nextDataStepSummary } from "../support/data-steps.ts";
-import { appsVersion, declaredApps } from "../support/apps-release.ts";
+import { declaredApps } from "../support/apps-release.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { Resource } from "../support/contracts.ts";
-import { createProfile, Profile } from "../support/profiles.ts";
+import { linkedAccountIds } from "../support/app-accounts.ts";
 
 const step = "5_redeploy_pre_beta10_executor_apps";
 /** The last release whose background cache refreshes aborted, resolved from npm. */
 const oldRelease = "0.0.1-beta.9";
 /** The release with the fix; an app on it is current. */
 const fixedRelease = "0.0.1-beta.10";
+/** The release the step pins: the last of host protocol 12, which still builds the old source. */
+const targetRelease = "0.0.1-beta.84";
 /** The release `1_app_framework_pin` declares in `main`, never deployed by this scenario. */
 const frameworkPinRelease = "0.0.1-beta.2";
 const token = "synthetic-redeploy-token";
 
 type Files = readonly { readonly path: string; readonly content: string }[];
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /** One account slot whose provider has `name`, a tool reading its token, and extra files. */
 const source = (provider: string, release: string, marker: string): Files => [
   {
@@ -114,7 +117,6 @@ const Deployed = Schema.Struct({ app: App });
 const RunningSource = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const Metadata = Schema.Struct({ metadata: Schema.NullOr(Schema.String) });
 const ExecutorDefaults = Schema.fromJsonString(
   Schema.Struct({
@@ -179,15 +181,15 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
             status: "complete",
           });
 
-          /** A profile with an account for `app`'s slot, and its token tool once setup finished. */
+          /** An account connected from `app`, which links it for `app`'s slot, and its token tool. */
           const connect = (app: App) =>
             Effect.gen(function* () {
               const path = `${prefix}/apps/${app.id}`;
-              const profile = yield* createProfile(actors.owner, path);
-              const pending = yield* request("POST", `/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }).pipe(ok(Resource));
+              const pending = yield* request(
+                "POST",
+                `/apps/${app.id}/accounts/user/service/connections`,
+                {},
+              ).pipe(ok(Resource));
               const account = (yield* request("POST", `/connections/${pending.id}/submit`, {
                 method: "apiKey",
                 label: "Synthetic",
@@ -196,30 +198,13 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
               yield* Effect.addFinalizer(() =>
                 request("DELETE", `/accounts/${account}`).pipe(Effect.ignore),
               );
-              const call = Effect.gen(function* () {
-                yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
-                  ok(SetupStatus),
-                  Effect.flatMap((current) =>
-                    current.status === "pending"
-                      ? Effect.fail(new Error("Profile setup has not finished"))
-                      : Effect.void,
-                  ),
-                  Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-                );
-                return yield* request("POST", `/apps/${app.id}/tools/call`, {
-                  profile: profile.id,
-                  tool: "token",
-                  kind: "query",
-                  input: {},
-                }).pipe(ok(Schema.String));
-              });
-              /** The profile still selects the same account. */
-              const selected = api
-                .request(actors.owner, "GET", `${path}/profiles/${profile.id}`)
-                .pipe(
-                  ok(Profile),
-                  Effect.map((current) => current.accounts),
-                );
+              const call = request("POST", `/apps/${app.id}/tools/call`, {
+                tool: "token",
+                kind: "query",
+                input: {},
+              }).pipe(ok(Schema.String));
+              /** The app still links the same account. */
+              const selected = linkedAccountIds(actors.owner, path);
               return { account, call, selected };
             });
 
@@ -382,33 +367,33 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
             app: untouched.id,
             deployment: redeployed.activeDeployment,
           });
-          const expected = sorted(repinned(untouchedFiles, oldRelease, appsVersion));
+          const expected = sorted(repinned(untouchedFiles, oldRelease, targetRelease));
           expect(sorted(yield* running(untouched))).toEqual(expected);
-          expect(declaredApps(yield* running(untouched))).toBe(appsVersion);
+          expect(declaredApps(yield* running(untouched))).toBe(targetRelease);
           expect(sorted((yield* workspace(untouched)).files)).toEqual(expected);
           expect(yield* call).toBe(token);
-          expect(yield* selected).toEqual({ service: account });
+          expect(yield* selected).toEqual([account]);
 
           // Main behind the running source gets the running source with the new pin.
-          const behindExpected = sorted(repinned(behindFiles, oldRelease, appsVersion));
+          const behindExpected = sorted(repinned(behindFiles, oldRelease, targetRelease));
           expect(sorted(yield* running(behind))).toEqual(behindExpected);
           expect(sorted((yield* workspace(behind)).files)).toEqual(behindExpected);
 
           // Main under only the framework pin gets the running source with the new pin; the pin
           // commit's unnamed manifest is replaced by the running one.
-          const pinnedExpected = sorted(repinned(pinnedFiles, oldRelease, appsVersion));
+          const pinnedExpected = sorted(repinned(pinnedFiles, oldRelease, targetRelease));
           expect(sorted(yield* running(pinned))).toEqual(pinnedExpected);
           expect(sorted((yield* workspace(pinned)).files)).toEqual(pinnedExpected);
 
           // Main under the pin on an earlier deployment's source gets the running source with the new
           // pin; the pin commit stays in its history.
-          const behindPinnedExpected = sorted(repinned(behindPinnedFiles, oldRelease, appsVersion));
+          const behindPinnedExpected = sorted(
+            repinned(behindPinnedFiles, oldRelease, targetRelease),
+          );
           expect(sorted(yield* running(behindPinned))).toEqual(behindPinnedExpected);
           expect(sorted((yield* workspace(behindPinned)).files)).toEqual(behindPinnedExpected);
           expect(yield* behindPinnedAccount.call).toBe(token);
-          expect(yield* behindPinnedAccount.selected).toEqual({
-            service: behindPinnedAccount.account,
-          });
+          expect(yield* behindPinnedAccount.selected).toEqual([behindPinnedAccount.account]);
 
           // The edited apps, the app on the fixed release and the other provider's app are untouched.
           const after = yield* state;

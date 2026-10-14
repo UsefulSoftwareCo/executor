@@ -7,13 +7,18 @@ import { AsyncResult } from "effect/reactivity";
 import {
   AccountRequired,
   ScheduleApprovalMode,
+  type AccountScope,
   type AppSchedule,
   type App,
   type ScheduleSettings,
 } from "@executor-js/sdk";
 import { useState, type ComponentType, type ReactNode } from "react";
 import type { FailureProps } from "../../contracts/dashboard.ts";
-import type { ScheduleBindings, ScheduleControls } from "../../contracts/schedules.ts";
+import {
+  type ScheduleBindings,
+  type ScheduleControls,
+  type ScheduleCopyControls,
+} from "../../contracts/schedules.ts";
 import { QueryView, useDashboard, useQuery } from "./context.tsx";
 import { Alert } from "../components/alert.tsx";
 import { DisabledTooltip } from "../components/disabled-tooltip.tsx";
@@ -26,13 +31,20 @@ import {
   SelectValue,
 } from "../components/select.tsx";
 
-type Row = {
+type Declaration = {
   readonly name: string;
+  /** `app`: one schedule, run without a caller with the app's accounts, that its editors control. */
+  readonly scope: AccountScope;
   readonly timing: AppSchedule["timing"];
   readonly declared: boolean;
-  readonly settings: ScheduleSettings | undefined;
+  /**
+   * The signed-in member's own copy, or the app schedule; without one the declaration is paused
+   * for them, or for the app.
+   */
+  readonly copy: ScheduleSettings | undefined;
 };
-const timingText = (timing: Row["timing"]) => {
+type ApprovalMode = ScheduleSettings["approvalMode"];
+const timingText = (timing: Declaration["timing"]) => {
   if (timing.kind === "cron") return `${timing.calendar.expression} · ${timing.calendar.timezone}`;
   const [amount, unit] =
     timing.milliseconds % 3_600_000 === 0
@@ -46,12 +58,12 @@ const timingText = (timing: Row["timing"]) => {
 export function AppSchedules<E>({
   app,
   canEdit,
-  enabled = true,
   ...props
 }: {
   readonly app: App;
   readonly canEdit: boolean;
-  readonly enabled?: boolean;
+  /** Whose copy the tab shows: the signed-in member's. Undefined when the host has one member. */
+  readonly actor: string | undefined;
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
@@ -82,56 +94,22 @@ export function AppSchedules<E>({
         </EmptyState>
       </SchedulesLayout>
     );
-  if (enabled) return <LiveSchedules {...props} app={app} canEdit={canEdit} />;
-  const { bindings, Failure } = props;
-  return (
-    <SchedulesLayout>
-      <QueryView query={bindings.settings} Failure={Failure} pending={<SchedulesPending />}>
-        {(rows) => (
-          <div className="divide-y rounded-lg border">
-            {rows.length === 0 ? (
-              <p className="p-4 text-sm text-muted-foreground">No saved schedules.</p>
-            ) : (
-              rows.map((row) => (
-                <div key={row.id} className="p-4">
-                  <h3 className="text-sm font-medium">{row.name}</h3>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {timingText(row.timing)} · Profile disabled
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </QueryView>
-    </SchedulesLayout>
-  );
+  return <LiveSchedules {...props} app={app} canEdit={canEdit} />;
 }
-function LiveSchedules<E>({
-  app,
-  canEdit,
-  bindings,
-  Failure,
-}: {
+type ListProps<E> = {
   readonly app: App;
   readonly canEdit: boolean;
+  readonly actor: string | undefined;
   readonly bindings: ScheduleBindings<E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
-}) {
+};
+function LiveSchedules<E>(props: ListProps<E>) {
+  const { bindings, Failure } = props;
   const discovery = useQuery(bindings.definitions);
   return (
     <SchedulesLayout>
       <QueryView query={bindings.settings} Failure={Failure} pending={<SchedulesPending />}>
-        {(saved) => (
-          <ScheduleList
-            app={app}
-            canEdit={canEdit}
-            saved={saved}
-            discovery={discovery}
-            bindings={bindings}
-            Failure={Failure}
-          />
-        )}
+        {(saved) => <ScheduleList {...props} saved={saved} discovery={discovery} />}
       </QueryView>
     </SchedulesLayout>
   );
@@ -151,7 +129,8 @@ function SchedulesLayout({ children }: { readonly children: ReactNode }) {
     <section className="w-full">
       <div className="space-y-4 p-7 max-[740px]:p-4">
         <p className="text-sm text-muted-foreground">
-          Schedules run with this app’s selected accounts. New schedules start paused.
+          Your schedules run as you, with the accounts you linked to this app. Change them in the
+          app’s Accounts tab.
         </p>
         {children}
       </div>
@@ -186,35 +165,42 @@ function SchedulesPending() {
 function ScheduleList<E>({
   app,
   canEdit,
+  actor,
   saved,
   discovery,
   bindings,
   Failure,
-}: {
-  readonly app: App;
-  readonly canEdit: boolean;
+}: ListProps<E> & {
   readonly saved: readonly ScheduleSettings[];
   readonly discovery: ReturnType<typeof useQuery<readonly AppSchedule[], E>>;
-  readonly bindings: ScheduleBindings<E>;
-  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
   const { AppLink } = useDashboard();
-  const rows = new Map<string, Row>();
-  for (const setting of saved)
-    rows.set(setting.name, {
+  const declarations = new Map<string, Declaration>();
+  for (const setting of saved) {
+    // The app schedule has no actor; other members' copies are theirs.
+    if (setting.actor !== null && actor !== undefined && setting.actor !== actor) continue;
+    declarations.set(setting.name, {
       name: setting.name,
+      scope: setting.actor === null ? "app" : "user",
       timing: setting.timing,
-      settings: setting,
       declared: false,
+      copy: setting,
     });
+  }
   if (Option.isSome(discovery.data))
-    for (const definition of discovery.data.value)
-      rows.set(definition.name, {
+    for (const definition of discovery.data.value) {
+      const scope = definition.scope ?? "user";
+      const saved = declarations.get(definition.name);
+      declarations.set(definition.name, {
         name: definition.name,
+        scope,
         timing: definition.timing,
-        settings: rows.get(definition.name)?.settings,
         declared: true,
+        // A copy saved in the other scope is not this declaration's.
+        copy: saved?.scope === scope ? saved.copy : undefined,
       });
+    }
+  const appSchedules = [...declarations.values()].some((item) => item.scope === "app");
   const discoveryView = AsyncResult.match(discovery.result, {
     onInitial: () => ({
       error: null,
@@ -248,87 +234,39 @@ function ScheduleList<E>({
       ),
     }),
     onFailure: (failure) => ({
-      error: <DiscoveryFailure cause={failure.cause} retry={discovery.refresh} Failure={Failure} />,
+      error: (
+        <DiscoveryFailure
+          app={app}
+          cause={failure.cause}
+          retry={discovery.refresh}
+          Failure={Failure}
+        />
+      ),
       empty: null,
     }),
   });
   return (
     <div className="space-y-4">
+      {appSchedules && (
+        <p className="text-sm text-muted-foreground">
+          App schedules run as the app, with the accounts linked for everyone.
+        </p>
+      )}
       {discoveryView.error}
-      {rows.size === 0 ? (
+      {declarations.size === 0 ? (
         discoveryView.empty
       ) : (
         <div className="divide-y rounded-lg border">
-          {[...rows.values()]
+          {[...declarations.values()]
             .sort((a, b) => a.name.localeCompare(b.name))
-            .map((row) => (
-              <div key={row.name} className="flex flex-wrap items-center justify-between gap-4 p-4">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-sm font-medium break-words">{row.name}</h3>
-                    <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">
-                      {row.settings?.activeRun
-                        ? "Run active"
-                        : row.settings?.reconnectAccount
-                          ? "Waiting for reconnect"
-                          : row.settings?.enabled
-                            ? "Enabled"
-                            : "Paused"}
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">{timingText(row.timing)}</p>
-                  {row.settings?.reconnectAccount ? (
-                    <p className="text-xs text-muted-foreground">
-                      Runs are skipped until the account reconnects.{" "}
-                      <AppLink
-                        app={app.id}
-                        view="accounts"
-                        className="underline underline-offset-2 hover:text-foreground"
-                      >
-                        View accounts
-                      </AppLink>
-                    </p>
-                  ) : (
-                    row.settings?.enabled &&
-                    row.settings.nextAt && (
-                      <p className="text-xs text-muted-foreground">
-                        Next: <LocalTime value={row.settings.nextAt} />
-                      </p>
-                    )
-                  )}
-                </div>
-                {bindings.controls ? (
-                  <Controls row={row} actions={bindings.controls(row.name)} Failure={Failure} />
-                ) : (
-                  <div className="flex max-w-full flex-wrap items-center gap-2">
-                    <DisabledTooltip reason="You need permission to manage this app or use your own enabled profile to change schedules.">
-                      <Select value={row.settings?.approvalMode ?? "automatic"} disabled>
-                        <SelectTrigger aria-label={`Approvals for ${row.name}`} className="w-44">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="automatic">Skip approvals</SelectItem>
-                          <SelectItem value="browser">Browser approvals</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </DisabledTooltip>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabledReason="You need permission to manage this app or use your own enabled profile to change schedules."
-                    >
-                      {row.settings?.enabled ? "Pause" : "Enable"}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabledReason="You need permission to manage this app or use your own enabled profile to run schedules."
-                    >
-                      Run now
-                    </Button>
-                  </div>
-                )}
-              </div>
+            .map((declaration) => (
+              <DeclarationRow
+                key={declaration.name}
+                app={app}
+                declaration={declaration}
+                bindings={bindings}
+                Failure={Failure}
+              />
             ))}
         </div>
       )}
@@ -336,22 +274,153 @@ function ScheduleList<E>({
   );
 }
 
+const noControls = "You need permission to use this app to change schedules.";
+const noAppControls = "Only people who can edit this app can change its app schedules.";
+
+/** The state a member's copy is in; a member without a copy has the declaration paused. */
+const copyState = (copy: ScheduleSettings | undefined) =>
+  copy === undefined
+    ? "Paused"
+    : copy.activeRun
+      ? "Run active"
+      : copy.accountRequired !== undefined
+        ? "Account required"
+        : copy.reconnectAccount !== undefined
+          ? "Waiting for reconnect"
+          : copy.enabled
+            ? "Enabled"
+            : "Paused";
+
+/** One declaration with the signed-in member's own copy of it. */
+function DeclarationRow<E>({
+  app,
+  declaration,
+  bindings,
+  Failure,
+}: {
+  readonly app: App;
+  readonly declaration: Declaration;
+  readonly bindings: ScheduleBindings<E>;
+  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+}) {
+  const { AppLink } = useDashboard();
+  const { name, copy, declared, scope } = declaration;
+  const controls = scope === "app" && bindings.manageApp !== true ? undefined : bindings.controls;
+  const reason = scope === "app" ? noAppControls : noControls;
+  const requiredBy =
+    copy?.accountRequired === undefined
+      ? undefined
+      : app.requirements.accounts[copy.accountRequired];
+  const required =
+    copy?.accountRequired === undefined
+      ? undefined
+      : (requiredBy?.definition.name ?? copy.accountRequired);
+  const accountsLink = (
+    <AppLink
+      app={app.id}
+      view="accounts"
+      className="underline underline-offset-2 hover:text-foreground"
+    >
+      View accounts
+    </AppLink>
+  );
+  return (
+    <div
+      aria-label={name}
+      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 p-4"
+    >
+      <div className="min-w-0 space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-medium break-words">{name}</h3>
+          <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">
+            {copyState(copy)}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {scope === "app" ? "App schedule" : "Your schedule"}
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground">{timingText(declaration.timing)}</p>
+        {!declared && copy !== undefined && (
+          <p className="text-xs text-muted-foreground">
+            The current deployment does not declare this schedule.
+          </p>
+        )}
+        {required !== undefined ? (
+          <p className="text-xs text-muted-foreground">
+            {requiredBy?.scope === "app"
+              ? `Runs are skipped until a ${required} account is linked to this app for everyone.`
+              : `Runs are skipped until you link a ${required} account to this app.`}{" "}
+            {accountsLink}
+          </p>
+        ) : copy?.reconnectAccount !== undefined ? (
+          <p className="text-xs text-muted-foreground">
+            Runs are skipped until the account reconnects. {accountsLink}
+          </p>
+        ) : (
+          copy?.enabled === true &&
+          copy.nextAt && (
+            <p className="text-xs text-muted-foreground">
+              Next: <LocalTime value={copy.nextAt} />
+            </p>
+          )
+        )}
+      </div>
+      {controls ? (
+        <ScheduleActions
+          name={name}
+          copy={copy}
+          declared={declared}
+          approvals={scope === "user"}
+          configure={controls.declaration(name, scope)}
+          actions={copy === undefined ? undefined : controls.copy(name, copy.id)}
+          Failure={Failure}
+        />
+      ) : (
+        <div className="flex max-w-full flex-wrap items-center gap-2">
+          {scope === "user" && (
+            <DisabledTooltip reason={reason}>
+              <Select value={copy?.approvalMode ?? "automatic"} disabled>
+                <SelectTrigger aria-label={`Approvals for ${name}`} className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="automatic">Skip approvals</SelectItem>
+                  <SelectItem value="browser">Browser approvals</SelectItem>
+                </SelectContent>
+              </Select>
+            </DisabledTooltip>
+          )}
+          <Button size="sm" variant="outline" disabledReason={reason}>
+            {copy?.enabled === true ? "Pause" : "Enable"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DiscoveryFailure<E>({
+  app,
   cause,
   retry,
   Failure,
 }: FailureProps<E> & {
+  readonly app: App;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
   const { AppLink } = useDashboard();
   const error = Cause.findErrorOption(cause);
   if (Option.isSome(error) && Schema.is(AccountRequired)(error.value)) {
+    // An app requirement is filled by the accounts linked for everyone, not by the caller's links.
+    const forEveryone = app.requirements.accounts[error.value.slot]?.scope === "app";
     return (
       <Alert className="flex flex-wrap items-center justify-between gap-4 p-6">
         <div>
-          <h3 className="text-sm font-medium">Choose accounts to load schedules</h3>
+          <h3 className="text-sm font-medium">Link an account to load schedules</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            This app needs an account selected before its schedules can load.
+            {forEveryone
+              ? "This app needs an account linked for everyone before its schedules can load."
+              : "This app needs a linked account before its schedules can load."}
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
@@ -365,73 +434,195 @@ function DiscoveryFailure<E>({
   return <Failure cause={cause} {...(retry ? { retry } : {})} />;
 }
 
-function Controls<E>({
-  row,
+/**
+ * The member's controls for their copy, or an editor's for the app schedule. Enabling configures
+ * the copy, adding it when there is none; pausing, running, changing approvals and removing act on
+ * the existing copy. App schedules run only mutations without approval, so they have no approval
+ * choice.
+ */
+function ScheduleActions<E>({
+  name,
+  copy,
+  declared,
+  approvals,
+  configure,
   actions,
   Failure,
 }: {
-  readonly row: Row;
-  readonly actions: ScheduleControls<E>;
+  readonly name: string;
+  readonly copy: ScheduleSettings | undefined;
+  readonly declared: boolean;
+  readonly approvals: boolean;
+  readonly configure: ScheduleControls<E>;
+  readonly actions: ScheduleCopyControls<E> | undefined;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
-  const configure = useAtomSet(actions.configure, { mode: "promiseExit" });
-  const run = useAtomSet(actions.runNow, { mode: "promiseExit" });
-  const saving = useAtomValue(actions.configure).waiting,
-    starting = useAtomValue(actions.runNow).waiting;
+  const enable = useAtomSet(configure.configure, { mode: "promiseExit" });
+  const enabling = useAtomValue(configure.configure).waiting;
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>(copy?.approvalMode ?? "automatic");
   const [error, setError] = useState<Cause.Cause<E>>();
-  const enabled = row.settings?.enabled ?? false;
-  const approvalMode = row.settings?.approvalMode ?? "automatic";
-  const change = async (enabled: boolean, approvalMode: "automatic" | "browser") => {
+  const act = async (result: Promise<Exit.Exit<unknown, E>>) => {
     setError(undefined);
-    const result = await configure({ enabled, approvalMode });
-    if (Exit.isFailure(result)) setError(result.cause);
+    const exit = await result;
+    if (Exit.isFailure(exit)) setError(exit.cause);
   };
+  const failure = error && (
+    <div className="w-full">
+      <Failure cause={error} />
+    </div>
+  );
+  if (copy === undefined || actions === undefined)
+    return (
+      <div className="flex max-w-full flex-wrap items-center gap-2">
+        {approvals && (
+          <ApprovalSelect
+            name={name}
+            value={approvalMode}
+            disabled={enabling}
+            onChange={setApprovalMode}
+          />
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={enabling || !declared}
+          onClick={() => {
+            void act(enable({ enabled: true, approvalMode }));
+          }}
+        >
+          Enable
+        </Button>
+        {failure}
+      </div>
+    );
+  return (
+    <CopyActions
+      name={name}
+      copy={copy}
+      declared={declared}
+      approvals={approvals}
+      enable={() => act(enable({ enabled: true, approvalMode: copy.approvalMode }))}
+      enabling={enabling}
+      actions={actions}
+      act={act}
+    >
+      {failure}
+    </CopyActions>
+  );
+}
+
+function CopyActions<E>({
+  name,
+  copy,
+  declared,
+  approvals,
+  enable,
+  enabling,
+  actions,
+  act,
+  children,
+}: {
+  readonly name: string;
+  readonly copy: ScheduleSettings;
+  readonly declared: boolean;
+  readonly approvals: boolean;
+  readonly enable: () => Promise<void>;
+  readonly enabling: boolean;
+  readonly actions: ScheduleCopyControls<E>;
+  readonly act: (result: Promise<Exit.Exit<unknown, E>>) => Promise<void>;
+  readonly children: ReactNode;
+}) {
+  const update = useAtomSet(actions.update, { mode: "promiseExit" });
+  const run = useAtomSet(actions.runNow, { mode: "promiseExit" });
+  const remove = useAtomSet(actions.remove, { mode: "promiseExit" });
+  const updating = useAtomValue(actions.update).waiting,
+    starting = useAtomValue(actions.runNow).waiting,
+    removing = useAtomValue(actions.remove).waiting;
+  const busy = enabling || updating || starting || removing;
   return (
     <div className="flex max-w-full flex-wrap items-center gap-2">
-      <Select
-        value={approvalMode}
-        disabled={saving || starting || (!row.declared && !row.settings)}
-        onValueChange={(value) => {
-          if (Schema.is(ScheduleApprovalMode)(value)) void change(enabled, value);
-        }}
-      >
-        <SelectTrigger aria-label={`Approvals for ${row.name}`} className="w-44">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="automatic">Skip approvals</SelectItem>
-          <SelectItem value="browser">Browser approvals</SelectItem>
-        </SelectContent>
-      </Select>
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={saving || starting || (!enabled && !row.declared)}
-        onClick={() => {
-          void change(!enabled, approvalMode);
-        }}
-      >
-        {enabled ? "Pause" : "Enable"}
-      </Button>
+      {approvals && (
+        <ApprovalSelect
+          name={name}
+          value={copy.approvalMode}
+          disabled={busy}
+          onChange={(value) => void act(update({ enabled: copy.enabled, approvalMode: value }))}
+        />
+      )}
+      {copy.enabled ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            void act(update({ enabled: false, approvalMode: copy.approvalMode }));
+          }}
+        >
+          Pause
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy || !declared}
+          onClick={() => {
+            void enable();
+          }}
+        >
+          Enable
+        </Button>
+      )}
       <Button
         size="sm"
         variant="ghost"
-        disabled={
-          saving || starting || !enabled || row.settings?.activeRun !== null || !row.declared
-        }
-        onClick={async () => {
-          setError(undefined);
-          const result = await run();
-          if (Exit.isFailure(result)) setError(result.cause);
+        disabled={busy || !copy.enabled || copy.activeRun !== null || !declared}
+        onClick={() => {
+          void act(run());
         }}
       >
         Run now
       </Button>
-      {error && (
-        <div className="w-full">
-          <Failure cause={error} />
-        </div>
-      )}
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={busy}
+        onClick={() => {
+          void act(remove());
+        }}
+      >
+        Remove
+      </Button>
+      {children}
     </div>
+  );
+}
+
+function ApprovalSelect({
+  name,
+  value,
+  disabled,
+  onChange,
+}: {
+  readonly name: string;
+  readonly value: ApprovalMode;
+  readonly disabled: boolean;
+  readonly onChange: (value: ApprovalMode) => void;
+}) {
+  return (
+    <Select
+      value={value}
+      disabled={disabled}
+      onValueChange={(next) => {
+        if (Schema.is(ScheduleApprovalMode)(next)) onChange(next);
+      }}
+    >
+      <SelectTrigger aria-label={`Approvals for ${name}`} className="w-44">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="automatic">Skip approvals</SelectItem>
+        <SelectItem value="browser">Browser approvals</SelectItem>
+      </SelectContent>
+    </Select>
   );
 }

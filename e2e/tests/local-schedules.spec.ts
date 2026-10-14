@@ -20,11 +20,11 @@ const definitions = Schema.Array(
     settings: Schema.NullOr(settings),
   }),
 );
-const source = `import { defineApp, mutation, interval, cron, object, string, router } from "apps";
+const source = `import { defineApp, mutation, userInterval, userCron, object, string, router } from "apps";
 const send = mutation({ input: object({ channel: string() }) }, async () => { throw new Error("Discovery must not execute"); });
-export default defineApp({ accounts: {} }, async () => ({  tools: router({ send }), schedules: {
-  digest: interval({ minutes: 5 }, send, { channel: "support" }),
-  morning: cron({ expression: "0 9 * * MON-FRI", timezone: "America/Los_Angeles" }, send, { channel: "daily" }),
+export default defineApp({}, async () => ({  tools: router({ send }), schedules: {
+  digest: userInterval({ minutes: 5 }, send, { channel: "support" }),
+  morning: userCron({ expression: "0 9 * * MON-FRI", timezone: "America/Los_Angeles" }, send, { channel: "daily" }),
 } }));`;
 layer(TestLive, { excludeTestServices: true })("Local schedules", (it) => {
   it.effect(scenarios.schedules.title, (context) =>

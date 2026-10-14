@@ -53,7 +53,7 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
               path: "index.ts",
               content: `import { defineApp, query, mutation, workflow, object, router } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   const remote = await mcpRouter({ url: ${JSON.stringify(`${upstream}/mcp`)} });
   return { tools: router({
     remote,

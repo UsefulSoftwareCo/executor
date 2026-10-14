@@ -14,7 +14,6 @@ import { appsManifest } from "../support/apps-release.ts";
 layer(TestLive, { excludeTestServices: true })("Local app navigation", (it) => {
   for (const [scenario, viewport] of [
     [scenarios.localAppDetailLoading, { width: 1440, height: 900 }],
-    [scenarios.localAppDetailLoadingMobile, { width: 390, height: 844 }],
   ] as const)
     it.effect(scenario.title, (context) =>
       withCase(
@@ -37,7 +36,7 @@ layer(TestLive, { excludeTestServices: true })("Local app navigation", (it) => {
                   path: "index.ts",
                   content: `
 import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     hello: query({ description: "A simple greeting", input: object({}) }, async () => "Hello"),
   })

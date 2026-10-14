@@ -9,10 +9,10 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
-const source = `import { defineApp, mutation, object, interval, router } from "apps";
+const source = `import { defineApp, mutation, object, userInterval, router } from "apps";
 import { always } from "apps/operations/approval";
 const send = mutation({ input: object({}), approval: always() }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({  tools: router({ send }), schedules: { digest: interval({ hours: 1 }, send, {}) } }));`;
+export default defineApp({}, async () => ({  tools: router({ send }), schedules: { digest: userInterval({ hours: 1 }, send, {}) } }));`;
 layer(TestLive, { excludeTestServices: true })("Schedule dashboard", (it) => {
   it.effect(scenarios.scheduledBrowser.title, (context) =>
     withCase(
@@ -69,7 +69,7 @@ layer(TestLive, { excludeTestServices: true })("Schedule dashboard", (it) => {
               page.waitForResponse(
                 (response) =>
                   response.request().method() === "POST" &&
-                  new URL(response.url()).pathname.endsWith("/schedules/digest/run"),
+                  /\/schedules\/digest\/copies\/[^/]+\/run$/.test(new URL(response.url()).pathname),
               ),
               page.getByRole("button", { name: "Run now", exact: true }).click(),
             ]).then(([response]) => response.status()),

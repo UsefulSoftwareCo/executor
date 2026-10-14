@@ -1,5 +1,6 @@
 import { dashboardHttpClient, hydrated, requestKey } from "@executor-js/ui/contracts/http";
 import { observeBrowserTransport, observeBrowserResponse } from "@executor-js/telemetry/browser";
+import { observeBuild } from "@executor-js/dashboard-start/build-change";
 import { BrowserAtoms, DashboardRuntime } from "./telemetry.ts";
 import { toolRunApproval } from "@executor-js/ui/contracts/browser-approval";
 import { LocalAppManagementApi } from "@executor-js/local-server/app-management";
@@ -9,26 +10,20 @@ import {
   DashboardOverview,
   DashboardTools,
 } from "@executor-js/local-server/contracts";
-import type {
-  AppId,
-  ApprovalRequestId,
-  DeploymentId,
-  Json,
-  ProfileId,
-  ToolName,
-} from "@executor-js/sdk";
+import type { AppId, ApprovalRequestId, DeploymentId, Json, ToolName } from "@executor-js/sdk";
 import { Cause, Clock, Data, Effect, Option, Schedule, Schema, Stream } from "effect";
 import { HttpClientError } from "effect/http";
 import { AsyncResult, Atom, AtomHttpApi } from "effect/reactivity";
 import { accountNeedsSignIn } from "./dashboard.ts";
 import { acknowledgedQuery, currentQuery } from "@executor-js/ui/contracts/mutations";
+import { refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
 
 /** The browser uses the same schemas and route definitions as the local product server. */
 export class DashboardClient extends AtomHttpApi.Service<DashboardClient>()("DashboardClient", {
   api: DashboardApi.addHttpApi(LocalAppManagementApi),
   httpClient: dashboardHttpClient,
   runtime: DashboardRuntime,
-  transformClient: observeBrowserTransport,
+  transformClient: (client) => observeBrowserTransport(observeBuild(client)),
   transformResponse: observeBrowserResponse,
 }) {}
 
@@ -216,37 +211,30 @@ const sourceFileQuery = Atom.family((key: SourceFileKey) =>
 export const sourceFileAtom = (key: ConstructorParameters<typeof SourceFileKey>[0]) =>
   sourceFileQuery(new SourceFileKey(key));
 
-/** Tool discovery reruns only when this app's execution inputs change. */
+/**
+ * Tool discovery follows the app's deployment. It is read again after linking, unlinking or
+ * connecting an account, and by the page's normal refresh on returning to it.
+ */
 class ToolKey extends Data.Class<{
   readonly app: AppId;
-  readonly profile?: ProfileId | undefined;
-  readonly revision?: number | undefined;
   readonly deployment?: DeploymentId | null | undefined;
-  readonly accounts?: string | undefined;
 }> {}
 const toolQueries = Atom.family((key: ToolKey) =>
   liveQueryAtom({
     name: "tools",
     // Every part of the key selects a distinct subscription, including those the request omits.
-    key: {
-      app: key.app,
-      profile: key.profile,
-      revision: key.revision,
-      deployment: key.deployment,
-      accounts: key.accounts,
-    },
+    key: { app: key.app, deployment: key.deployment },
     success: DashboardTools,
     query: Effect.flatMap(DashboardClient, (client) =>
       client.dashboard.liveTools({
         params: { app: key.app },
-        query: { profile: key.profile, expectedProfileRevision: key.revision },
         sseOptions: { maxEventSize: 16 * 1024 * 1024 },
       }),
     ),
-  }).pipe(currentQuery),
+  }).pipe(refreshedOnFocus, currentQuery),
 );
 
-/** Catalog identities follow each tab's saved account selection. */
+/** One catalog per app and deployment. */
 export const toolsAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolQueries(new ToolKey(key));
 
@@ -256,10 +244,10 @@ const toolLists = Atom.family((key: ToolKey) =>
     AsyncResult.map((page) => page.tools),
   ),
 );
-/** The selected profile's tools alone, for pickers that do not group them. */
+/** The catalog's tools alone, for pickers that do not group them. */
 export const toolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolLists(new ToolKey(key));
-/** Shared browser view for the selected profile, with the routers that group its tools. */
+/** Shared browser view for the page's accounts, with the routers that group its tools. */
 export const toolCatalogAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolQueries(new ToolKey(key));
 class ToolDetailKey extends Data.Class<
@@ -277,8 +265,6 @@ export const toolDetailAtom = (key: ConstructorParameters<typeof ToolDetailKey>[
 
 class CallKey extends Data.Class<{
   readonly app: AppId;
-  readonly profile?: ProfileId | undefined;
-  readonly expectedProfileRevision?: number | undefined;
   readonly deployment?: DeploymentId | undefined;
   readonly tool: ToolName;
   readonly kind: "query" | "mutation";
@@ -286,11 +272,14 @@ class CallKey extends Data.Class<{
 const calls = Atom.family(({ app, ...target }: CallKey) =>
   DashboardClient.runtime.fn((input: Json) =>
     Effect.flatMap(DashboardClient, (client) =>
-      client.dashboard.runTool({ params: { app }, payload: { ...target, input } }),
+      client.dashboard.runTool({
+        params: { app },
+        payload: { ...target, input },
+      }),
     ),
   ),
 );
-/** Each tool call runs against the tab's exact profile revision and deployment. */
+/** Each tool call runs with the app's linked accounts and the page's deployment. */
 export const callToolAtom = (key: ConstructorParameters<typeof CallKey>[0]) =>
   calls(new CallKey(key));
 const toolRunApprovals = Atom.family((endpoint: string) => toolRunApproval(BrowserAtoms, endpoint));

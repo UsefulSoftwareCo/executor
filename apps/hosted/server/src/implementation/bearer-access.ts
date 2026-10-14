@@ -25,7 +25,7 @@ import {
   type GrantTarget,
 } from "@executor-js/mcp-auth";
 import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
-import { Clock, Effect, Option, Schema } from "effect";
+import { Clock, Context, Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { ApiKeyId, ApiKeyMetadata } from "../contracts/api-keys.ts";
 import {
@@ -75,7 +75,29 @@ const bearer = (headers: Headers) => headers.get("authorization")?.match(/^Beare
  * the credential (oauth-provider's default `storeTokens: "hashed"`, api-key's default hasher).
  */
 const storedHash = (token: string) =>
-  Effect.tryPromise({ try: () => defaultKeyHasher(token), catch: () => unavailable });
+  Effect.gen(function* () {
+    const hashes = yield* BearerHashes;
+    const known = hashes?.get(token);
+    if (known !== undefined) return known;
+    const hash = yield* Effect.tryPromise({
+      try: () => defaultKeyHasher(token),
+      catch: () => unavailable,
+    });
+    hashes?.set(token, hash);
+    return hash;
+  });
+
+/**
+ * The stored hashes of the bearer tokens one HTTP request has already checked, provided for that
+ * request only. Hashing waits for Web Crypto, so a recheck that hashes again sends its statement
+ * after an event-loop turn, apart from reads issued with it; from a Worker that second write waits
+ * for the first one's acknowledgement, a whole round trip. A hash is a pure function of the
+ * token, so reusing it within the request skips no check.
+ */
+export const BearerHashes = Context.Reference<Map<string, string> | undefined>(
+  "hosted/BearerHashes",
+  { defaultValue: () => undefined },
+);
 
 /**
  * A stored `string[]` (a `jsonb` column), as Better Auth reads it: the driver decodes the
@@ -372,6 +394,7 @@ const PatRow = Schema.Struct({
   metadata: Schema.NullOr(Schema.String),
   expiresAt: Schema.NullOr(Schema.Number),
   usable: Schema.Boolean,
+  contended: Schema.Boolean,
   userExists: Schema.Boolean,
   memberships: Schema.String,
   urlOrganizations: Schema.String,
@@ -386,12 +409,26 @@ const Memberships = Schema.Array(
 );
 
 /**
+ * How stale a key's recorded last use may be. API keys list it to the minute; writing it on every
+ * request would make each bearer call, reads included, a database write.
+ */
+const lastRequestPrecision = 60_000;
+
+/**
  * A personal access token, its owner and the owner's memberships. The statement applies Better
- * Auth's writes with the application clock `at` (epoch milliseconds): a live key records its use (`lastRequest`,
- * `updatedAt`), and an enabled key past its expiry is deleted, so an expired credential's hash
- * does not outlive its first refused use. The caller still decides expiry with its clock after
- * the statement, as Better Auth does. Executor never sets per-key quotas, so a key with
- * `remaining` set is refused rather than used without consuming its quota.
+ * Auth's writes with the application clock `at` (epoch milliseconds): a live key records its use
+ * (`lastRequest`, `updatedAt`) at most once per `lastRequestPrecision`, and an enabled key past
+ * its expiry is deleted, so an expired credential's hash does not outlive its first refused use.
+ * The caller still decides expiry with its clock after the statement, as Better Auth does.
+ * Executor never sets per-key quotas, so a key with `remaining` set is refused rather than used
+ * without consuming its quota.
+ *
+ * The statement reads the key from its snapshot. A key whose use is already recorded is accepted
+ * without a write, so it does not wait for a concurrent revocation that has not committed: as for
+ * session reads, a revocation applies to requests whose statement starts after it commits. A key
+ * whose use is stale is updated, and the update rechecks the row it locks, so concurrent requests
+ * record the use once. When a concurrent commit changed the row first, the update matches nothing
+ * and `contended` asks the caller to read the key again from a fresh snapshot.
  */
 const loadPat = (
   sql: SqlClient.SqlClient,
@@ -404,12 +441,19 @@ const loadPat = (
   with k as (
     select id, "referenceId", metadata, "expiresAt",
       enabled is not false and remaining is null as usable,
-      enabled is not false and "expiresAt" < to_timestamp(${at}::float8 / 1000) as expired
+      enabled is not false and "expiresAt" < to_timestamp(${at}::float8 / 1000) as expired,
+      "lastRequest" > to_timestamp(${at - lastRequestPrecision}::float8 / 1000) as recorded
     from apikey where key = ${hash}
   ), used as (
     update apikey set "lastRequest" = to_timestamp(${at}::float8 / 1000),
       "updatedAt" = to_timestamp(${at}::float8 / 1000)
-    where id in (select id from k where usable and not coalesce(expired, false)) returning id
+    where id in (select id from k
+      where usable and not coalesce(expired, false) and not coalesce(recorded, false))
+      and enabled is not false and remaining is null
+      and ("expiresAt" is null or "expiresAt" >= to_timestamp(${at}::float8 / 1000))
+      and ("lastRequest" is null
+        or "lastRequest" <= to_timestamp(${at - lastRequestPrecision}::float8 / 1000))
+    returning id
   ), deleted as (
     delete from apikey where id in (select id from k where expired) returning id
   )
@@ -418,7 +462,10 @@ const loadPat = (
     k."referenceId" as "userId",
     k.metadata,
     floor(extract(epoch from k."expiresAt") * 1000)::float8 as "expiresAt",
-    k.usable and exists (select 1 from used) as usable,
+    k.usable and not coalesce(k.expired, false)
+      and (coalesce(k.recorded, false) or exists (select 1 from used)) as usable,
+    k.usable and not coalesce(k.expired, false) and not coalesce(k.recorded, false)
+      and not exists (select 1 from used) as contended,
     exists (select 1 from "user" u where u.id = k."referenceId") as "userExists",
     (select coalesce(json_agg(json_build_object(
         'organization', m."organizationId", 'role', m.role, 'slug', o.slug)), '[]'::json)::text
@@ -434,17 +481,25 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
   Effect.gen(function* () {
     const header = request.headers.get("x-executor-organization");
     const hash = yield* storedHash(token);
-    const rows = yield* loadPat(
-      sql,
-      hash,
-      yield* Clock.currentTimeMillis,
-      request.organization ?? null,
-      header,
-    );
-    if (rows[0] === undefined) return yield* unauthorized;
-    const row = yield* Schema.decodeUnknownEffect(PatRow)(rows[0]).pipe(
-      Effect.mapError(() => unavailable),
-    );
+    const load = Effect.gen(function* () {
+      const rows = yield* loadPat(
+        sql,
+        hash,
+        yield* Clock.currentTimeMillis,
+        request.organization ?? null,
+        header,
+      );
+      if (rows[0] === undefined) return yield* unauthorized;
+      return yield* Schema.decodeUnknownEffect(PatRow)(rows[0]).pipe(
+        Effect.mapError(() => unavailable),
+      );
+    });
+    const first = yield* load;
+    // A concurrent commit changed the key first; its committed state decides. Another change
+    // again is an outage to retry, not a refused key. In a tool call's batch (StatementBatch) only
+    // the first statement joins the batch; this second read runs after it, in its own snapshot.
+    const row = first.contended ? yield* load : first;
+    if (row.contended) return yield* unavailable;
     // Disabled, expired and deleted-user keys are refused.
     const now = yield* Clock.currentTimeMillis;
     if (!row.usable || (row.expiresAt !== null && now > row.expiresAt) || !row.userExists)

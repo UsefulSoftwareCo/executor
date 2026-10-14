@@ -114,11 +114,13 @@ await declarations(join(out, "types"));
 
 // Worker hosts retain these ready-to-link modules with each deployment. They
 // include runtime dependencies and do not execute npm package scripts.
-const snapshot = async (names, external) => {
-  const directory = join(out, ".framework");
+const snapshotDirectory = join(out, ".framework");
+const moduleName = (file) =>
+  `node_modules/apps/${relative(snapshotDirectory, file.path).split("\\").join("/")}`;
+const snapshot = async (names, external, sourcemap = false) => {
   const result = await build({
     entryPoints: Object.fromEntries(names.map((name) => [name, entries[name]])),
-    outdir: directory,
+    outdir: snapshotDirectory,
     bundle: true,
     splitting: true,
     format: "esm",
@@ -127,37 +129,61 @@ const snapshot = async (names, external) => {
     minify: true,
     write: false,
     external,
+    ...(sourcemap ? { sourcemap: "external", sourcesContent: false } : {}),
   });
-  return Object.fromEntries(
-    result.outputFiles.map((file) => [
-      `node_modules/apps/${relative(directory, file.path).split("\\").join("/")}`,
-      file.text,
-    ]),
-  );
+  return result.outputFiles;
 };
+const serverEntries = [
+  "index",
+  "host",
+  "storage/facet",
+  "contracts",
+  "mcp",
+  "graphql",
+  "openapi",
+  "skills",
+  "skills/effect",
+  "operations/approval",
+];
+const server = Object.fromEntries(
+  (await snapshot(serverEntries, [])).map((file) => [moduleName(file), file.text]),
+);
 await writeFile(
   join(out, "runtime.json"),
   JSON.stringify({
     protocol: frameworkProtocol,
     version: manifest.version,
-    server: await snapshot(
-      [
-        "index",
-        "host",
-        "storage/facet",
-        "contracts",
-        "mcp",
-        "graphql",
-        "openapi",
-        "skills",
-        "skills/effect",
-        "operations/approval",
-      ],
-      [],
+    server,
+    browser: Object.fromEntries(
+      (await snapshot(["index", "client", "effect", "react"], ["react", "react/*"])).map((file) => [
+        moduleName(file),
+        file.text,
+      ]),
     ),
-    browser: await snapshot(["index", "client", "effect", "react"], ["react", "react/*"]),
   }),
 );
+
+// E2E coverage of app Workers maps these modules to their sources (see
+// e2e/coverage.ts), through `runtime.json.map`, which the package does not
+// include. A source map changes esbuild's chunk hashes, so a second build makes
+// the maps and each one goes to the module whose code matches apart from chunk
+// names, which keep their length.
+const chunkNames = (text) => text.replace(/-[A-Z0-9]{8}\.js/g, ".js");
+const byCode = new Map(Object.entries(server).map(([name, text]) => [chunkNames(text), name]));
+const mapped = await snapshot(serverEntries, [], true);
+const maps = {};
+for (const file of mapped) {
+  if (!file.path.endsWith(".map")) continue;
+  const code = mapped.find((output) => `${output.path}.map` === file.path);
+  const name = code === undefined ? undefined : byCode.get(chunkNames(code.text));
+  if (name !== undefined)
+    maps[name] = {
+      ...JSON.parse(file.text),
+      // Source paths resolve from the map's directory, which is this file's.
+      sourceRoot: `${relative(out, dirname(file.path)).split("\\").join("/")}/`,
+    };
+}
+await writeFile(join(out, "runtime.json.map"), JSON.stringify(maps));
 
 const exports = Object.fromEntries(
   Object.entries(manifest.exports)

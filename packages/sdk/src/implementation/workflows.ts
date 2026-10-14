@@ -1,4 +1,4 @@
-import type { ResourceLifecycle } from "../contracts/executor.ts";
+import { CurrentActor } from "../contracts/executor.ts";
 /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
 import { Cause, Clock, Effect, Redacted, Result, Schema, type Crypto } from "effect";
 import { Hex } from "effect/encoding";
@@ -20,7 +20,7 @@ import {
   WorkflowTarget,
   WorkflowApp,
 } from "../contracts/workflows.ts";
-import { SelectedAccounts } from "../contracts/apps.ts";
+import { AccountScope, SelectedAccounts } from "../contracts/apps.ts";
 import { AppId, DeploymentId, OwnerId, StorageError, type Json } from "../contracts/shared.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { Runtime } from "../contracts/runtime.ts";
@@ -28,19 +28,20 @@ import type { ExecutorDatabase } from "./storage.ts";
 import type { Executor } from "../contracts/executor.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
-import { storedProfile } from "./profiles.ts";
-import { ProfileId } from "../contracts/shared.ts";
 import { storedAccount } from "./accounts.ts";
-import { storedApp } from "./apps.ts";
+import { storedApp, storedDeployment } from "./apps.ts";
 import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
+import { invocationScope, scopedSelection } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
 const StoredRun = Schema.Struct({
   id: WorkflowRunId,
   app: AppId,
-  profile: Schema.NullOr(ProfileId),
-  profileRevision: Schema.NullOr(Schema.Int),
+  /** The subject the run started for; its steps are checked against this subject's access. */
+  actor: Schema.NullOr(Schema.NonEmptyString),
+  /** Whether the run started with a caller; its steps bind `ctx.user` only when it did. */
+  scope: AccountScope,
   owner: OwnerId,
   key: Schema.String,
   deployment: DeploymentId,
@@ -114,7 +115,6 @@ export const makeWorkflowRuns = (
   crypto: Crypto.Crypto,
   declarations: Declarations,
   backend?: WorkflowRuntime,
-  lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
   const read = (run: WorkflowRunId, app?: AppId) =>
@@ -141,7 +141,6 @@ export const makeWorkflowRuns = (
       return yield* Schema.decodeUnknownEffect(WorkflowRun)({
         id: row.id,
         app: row.app,
-        ...(row.profile === null ? {} : { profile: row.profile }),
         deployment: row.deployment,
         workflow: row.name,
         createdAt: row.createdAt.toISOString(),
@@ -193,20 +192,24 @@ export const makeWorkflowRuns = (
       "engine",
       true,
     );
+  /** The run's captured deployment, scope and accounts, checked against the actor it started for. */
+  const captured = (row: typeof StoredRun.Type) =>
+    snapshot(db, {
+      app: row.app,
+      deployment: row.deployment,
+      captured: { accounts: row.accounts, scope: row.scope },
+    }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
   const context: WorkflowHost["context"] = (run) =>
     safe(
       Effect.gen(function* () {
         const row = yield* read(run);
         if (terminal(row))
           return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
-        const state = yield* snapshot(
-          db,
-          { app: row.app, deployment: row.deployment, profile: row.profile ?? undefined },
-          row.accounts,
-          row.profileRevision ?? undefined,
-        );
+        const state = yield* captured(row);
         return {
-          ...(yield* resolve(state, resolveAccount, lifecycle)),
+          ...(yield* resolve(state, resolveAccount).pipe(
+            Effect.provideService(CurrentActor, state.actor),
+          )),
           database: ownsDatabase(state.deployment.requirements),
           workflowControls: controls(state),
         };
@@ -219,12 +222,7 @@ export const makeWorkflowRuns = (
         const row = yield* read(run);
         if (row.status === "terminated" || row.status === "errored")
           return yield* failure(row.status === "terminated" ? "terminated" : "conflict");
-        const state = yield* snapshot(
-          db,
-          { app: row.app, deployment: row.deployment, profile: row.profile ?? undefined },
-          row.accounts,
-          row.profileRevision ?? undefined,
-        );
+        const state = yield* captured(row);
         const payload = yield* decrypt(row);
         if (row.status === "queued")
           yield* query(() =>
@@ -423,6 +421,10 @@ export const makeWorkflowRuns = (
         `wfr_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
       );
       const key = input.key ?? id;
+      const actor = inherited === undefined ? yield* CurrentActor : inherited.actor;
+      // A key is the caller's within one scope: a run started without a caller never answers a
+      // start with one, nor the reverse, even for the same actor.
+      const scope = inherited === undefined ? invocationScope(input.accounts) : inherited.scope;
       const find = () =>
         query(() =>
           db.findFirst("workflowRuns", {
@@ -430,16 +432,17 @@ export const makeWorkflowRuns = (
               b.and(
                 b("app", "=", input.app),
                 b("key", "=", key),
-                input.profile === undefined
-                  ? b("profile", "is", null)
-                  : b("profile", "=", input.profile),
+                actor === undefined ? b("actor", "is", null) : b("actor", "=", actor),
+                b("scope", "=", scope),
               ),
           }),
         );
       let row = yield* find();
       if (row === null) {
         const state = inherited ?? (yield* snapshot(db, input));
-        const bound = yield* resolve(state, resolveAccount, lifecycle);
+        const bound = yield* resolve(state, resolveAccount).pipe(
+          Effect.provideService(CurrentActor, actor),
+        );
         const parsed = yield* safe(
           runtime
             .workflow({
@@ -471,16 +474,6 @@ export const makeWorkflowRuns = (
                 set: { createdAt: state.app.createdAt },
               }),
             );
-            if (state.profile !== undefined) {
-              const profile = yield* storedProfile(db, {
-                app: state.app.id,
-                profile: state.profile.id,
-              });
-              if (inherited === undefined && profile.revision !== state.profile.revision)
-                return yield* failure("conflict");
-              if (!profile.enabled || profile.status === "removed" || profile.status === "removing")
-                return yield* failure("conflict");
-            }
             const currentApp = yield* storedApp(db, { app: state.app.id });
             if (
               inherited === undefined &&
@@ -503,8 +496,8 @@ export const makeWorkflowRuns = (
                 id,
                 app: input.app,
                 owner: state.app.owner,
-                profile: input.profile ?? null,
-                profileRevision: state.profile?.revision ?? null,
+                actor: actor ?? null,
+                scope: state.scope,
                 key,
                 deployment: state.deployment.id,
                 name: input.workflow,
@@ -564,7 +557,8 @@ export const makeWorkflowRuns = (
       );
       return yield* view(yield* read(row.id));
     });
-  const list = (input: typeof ListWorkflowRuns.Type, onlyProfile?: ProfileId | null) =>
+  /** `actor` limits the page to one actor's runs; null to runs started without one. */
+  const list = (input: typeof ListWorkflowRuns.Type, actor?: string | null) =>
     Effect.gen(function* () {
       yield* storedApp(db, { app: input.app });
       const limit = input.limit ?? 20;
@@ -573,13 +567,9 @@ export const makeWorkflowRuns = (
           where: (b) =>
             b.and(
               b("app", "=", input.app),
-              ...(onlyProfile === null
-                ? [b("profile", "is", null)]
-                : onlyProfile !== undefined
-                  ? [b("profile", "=", onlyProfile)]
-                  : input.profile === undefined
-                    ? []
-                    : [b("profile", "=", input.profile)]),
+              ...(actor === undefined
+                ? []
+                : [actor === null ? b("actor", "is", null) : b("actor", "=", actor)]),
               ...(input.workflow === undefined ? [] : [b("name", "=", input.workflow)]),
               ...(input.key === undefined ? [] : [b("key", "=", input.key)]),
               ...(input.cursor === undefined ? [] : [b("id", ">", input.cursor)]),
@@ -600,10 +590,10 @@ export const makeWorkflowRuns = (
         ...(rows.length > limit && last !== undefined ? { next: last.id } : {}),
       });
     }).pipe(Effect.withSpan("sdk.workflows.list"));
-  /** The snapshot is the profile boundary: controls never widen to another profile's runs. */
+  /** The snapshot's actor is the boundary: controls never widen to another actor's runs. */
   function controls(inherited: InvocationSnapshot): WorkflowHostControls {
     const app = inherited.app.id;
-    const profile = inherited.profile?.id;
+    const actor = inherited.actor ?? null;
     const parse = <A, B>(
       schema: Schema.Decoder<A>,
       input: unknown,
@@ -612,7 +602,7 @@ export const makeWorkflowRuns = (
     const within = (input: typeof WorkflowTarget.Type) =>
       Effect.gen(function* () {
         const row = yield* read(input.run, input.app);
-        if (row.profile !== (profile ?? null)) return yield* failure("not_found");
+        if (row.actor !== actor) return yield* failure("not_found");
       });
     return {
       start: (input) =>
@@ -621,7 +611,11 @@ export const makeWorkflowRuns = (
           {
             ...input,
             app,
-            profile,
+            accounts: scopedSelection(
+              inherited.deployment.requirements.accounts,
+              inherited.accounts,
+              inherited.scope,
+            ),
           },
           (input) => start(input, inherited),
         ),
@@ -630,15 +624,7 @@ export const makeWorkflowRuns = (
           within(input).pipe(Effect.andThen(get(input))),
         ),
       list: (input) =>
-        parse(
-          Schema.toType(ListWorkflowRuns),
-          {
-            ...input,
-            app,
-            profile,
-          },
-          (input) => list(input, profile ?? null),
-        ),
+        parse(Schema.toType(ListWorkflowRuns), { ...input, app }, (input) => list(input, actor)),
       terminate: (input) =>
         parse(WorkflowTarget, { ...input, app }, (input) =>
           within(input).pipe(Effect.andThen(terminate(input))),
@@ -673,11 +659,22 @@ export const makeWorkflowRuns = (
       list,
       pinned: (input: Parameters<Executor["apps"]["workflowRuns"]["pinned"]>[0]) =>
         Effect.gen(function* () {
-          yield* storedApp(db, { app: input.app, owner: input.owner });
+          const app = yield* storedApp(db, { app: input.app, owner: input.owner });
           const row = yield* read(input.run, input.app);
           if (input.owner !== undefined && row.owner !== input.owner)
             return yield* failure("not_found");
-          return { accounts: row.accounts, profile: row.profile };
+          // Each account keeps the scope its requirement had when the run started, whatever later
+          // deployments declare.
+          const deployment = yield* storedDeployment(db, app, row.deployment).pipe(
+            Effect.catchTags({
+              DeploymentNotFound: () => failure("not_found"),
+              AppNotDeployed: () => failure("not_found"),
+            }),
+          );
+          return {
+            accounts: scopedSelection(deployment.requirements.accounts, row.accounts, row.scope),
+            actor: row.actor,
+          };
         }),
     },
     host: {

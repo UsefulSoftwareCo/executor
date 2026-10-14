@@ -1,6 +1,6 @@
 /**
- * Every dashboard sign-in fills one app requirement. The server saves the account and selects it
- * for the profile in one step; credentials are never entered outside an app.
+ * Every dashboard sign-in fills one app requirement, in the scope the dialog names: saving the
+ * account links it to that requirement. Credentials are never entered outside an app.
  */
 import { Effect } from "effect";
 import type { Atom } from "effect/reactivity";
@@ -8,45 +8,31 @@ import type {
   Account,
   AccountFieldsInput,
   AccountId,
+  AccountScope,
   AppId,
-  OAuthClientInput,
-  ProfileId,
-  SelectedAccounts,
+  DeploymentId,
+  OAuthClientSelection,
 } from "@executor-js/sdk";
-import { DashboardClient, toolsAtom } from "./api.ts";
+import { DashboardClient } from "./api.ts";
 import { accountCredentialsChanged } from "./accounts.ts";
-import { createProfile, profileSelectionChanged } from "./profiles.ts";
+import { refreshAppLinks } from "./app-accounts.ts";
+import { refreshAppDiscovery } from "./app-discovery.ts";
 
-/**
- * One dialog's connection for an app requirement. Without a profile, the first attempt creates
- * one with the shown selection; retries reuse it. `account` replaces that account's credentials.
- */
+/** One dialog's connection for an app requirement. `account` replaces that account's credentials. */
 export function appConnectionAtoms(key: {
   readonly app: AppId;
+  /** The deployment whose discovery the page shows, read again once the account is linked. */
+  readonly deployment: DeploymentId | null;
+  readonly scope: AccountScope;
   readonly requirement: string;
-  readonly profile: ProfileId | undefined;
-  readonly accounts: SelectedAccounts;
   readonly account?: AccountId | undefined;
 }) {
-  const idempotencyKey = crypto.randomUUID();
-  let profile = key.profile;
-  const target = (get: Atom.FnContext) =>
-    Effect.gen(function* () {
-      profile ??= (yield* createProfile(get, {
-        app: key.app,
-        accounts: key.accounts,
-        idempotencyKey,
-      })).id;
-      return {
-        profile,
-        requirement: key.requirement,
-        ...(key.account === undefined ? {} : { account: key.account }),
-      };
-    });
+  const params = { app: key.app, requirement: key.requirement };
+  const target = key.account === undefined ? {} : { account: key.account };
   const saved = (get: Atom.FnContext, account: Account) => {
     accountCredentialsChanged(get, account);
-    profileSelectionChanged(get, key.app);
-    get.refresh(toolsAtom({ app: key.app }));
+    refreshAppLinks(get, key.app, key.requirement);
+    refreshAppDiscovery(get, key);
   };
   return {
     submit: DashboardClient.runtime.fn(
@@ -59,14 +45,13 @@ export function appConnectionAtoms(key: {
         get,
       ) =>
         Effect.gen(function* () {
-          const payload = { ...(yield* target(get)), ...input };
           const client = yield* DashboardClient;
-          const account = yield* client.dashboard.connectAccount({
-            params: { app: key.app },
-            payload,
-          });
+          const request = { params, payload: { ...target, ...input } };
+          const account = yield* key.scope === "app"
+            ? client.dashboard.appConnect(request)
+            : client.dashboard.userConnect(request);
           saved(get, account);
-          return { account, profile: payload.profile };
+          return account;
         }),
     ),
     startOAuth: DashboardClient.runtime.fn(
@@ -74,19 +59,18 @@ export function appConnectionAtoms(key: {
         input: {
           readonly method: string;
           readonly label?: string;
-          readonly client?: OAuthClientInput;
+          readonly client?: OAuthClientSelection;
         },
         get,
       ) =>
         Effect.gen(function* () {
-          const payload = { ...(yield* target(get)), ...input };
           const client = yield* DashboardClient;
-          const signIn = yield* client.dashboard.startOAuth({
-            params: { app: key.app },
-            payload,
-          });
+          const request = { params, payload: { ...target, ...input } };
+          const signIn = yield* key.scope === "app"
+            ? client.dashboard.appConnectOAuth(request)
+            : client.dashboard.userConnectOAuth(request);
           if (signIn.status === "completed") saved(get, signIn.account);
-          return { ...signIn, profile: payload.profile };
+          return signIn;
         }),
     ),
   };

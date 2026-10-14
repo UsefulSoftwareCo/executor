@@ -15,6 +15,7 @@ import {
 } from "../../contracts/errors.ts";
 import { Link, useParams } from "@tanstack/react-router";
 export {
+  AppIcon,
   ProviderIcon,
   SearchInput,
   LoadingRows,
@@ -37,7 +38,7 @@ export function Failure({
     return (
       <ProviderErrorNotice
         error={error.value}
-        context="While using this app and selected profile."
+        context="While using this app and its accounts."
         retry={retry}
         retrying={retrying}
         layout={layout}

@@ -18,7 +18,7 @@ export interface ClientMetadataDocument {
   readonly client_name: string;
   readonly client_uri: string;
   readonly logo_uri: string;
-  /** Exactly the callback the host sends as `redirect_uri`. */
+  /** Exactly the callback sign-ins as this client send as `redirect_uri`, on the document's origin. */
   readonly redirect_uris: readonly [string];
   readonly grant_types: readonly ["authorization_code", "refresh_token"];
   readonly response_types: readonly ["code"];
@@ -39,4 +39,14 @@ export class ClientMetadataUrlInvalid extends Schema.TaggedError<ClientMetadataU
     reason: Schema.Literals(["format", "path"]),
     message: Schema.String,
   },
+) {}
+
+/**
+ * The operator's OAuth client settings are inconsistent: a client ID without its secret, a secret
+ * without its ID, or test client definitions on a host that does not read them. Each problem names
+ * the settings and the client, never a supplied value, so never a client secret.
+ */
+export class FirstPartyOAuthClientsInvalid extends Schema.TaggedError<FirstPartyOAuthClientsInvalid>()(
+  "FirstPartyOAuthClientsInvalid",
+  { message: Schema.String, problems: Schema.Array(Schema.String) },
 ) {}

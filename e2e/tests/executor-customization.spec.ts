@@ -1,7 +1,9 @@
-/** Customized management apps retain personal bindings through the browser and MCP. */
+/** Customized management apps keep their personal account links through the browser and MCP. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { saveAndDeploy } from "../support/app-authoring.ts";
+import { linkedAccountIds } from "../support/app-accounts.ts";
+import { linkedChoice } from "../support/account-choices.ts";
 import { managementApp } from "../support/management-app.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -23,11 +25,6 @@ const Inventory = Schema.Struct({
     Schema.Struct({ id: Schema.String, method: Schema.String, label: Schema.String }),
   ),
 });
-const Profile = Schema.Struct({
-  id: Schema.String,
-  revision: Schema.Number,
-  accounts: Schema.Struct({ service: Schema.String }),
-});
 const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
@@ -42,8 +39,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor customization", (it) 
           browser = yield* Browser,
           oauth = yield* McpOAuth,
           mcp = yield* McpClient;
-        const { app, profile: provisioned } = yield* managementApp(actors.owner);
-        const own = yield* Schema.decodeUnknownEffect(Profile)(provisioned);
+        const { app, account: own } = yield* managementApp(actors.owner);
         const prefix = `/api/organizations/${actors.organization.id}`;
         const path = `${prefix}/apps/${app.id}`;
         const read = (actor: typeof actors.owner) =>
@@ -52,7 +48,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor customization", (it) 
             Effect.flatMap((response) => body(Inventory, response)),
           );
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${own.accounts.service}`, {
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${own}`, {
             label: "My Executor key",
           })).status,
         ).toBe(200);
@@ -93,30 +89,30 @@ layer(HostedLive, { excludeTestServices: true })("Executor customization", (it) 
         expect(saved.files.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual(
           modified.toSorted((a, b) => a.path.localeCompare(b.path)),
         );
+        // The redeployed common app keeps the user's own managed key linked.
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([own]);
         yield* browser.login(actors.owner);
-        yield* browser.use("Open the user's Executor profile", (page) =>
-          page.goto(
-            `/org/${actors.organization.slug}/apps/${app.id}?view=accounts&profile=${own.id}`,
-          ),
+        yield* browser.use("Open the user's Executor accounts", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
         );
-        yield* browser.use("The managed account is selected in the picker", (page) =>
-          page.getByText("My Executor key", { exact: true }).waitFor(),
+        yield* browser.use("The managed account is linked to the common app", (page) =>
+          linkedChoice(page, "Executor", "My Executor key").waitFor(),
         );
-        yield* browser.checkpoint("Executor uses a personal profile of the common app");
+        yield* browser.checkpoint("Executor runs the common app with the user's linked key");
         const grant = yield* oauth.authorize;
         yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
         const client = yield* mcp.connect(
           Redacted.make(Redacted.value(grant.tokens).access_token),
-          "executor-key-profile",
+          "executor-key-account",
         );
         const called = yield* client.use(
-          "Run the default app through its personal MCP target",
+          "Run the default app with the user's linked key",
           (client, signal) =>
             client.callTool(
               {
                 name: "execute",
                 arguments: {
-                  code: `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(own.id)}].context.get({});`,
+                  code: `return await tools[${JSON.stringify(app.slug)}].context.get({});`,
                 },
               },
               undefined,

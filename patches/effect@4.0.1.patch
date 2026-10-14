@@ -433,10 +433,62 @@ index 615a9f9..7874d1c 100644
  //# sourceMappingURL=McpSchema.js.map
 \ No newline at end of file
 diff --git a/dist/ai/McpServer.d.ts b/dist/ai/McpServer.d.ts
-index 63727e7..79bf387 100644
+index 63727e7..4d600ec 100644
 --- a/dist/ai/McpServer.d.ts
 +++ b/dist/ai/McpServer.d.ts
-@@ -315,6 +315,40 @@ export declare const registerToolkit: <Tools extends Record<string, Tool.Any>>(t
+@@ -256,6 +256,39 @@ export declare const layerStdio: (options: {
+     readonly protocols: Arr.NonEmptyReadonlyArray<McpProtocol.ProtocolAdapter>;
+     readonly extensions?: ServerExtensions | undefined;
+ }) => Layer.Layer<McpServer | McpServerClient, Cause.IllegalArgumentError, Stdio>;
++/**
++ * Keeps MCP HTTP sessions beyond a server's memory, for `layerHttp`'s `sessions` option.
++ *
++ * `save` runs when `initialize` opens a session and when the client sets its log level, never
++ * for other requests. `load` runs only for a session id the server does not hold. It passes what
++ * `save` stored to `restore`, if anything, which decodes it and registers the session, and
++ * returns whether the server now holds it. A value the server cannot read, or a version it no
++ * longer serves, returns `false`: the session stays unknown, and the store should not keep
++ * that value as in use. Neither may fail.
++ *
++ * A store keeps protocol state only: who may use a session is for the host to check on every
++ * request.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export interface SessionStore {
++    readonly save: (sessionId: string, session: StoredSession) => Effect.Effect<void>;
++    readonly load: (sessionId: string, restore: (stored: unknown) => boolean) => Effect.Effect<void>;
++}
++/**
++ * What a {@link SessionStore} keeps of one session: its negotiated `initialize`, encoded as JSON,
++ * and the log level the client set, if any.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export type StoredSession = {
++    readonly initialize: typeof McpSchema.Initialize.payloadSchema.Encoded;
++    readonly logLevel?: McpSchema.LoggingLevel;
++};
+ /**
+  * Registers a Streamable HTTP MCP endpoint at `options.path`.
+  *
+@@ -298,6 +331,11 @@ export declare const layerHttp: (options: {
+     readonly protocols: Arr.NonEmptyReadonlyArray<McpProtocol.ProtocolAdapter>;
+     readonly extensions?: ServerExtensions | undefined;
+     readonly allowedOrigins?: ReadonlyArray<string> | undefined;
++    /**
++     * Keeps sessions beyond this server's memory, so a client continues its session after the
++     * server restarts. Without one, a restart forgets every session (`404`).
++     */
++    readonly sessions?: SessionStore | undefined;
+ }) => Layer.Layer<McpServer | McpServerClient, Cause.IllegalArgumentError, HttpRouter.HttpRouter>;
+ /**
+  * Registers a `Toolkit` with the `McpServer`.
+@@ -315,6 +353,40 @@ export declare const registerToolkit: <Tools extends Record<string, Tool.Any>>(t
   * @since 4.0.0
   */
  export declare const toolkit: <Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>) => Layer.Layer<never, never, Tool.HandlersFor<Tools> | Exclude<Tool.HandlerServices<Tools>, McpRequestContext>>;
@@ -478,7 +530,7 @@ index 63727e7..79bf387 100644
   * Utility type that validates a completion-handler record against the allowed
   * parameter keys.
 diff --git a/dist/ai/McpServer.js b/dist/ai/McpServer.js
-index 2da5941..eab5665 100644
+index 2da5941..63c4447 100644
 --- a/dist/ai/McpServer.js
 +++ b/dist/ai/McpServer.js
 @@ -423,8 +423,15 @@ export class McpServer extends /*#__PURE__*/Context.Service()("effect/ai/McpServ
@@ -548,7 +600,15 @@ index 2da5941..eab5665 100644
                  });
                  activeRequests.set(clientId, requests);
                }
-@@ -1090,9 +1112,7 @@ export const layerHttp = options => {
+@@ -1083,16 +1105,14 @@ const mcpStdioSerialization = protocols => {
+  * @since 4.0.0
+  */
+ export const layerHttp = options => {
+-  const runtime = McpRuntime.layer(options.protocols);
++  const runtime = McpRuntime.layer(options.protocols, options.sessions);
+   const methodNotAllowedResponse = HttpServerResponse.empty({
+     status: 405,
+     headers: {
        allow: "POST"
      }
    });
@@ -559,7 +619,7 @@ index 2da5941..eab5665 100644
    const routes = Layer.mergeAll(HttpRouter.add("GET", options.path, methodNotAllowed), HttpRouter.add("PUT", options.path, methodNotAllowed), HttpRouter.add("PATCH", options.path, methodNotAllowed), HttpRouter.add("DELETE", options.path, methodNotAllowed), HttpRouter.add("OPTIONS", options.path, methodNotAllowed));
    return Layer.merge(layerWithRuntime(options, "http"), routes).pipe(Layer.provide(layerMcpProtocolHttp(options)), Layer.provide(runtime), Layer.provide(RpcSerialization.layerJsonRpc()));
  };
-@@ -1105,20 +1125,14 @@ const layerMcpProtocolHttp = options => Layer.effect(RpcServer.Protocol)(Effect.
+@@ -1105,31 +1125,43 @@ const layerMcpProtocolHttp = options => Layer.effect(RpcServer.Protocol)(Effect.
    const router = yield* HttpRouter.HttpRouter;
    yield* router.add("POST", options.path, request => {
      if (!isAllowedMcpOrigin(request, options.allowedOrigins)) {
@@ -583,7 +643,9 @@ index 2da5941..eab5665 100644
      }
      return Effect.gen(function* () {
        const parsed = yield* Effect.result(Effect.flatMap(request.text, Schema.decodeEffect(Schema.UnknownFromJsonString)));
-@@ -1126,10 +1140,26 @@ const layerMcpProtocolHttp = options => Layer.effect(RpcServer.Protocol)(Effect.
++      const sessionId = request.headers[MCP_SESSION_ID_HEADER];
++      if (sessionId !== undefined) yield* runtime.restoreHttp(sessionId);
+       const admission = runtime.admitHttp(request.headers, parsed);
        if (admission._tag === "Rejected") {
          return admission.response;
        }
@@ -612,7 +674,7 @@ index 2da5941..eab5665 100644
        });
        return yield* admission.acknowledge ? Effect.catchCause(response, () => Effect.succeed(HttpServerResponse.empty({
          status: 202
-@@ -1180,15 +1210,16 @@ function mcpJsonRpcSerialization(options) {
+@@ -1180,15 +1212,16 @@ function mcpJsonRpcSerialization(options) {
      ...serialization,
      makeUnsafe: () => {
        const parser = serialization.makeUnsafe();
@@ -633,7 +695,7 @@ index 2da5941..eab5665 100644
              }
            }
            const encoded = parser.encode(response);
-@@ -1198,7 +1229,12 @@ function mcpJsonRpcSerialization(options) {
+@@ -1198,7 +1231,12 @@ function mcpJsonRpcSerialization(options) {
            if (cancelledIds.size > 0) {
              // Count cancelled completions toward the batch, but never write their responses.
              // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/cancellation
@@ -647,7 +709,7 @@ index 2da5941..eab5665 100644
              if (Array.isArray(message)) {
                const remaining = message.filter(keep);
                if (remaining.length === 0) return undefined;
-@@ -1244,6 +1280,19 @@ const isAllowedMcpOrigin = (request, allowedOrigins) => {
+@@ -1244,6 +1282,19 @@ const isAllowedMcpOrigin = (request, allowedOrigins) => {
    const origin = request.headers["origin"];
    return origin === undefined || (allowedOrigins ?? []).includes(origin);
  };
@@ -667,7 +729,7 @@ index 2da5941..eab5665 100644
  const mcpMediaTypes = header => header === undefined ? [] : header.split(",").flatMap(part => {
    const [mediaType, ...parameters] = part.split(";");
    const quality = parameters.map(parameter => parameter.trim().toLowerCase()).find(parameter => parameter.startsWith("q="));
-@@ -1400,6 +1449,32 @@ const toolJsonSchema = (schema, strict) => {
+@@ -1400,6 +1451,32 @@ const toolJsonSchema = (schema, strict) => {
   * @since 4.0.0
   */
  export const toolkit = toolkit => Layer.effectDiscard(registerToolkit(toolkit)).pipe(Layer.provide(McpServer.layer));
@@ -816,10 +878,74 @@ index 0161147..e83835d 100644
        return yield* Effect.void;
      })
 diff --git a/dist/ai/internal/mcpRuntime.js b/dist/ai/internal/mcpRuntime.js
-index 06370fd..c04af48 100644
+index 06370fd..c93d955 100644
 --- a/dist/ai/internal/mcpRuntime.js
 +++ b/dist/ai/internal/mcpRuntime.js
-@@ -89,6 +89,14 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+@@ -6,7 +6,9 @@ import * as HttpServerRequest from "../../http/HttpServerRequest.js";
+ import * as HttpServerResponse from "../../http/HttpServerResponse.js";
+ import * as Layer from "../../Layer.js";
+ import * as Predicate from "../../Predicate.js";
++import { CurrentLogLevel } from "../../References.js";
+ import * as Result from "../../Result.js";
++import * as Schema from "../../Schema.js";
+ import * as RpcGroup from "../../rpc/RpcGroup.js";
+ import * as PublicMcpSchema from "../McpSchema.js";
+ import * as McpProtocol from "./mcpProtocol.js";
+@@ -72,9 +74,52 @@ export const selectStatefulProtocol = (protocols, offeredVersion) => protocols.f
+ /**
+  * @internal
+  */
+-export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
++export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols, sessions) {
+   const statefulProtocol = protocols.find(protocol => protocol.runtime._tag === "Stateful");
+   const stateful = statefulProtocol === undefined ? undefined : McpStatefulRuntime.make();
++  // Set when the server installs its handlers. The server starts in its own fiber, so a woken
++  // server's first request can arrive before that; it then uses the level in effect.
++  let defaultLogLevel;
++  const decodeStored = Schema.decodeUnknownOption(McpStatefulRuntime.StoredSession);
++  // What the store keeps: the negotiated initialize and any level the client set, never
++  // anything about who the caller is. The host authenticates every request itself.
++  const storedSession = (binding, logLevel) => ({
++    initialize: Schema.encodeSync(PublicMcpSchema.Initialize.payloadSchema)(binding.initializePayload),
++    ...(logLevel === undefined ? {} : {
++      logLevel
++    })
++  });
++  const restoreHttp = sessionId => {
++    if (sessions === undefined || stateful === undefined || stateful.resolveSessionId(sessionId) !== undefined) {
++      return Effect.void;
++    }
++    return Effect.flatMap(CurrentLogLevel, currentLevel => sessions.load(sessionId, stored => {
++      // A concurrent request may have restored it before this one read the store.
++      if (stateful.resolveSessionId(sessionId) !== undefined) return true;
++      const decoded = decodeStored(stored);
++      if (decoded._tag === "None") return false;
++      const initializePayload = decoded.value.initialize;
++      // A session negotiated a version this server no longer serves stays unknown: 404.
++      const protocol = registry.protocols.find(protocol => protocol.runtime._tag === "Stateful" && protocol.protocolVersion === initializePayload.protocolVersion);
++      if (protocol === undefined) return false;
++      stateful.registerHttp(sessionId, {
++        initializePayload,
++        negotiatedProfile: {
++          protocolVersion: initializePayload.protocolVersion,
++          clientCapabilities: initializePayload.capabilities,
++          clientInfo: initializePayload.clientInfo,
++          requestMetadata: initializePayload._meta
++        },
++        protocol: protocol,
++        supportsResourceSubscriptions: false,
++        logLevel: defaultLogLevel ?? currentLevel,
++        ...(decoded.value.logLevel === undefined ? {} : {
++          mcpLogLevel: decoded.value.logLevel
++        })
++      });
++      return true;
++    }));
++  };
+   const protocolVersions = protocols.map(protocol => protocol.protocolVersion);
+   let statelessDescriptor;
+   let statelessProtocol;
+@@ -89,6 +134,14 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
      statelessProtocol = protocol;
    }
    const registry = yield* McpProtocolRegistry.make(protocols);
@@ -834,7 +960,7 @@ index 06370fd..c04af48 100644
    const selectHttpProtocol = (headers, input) => {
      const protocolVersion = headers[MCP_PROTOCOL_VERSION_HEADER];
      const sessionId = headers[MCP_SESSION_ID_HEADER];
-@@ -130,14 +138,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+@@ -130,14 +183,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
          return {
            _tag: "Rejected",
            status: 400,
@@ -850,7 +976,7 @@ index 06370fd..c04af48 100644
          };
        }
        const method = inputRecord?.method;
-@@ -159,23 +160,28 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+@@ -159,23 +205,28 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
        };
      }
      const binding = sessionId === undefined ? undefined : stateful?.resolveSessionId(sessionId);
@@ -886,7 +1012,15 @@ index 06370fd..c04af48 100644
      }
      return {
        _tag: "Accepted",
-@@ -276,10 +282,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+@@ -260,6 +311,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+       };
+     }),
+     resolveRequest: (clientId, headers) => stateful?.resolve(clientId, headers),
++    restoreHttp,
+     admitHttp: (headers, parsed) => {
+       const reject = (status, error, id = null) => ({
+         _tag: "Rejected",
+@@ -276,10 +328,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
        if (Result.isFailure(parsed)) {
          const version = headers[MCP_PROTOCOL_VERSION_HEADER];
          if (version !== undefined && !registry.protocols.some(protocol => protocol.protocolVersion === version)) {
@@ -900,7 +1034,7 @@ index 06370fd..c04af48 100644
            message: "Parse error"
          }));
        }
-@@ -291,8 +298,13 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+@@ -291,8 +344,13 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
            }));
          }
          const admission = selectHttpProtocol(headers, input);
@@ -916,7 +1050,7 @@ index 06370fd..c04af48 100644
          }
          return {
            _tag: "Accepted",
-@@ -320,8 +332,15 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+@@ -320,8 +378,15 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
        }
        const isInitialize = Predicate.hasProperty(input, "method") && input.method === "initialize";
        const hasSession = headers[MCP_SESSION_ID_HEADER] !== undefined;
@@ -934,6 +1068,59 @@ index 06370fd..c04af48 100644
        }
        if (isRequest && admission.protocol?.runtime._tag === "Stateless" && !(admission.protocol.handlerRpcs?.requests.has(input.method) ?? admission.protocol.clientRpcs.requests.has(input.method))) {
          return reject(404, new PublicMcpSchema.MethodNotFound({
+@@ -339,6 +404,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+     deliveryClientIds: () => stateful?.initializedClientIds() ?? [],
+     canDeliver: (clientId, headers, notification, fallback) => stateful?.canDeliver(clientId, headers, notification, fallback) ?? true,
+     installHandlers: Effect.fnUntraced(function* (options) {
++      defaultLogLevel = options.defaultLogLevel;
+       const contextMap = new Map();
+       const installationContext = {
+         subscribeServerNotifications: options.subscribeServerNotifications,
+@@ -408,9 +474,13 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+                 supportsResourceSubscriptions: httpRequest === undefined && capabilities.resources?.subscribe === true,
+                 logLevel: options.defaultLogLevel
+               };
++              let saved = Effect.void;
+               if (httpRequest !== undefined) {
+                 const sessionId = crypto.randomUUID();
+-                stateful.registerHttp(sessionId, registration);
++                const session = stateful.registerHttp(sessionId, registration);
++                // Kept before the client learns the id, so a server that restarts right after
++                // still knows it.
++                if (sessions !== undefined) saved = sessions.save(sessionId, storedSession(session, undefined));
+                 appendPreResponseHandlerUnsafe(httpRequest, (_request, response) => Effect.succeed(HttpServerResponse.setHeaders(response, {
+                   [MCP_SESSION_ID_HEADER]: sessionId,
+                   [MCP_PROTOCOL_VERSION_HEADER]: protocol.protocolVersion
+@@ -418,7 +488,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+               } else {
+                 stateful.registerConnection(clientId, registration);
+               }
+-              return Effect.succeed({
++              return Effect.as(saved, {
+                 capabilities,
+                 instructions: options.serverInfo.instructions,
+                 serverInfo: PublicMcpSchema.Implementation.make({
+@@ -431,7 +501,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+               });
+             });
+           }),
+-          setLogLevel: stateful.setLogLevel,
++          setLogLevel: (level, clientId, headers) => Effect.andThen(stateful.setLogLevel(level, clientId, headers), () => {
++            const sessionId = headers[MCP_SESSION_ID_HEADER];
++            const session = sessionId === undefined ? undefined : stateful.resolveSessionId(sessionId);
++            return sessions === undefined || sessionId === undefined || session === undefined ? Effect.void : sessions.save(sessionId, storedSession(session, level));
++          }),
+           subscribe: stateful.subscribe,
+           unsubscribe: stateful.unsubscribe,
+           clientNotification: Effect.fnUntraced(function* (notification, clientId) {
+@@ -449,5 +523,5 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+ /**
+  * @internal
+  */
+-export const layer = protocols => Layer.effect(ServerRuntime)(make(protocols));
++export const layer = (protocols, sessions) => Layer.effect(ServerRuntime)(make(protocols, sessions));
+ //# sourceMappingURL=mcpRuntime.js.map
+\ No newline at end of file
 diff --git a/dist/ai/internal/mcpSchema/v2026_07_28.js b/dist/ai/internal/mcpSchema/v2026_07_28.js
 index 5f32a89..c35f862 100644
 --- a/dist/ai/internal/mcpSchema/v2026_07_28.js
@@ -1035,6 +1222,45 @@ index 5f32a89..c35f862 100644
 + * @internal
 + */
 +export class ClientRequestRpcs extends /*#__PURE__*/RpcGroup.make(Discover, Complete, GetPrompt, ListPrompts, ListResources, ListResourceTemplates, ReadResource, SubscriptionsListen, CallTool, ListTools, ListEvents, SubscribeEvent, UnsubscribeEvent) {}
+ /**
+  * @internal
+  */
+diff --git a/dist/ai/internal/mcpStatefulRuntime.js b/dist/ai/internal/mcpStatefulRuntime.js
+index 9471bdf..befa961 100644
+--- a/dist/ai/internal/mcpStatefulRuntime.js
++++ b/dist/ai/internal/mcpStatefulRuntime.js
+@@ -5,6 +5,7 @@
+  */
+ import * as Effect from "../../Effect.js";
+ import * as LogLevel from "../../LogLevel.js";
++import * as Schema from "../../Schema.js";
+ import * as PublicMcpSchema from "../McpSchema.js";
+ import * as McpProtocol from "./mcpProtocol.js";
+ const MCP_SESSION_ID_HEADER = "mcp-session-id";
+@@ -13,11 +14,25 @@ const makeSession = registration => ({
+   negotiatedProfile: registration.negotiatedProfile,
+   protocol: registration.protocol,
+   resourceSubscriptions: registration.supportsResourceSubscriptions ? new Set() : undefined,
+-  logLevel: {
++  logLevel: registration.mcpLogLevel === undefined ? {
+     _tag: "Effect",
+     level: registration.logLevel
++  } : {
++    _tag: "Mcp",
++    level: registration.mcpLogLevel
+   }
+ });
++/**
++ * What a session store keeps of one HTTP session: the `initialize` it negotiated, encoded, and
++ * the level the client last set. Stored values are decoded again when they are read, so a
++ * value an older or newer server wrote and this one cannot read is an unknown session.
++ *
++ * @internal
++ */
++export const StoredSession = /*#__PURE__*/Schema.Struct({
++  initialize: PublicMcpSchema.Initialize.payloadSchema,
++  logLevel: /*#__PURE__*/Schema.optionalKey(PublicMcpSchema.LoggingLevel)
++});
  /**
   * @internal
   */
@@ -1336,10 +1562,18 @@ index 02fa724..c316c3a 100644
 + */
 +export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type
 diff --git a/src/ai/McpServer.ts b/src/ai/McpServer.ts
-index 8c601ab..2060c9f 100644
+index 8c601ab..fd5df94 100644
 --- a/src/ai/McpServer.ts
 +++ b/src/ai/McpServer.ts
-@@ -650,14 +650,37 @@ export class McpServer extends Context.Service<McpServer, {
+@@ -50,6 +50,7 @@ import * as AiError from "./AiError.ts"
+ import * as McpCore from "./internal/mcpCore.ts"
+ import * as McpProtocolInternal from "./internal/mcpProtocol.ts"
+ import * as McpRuntime from "./internal/mcpRuntime.ts"
++import type * as McpStatefulRuntime from "./internal/mcpStatefulRuntime.ts"
+ import * as InternalStructuredOutput from "./internal/structured-output.ts"
+ import type * as McpProtocol from "./McpProtocol.ts"
+ import * as McpSchema from "./McpSchema.ts"
+@@ -650,14 +651,37 @@ export class McpServer extends Context.Service<McpServer, {
  const MCP_SESSION_ID_HEADER = "mcp-session-id"
  const MCP_PROTOCOL_VERSION_HEADER = "mcp-protocol-version"
  const MCP_INVALID_BATCH_METHOD = "invalid/json-rpc-batch"
@@ -1378,7 +1612,7 @@ index 8c601ab..2060c9f 100644
  class McpClientKey extends Data.Class<{
    readonly clientId: number
    readonly profile: McpCore.NegotiatedProtocolProfile<string>
-@@ -798,6 +821,8 @@ const runWithRuntime = Effect.fnUntraced(function*(
+@@ -798,6 +822,8 @@ const runWithRuntime = Effect.fnUntraced(function*(
        if (!cancelRequest(clientId, requestId)) {
          return Effect.void
        }
@@ -1387,7 +1621,7 @@ index 8c601ab..2060c9f 100644
        return isHttp
          ? protocol.end(clientId)
          : sendNotification(protocolVersion, clientId, {
-@@ -948,13 +973,13 @@ const runWithRuntime = Effect.fnUntraced(function*(
+@@ -948,13 +974,13 @@ const runWithRuntime = Effect.fnUntraced(function*(
        if (response._tag === "Exit") {
          const requests = activeRequests.get(clientId)
          const key = requestKey(response.requestId)
@@ -1404,7 +1638,7 @@ index 8c601ab..2060c9f 100644
            return protocol.send(clientId, response)
          }
          if (
-@@ -1130,7 +1155,13 @@ const runWithRuntime = Effect.fnUntraced(function*(
+@@ -1130,7 +1156,13 @@ const runWithRuntime = Effect.fnUntraced(function*(
                }
                if (request.isNotification !== true) {
                  const requests = activeRequests.get(clientId) ?? new Map<string, ActiveRequest>()
@@ -1419,7 +1653,58 @@ index 8c601ab..2060c9f 100644
                  activeRequests.set(clientId, requests)
                }
                const handled = f(clientId, routedRequest)
-@@ -1567,7 +1598,7 @@ export const layerHttp = (options: {
+@@ -1516,6 +1548,35 @@ const mcpStdioSerialization = (
+   })
+ }
+ 
++/**
++ * Keeps MCP HTTP sessions beyond a server's memory, for `layerHttp`'s `sessions` option.
++ *
++ * `save` runs when `initialize` opens a session and when the client sets its log level, never
++ * for other requests. `load` runs only for a session id the server does not hold. It passes what
++ * `save` stored to `restore`, if anything, which decodes it and registers the session, and
++ * returns whether the server now holds it. A value the server cannot read, or a version it no
++ * longer serves, returns `false`: the session stays unknown, and the store should not keep
++ * that value as in use. Neither may fail.
++ *
++ * A store keeps protocol state only: who may use a session is for the host to check on every
++ * request.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export interface SessionStore extends McpStatefulRuntime.SessionStore {}
++
++/**
++ * What a {@link SessionStore} keeps of one session: its negotiated `initialize`, encoded as JSON,
++ * and the log level the client set, if any.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export type StoredSession = McpStatefulRuntime.StoredSession
++
+ /**
+  * Registers a Streamable HTTP MCP endpoint at `options.path`.
+  *
+@@ -1558,8 +1619,13 @@ export const layerHttp = (options: {
+   readonly protocols: Arr.NonEmptyReadonlyArray<McpProtocol.ProtocolAdapter>
+   readonly extensions?: ServerExtensions | undefined
+   readonly allowedOrigins?: ReadonlyArray<string> | undefined
++  /**
++   * Keeps sessions beyond this server's memory, so a client continues its session after the
++   * server restarts. Without one, a restart forgets every session (`404`).
++   */
++  readonly sessions?: SessionStore | undefined
+ }): Layer.Layer<McpServer | McpServerClient, Cause.IllegalArgumentError, HttpRouter.HttpRouter> => {
+-  const runtime = McpRuntime.layer(options.protocols)
++  const runtime = McpRuntime.layer(options.protocols, options.sessions)
+   const methodNotAllowedResponse = HttpServerResponse.empty({
+     status: 405,
+     headers: { allow: "POST" }
+@@ -1567,7 +1633,7 @@ export const layerHttp = (options: {
    const methodNotAllowed = (request: HttpServerRequest.HttpServerRequest) =>
      isAllowedMcpOrigin(request, options.allowedOrigins)
        ? Effect.succeed(methodNotAllowedResponse)
@@ -1428,7 +1713,7 @@ index 8c601ab..2060c9f 100644
    const routes = Layer.mergeAll(
      HttpRouter.add("GET", options.path, methodNotAllowed),
      HttpRouter.add("PUT", options.path, methodNotAllowed),
-@@ -1598,14 +1629,21 @@ const layerMcpProtocolHttp = (options: {
+@@ -1598,30 +1664,60 @@ const layerMcpProtocolHttp = (options: {
      const router = yield* HttpRouter.HttpRouter
      yield* router.add("POST", options.path, (request) => {
        if (!isAllowedMcpOrigin(request, options.allowedOrigins)) {
@@ -1453,7 +1738,11 @@ index 8c601ab..2060c9f 100644
        }
        return Effect.gen(function*() {
          const parsed = yield* Effect.result(
-@@ -1615,13 +1653,34 @@ const layerMcpProtocolHttp = (options: {
+           Effect.flatMap(request.text, Schema.decodeEffect(Schema.UnknownFromJsonString))
+         )
++        const sessionId = request.headers[MCP_SESSION_ID_HEADER]
++        if (sessionId !== undefined) yield* runtime.restoreHttp(sessionId)
+         const admission = runtime.admitHttp(request.headers, parsed)
          if (admission._tag === "Rejected") {
            return admission.response
          }
@@ -1492,7 +1781,7 @@ index 8c601ab..2060c9f 100644
          })
          return yield* admission.acknowledge
            ? Effect.catchCause(response, () => Effect.succeed(HttpServerResponse.empty({ status: 202 })))
-@@ -1677,15 +1736,16 @@ function mcpJsonRpcSerialization(options?: {
+@@ -1677,15 +1773,16 @@ function mcpJsonRpcSerialization(options?: {
      ...serialization,
      makeUnsafe: () => {
        const parser = serialization.makeUnsafe()
@@ -1513,7 +1802,7 @@ index 8c601ab..2060c9f 100644
              }
            }
            const encoded = parser.encode(response)
-@@ -1695,9 +1755,15 @@ function mcpJsonRpcSerialization(options?: {
+@@ -1695,9 +1792,15 @@ function mcpJsonRpcSerialization(options?: {
            if (cancelledIds.size > 0) {
              // Count cancelled completions toward the batch, but never write their responses.
              // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/cancellation
@@ -1532,7 +1821,7 @@ index 8c601ab..2060c9f 100644
              if (Array.isArray(message)) {
                const remaining = message.filter(keep)
                if (remaining.length === 0) return undefined
-@@ -1751,6 +1817,18 @@ const isAllowedMcpOrigin = (
+@@ -1751,6 +1854,18 @@ const isAllowedMcpOrigin = (
    return origin === undefined || (allowedOrigins ?? []).includes(origin)
  }
  
@@ -1551,7 +1840,7 @@ index 8c601ab..2060c9f 100644
  const mcpMediaTypes = (header: string | undefined): ReadonlyArray<string> =>
    header === undefined
      ? []
-@@ -1979,6 +2057,72 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
+@@ -1979,6 +2094,72 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
      Layer.provide(McpServer.layer)
    )
  
@@ -1806,10 +2095,19 @@ index c1cce20..37dfe24 100644
        _request: typeof McpSchema.CancelledNotification.payloadSchema.Type
      ) {
 diff --git a/src/ai/internal/mcpRuntime.ts b/src/ai/internal/mcpRuntime.ts
-index b388d17..ff4d359 100644
+index b388d17..a1d2665 100644
 --- a/src/ai/internal/mcpRuntime.ts
 +++ b/src/ai/internal/mcpRuntime.ts
-@@ -96,11 +96,11 @@ type HttpProtocolSelection =
+@@ -15,6 +15,8 @@ import * as Layer from "../../Layer.ts"
+ import type * as LogLevel from "../../LogLevel.ts"
+ import * as Predicate from "../../Predicate.ts"
+ import * as Result from "../../Result.ts"
++import * as Schema from "../../Schema.ts"
++import { CurrentLogLevel } from "../../References.ts"
+ import * as RpcGroup from "../../rpc/RpcGroup.ts"
+ import type * as RpcMessage from "../../rpc/RpcMessage.ts"
+ import type * as PublicMcpProtocol from "../McpProtocol.ts"
+@@ -96,11 +98,11 @@ type HttpProtocolSelection =
    | {
      readonly _tag: "Rejected"
      readonly status: 400 | 404
@@ -1823,7 +2121,77 @@ index b388d17..ff4d359 100644
    }
  
  /**
-@@ -228,6 +228,11 @@ export const make = Effect.fnUntraced(function*(
+@@ -168,6 +170,11 @@ export interface ServerRuntimeShape {
+     request: RpcMessage.RequestEncoded
+   ) => Effect.Effect<PreparedRequest, unknown>
+   readonly resolveRequest: (clientId: number, headers: Headers.Headers) => RequestBinding | undefined
++  /**
++   * Bring an HTTP session this runtime does not hold back from its session store, if the store
++   * has it. Nothing happens for a session in memory, or without a store.
++   */
++  readonly restoreHttp: (sessionId: string) => Effect.Effect<void>
+   readonly admitHttp: (headers: Headers.Headers, input: Result.Result<unknown, unknown>) => HttpAdmission
+   readonly effectLogLevel: (
+     clientId: number,
+@@ -208,10 +215,56 @@ export const selectStatefulProtocol = <Protocol extends PublicMcpProtocol.AnyPro
+  * @internal
+  */
+ export const make = Effect.fnUntraced(function*(
+-  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>
++  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>,
++  sessions?: McpStatefulRuntime.SessionStore | undefined
+ ) {
+   const statefulProtocol = protocols.find((protocol) => protocol.runtime._tag === "Stateful")
+   const stateful = statefulProtocol === undefined ? undefined : McpStatefulRuntime.make()
++  // Set when the server installs its handlers. The server starts in its own fiber, so a woken
++  // server's first request can arrive before that; it then uses the level in effect.
++  let defaultLogLevel: LogLevel.LogLevel | undefined
++  const decodeStored = Schema.decodeUnknownOption(McpStatefulRuntime.StoredSession)
++  // What the store keeps: the negotiated initialize and any level the client set, never
++  // anything about who the caller is. The host authenticates every request itself.
++  const storedSession = (
++    binding: McpStatefulRuntime.Binding,
++    logLevel: PublicMcpSchema.LoggingLevel | undefined
++  ): McpStatefulRuntime.StoredSession => ({
++    initialize: Schema.encodeSync(PublicMcpSchema.Initialize.payloadSchema)(binding.initializePayload),
++    ...(logLevel === undefined ? {} : { logLevel })
++  })
++  const restoreHttp = (sessionId: string): Effect.Effect<void> => {
++    if (sessions === undefined || stateful === undefined || stateful.resolveSessionId(sessionId) !== undefined) {
++      return Effect.void
++    }
++    return Effect.flatMap(CurrentLogLevel, (currentLevel) =>
++      sessions.load(sessionId, (stored) => {
++        // A concurrent request may have restored it before this one read the store.
++        if (stateful.resolveSessionId(sessionId) !== undefined) return true
++        const decoded = decodeStored(stored)
++        if (decoded._tag === "None") return false
++        const initializePayload = decoded.value.initialize
++        // A session negotiated a version this server no longer serves stays unknown: 404.
++        const protocol = registry.protocols.find((protocol) =>
++          protocol.runtime._tag === "Stateful" && protocol.protocolVersion === initializePayload.protocolVersion
++        )
++        if (protocol === undefined) return false
++        stateful.registerHttp(sessionId, {
++          initializePayload,
++          negotiatedProfile: {
++            protocolVersion: initializePayload.protocolVersion as PublicMcpProtocol.StatefulProtocolVersion,
++            clientCapabilities: initializePayload.capabilities,
++            clientInfo: initializePayload.clientInfo,
++            requestMetadata: initializePayload._meta
++          },
++          protocol: protocol as PublicMcpProtocol.ProtocolAdapter,
++          supportsResourceSubscriptions: false,
++          logLevel: defaultLogLevel ?? currentLevel,
++          ...(decoded.value.logLevel === undefined ? {} : { mcpLogLevel: decoded.value.logLevel })
++        })
++        return true
++      }))
++  }
+   const protocolVersions = protocols.map((protocol) => protocol.protocolVersion)
+   let statelessDescriptor: PublicMcpProtocol.StatelessRuntimeDescriptor | undefined
+   let statelessProtocol: PublicMcpProtocol.AnyProtocolAdapter | undefined
+@@ -228,6 +281,11 @@ export const make = Effect.fnUntraced(function*(
      statelessProtocol = protocol
    }
    const registry = yield* McpProtocolRegistry.make(protocols)
@@ -1835,7 +2203,7 @@ index b388d17..ff4d359 100644
    const selectHttpProtocol = (headers: Headers.Headers, input: unknown): HttpProtocolSelection => {
      const protocolVersion = headers[MCP_PROTOCOL_VERSION_HEADER]
      const sessionId = headers[MCP_SESSION_ID_HEADER]
-@@ -272,18 +277,7 @@ export const make = Effect.fnUntraced(function*(
+@@ -272,18 +330,7 @@ export const make = Effect.fnUntraced(function*(
          }
        }
        if (statelessProtocol === undefined || protocolVersion !== statelessProtocol.protocolVersion) {
@@ -1855,7 +2223,7 @@ index b388d17..ff4d359 100644
        }
        const method = inputRecord?.method
        if (typeof method !== "string" || headers[MCP_METHOD_HEADER] !== method) {
-@@ -300,22 +294,36 @@ export const make = Effect.fnUntraced(function*(
+@@ -300,22 +347,36 @@ export const make = Effect.fnUntraced(function*(
        return { _tag: "Accepted", binding: undefined, protocol: statelessProtocol }
      }
      const binding = sessionId === undefined ? undefined : stateful?.resolveSessionId(sessionId)
@@ -1895,7 +2263,15 @@ index b388d17..ff4d359 100644
      }
      return { _tag: "Accepted", binding, protocol: binding?.protocol }
    }
-@@ -395,11 +403,13 @@ export const make = Effect.fnUntraced(function*(
+@@ -385,6 +446,7 @@ export const make = Effect.fnUntraced(function*(
+       return { protocol, profile, requestContext }
+     }),
+     resolveRequest: (clientId, headers) => stateful?.resolve(clientId, headers),
++    restoreHttp,
+     admitHttp: (headers, parsed) => {
+       const reject = (status: number, error?: unknown, id: string | number | null = null): HttpAdmission => ({
+         _tag: "Rejected",
+@@ -395,11 +457,13 @@ export const make = Effect.fnUntraced(function*(
        if (Result.isFailure(parsed)) {
          const version = headers[MCP_PROTOCOL_VERSION_HEADER]
          if (version !== undefined && !registry.protocols.some((protocol) => protocol.protocolVersion === version)) {
@@ -1912,7 +2288,7 @@ index b388d17..ff4d359 100644
            : reject(200, new PublicMcpSchema.ParseError({ message: "Parse error" }))
        }
        const input = parsed.success
-@@ -408,13 +418,20 @@ export const make = Effect.fnUntraced(function*(
+@@ -408,13 +472,20 @@ export const make = Effect.fnUntraced(function*(
            return reject(400, new PublicMcpSchema.InvalidRequest({ message: "Invalid Request" }))
          }
          const admission = selectHttpProtocol(headers, input)
@@ -1935,7 +2311,7 @@ index b388d17..ff4d359 100644
          }
          return {
            _tag: "Accepted",
-@@ -444,8 +461,24 @@ export const make = Effect.fnUntraced(function*(
+@@ -444,8 +515,24 @@ export const make = Effect.fnUntraced(function*(
        }
        const isInitialize = Predicate.hasProperty(input, "method") && input.method === "initialize"
        const hasSession = headers[MCP_SESSION_ID_HEADER] !== undefined
@@ -1962,6 +2338,63 @@ index b388d17..ff4d359 100644
        }
        if (
          isRequest && admission.protocol?.runtime._tag === "Stateless" &&
+@@ -468,6 +555,7 @@ export const make = Effect.fnUntraced(function*(
+     canDeliver: (clientId, headers, notification, fallback) =>
+       stateful?.canDeliver(clientId, headers, notification, fallback) ?? true,
+     installHandlers: Effect.fnUntraced(function*(options) {
++      defaultLogLevel = options.defaultLogLevel
+       const contextMap = new Map<string, unknown>()
+       const installationContext: McpProtocol.HandlerInstallationContext = {
+         subscribeServerNotifications: options.subscribeServerNotifications,
+@@ -521,9 +609,13 @@ export const make = Effect.fnUntraced(function*(
+                   capabilities.resources?.subscribe === true,
+                 logLevel: options.defaultLogLevel
+               }
++              let saved: Effect.Effect<void> = Effect.void
+               if (httpRequest !== undefined) {
+                 const sessionId = crypto.randomUUID()
+-                stateful.registerHttp(sessionId, registration)
++                const session = stateful.registerHttp(sessionId, registration)
++                // Kept before the client learns the id, so a server that restarts right after
++                // still knows it.
++                if (sessions !== undefined) saved = sessions.save(sessionId, storedSession(session, undefined))
+                 appendPreResponseHandlerUnsafe(
+                   httpRequest,
+                   (_request, response) =>
+@@ -535,7 +627,7 @@ export const make = Effect.fnUntraced(function*(
+               } else {
+                 stateful.registerConnection(clientId, registration)
+               }
+-              return Effect.succeed({
++              return Effect.as(saved, {
+                 capabilities,
+                 instructions: options.serverInfo.instructions,
+                 serverInfo: PublicMcpSchema.Implementation.make({
+@@ -548,7 +640,14 @@ export const make = Effect.fnUntraced(function*(
+               })
+             })
+           }),
+-          setLogLevel: stateful.setLogLevel,
++          setLogLevel: (level, clientId, headers) =>
++            Effect.andThen(stateful.setLogLevel(level, clientId, headers), () => {
++              const sessionId = headers[MCP_SESSION_ID_HEADER]
++              const session = sessionId === undefined ? undefined : stateful.resolveSessionId(sessionId)
++              return sessions === undefined || sessionId === undefined || session === undefined
++                ? Effect.void
++                : sessions.save(sessionId, storedSession(session, level))
++            }),
+           subscribe: stateful.subscribe,
+           unsubscribe: stateful.unsubscribe,
+           clientNotification: Effect.fnUntraced(function*(notification, clientId) {
+@@ -568,5 +667,6 @@ export const make = Effect.fnUntraced(function*(
+  * @internal
+  */
+ export const layer = (
+-  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>
+-): Layer.Layer<ServerRuntime, Cause.IllegalArgumentError> => Layer.effect(ServerRuntime)(make(protocols))
++  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>,
++  sessions?: McpStatefulRuntime.SessionStore | undefined
++): Layer.Layer<ServerRuntime, Cause.IllegalArgumentError> => Layer.effect(ServerRuntime)(make(protocols, sessions))
 diff --git a/src/ai/internal/mcpSchema/v2026_07_28.ts b/src/ai/internal/mcpSchema/v2026_07_28.ts
 index b38c929..d395e31 100644
 --- a/src/ai/internal/mcpSchema/v2026_07_28.ts
@@ -2086,6 +2519,69 @@ index b38c929..d395e31 100644
 +  SubscribeEvent,
 +  UnsubscribeEvent
  ) {}
+ 
+ /**
+diff --git a/src/ai/internal/mcpStatefulRuntime.ts b/src/ai/internal/mcpStatefulRuntime.ts
+index 19c41ab..ae397cd 100644
+--- a/src/ai/internal/mcpStatefulRuntime.ts
++++ b/src/ai/internal/mcpStatefulRuntime.ts
+@@ -6,6 +6,7 @@
+ import * as Effect from "../../Effect.ts"
+ import type * as Headers from "../../http/Headers.ts"
+ import * as LogLevel from "../../LogLevel.ts"
++import * as Schema from "../../Schema.ts"
+ import type * as PublicMcpProtocol from "../McpProtocol.ts"
+ import * as PublicMcpSchema from "../McpSchema.ts"
+ import type * as McpCore from "./mcpCore.ts"
+@@ -37,6 +38,39 @@ interface Session extends Binding {
+ export interface Registration extends Binding {
+   readonly supportsResourceSubscriptions: boolean
+   readonly logLevel: LogLevel.LogLevel
++  /** A level the client set with `logging/setLevel`, for a session brought back from a store. */
++  readonly mcpLogLevel?: PublicMcpSchema.LoggingLevel | undefined
++}
++
++/**
++ * What a session store keeps of one HTTP session: the `initialize` it negotiated, encoded, and
++ * the level the client last set. Stored values are decoded again when they are read, so a
++ * value an older or newer server wrote and this one cannot read is an unknown session.
++ *
++ * @internal
++ */
++export const StoredSession = Schema.Struct({
++  initialize: PublicMcpSchema.Initialize.payloadSchema,
++  logLevel: Schema.optionalKey(PublicMcpSchema.LoggingLevel)
++})
++
++/**
++ * @internal
++ */
++export type StoredSession = typeof StoredSession.Encoded
++
++/**
++ * Keeps HTTP sessions beyond the server's memory. `save` runs when `initialize` opens a session
++ * and when its log level changes, never for other requests; `load` runs only for a session id
++ * the server does not hold, and passes what it finds to `restore`, which returns whether the
++ * server now holds the session. Neither may fail: a session the store cannot keep still works
++ * until the server forgets it.
++ *
++ * @internal
++ */
++export interface SessionStore {
++  readonly save: (sessionId: string, session: StoredSession) => Effect.Effect<void>
++  readonly load: (sessionId: string, restore: (stored: unknown) => boolean) => Effect.Effect<void>
+ }
+ 
+ /**
+@@ -83,7 +117,9 @@ const makeSession = (registration: Registration): Session => ({
+   negotiatedProfile: registration.negotiatedProfile,
+   protocol: registration.protocol,
+   resourceSubscriptions: registration.supportsResourceSubscriptions ? new Set() : undefined,
+-  logLevel: { _tag: "Effect", level: registration.logLevel }
++  logLevel: registration.mcpLogLevel === undefined
++    ? { _tag: "Effect", level: registration.logLevel }
++    : { _tag: "Mcp", level: registration.mcpLogLevel }
+ })
  
  /**
 diff --git a/src/rpc/RpcServer.ts b/src/rpc/RpcServer.ts

@@ -1,4 +1,3 @@
-import { ProfileId } from "@executor-js/sdk";
 import { AppView } from "@executor-js/ui/contracts/dashboard";
 import { AccountId } from "@executor-js/sdk";
 import { Option, Schema } from "effect";
@@ -10,17 +9,11 @@ export type NavigationSection = "apps" | "accounts" | "connect" | "approvals";
 export interface AppSearch {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
-  readonly profile?: ProfileId | undefined;
 }
 
 /** The account list marks a linked account, which has no page of its own. */
 export interface AccountsSearch {
   readonly account?: AccountId | undefined;
-}
-
-/** Setup opens the app's accounts, optionally for one profile. */
-export interface SetupSearch {
-  readonly profile?: ProfileId | undefined;
 }
 
 const text = Schema.decodeUnknownOption(Schema.NonEmptyString);
@@ -30,7 +23,6 @@ export function parseAppSearch(search: Record<string, unknown>): AppSearch {
   const view = Schema.decodeUnknownOption(AppView)(search.view);
   const tool = text(search.tool);
   return {
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
     view: Option.getOrUndefined(view),
     tool: Option.getOrUndefined(tool),
   };
@@ -40,13 +32,6 @@ export function parseAppSearch(search: Record<string, unknown>): AppSearch {
 export function parseAccountsSearch(search: Record<string, unknown>): AccountsSearch {
   return {
     account: Option.getOrUndefined(Schema.decodeUnknownOption(AccountId)(search.account)),
-  };
-}
-
-/** Ignore a malformed profile identity. */
-export function parseSetupSearch(search: Record<string, unknown>): SetupSearch {
-  return {
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }
 
@@ -72,7 +57,7 @@ export function localPageTitle(pathname: string): string {
   if (section === "apps") {
     if (item === "add") return action === "custom" ? "Add custom app" : "Add app";
     if (action === "delete") return "Delete app";
-    if (action === "setup") return "Choose accounts";
+    if (action === "setup") return "Accounts";
     return item ? "App" : "Apps";
   }
   if (section === "accounts") return "Accounts";

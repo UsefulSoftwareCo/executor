@@ -9,7 +9,7 @@ import { Clock, Console, Effect, FileSystem, Schema } from "effect";
 import { createHash } from "node:crypto";
 import { cookieHeader, productClient, PerfRequestFailed, type ProductClient } from "./client.ts";
 import { formatSpec, type EmulatorSpec } from "./emulator.ts";
-import { fixtureActors, stableUuid } from "./sessions.ts";
+import { fixtureActors } from "./sessions.ts";
 import { productionShape, random, toolsPerApp, type Random } from "./shape.ts";
 import type { StageControl } from "./stage.ts";
 import { appsManifest, withApps, mcpSdkVersion } from "../../support/apps-release.ts";
@@ -23,7 +23,7 @@ export const AppReceipt = Schema.Struct({
   tools: Schema.Number,
   auth: Schema.Boolean,
   url: Schema.String,
-  profile: Schema.String,
+  /** The owner's accounts linked to the app, in link order. */
   accounts: Schema.Array(Schema.String),
 });
 export type AppReceipt = typeof AppReceipt.Type;
@@ -144,7 +144,7 @@ export const plan = (seed: number): readonly OrgPlan[] => {
         failing("Perf err fast", "mcp", 0, {}),
         // Every call outlasts the 5 minute execution budget.
         failing("Perf err slow", "mcp", 1, { latencyMs: 315_000 }),
-        // Requires an API key that no profile selects.
+        // Requires an API key, and no account is linked to it.
         failing("Perf err keyed", "mcp", 2, { auth: true }),
         failing("Perf err moved", "authored", 3, {}),
         failing("Perf err refresh", "refresh", 4, {}),
@@ -178,16 +178,7 @@ const Created = Schema.Struct({ id: Schema.String, slug: Schema.String, name: Sc
 const Id = Schema.Struct({ id: Schema.String });
 const Inventory = Schema.Struct({
   apps: Schema.Array(Created),
-  profiles: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      app: Schema.String,
-      accounts: Schema.Record(
-        Schema.String,
-        Schema.Union([Schema.String, Schema.Array(Schema.String)]),
-      ),
-    }),
-  ),
+  links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
 });
 
 const appUrl = (app: AppPlan, emulator: string) => {
@@ -202,7 +193,6 @@ const receiptFor = (
   app: AppPlan,
   emulator: string,
   created: typeof Created.Type,
-  profile: string,
   accounts: readonly string[],
 ): AppReceipt => ({
   id: created.id,
@@ -213,7 +203,6 @@ const receiptFor = (
   tools: app.spec.tools,
   auth: app.spec.auth,
   url: appUrl(app, emulator),
-  profile,
   accounts,
 });
 const Key = Schema.Struct({ key: Schema.String });
@@ -237,7 +226,7 @@ const slowRefresh = (signal) => new Promise((resolve) => {
   signal.addEventListener("abort", () => { clearTimeout(timer); resolve(undefined); }, { once: true });
 });
 const options = (key) => ({ key, schema: string(), freshFor: 0, staleFor: "10 minutes" });
-export default defineApp({ accounts: {} }, async (ctx) => ({ tools: router({
+export default defineApp({}, async (ctx) => ({ tools: router({
    pause: query({ input: object({}) }, async () => {
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     return true;
@@ -283,12 +272,12 @@ const authoredFiles = (kind: "mcp" | "openapi", url: string, keyed: boolean) => 
         ? `import { accountRouter, defineApp, router } from "apps";
 ${helper}
 import { provider } from "./provider.ts";
-export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, cache, fetch, signal }) => ({
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ({ user: { accounts }, cache, fetch, signal }) => ({
   tools: await accountRouter(accounts.service, async (account) => ${operations("account")}, { signal }),
 }));`
         : `import { defineApp, router } from "apps";
 ${helper}
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({ tools: await ${operations("")} }));`,
+export default defineApp({}, async ({ cache, fetch, signal }) => ({ tools: await ${operations("")} }));`,
     },
     ...(keyed
       ? [
@@ -326,7 +315,7 @@ const seedApp = (client: ProductClient, root: string, app: AppPlan, emulator: st
           Effect.flatMap((response) => expectOk(`deploy ${app.name}`, response)),
           Effect.flatMap(Schema.decodeUnknownEffect(Created)),
         );
-      return receiptFor(app, emulator, deployed, "", []);
+      return receiptFor(app, emulator, deployed, []);
     }
     if (app.kind === "authored") {
       const deployed = yield* client
@@ -343,7 +332,7 @@ const seedApp = (client: ProductClient, root: string, app: AppPlan, emulator: st
               path: "index.ts",
               content: `import { defineApp, router } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)} }) }));`,
+export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)} }) }));`,
             },
           ],
         })
@@ -351,7 +340,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter
           Effect.flatMap((response) => expectOk(`deploy ${app.name}`, response)),
           Effect.flatMap(Schema.decodeUnknownEffect(Created)),
         );
-      return receiptFor(app, emulator, deployed, "", []);
+      return receiptFor(app, emulator, deployed, []);
     }
     // Quick add covers public MCP servers; keyed servers and OpenAPI apps are authored source.
     const imported = yield* (
@@ -368,21 +357,11 @@ export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter
       Effect.flatMap(Schema.decodeUnknownEffect(Created)),
     );
     const appPath = `${root}/apps/${imported.id}`;
-    const profile = yield* client
-      .request("POST", `${appPath}/profiles`, {
-        accounts: {},
-        idempotencyKey: stableUuid(`${imported.id}:profile`),
-      })
-      .pipe(
-        Effect.flatMap((response) => expectOk(`profile ${app.name}`, response)),
-        Effect.flatMap(Schema.decodeUnknownEffect(Id)),
-      );
+    // Connecting from the app links each new account to it for the owner; `.many()` uses them all.
     const accounts: string[] = [];
     for (let account = 0; account < app.accounts; account++) {
       const connection = yield* client
-        .request("POST", `${appPath}/connections`, {
-          profile: profile.id,
-          requirement: "service",
+        .request("POST", `${appPath}/accounts/user/service/connections`, {
           destination: { kind: "shared", audience: { kind: "everyone" } },
         })
         .pipe(
@@ -401,19 +380,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter
         );
       accounts.push(saved.id);
     }
-    if (accounts.length > 0) {
-      const current = yield* client.request("GET", `${appPath}/profiles/${profile.id}`).pipe(
-        Effect.flatMap((response) => expectOk(`read profile ${app.name}`, response)),
-        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ revision: Schema.Number }))),
-      );
-      yield* client
-        .request("PATCH", `${appPath}/profiles/${profile.id}`, {
-          expectedRevision: current.revision,
-          accounts: { service: accounts },
-        })
-        .pipe(Effect.flatMap((response) => expectOk(`select accounts ${app.name}`, response)));
-    }
-    return receiptFor(app, emulator, imported, profile.id, accounts);
+    return receiptFor(app, emulator, imported, accounts);
   });
 
 /** Seed (or resume seeding) every planned organization; writes the receipt after each app. */
@@ -497,13 +464,12 @@ export const seedStage = (input: {
       for (const app of org.apps) {
         if (apps.some((entry) => entry.name === app.name)) continue;
         const found = inventory.apps.find((entry) => entry.name === app.name);
-        const profile = inventory.profiles.find((entry) => entry.app === found?.id);
-        if (found === undefined || profile === undefined) continue;
-        const selected = profile.accounts.service;
-        const accounts =
-          selected === undefined ? [] : typeof selected === "string" ? [selected] : selected;
+        if (found === undefined) continue;
+        const accounts = inventory.links
+          .filter((link) => link.app === found.id)
+          .map((link) => link.account);
         if (accounts.length !== app.accounts) continue;
-        apps.push(receiptFor(app, input.emulator, found, profile.id, accounts));
+        apps.push(receiptFor(app, input.emulator, found, accounts));
       }
       const done = new Set(apps.map((app) => app.name));
       const pending = org.apps.filter((app) => !done.has(app.name));

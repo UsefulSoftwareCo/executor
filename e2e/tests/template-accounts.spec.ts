@@ -1,4 +1,4 @@
-/** Multi-account routing is verified through skill-authored source and public profile/tool APIs. */
+/** Multi-account routing is verified through skill-authored source and public link/tool APIs. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
@@ -9,6 +9,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
+import { linkedAccountIds, unlinkAccount, connectionsPath } from "../support/app-accounts.ts";
 import { authoredAppFiles } from "../support/authored-templates.ts";
 import { strictTypeProblems } from "../support/apps-package.ts";
 import { withApps } from "../support/apps-release.ts";
@@ -17,11 +18,6 @@ import { outputContractProblems } from "../support/output-contract.ts";
 import { templateUpstream } from "../support/template-upstream.ts";
 import { scenarios } from "../test-plan.ts";
 
-const Profile = Schema.Struct({
-  id: Schema.String,
-  revision: Schema.Number,
-  accounts: Schema.Struct({ service: Schema.Array(Schema.String) }),
-});
 const Tools = Schema.Struct({
   items: Schema.Array(
     Schema.Struct({
@@ -31,7 +27,7 @@ const Tools = Schema.Struct({
     }),
   ),
 });
-/** What one MCP execution described and returned for the profile's MCP tool. */
+/** What one MCP execution described and returned for the app's MCP tool. */
 const Searched = Schema.Struct({
   structuredContent: Schema.Struct({
     execution: Schema.Struct({
@@ -126,12 +122,14 @@ const treeUpstream = Effect.gen(function* () {
 /**
  * One app with both `accountRouter` callback forms integrations.md shows: a synchronous callback
  * returning `liveOpenapiRouter`, and a router of hand-written queries and mutations whose handlers
- * take `(_ctx, input)`. No casts, so it type-checks only if the framework's types accept them.
+ * take `(_ctx, input)`. `own.identity` is the custom tool beside the generated ones: it calls the
+ * same API with the account's credential. No casts, so it type-checks only if the framework's
+ * types accept them.
  */
 const routedAppFiles = (origin: string) => [
   {
     path: "index.ts",
-    content: `import { accountRouter, defineApp, defineProvider, mutation, object, query, router, secrets, string } from "apps";
+    content: `import { accountRouter, decodeJson, defineApp, defineProvider, mutation, object, query, router, secrets, string } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
 
 const service = defineProvider({
@@ -139,19 +137,27 @@ const service = defineProvider({
   auth: { apiKey: secrets({ label: "API key", fields: object({ token: string({ minLength: 1 }) }) }) },
 });
 
-export default defineApp({ accounts: { service: service.many() } }, async ({ accounts, cache, fetch, signal }) => ({
+export default defineApp({ user: { accounts: { service: service.many() } } }, async ({ user, cache, fetch, signal }) => ({
   tools: router({
     own: await accountRouter(
-      accounts.service,
+      user?.accounts.service ?? [],
       (account) =>
         router({
           whoami: query({ input: object({}) }, async () => account.id),
           echo: mutation({ input: object({ text: string() }) }, async (_ctx, input) => input.text),
+          identity: query({ input: object({}) }, async ({ fetch }) =>
+            decodeJson(
+              await fetch(${JSON.stringify(`${origin}/identity`)}, {
+                headers: { Authorization: \`Bearer \${account.fields.token}\` },
+              }),
+              object({ account: string() }),
+            ),
+          ),
         }),
       { signal },
     ),
     api: await accountRouter(
-      accounts.service,
+      user?.accounts.service ?? [],
       (account) =>
         liveOpenapiRouter({
           source: { url: ${JSON.stringify(`${origin}/openapi.json`)} },
@@ -189,9 +195,9 @@ const undeclaredAccountFiles = [
     content: `import { accountRouter, defineApp, defineProvider, object, query, router, secrets, string, type QueryContext } from "apps";
 const service = defineProvider({ name: "Service", auth: { apiKey: secrets({ label: "API key", fields: object({ token: string() }) }) } });
 const github = defineProvider({ name: "GitHub", auth: { token: secrets({ label: "Token", fields: object({ token: string() }) }) } });
-const repo = query({ input: object({}) }, async (ctx: QueryContext<{ accounts: { github: typeof github } }>) => ctx.accounts.github.id);
-export default defineApp({ accounts: { service: service.many() } }, async ({ accounts, signal }) => ({
-  tools: await accountRouter(accounts.service, () => router({ repo }), { signal }),
+const repo = query({ input: object({}) }, async (ctx: QueryContext<{ user: { accounts: { github: typeof github } } }>) => ctx.user.accounts.github.id);
+export default defineApp({ user: { accounts: { service: service.many() } } }, async ({ user, signal }) => ({
+  tools: await accountRouter(user?.accounts.service ?? [], () => router({ repo }), { signal }),
 }));
 `,
   },
@@ -220,36 +226,25 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
           const app = yield* body(App, response),
             path = `${prefix}/apps/${app.id}`;
           const accounts: string[] = [];
-          let profileId: string | undefined;
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
-              if (profileId !== undefined)
-                yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profileId}`);
               yield* api.request(actors.owner, "DELETE", path);
               for (const id of accounts)
                 yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
             }).pipe(Effect.orDie),
           );
-          const create = yield* api.request(actors.owner, "POST", `${path}/profiles`, {
-            accounts: { service: [] },
-            idempotencyKey: randomUUID(),
-          });
-          expect(
-            create.status,
-            `${kind} accepts an account array: ${JSON.stringify(create.body)}`,
-          ).toBe(200);
-          let profile = yield* body(Profile, create);
-          profileId = profile.id;
-          const catalog = () =>
-            api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`);
+          // An account array with no linked account resolves to none: the catalog is empty.
+          const catalog = () => api.request(actors.owner, "GET", `${path}/tools`);
           const empty = yield* catalog();
           expect(empty.status, JSON.stringify(empty.body)).toBe(200);
           expect((yield* body(Tools, empty)).items).toEqual([]);
           for (const label of ["work", "personal"]) {
-            const start = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            });
+            const start = yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(path, "user", "service"),
+              {},
+            );
             expect(start.status, JSON.stringify(start.body)).toBe(200);
             const connection = yield* body(Resource, start);
             const saved = yield* api.request(
@@ -265,11 +260,8 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
             expect(saved.status, JSON.stringify(saved.body)).toBe(200);
             accounts.push((yield* body(Resource, saved)).id);
           }
-          profile = yield* body(
-            Profile,
-            yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`),
-          );
-          expect(profile.accounts.service).toEqual(accounts);
+          // Connecting from the app links each account; the array uses every linked account.
+          expect(yield* linkedAccountIds(actors.owner, path)).toEqual(accounts);
           const tools = yield* catalog();
           expect(tools.status, JSON.stringify(tools.body)).toBe(200);
           const tool =
@@ -291,7 +283,6 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
           }
           const call = (accountId: string, label: string) =>
             api.request(actors.owner, "POST", `${path}/tools/call`, {
-              profile: profile.id,
               tool,
               // Every template's identity operation is a read.
               kind: "query",
@@ -328,7 +319,7 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
             const client = yield* (yield* McpClient).connect(key.key, "template-account-outputs", {
               organization: actors.organization.id,
             });
-            const expression = `tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].${tool}`;
+            const expression = `tools[${JSON.stringify(app.slug)}].${tool}`;
             const searched = yield* client.use("Describe and call the MCP tool", (client, signal) =>
               client.callTool(
                 {
@@ -347,9 +338,7 @@ return { items: found.items, results };`,
             );
             const { items, results } = (yield* Schema.decodeUnknownEffect(Searched)(searched))
               .structuredContent.execution.value;
-            const signature = items.find(
-              (item) => item.path.includes(profile.id) && item.path.endsWith(".identity"),
-            )?.signature;
+            const signature = items.find((item) => item.path === expression)?.signature;
             if (signature === undefined)
               return yield* Effect.die(`Missing described MCP tool: ${JSON.stringify(items)}`);
             expect(results).toHaveLength(2);
@@ -368,16 +357,12 @@ return { items: found.items, results };`,
             retained = accounts[1];
           if (removed === undefined || retained === undefined)
             return yield* Effect.die("Account fixtures missing");
-          const updated = yield* api.request(
-            actors.owner,
-            "PATCH",
-            `${path}/profiles/${profile.id}`,
-            {
-              expectedRevision: profile.revision,
-              accounts: { service: [retained] },
-            },
-          );
-          expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+          // Unlinking one account removes it from the array but keeps the account itself.
+          yield* unlinkAccount(actors.owner, path, "service", removed);
+          expect(yield* linkedAccountIds(actors.owner, path)).toEqual([retained]);
+          expect(
+            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${removed}`)).status,
+          ).toBe(200);
           const rejected = yield* call(removed, "work");
           expect(rejected.status).toBeGreaterThanOrEqual(400);
           expect(rejected.status).toBeLessThan(500);
@@ -403,19 +388,10 @@ return { items: found.items, results };`,
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         const app = yield* body(App, response),
           path = `${prefix}/apps/${app.id}`;
-        const profile = yield* body(
-          Profile,
-          yield* api.request(actors.owner, "POST", `${path}/profiles`, {
-            accounts: { service: [] },
-            idempotencyKey: randomUUID(),
-          }),
-        );
+        // Connecting from the app links the account to it.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const account = yield* body(
           Resource,
@@ -432,14 +408,12 @@ return { items: found.items, results };`,
         );
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile.id}`);
             yield* api.request(actors.owner, "DELETE", path);
             yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`);
           }).pipe(Effect.orDie),
         );
         const call = (complete: boolean) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "tree",
             kind: "query",
             input: { accountId: account.id, input: { complete } },
@@ -478,7 +452,7 @@ return { items: found.items, results };`,
             line: 5,
             code: 2345,
             message: expect.stringContaining(
-              "Property 'github' is missing in type '{ readonly service: readonly { readonly id: string & Brand<\"acc\">;",
+              "Property 'github' is missing in type 'BoundAccounts<{ readonly service: ManyAccounts<",
             ),
           },
         ]);
@@ -490,28 +464,18 @@ return { items: found.items, results };`,
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         const path = `${prefix}/apps/${(yield* body(App, response)).id}`;
         const accounts: string[] = [];
-        let profile = yield* body(
-          Profile,
-          yield* api.request(actors.owner, "POST", `${path}/profiles`, {
-            accounts: { service: [] },
-            idempotencyKey: randomUUID(),
-          }),
-        );
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile.id}`);
             yield* api.request(actors.owner, "DELETE", path);
             for (const id of accounts)
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
+        // Connecting from the app links each account; the array uses every linked account.
         for (const label of ["work", "personal"]) {
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
           );
           const saved = yield* api.request(
             actors.owner,
@@ -522,20 +486,13 @@ return { items: found.items, results };`,
           expect(saved.status, JSON.stringify(saved.body)).toBe(200);
           accounts.push((yield* body(Resource, saved)).id);
         }
-        profile = yield* body(
-          Profile,
-          yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`),
-        );
-        const tools = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/tools?profile=${profile.id}`,
-        );
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual(accounts);
+        const tools = yield* api.request(actors.owner, "GET", `${path}/tools`);
         expect(tools.status, JSON.stringify(tools.body)).toBe(200);
         expect(
           (yield* body(Tools, tools)).items.map((item) => item.name).toSorted(),
           JSON.stringify(tools.body),
-        ).toEqual(["api.identity.getIdentity", "own.echo", "own.whoami"]);
+        ).toEqual(["api.identity.getIdentity", "own.echo", "own.identity", "own.whoami"]);
         const call = (
           tool: string,
           kind: "query" | "mutation",
@@ -543,7 +500,6 @@ return { items: found.items, results };`,
           input: unknown,
         ) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool,
             kind,
             input: { accountId, input },
@@ -561,6 +517,10 @@ return { items: found.items, results };`,
           const identity = yield* call("api.identity.getIdentity", "query", id, {});
           expect(identity.status, JSON.stringify(identity.body)).toBe(200);
           expect(identity.body).toEqual({ account: label });
+          // The custom tool sends the same account's credential as the generated one.
+          const custom = yield* call("own.identity", "query", id, {});
+          expect(custom.status, JSON.stringify(custom.body)).toBe(200);
+          expect(custom.body).toEqual({ account: label });
         }
       }),
     ),

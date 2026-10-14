@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { App } from "../support/contracts.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 /**
@@ -24,7 +23,7 @@ let shared = { type: "string" };
 for (let level = 0; level < 30; level++) shared = { anyOf: [shared, shared] };
 let nested = { type: "string" };
 for (let level = 0; level < 20000; level++) nested = { not: nested };
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     source: dynamicRouter({
       list: async () => [{ name: "route", description: "Echo a route", inputSchema: route, readOnly: true }],
@@ -55,10 +54,8 @@ layer(HostedLive, { excludeTestServices: true })("Imported JSON Schemas", (it) =
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, path);
         const call = (input: unknown) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "source.route",
             input,
           });

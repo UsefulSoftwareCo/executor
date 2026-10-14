@@ -6,6 +6,7 @@ import { localTelemetry } from "@executor-js/telemetry/local";
 import { Config, ConfigProvider, Console, Effect, Layer, Option } from "effect";
 import { CliError, Command, Flag } from "effect/cli";
 import { HttpRouter } from "effect/http";
+import * as Statement from "effect/sql/Statement";
 import { selfHostRoutes } from "../self-host/src/main.ts";
 import { selfHostDatabase } from "../self-host/src/database.ts";
 import { selfHostConfiguration } from "../self-host/src/implementation/bootstrap.ts";
@@ -13,6 +14,7 @@ import { devAppName, freePort } from "../../../scripts/dev-host.ts";
 import { developmentSettings, developmentSignIn } from "./development.ts";
 import { accessCheckFixture } from "./access-check-fixture.ts";
 import { statementHoldFixture } from "./statement-hold-fixture.ts";
+import { storageFaultFixture } from "./storage-fault-fixture.ts";
 
 /**
  * Zero-config defaults; explicit settings win. The hostname is per checkout so browser
@@ -46,6 +48,7 @@ const command = Command.make("test-self-host", {
     Effect.gen(function* () {
       const target = yield* developmentSettings;
       const directory = yield* Config.NonEmptyString("EXECUTOR_DATA_DIR");
+      const storageFault = yield* storageFaultFixture;
       const server = Layer.unwrap(
         Effect.gen(function* () {
           const development = yield* developmentSignIn(target, organization);
@@ -55,6 +58,7 @@ const command = Command.make("test-self-host", {
             HttpRouter.add("GET", "/api/devtools", development.status),
             HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
             statementHold.routes,
+            storageFault.routes,
             product,
             accessCheckFixture,
           );
@@ -76,7 +80,10 @@ const command = Command.make("test-self-host", {
         Layer.provide(BunHttpServer.layerHttpServices),
       );
       yield* Console.log(`Starting local test server at ${target.origin}/login`);
-      return yield* Layer.launch(server);
+      // Fibers inherit the reference, so every statement the server runs reaches the fault.
+      return yield* Layer.launch(server).pipe(
+        Effect.provideService(Statement.CurrentTransformer, storageFault.transformer),
+      );
     }).pipe(Effect.provideServiceEffect(ConfigProvider.ConfigProvider, testServerConfiguration)),
   ),
 );

@@ -1,0 +1,301 @@
+diff --git a/src/bun_core/util.rs b/src/bun_core/util.rs
+index 28006517..160c80d2 100644
+--- a/src/bun_core/util.rs
++++ b/src/bun_core/util.rs
+@@ -3796,14 +3796,45 @@ fn argv_storage() -> &'static [ZBox] {
+     })
+ }
+ 
++// ─── Standalone executable lockdown ──────────────────────────────────────────
++/// Whether this process is a `bun build --compile` executable, i.e. the
++/// standalone module graph is embedded in the running image. `main` sets it
++/// once, before argv or the environment is interpreted. While it is set, Bun
++/// ignores the environment variables that would otherwise let another local
++/// process change what code runs inside the executable: `BUN_BE_BUN`,
++/// `BUN_INTERNAL_WEBVIEW_HOST`, `BUN_OPTIONS`, `BUN_INSPECT`,
++/// `BUN_INSPECT_CONNECT_TO`, `BUN_INSPECT_PRELOAD`, `BUN_JSC_*` and
++/// `NODE_PATH`, and the runtime transpiler cache is off.
++static IS_STANDALONE_EXECUTABLE: core::sync::atomic::AtomicBool =
++    core::sync::atomic::AtomicBool::new(false);
++
++/// Called once from `main`, before any other thread exists.
++pub fn set_is_standalone_executable(value: bool) {
++    IS_STANDALONE_EXECUTABLE.store(value, core::sync::atomic::Ordering::Relaxed);
++}
++
++#[inline]
++pub fn is_standalone_executable() -> bool {
++    IS_STANDALONE_EXECUTABLE.load(core::sync::atomic::Ordering::Relaxed)
++}
++
++/// C++ view of [`is_standalone_executable`] (read by `JSCInitialize`).
++#[unsafe(no_mangle)]
++extern "C" fn Bun__isStandaloneExecutable() -> bool {
++    is_standalone_executable()
++}
++
+ #[cold]
+ #[inline(never)]
+ fn argv_view_init() {
+     let storage: &'static [ZBox] = argv_storage();
+     // ARGV_STORAGE is process-static via `Once`; `as_zstr` borrows for `'static`.
+     let mut view: Vec<&'static ZStr> = storage.iter().map(ZBox::as_zstr).collect();
+-    // Splice BUN_OPTIONS tokens after argv[0].
+-    if let Some(opts) = crate::env_var::BUN_OPTIONS.get() {
++    // Splice BUN_OPTIONS tokens after argv[0]. Never for a compiled executable.
++    if let Some(opts) = crate::env_var::BUN_OPTIONS
++        .get()
++        .filter(|_| !is_standalone_executable())
++    {
+         let original_len = view.len();
+         append_options_env::<&'static ZStr>(opts, &mut view);
+         set_bun_options_argc(view.len() - original_len);
+diff --git a/src/bundler/cache.rs b/src/bundler/cache.rs
+index fb867d89..22904c63 100644
+--- a/src/bundler/cache.rs
++++ b/src/bundler/cache.rs
+@@ -39,6 +39,7 @@ impl RuntimeTranspilerCacheExt for RuntimeTranspilerCache {
+     #[inline]
+     fn disabled() -> bool {
+         DISABLED.load(Ordering::Relaxed)
++            || bun_core::is_standalone_executable()
+             || bun_core::env_var::BUN_RUNTIME_TRANSPILER_CACHE_PATH
+                 .get()
+                 .map(|v| v.is_empty() || v == b"0")
+diff --git a/src/jsc/RuntimeTranspilerCache.rs b/src/jsc/RuntimeTranspilerCache.rs
+index 6ad49e14..28aebab2 100644
+--- a/src/jsc/RuntimeTranspilerCache.rs
++++ b/src/jsc/RuntimeTranspilerCache.rs
+@@ -611,6 +611,12 @@ impl RuntimeTranspilerCache {
+             );
+         }
+ 
++        // Compiled executables never read or write the on-disk cache: entries
++        // there are trusted as transpiled output for files loaded from disk.
++        if bun_core::is_standalone_executable() {
++            return 0;
++        }
++
+         if let Some(dir) = env_var::BUN_RUNTIME_TRANSPILER_CACHE_PATH.get() {
+             if dir.is_empty() || (dir.len() == 1 && dir[0] == b'0') {
+                 return 0;
+@@ -842,7 +848,7 @@ impl RuntimeTranspilerCache {
+         parser_options: &ParserOptions<'_>,
+         used_jsx: bool,
+     ) -> bool {
+-        if !FeatureFlags::RUNTIME_TRANSPILER_CACHE {
++        if !FeatureFlags::RUNTIME_TRANSPILER_CACHE || bun_core::is_standalone_executable() {
+             return false;
+         }
+ 
+diff --git a/src/jsc/bindings/ZigGlobalObject.cpp b/src/jsc/bindings/ZigGlobalObject.cpp
+index 1bcd27a1..60b26cab 100644
+--- a/src/jsc/bindings/ZigGlobalObject.cpp
++++ b/src/jsc/bindings/ZigGlobalObject.cpp
+@@ -280,6 +280,9 @@ extern "C" long Bun__crashHandlerFromJSCFrame(void*, void*, void*, void*);
+ // bun_icu_default_locale.cpp
+ extern "C" void Bun__ensureICUDefaultLocale();
+ 
++// bun_core::is_standalone_executable(): true for `bun build --compile` output.
++extern "C" bool Bun__isStandaloneExecutable();
++
+ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(const char* ptr, size_t length), bool evalMode, bool oneShotStartup, bool shortLivedGlobals)
+ {
+     static std::once_flag jsc_init_flag;
+@@ -360,7 +363,9 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+                 JSC::Options::thresholdForFTLOptimizeAfterWarmUp() = 1000000;
+             }
+ 
+-            if (envc > 0) [[likely]] {
++            // Compiled executables ignore BUN_JSC_* (JSC options can expose
++            // internals such as $vm or change JIT and memory safety settings).
++            if (envc > 0 && !Bun__isStandaloneExecutable()) [[likely]] {
+                 auto envc_copy = envc;
+                 while (envc_copy--) {
+                     const char* env = (const char*)envp[envc_copy];
+diff --git a/src/resolver/resolver.rs b/src/resolver/resolver.rs
+index 24f019f6..99e9bcf8 100644
+--- a/src/resolver/resolver.rs
++++ b/src/resolver/resolver.rs
+@@ -2794,8 +2794,11 @@ impl<'a> Resolver<'a> {
+ 
+         // try resolve from `NODE_PATH`
+         // https://nodejs.org/api/modules.html#loading-from-the-global-folders
++        // Compiled executables ignore NODE_PATH: it would let the environment
++        // satisfy imports (e.g. optional `require`s) of modules loaded from disk.
+         let node_path: &[u8] = self
+             .env_loader()
++            .filter(|_| !bun_core::is_standalone_executable())
+             .and_then(|env| env.get(b"NODE_PATH"))
+             .unwrap_or(b"");
+         if !node_path.is_empty() {
+diff --git a/src/runtime/bin_entry/mod.rs b/src/runtime/bin_entry/mod.rs
+index 098d8c73..1a6a9058 100644
+--- a/src/runtime/bin_entry/mod.rs
++++ b/src/runtime/bin_entry/mod.rs
+@@ -154,6 +154,10 @@ pub(crate) unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) ->
+     //    for the entire process.
+     unsafe { bun_core::init_argv(argc, argv) };
+ 
++    // 0b. Decide once whether this is a `bun build --compile` executable,
++    //     before argv (BUN_OPTIONS) or any other environment variable is read.
++    bun_core::set_is_standalone_executable(bun_standalone_graph::Graph::is_embedded());
++
+     // 1. Crash handler first so anything below gets a usable trace.
+     bun_crash_handler::init();
+ 
+diff --git a/src/runtime/cli/Arguments.rs b/src/runtime/cli/Arguments.rs
+index 8ed18c92..7ced2bf4 100644
+--- a/src/runtime/cli/Arguments.rs
++++ b/src/runtime/cli/Arguments.rs
+@@ -1013,7 +1013,9 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
+             let preloads = args.options(b"--preload");
+             let preloads2 = args.options(b"--require");
+             let preloads3 = args.options(b"--import");
+-            let preload4 = env_var::BUN_INSPECT_PRELOAD.get();
++            let preload4 = env_var::BUN_INSPECT_PRELOAD
++                .get()
++                .filter(|_| !bun_core::is_standalone_executable());
+ 
+             let total_preloads = ctx.preloads.len()
+                 + preloads.len()
+diff --git a/src/runtime/cli/mod.rs b/src/runtime/cli/mod.rs
+index b1046329..c47e3174 100644
+--- a/src/runtime/cli/mod.rs
++++ b/src/runtime/cli/mod.rs
+@@ -1168,9 +1168,13 @@ pub mod command {
+         // WebView host subprocess entry. Must be before StandaloneModuleGraph,
+         // before JSC init, before anything that touches a JS engine. The child
+         // runs CFRunLoopRun() as its real main loop — no Bun runtime past this.
++        // Ignored by compiled executables: the env var alone would turn the
++        // signed binary into a WebView host speaking to an attacker's fd.
+         #[cfg(target_os = "macos")]
+         {
+-            if let Some(fd_str) = bun_core::env_var::BUN_INTERNAL_WEBVIEW_HOST::get() {
++            if let Some(fd_str) = bun_core::env_var::BUN_INTERNAL_WEBVIEW_HOST::get()
++                .filter(|_| !bun_core::is_standalone_executable())
++            {
+                 // Parse base-10 directly
+                 // from bytes; env var values are `&[u8]`, not assumed UTF-8.
+                 let fd: u32 = match bun_core::parse_int::<u32>(fd_str, 10).ok() {
+@@ -1189,13 +1193,18 @@ pub mod command {
+             }
+         }
+ 
+-        // bun build --compile entry point
+-        if !bun_core::env_var::feature_flag::BUN_BE_BUN::get().unwrap_or(false) {
++        // bun build --compile entry point. A compiled executable always runs
++        // its embedded graph: BUN_BE_BUN is honoured only by plain `bun`.
++        let standalone = bun_core::is_standalone_executable();
++        if standalone || !bun_core::env_var::feature_flag::BUN_BE_BUN::get().unwrap_or(false) {
+             if let Some(graph) = bun_standalone_graph::Graph::from_executable()? {
+                 // Never taken for a plain `bun` binary; ~2 KB of argv-splice
+                 // and ctx-setup code lives behind this cold call.
+                 return boot_standalone(graph, log);
+             }
++            if standalone {
++                Output::panic(format_args!("failed to load the standalone module graph"));
++            }
+         }
+ 
+         // Fast path: `bun -v` / `bun --version` / `bun --revision`, the
+diff --git a/src/runtime/jsc_hooks.rs b/src/runtime/jsc_hooks.rs
+index 029b3568..cd76cb4f 100644
+--- a/src/runtime/jsc_hooks.rs
++++ b/src/runtime/jsc_hooks.rs
+@@ -591,8 +591,19 @@ unsafe fn configure_debugger(
+         return;
+     }
+ 
+-    let unix: &'static [u8] = env_var::BUN_INSPECT.get().unwrap_or(b"");
+-    let connect_to: &'static [u8] = env_var::BUN_INSPECT_CONNECT_TO.get().unwrap_or(b"");
++    // Compiled executables never attach a debugger because of the environment;
++    // only `--inspect*` baked in with `--compile-exec-argv` can enable one.
++    let standalone = bun_core::is_standalone_executable();
++    let unix: &'static [u8] = if standalone {
++        b""
++    } else {
++        env_var::BUN_INSPECT.get().unwrap_or(b"")
++    };
++    let connect_to: &'static [u8] = if standalone {
++        b""
++    } else {
++        env_var::BUN_INSPECT_CONNECT_TO.get().unwrap_or(b"")
++    };
+ 
+     let set_breakpoint_on_first_line = !unix.is_empty() && unix.ends_with(b"?break=1");
+     let wait_for_debugger = !unix.is_empty() && unix.ends_with(b"?wait=1");
+diff --git a/src/standalone_graph/StandaloneModuleGraph.rs b/src/standalone_graph/StandaloneModuleGraph.rs
+index 9ab6dbbf..550cd4c5 100644
+--- a/src/standalone_graph/StandaloneModuleGraph.rs
++++ b/src/standalone_graph/StandaloneModuleGraph.rs
+@@ -2710,6 +2710,31 @@ impl StandaloneModuleGraph {
+     /// Loads the standalone module graph from the executable, allocates it on the heap,
+     /// sets it globally, and returns the pointer.
+     pub fn from_executable() -> crate::Result<Option<*mut StandaloneModuleGraph>> {
++        let Some((base, len)) = Self::embedded_payload() else {
++            return Ok(None);
++        };
++        // SAFETY: `embedded_payload` checked that `[len - Offsets - TRAILER, len)`
++        // is in bounds; `read_unaligned` avoids forming a `&[u8]` over the region.
++        let offsets_ptr = unsafe { base.add(len - size_of::<Offsets>() - TRAILER.len()) };
++        // SAFETY: offsets_ptr has at least size_of::<Offsets>() bytes.
++        let offsets: Offsets = unsafe { core::ptr::read_unaligned(offsets_ptr.cast::<Offsets>()) };
++        let graph = from_bytes_alloc(base, len, offsets)?;
++        // SAFETY: `from_bytes_alloc` just allocated `graph` for the life of the process.
++        unsafe { &*graph }.prefetch_startup_pages();
++        Ok(Some(graph))
++    }
++
++    /// Whether the running executable carries a standalone module graph
++    /// (built with `bun build --compile`). Cheap: reads the embedded section
++    /// header and trailer only. Used by `main` to set
++    /// `bun_core::is_standalone_executable`.
++    pub fn is_embedded() -> bool {
++        Self::embedded_payload().is_some()
++    }
++
++    /// The embedded payload `(base, len)` when it is present and ends in a
++    /// valid trailer.
++    fn embedded_payload() -> Option<(*mut u8, usize)> {
+         #[cfg(target_os = "macos")]
+         let data = macho::get_data();
+         #[cfg(windows)]
+@@ -2724,30 +2749,21 @@ impl StandaloneModuleGraph {
+             target_os = "freebsd"
+         )))]
+         let data: Option<(*mut u8, usize)> = None;
+-        let Some((base, len)) = data else {
+-            return Ok(None);
+-        };
++        let (base, len) = data?;
+         if len < size_of::<Offsets>() + TRAILER.len() {
+             bun_core::debug_warn!("bun standalone module graph is too small to be valid");
+-            return Ok(None);
++            return None;
+         }
+-        // SAFETY: `[len - Offsets - TRAILER, len)` is in-bounds (checked above) and
+-        // read-only; build short-lived views via raw `read_unaligned` so no `&[u8]`
+-        // ever spans the writable bytecode region carried in `base`'s provenance.
+-        let offsets_ptr = unsafe { base.add(len - size_of::<Offsets>() - TRAILER.len()) };
+-        // SAFETY: `[len - TRAILER.len(), len)` is in-bounds (length checked above) and read-only.
++        // SAFETY: `[len - TRAILER.len(), len)` is in-bounds (length checked above) and
++        // read-only; a short-lived view so no `&[u8]` ever spans the writable
++        // bytecode region carried in `base`'s provenance.
+         let trailer_bytes =
+             unsafe { core::slice::from_raw_parts(base.add(len - TRAILER.len()), TRAILER.len()) };
+         if trailer_bytes != TRAILER {
+             bun_core::debug_warn!("bun standalone module graph has invalid trailer");
+-            return Ok(None);
++            return None;
+         }
+-        // SAFETY: offsets_ptr has at least size_of::<Offsets>() bytes.
+-        let offsets: Offsets = unsafe { core::ptr::read_unaligned(offsets_ptr.cast::<Offsets>()) };
+-        let graph = from_bytes_alloc(base, len, offsets)?;
+-        // SAFETY: `from_bytes_alloc` just allocated `graph` for the life of the process.
+-        unsafe { &*graph }.prefetch_startup_pages();
+-        Ok(Some(graph))
++        Some((base, len))
+     }
+ 
+     /// Starts reading the payload pages the entry point's static import closure

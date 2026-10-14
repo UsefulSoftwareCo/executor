@@ -2,14 +2,17 @@
  * Executor's own time on one tool call. Each isolate the call runs in measures its own part on its
  * own clock: the caller its work outside runtime calls, and the runner, data supervisor and app
  * isolate their work outside waiting on the next isolate, on upstream providers, on elicitation
- * answers and on the app's authored code. The parts are summed; no duration is subtracted across
- * isolates. Transit between isolates is on no single clock and is not included.
+ * answers, on another call's cache load and on the app's authored code; work handed to the
+ * background runs beside the call and counts for none of them. The parts are summed. Transit between isolates is on no single clock and is not included; an
+ * isolate's start-up is, when the isolate started for this call (see `runtimeCallParts`).
  */
 import { Effect, type Tracer } from "effect";
 import { measuredSpan } from "@executor-js/telemetry";
 import type { InvocationTiming } from "apps/contracts";
 import {
+  isolateStarts,
   RuntimeCallTimings,
+  StartedPart,
   type DispatchTiming,
   type IsolateTiming,
   type RuntimeCallTiming,
@@ -23,6 +26,16 @@ const staleClockToleranceMs = 10;
  * must cover the child's elapsed time; where it does not, the two clocks disagree and the stalled
  * one under-measured its own part. The app isolate's part is its whole dispatch, which `app` divides
  * by owner within its own span.
+ *
+ * What a parent waited beyond its child's elapsed time is the hop's gap: transit, and the child's
+ * start-up when it started for this call, which ran before its clock began. A cold hop's gap is
+ * Executor's time, since nothing else measures it: the runner's when its isolate started, the
+ * supervisor's when its object started, and the app's when its data facet started inside the
+ * supervisor's wait. A facet's synchronous SQL and code never move its clock, so that gap also
+ * holds the app's code on the call that started it. The app Worker's own start is already the
+ * runner's (`runtime.app.rpc.start`), outside its wait. A warm hop's gap is transit and stays out.
+ * A runner inside the supervisor (Cloud database calls) is reached in the supervisor's object, so
+ * the caller's hop holds the supervisor's start and the runner's hop to the supervisor is local.
  */
 export const runtimeCallParts = (
   callerWaitMs: number,
@@ -49,17 +62,47 @@ export const runtimeCallParts = (
       ? [`${parent.isolate}/${child.isolate}`]
       : [];
   });
-  const appOwnMs = dispatch.elapsedMs - app.upstreamMs - app.elicitationMs - app.authoredMs;
+  const gap = (index: number) => Math.max(0, waiting[index]!.waitMs - waited[index]!.elapsedMs);
+  const gaps = {
+    runner: gap(0),
+    ...(supervisor === undefined ? {} : { supervisor: gap(1) }),
+    app: gap(waited.length - 1),
+  };
+  const reported = new Set([...(runner.started ?? []), ...(supervisor?.started ?? [])]);
+  // Each reporter on the path must say what started; one that predates it leaves it unknown.
+  const known =
+    runner.started !== undefined && (supervisor === undefined || supervisor.started !== undefined);
+  const started = known ? StartedPart.literals.filter((part) => reported.has(part)) : undefined;
+  // A runner inside the supervisor has no start of its own: the caller's hop to it holds the
+  // supervisor's.
+  const runnerHopStarted =
+    runner.host === "supervisor" ? reported.has("supervisor") : reported.has("runner");
+  const startMs =
+    (runnerHopStarted ? gaps.runner : 0) +
+    (reported.has("supervisor") ? (gaps.supervisor ?? 0) : 0) +
+    (reported.has("facet") ? gaps.app : 0);
+  const leaseMs = app.leaseMs ?? 0;
+  const backgroundMs = app.backgroundMs ?? 0;
+  const appOwnMs =
+    dispatch.elapsedMs - app.upstreamMs - app.elicitationMs - app.authoredMs - leaseMs;
   return {
     ownMs:
       runner.elapsedMs -
       runner.waitMs +
       (supervisor === undefined ? 0 : supervisor.elapsedMs - supervisor.waitMs) +
-      appOwnMs,
+      appOwnMs +
+      startMs,
     appOwnMs,
     upstreamMs: app.upstreamMs,
     elicitationMs: app.elicitationMs,
     authoredMs: app.authoredMs,
+    leaseMs,
+    backgroundMs,
+    startMs,
+    unclockedMs: gaps.runner + (gaps.supervisor ?? 0) + gaps.app - startMs,
+    started,
+    cold: started?.some((part) => isolateStarts.has(part)),
+    gaps,
     staleClocks,
   };
 };
@@ -119,6 +162,42 @@ export const toolCallSpan =
               "executor.authored_ms",
               sum(({ authoredMs }) => authoredMs),
             );
+            span.attribute(
+              "executor.lease.wait_ms",
+              sum(({ leaseMs }) => leaseMs),
+            );
+            span.attribute(
+              "executor.background_ms",
+              sum(({ backgroundMs }) => backgroundMs),
+            );
+            span.attribute(
+              "executor.start_ms",
+              sum(({ startMs }) => startMs),
+            );
+            span.attribute(
+              "executor.unclocked_ms",
+              sum(({ unclockedMs }) => unclockedMs),
+            );
+            // Cold or warm is the main split of Executor time; it needs no join with the trace.
+            // Unknown when no call reported its parts.
+            // Only when every invoked call said what started; one that did not finish, or a
+            // runner or supervisor that predates it, leaves the call neither cold nor warm.
+            if (
+              parts.length > 0 &&
+              calls.every(
+                ({ invoked, parts }) => invoked === undefined || parts?.started !== undefined,
+              )
+            ) {
+              span.attribute(
+                "executor.runtime.cold",
+                parts.some(({ cold }) => cold === true),
+              );
+              const started = new Set(parts.flatMap((part) => part.started ?? []));
+              span.attribute(
+                "executor.runtime.started",
+                StartedPart.literals.filter((part) => started.has(part)).join(","),
+              );
+            }
             // A call that was invoked but reported no parts did not finish, or its build or runner
             // predates timing: its Executor time cannot be told from the rest, so none is recorded.
             if (calls.every(({ invoked, parts }) => invoked === undefined || parts !== undefined)) {

@@ -10,13 +10,28 @@ accounts, runs your apps, and serves an MCP endpoint for your agents.
 
 <ReleaseCommand product="cli" />
 
-`executor` starts the server and opens the dashboard in your browser. The
-package includes its runtime and dashboard; no source checkout or Bun install
-is needed.
+<ReleaseCommand product="cli-script" />
 
-If npm prints `EBADENGINE`, upgrade Node before installing again. npm can report
-a successful install while skipping the native runtime on an unsupported Node
-version. After upgrading, repeat the install command with `--include=optional`.
+<ReleaseCommand product="cli-windows" />
+
+<ReleaseCommand product="cli-homebrew" />
+
+`executor` starts the server and opens the dashboard in your browser. Executor
+is one executable with its runtime, dashboard, Git and workerd beside it; no
+source checkout, Node or Bun is needed to run it.
+
+The npm package is a small launcher: npm installs the executable for your
+platform as an optional dependency. If `executor` reports that its native
+runtime is missing, npm skipped optional dependencies; install again with
+`--include=optional`.
+
+The install script keeps each release in `~/.executor/v2/runtime/versions/`,
+points `~/.executor/v2/runtime/current` at the one in use and links
+`~/.local/bin/executor` to it. It never edits your shell profile: if
+`~/.local/bin` is not on your `PATH`, it prints the line to add. On Windows the
+script adds `%USERPROFILE%\.executor\v2\runtime\current` to your user `PATH`.
+Pass a version to install that release, for example
+`curl -fsSL https://executor.sh/docs/install.sh | sh -s -- 2.0.0-beta.16`.
 
 If `executor --version` still shows v1, your shell is finding an older install.
 Run `type -a executor` on macOS or Linux, or `where.exe executor` on Windows,
@@ -48,11 +63,32 @@ value that does not match the directory stops startup and changes nothing.
 | `executor serve` | Start without opening a browser. |
 | `executor pair` | Print a new connection link for the running server. |
 | `executor apps` | Create, edit, deploy and install apps. See [Author an app](/author-an-app). |
+| `executor upgrade` | Install the newest release the way Executor was installed; `--rollback` returns to the previous one. |
 | `executor rotate-key` | Replace the saved API key. Restart Executor, then update clients that used the old key. |
 
-There is no `executor mcp` command. That started a stdio MCP server in
-Executor 1. Executor 2 serves MCP over HTTP from the running server, so point
-clients at `http://127.0.0.1:4312/mcp`; see [Connect an agent](#connect-an-agent).
+`executor pair` asks the server on `EXECUTOR_PORT` for a link, using the API key
+saved in `EXECUTOR_DATA_DIR`, or `EXECUTOR_API_KEY` when you set it. Run it with
+the same values as the server. It only reads the key: it never creates a data
+directory or keys. If it reports that the server did not accept the key, the
+server uses another data directory, or its key was rotated and it has not
+restarted yet. Executor desktop keeps its own data directory; use its
+**File > Open in browser** menu item instead.
+
+### Coming from Executor 1
+
+Executor 2 answers the old commands with the command to run instead.
+
+| Executor 1 | Executor 2 |
+| --- | --- |
+| `executor web` | `executor` starts the server and opens the dashboard. If the server is already running, `executor pair` prints a link to open instead. |
+| `executor open` | `executor pair` prints a connection link for the running server. |
+| `executor daemon run` | `executor serve` starts the server without opening a browser. |
+| `executor install`, `executor service install` | No background service yet. Keep `executor serve` running while your agents use Executor. |
+| `executor mcp` | The running server serves MCP over HTTP at `http://127.0.0.1:4312/mcp`; see [Connect an agent](#connect-an-agent). |
+| `executor call`, `executor tools`, `executor resume` | Agents call tools through the MCP endpoint. |
+| `executor server` | No server profiles. `executor apps` commands take `--host`, and `executor rotate-key` replaces `executor server rotate-token`. |
+| `executor login` | `executor apps login --host https://api.executor.sh` signs in to hosted Executor for app commands. |
+| `executor docs` | Open [executor.sh/docs](https://executor.sh/docs). |
 
 ## Configure it
 
@@ -91,10 +127,38 @@ Missing keys stop startup. Executor will not generate replacements for an
 existing installation. Restore the original keys to recover access.
 
 `executor` and `executor serve` check npm at most once a day for a newer
-release on their channel and print the install command. Beta installs are told
-about stable once it is newer. The check never installs anything and is skipped
-in CI. Run the install command again to update. The v2 data directory stays the same
-when beta becomes stable. Uninstalling the package does not delete data or keys.
+release on their channel and print a reminder to run `executor upgrade`. Beta
+installs are told about stable once it is newer. The check never installs
+anything and is skipped in CI. The v2 data directory stays the same when beta
+becomes stable. Uninstalling the package does not delete data or keys.
+
+`executor upgrade` installs the newest release on your channel the way
+Executor was installed, which it tells from where Executor's files live. For an
+install from the install script, it downloads the release, checks it against
+the release's SHA256SUMS, confirms the new version starts, and then switches
+`current` to it. The version it replaced stays installed, and
+`executor upgrade --rollback` switches back to it. For npm, pnpm, Bun or Yarn,
+it runs that package manager; `--method npm|pnpm|bun|yarn` chooses one instead.
+It first checks that your Node.js meets the new launcher's requirement, and
+afterwards runs `executor --version` to confirm the new command works. A
+Homebrew install is upgraded with `brew upgrade`.
+
+```sh
+executor upgrade                 # newest release on your channel
+executor upgrade 2.0.0-beta.16   # a specific release
+executor upgrade --rollback      # back to the previous release (install script)
+executor upgrade --method pnpm   # install with pnpm
+```
+
+On a terminal it asks before installing; `--yes` skips the question. Without a
+terminal, as for agents and CI, it installs without asking. Installing an older
+release needs the version and confirmation, or `--yes` without a terminal. If
+you run Executor through `npx`, `bunx` or `pnpm dlx`, there is nothing to
+upgrade: run `npx executor@beta` to get the newest release. When Executor cannot
+tell which package manager installed it, it prints the install command for each
+one instead of guessing. A running `executor` or `executor serve` keeps using
+the old version until you restart it; `executor upgrade` says when one is
+running. Executor never updates itself without being asked.
 
 The desktop app uses the same local server with a separate
 profile. It checks for updates in the background and asks before restarting to

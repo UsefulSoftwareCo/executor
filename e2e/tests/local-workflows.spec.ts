@@ -5,8 +5,8 @@ import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
+import { localLinks } from "../support/local-links.ts";
 import {
   workflowFiles,
   WorkflowRun as Run,
@@ -46,8 +46,8 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
             });
           },
         };
-        const owner = "workflow-e2e",
-          accountOwner = "workflow-accounts-e2e",
+        // Local saves the app and its accounts under the one owner it assigns.
+        const owner = "local",
           name = `Workflow ${randomUUID().slice(0, 8)}`;
         const resources: {
           apps: string[];
@@ -79,24 +79,28 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const { app } = yield* body(Deployment, deployed);
         resources.apps.push(app.id);
         const path = `/v1/apps/${app.id}`;
-        const profile = yield* createProfile(agent, path, { owner, subject: "local" });
-        const addAccount = (token: string) =>
-          Effect.gen(function* () {
-            const created = yield* api.request(agent, "POST", "/v1/accounts", {
-              owner: accountOwner,
-              provider: app.requirements.accounts.service.provider,
-              method: "key",
-              label: name,
-              fields: { token },
-            });
-            expect(created.status).toBe(200);
-            const account = (yield* body(Resource, created)).id;
-            resources.accounts.push(account);
-            expect(
-              (yield* selectProfileAccounts(agent, path, profile.id, { service: account })).status,
-            ).toBe(200);
-            return account;
+        // Calls name no accounts: each uses the account linked to the app, which connecting from
+        // the app replaces.
+        /** Connect an account for the app, or replace one's key. */
+        const connect = (token: string, account?: string) =>
+          connectLocalAccount(agent, {
+            app: app.id,
+            requirement: "service",
+            method: "key",
+            label: name,
+            fields: { token },
+            ...(account === undefined ? {} : { account }),
           });
+        const addAccount = (token: string) =>
+          connect(token).pipe(
+            Effect.map((connected) => connected.id),
+            Effect.tap((account) =>
+              Effect.gen(function* () {
+                resources.accounts.push(account);
+                expect(yield* localLinks(agent, app.id)).toEqual([account]);
+              }),
+            ),
+          );
         const account = yield* addAccount("synthetic-original");
         expect((yield* session.send("GET", `${path}/workflows`)).status).toBe(401);
         expect(
@@ -105,11 +109,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
             input: {},
           })).status,
         ).toBeGreaterThanOrEqual(400);
-        const definitions = yield* api.request(
-          agent,
-          "GET",
-          `${path}/workflows?profile=${profile.id}`,
-        );
+        const definitions = yield* api.request(agent, "GET", `${path}/workflows`);
         expect(definitions.status).toBe(200);
         expect(
           (yield* body(Schema.Array(Schema.Struct({ name: Schema.String })), definitions)).map(
@@ -119,7 +119,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const start = (workflow: string, input: Schema.Json = {}, key: string = randomUUID()) =>
           Effect.gen(function* () {
             const response = yield* api.request(agent, "POST", `${path}/workflow-runs`, {
-              profile: profile.id,
               workflow,
               input,
               key,
@@ -149,7 +148,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           Effect.gen(function* () {
             const response = yield* api.request(agent, "POST", "/v1/tools/call", {
               app: app.id,
-              profile: profile.id,
               tool,
               kind: workflowToolKinds[tool],
               input,
@@ -167,7 +165,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         expect((yield* start("process", { label: "pinned" }, name)).id).toBe(run.id);
         expect(
           (yield* api.request(agent, "POST", `${path}/workflow-runs`, {
-            profile: profile.id,
             workflow: "process",
             input: { label: "other" },
             key: name,
@@ -178,23 +175,16 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
           yield* Effect.sleep("100 millis");
         }
-        const blockedAppOwner = yield* api.request(agent, "DELETE", `/v1/owners/${owner}`);
-        expect(blockedAppOwner.status).toBe(409);
-        expect(blockedAppOwner.body).toMatchObject({ _tag: "AppWorkflowsActive", app: app.id });
-        const blockedAccountOwner = yield* api.request(
-          agent,
-          "DELETE",
-          `/v1/owners/${accountOwner}`,
-        );
-        expect(blockedAccountOwner.status).toBe(409);
-        expect(blockedAccountOwner.body).toMatchObject({ _tag: "AccountWorkflowsActive", account });
-        expect((yield* api.request(agent, "DELETE", path)).status).toBe(409);
-        expect((yield* api.request(agent, "DELETE", `/v1/accounts/${account}`)).status).toBe(409);
-        expect(
-          (yield* api.request(agent, "PUT", `/v1/accounts/${account}/credentials`, {
-            fields: { token: "synthetic-refreshed" },
-          })).status,
-        ).toBe(200);
+        // Local's owners are shared by every scenario on this server, so the run blocks removing
+        // its own app and account rather than a whole owner.
+        const blockedApp = yield* api.request(agent, "DELETE", path);
+        expect(blockedApp.status).toBe(409);
+        expect(blockedApp.body).toMatchObject({ _tag: "AppWorkflowsActive", app: app.id });
+        const blockedAccount = yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
+        expect(blockedAccount.status).toBe(409);
+        expect(blockedAccount.body).toMatchObject({ _tag: "AccountWorkflowsActive", account });
+        // Reconnecting replaces the key while the run holds the account.
+        expect((yield* connect("synthetic-refreshed", account)).id).toBe(account);
         const second = yield* addAccount("synthetic-other");
         expect(second).not.toBe(account);
         const updated = yield* api.request(agent, "POST", "/v1/apps/deploy", {
@@ -224,11 +214,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           Schema.Struct({ items: Schema.Array(Run) }),
         )(yield* call("history"));
         expect(history.items.length).toBe(1);
-        const listed = yield* api.request(
-          agent,
-          "GET",
-          `${path}/workflow-runs?limit=1&profile=${profile.id}`,
-        );
+        const listed = yield* api.request(agent, "GET", `${path}/workflow-runs?limit=1`);
         expect(listed.status).toBe(200);
         expect(
           (yield* body(Schema.Struct({ items: Schema.Array(Run), next: Schema.String }), listed))
@@ -250,15 +236,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         ).toBe(200);
         expect((yield* wait(slow.id, "terminated")).status).toBe("terminated");
         expect((yield* rows()).some((row) => row.label === "cancel:after")).toBe(false);
-        const purgedApp = yield* api.request(agent, "DELETE", `/v1/owners/${owner}`);
-        expect(purgedApp.status).toBe(200);
-        expect(purgedApp.body).toMatchObject({ apps: 1, accounts: 0 });
-        resources.apps.length = 0;
-        resources.runs.length = 0;
-        const purgedAccounts = yield* api.request(agent, "DELETE", `/v1/owners/${accountOwner}`);
-        expect(purgedAccounts.status).toBe(200);
-        expect(purgedAccounts.body).toMatchObject({ apps: 0, accounts: 2 });
-        resources.accounts.length = 0;
       }),
     ),
   );

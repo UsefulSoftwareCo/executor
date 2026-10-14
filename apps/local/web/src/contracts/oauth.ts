@@ -3,10 +3,10 @@ import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect, Option, Schema, type Redacted } from "effect";
 import { Atom } from "effect/reactivity";
-import { AppId, ProfileId, type ProviderId } from "@executor-js/sdk";
+import { AppId, type ProviderId } from "@executor-js/sdk";
 import { DashboardClient, appAtom, toolsAtom } from "./api.ts";
+import { refreshAppLinks } from "./app-accounts.ts";
 import { accountCredentialsChanged } from "./accounts.ts";
-import { profileSelectionChanged } from "./profiles.ts";
 import { invalidate } from "@executor-js/ui/contracts/mutations";
 
 class OAuthSetupKey extends Data.Class<{
@@ -29,12 +29,11 @@ export const oauthCallbackAtom = Atom.make<Redacted.Redacted<string> | undefined
 );
 /** Safe navigation intent; the server finds the connection from the callback's OAuth state. */
 /**
- * Every sign-in fills an app requirement, which completion selects, so it returns to that app's
- * accounts. A reconnect keeps the account's name.
+ * Every sign-in fills an app requirement, so it returns to that app's accounts, where the new
+ * account is already linked. A reconnect keeps the account's name.
  */
 export const OAuthReturn = Schema.Struct({
   app: AppId,
-  profile: ProfileId,
   reconnect: Schema.Boolean,
 });
 /** Finish once per document load, even if React remounts the page. */
@@ -53,7 +52,7 @@ export const completeOAuthAtom = DashboardClient.runtime
       if (Option.isSome(target)) {
         invalidate(get, appAtom(target.value.app));
         get.refresh(toolsAtom({ app: target.value.app }));
-        profileSelectionChanged(get, target.value.app);
+        refreshAppLinks(get, target.value.app);
       }
       return savedAccount;
     }),

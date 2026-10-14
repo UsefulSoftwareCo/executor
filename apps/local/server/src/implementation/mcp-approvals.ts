@@ -1,7 +1,8 @@
-import { GrantId, permitsBrowserApproval, restrictMcpBackend } from "@executor-js/mcp-auth";
+import type { SqlClient } from "effect/sql";
+import { GrantId, permitsBrowserApproval } from "@executor-js/mcp-auth";
 import { localMcpBackend } from "./mcp.ts";
 import type { LocalMcpOAuth } from "./mcp-oauth.ts";
-import type { Executor } from "@executor-js/sdk/core";
+import { invocationAccounts, type Executor } from "@executor-js/sdk/core";
 /** Browser approval access uses paired dashboard cookies, never the programmatic bearer key. */
 import {
   BrowserApprovalAddress,
@@ -19,6 +20,7 @@ export const localMcpApproval = (
   approvals: BrowserApprovals,
   auth: LocalAuth,
   config: ServerConfig,
+  sql: SqlClient.SqlClient,
   executor: Executor,
   oauth: LocalMcpOAuth,
 ) =>
@@ -55,12 +57,15 @@ export const localMcpApproval = (
     const view = yield* approvals.get(grant.id, address);
     if (view.status === "pending") {
       const tool =
-        view.request.status === "approval-required" ? view.request.invocation : view.request.tool;
+        view.request.status === "approval-required"
+          ? {
+              app: view.request.invocation.app,
+              tool: view.request.invocation.tool,
+              accounts: invocationAccounts(view.request.invocation),
+            }
+          : view.request.tool;
       // The same grant checks as the MCP route, including runs-as targets and read-only tools.
-      const allowed = yield* restrictMcpBackend<Error, never>(
-        localMcpBackend(executor, grant.id),
-        Effect.succeed(grant),
-      )
+      const allowed = yield* localMcpBackend(sql, executor, grant.id, Effect.succeed(grant))
         .authorizeElicitation(tool)
         .pipe(
           Effect.as(true),

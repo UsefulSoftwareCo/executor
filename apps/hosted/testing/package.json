@@ -8,6 +8,7 @@
   "dependencies": {
     "@effect/platform-bun": "4.0.1",
     "@effect/platform-node": "4.0.1",
+    "@effect/sql-pg": "4.0.1",
     "@executor-js/dashboard-start": "workspace:*",
     "@executor-js/devtools": "workspace:*",
     "@executor-js/hosted-server": "workspace:*",

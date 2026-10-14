@@ -17,7 +17,7 @@ export const declarationFreshness = {
 /**
  * How long an evaluated tool listing is reused, with the same meaning as `declarationFreshness`.
  * The app cache's `freshFor`/`staleFor` already bound how old a remote catalog behind a listing
- * can be, and a new deployment, profile revision, account selection or stored credential is a
+ * can be, and a new deployment, account set or stored credential is a
  * different listing, so this window only bounds re-evaluation and inputs nothing else tracks,
  * such as a factory that fetches without the app cache. `maxStaleMillis` defaults to 24 hours, so
  * a listing read at least once a day is served from memory while it refreshes in the background.
@@ -53,6 +53,24 @@ export const defaultToolListingPolicy: ToolListingPolicy = {
   loadMillis: 45_000,
   slowFailureMillis: 1_000,
 };
+
+/**
+ * How an in-process caller reads a kept catalog, such as a tool listing or skill catalog. Not an
+ * HTTP input.
+ */
+export interface CatalogReadOptions {
+  /**
+   * Whether a kept result past its freshness starts a background evaluation that replaces it.
+   * Defaults to true. A read across every app, such as MCP search or the skills index, passes
+   * false: refreshing every aged result would load every app's Worker, so it serves a kept result
+   * of any age below its `maxStaleMillis` as it is, and waits for the whole durable read rather
+   * than evaluating beside a slow one. A result is still evaluated when none is kept,
+   * and a deployment, account selection, stored credential or app cache
+   * invalidation is another result or forgets the kept one, so only inputs nothing tracks, such as
+   * a factory that fetches without the app cache, can be older than they would be otherwise.
+   */
+  readonly refreshStale?: boolean;
+}
 
 /**
  * Memory bounds for one host process or isolate, in UTF-16 string bytes of each result's JSON
@@ -141,11 +159,13 @@ export interface DeclarationCache {
   readonly changed: (app: string, at: number) => void;
   /** Whether a result of the app evaluated from `at` predates an invalidation seen here. */
   readonly outdated: (app: string, at: number) => boolean;
+  /** What the store holds now, measured as its limits are. */
+  readonly usage: () => { readonly entries: number; readonly bytes: number };
 }
 
 /**
  * How long a read that missed this process's store waits for the durable copy before it also
- * starts evaluating. A warm durable store answers well inside it, so a hit never evaluates; a slow
+ * starts evaluating, unless it passes `refreshStale: false`. A warm durable store answers well inside it, so a hit never evaluates; a slow
  * one, such as a Durable Object waking up, delays a miss by at most this much.
  */
 export const durableHeadStartMillis = 100;
@@ -161,8 +181,9 @@ export interface DurableEntry {
  * as `DeclarationCache`. Values can include text derived from credentials, so a host keeps them
  * only where it already keeps the app's account-scoped cache, never in a store shared across
  * owners. An app cache invalidation must make the host forget the app's results evaluated no
- * later than then. `get` never fails: a failure or a slow store is a miss. `set` may drop a
- * result, and keeps it at most until `until`.
+ * later than then. `get` has no expected failure: a store failure or a slow store is a miss.
+ * `set` may drop a result, and keeps it at most until `until`. Defects and interruption still
+ * propagate from both.
  */
 export interface DurableDeclarations {
   readonly get: (app: string, key: string) => Effect.Effect<DurableEntry | undefined>;

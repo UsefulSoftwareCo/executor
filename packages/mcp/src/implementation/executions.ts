@@ -5,11 +5,13 @@ import {
   ElicitationFailed,
   toolCallSpan,
   ToolInputs,
+  invocationAccounts,
   type ToolCallResult,
   type ToolPending,
 } from "@executor-js/sdk/core";
 import {
   defaultElicitationLimits,
+  exactApprovalElicitation,
   type ElicitationResponse,
   type ElicitationHandler,
 } from "apps/contracts";
@@ -30,6 +32,8 @@ import {
 } from "effect";
 import type { McpBackend } from "../contracts/backend.ts";
 import {
+  ApprovalTooLarge,
+  ApprovalUnavailable,
   defaultMcpRuntimeLimits,
   ElicitationRequestId,
   ElicitationResponseInvalid,
@@ -40,45 +44,70 @@ import {
   type ExecuteResult,
   type McpExecutionResult,
   type McpLimits,
+  type PendingInteraction,
+  resumeUnavailableMessage,
+  type ResumeUnavailableReason,
 } from "../contracts/execute.ts";
 import type { BrowserApprovalView, BrowserApprovalAcknowledgement } from "../contracts/browser.ts";
 import { programScheduler } from "./program-scheduler.ts";
 import { reportFailure } from "./diagnostics.ts";
 import {
-  executeProgram,
   executionProgress,
   reportedCalls,
   timeoutDeliveryMs,
   timeoutMessage,
   type ExecutionProgress,
+  type Program,
 } from "./execute.ts";
 
-class ApprovalTooLarge extends Schema.TaggedError<ApprovalTooLarge>()("ApprovalTooLarge", {}) {}
 class ApprovalDenied extends Schema.TaggedError<ApprovalDenied>()("ApprovalDenied", {}) {}
 class ApprovalCancelled extends Schema.TaggedError<ApprovalCancelled>()("ApprovalCancelled", {}) {}
 class McpExecutionFailed extends Schema.TaggedError<McpExecutionFailed>()(
   "McpExecutionFailed",
   {},
 ) {}
-class ApprovalUnavailable extends Schema.TaggedError<ApprovalUnavailable>()(
-  "ApprovalUnavailable",
-  {},
-) {}
 
-/** The asking call's identity. A call without a profile omits the keys; MCP results are JSON. */
+/** Why a request stopped being pending before or without a resume answering it. */
+type Ended = Exclude<ResumeUnavailableReason, "not-found">;
+/** Ended requests are remembered as long as an answer to them can plausibly still arrive. */
+const endedRetentionMs = 30 * 60 * 1000;
+/** Bounds that memory however many requests a host issues. */
+const maxEnded = 4096;
+
+/** Whether a call runs with no account in either scope. */
+const accountFree = (accounts: NonNullable<InteractionTool["accounts"]>) =>
+  Object.keys(accounts.app).length === 0 && Object.keys(accounts.user ?? {}).length === 0;
+
+/**
+ * The asking call's identity. A call without accounts in either scope omits the key; MCP results
+ * are JSON.
+ */
 const interactionTool = (call: {
   readonly app: InteractionTool["app"];
   readonly tool: InteractionTool["tool"];
-  readonly profile?: InteractionTool["profile"] | undefined;
-  readonly expectedProfileRevision?: InteractionTool["expectedProfileRevision"] | undefined;
+  readonly accounts?: InteractionTool["accounts"] | undefined;
 }): InteractionTool => ({
   app: call.app,
   tool: call.tool,
-  ...(call.profile === undefined ? {} : { profile: call.profile }),
-  ...(call.expectedProfileRevision === undefined
-    ? {}
-    : { expectedProfileRevision: call.expectedProfileRevision }),
+  ...(call.accounts === undefined || accountFree(call.accounts) ? {} : { accounts: call.accounts }),
 });
+
+/**
+ * How a run's pending interactions reach a person, which decides what must fit the output budget.
+ * Model and browser delivery return the whole interaction as the execute result; browser delivery
+ * also adds its review link, a few hundred bytes the budget does not count. Native delivery sends
+ * only the prompt, as the client's own elicitation request.
+ */
+export type PendingTransport = "result" | "prompt";
+/**
+ * Who answers a policy approval: the user through a pending interaction (`ask`), or the MCP client,
+ * which already confirmed the destructive tool call that started the run (`client`).
+ */
+export type ApprovalMode = "ask" | "client";
+const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+/** UTF-8 bytes of the JSON a transport sends for this interaction. */
+const sentBytes = (transport: PendingTransport, request: PendingInteraction) =>
+  jsonBytes(transport === "prompt" ? request.elicitation : request);
 
 type Operation = { readonly waiting: Set<InteractionId> };
 type Pending = {
@@ -109,6 +138,8 @@ type Event =
   | { readonly kind: "done"; readonly result: typeof ExecuteResult.Type };
 type Run = {
   readonly id: string;
+  readonly transport: PendingTransport;
+  readonly approval: ApprovalMode;
   readonly scheduling: ReturnType<typeof programScheduler>;
   readonly caller: string;
   readonly scope: Scope.Closeable;
@@ -122,6 +153,14 @@ type Run = {
   busy: boolean;
   closed: boolean;
 };
+
+/**
+ * Programs running in this process, across every execution store in it. On Cloud the process is
+ * an isolate that several MCP session objects share, and every program there counts against its
+ * one memory limit, parked ones included.
+ */
+const live = { programs: 0 };
+export const runningPrograms = () => live.programs;
 
 /** Both transports drive this bounded, host-owned store. Closing it cancels programs and their tools. */
 export const makeExecutions = (
@@ -139,10 +178,28 @@ export const makeExecutions = (
     /** Ended runs whose tools are still being cancelled; they count toward the execution limit. */
     const closing = new Set<Run>();
     const requests = new Map<InteractionId, Pending>();
-    const unavailable = (requestId: InteractionId): McpExecutionResult => ({
-      status: "unavailable",
-      requestId,
-    });
+    /**
+     * Why each recently pending request stopped being pending, kept for its caller only, so a late
+     * resume learns whether it was answered, expired or ended rather than only that it is gone.
+     */
+    const ended = new Map<
+      InteractionId,
+      { readonly caller: string; readonly reason: Ended; readonly until: number }
+    >();
+    const unavailable = (
+      caller: string,
+      requestId: InteractionId,
+    ): Extract<McpExecutionResult, { status: "unavailable" }> => {
+      const known = ended.get(requestId);
+      const reason: ResumeUnavailableReason =
+        known === undefined || known.caller !== caller ? "not-found" : known.reason;
+      return {
+        status: "unavailable",
+        requestId,
+        reason,
+        message: resumeUnavailableMessage(reason),
+      };
+    };
     const failure = (
       run: Run,
       kind: CodeMode.DiagnosticKind,
@@ -166,8 +223,23 @@ export const makeExecutions = (
         );
       });
     const wake = (run: Run) => Queue.offer(run.events, { kind: "wake" });
-    const forget = (pending: Pending) => {
-      requests.delete(pending.request.requestId);
+    /** Stop offering a request. Only the first end of a still pending request is remembered. */
+    const forget = (pending: Pending, reason: Ended) => {
+      const id = pending.request.requestId;
+      if (requests.get(id) === pending) {
+        // Map order is insertion order: drop the oldest records beyond the bound.
+        ended.delete(id);
+        ended.set(id, {
+          caller: pending.run.caller,
+          reason,
+          until: clock.currentTimeMillisUnsafe() + endedRetentionMs,
+        });
+        for (const oldest of ended.keys()) {
+          if (ended.size <= maxEnded) break;
+          ended.delete(oldest);
+        }
+      }
+      requests.delete(id);
       pending.run.pending.delete(pending.request.requestId);
       // Wake collectors atomically with removal; an already recorded answer is never overwritten.
       Deferred.doneUnsafe(pending.browserAnswer, Effect.succeed(undefined));
@@ -177,7 +249,7 @@ export const makeExecutions = (
       if (run.closed) return false;
       run.closed = true;
       run.scheduling.resume();
-      for (const pending of run.pending.values()) forget(pending);
+      for (const pending of run.pending.values()) forget(pending, "ended");
       runs.delete(run);
       return true;
     };
@@ -216,9 +288,13 @@ export const makeExecutions = (
         while (true) {
           yield* Effect.sleep("1 second");
           const now = yield* Clock.currentTimeMillis;
+          for (const [id, { until }] of ended) if (until <= now) ended.delete(id);
           for (const run of runs) {
-            if ([...run.pending.values()].some(({ request }) => request.expiresAt <= now))
-              yield* stop(run);
+            const lapsed = [...run.pending.values()].filter(
+              ({ request }) => request.expiresAt <= now,
+            );
+            for (const pending of lapsed) forget(pending, "expired");
+            if (lapsed.length > 0) yield* stop(run);
           }
         }
       }),
@@ -227,12 +303,8 @@ export const makeExecutions = (
 
     const record = (pending: Pending) =>
       Effect.gen(function* () {
-        if (pending.run.closed || expired(pending.run)) return yield* new ApprovalUnavailable();
-        if (
-          new TextEncoder().encode(JSON.stringify(pending.request)).byteLength >
-          limits.maxOutputBytes
-        )
-          return yield* new ApprovalTooLarge();
+        if (pending.run.closed || expired(pending.run))
+          return yield* new ApprovalUnavailable({ reason: "ended" });
         pending.run.pending.set(pending.request.requestId, pending);
         requests.set(pending.request.requestId, pending);
         yield* wake(pending.run);
@@ -253,6 +325,16 @@ export const makeExecutions = (
             elicitation: form.request,
             expiresAt: (yield* Clock.currentTimeMillis) + defaultElicitationLimits.timeoutMs,
           };
+          // The app's question cannot reach anyone, so its request is invalid. The app learns only
+          // that; the span keeps the size, for operators.
+          const bytes = sentBytes(run.transport, request);
+          if (bytes > limits.maxOutputBytes) {
+            yield* Effect.annotateCurrentSpan({
+              "executor.elicitation.bytes": bytes,
+              "executor.elicitation.limit": limits.maxOutputBytes,
+            });
+            return yield* new ElicitationFailed({ reason: "invalid-request" });
+          }
           const pending: Pending = {
             kind: "input",
             browserAnswer: yield* Deferred.make<ElicitationResponse | undefined>(),
@@ -265,7 +347,8 @@ export const makeExecutions = (
           };
           operation.waiting.add(request.requestId);
           return yield* record(pending).pipe(
-            Effect.mapError(() => new ElicitationFailed({ reason: "invalid-request" })),
+            // Recording fails only once the run has ended.
+            Effect.mapError(() => new ElicitationFailed({ reason: "unavailable" })),
             Effect.andThen(Deferred.await(response)),
             Effect.raceFirst(
               Effect.callback<never>((resume) => {
@@ -278,7 +361,7 @@ export const makeExecutions = (
             Effect.ensuring(
               Effect.gen(function* () {
                 const abandoned = requests.get(request.requestId) === pending;
-                forget(pending);
+                forget(pending, "ended");
                 operation.waiting.delete(request.requestId);
                 // A transport can cancel a question after its drive has returned.
                 // Close from the host scope: this callback is itself owned by run.scope.
@@ -301,6 +384,95 @@ export const makeExecutions = (
             Effect.sync(() => run.operations.delete(operation)).pipe(Effect.andThen(wake(run))),
           ),
           Effect.forkIn(run.scope),
+        );
+      });
+
+    /**
+     * The approval request as `run` sends it. A native client is sent only the prompt, so it shows
+     * the exact arguments whenever that prompt fits the budget, and the saved shortened one
+     * otherwise. A request over the budget is never offered: the saved call is cancelled, so it can
+     * never run, and the call fails with the request's size.
+     */
+    /**
+     * Accept a policy approval at once, for a run whose MCP client already confirmed the call. The
+     * approved call runs as a resumed one does, so its failures reach the caller the same way.
+     */
+    const approveNow = (
+      run: Run,
+      backend: McpBackend<Error>,
+      operation: Operation,
+      request: typeof ToolPending.Type,
+    ): Effect.Effect<ToolCallResult, Error> =>
+      backend
+        .resumeInvocation(
+          request,
+          { action: "accept" },
+          {
+            elicitation: elicitation(
+              run,
+              operation,
+              interactionTool({
+                app: request.invocation.app,
+                tool: request.invocation.tool,
+                accounts: invocationAccounts(request.invocation),
+              }),
+            ),
+          },
+        )
+        .pipe(
+          Effect.flatMap((result) =>
+            Match.value(result).pipe(
+              Match.when({ status: "completed" }, (result) => Effect.succeed(result)),
+              Match.when({ status: "denied" }, () => Effect.fail(new ApprovalDenied())),
+              Match.when({ status: "cancelled" }, () => Effect.fail(new ApprovalCancelled())),
+              Match.when(
+                { status: "failed", reason: "execution-failed", context: "unconfirmed" },
+                () => Effect.fail(new ApprovalUnavailable({ reason: "context-unconfirmed" })),
+              ),
+              Match.when({ status: "failed", reason: "execution-failed" }, ({ error }) =>
+                Effect.fail(error),
+              ),
+              Match.when({ status: "failed" }, ({ reason }) =>
+                Effect.fail(new ApprovalUnavailable({ reason })),
+              ),
+              Match.when({ status: "already-consumed" }, () =>
+                Effect.fail(new ApprovalUnavailable({ reason: "answered" })),
+              ),
+              Match.exhaustive,
+            ),
+          ),
+        );
+    const offer = (
+      run: Run,
+      backend: McpBackend<Error>,
+      saved: typeof ToolPending.Type,
+    ): Effect.Effect<typeof ToolPending.Type, ApprovalTooLarge> =>
+      Effect.gen(function* () {
+        const exact =
+          run.transport === "prompt"
+            ? exactApprovalElicitation(
+                saved.invocation.tool,
+                saved.invocation.input,
+                limits.maxOutputBytes,
+              )
+            : undefined;
+        const request =
+          exact !== undefined && jsonBytes(exact) <= limits.maxOutputBytes
+            ? { ...saved, elicitation: exact }
+            : saved;
+        const bytes = sentBytes(run.transport, request);
+        if (bytes <= limits.maxOutputBytes) return request;
+        // Its ID never leaves the host, but consuming it means no answer could ever run it.
+        yield* Effect.ignore(backend.resumeInvocation(saved, { action: "cancel" }), {
+          log: "Warn",
+          message: "Cancelling an oversized approval request failed",
+        });
+        return yield* Effect.fail(
+          new ApprovalTooLarge({
+            tool: saved.invocation.tool,
+            bytes,
+            limit: limits.maxOutputBytes,
+          }),
         );
       });
 
@@ -343,11 +515,14 @@ export const makeExecutions = (
           );
         });
       return {
-        listSkills: (input) => exchange((backend) => backend.listSkills(input)),
+        listSkills: (input, options) => exchange((backend) => backend.listSkills(input, options)),
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
-        listTargets: (input) => exchange((backend) => backend.listTargets(input)),
+        listAccounts: (input) => exchange((backend) => backend.listAccounts(input)),
         listTools: (input, options) => exchange((backend) => backend.listTools(input, options)),
+        searchableTools: (input, options) =>
+          exchange((backend) => backend.searchableTools(input, options)),
+        searchTools: (input) => exchange((backend) => backend.searchTools(input)),
         eventDefinitions: (input) => exchange((backend) => backend.eventDefinitions(input)),
         findEventSubscription: (key) => exchange((backend) => backend.findEventSubscription(key)),
         subscribeEvent: (input) => exchange((backend) => backend.subscribeEvent(input)),
@@ -368,6 +543,13 @@ export const makeExecutions = (
                         "executor.tool.name": input.tool,
                       },
                     }),
+                    Effect.flatMap((result): Effect.Effect<ToolCallResult, Error> =>
+                      result.status === "completed"
+                        ? Effect.succeed(result)
+                        : run.approval === "client"
+                          ? approveNow(run, backend, operation, result)
+                          : offer(run, backend, result),
+                    ),
                   ),
               (result, response) => {
                 if (result.status === "completed")
@@ -388,7 +570,8 @@ export const makeExecutions = (
             );
           }),
         authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "unavailable" })),
-        resumeInvocation: () => Effect.fail(new ApprovalUnavailable()),
+        // Only the execution manager answers approvals; program code never reaches this.
+        resumeInvocation: () => Effect.die("A program cannot resume an approval request"),
       };
     };
 
@@ -487,12 +670,16 @@ export const makeExecutions = (
         const pending = requests.get(id);
         if (pending === undefined || pending.run.caller !== caller) return undefined;
         if (pending.request.expiresAt <= (yield* Clock.currentTimeMillis)) {
+          forget(pending, "expired");
           yield* release(pending.run);
           return undefined;
         }
         return pending;
       });
     return {
+      /** Why the caller has no such request to answer. */
+      unavailable: (caller: string, id: InteractionId) =>
+        Effect.sync(() => unavailable(caller, id)),
       /** Inspect a caller-owned live request, including one whose browser answer is recorded. */
       pendingInteraction: (caller: string, id: InteractionId) =>
         current(caller, id).pipe(Effect.map((pending) => pending?.request)),
@@ -543,11 +730,16 @@ export const makeExecutions = (
             ? release(pending.run)
             : Effect.void;
         }),
-      /** Start one program. Policy consent and tool input return the same pending-interaction union. */
+      /**
+       * Start one program or batch of direct calls. Policy consent and tool input return the same
+       * pending-interaction union.
+       */
       execute: (
         caller: string,
         backend: McpBackend<Error>,
-        code: string,
+        work: Program,
+        transport: PendingTransport,
+        approval: ApprovalMode = "ask",
       ): Effect.Effect<McpExecutionResult, ExecutionRejected> =>
         Effect.gen(function* () {
           const admitted = () => runs.size + closing.size < defaultMcpRuntimeLimits.maxExecutions;
@@ -557,6 +749,8 @@ export const makeExecutions = (
           }
           const run: Run = {
             id: crypto.randomUUID(),
+            transport,
+            approval,
             caller,
             scheduling: programScheduler(scheduler),
             scope: yield* Scope.make(),
@@ -575,16 +769,26 @@ export const makeExecutions = (
           }
           runs.add(run);
           yield* Effect.annotateCurrentSpan("executor.execution.id", run.id);
+          // Ends at once, so it is exported even when the process dies while the program runs.
+          yield* Effect.withSpan(Effect.void, "mcp.execution.started", {
+            attributes: {
+              "executor.execution.id": run.id,
+              "executor.execution.concurrent": live.programs,
+            },
+          });
           yield* beforeExecute.pipe(
             Effect.onError(() => stop(run)),
             Effect.onInterrupt(() => stop(run)),
           );
-          const program = executeProgram(
-            broker(run),
-            limits,
-            code,
-            Deferred.await(run.expired),
-            run.progress,
+          const program = Effect.acquireUseRelease(
+            Effect.sync(() => {
+              live.programs += 1;
+            }),
+            () => work(broker(run), limits, Deferred.await(run.expired), run.progress),
+            () =>
+              Effect.sync(() => {
+                live.programs -= 1;
+              }),
           ).pipe(
             Effect.onExit((exit) =>
               Queue.offer(run.events, {
@@ -619,23 +823,25 @@ export const makeExecutions = (
           }).pipe(Effect.mapError(() => new ElicitationResponseInvalid()));
           const pending = requests.get(input.requestId);
           if (pending === undefined || pending.run.caller !== caller)
-            return unavailable(input.requestId);
+            return unavailable(caller, input.requestId);
           const response = yield* pending.respond(input.response);
           const run = pending.run;
           yield* Effect.annotateCurrentSpan("executor.execution.id", run.id);
           if (pending.request.expiresAt <= (yield* Clock.currentTimeMillis)) {
+            forget(pending, "expired");
             yield* release(run);
-            return unavailable(input.requestId);
+            return unavailable(caller, input.requestId);
           }
-          if (requests.get(input.requestId) !== pending) return unavailable(input.requestId);
+          if (requests.get(input.requestId) !== pending)
+            return unavailable(caller, input.requestId);
           // A run parks only before its deadline; never let an answer start work after it.
           if (expired(run)) {
             yield* release(run);
-            return unavailable(input.requestId);
+            return unavailable(caller, input.requestId);
           }
           if (run.busy) return { status: "busy", requestId: input.requestId };
           run.busy = true;
-          forget(pending);
+          forget(pending, "answered");
           if (pending.kind === "approval") approvalWait(run, pending.call, false);
           const begin = Match.value(pending).pipe(
             Match.when({ kind: "approval" }, (pending) =>
@@ -648,8 +854,7 @@ export const makeExecutions = (
                       interactionTool({
                         app: pending.request.invocation.app,
                         tool: pending.request.invocation.tool,
-                        profile: pending.request.invocation.profile,
-                        expectedProfileRevision: pending.request.invocation.profileRevision,
+                        accounts: invocationAccounts(pending.request.invocation),
                       }),
                     ),
                   })
@@ -672,8 +877,27 @@ export const makeExecutions = (
                         Match.when({ status: "cancelled" }, () =>
                           Deferred.fail(pending.response, new ApprovalCancelled()),
                         ),
-                        Match.whenOr({ status: "failed" }, { status: "already-consumed" }, () =>
-                          Deferred.fail(pending.response, new ApprovalUnavailable()),
+                        // Storage failed before Executor could confirm the reviewed call, so it was not resumed.
+                        Match.when(
+                          { status: "failed", reason: "execution-failed", context: "unconfirmed" },
+                          () =>
+                            Deferred.fail(
+                              pending.response,
+                              new ApprovalUnavailable({ reason: "context-unconfirmed" }),
+                            ),
+                        ),
+                        // Resuming the approved call failed: the program sees that failure, as for a live call.
+                        Match.when({ status: "failed", reason: "execution-failed" }, ({ error }) =>
+                          Deferred.fail(pending.response, error),
+                        ),
+                        Match.when({ status: "failed" }, ({ reason }) =>
+                          Deferred.fail(pending.response, new ApprovalUnavailable({ reason })),
+                        ),
+                        Match.when({ status: "already-consumed" }, () =>
+                          Deferred.fail(
+                            pending.response,
+                            new ApprovalUnavailable({ reason: "answered" }),
+                          ),
                         ),
                         Match.exhaustive,
                       ),

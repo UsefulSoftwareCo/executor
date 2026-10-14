@@ -6,6 +6,13 @@ const install = () => {
     dropped = 0;
   const recent = new Map<string, number>();
   const extension = /^(?:chrome|moz|safari-web)-extension:/;
+  // The Resize Observer spec reports an observer loop as an ErrorEvent with these messages, a null
+  // error and no script position. Browsers dispatch it outside any script, so no app code failed.
+  // A null error alone does not identify it: a muted cross-origin "Script error." looks the same.
+  const resizeLoop = new Set([
+    "ResizeObserver loop completed with undelivered notifications.",
+    "ResizeObserver loop limit exceeded",
+  ]);
   const errorTypes = new Set([
     "Error",
     "TypeError",
@@ -170,6 +177,7 @@ const install = () => {
     (event: Event) => {
       if (event instanceof ErrorEvent) {
         if (extension.test(event.filename)) return;
+        if (event.error === null && event.lineno === 0 && resizeLoop.has(event.message)) return;
         const attributes = sourceAttributes(event.filename, event.lineno, event.colno);
         if (event.error instanceof Error && errorTypes.has(event.error.name))
           attributes.push({ key: "exception.type", value: { stringValue: event.error.name } });

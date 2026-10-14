@@ -1,15 +1,5 @@
 /** Stale-while-revalidate reads of evaluated app declarations (skills, workflows, webhooks). */
-import {
-  Array as Arr,
-  Clock,
-  Deferred,
-  Effect,
-  Exit,
-  Fiber,
-  Option,
-  Schema,
-  type Crypto,
-} from "effect";
+import { Clock, Deferred, Effect, Exit, Fiber, Option, Schema, type Crypto } from "effect";
 import { Hex } from "effect/encoding";
 import {
   declarationFreshness,
@@ -24,11 +14,11 @@ import {
   type PendingLoad,
 } from "../contracts/declarations.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
-import { CurrentProfile } from "../contracts/profiles.ts";
 import { type AccountId, StorageError } from "../contracts/shared.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { makeHandoff } from "./handoff.ts";
 import { resolve, type InvocationSnapshot } from "./tools.ts";
+import { accountAuthority } from "./selection.ts";
 
 /** One store per process or isolate. Least recently used entries leave first. */
 export const makeDeclarationCache = (
@@ -80,14 +70,14 @@ export const makeDeclarationCache = (
       for (const [key, entry] of entries) if (entry.app === app && entry.at <= at) remove(key);
     },
     outdated: (app, at) => at <= (changes.get(app) ?? -Infinity),
+    usage: () => ({ entries: entries.size, bytes }),
   };
 };
 
 const JsonText = Schema.fromJsonString(Schema.Unknown);
 
 /**
- * Evaluated declarations depend on the build, the profile revision, the selected accounts and
- * their credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
+ * Evaluated declarations depend on the build, the invocation scope, the account set and its credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
  * only after the same lifecycle checks that precede credential release in an evaluation.
  */
 export const makeDeclarations = (options: {
@@ -123,9 +113,8 @@ export const makeDeclarations = (options: {
             state.app.id,
             state.deployment.id,
             state.deployment.build,
-            state.profile === undefined
-              ? null
-              : [state.profile.id, state.profile.revision, state.profile.subject],
+            // A caller's evaluation and actorless work see different contexts: only one has `user`.
+            state.scope,
             selections,
           ]),
         ),
@@ -143,26 +132,19 @@ export const makeDeclarations = (options: {
         accounts.map((account) => ({ account, provider: required.definition })),
       );
       const accounts = selected.map(({ account }) => account);
+      // Each use is authorized on its own: by the actor's use where a user requirement uses the
+      // account, and by the app link for each app requirement it fills.
+      const { user: linked, app: appUses } = accountAuthority(state.selections);
       const permitted = (allowed: ReadonlySet<AccountId>) =>
         accounts.every((account) => allowed.has(account.id))
           ? Effect.void
           : Effect.fail(new StorageError());
-      // The profile's subject and its accounts are rechecked together, before the grant checks.
-      const profileChecked =
-        state.profile !== undefined && lifecycle?.profileResolving !== undefined
-          ? lifecycle.profileResolving(state.profile, accounts).pipe(Effect.flatMap(permitted))
-          : undefined;
-      if (profileChecked !== undefined) yield* profileChecked;
-      // Otherwise product authority for every account is one read, alongside the grant checks.
-      const authorized =
-        profileChecked !== undefined ||
-        lifecycle === undefined ||
-        !Arr.isReadonlyArrayNonEmpty(accounts)
-          ? Effect.void
-          : lifecycle.accountsResolving(accounts).pipe(Effect.flatMap(permitted));
+      // The actor's use of the app and of every account is one read, alongside the grant checks.
       yield* Effect.all(
         [
-          authorized,
+          lifecycle === undefined
+            ? Effect.void
+            : lifecycle.appResolving(state.app, linked, appUses).pipe(Effect.flatMap(permitted)),
           Effect.forEach(
             selected,
             ({ account, provider }) => options.accountUsable(account, provider),
@@ -174,7 +156,7 @@ export const makeDeclarations = (options: {
         ],
         { concurrency: "unbounded", discard: true },
       );
-    }).pipe(Effect.provideService(CurrentProfile, state.profile));
+    });
   /** A result another process or isolate kept, if the host keeps results beyond this one. */
   const recall = (app: string, id: string) =>
     options.durable === undefined ? Effect.succeed(undefined) : options.durable.get(app, id);
@@ -222,7 +204,9 @@ export const makeDeclarations = (options: {
      * `revalidate` marks a kept value that is not served once stale, even with background work:
      * the read evaluates first instead, so its caller never gets a value a refresh replaces moments
      * later. `live` evaluates without reading or writing kept results, for callers that act on the
-     * result, such as reconciling upstream webhook registrations.
+     * result, such as reconciling upstream webhook registrations. `refreshStale: false` serves a
+     * kept value of any age below the bound as it is, without `revalidate` or a background
+     * refresh; see `CatalogReadOptions`.
      */
     read: <E>(
       command: string,
@@ -233,15 +217,14 @@ export const makeDeclarations = (options: {
         readonly current?: (value: unknown) => Effect.Effect<boolean>;
         readonly revalidate?: (value: unknown) => boolean;
         readonly live?: boolean;
+        readonly refreshStale?: boolean;
       } = {},
     ) =>
       Effect.gen(function* () {
         // Inputs are read no earlier than this; age counts from here, not from when an
         // evaluation, possibly a background one, finished.
         const started = yield* Clock.currentTimeMillis;
-        const evaluated = resolve(state, options.resolveAccount, options.lifecycle).pipe(
-          Effect.flatMap(evaluate),
-        );
+        const evaluated = resolve(state, options.resolveAccount).pipe(Effect.flatMap(evaluate));
         if (policy.live === true) {
           yield* Effect.annotateCurrentSpan("executor.declarations.cache", "live");
           return yield* evaluated;
@@ -299,6 +282,14 @@ export const makeDeclarations = (options: {
             }
             const stale = age >= declarationFreshness.freshMillis;
             const background = options.background;
+            if (stale && policy.refreshStale === false) {
+              yield* authorize(state);
+              yield* Effect.annotateCurrentSpan({
+                "executor.declarations.cache": "stale",
+                "executor.declarations.age_ms": age,
+              });
+              return value;
+            }
             if (stale && background === undefined) {
               yield* Effect.annotateCurrentSpan("executor.declarations.cache", "expired");
               return yield* load;
@@ -436,8 +427,12 @@ export const makeDeclarations = (options: {
                 Effect.andThen(serve(found)),
               )
             : undefined;
+        // A reader that does not refresh waits for the whole durable read: an evaluation beside
+        // it would load the app's Worker and replace the kept result the read then serves.
         const early = yield* Fiber.join(recalling).pipe(
-          Effect.timeoutOption(durableHeadStartMillis),
+          policy.refreshStale === false
+            ? Effect.map(Option.some)
+            : Effect.timeoutOption(durableHeadStartMillis),
         );
         if (Option.isSome(early)) return yield* recalled(early.value) ?? miss;
         // A slow supervisor, often one waking up, would delay every miss: evaluate beside the

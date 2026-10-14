@@ -11,7 +11,7 @@ import { appsManifest } from "./apps-release.ts";
 
 const RunTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("app") }),
-  Schema.Struct({ kind: Schema.Literal("profile"), id: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("account"), id: Schema.String }),
 ]);
 /** The public connection record, including the MCP URL that issues grants bound to it. */
 export const ConnectionView = Schema.Struct({
@@ -28,6 +28,30 @@ export const ConnectionView = Schema.Struct({
 export const Execution = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Boolean, value: Schema.optional(Schema.Unknown) }),
+});
+/** A tool call's refusal as code mode's `error.message` carries it. */
+export const TargetRefusal = Schema.Struct({
+  code: Schema.String,
+  status: Schema.Number,
+  message: Schema.String,
+  recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
+  retryable: Schema.Boolean,
+});
+/**
+ * `GrantForbidden` for the reason `target`: the grant includes `app` but not running it with
+ * `account`. Its message names the refused account.
+ */
+export const targetRefusal = (app: string, account: string): typeof TargetRefusal.Type => ({
+  code: "GrantForbidden",
+  status: 403,
+  message: `This credential’s grant includes the app ${app}, but not running it with the account ${account}.`,
+  recovery: {
+    action:
+      "Run the app with accounts the grant allows, or add this target to its connection, then retry.",
+    instructions:
+      "For each app, an MCP grant or its connection lists how the app may run: with specific accounts, or without an account. One entry must permit every account a call uses. Check the runs-as choices for this app. Choose accounts the grant includes, or add these to the connection, then verify that the call succeeds. Do not bypass authorization.",
+  },
+  retryable: false,
 });
 const Tokens = Schema.Struct({
   access_token: Schema.NonEmptyString,
@@ -176,7 +200,7 @@ export const readWriteAppFiles = (receipt: string) => [
     path: "index.ts",
     content: `
 import { defineApp, mutation, object, query, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     read: query({ description: "Read the receipt", input: object({}) }, async () => ({ read: ${JSON.stringify(receipt)} })),
     write: mutation({ description: "Write a message", input: object({ message: string() }) }, async (_, input) => ({ wrote: input.message })),

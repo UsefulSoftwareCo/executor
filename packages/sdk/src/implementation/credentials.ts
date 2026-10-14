@@ -23,7 +23,39 @@ export const aesGcmCredentials = (
         ]),
       catch: () => new CredentialsError(),
     });
+    // Fingerprints use their own key, HMAC-derived from the configured one, so no digest is ever
+    // made under the encryption key itself.
+    const fingerprintKey = yield* Effect.tryPromise({
+      try: async () => {
+        const root = await crypto.subtle.importKey(
+          "raw",
+          Uint8Array.from(bytes),
+          { name: "HMAC", hash: "SHA-256" },
+          false,
+          ["sign"],
+        );
+        const derived = await crypto.subtle.sign(
+          "HMAC",
+          root,
+          new TextEncoder().encode("executor credential fingerprints"),
+        );
+        return crypto.subtle.importKey("raw", derived, { name: "HMAC", hash: "SHA-256" }, false, [
+          "sign",
+        ]);
+      },
+      catch: () => new CredentialsError(),
+    });
     return {
+      fingerprint: (purpose, value) =>
+        Effect.tryPromise({
+          try: () =>
+            crypto.subtle.sign(
+              "HMAC",
+              fingerprintKey,
+              new TextEncoder().encode(JSON.stringify([purpose, Redacted.value(value)])),
+            ),
+          catch: () => new CredentialsError(),
+        }).pipe(Effect.map((signature) => Hex.encode(new Uint8Array(signature)))),
       encrypt: (account, fields) =>
         Effect.gen(function* () {
           const nonce = yield* Effect.try({

@@ -14,16 +14,25 @@ import {
   AppAccessDenied,
   AppManagementHost,
   appManagementRoutes,
+  type AppCapabilities,
   frameworkDocumentation,
   frameworkRoutes,
   gitRoutes,
 } from "@executor-js/app-management";
-import { OwnerId, type AppId, type Executor } from "@executor-js/sdk/core";
+import { type App, type AppId, type Executor } from "@executor-js/sdk/core";
+import { localOwner } from "./owners.ts";
 import { HttpRouter, HttpServerRequest } from "effect/http";
 import { Effect, Layer, Redacted } from "effect";
 import { Base64 } from "effect/encoding";
 import { localRequest, requestOrigin, type LocalAuth } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
+
+/**
+ * Local has one paired user, who may see, manage and edit every app. Requests still need the
+ * pairing or API key that `LocalAppAccess` checks, and protected apps stay read-only.
+ */
+const pairedUserAppAccess = (apps: ReadonlyArray<App>) =>
+  Effect.succeed(apps.map((): AppCapabilities => ({ visible: true, manage: true, edit: true })));
 
 /** Local has one real owner and no invented publishing organization. */
 export const localAppManagement = (
@@ -43,7 +52,7 @@ export const localAppManagement = (
           authorize(
             response.pipe(
               Effect.provideService(AppIdentity, {
-                owner: OwnerId.make("local"),
+                owner: localOwner,
                 readOwner: null,
                 scope: "local",
                 namespace: null,
@@ -75,7 +84,7 @@ export const localAppManagement = (
                 return yield* new AppAccessDenied({ reason: "authentication" });
             }
             return {
-              owner: OwnerId.make("local"),
+              owner: localOwner,
               readOwner: null,
               scope: "local",
               namespace: null,
@@ -99,6 +108,11 @@ export const localAppManagement = (
       HttpRouter.provideRequest(
         Layer.succeed(AppGitOrigins, (request) => [requestOrigin(config, request)]),
       ),
-      HttpRouter.provideRequest(Layer.succeed(AppManagementHost, Effect.succeed(resources))),
+      HttpRouter.provideRequest(
+        Layer.succeed(
+          AppManagementHost,
+          Effect.succeed({ executor: resources.executor, access: pairedUserAppAccess }),
+        ),
+      ),
     );
   });

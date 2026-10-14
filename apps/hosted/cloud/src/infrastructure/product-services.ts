@@ -32,8 +32,10 @@ export const cloudProductServices = Effect.fn(function* (
   const blobs = yield* cloudBlobs;
   const { executor, database } = yield* cloudExecutor(databases, sources);
   const assets = yield* makeExecutionMemo(
-    cachedBuildAssets(origin, (build, path) =>
-      cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
+    cachedBuildAssets(
+      origin,
+      (build, path) => cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
+      (key, range) => blobs.stream(key, range),
     ),
   );
   // Alchemy's runtime requirement marks event-only operations; it is not a

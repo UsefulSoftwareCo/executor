@@ -30,7 +30,7 @@ export const status = query({ input: object({}), output: string() }, async ({ sq
 export const repair = mutation({ input: object({}), output: string() }, async ({ sql }) => {
   sql.exec("INSERT INTO repairs (note) VALUES ('repaired')"); return "ok";
 });
-export default defineApp({ accounts: {} }, { tools: router({ status, repair }) });`,
+export default defineApp({}, { tools: router({ status, repair }) });`,
   },
   {
     path: "migrations/0001_repairs.sql",

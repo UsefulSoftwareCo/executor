@@ -4,14 +4,13 @@ import { QueryView } from "@executor-js/ui/dashboard/context";
 import type { DashboardApp } from "@executor-js/local-server/contracts";
 import { useAtomSet } from "@effect/atom-react";
 import type { AppId } from "@executor-js/sdk";
-import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import type { Cause } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { useState } from "react";
 import { appAtom } from "../../contracts/api.ts";
 import { deleteAppAtom } from "../../contracts/onboarding.ts";
-import { Empty, Failure, LoadingRows, ProviderIcon } from "../components/common.tsx";
+import { AppIcon, Empty, Failure, LoadingRows } from "../components/common.tsx";
 import { Button } from "@executor-js/ui/components/button";
 import { Link, useNavigate } from "@tanstack/react-router";
 
@@ -50,7 +49,6 @@ function DeleteAppConfirmation({ id, data }: { readonly id: AppId; readonly data
         </Link>
       </Empty>
     );
-  const provider = Object.values(app.requirements.accounts)[0]?.definition;
   const confirm = () => {
     if (pending) return;
     setPending(true);
@@ -74,16 +72,10 @@ function DeleteAppConfirmation({ id, data }: { readonly id: AppId; readonly data
       </div>
       <div className="setup-form max-w-145 flex flex-col gap-5.75 pt-2.5 max-[740px]:gap-5.25">
         <div className="setup-provider flex items-center gap-3.25 [&_h2]:text-[16px] [&_h2]:[font-weight:550] [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere">
-          <ProviderIcon
-            name={provider?.name ?? app.name}
-            url={providerDisplayUrl(provider)}
-            large
-          />
+          <AppIcon app={app} large />
           <h2>{app.name}</h2>
         </div>
-        <p>
-          This deletes this app and its account selections. Saved accounts and other apps are kept.
-        </p>
+        <p>This deletes this app. Saved accounts and other apps are kept.</p>
         {error && <Failure cause={error} />}
         <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px]">
           <Button variant="destructive" loading={pending} onClick={confirm}>

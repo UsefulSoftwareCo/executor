@@ -11,9 +11,9 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Inventory, Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { publicTemplateUpstream } from "../support/template-upstream.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Requirements = Schema.Struct({
   id: Schema.String,
@@ -97,13 +97,14 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth discovery", (it) => {
             app.requirements.accounts.service?.health,
             "The generated provider checks accounts against the server",
           ).toBe(true);
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            ),
           );
           const start = yield* api.request(
             actors.owner,

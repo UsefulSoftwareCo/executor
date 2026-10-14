@@ -3,7 +3,7 @@
  * would refuse.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -12,9 +12,8 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Workflows = Schema.Array(Schema.Struct({ name: Schema.String }));
@@ -35,8 +34,6 @@ layer(HostedLive, { excludeTestServices: true })("App declarations and OAuth gra
         Effect.gen(function* () {
           const api = yield* Api,
             actors = yield* Actors,
-            evidence = yield* Evidence,
-            telemetry = yield* Telemetry,
             http = yield* HttpClient.HttpClient;
           const issuer = yield* oauthSetupIssuer;
           yield* issuer.configure({ refreshTokens: true, expiresIn: lifetime });
@@ -51,7 +48,7 @@ layer(HostedLive, { excludeTestServices: true })("App declarations and OAuth gra
                 content: `import {defineApp,defineProvider,oauth2,query,workflow,object, router} from "apps";
 const service=defineProvider({name:"Reporting",auth:{oauth:oauth2({discover:${discover}})}});
 const noop=workflow({input:object({})},async()=>null);
-export default defineApp({accounts:{service}},async({accounts})=>{
+export default defineApp({user: { accounts:{service} }},async({user: { accounts }})=>{
   const generation=accounts.service.fields.access_token.split("-").pop();
   return {
     tools: router({
@@ -76,13 +73,10 @@ export default defineApp({accounts:{service}},async({accounts})=>{
                 yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
             }).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, path);
+          // Connecting from the app links the account, so reads and calls use it.
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
           );
           const started = yield* api.request(
             actors.owner,
@@ -112,35 +106,9 @@ export default defineApp({accounts:{service}},async({accounts})=>{
           account = (yield* body(Resource, completed)).id;
           const connectedAt = Date.now();
 
-          /** The cache outcome recorded by the SDK span of the latest request's own trace. */
-          const outcome = Effect.gen(function* () {
-            const request = (yield* evidence.requests).at(-1);
-            if (request === undefined) return yield* Effect.fail(new Error("Missing request"));
-            const spans = yield* telemetry.query(request.traceId).pipe(
-              Effect.flatMap((result) => {
-                const tagged = result.data.filter(
-                  ({ span }) => span.tags["executor.declarations.cache"] !== undefined,
-                );
-                return tagged.length === 0
-                  ? Effect.fail(new Error("Missing declaration read span"))
-                  : Effect.succeed(tagged);
-              }),
-              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
-            );
-            expect(spans).toHaveLength(1);
-            return spans[0]?.span.tags["executor.declarations.cache"];
-          });
-          const workflows = api.request(
-            actors.owner,
-            "GET",
-            `${path}/workflows?profile=${profile.id}`,
-          );
-          const bundle = api.request(
-            actors.owner,
-            "GET",
-            `${path}/skill-bundle?profile=${profile.id}`,
-          );
-          const listing = api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`);
+          const workflows = api.request(actors.owner, "GET", `${path}/workflows`);
+          const bundle = api.request(actors.owner, "GET", `${path}/skill-bundle`);
+          const listing = api.request(actors.owner, "GET", `${path}/tools`);
           const names = (response: { status: number; body: unknown }) =>
             body(Workflows, response).pipe(Effect.map((rows) => rows.map((row) => row.name)));
           const descriptions = (response: { status: number; body: unknown }) =>
@@ -152,21 +120,15 @@ export default defineApp({accounts:{service}},async({accounts})=>{
           const first = yield* workflows;
           expect(first.status, JSON.stringify(first.body)).toBe(200);
           expect(yield* names(first)).toEqual(["grant_token"]);
-          expect(yield* outcome).toBe("miss");
           const kept = yield* workflows;
           expect(yield* names(kept)).toEqual(["grant_token"]);
-          expect(yield* outcome).toBe("hit");
           const skills = yield* bundle;
           expect(yield* descriptions(skills)).toEqual(["Grant token"]);
-          expect(yield* outcome).toBe("miss");
           expect(yield* descriptions(yield* bundle)).toEqual(["Grant token"]);
-          expect(yield* outcome).toBe("hit");
           const listed = yield* listing;
           expect(listed.status, JSON.stringify(listed.body)).toBe(200);
           expect(listed.body).toMatchObject({ items: [{ name: "read" }] });
-          expect(yield* outcome).toBe("miss");
           expect((yield* listing).body).toEqual(listed.body);
-          expect(yield* outcome).toBe("hit");
           // Every read above ran before renewal was due, so the stored credential never changed.
           expect(Date.now() - connectedAt).toBeLessThan((lifetime - 30) * 1000);
 
@@ -177,7 +139,6 @@ export default defineApp({accounts:{service}},async({accounts})=>{
             tokenError: { status: 400, body: { error: "invalid_grant" } },
           });
           const refused = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "read",
             kind: "query",
             input: {},

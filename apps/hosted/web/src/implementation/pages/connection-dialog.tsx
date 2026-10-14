@@ -68,7 +68,7 @@ export function ConnectionDialogHeader({
   );
 }
 
-/** A connection query parameter opens the existing request over its app or account page. */
+/** A connection query parameter opens the existing request over its app page. */
 export function AccountConnectionDialog({
   connectionId,
   client,
@@ -126,22 +126,13 @@ function ResumedConnectionDialog({
             connection={connection}
             manualClient={client === "change"}
             onPendingChange={setBusy}
-            onSaved={(account) => {
-              void navigate(
-                connection.target
-                  ? {
-                      to: "/org/$organizationSlug/apps/$appId",
-                      params: { organizationSlug, appId: connection.target.app },
-                      search: { view: "accounts", profile: connection.target.profile },
-                      replace: true,
-                    }
-                  : {
-                      to: "/org/$organizationSlug/accounts",
-                      params: { organizationSlug },
-                      search: { account: account.id },
-                      replace: true,
-                    },
-              );
+            onSaved={() => {
+              void navigate({
+                to: "/org/$organizationSlug/apps/$appId",
+                params: { organizationSlug, appId: connection.target.app },
+                search: { view: "accounts" },
+                replace: true,
+              });
             }}
           />
         )}
@@ -165,28 +156,12 @@ export function ConnectionEntry({
   useEffect(() => {
     if (connection === undefined) return;
     const search = { connection: connection.id, client };
-    void navigate(
-      connection.target
-        ? {
-            to: "/org/$organizationSlug/apps/$appId",
-            params: { organizationSlug, appId: connection.target.app },
-            search: { ...search, view: "accounts", profile: connection.target.profile },
-            replace: true,
-          }
-        : connection.reconnectAccount
-          ? {
-              to: "/org/$organizationSlug/accounts",
-              params: { organizationSlug },
-              search: { ...search, account: connection.reconnectAccount.id },
-              replace: true,
-            }
-          : {
-              to: "/org/$organizationSlug/accounts",
-              params: { organizationSlug },
-              search,
-              replace: true,
-            },
-    );
+    void navigate({
+      to: "/org/$organizationSlug/apps/$appId",
+      params: { organizationSlug, appId: connection.target.app },
+      search: { ...search, view: "accounts" },
+      replace: true,
+    });
   }, [connection, client, navigate, organizationSlug]);
   return (
     <ConnectionModal

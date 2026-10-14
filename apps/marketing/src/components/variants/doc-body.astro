@@ -3,10 +3,11 @@
 import { release, platforms, desktopAssetSuffix, desktopDownloads } from "../../../../../scripts/releases/config.ts";
 import Testimonials from "./testimonials.astro";
 import CopyPrompt from "./copy-prompt.astro";
-import { tagline, introductionItems, homepageStory } from "../../content/site-copy";
-import AppStartingPoints from "../app-starting-points.astro";
-import CustomTool from "../custom-tool.astro";
-import { DailyBriefDemo } from "../daily-brief-demo";
+import { tagline, taglineBuild, heroLead, heroItems, homepageStory, differences } from "../../content/site-copy";
+import EverythingYouUse from "../everything-you-use.astro";
+import { ConnectedHub } from "../connected-hub";
+import { GmailLadder } from "../gmail-ladder";
+import MoreExamples from "../more-examples.astro";
 import AppStructure from "../app-structure.astro";
 import { appStructure } from "../../content/app-structure";
 import { AppPieces } from "../app-pieces";
@@ -22,12 +23,16 @@ interface Props {
 ---
 
 <article class="doc max-w-180 [margin-inline:auto] [padding:4rem_1.5rem_6rem] overflow-x-clip min-[640px]:[padding:4.5rem_2.5rem_7rem] min-[1024px]:max-w-none min-[1024px]:[margin-inline:0] min-[1024px]:[padding-inline:0] max-[719.98px]:[padding:2.25rem_1.25rem_4rem]">
-  {/* ── Intro ── */}
+  {/* ── Intro: the tagline, one clause per section below ── */}
     <header class="doc__intro min-[1024px]:max-w-180 max-[1023.98px]:text-center">
-      <h1 class="doc__title text-[clamp(1.6rem,_2.6vw,_2.1rem)] font-semibold tracking-[-0.02em] leading-[1.22] text-ink [text-wrap:pretty] mb-[1rem] max-[719.98px]:text-[1.75rem]">{tagline}</h1>
-      <p class="mb-6 max-w-[48ch] text-[18px] leading-[1.65] tracking-[-0.01em] text-tone-47 [text-wrap:balance] max-[719.98px]:text-[17px] max-[1023.98px]:mx-auto">Your {introductionItems.map((item, i) => (
+      <h1 class="doc__title text-[clamp(1.9rem,_3.4vw,_2.75rem)] font-semibold tracking-[-0.03em] leading-[1.12] text-ink [text-wrap:balance] mb-[1.1rem] max-[719.98px]:text-[2rem]">
+        <a href="#everything" class="hover:text-tone-33">Everything you use,</a>{" "}
+        <a href="#connected" class="hover:text-tone-33">connected in one place.</a>{" "}
+        <a href="#build" class="text-tone-67 hover:text-tone-47">{taglineBuild}</a>
+      </h1>
+      <p class="mb-6 max-w-[52ch] text-[17px] leading-[1.65] tracking-[-0.01em] text-tone-47 [text-wrap:pretty] max-[719.98px]:text-[16px] max-[1023.98px]:mx-auto">{heroLead} All of your {heroItems.map((item, i) => (
         <>
-          {i === introductionItems.length - 1 && "and "}
+          {i === heroItems.length - 1 && "and "}
           {"comingSoon" in item ? (
             <span tabindex="0" class="group/soon relative cursor-default whitespace-nowrap text-tone-77 outline-none">
               {item.label}
@@ -38,35 +43,51 @@ interface Props {
         </>
       ))}all in one place.</p>
       <div class="doc__actions flex flex-wrap items-center gap-[0.6rem_0.9rem] mb-[1.1rem] max-[719.98px]:flex-col max-[719.98px]:items-stretch max-[1023.98px]:justify-center">
-        <a href={appHref("/login?mode=signup")} class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-ink-hover [.doc\_\_way-a_&]:text-[13.5px] [.doc\_\_way-a_&]:py-[0.55rem] [.doc\_\_way-a_&]:px-[0.95rem] [.doc\_\_section_a&]:no-underline [.doc\_\_section_a&]:text-surface max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center max-[719.98px]:[.doc\_\_way-a_&]:w-full max-[719.98px]:[.doc\_\_way-a_&]:justify-center max-[719.98px]:[.doc\_\_way-a_&]:text-center [.pricing\_\_card_>_&]:self-start [.pricing\_\_card_>_&]:mb-[1.4rem]">Get started</a>
+        <a href={appHref("/login?mode=signup")} class="btn-primary bg-ink text-surface rounded-[8px] py-[0.65rem] px-[1.1rem] font-medium text-[0.9rem] tracking-[-0.005em] [transition:background_0.15s_ease] hover:bg-ink-hover max-[719.98px]:[.doc\_\_actions_>_&]:w-full max-[719.98px]:[.doc\_\_actions_>_&]:justify-center max-[719.98px]:[.doc\_\_actions_>_&]:text-center">Get started</a>
         <CopyPrompt />
       </div>
-      <p class="doc__subhead doc__subhead--fine mb-[1.5rem] max-[719.98px]:text-[16px] text-[15px] [color:var(--color-ink-3)] max-w-[52ch] [&_a]:[color:var(--color-ink-2)] [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:text-ink">
+      <p class="doc__subhead doc__subhead--fine mb-[1.5rem] max-[719.98px]:text-[16px] text-[15px] [color:var(--color-ink-3)] max-w-[52ch] [&_a]:[color:var(--color-ink-2)] [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:text-ink max-[1023.98px]:mx-auto">
         Rather keep it on your machine? <a href="#install">Desktop, CLI, or self-hosted ↓</a>
       </p>
     </header>
 
-    <section id="apps" aria-labelledby="apps-title" class="doc__hero-app scroll-mt-14 min-[1024px]:scroll-mt-0 mt-[2.5rem] max-[719.98px]:mt-[2rem]">
-      <h2 id="apps-title" class="sr-only">{homepageStory.apps.title}</h2>
-      <AppPieces client:load />
-    </section>
-
-  <section id="connect" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
-    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.start.title}</h2>
-    <p>{homepageStory.start.body}</p>
-    <AppStartingPoints />
+  <section id="everything" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem] mt-[2.5rem]!">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.everything.title}</h2>
+    <p>{homepageStory.everything.body}</p>
+    <EverythingYouUse />
   </section>
 
-  <section id="mission" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+  <section id="connected" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.connected.title}</h2>
+    <p>{homepageStory.connected.body}</p>
+    <div class="doc__fig--wide max-w-225"><ConnectedHub client:visible /></div>
+  </section>
+
+  <section id="build" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
     <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.build.title}</h2>
     <p>{homepageStory.build.body}</p>
-    <CustomTool />
+    <div class="doc__fig--wide max-w-225"><GmailLadder client:visible /></div>
+    <h3 class="mt-10 text-[15px] font-semibold text-ink">{homepageStory.more.title}</h3>
+    <MoreExamples />
   </section>
 
-  <section id="automate" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
-    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.automate.title}</h2>
-    <p>{homepageStory.automate.body}</p>
-    <div class="doc__fig--wide max-w-225"><DailyBriefDemo client:visible /></div>
+
+  <section id="apps" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.apps.title}</h2>
+    <p>{homepageStory.apps.body}</p>
+    <div class="doc__fig--wide mt-7"><AppPieces client:visible /></div>
+  </section>
+
+  <section id="different" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
+    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">What it is, and isn't</h2>
+    <dl class="doc__fig--wide mt-5 grid max-w-225 gap-px overflow-hidden rounded-[10px] border border-tone-90 bg-tone-90 min-[720px]:grid-cols-2">
+      {differences.map(({ question, answer }) => (
+        <div class="bg-tone-100 px-5 py-5">
+          <dt class="text-[15px] font-medium text-ink">{question}</dt>
+          <dd class="mt-1.5 text-[14px] leading-[1.6] text-tone-47">{answer}</dd>
+        </div>
+      ))}
+    </dl>
   </section>
 
   <section id="agents" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">

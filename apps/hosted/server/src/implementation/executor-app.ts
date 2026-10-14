@@ -14,8 +14,8 @@ import { wellKnownSkills } from "apps/skills";
 import { provider } from "./provider.ts";
 import configuration from "./openapi.json";
 
-export default defineApp({ accounts: { service: provider } }, async (context) => {
-  const account = context.accounts.service;
+export default defineApp({ user: { accounts: { service: provider } } }, async (context) => {
+  const account = context.user.accounts.service;
   const tools = liveOpenapiRouter({
     ...configuration,
     cache: context.cache,

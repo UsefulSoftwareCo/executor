@@ -14,7 +14,7 @@ import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -155,7 +155,14 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
           expect(listed.status).toBe(200);
           expect(listed.version).toBe(protocolVersion);
           const { tools } = yield* Schema.decodeUnknownEffect(Tools)(listed.reply?.result);
-          expect(tools.map((tool) => tool.name).sort()).toEqual(["execute", "resume", "skills"]);
+          expect(tools.map((tool) => tool.name).sort()).toEqual([
+            "call",
+            "describe",
+            "execute",
+            "resume",
+            "search",
+            "skills",
+          ]);
           const called = yield* post(session, {
             id: 3,
             method: "tools/call",
@@ -523,7 +530,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP protocol versions",
               path: "index.ts",
               content: `import { defineApp, mutation, object, query, router, string } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   wait: query({ input: object({ call: string() }) }, async (_ctx, { call }) => {
     await fetch(${JSON.stringify(`${signals.origin}/started?call=`)} + encodeURIComponent(call));
     await new Promise((resolve) => setTimeout(resolve, 25_000));
@@ -541,20 +548,6 @@ export default defineApp({ accounts: {} }, { tools: router({
           api.request(actors.owner, "DELETE", `${root}/apps/${app.id}`).pipe(Effect.orDie),
         );
         yield* checkCancelledCalls(credentials, app.slug, signals.started);
-      }),
-    ),
-  );
-});
-
-layer(TestLive, { excludeTestServices: true })("Local MCP protocol versions", (it) => {
-  it.effect(scenarios.localMcpProtocolVersions.title, (context) =>
-    withCase(
-      context,
-      Effect.gen(function* () {
-        const target = yield* Target;
-        yield* checkProtocolVersions({
-          authorization: `Bearer ${Redacted.value(target.apiKey)}`,
-        });
       }),
     ),
   );

@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { RegistryContext, useAtomValue, useAtomRefresh } from "@effect/atom-react";
-import { Option } from "effect";
+import { type Cause, Option } from "effect";
 import { Skeleton } from "../components/skeleton.tsx";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import type { DashboardBindings, Query, QueryProps } from "../../contracts/dashboard.ts";
@@ -45,6 +45,51 @@ export function QueryView<A, E>({
     </QueryResult>
   );
 }
+
+type Results = Readonly<Record<string, AsyncResult.AsyncResult<unknown, unknown>>>;
+
+/**
+ * Several reads one view needs, as one read. It fails with the first failure, so a cause shared by
+ * the reads, such as a removed app, is reported once. It keeps every read's last value while it
+ * fails, so the view keeps its open dialogs and drafts.
+ */
+export const allResults = <const R extends Results>(
+  results: R,
+): AsyncResult.AsyncResult<
+  { readonly [K in keyof R]: AsyncResult.AsyncResult.Success<R[K]> },
+  AsyncResult.AsyncResult.Failure<R[keyof R]>
+> => {
+  const entries = Object.entries(results);
+  const waiting = entries.some(([, result]) => result.waiting);
+  const values = entries.flatMap(([key, result]) =>
+    Option.match(AsyncResult.value(result), {
+      onNone: () => [],
+      onSome: (value) => [[key, value] as const],
+    }),
+  );
+  // Every read has a value exactly when each entry produced one.
+  const value =
+    values.length === entries.length
+      ? Option.some(
+          Object.fromEntries(values) as {
+            readonly [K in keyof R]: AsyncResult.AsyncResult.Success<R[K]>;
+          },
+        )
+      : Option.none();
+  const failed = entries.find(([, result]) => AsyncResult.isFailure(result));
+  if (failed !== undefined && AsyncResult.isFailure(failed[1]))
+    return AsyncResult.failure(
+      failed[1].cause as Cause.Cause<AsyncResult.AsyncResult.Failure<R[keyof R]>>,
+      {
+        previousSuccess: Option.map(value, (current) => AsyncResult.success(current)),
+        waiting,
+      },
+    );
+  return Option.match(value, {
+    onNone: () => AsyncResult.initial(waiting),
+    onSome: (current) => AsyncResult.success(current, { waiting }),
+  });
+};
 
 /** Render a query snapshot without subscribing again. Error and content retain separate React positions. */
 export function QueryResult<A, E>({

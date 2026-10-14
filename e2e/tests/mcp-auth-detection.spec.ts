@@ -12,8 +12,8 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Inventory, Resource } from "../support/contracts.ts";
 import { mcpAuthServer, type McpAuthPattern } from "../support/mcp-auth-patterns.ts";
 import { appsManifest } from "../support/apps-release.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Imported = Schema.Struct({
   id: Schema.String,
@@ -107,7 +107,7 @@ const importer = Effect.gen(function* () {
             path: "index.ts",
             content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Discovered service",auth:{oauth:oauth2({discover:${JSON.stringify(url)}})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
           },
           appsManifest,
         ],
@@ -123,13 +123,16 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
     });
   const startOAuth = (appId: string, client?: { readonly clientId: string }) =>
     Effect.gen(function* () {
-      const profile = yield* createProfile(actors.owner, `${prefix}/apps/${appId}`);
       const connection = yield* body(
         Resource,
-        yield* api.request(actors.owner, "POST", `${prefix}/apps/${appId}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        }),
+        yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(`${prefix}/apps/${appId}`, "user", "service"),
+          {
+            destination: { kind: "personal" },
+          },
+        ),
       );
       return yield* api.request(
         actors.owner,

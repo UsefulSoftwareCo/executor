@@ -1,4 +1,3 @@
-import { accountContexts, selectedAccountContext } from "./account-group.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
 import { Option } from "effect";
 import { AppCardsSkeleton } from "./loading.tsx";
@@ -7,17 +6,18 @@ import { useState, type ReactNode } from "react";
 import { QueryResult, useQuery, useDashboard } from "./context.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AlertCircleIcon, ArrowRight02Icon, Key01Icon } from "@hugeicons/core-free-icons";
-import { providerDisplayUrl, type Inventory, type QueryProps } from "../../contracts/dashboard.ts";
+import type { Inventory, QueryProps } from "../../contracts/dashboard.ts";
+import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 import {
-  accountSelectionIssues,
-  selectedIds,
-  accountNeedsSignIn,
-} from "../../contracts/dashboard.ts";
+  linkedAccountIds,
+  missingRequirements,
+  requirementAccounts,
+} from "../../contracts/app-accounts.ts";
 
-import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+import { AppIcon, Empty, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 
-/** A card for each configured app and its selected accounts. */
+/** A card for each configured app and its linked accounts. */
 export function AppsPage<E>({
   action,
   connect,
@@ -39,7 +39,7 @@ export function AppsPage<E>({
     <PageFrame>
       <PageHeader
         title="Apps"
-        description="Your installed apps and their selected accounts."
+        description="Your installed apps and their linked accounts."
         {...(Option.isSome(data) ? { count: data.value.apps.length } : {})}
       >
         {connect}
@@ -113,18 +113,21 @@ function AppsList({
         <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1 max-[600px]:gap-2">
           {pending}
           {apps.map((app) => {
-            const context = selectedAccountContext(
-              accountContexts(
-                app,
-                data.profiles.filter((profile) => profile.app === app.id),
-                true,
-              ),
-              undefined,
+            const ids = linkedAccountIds(data.links, app.id);
+            const selected = ids.flatMap((id) => {
+              const account = data.accounts.find((item) => item.id === id);
+              return account === undefined ? [] : [account];
+            });
+            // The inventory names no requirements, so a user requirement counts any linked
+            // account of its provider; app links are not listed here.
+            const user = Object.entries(app.requirements.accounts).flatMap(([slot, requirement]) =>
+              requirement.scope === "user"
+                ? selected
+                    .filter((account) => account.provider === requirement.provider)
+                    .map((account) => ({ requirement: slot, account }))
+                : [],
             );
-            const selection = context?.accounts ?? {};
-            const ids = selectedIds(selection);
-            const issues = accountSelectionIssues(app, selection, data.accounts);
-            const selected = data.accounts.filter((account) => ids.includes(account.id));
+            const missing = missingRequirements(requirementAccounts(app, { user })).length > 0;
             const needsSignIn = selected.some((account) => accountNeedsSignIn(account));
             const unavailable = selected.some((account) => account.signIn?.state === "unavailable");
             const provider = Object.values(app.requirements.accounts)[0]?.definition;
@@ -137,10 +140,7 @@ function AppsList({
                 >
                   <div className="app-card-heading flex items-center justify-between gap-3 max-[600px]:contents">
                     <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px] max-[600px]:contents max-[600px]:[&_>_.provider-icon]:row-span-2">
-                      <ProviderIcon
-                        name={provider?.name ?? app.name}
-                        url={providerDisplayUrl(provider)}
-                      />
+                      <AppIcon app={app} />
                       <div className="max-[600px]:col-start-2 max-[600px]:row-start-1 max-[600px]:self-end">
                         <strong title={app.name}>{app.name}</strong>
                       </div>
@@ -155,7 +155,7 @@ function AppsList({
                   </div>
                   <div className="app-card-footer flex items-center justify-between gap-3 mt-auto pt-4 text-[11px] text-muted-foreground max-[600px]:col-start-2 max-[600px]:row-start-2 max-[600px]:mt-0 max-[600px]:self-start max-[600px]:pt-0">
                     <div className="account-cell [.app-card_&]:flex-1 [.app-card_&]:[align-content:start] [.app-card_&]:text-foreground max-[600px]:[.app-card_&]:text-muted-foreground [.app-card_&_>_span]:min-w-0 grid gap-1.25 text-[12px] min-w-0 [&_>_span]:flex [&_>_span]:items-center [&_>_span]:gap-1.5 [&_>_span]:wrap-anywhere [&_svg]:text-muted-foreground [&_svg]:shrink-0">
-                      {issues.length > 0 ? (
+                      {missing ? (
                         <span className="setup-state inline-flex items-center gap-1">
                           <HugeiconsIcon
                             icon={AlertCircleIcon}
@@ -164,14 +164,12 @@ function AppsList({
                             size={12}
                           />
                           <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                            {issues.some((issue) => issue.reason === "disconnected")
-                              ? "Account disconnected"
-                              : "Needs account"}
+                            Needs account
                           </span>
                         </span>
-                      ) : ids.length === 0 ? (
+                      ) : selected.length === 0 ? (
                         <span className="muted text-muted-foreground">
-                          {provider === undefined ? "No account required" : "No accounts selected"}
+                          {provider === undefined ? "No account required" : "No accounts linked"}
                         </span>
                       ) : (
                         <span>
@@ -186,13 +184,8 @@ function AppsList({
                             <HugeiconsIcon icon={Key01Icon} strokeWidth={2} aria-hidden size={12} />
                           )}
                           <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                            {ids
-                              .map((id) => {
-                                const account = data.accounts.find((account) => account.id === id);
-                                return account
-                                  ? account.label || "Unnamed account"
-                                  : "Account unavailable";
-                              })
+                            {selected
+                              .map((account) => account.label || "Unnamed account")
                               .join(", ")}
                           </span>
                         </span>

@@ -1,5 +1,5 @@
 import { openThroughBrowser } from "../support/in-app-navigation.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 /** Members keep a stable app overview and discover restricted actions without gaining authority. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -18,7 +18,7 @@ const Access = Schema.Struct({ revision: Schema.String });
 const Group = Schema.Struct({ id: Schema.String, revision: Schema.String });
 const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 const service = defineProvider({name:"Member controls fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-export default defineApp({accounts:{service:service.many()}},{tools: router({ hello:query({input:object({})},async()=>"Hello") })});`;
+export default defineApp({user: { accounts:{service:service.many()} }},{tools: router({ hello:query({input:object({})},async()=>"Hello") })});`;
 const bounds = (page: Page) =>
   page.locator(".app-overview > div > section").evaluateAll((cards) =>
     cards.map((card) => {
@@ -67,14 +67,14 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 ).toBe(200);
             }).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-              destination: { kind: "shared", audience: { kind: "everyone" } },
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              { destination: { kind: "shared", audience: { kind: "everyone" } } },
+            ),
           );
           const account = yield* body(
             Resource,
@@ -100,15 +100,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               audience: { kind: "everyone" },
             })).status,
           ).toBe(200);
-          const memberProfile = yield* createProfile(actors.member, `${prefix}/apps/${app.id}`);
-          expect(
-            (yield* selectProfileAccounts(
-              actors.member,
-              `${prefix}/apps/${app.id}`,
-              memberProfile.id,
-              { service: [account.id] },
-            )).status,
-          ).toBe(200);
+          yield* linkAccount(actors.member, `${prefix}/apps/${app.id}`, "service", account.id);
           const viewer = yield* body(
             Schema.Struct({ userId: Schema.String }),
             yield* api.request(actors.member, "GET", "/api/viewer"),
@@ -323,7 +315,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               "Delete app",
               "Save access",
               "Reset changes",
-              "Share publicly",
+              "Publish",
             ])
               expect(
                 yield* browser.use(`Restricted ${label} remains visible`, (page) =>

@@ -36,11 +36,9 @@ export function AppWorkflows<E>({
   app,
   bindings,
   Failure,
-  enabled = true,
   start,
   runAction,
 }: WorkflowActions & {
-  readonly enabled?: boolean;
   readonly app: App;
   readonly bindings: WorkflowBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
@@ -51,18 +49,6 @@ export function AppWorkflows<E>({
         <EmptyStatePanel title="No deployment yet">
           Deploy this app to use its workflows.
         </EmptyStatePanel>
-      </section>
-    );
-  if (!enabled)
-    return (
-      <section aria-label="Workflow run history" className="p-5">
-        <WorkflowRuns
-          workflow={undefined}
-          workflows={[]}
-          bindings={bindings}
-          Failure={Failure}
-          runAction={runAction}
-        />
       </section>
     );
   return (

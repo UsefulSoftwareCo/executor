@@ -16,7 +16,7 @@ import { groupsAtom } from "../../contracts/groups.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { SharingEditor } from "../components/sharing.tsx";
-/** These controls change app and account access; profile selections are separate. */
+/** These controls change app and account access; linked accounts are separate. */
 export function AppAccessSettings({ app }: { readonly app: AppId }) {
   const { organization } = useOrganizationRoute();
   const save = useAtomSet(shareAppAtom({ organization, app }), { mode: "promiseExit" });

@@ -1,5 +1,5 @@
 /** Small Effect HTTP adapter for the cloud product's Autumn operations. */
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { type Duration, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import {
   AutumnClient,
@@ -11,8 +11,55 @@ import {
   type AutumnOptions,
 } from "../contracts/autumn.ts";
 
-/** Use the injected HTTP client. Every call owns its response scope and obeys caller cancellation. */
-export const autumnLive = (options: AutumnOptions) =>
+/** Autumn's error body; only its stable code is read. */
+const NotFound = Schema.Struct({ code: Schema.String });
+
+/**
+ * How long a read may take. Writes are never retried, since a write whose answer was lost may
+ * have taken, so only reads are the consumer's choice.
+ */
+export interface AutumnReadPolicy {
+  /** Each attempt's timeout. */
+  readonly attempt: Duration.Input;
+  /** More attempts after a retryable failure, and the bound on all of them, waits included. */
+  readonly retry?: { readonly times: number; readonly budget: Duration.Input };
+}
+
+/**
+ * Each consumer picks the reads that fit its own deadline. Healthy reads answer in well under a
+ * second; while Autumn is degraded some answer in up to about seven seconds and others never do.
+ */
+export const autumnReads = {
+  /**
+   * One attempt with the write timeout, for requests a person is waiting on that have their own
+   * deadline: the billing overview, and sign-in's v1 check, which gives up after ten seconds.
+   */
+  once: { attempt: autumnTimeout },
+  /**
+   * The v1 import's plan check: eight seconds an attempt, then up to two more about 200 and 400
+   * milliseconds apart, with jitter, within twenty seconds in all.
+   */
+  patient: { attempt: "8 seconds", retry: { times: 2, budget: "20 seconds" } },
+} as const satisfies Record<string, AutumnReadPolicy>;
+
+const readRetryDelay = Schedule.exponential("200 millis").pipe(Schedule.jittered);
+
+/**
+ * Whether another attempt could answer: no response, a timeout, a server error or a rate limit.
+ * A response Autumn gave, an unexpected status or a body that does not decode is final.
+ */
+const retryable = (error: AutumnRequestFailed) =>
+  error.reason === "transport" ||
+  error.reason === "timeout" ||
+  (error.reason === "status" &&
+    error.status !== undefined &&
+    (error.status >= 500 || error.status === 429));
+
+/**
+ * Use the injected HTTP client. Every call owns its response scope and obeys caller cancellation.
+ * Reads follow `reads`; writes always get one attempt of `autumnTimeout`.
+ */
+export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
   Layer.effect(
     AutumnClient,
     Effect.gen(function* () {
@@ -26,6 +73,10 @@ export const autumnLive = (options: AutumnOptions) =>
           path: string,
           input: Schema.Codec<I, unknown>,
           output: Schema.ConstraintDecoder<A>,
+          /** Reads follow the consumer's read policy; anything else is sent once. */
+          kind: "read" | "write",
+          /** A 404 with this error code is an answer, decoded as `null`, not a failure. */
+          notFound?: string,
         ) =>
         (payload: I) => {
           const failed = (reason: AutumnRequestFailed["reason"], cause: unknown, status?: number) =>
@@ -58,11 +109,19 @@ export const autumnLive = (options: AutumnOptions) =>
                   .pipe(Effect.mapError((cause) => failed("transport", cause)));
                 yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
                 // Require confirmed provider responses, never queued or fail-open answers.
-                if (response.status !== 200) return { status: response.status } as const;
+                const missing = notFound !== undefined && response.status === 404;
+                if (response.status !== 200 && !missing)
+                  return { status: response.status, answered: false } as const;
                 const json = yield* response.json.pipe(
                   Effect.mapError((cause) => failed("response", cause, response.status)),
                 );
-                return { status: 200, json } as const;
+                if (!missing) return { status: 200, answered: true, json } as const;
+                // Only the named code answers; any other 404, such as an unknown route, fails.
+                const named = Option.exists(
+                  Schema.decodeUnknownOption(NotFound)(json),
+                  (body) => body.code === notFound,
+                );
+                return { status: 404, answered: named, json: null } as const;
               }).pipe(
                 Effect.withSpan("autumn.http", {
                   kind: "client",
@@ -75,7 +134,7 @@ export const autumnLive = (options: AutumnOptions) =>
                 }),
               );
               yield* Effect.annotateCurrentSpan("http.response.status_code", exchange.status);
-              if (exchange.status !== 200)
+              if (!exchange.answered)
                 return yield* new AutumnRequestFailed({
                   operation,
                   reason: "status",
@@ -86,8 +145,22 @@ export const autumnLive = (options: AutumnOptions) =>
               );
             }),
           ).pipe(
-            Effect.timeout(autumnTimeout),
+            Effect.timeout(kind === "read" ? reads.attempt : autumnTimeout),
             Effect.catchTag("TimeoutError", (cause) => Effect.fail(failed("timeout", cause))),
+            (attempt) =>
+              kind === "write" || reads.retry === undefined
+                ? attempt
+                : attempt.pipe(
+                    Effect.retry({
+                      times: reads.retry.times,
+                      schedule: readRetryDelay,
+                      while: retryable,
+                    }),
+                    Effect.timeout(reads.retry.budget),
+                    Effect.catchTag("TimeoutError", (cause) =>
+                      Effect.fail(failed("timeout", cause)),
+                    ),
+                  ),
             // Replace the generic HTTP span: a private instance path carries a capability.
             Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
             Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
@@ -100,31 +173,50 @@ export const autumnLive = (options: AutumnOptions) =>
           "customers.get_or_create",
           AutumnRequests.getOrCreateCustomer,
           AutumnResponses.getOrCreateCustomer,
+          "write",
+        ),
+        getCustomer: post(
+          "getCustomer",
+          "customers.get",
+          AutumnRequests.getCustomer,
+          AutumnResponses.getCustomer,
+          "read",
+          "customer_not_found",
         ),
         listPlans: post(
           "listPlans",
           "plans.list",
           AutumnRequests.listPlans,
           AutumnResponses.listPlans,
+          "read",
         ),
         updateBalance: post(
           "updateBalance",
           "balances.update",
           AutumnRequests.updateBalance,
           AutumnResponses.updateBalance,
+          "write",
         ),
-        attach: post("attach", "billing.attach", AutumnRequests.attach, AutumnResponses.attach),
+        attach: post(
+          "attach",
+          "billing.attach",
+          AutumnRequests.attach,
+          AutumnResponses.attach,
+          "write",
+        ),
         openCustomerPortal: post(
           "openCustomerPortal",
           "billing.open_customer_portal",
           AutumnRequests.openCustomerPortal,
           AutumnResponses.openCustomerPortal,
+          "write",
         ),
         cancelSubscription: post(
           "cancelSubscription",
           "billing.update",
           AutumnRequests.cancelSubscription,
           AutumnResponses.cancelSubscription,
+          "write",
         ),
       });
     }),

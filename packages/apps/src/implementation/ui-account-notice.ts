@@ -19,11 +19,11 @@ export const accountProblemBlocks = (problem: UiAccountProblem) =>
 export const accountProblemText = (problem: UiAccountProblem) => {
   switch (problem.reason) {
     case "missing":
-      return `No ${problem.provider} account chosen`;
+      return `No ${problem.provider} account linked`;
     case "removed":
       return `${problem.provider} account was removed or is no longer shared`;
     case "incompatible":
-      return `Chosen account can't be used as the ${problem.provider} account`;
+      return `Linked account can't be used as the ${problem.provider} account`;
     case "credentials_rejected":
       return `${problem.account} (${problem.provider}): sign-in rejected at last check`;
     case "forbidden":
@@ -56,7 +56,7 @@ li.bad::before{background:#dc2626}li.warn::before{background:#f59e0b}
 .actions{display:flex;flex-wrap:wrap;gap:8px}
 a{padding:8px 14px;border-radius:8px;border:1px solid #d4d4d8;color:#18181b;text-decoration:none;font-weight:500}
 a.primary{background:#18181b;border-color:#18181b;color:#fff}
-</style></head><body><main><h1>${title}</h1><p>This profile's accounts need attention before the app can work.</p><ul>${items}</ul><div class="actions"><a class="primary" href="${escape(notice.fix)}">Fix accounts</a><a href="${escape(notice.choose)}">Open with another profile</a></div></main></body></html>`;
+</style></head><body><main><h1>${title}</h1><p>This app's accounts need attention before it can work.</p><ul>${items}</ul><div class="actions"><a class="primary" href="${escape(notice.fix)}">Fix accounts</a></div></main></body></html>`;
 };
 
 /** Inline card for advisory problems; the app still loads underneath. */

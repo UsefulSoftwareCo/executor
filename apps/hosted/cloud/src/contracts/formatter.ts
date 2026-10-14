@@ -1,5 +1,5 @@
 /** The private binding to the Worker that formats source for display. */
-import type { SourceFile } from "@executor-js/sdk/core";
+import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import type { RpcCallError } from "alchemy/Rpc";
 import type { Effect } from "effect";
 

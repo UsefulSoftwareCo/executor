@@ -74,13 +74,21 @@ export const AppUiUnavailable = ApiError.define({
   message: "Executor could not read the app's page build or domain right now. Try again.",
 });
 export type AppUiUnavailable = typeof AppUiUnavailable.Type;
-/** Domain readiness is separate from app deployment and authorization. A pending domain has no usable link. */
+/**
+ * Domain readiness is separate from app deployment and authorization. A pending domain has no
+ * usable link. An unavailable page says why, because an app without a UI is not an outage.
+ */
 export const AppUiLocation = Schema.Union([
   Schema.Struct({ status: Schema.Literal("ready"), url: HttpUrl }),
   Schema.Struct({
-    status: Schema.Literals(["unavailable", "pending", "failed"]),
+    status: Schema.Literal("unavailable"),
     url: Schema.Null,
+    reason: Schema.Literals(["no_ui", "no_app_domain"]).annotate({
+      description:
+        "no_ui: the active deployment has no UI (no index.html), as for tool-only apps. no_app_domain: this Executor has no app domain configured, so no app UI has an address.",
+    }),
   }),
+  Schema.Struct({ status: Schema.Literals(["pending", "failed"]), url: Schema.Null }),
 ]);
 /** A browser started this attempt on an app origin; only a digest of its HttpOnly proof is retained. */
 export const AppUiAttempt = Schema.Struct({

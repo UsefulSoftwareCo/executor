@@ -24,7 +24,7 @@ const mcpAppFiles = (name: string, receipt: string) => [
     path: "index.ts",
     content: `
 import { mutation, defineApp, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({  tools: router({
+export default defineApp({}, async () => ({  tools: router({
     echo: mutation({ description: ${JSON.stringify(`Echo from ${name}`)}, input: object({ message: string() })},
     async (_, input) => ({ message: input.message, receipt: ${JSON.stringify(receipt)} })),
   }) }));

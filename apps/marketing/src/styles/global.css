@@ -64,9 +64,8 @@
   --color-glyph-json: #8b9ba0;
 }
 
-/* Astro's <Code> emits both themes; switch to the dark one. */
-:root[data-theme="dark"] .astro-code,
-:root[data-theme="dark"] .astro-code span {
+/* Astro's <Code> and the shared highlighter emit both themes; switch to the dark one. */
+:root[data-theme="dark"] [style*="--shiki-dark:"] {
   color: var(--shiki-dark) !important;
 }
 
@@ -193,4 +192,17 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Scroll reveals. home-page.astro adds .reveal-init only when motion is allowed. */
+.reveal-init {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+.reveal-init.is-visible {
+  opacity: 1;
+  transform: none;
 }

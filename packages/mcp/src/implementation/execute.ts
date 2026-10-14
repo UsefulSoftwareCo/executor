@@ -1,27 +1,50 @@
 /** Build a live catalog and execute code against configured apps. */
-import { CodeMode, Namespace, Tool, toolError } from "@opencode-ai/codemode";
-import { tokTypes, tokenizer, type Token } from "acorn";
+import { CodeMode, Namespace, Tool, ToolError, toolError } from "@opencode-ai/codemode";
+import { parse, tokTypes, tokenizer, type Token } from "acorn";
 import {
   Json,
   AppSlug,
   JsonObject,
   routerFailure,
-  ToolApprovalRequired,
+  approvalRequired,
   ToolListingTimedOut,
+  ToolSearchUnavailable,
+  resolveLinkedAccounts,
+  AccountChoiceUnsupported,
   type App,
+  type AppAccounts,
   type AppId,
   type Cursor,
+  ToolName,
   type DeploymentId,
+  type SearchableTools,
   type Tool as AppTool,
   type ToolRouter,
+  type ToolSearchItem,
+  type ToolSearchListing,
+  type ToolSearchScope,
+  type ToolSearchTarget,
 } from "@executor-js/sdk/core";
-import { Clock, Deferred, Duration, Effect, JsonPointer, Option, Schema, Semaphore } from "effect";
-import { diagnostic, executionDiagnostic } from "./diagnostics.ts";
-import type { McpTarget } from "../contracts/targets.ts";
-import type { McpBackend } from "../contracts/backend.ts";
+import { Clock, Deferred, Duration, Effect, Option, Schema, Semaphore } from "effect";
 import {
+  diagnostic,
+  diagnosticSummary,
+  executionDiagnostic,
+  failureDetail,
+  reportFailure,
+} from "./diagnostics.ts";
+import { nearest } from "./suggestions.ts";
+import type { McpAppAccounts } from "../contracts/targets.ts";
+import type { McpBackend } from "../contracts/backend.ts";
+import { accountSummary, accountsKey, discoveryAccounts } from "./accounts.ts";
+import {
+  AppAccountRequired,
+  CallInput,
+  CallRequest,
+  CatalogUnavailable,
+  type CallOutcome,
+  type ExecuteResult,
   AppDiscoveryTimedOut,
-  AppProfileRequired,
   defaultMcpRuntimeLimits,
   defaultSearchLimits,
   DescribeInput,
@@ -163,6 +186,7 @@ const renderedDefinition = (schema: Tool.JsonSchema) => {
   return rendered;
 };
 
+const reserved = ["__proto__", "prototype", "constructor"];
 // Codemode treats dots as namespace separators. Leave ordinary names readable;
 // only escape characters needed to distinguish inaccessible/reserved segments.
 function toolPath(name: string): string {
@@ -170,40 +194,50 @@ function toolPath(name: string): string {
     .split(".")
     .map((segment) => {
       if (segment === "") return "%00";
-      if (["__proto__", "prototype", "constructor"].includes(segment)) return `%${segment}`;
+      if (reserved.includes(segment)) return `%${segment}`;
       return segment.replaceAll("%", "%25");
     })
     .join(".");
 }
+/** The tool name a path below a target names: `toolPath` undone. */
+const toolName = (path: string) =>
+  path
+    .split(".")
+    .map((segment) =>
+      segment === "%00"
+        ? ""
+        : segment.startsWith("%") && reserved.includes(segment.slice(1))
+          ? segment.slice(1)
+          : segment.replaceAll("%25", "%"),
+    )
+    .join(".");
 
 function listTools<E extends Error>(
   backend: McpBackend<E>,
   app: AppId,
-  target: McpTarget,
+  accounts: AppAccounts,
   /** Records each page as progress. */
   paged: Effect.Effect<void>,
-  /** Discovery's wait bound: a listing another request started longer ago is reported at once. */
-  waitMs: number,
 ) {
   return Effect.gen(function* () {
-    const tools: AppTool[] = [];
-    let routers: readonly ToolRouter[] = [];
-    let cursor: Cursor | undefined;
-    let deployment: DeploymentId | undefined;
-    const selection =
-      target.kind === "app" ? {} : { profile: target.id, expectedProfileRevision: target.revision };
-    do {
-      const page = yield* backend.listTools(
-        { app, ...selection, deployment, cursor, limit: 2_000 },
-        { reportRunningAfterMillis: waitMs },
-      );
-      yield* paged;
-      deployment = page.deployment;
+    const list = (deployment?: DeploymentId, cursor?: Cursor) =>
+      backend
+        .listTools(
+          { app, accounts, deployment, cursor, limit: 2_000 },
+          // The catalog's watcher owns the pre-program wait bound. A dynamic namespace is governed
+          // by CodeMode's execution deadline and must be allowed to join a listing already running.
+          { refreshStale: false },
+        )
+        .pipe(Effect.tap(() => paged));
+    let page = yield* list();
+    // Later pages are pinned to the first page's deployment.
+    const deployment = page.deployment;
+    const tools: AppTool[] = [...page.items];
+    while (page.next !== undefined) {
+      page = yield* list(deployment, page.next);
       tools.push(...page.items);
-      routers = page.routers;
-      cursor = page.next;
-    } while (cursor !== undefined);
-    return { tools, routers, deployment, selection };
+    }
+    return { tools, routers: page.routers, deployment };
   });
 }
 
@@ -211,7 +245,8 @@ function listTools<E extends Error>(
  * Projections of kept tool listings. The SDK serves every page of a kept listing from the same
  * item objects, so a projection keyed by those objects lives exactly as long as the listing and
  * is not recomputed while the listing is reused. A listing evaluated again has new objects, and
- * nothing here outlives the listing it was derived from.
+ * nothing here outlives the listing it was derived from. Schemas are rendered only for tools a
+ * program can call and tools a search or describe returns; ranking reads none of them.
  */
 const renderedSchemas = new WeakMap<
   AppTool,
@@ -230,265 +265,42 @@ const renderSchemas = (tool: AppTool) =>
     return rendered;
   });
 type RenderedSchemas = Effect.Success<ReturnType<typeof renderSchemas>>;
-
-/**
- * A loaded target: an app's own tools, or one of its profiles. Search results list each target
- * once instead of labelling every tool with it.
- */
-type Target = {
+/** An app as paths and results name it. Search results list each app once instead of labelling every tool with it. */
+type Place = {
+  readonly id: AppId;
   readonly slug: string;
-  /** Canonical path below `tools`: the slug, or `slug.profiles.<id>`. */
+  /** Canonical path below `tools`: the app's slug. */
   readonly path: string;
   readonly app: string;
-  readonly profile?: string;
+  /** The labels of the linked accounts its calls use. */
   readonly accounts?: string;
-  /** The target's routers by router path. The root router has path "". */
-  readonly routers: ReadonlyMap<string, ToolRouter>;
 };
-/** One callable tool of a loaded target. */
+/** A loaded app, whose tools a program can call. */
+type Target = Place & {
+  /** The app's routers by router path. The root router has path "". */
+  readonly routers: ReadonlyMap<string, ToolRouter>;
+  /**
+   * The deployment its tools were listed from. Calls name no deployment: the host runs each on the
+   * app's active deployment when the call starts, so a deploy earlier in the same program, or since
+   * the app was loaded, is the one called.
+   */
+  readonly deployment: DeploymentId;
+  /** The caller's linked accounts, which each call resolves its accounts from. */
+  readonly linked: McpAppAccounts;
+};
+/** One callable tool of a loaded app. */
 type Entry = {
   /** Canonical path below `tools`. */
   readonly path: string;
   readonly tool: AppTool;
-  readonly schemas: RenderedSchemas;
-  /** The program's own tool at this path. */
-  readonly program: Tool.Tool;
   readonly target: Target;
 };
-/** A search candidate: one tool, and the same tool under the app's other profiles. */
-type Candidate = { readonly entry: Entry; readonly others: ReadonlyArray<Entry> };
-
-/** What makes two profiles' tools the same tool for search: name aside, everything agents read. */
-const identities = new WeakMap<AppTool, string>();
-const identity = (tool: AppTool) => {
-  const known = identities.get(tool);
-  if (known !== undefined) return known;
-  const computed = JSON.stringify([
-    tool.description,
-    tool.router ?? null,
-    tool.inputSchema,
-    tool.outputSchema ?? null,
-  ]);
-  identities.set(tool, computed);
-  return computed;
+/** An app whose current listing is kept as search rows. */
+type SearchTarget = Place & {
+  readonly listing: ToolSearchListing;
+  /** The accounts the listing was read with. */
+  readonly listed: AppAccounts;
 };
-
-/**
- * Merge each tool that several of an app's targets expose with the same signature into one
- * candidate at its first path. `entries` are in path order.
- */
-const candidates = (entries: ReadonlyArray<Entry>): ReadonlyArray<Candidate> => {
-  const named = new Map<string, Array<Entry>>();
-  for (const entry of entries) {
-    const key = `${entry.target.slug}\u0000${entry.tool.name}`;
-    const known = named.get(key);
-    if (known === undefined) named.set(key, [entry]);
-    else known.push(entry);
-  }
-  const others = new Map<Entry, Array<Entry>>();
-  const merged = new Set<Entry>();
-  for (const group of named.values()) {
-    if (group.length < 2) continue;
-    const first = new Map<string, Entry>();
-    for (const entry of group) {
-      const kept = first.get(identity(entry.tool));
-      if (kept === undefined) {
-        first.set(identity(entry.tool), entry);
-        continue;
-      }
-      merged.add(entry);
-      const known = others.get(kept);
-      if (known === undefined) others.set(kept, [entry]);
-      else known.push(entry);
-    }
-  }
-  return entries.flatMap((entry) =>
-    merged.has(entry) ? [] : [{ entry, others: others.get(entry) ?? [] }],
-  );
-};
-
-/** Text CodeMode's search matches for every tool below a namespace. */
-const labels = (...parts: ReadonlyArray<string | undefined>) =>
-  parts.filter((part): part is string => part !== undefined && part !== "").join(" ");
-
-/**
- * The names and descriptions of a tool's top-level input properties, after a top-level reference:
- * the input text CodeMode's search matches.
- */
-const inputLabels = new WeakMap<AppTool, string>();
-const inputLabel = (entry: Entry) => {
-  const known = inputLabels.get(entry.tool);
-  if (known !== undefined) return known;
-  const { input } = entry.schemas;
-  const reference = input.$ref?.match(/^#\/(?:\$defs|definitions)\/([^/]+)$/)?.[1];
-  const properties =
-    input.$ref === undefined
-      ? input.properties
-      : reference === undefined
-        ? undefined
-        : { ...input.definitions, ...input.$defs }[JsonPointer.unescapeToken(reference)]
-            ?.properties;
-  const computed = labels(
-    ...Object.entries(properties ?? {}).flatMap(([name, property]) => [
-      name,
-      typeof property.description === "string" ? property.description : undefined,
-    ]),
-  );
-  inputLabels.set(entry.tool, computed);
-  return computed;
-};
-/** A stand-in that CodeMode ranks by its description, without rendering a signature. */
-const rankingStubs = new WeakMap<AppTool, Tool.Tool>();
-const rankingStub = (entry: Entry) => {
-  const known = rankingStubs.get(entry.tool);
-  if (known !== undefined) return known;
-  const stub = Tool.make({
-    description: entry.tool.description,
-    input: { type: "object" },
-    execute: () => Effect.void,
-  });
-  rankingStubs.set(entry.tool, stub);
-  return stub;
-};
-
-/**
- * The tool tree CodeMode ranks: every candidate at its own path, with its other text as namespace
- * descriptions, which CodeMode's search matches for each tool below them: the app's name, the
- * profile's label and accounts, router titles, and on each tool's own node its input labels and a
- * merged tool's other profiles. CodeMode matches input labels and namespace descriptions with the
- * same weight, so the stand-ins rank as the tools would without rendering their signatures.
- */
-const rankingTree = (ranked: ReadonlyArray<Candidate>) => {
-  const tree: Record<string, Tool.Tool | Namespace.Namespace> = Object.create(null);
-  const apps = new Map<string, { names: Array<string>; namespaces: Map<string, Array<string>> }>();
-  const seen = new Set<Target>();
-  for (const { entry, others } of ranked) {
-    const { target } = entry;
-    const app = apps.get(target.slug) ?? { names: [target.app], namespaces: new Map() };
-    apps.set(target.slug, app);
-    // Namespaces are relative to the app's own namespace.
-    const note = (path: string, text: string) => {
-      if (text === "") return;
-      const key = path.slice(target.slug.length + 1);
-      app.namespaces.set(key, [...(app.namespaces.get(key) ?? []), text]);
-    };
-    if (!seen.has(target)) {
-      seen.add(target);
-      const root = target.routers.get("");
-      const own = labels(target.profile, target.accounts, root?.title, root?.description);
-      if (target.path === target.slug) app.names.push(own);
-      else note(target.path, own);
-      for (const [path, router] of target.routers)
-        if (path !== "")
-          note(`${target.path}.${toolPath(path)}`, labels(router.title, router.description));
-    }
-    note(
-      entry.path,
-      labels(
-        inputLabel(entry),
-        ...others.flatMap((other) => [other.target.profile, other.target.accounts]),
-      ),
-    );
-    tree[entry.path] = rankingStub(entry);
-  }
-  // Each app's namespace and its tools' paths below it meet in one CodeMode node per segment.
-  for (const [slug, app] of apps) {
-    const name = labels(...app.names);
-    tree[slug] = Namespace.make({
-      ...(name === "" ? {} : { description: name }),
-      tools: Object.fromEntries(
-        [...app.namespaces].map(([path, texts]) => [
-          path,
-          Namespace.make({ description: labels(...texts), tools: {} }),
-        ]),
-      ),
-    });
-  }
-  return tree;
-};
-
-const RankedPage = Schema.Struct({
-  items: Schema.Array(Schema.Struct({ path: Schema.String })),
-  remaining: Schema.Int,
-});
-type RankRequest = { readonly query: string; readonly offset: number; readonly limit: number };
-/** CodeMode's search over one set of candidates, as the paths it ranks for a request. */
-type Ranking = (
-  request: RankRequest,
-) => Effect.Effect<{ readonly paths: ReadonlyArray<string>; readonly remaining: number }>;
-/**
- * Rank candidates with CodeMode's own `search()`, the same ranking a program's global `search()`
- * uses. The pinned CodeMode exports no ranking function, so a one-line program calls it. The
- * ranking holds only listing data, never an execution's own objects.
- */
-const ranking = (ranked: ReadonlyArray<Candidate>): Ranking => {
-  const runtime = ranked.length === 0 ? undefined : CodeMode.make({ tools: rankingTree(ranked) });
-  return (request) =>
-    Effect.gen(function* () {
-      if (runtime === undefined) return { paths: [], remaining: 0 };
-      const result = yield* runtime.execute(`return search(${JSON.stringify(request)});`);
-      if (!result.ok) return yield* Effect.die(result.error.message);
-      const page = yield* Schema.decodeUnknownEffect(RankedPage)(result.value).pipe(Effect.orDie);
-      return { paths: page.items.map((item) => item.path), remaining: page.remaining };
-    });
-};
-/** Everything a ranking depends on: each candidate's path and listed tool, and every label. */
-const rankingBasis = (ranked: ReadonlyArray<Candidate>) => {
-  const basis: Array<unknown> = [];
-  const seen = new Set<Target>();
-  for (const { entry, others } of ranked) {
-    basis.push(entry.path, entry.tool, others.length);
-    for (const other of others) basis.push(other.target.profile, other.target.accounts);
-    if (seen.has(entry.target)) continue;
-    seen.add(entry.target);
-    basis.push(entry.target.app, entry.target.profile, entry.target.accounts);
-    for (const router of entry.target.routers.values())
-      basis.push(router.path, router.title, router.description);
-  }
-  return basis;
-};
-/**
- * Rankings reused across executions. A kept tool listing serves the same tool objects, so a
- * ranking is kept by its first candidate's tool, reused while its basis is unchanged, and goes
- * when the listing does. Each tool keeps the last few, for the namespaces searched below it.
- */
-const keptRankings = new WeakMap<
-  AppTool,
-  ReadonlyArray<{ readonly basis: ReadonlyArray<unknown>; readonly ranking: Ranking }>
->();
-const rankingFor = (ranked: ReadonlyArray<Candidate>) => {
-  const anchor = ranked[0]?.entry.tool;
-  if (anchor === undefined) return ranking(ranked);
-  const basis = rankingBasis(ranked);
-  const kept = keptRankings.get(anchor) ?? [];
-  const same = kept.find(
-    (item) =>
-      item.basis.length === basis.length &&
-      item.basis.every((value, index) => value === basis[index]),
-  );
-  if (same !== undefined) return same.ranking;
-  const made = ranking(ranked);
-  keptRankings.set(anchor, [{ basis, ranking: made }, ...kept].slice(0, 4));
-  return made;
-};
-/** Ranks this execution's candidates and returns them in rank order. */
-const ranker = (ranked: ReadonlyArray<Candidate>) => {
-  const rank = rankingFor(ranked);
-  const byPath = new Map(
-    ranked.map((candidate) => [CodeMode.toolExpression(candidate.entry.path), candidate]),
-  );
-  return (request: RankRequest) =>
-    rank(request).pipe(
-      Effect.map(({ paths, remaining }) => ({
-        items: paths.flatMap((path) => {
-          const candidate = byPath.get(path);
-          return candidate === undefined ? [] : [candidate];
-        }),
-        remaining,
-      })),
-    );
-};
-type Ranker = ReturnType<typeof ranker>;
 
 /** CodeMode's signature for the schemas given, `(input: ...): Promise<...>`, without a path. */
 const signatureOf = (
@@ -542,12 +354,12 @@ const singleLine = (pretty: string) => {
  * A tool's input type on one line, before any cut. CodeMode renders a tool without output as
  * `(input: <type>): Promise<void>`, or `(): Promise<void>` when its input is empty.
  */
-const inputTypes = new WeakMap<AppTool, string>();
-const inputType = (entry: Entry) =>
+const inputTypes = new WeakMap<RenderedSchemas, string>();
+const inputType = (schemas: RenderedSchemas) =>
   Effect.gen(function* () {
-    const known = inputTypes.get(entry.tool);
+    const known = inputTypes.get(schemas);
     if (known !== undefined) return known;
-    const rendered = yield* signatureOf(entry.schemas.input, undefined);
+    const rendered = yield* signatureOf(schemas.input, undefined);
     const prefix = "(input: ";
     const suffix = "): Promise<void>";
     const computed =
@@ -556,17 +368,17 @@ const inputType = (entry: Entry) =>
         : rendered.startsWith(prefix) && rendered.endsWith(suffix)
           ? singleLine(rendered.slice(prefix.length, -suffix.length))
           : yield* Effect.die(`Unexpected CodeMode input signature: ${rendered.slice(0, 80)}`);
-    inputTypes.set(entry.tool, computed);
+    inputTypes.set(schemas, computed);
     return computed;
   });
 /** A tool's whole signature, `(input: ...): Promise<...>`, with its documentation. */
-const signatures = new WeakMap<AppTool, string>();
-const signature = (entry: Entry) =>
+const signatures = new WeakMap<RenderedSchemas, string>();
+const signature = (schemas: RenderedSchemas) =>
   Effect.gen(function* () {
-    const known = signatures.get(entry.tool);
+    const known = signatures.get(schemas);
     if (known !== undefined) return known;
-    const computed = yield* signatureOf(entry.schemas.input, entry.schemas.output ?? Schema.Json);
-    signatures.set(entry.tool, computed);
+    const computed = yield* signatureOf(schemas.input, schemas.output ?? Schema.Json);
+    signatures.set(schemas, computed);
     return computed;
   });
 
@@ -584,31 +396,31 @@ const summary = (tool: AppTool) =>
     defaultSearchLimits.descriptionChars,
   );
 
-/** A target's namespace, as results list it once. */
-const targetNamespace = (target: Target): SearchNamespace => ({
+/** An app's namespace, as results list it once. */
+const targetNamespace = (target: Place): SearchNamespace => ({
   path: CodeMode.toolExpression(target.path),
   app: target.app,
-  ...(target.profile === undefined ? {} : { profile: target.profile }),
   ...(target.accounts === undefined ? {} : { accounts: target.accounts }),
 });
-/** The namespaces an entry's path sits in: its target, and its router when that has a title. */
-const namespacesOf = (entry: Entry): ReadonlyArray<SearchNamespace> => {
-  const { target } = entry;
-  const router =
-    entry.tool.router === undefined ? undefined : target.routers.get(entry.tool.router);
-  return [
-    targetNamespace(target),
-    ...(router?.title === undefined
-      ? []
-      : [
-          {
-            path: CodeMode.toolExpression(`${target.path}.${toolPath(router.path)}`),
-            app: target.app,
-            router: router.title,
-          },
-        ]),
-  ];
-};
+/** The namespaces a tool's path sits in: its app, and its router when that has a title. */
+const namespacesOf = (
+  target: Place,
+  router: ToolRouter | undefined,
+): ReadonlyArray<SearchNamespace> => [
+  targetNamespace(target),
+  ...(router?.title === undefined
+    ? []
+    : [
+        {
+          path: CodeMode.toolExpression(`${target.path}.${toolPath(router.path)}`),
+          app: target.app,
+          router: router.title,
+        },
+      ]),
+];
+/** The router an entry's tool is listed under. */
+const routerOf = (entry: Entry) =>
+  entry.tool.router === undefined ? undefined : entry.target.routers.get(entry.tool.router);
 const encoder = new TextEncoder();
 const jsonBytes = (value: unknown) => encoder.encode(JSON.stringify(value)).byteLength;
 
@@ -617,7 +429,7 @@ const expressionMember =
   /^(?:\.([A-Za-z_$][\w$]*)|\[("(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*")\])/;
 /**
  * The canonical path of a name an agent passes: a tool expression such as
- * `tools.acme.profiles["ins_1"].issues` becomes `acme.profiles.ins_1.issues`, and `tools` alone
+ * `tools["my-app"].issues` becomes `my-app.issues`, and `tools` alone
  * becomes "". Other names are already canonical paths.
  */
 const canonical = (name: string) => {
@@ -639,86 +451,233 @@ const within = (path: string, namespace: string) =>
   path === namespace || path.startsWith(`${namespace}.`);
 
 /** Loads the apps named (or every app) and returns their tools in path order. */
-type Searchable<E> = (
+type Described<E> = (
   names: ReadonlyArray<string> | "all",
 ) => Effect.Effect<ReadonlyArray<Entry>, E>;
+/** Makes the apps named (or every app) searchable and returns their targets in path order. */
+type Searchable<E> = (
+  names: ReadonlyArray<string> | "all",
+) => Effect.Effect<ReadonlyArray<SearchTarget>, E>;
+/** Reports targets whose listing search no longer keeps, and searches without them from then. */
+type Lost = (targets: ReadonlyArray<SearchTarget>) => Effect.Effect<void>;
+
+/** Where a ranked tool sits: its target and its canonical path below `tools`. */
+type Found = { readonly target: SearchTarget; readonly path: string };
 
 /**
- * One page of ranked tools. Items are added in rank order until the next would take the page past
- * its byte budget, so a page never exceeds the execute output limit; it always holds at least one
- * match. `remaining` and `next` count from the last item the page holds. A namespace's apps load
- * once per execution, so its ranker is kept in `rankers` for the execution's later searches.
+ * Ranked tools for one search. The backend ranks the rows of every target the namespace reaches,
+ * so no listing is loaded to search. A query that is a tool's exact path, or its tool expression,
+ * returns only that tool; a query without words lists every tool in target and name order.
  */
-const searchPage = <E>(
+const rank = <E extends Error>(
   searchable: Searchable<E>,
-  rankers: Map<string, Ranker>,
+  lost: Lost,
+  search: McpBackend<E>["searchTools"],
+  input: {
+    readonly query?: string;
+    readonly namespace?: string;
+    readonly offset: number;
+    readonly limit: number;
+  },
+) =>
+  Effect.gen(function* () {
+    const namespace = input.namespace === undefined ? "" : canonical(input.namespace);
+    const { offset, limit } = input;
+    // A target inside the namespace is searched whole; one the namespace lies in, below it.
+    const targets = (yield* searchable(namespace === "" ? "all" : [namespace])).flatMap(
+      (target): ReadonlyArray<{ target: SearchTarget; below: string | undefined }> =>
+        namespace === "" || within(target.path, namespace)
+          ? [{ target, below: undefined }]
+          : within(namespace, target.path)
+            ? [{ target, below: toolName(namespace.slice(target.path.length + 1)) }]
+            : [],
+    );
+    const searched = (
+      scope: (target: SearchTarget) => ReadonlyArray<ToolSearchScope>,
+    ): ReadonlyArray<ToolSearchTarget> =>
+      targets.map(({ target, below }) => ({
+        listing: target.listing,
+        app: target.id,
+        accounts: target.listed,
+        labels: [target.app, target.slug, target.accounts ?? ""],
+        scopes: scope(target),
+        ...(below === undefined ? {} : { below }),
+      }));
+    const query = (input.query ?? "").trim();
+    const path = canonical(query);
+    // The target an exact path names a tool of: the one with the longest path it lies below.
+    const named = targets
+      .filter(({ target }) => path.startsWith(`${target.path}.`))
+      .reduce<SearchTarget | undefined>(
+        (best, { target }) =>
+          best === undefined || target.path.length > best.path.length ? target : best,
+        undefined,
+      );
+    const name = named === undefined ? undefined : toolName(path.slice(named.path.length + 1));
+    const exact = !Schema.is(ToolName)(name)
+      ? undefined
+      : yield* search({
+          targets: searched((target) => [
+            { readOnly: false, names: target === named ? [name] : [] },
+          ]),
+          query: "",
+          offset: 0,
+          limit: 1,
+        });
+    const ranked =
+      exact !== undefined && exact.items.length > 0
+        ? { items: offset === 0 ? exact.items : [], remaining: 0, missing: exact.missing }
+        : yield* search({ targets: searched(() => []), query, offset, limit });
+    // A listing this execution found and search no longer keeps is reported, so its app's
+    // absence from the page is never mistaken for an app without matches.
+    yield* lost(
+      ranked.missing.flatMap((index) => {
+        const target = targets[index]?.target;
+        return target === undefined ? [] : [target];
+      }),
+    );
+    // Each app has one target, so no item is listed under another.
+    const items = ranked.items.flatMap(
+      (found): ReadonlyArray<{ found: ToolSearchItem; first: Found }> => {
+        const target = targets[found.target]?.target;
+        return target === undefined
+          ? []
+          : [{ found, first: { target, path: `${target.path}.${toolPath(found.tool.name)}` } }];
+      },
+    );
+    return { items, remaining: ranked.remaining + ranked.items.length - items.length };
+  });
+
+/**
+ * Add ranked items to a page in rank order until the next would take it past its byte budget, so a
+ * page never exceeds the execute output limit; it always holds at least one match. Each item is
+ * rendered only when it is reached.
+ */
+const fill = <A, B, E>(
+  ranked: ReadonlyArray<A>,
+  budget: number,
+  used: number,
+  render: (ranked: A, page: ReadonlyArray<B>) => Effect.Effect<B, E>,
+  cost: (item: B) => number,
+) =>
+  Effect.gen(function* () {
+    const items: Array<B> = [];
+    for (const candidate of ranked) {
+      const item = yield* render(candidate, items);
+      const added = cost(item);
+      if (items.length > 0 && used + added > budget) break;
+      used += added;
+      items.push(item);
+    }
+    return items;
+  });
+
+/**
+ * One page of `tools.search`: exact callable paths, one-line descriptions and input types, with
+ * each app and titled router listed once. `remaining` and `next` count from the last item the
+ * page holds.
+ */
+const searchPage = <E extends Error>(
+  searchable: Searchable<E>,
+  lost: Lost,
+  search: McpBackend<E>["searchTools"],
   limits: McpLimits,
   input: typeof SearchInput.Type,
 ) =>
   Effect.gen(function* () {
-    const namespace = input.namespace === undefined ? "" : canonical(input.namespace);
     const offset = input.offset ?? 0;
-    const entries = yield* searchable(namespace === "" ? "all" : [namespace]);
-    const rank =
-      rankers.get(namespace) ??
-      ranker(
-        candidates(
-          namespace === "" ? entries : entries.filter((entry) => within(entry.path, namespace)),
-        ),
-      );
-    rankers.set(namespace, rank);
-    const ranked = yield* rank({
-      query: input.query ?? "",
+    const ranked = yield* rank(searchable, lost, search, {
+      ...input,
       offset,
       limit: input.limit ?? defaultSearchLimits.defaultItems,
     });
-    const budget = searchPageBytes(limits);
-    let used = jsonBytes({ items: [], namespaces: [], remaining: 0, next: { ...input, offset } });
-    const items: Array<typeof SearchItem.Type> = [];
-    const namespaces = new Map<string, SearchNamespace>();
-    for (const { entry, others } of ranked.items) {
-      const type = yield* inputType(entry);
-      const item = {
-        path: CodeMode.toolExpression(entry.path),
-        description: summary(entry.tool),
-        input: cut(type, defaultSearchLimits.inputChars),
-        ...(type.length > defaultSearchLimits.inputChars ? { inputTruncated: true as const } : {}),
-        ...(others.length === 0
-          ? {}
-          : { alsoAt: others.map((other) => CodeMode.toolExpression(other.path)) }),
-      };
-      const added = new Map<string, SearchNamespace>();
-      for (const space of [
-        ...namespacesOf(entry),
-        ...others.map((other) => targetNamespace(other.target)),
-      ])
-        if (!namespaces.has(space.path)) added.set(space.path, space);
-      const cost =
-        jsonBytes(item) +
-        1 +
-        [...added.values()].reduce((sum, space) => sum + jsonBytes(space) + 1, 0);
-      if (items.length > 0 && used + cost > budget) break;
-      used += cost;
-      items.push(item);
-      for (const [path, space] of added) namespaces.set(path, space);
-    }
-    const remaining = ranked.remaining + ranked.items.length - items.length;
+    const page = yield* fill(
+      ranked.items,
+      searchPageBytes(limits),
+      jsonBytes({ items: [], namespaces: [], remaining: 0, next: { ...input, offset } }),
+      (
+        { found, first },
+        page: ReadonlyArray<{
+          readonly item: typeof SearchItem.Type;
+          readonly added: ReadonlyArray<SearchNamespace>;
+        }>,
+      ) =>
+        Effect.gen(function* () {
+          const type = yield* inputType(yield* renderSchemas(found.tool));
+          const item = {
+            path: CodeMode.toolExpression(first.path),
+            description: summary(found.tool),
+            input: cut(type, defaultSearchLimits.inputChars),
+            ...(type.length > defaultSearchLimits.inputChars
+              ? { inputTruncated: true as const }
+              : {}),
+          };
+          // Each namespace is listed once, with the first item in it, and counts toward that item.
+          const listed = new Set(page.flatMap(({ added }) => added.map((space) => space.path)));
+          const added = new Map<string, SearchNamespace>();
+          for (const space of namespacesOf(first.target, found.router))
+            if (!listed.has(space.path)) added.set(space.path, space);
+          return { item, added: [...added.values()] };
+        }),
+      ({ item, added }) =>
+        jsonBytes(item) + 1 + added.reduce((sum, space) => sum + jsonBytes(space) + 1, 0),
+    );
+    const remaining = ranked.remaining + ranked.items.length - page.length;
     return {
-      items,
-      namespaces: [...namespaces.values()],
+      items: page.map(({ item }) => item),
+      namespaces: page.flatMap(({ added }) => added),
       remaining,
-      next: remaining > 0 ? { ...input, offset: offset + items.length } : null,
+      next: remaining > 0 ? { ...input, offset: offset + page.length } : null,
     };
   });
 
 /**
- * Full detail for exact tool paths. A path that names no tool is reported with the closest paths
- * in its app, ranked as search ranks them.
+ * One page of CodeMode's global `search()`, ranked as `tools.search` ranks, in the shape CodeMode's
+ * own `search()` documents: each tool's expression, whole description and signature. Only the
+ * tools on the page have their signatures rendered; `rendered` counts them.
  */
-const describeTools = <E>(searchable: Searchable<E>, paths: ReadonlyArray<string>) =>
+const globalSearchPage = <E extends Error>(
+  searchable: Searchable<E>,
+  lost: Lost,
+  search: McpBackend<E>["searchTools"],
+  limits: McpLimits,
+  input: CodeMode.SearchRequest,
+  rendered: () => void,
+) =>
+  Effect.gen(function* () {
+    const offset = input.offset ?? 0;
+    const ranked = yield* rank(searchable, lost, search, {
+      ...input,
+      offset,
+      limit: input.limit ?? defaultSearchLimits.defaultItems,
+    });
+    const items = yield* fill(
+      ranked.items,
+      searchPageBytes(limits),
+      jsonBytes({ items: [], remaining: 0, next: { offset } }),
+      ({ found, first }) =>
+        renderSchemas(found.tool).pipe(
+          Effect.flatMap(signature),
+          Effect.tap(() => Effect.sync(rendered)),
+          Effect.map((typed) => {
+            const path = CodeMode.toolExpression(first.path);
+            return { path, description: found.tool.description, signature: `${path}${typed}` };
+          }),
+        ),
+      (item) => jsonBytes(item) + 1,
+    );
+    const remaining = ranked.remaining + ranked.items.length - items.length;
+    return { items, remaining, next: remaining > 0 ? { offset: offset + items.length } : null };
+  });
+
+/**
+ * Full detail for exact tool paths. A path that names no tool is reported with the paths in its
+ * app that are fewest edits away.
+ */
+const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const named = paths.map(canonical);
-    const entries = yield* searchable(named.filter((path) => path !== ""));
+    const entries = yield* described(named.filter((path) => path !== ""));
     const byPath = new Map(entries.map((entry) => [entry.path, entry]));
     const items: Array<(typeof DescribeResult.Type.items)[number]> = [];
     const namespaces = new Map<string, SearchNamespace>();
@@ -727,59 +686,72 @@ const describeTools = <E>(searchable: Searchable<E>, paths: ReadonlyArray<string
       const name = named[index] ?? "";
       const entry = byPath.get(name);
       if (entry === undefined) {
-        const closest = yield* ranker(
+        const closest = nearest(
+          name,
           entries
             .filter((candidate) => within(name, candidate.target.slug))
-            .map((candidate) => ({ entry: candidate, others: [] })),
-        )({ query: name, offset: 0, limit: 3 });
-        missing.push({
-          path,
-          matches: closest.items.map((candidate) => CodeMode.toolExpression(candidate.entry.path)),
-        });
+            .map((candidate) => candidate.path),
+          3,
+        );
+        missing.push({ path, matches: closest.map((match) => CodeMode.toolExpression(match)) });
         continue;
       }
       items.push({
         path: CodeMode.toolExpression(entry.path),
         description: entry.tool.description,
-        signature: yield* signature(entry),
+        signature: yield* signature(yield* renderSchemas(entry.tool)),
       });
-      for (const space of namespacesOf(entry)) namespaces.set(space.path, space);
+      for (const space of namespacesOf(entry.target, routerOf(entry)))
+        namespaces.set(space.path, space);
     }
     return { items, namespaces: [...namespaces.values()], missing };
   });
 
 /**
- * The apps a program can reach. Every tool path starts at the `tools` global, so a program whose
- * uses of `tools` are all static members, such as `tools.github` or `tools["my-app"]`, reaches
- * only those apps. Any other use (`tools[name]`, `Object.keys(tools)`, passing `tools` around)
- * and CodeMode's global `search()`, which reads the program's own tool index, reach every app.
- * Source that does not tokenize also reaches every app; CodeMode then reports its parse error.
+ * The apps a program names, which discovery loads before it runs, and why it may reach others.
+ * Every tool path starts at the `tools` global, so a program whose uses of `tools` are all static
+ * members, such as `tools.github` or `tools["my-app"]`, names only those apps (`static`). Any other
+ * use (`tools[name]`, `Object.keys(tools)`, passing `tools` around) can reach any app (`dynamic`),
+ * and so can source that does not tokenize (`parse`; CodeMode then reports its parse error). The
+ * program loads such an app when it first reaches it. A program that names apps statically and
+ * uses CodeMode's global `search()` is `search`: the search ranks in the backend and loads nothing.
  */
+export type Reach = {
+  readonly apps: ReadonlySet<string>;
+  readonly reason: "static" | "search" | "dynamic" | "parse";
+};
 export const programReach = (code: string) =>
   Effect.try({
     try: () =>
       // Acorn's declarations omit the token value it sets: cooked identifier and string text.
       Array.from(
-        tokenizer(code, {
+        (parse(code, {
           ecmaVersion: "latest",
           allowReturnOutsideFunction: true,
           allowAwaitOutsideFunction: true,
         }),
+        tokenizer(code, {
+          ecmaVersion: "latest",
+          allowReturnOutsideFunction: true,
+          allowAwaitOutsideFunction: true,
+        })),
         (token: Token & { readonly value?: unknown }) => ({
           type: token.type,
           value: typeof token.value === "string" ? token.value : undefined,
         }),
       ),
-    catch: () => "all" as const,
+    catch: () => "parse" as const,
   }).pipe(
-    Effect.map((tokens): ReadonlySet<string> | "all" => {
+    Effect.map((tokens): Reach => {
       const at = (index: number) => tokens[index] ?? { type: tokTypes.eof, value: undefined };
       const member = (index: number) =>
         at(index).type === tokTypes.dot || at(index).type === tokTypes.questionDot;
-      const slugs = new Set<string>();
+      const apps = new Set<string>();
+      let searched = false;
+      let dynamic = false;
       for (const [index, token] of tokens.entries()) {
         if (token.type !== tokTypes.name || member(index - 1)) continue;
-        if (token.value === "search") return "all";
+        if (token.value === "search") searched = true;
         if (token.value !== "tools") continue;
         // tools.slug and tools?.slug; property names may be keywords.
         const name = at(index + 2);
@@ -788,7 +760,7 @@ export const programReach = (code: string) =>
           name.value !== undefined &&
           (name.type === tokTypes.name || name.type.keyword !== undefined)
         ) {
-          slugs.add(name.value);
+          apps.add(name.value);
           continue;
         }
         // tools["slug"] and tools?.["slug"]
@@ -800,26 +772,39 @@ export const programReach = (code: string) =>
           key.value !== undefined &&
           at(open + 2).type === tokTypes.bracketR
         ) {
-          slugs.add(key.value);
+          apps.add(key.value);
           continue;
         }
-        return "all";
+        dynamic = true;
       }
-      return slugs;
+      return { apps, reason: dynamic ? "dynamic" : searched ? "search" : "static" };
     }),
-    Effect.orElseSucceed(() => "all" as const),
+    Effect.orElseSucceed((): Reach => ({ apps: new Set(), reason: "parse" })),
   );
 
 type ListedApp = Pick<App, "id" | "name" | "slug">;
+/**
+ * One app's discovery: why it failed, that a requirement has no linked account (it then exposes
+ * no tools), or what was read with the accounts discovery lists it with.
+ */
+type Discovered<A> =
+  | { readonly kind: "failed"; readonly error: string }
+  | { readonly kind: "unlinked" }
+  | { readonly kind: "loaded"; readonly linked: McpAppAccounts; readonly value: A };
 
 /**
- * Discover apps on demand within one execution. Listing apps is cheap; listing an app's targets
+ * Discover apps on demand within one execution. Listing apps is cheap; listing an app's accounts
  * and tools can mean evaluating thousands of definitions or reaching an upstream server, so each
  * app is discovered at most once and only when the program or its search needs it. The backend
  * may serve a tool listing it kept from an earlier execution; its rendered schemas and search
  * projections are then reused too. Everything else is per execution.
  */
-function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
+function catalog(
+  backend: McpBackend<Error>,
+  progress: ExecutionProgress,
+  /** Completes at the execution deadline; dynamic loads must stop in the program phase. */
+  programDeadline: Effect.Effect<void>,
+) {
   return Effect.gen(function* () {
     const {
       discoveryConcurrency: concurrency,
@@ -886,7 +871,9 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
           }),
         );
       }).pipe(Effect.withSpan(name));
-    const apps = yield* backend.listApps().pipe(Effect.withSpan("mcp.discovery.apps"));
+    const apps = yield* backend
+      .listApps({ toolsOnly: true })
+      .pipe(Effect.withSpan("mcp.discovery.apps"));
     yield* Effect.annotateCurrentSpan({
       "executor.discovery.apps": apps.length,
       "executor.discovery.concurrency": concurrency,
@@ -895,15 +882,36 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
     for (const app of apps) counts.set(app.slug, (counts.get(app.slug) ?? 0) + 1);
     const unique = (app: ListedApp) => Schema.is(AppSlug)(app.slug) && counts.get(app.slug) === 1;
     const tools: Catalog = Object.create(null);
+    /**
+     * Why an app, or a target or router of it, is unavailable, as each reader found it: discovery
+     * loading its tools for the program and describe, search keeping its rows, and a search or
+     * describe that named an app exposing no tools. Each reader keeps its own entries, so one
+     * never hides another's; the same failure found twice is reported once.
+     */
     const failures = new Map<AppId, Array<typeof UnavailableApp.Type>>();
+    const searchFailures = new Map<AppId, Array<typeof UnavailableApp.Type>>();
+    const revealed = new Map<AppId, Array<typeof UnavailableApp.Type>>();
     // Tool path prefixes that expose no tools in this execution, and those that do. A call is
     // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
     const namespaces: Namespaces = new Map();
     /** The deployment each loaded namespace's tools came from. */
     const loadedFrom = new Map<string, DeploymentId>();
-    const unavailableApps = () => apps.flatMap((app) => failures.get(app.id) ?? []);
+    const unavailableOf = (app: AppId) => {
+      const seen = new Set<string>();
+      return [
+        ...(failures.get(app) ?? []),
+        ...(searchFailures.get(app) ?? []),
+        ...(revealed.get(app) ?? []),
+      ].filter((entry) => {
+        const key = JSON.stringify([entry.router, entry.name, entry.reason]);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+    const unavailableApps = () => apps.flatMap((app) => unavailableOf(app.id));
     /**
-     * Report an app that exposes no tools, such as one that needs a profile, once a search or
+     * Report an app that exposes no tools, such as one that needs an account, once a search or
      * describe names it; otherwise its empty result would look like an app with no tools. A call
      * already reports why in its error, and unnamed apps stay quiet: most members never set up
      * most of their organization's account apps.
@@ -911,202 +919,260 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
     const reveal = (entry: typeof UnavailableApp.Type) =>
       Effect.sync(() => {
         const app = apps.find((candidate) => candidate.id === entry.app);
-        const failed = app === undefined ? undefined : failures.get(app.id);
-        if (failed === undefined || failed.includes(entry)) return;
-        failed.push(entry);
+        if (app === undefined || (!failures.has(app.id) && !searchFailures.has(app.id))) return;
+        if (unavailableOf(app.id).includes(entry)) return;
+        const shown = revealed.get(app.id) ?? [];
+        revealed.set(app.id, shown);
+        shown.push(entry);
         progress.unavailableApps = unavailableApps();
       });
-    /** Each loaded app's callable tools, for search. */
+    /** Each loaded app's tools, for describe and for the program's catalog. */
     const listed = new Map<string, ReadonlyArray<Entry>>();
+    /** Each searchable app's target. */
+    const indexed = new Map<string, ReadonlyArray<SearchTarget>>();
+    /**
+     * Call an entry's tool with the caller's linked accounts, as a program's call and a direct
+     * call both do. Calls no longer choose accounts: one that passes `$accounts` is refused before
+     * it runs, unless the tool declares `$accounts` as its own input.
+     */
+    const call =
+      (entry: Entry) =>
+      (input: unknown): Effect.Effect<Json, ToolError> =>
+        Schema.decodeUnknownEffect(Json)(input).pipe(
+          Effect.mapError(() => toolError("Tool arguments must be JSON")),
+          Effect.flatMap((input) =>
+            Effect.gen(function* () {
+              if (Schema.is(JsonObject)(input) && Object.hasOwn(input, accountsKey)) {
+                const schemas = yield* renderSchemas(entry.tool);
+                if (schemas.input.properties?.[accountsKey] === undefined)
+                  return yield* new AccountChoiceUnsupported({ app: entry.target.id });
+              }
+              const accounts = yield* resolveLinkedAccounts({
+                app: entry.target.id,
+                deployment: entry.target.deployment,
+                // The host fills app requirements from the app links.
+                appLinks: {},
+                userLinks: entry.target.linked,
+              });
+              const result = yield* backend.callTool({
+                app: entry.target.id,
+                accounts,
+                tool: entry.tool.name,
+                kind: entry.tool.readOnly === true ? "query" : "mutation",
+                input,
+              });
+              if (result.status !== "completed") return yield* approvalRequired(result);
+              return result.value;
+            }).pipe(Effect.mapError((error) => toolError(diagnostic(error)))),
+          ),
+        );
+    /** The program's own tool for an entry, built when the program's catalog takes its app. */
+    const program = (entry: Entry) =>
+      renderSchemas(entry.tool).pipe(
+        Effect.map((schemas) =>
+          Tool.make({
+            description: entry.tool.description,
+            input: schemas.input,
+            output: schemas.output ?? Schema.Json,
+            execute: call(entry),
+          }),
+        ),
+      );
 
-    const discoverApp = (app: ListedApp) =>
+    /** Each app's linked accounts, listed at most once per execution. A failure is recorded once. */
+    const accountsOf = new Map(
+      yield* Effect.forEach(apps, (app) =>
+        Effect.cached(
+          discover("mcp.discovery.accounts", app.id, backend.listAccounts({ app: app.id })).pipe(
+            Effect.tapError(unloaded),
+          ),
+        ).pipe(Effect.map((linked) => [app.id, linked] as const)),
+      ),
+    );
+    /**
+     * Read something of an app with the accounts discovery lists it with, recording why it has
+     * nothing.
+     */
+    const discoverApp = <A>(
+      app: ListedApp,
+      name: string,
+      read: (accounts: AppAccounts) => Effect.Effect<A, Error>,
+    ): Effect.Effect<Discovered<A>> =>
       Effect.gen(function* () {
         if (!unique(app))
           return {
-            targets: [],
+            kind: "failed",
             error: !Schema.is(AppSlug)(app.slug) ? "AppSlugInvalid" : "AppSlugAmbiguous",
-          };
-        return yield* discover(
-          "mcp.discovery.targets",
-          app.id,
-          backend.listTargets({ app: app.id }),
-        ).pipe(
-          Effect.flatMap((targets) =>
-            Effect.forEach(
-              targets,
-              (target) =>
-                discover(
-                  "mcp.discovery.tools",
-                  app.id,
-                  listTools(backend, app.id, target, settled, discoveryWaitMs),
-                ).pipe(
-                  Effect.map((catalog) => ({ target, catalog, error: undefined })),
-                  Effect.catch((error) =>
-                    Effect.gen(function* () {
-                      // This app's listing has run for longer than discovery waits, or recently
-                      // timed out. Give up on the app now, as discovery would after waiting,
-                      // rather than wait for its other listings again.
-                      if (Schema.is(ToolListingTimedOut)(error)) yield* stop(app.id);
-                      yield* unloaded(error);
-                      return { target, catalog: undefined, error: diagnostic(error) };
-                    }),
-                  ),
-                ),
-              { concurrency: "unbounded" },
-            ),
-          ),
-          Effect.map((targets) => ({ targets, error: undefined })),
+          } as const;
+        const listed = accountsOf.get(app.id);
+        if (listed === undefined) return { kind: "unlinked" } as const;
+        return yield* listed.pipe(
+          Effect.flatMap((linked): Effect.Effect<Discovered<A>> => {
+            const accounts = discoveryAccounts(linked);
+            if (accounts === undefined) return Effect.succeed({ kind: "unlinked" });
+            return discover(name, app.id, read(accounts)).pipe(
+              Effect.map((value): Discovered<A> => ({ kind: "loaded", linked, value })),
+              Effect.catch((error) =>
+                Effect.gen(function* () {
+                  // This app's listing has run for longer than discovery waits, or recently
+                  // timed out. Give up on the app now, as discovery would after waiting.
+                  if (Schema.is(ToolListingTimedOut)(error)) yield* stop(app.id);
+                  yield* unloaded(error);
+                  return { kind: "failed", error: diagnostic(error) } as const;
+                }),
+              ),
+            );
+          }),
           Effect.catch((error) =>
-            unloaded(error).pipe(Effect.as({ targets: [], error: diagnostic(error) })),
+            Effect.succeed({ kind: "failed", error: diagnostic(error) } as const),
           ),
         );
       });
+    const placeOf = (app: ListedApp, linked: McpAppAccounts): Place => {
+      const accounts = accountSummary(linked);
+      return {
+        id: app.id,
+        slug: app.slug,
+        path: app.slug,
+        app: app.name,
+        ...(accounts === "" ? {} : { accounts }),
+      };
+    };
+    const routerFailures = (
+      app: ListedApp,
+      deployment: DeploymentId,
+      routers: ReadonlyArray<ToolRouter>,
+    ) =>
+      routers.flatMap((router) =>
+        router.error === undefined
+          ? []
+          : [
+              {
+                namespace: `${app.slug}.${toolPath(router.path)}`,
+                entry: {
+                  app: app.id,
+                  name: `${app.name} ${router.title ?? router.path}`,
+                  router: router.path,
+                  reason: diagnostic(routerFailure({ app: app.id, deployment }, router.error)),
+                },
+              },
+            ],
+      );
+    /**
+     * An app whose requirement has no account the caller linked exposes no tools. A call into it
+     * fails with that reason, and a search or describe that names it lists it (see `reveal`).
+     * Unnamed, it stays quiet: most members never set up most of their organization's apps.
+     */
+    const accountRequired = (app: ListedApp) => ({
+      app: app.id,
+      name: app.name,
+      reason: diagnostic(new AppAccountRequired({ app: app.id })),
+    });
 
     const project = (
       app: ListedApp,
-      { targets, error }: Effect.Success<ReturnType<typeof discoverApp>>,
+      discovered: Discovered<Effect.Success<ReturnType<typeof listTools>>>,
     ) =>
-      Effect.gen(function* () {
+      Effect.sync(() => {
         const failed: Array<typeof UnavailableApp.Type> = [];
         failures.set(app.id, failed);
-        if (error !== undefined) {
-          const entry = { app: app.id, name: app.name, reason: error };
+        if (discovered.kind === "failed") {
+          const entry = { app: app.id, name: app.name, reason: discovered.error };
           failed.push(entry);
           if (unique(app)) namespaces.set(app.slug, entry);
           return;
         }
-        // An app that needs accounts exposes no target when the caller has no enabled profile.
-        // A call into it fails with that reason, and a search or describe that names it lists it
-        // (see `reveal`). Unnamed, it stays quiet: most members never set up most of their
-        // organization's account apps.
-        if (targets.length === 0) {
-          namespaces.set(app.slug, {
-            app: app.id,
-            name: app.name,
-            reason: diagnostic(new AppProfileRequired({ app: app.id })),
-          });
+        if (discovered.kind === "unlinked") {
+          namespaces.set(app.slug, accountRequired(app));
           tools[app.slug] = {};
           return;
         }
-        const entries: Array<readonly [string, Tool.Tool]> = [];
-        const found: Array<Entry> = [];
-        for (const { target, catalog, error } of targets) {
-          const namespace =
-            target.kind === "app" ? app.slug : `${app.slug}.profiles.${toolPath(target.id)}`;
-          if (catalog === undefined) {
-            const entry = {
-              app: app.id,
-              name: app.name,
-              ...(target.kind === "profile" ? { profile: target.id } : {}),
-              reason: error,
-            };
-            failed.push(entry);
-            namespaces.set(namespace, entry);
-            continue;
-          }
-          namespaces.set(namespace, "available");
-          if (catalog.deployment !== undefined) loadedFrom.set(namespace, catalog.deployment);
-          // A router that could not list its tools is reported like an app, at its own namespace,
-          // so a call into it explains why instead of reporting an unknown tool.
-          const groups = new Map(catalog.routers.map((router) => [router.path, router]));
-          for (const router of catalog.routers) {
-            if (router.error === undefined) continue;
-            const entry = {
-              app: app.id,
-              name: `${app.name} ${router.title ?? router.path}`,
-              ...(target.kind === "profile" ? { profile: target.id } : {}),
-              router: router.path,
-              reason: diagnostic(
-                routerFailure({ app: app.id, deployment: catalog.deployment }, router.error),
-              ),
-            };
-            failed.push(entry);
-            namespaces.set(`${namespace}.${toolPath(router.path)}`, entry);
-          }
-          const described: Target = {
-            slug: app.slug,
-            path: namespace,
-            app: app.name,
-            ...(target.kind === "app"
-              ? {}
-              : {
-                  profile: target.label,
-                  ...(target.accounts === undefined ? {} : { accounts: target.accounts }),
-                }),
-            routers: groups,
-          };
-          const projected = yield* Effect.forEach(catalog.tools, (tool) =>
-            renderSchemas(tool).pipe(
-              Effect.map((schemas) => {
-                const name =
-                  target.kind === "app"
-                    ? toolPath(tool.name)
-                    : `profiles.${toolPath(target.id)}.${toolPath(tool.name)}`;
-                const program = Tool.make({
-                  description: tool.description,
-                  input: schemas.input,
-                  output: schemas.output ?? Schema.Json,
-                  execute: (input) =>
-                    Schema.decodeUnknownEffect(Json)(input).pipe(
-                      Effect.mapError(() => toolError("Tool arguments must be JSON")),
-                      Effect.flatMap((input) =>
-                        backend
-                          .callTool({
-                            app: app.id,
-                            deployment: catalog.deployment,
-                            ...catalog.selection,
-                            tool: tool.name,
-                            kind: tool.readOnly === true ? "query" : "mutation",
-                            input,
-                          })
-                          .pipe(
-                            Effect.flatMap((result) =>
-                              result.status === "completed"
-                                ? Effect.succeed(result.value)
-                                : Effect.fail(
-                                    new ToolApprovalRequired({
-                                      app: result.invocation.app,
-                                      deployment: result.invocation.deployment,
-                                      tool: result.invocation.tool,
-                                    }),
-                                  ),
-                            ),
-                            Effect.mapError((error) => toolError(diagnostic(error))),
-                          ),
-                      ),
-                    ),
-                });
-                found.push({
-                  path: `${app.slug}.${name}`,
-                  tool,
-                  schemas,
-                  program,
-                  target: described,
-                });
-                return [name, program] as const;
-              }),
-            ),
-          );
-          entries.push(...projected);
+        const { linked, value: catalog } = discovered;
+        const namespace = app.slug;
+        namespaces.set(namespace, "available");
+        loadedFrom.set(namespace, catalog.deployment);
+        // A router that could not list its tools is reported like an app, at its own namespace,
+        // so a call into it explains why instead of reporting an unknown tool.
+        for (const { namespace, entry } of routerFailures(
+          app,
+          catalog.deployment,
+          catalog.routers,
+        )) {
+          failed.push(entry);
+          namespaces.set(namespace, entry);
         }
-        // An app none of whose targets loaded is unavailable as a whole.
-        const whole = failed[0];
-        if (entries.length === 0 && whole !== undefined && !namespaces.has(app.slug))
-          namespaces.set(app.slug, whole);
-        tools[app.slug] = Object.fromEntries(entries);
-        listed.set(app.slug, found);
+        const described: Target = {
+          ...placeOf(app, linked),
+          routers: new Map(catalog.routers.map((router) => [router.path, router])),
+          deployment: catalog.deployment,
+          linked,
+        };
+        listed.set(
+          app.slug,
+          catalog.tools.map((tool) => ({
+            path: `${namespace}.${toolPath(tool.name)}`,
+            tool,
+            target: described,
+          })),
+        );
       });
 
-    // Each app is discovered at most once, by whichever of the program or a search needs it first.
+    /**
+     * Keep a search's target and why it is unavailable, beside what discovery found when it
+     * loaded the app: an app that loaded can still fail to keep its search rows. A search names
+     * only the app's own namespace, which `reveal` reads, and only when discovery has not.
+     */
+    const projectSearch = (app: ListedApp, discovered: Discovered<SearchableTools>) =>
+      Effect.sync(() => {
+        const failed: Array<typeof UnavailableApp.Type> = [];
+        searchFailures.set(app.id, failed);
+        const found: Array<SearchTarget> = [];
+        if (discovered.kind === "failed")
+          failed.push({ app: app.id, name: app.name, reason: discovered.error });
+        else if (discovered.kind === "unlinked") {
+          if (!namespaces.has(app.slug)) namespaces.set(app.slug, accountRequired(app));
+        } else {
+          const { linked, value: searchable } = discovered;
+          for (const { entry } of routerFailures(app, searchable.deployment, searchable.routers))
+            failed.push(entry);
+          found.push({
+            ...placeOf(app, linked),
+            listing: searchable.listing,
+            listed: searchable.accounts,
+          });
+        }
+        const whole = failed[0];
+        if (found.length === 0 && whole !== undefined && !namespaces.has(app.slug))
+          namespaces.set(app.slug, whole);
+        indexed.set(app.slug, found);
+      });
+
+    const reported = Effect.sync(() => {
+      progress.unavailableApps = unavailableApps();
+    });
+    // Each app is discovered at most once, by whichever of the program or a describe needs it
+    // first, and made searchable at most once, by the first search that reaches it.
     const discovered = yield* Effect.forEach(apps, (app) =>
       Effect.cached(
-        discoverApp(app).pipe(
+        discoverApp(app, "mcp.discovery.tools", (accounts) =>
+          listTools(backend, app.id, accounts, settled),
+        ).pipe(
           Effect.flatMap((result) => project(app, result)),
-          Effect.andThen(
-            Effect.sync(() => {
-              progress.unavailableApps = unavailableApps();
-            }),
+          Effect.andThen(reported),
+        ),
+      ).pipe(Effect.map((load) => ({ app, load }))),
+    );
+    const searchedApps = yield* Effect.forEach(apps, (app) =>
+      Effect.cached(
+        discoverApp(app, "mcp.discovery.search", (accounts) =>
+          backend.searchableTools(
+            { app: app.id, accounts },
+            // Search reads every app's rows; refreshing aged ones would load each app's Worker.
+            { reportRunningAfterMillis: discoveryWaitMs, refreshStale: false },
           ),
+        ).pipe(
+          Effect.flatMap((result) => projectSearch(app, result)),
+          Effect.andThen(reported),
         ),
       ).pipe(Effect.map((load) => ({ app, load }))),
     );
@@ -1115,7 +1181,9 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
      * `discoveryIdleMs`, give up on every selected app still running a listing, however many
      * there are. Apps still queued then start, with a new idle period.
      */
-    const load = (selected: ReadonlyArray<(typeof discovered)[number]>) =>
+    const load = (
+      selected: ReadonlyArray<{ readonly app: ListedApp; readonly load: Effect.Effect<void> }>,
+    ) =>
       Effect.gen(function* () {
         const began = yield* Clock.currentTimeMillis;
         let restarted = began;
@@ -1140,42 +1208,161 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
           watch,
         );
       });
+    /** Dynamic namespaces run while CodeMode has the program turn. Discovery's idle stop is only
+     * for pre-program reads; CodeMode's deadline interrupts this load in the program phase. */
+    const loadForProgram = (
+      selected: ReadonlyArray<{ readonly app: ListedApp; readonly load: Effect.Effect<void> }>,
+    ) =>
+      Effect.raceFirst(
+        Effect.forEach(selected, ({ load }) => load, { concurrency: "unbounded", discard: true }),
+        programDeadline.pipe(Effect.andThen(Effect.interrupt)),
+      );
+    /** The apps the canonical names lie in, or every app. */
+    const named = <A extends { readonly app: ListedApp }>(
+      all: ReadonlyArray<A>,
+      names: ReadonlyArray<string> | "all",
+    ) =>
+      names === "all" ? all : all.filter(({ app }) => names.some((name) => within(name, app.slug)));
+    /** Report an app a search or describe names that exposes no tools. */
+    const revealNamed = (selected: ReadonlyArray<{ readonly app: ListedApp }>) =>
+      Effect.forEach(
+        selected,
+        ({ app }) => {
+          const entry = namespaces.get(app.slug);
+          return unique(app) && entry !== undefined && entry !== "available"
+            ? reveal(entry)
+            : Effect.void;
+        },
+        { discard: true },
+      );
+    const byPath = <A extends { readonly path: string }>(left: A, right: A) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
 
     /**
      * The tools of every app the canonical names lie in, once those apps are loaded. A name is an
-     * app slug, a target or router below it, or a tool path. Entries are in path order.
+     * app slug, a router below it, or a tool path. Entries are in path order.
      */
-    const searchable = (names: ReadonlyArray<string> | "all") =>
+    const described = (names: ReadonlyArray<string> | "all") =>
       Effect.gen(function* () {
-        const selected =
-          names === "all"
-            ? discovered
-            : discovered.filter(({ app }) => names.some((name) => within(name, app.slug)));
+        const selected = named(discovered, names);
         yield* load(selected);
-        if (names !== "all")
-          for (const { app } of selected) {
-            const entry = namespaces.get(app.slug);
-            if (unique(app) && entry !== undefined && entry !== "available") yield* reveal(entry);
-          }
+        if (names !== "all") yield* revealNamed(selected);
         const entries = selected
           .flatMap(({ app }) => (unique(app) ? (listed.get(app.slug) ?? []) : []))
-          .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
-        // Like the program's catalog, the size this search's CPU grows with.
+          .sort(byPath);
         yield* Effect.annotateCurrentSpan({
           "executor.discovery.apps": selected.length,
           "executor.discovery.tools": entries.length,
         });
         return entries;
+      }).pipe(Effect.withSpan("mcp.describe.discovery"));
+    /**
+     * Report targets whose listing search no longer keeps, as discovery reports a target it could
+     * not load, and leave them out of later searches.
+     */
+    const lost: Lost = (targets) =>
+      Effect.sync(() => {
+        if (targets.length === 0) return;
+        for (const target of targets) {
+          const app = apps.find((candidate) => candidate.id === target.id);
+          if (app === undefined) continue;
+          const kept = indexed.get(app.slug);
+          if (kept !== undefined)
+            indexed.set(
+              app.slug,
+              kept.filter((candidate) => candidate.listing !== target.listing),
+            );
+          const failed = searchFailures.get(app.id) ?? [];
+          searchFailures.set(app.id, failed);
+          failed.push({
+            app: app.id,
+            name: app.name,
+            reason: diagnostic(new ToolSearchUnavailable({ app: app.id, reason: "removed" })),
+          });
+        }
+        progress.unavailableApps = unavailableApps();
+      });
+    /**
+     * The searchable targets of every app the canonical names lie in, in path order. Searching
+     * ranks their rows in the backend; no listing is loaded here unless its rows are missing.
+     */
+    const searchable = (names: ReadonlyArray<string> | "all") =>
+      Effect.gen(function* () {
+        const selected = named(searchedApps, names);
+        yield* load(selected);
+        if (names !== "all") yield* revealNamed(selected);
+        const targets = selected
+          .flatMap(({ app }) => (unique(app) ? (indexed.get(app.slug) ?? []) : []))
+          .sort(byPath);
+        yield* Effect.annotateCurrentSpan({
+          "executor.discovery.apps": selected.length,
+          "executor.discovery.targets": targets.length,
+        });
+        return targets;
       }).pipe(Effect.withSpan("mcp.search.discovery"));
-    const reachable = (reach: ReadonlySet<string> | "all") =>
-      reach === "all" ? discovered : discovered.filter(({ app }) => reach.has(app.slug));
+    const reachable = (names: ReadonlySet<string>) =>
+      discovered.filter(({ app }) => names.has(app.slug));
     const slugs = new Set(apps.map((app) => app.slug));
+    /** Build the catalog of the loaded apps among `selected`, which the program can call. */
+    const callable = (selected: ReadonlyArray<(typeof discovered)[number]>) =>
+      Effect.forEach(
+        selected,
+        ({ app }) =>
+          Effect.gen(function* () {
+            const found = listed.get(app.slug);
+            if (!unique(app) || found === undefined || app.slug in tools) return;
+            const prefix = app.slug.length + 1;
+            tools[app.slug] = Object.fromEntries(
+              yield* Effect.forEach(found, (entry) =>
+                program(entry).pipe(
+                  Effect.map((tool) => [entry.path.slice(prefix), tool] as const),
+                ),
+              ),
+            );
+          }),
+        { discard: true },
+      );
+    /**
+     * The program's namespace of each app whose tools it does not hold yet. The app is discovered
+     * and its tools built when the program first reaches it: calls one of its tools, or lists its
+     * keys, however it names it. Discovery, its wait and its unavailable-app reporting are the
+     * same as for an app the program names; an app that does not load leaves no namespace, so a
+     * call into it reports why as before. Listing the keys of `tools` lists apps and loads none.
+     */
+    const lazy = yield* Effect.forEach(discovered, (selected) =>
+      Effect.cached(
+        Effect.gen(function* () {
+          yield* loadForProgram([selected]);
+          yield* callable([selected]);
+          const loaded = tools[selected.app.slug];
+          yield* Effect.annotateCurrentSpan(
+            "executor.discovery.tools",
+            loaded === undefined ? 0 : Object.keys(loaded).length,
+          );
+          return loaded;
+        }).pipe(Effect.withSpan("mcp.discovery.namespace")),
+      ).pipe(Effect.map((open) => ({ app: selected.app, open }))),
+    );
+    /** Namespaces for the program over every app it does not hold, each loaded on first use. */
+    const namespacesOnUse = (provide: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E>) =>
+      Object.fromEntries(
+        lazy.flatMap(({ app, open }) =>
+          unique(app) && !(app.slug in tools)
+            ? [[app.slug, Namespace.lazy({ load: provide(open) })] as const]
+            : [],
+        ),
+      );
     return {
       tools,
       namespaces,
+      namespacesOnUse,
       load,
+      callable,
       reachable,
+      call,
+      described,
       searchable,
+      lost,
       unavailableApps,
       unknownTool: (error: CodeMode.Diagnostic) => unknownTool(error, loadedFrom, slugs),
     };
@@ -1255,7 +1442,10 @@ const unknownTool = (
  */
 const unavailableTarget = (error: CodeMode.Diagnostic, namespaces: Namespaces) => {
   const path = unknownPath(error);
-  if (path === undefined) return undefined;
+  return path === undefined ? undefined : unavailableAt(path, namespaces);
+};
+/** The app or router a canonical path lies in, when it did not load. */
+const unavailableAt = (path: string, namespaces: Namespaces) => {
   const segments = path.split(".");
   for (let length = segments.length; length > 0; length--) {
     const found = namespaces.get(segments.slice(0, length).join("."));
@@ -1264,6 +1454,12 @@ const unavailableTarget = (error: CodeMode.Diagnostic, namespaces: Namespaces) =
   }
   return undefined;
 };
+
+/** Why a call into an app that did not load cannot run, as the agent reads it. */
+const unavailableMessage = (unavailable: typeof UnavailableApp.Type) =>
+  unavailable.reason.startsWith("{")
+    ? unavailable.reason
+    : `${unavailable.name} could not be loaded in this execution (${unavailable.reason}); its tools cannot be called until it loads.`;
 
 /**
  * A snapshot for a result. A call still running when the execution ends is reported as
@@ -1314,11 +1510,28 @@ const deadlineClock = (
 });
 
 /**
+ * One execution's work. The run supplies its brokered backend, its limits, a `deadline` that
+ * completes when the execution's budget is spent, and the progress its driver reports from.
+ */
+export type Program = (
+  backend: McpBackend<Error>,
+  limits: McpLimits,
+  deadline: Effect.Effect<void>,
+  progress: ExecutionProgress,
+) => Effect.Effect<typeof ExecuteResult.Type>;
+
+/** Run one CodeMode program as an execution. */
+export const executeProgram =
+  (code: string): Program =>
+  (backend, limits, deadline, progress) =>
+    runProgram(backend, limits, code, deadline, progress);
+
+/**
  * Internal interpreter entry. `deadline` completes when the execution's budget is spent; the
  * caller decides whether that is wall time or active time. Discovery stops at the deadline;
  * a running program is stopped by CodeMode so its admitted calls and logs are returned.
  */
-export function executeProgram(
+function runProgram(
   backend: McpBackend<Error>,
   limits: McpLimits,
   code: string,
@@ -1342,13 +1555,18 @@ export function executeProgram(
         callTool: (input, options) =>
           backend.callTool(input, options).pipe(Effect.provideService(Clock.Clock, clock)),
       };
-      // Discovery covers the apps the program can reach; search discovers others when it runs.
+      // Discovery covers the apps the program names. The program loads any other app when it first
+      // reaches it, and search ranks in the backend without loading apps' tools.
       const reach = yield* programReach(code);
       const loaded = yield* Effect.gen(function* () {
-        const discovered = yield* catalog(tools, progress);
-        const reachable = discovered.reachable(reach);
-        yield* Effect.annotateCurrentSpan("executor.discovery.reachable", reachable.length);
+        const discovered = yield* catalog(tools, progress, deadline);
+        const reachable = discovered.reachable(reach.apps);
+        yield* Effect.annotateCurrentSpan({
+          "executor.discovery.reachable": reachable.length,
+          "executor.discovery.reach_reason": reach.reason,
+        });
         yield* discovered.load(reachable);
+        yield* discovered.callable(reachable);
         yield* Effect.annotateCurrentSpan({
           "executor.discovery.tools": Object.values(discovered.tools).reduce(
             (sum, entries) => sum + Object.keys(entries).length,
@@ -1368,28 +1586,51 @@ export function executeProgram(
       }
       const prepared = loaded.value;
       progress.phase = "program";
-      // Discovery for a search runs on the real clock, like tool calls.
-      const rankers = new Map<string, Ranker>();
+      // Discovery while the program runs is on the real clock, like tool calls.
+      const real = <A, E>(effect: Effect.Effect<A, E>) =>
+        effect.pipe(Effect.provideService(Clock.Clock, clock));
+      // Signatures the program's global `search()` rendered for its pages.
+      let searchSignatures = 0;
       const search = Tool.make({
         description:
-          "Find app tools by words in their paths, descriptions and labels. Returns exact callable paths, one-line descriptions and input types, with each app and profile listed once. Use tools.search.describe for output types and whole descriptions.",
+          "Find app tools by words in their paths, descriptions and labels. Returns exact callable paths, one-line descriptions and input types, with each app and its linked accounts listed once. Use tools.search.describe for output types and whole descriptions.",
         input: SearchInput,
         output: SearchResult,
         execute: (input) =>
-          searchPage(prepared.searchable, rankers, limits, input).pipe(
-            Effect.provideService(Clock.Clock, clock),
-          ),
+          real(searchPage(prepared.searchable, prepared.lost, tools.searchTools, limits, input)),
       });
       const describe = Tool.make({
         description:
           "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from tools.search.",
         input: DescribeInput,
         output: DescribeResult,
-        execute: ({ paths }) =>
-          describeTools(prepared.searchable, paths).pipe(Effect.provideService(Clock.Clock, clock)),
+        execute: ({ paths }) => real(describeTools(prepared.described, paths)),
       });
       const runtime = CodeMode.make({
-        tools: { ...prepared.tools, search, "search.describe": describe },
+        tools: {
+          // Namespace loading must use CodeMode's deadline clock so a dynamic listing stall is
+          // reported as a program timeout. The backend wrapper still gives actual tool calls the
+          // real clock above.
+          ...prepared.namespacesOnUse(<A, E>(effect: Effect.Effect<A, E>) => effect),
+          ...prepared.tools,
+          search,
+          "search.describe": describe,
+        },
+        // CodeMode's global `search()` ranks as `tools.search` does, instead of an index of every
+        // tool's signature.
+        search: (input) =>
+          real(
+            globalSearchPage(
+              prepared.searchable,
+              prepared.lost,
+              tools.searchTools,
+              limits,
+              input,
+              () => {
+                searchSignatures += 1;
+              },
+            ),
+          ),
         limits,
         // Both hooks run on the fiber that makes the call.
         onToolCallStart: ({ index, name }) =>
@@ -1436,9 +1677,7 @@ export function executeProgram(
           : {
               error: {
                 kind: "ToolFailure" as const,
-                message: unavailable.reason.startsWith("{")
-                  ? unavailable.reason
-                  : `${unavailable.name} could not be loaded in this execution (${unavailable.reason}); its tools cannot be called until it loads.`,
+                message: unavailableMessage(unavailable),
               },
             }),
         ...(timedOut
@@ -1452,10 +1691,10 @@ export function executeProgram(
         toolCalls: reportedCalls(progress),
       });
       if (timedOut) yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
-      // Signatures cost CPU per reachable tool; a program renders them only by searching.
+      // Signatures cost CPU per tool; a program renders them only for its global `search()` pages.
       yield* Effect.annotateCurrentSpan(
         "executor.codemode.signatures_rendered",
-        runtime.signaturesRendered(),
+        runtime.signaturesRendered() + searchSignatures,
       );
       yield* Effect.annotateCurrentSpan("executor.outcome", execution.ok ? "completed" : "failed");
       return { execution, unavailableApps: prepared.unavailableApps() };
@@ -1468,3 +1707,207 @@ export function executeProgram(
     );
   });
 }
+
+/** A failed direct call, in the shape every outcome of a batch shares. */
+const callFailure = (
+  path: string,
+  kind: CodeMode.DiagnosticKind,
+  message: string,
+  matches?: ReadonlyArray<string>,
+): CallOutcome => ({
+  path,
+  ok: false,
+  error: failureDetail({ kind, message }),
+  ...(matches === undefined ? {} : { matches }),
+});
+
+/**
+ * Call tools by exact path without a program. Each call runs the same catalog tool a program
+ * would call, through the run's backend, so approvals and tool input pause and resume as they do
+ * for execute. Calls run concurrently and fail independently. A result that would take the
+ * output past its budget is refused rather than cut: the agent can select fields with execute.
+ */
+export function callTools(input: typeof CallInput.Type): Program {
+  return (backend, limits, deadline, progress) =>
+    Effect.suspend(() => {
+      const single = "path" in input.calls;
+      const requests: ReadonlyArray<typeof CallRequest.Type> =
+        "path" in input.calls ? [input.calls] : input.calls;
+      const failure = (kind: CodeMode.DiagnosticKind, message: string) => ({
+        execution: executionDiagnostic({
+          ok: false as const,
+          error: { kind, message },
+          toolCalls: reportedCalls(progress),
+        }),
+        unavailableApps: progress.unavailableApps,
+      });
+      if (requests.length > limits.maxToolCalls)
+        return Effect.succeed(
+          failure(
+            "ToolCallLimitExceeded",
+            `One call accepts at most ${limits.maxToolCalls} tool calls; this one has ${requests.length}.`,
+          ),
+        );
+      const named = requests.map(({ path }) => canonical(path));
+      return Effect.gen(function* () {
+        // Discovery loads only the apps the calls name.
+        const loaded = yield* Effect.gen(function* () {
+          const discovered = yield* catalog(backend, progress, deadline);
+          const entries = yield* discovered.described(named.filter((path) => path !== ""));
+          return { discovered, entries };
+        }).pipe(
+          Effect.withSpan("mcp.catalog"),
+          Effect.map(Option.some),
+          Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
+        );
+        if (Option.isNone(loaded)) {
+          yield* Effect.annotateCurrentSpan("executor.timeout.phase", "discovery");
+          return failure("TimeoutExceeded", timeoutMessage(limits.timeoutMs, "discovery"));
+        }
+        const { discovered, entries } = loaded.value;
+        const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+        progress.phase = "program";
+        const run = (request: typeof CallRequest.Type, index: number) =>
+          Effect.gen(function* () {
+            const path = named[index] ?? "";
+            const entry = byPath.get(path);
+            if (entry === undefined) {
+              const unavailable = unavailableAt(path, discovered.namespaces);
+              if (unavailable !== undefined)
+                return callFailure(request.path, "ToolFailure", unavailableMessage(unavailable));
+              const closest = nearest(
+                path,
+                entries
+                  .filter((candidate) => within(path, candidate.target.slug))
+                  .map((candidate) => candidate.path),
+                3,
+              );
+              return callFailure(
+                request.path,
+                "UnknownTool",
+                `No tool at ${request.path}. Use search to find exact paths.`,
+                closest.map((match) => CodeMode.toolExpression(match)),
+              );
+            }
+            const name = CodeMode.toolExpression(entry.path);
+            const fiber = yield* Effect.fiberId;
+            const started = yield* Clock.currentTimeMillis;
+            progress.calls[index] = { name, outcome: "running" };
+            progress.callFibers.set(fiber, index);
+            const finish = (outcome: "success" | "failure") =>
+              Effect.gen(function* () {
+                const recorded = progress.calls[index];
+                if (recorded === undefined) return;
+                recorded.outcome = outcome;
+                recorded.durationMs = (yield* Clock.currentTimeMillis) - started;
+              });
+            return yield* discovered
+              .call(entry)(request.input)
+              .pipe(
+                Effect.matchEffect({
+                  onSuccess: (value) =>
+                    finish("success").pipe(Effect.as<CallOutcome>({ path: name, ok: true, value })),
+                  onFailure: (error) =>
+                    finish("failure").pipe(
+                      Effect.as(callFailure(name, "ToolFailure", error.message)),
+                    ),
+                }),
+                Effect.ensuring(Effect.sync(() => progress.callFibers.delete(fiber))),
+              );
+          });
+        const outcomes = yield* Effect.forEach(requests, run, { concurrency: "unbounded" }).pipe(
+          Effect.map(Option.some),
+          Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
+        );
+        if (Option.isNone(outcomes)) {
+          yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
+          return failure("TimeoutExceeded", timeoutMessage(limits.timeoutMs, "program"));
+        }
+        // Results keep the batch order; once the output budget is spent, later values are refused.
+        let used = 0;
+        const bounded = outcomes.value.map((outcome): CallOutcome => {
+          const bytes = jsonBytes(outcome);
+          if (!outcome.ok || used + bytes <= limits.maxOutputBytes) {
+            used += bytes;
+            return outcome;
+          }
+          const refused = callFailure(
+            outcome.path,
+            "Truncated",
+            `The tool ran, but its ${bytes}-byte result would pass the ${limits.maxOutputBytes}-byte output limit. Call it inside execute and return only the fields you need.`,
+          );
+          used += jsonBytes(refused);
+          return refused;
+        });
+        yield* Effect.annotateCurrentSpan({
+          "executor.call.count": requests.length,
+          "executor.outcome": "completed",
+        });
+        return {
+          execution: {
+            ok: true as const,
+            value: single ? (bounded[0] ?? null) : bounded,
+            toolCalls: reportedCalls(progress),
+          },
+          unavailableApps: discovered.unavailableApps(),
+        };
+      }).pipe(
+        Effect.catch((error) =>
+          recordFailure(progress, error).pipe(
+            Effect.as(failure("ExecutionFailure", diagnostic(error))),
+          ),
+        ),
+      );
+    });
+}
+
+/**
+ * Read the caller's catalog outside any program, for the search and describe tools. Discovery
+ * failures are reported as they are for a program; a failure to list apps fails the request.
+ */
+const readCatalog = <A>(
+  backend: McpBackend<Error>,
+  read: (discovered: Effect.Success<ReturnType<typeof catalog>>) => Effect.Effect<A, Error>,
+) =>
+  Effect.gen(function* () {
+    const progress = executionProgress();
+    // No program runs, so no program deadline stops a load.
+    return yield* catalog(backend, progress, Effect.never).pipe(
+      Effect.flatMap((discovered) =>
+        read(discovered).pipe(Effect.map((value) => ({ value, discovered }))),
+      ),
+      Effect.ensuring(
+        Effect.suspend(() =>
+          Effect.forEach(progress.failures.splice(0), reportFailure, { discard: true }),
+        ),
+      ),
+      Effect.catch((error) =>
+        reportFailure(error).pipe(
+          Effect.andThen(
+            Effect.fail(new CatalogUnavailable({ message: diagnosticSummary(error) })),
+          ),
+        ),
+      ),
+    );
+  });
+
+/** The search tool: one ranked page of the caller's catalog, as tools.search returns it. */
+export const searchCatalog = (
+  backend: McpBackend<Error>,
+  limits: McpLimits,
+  input: typeof SearchInput.Type,
+) =>
+  readCatalog(backend, (discovered) =>
+    searchPage(discovered.searchable, discovered.lost, backend.searchTools, limits, input),
+  ).pipe(
+    Effect.map(({ value, discovered }) => ({
+      ...value,
+      unavailableApps: discovered.unavailableApps(),
+    })),
+  );
+
+/** The describe tool: full signatures for exact paths, as tools.search.describe returns them. */
+export const describeCatalog = (backend: McpBackend<Error>, input: typeof DescribeInput.Type) =>
+  readCatalog(backend, (discovered) => describeTools(discovered.described, input.paths)).pipe(
+    Effect.map(({ value }) => value),
+  );

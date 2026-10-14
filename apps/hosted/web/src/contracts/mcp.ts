@@ -6,6 +6,7 @@ import { BrowserAtoms } from "./telemetry.ts";
 import { Effect, Schema } from "effect";
 import { Atom } from "effect/reactivity";
 import type { ResourceOrigins } from "@executor-js/mcp-auth/grants";
+import { DeviceDecision, DeviceRequestView } from "@executor-js/mcp-auth/device";
 import { authCallOptions, mcpAuthorization, type AuthCallOptions } from "./auth.ts";
 
 /**
@@ -90,6 +91,75 @@ export const mcpClientAtom = Atom.family((clientId: string) =>
 export const mcpConsentAtom = BrowserAtoms.fn(
   (input: { accept: boolean; organization: string | undefined; query: string }) =>
     request("consent", (options) => mcpAuthorization(options).consent(input)),
+);
+
+/**
+ * Device sign-in requests fail for reasons the person can act on: a mistyped or expired code, a
+ * code already used, or an organization they no longer belong to.
+ */
+const deviceCall = <A>(
+  operation: string,
+  run: (
+    options: AuthCallOptions,
+  ) => Promise<{ data: unknown; error: null } | { data: null; error: { status: number } }>,
+  schema: Schema.Decoder<A>,
+) =>
+  Effect.flatMap(authCallOptions, (options) =>
+    Effect.tryPromise({
+      try: () => run(options),
+      catch: () => new McpConnectionFailed({ message: "Cannot reach Executor. Try again." }),
+    }),
+  ).pipe(
+    Effect.flatMap((result) =>
+      result.error === null
+        ? Schema.decodeUnknownEffect(schema)(result.data).pipe(
+            Effect.mapError(
+              () => new McpConnectionFailed({ message: "Something went wrong. Try again." }),
+            ),
+          )
+        : Effect.fail(
+            new McpConnectionFailed({
+              message:
+                result.error.status === 404
+                  ? "This code is not valid or has expired. Check the code your device shows, or start signing in again there."
+                  : result.error.status === 409
+                    ? "This code was already used. Start signing in again on your device."
+                    : result.error.status === 403
+                      ? "You no longer have access to this organization. Choose another one."
+                      : result.error.status === 429
+                        ? "Too many attempts. Wait a minute and try again."
+                        : "This request could not be completed. Try again.",
+            }),
+          ),
+    ),
+    Effect.withSpan(`ui.device.${operation}`),
+  );
+
+/** The pending device sign-in a user code names, for the person deciding it. */
+export const deviceRequestAtom = Atom.family((userCode: string) =>
+  BrowserAtoms.atom(
+    deviceCall(
+      "request",
+      (options) => mcpAuthorization(options).deviceRequest(userCode),
+      DeviceRequestView,
+    ),
+  ).pipe(
+    hydratedResult({
+      key: `hosted:device-request:${requestKey({ userCode })}`,
+      success: DeviceRequestView,
+      error: McpConnectionFailed,
+    }),
+  ),
+);
+
+/** The organization chosen on the page belongs to this decision only. */
+export const deviceDecisionAtom = BrowserAtoms.fn(
+  (input: { userCode: string; accept: boolean; organization: string | undefined }) =>
+    deviceCall(
+      "decide",
+      (options) => mcpAuthorization(options).decideDevice(input),
+      DeviceDecision,
+    ),
 );
 
 /** Consent searches the complete live catalog, including tools beyond the first page. */

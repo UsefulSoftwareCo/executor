@@ -10,26 +10,47 @@ import {
   Provider,
   SecretsMethod,
 } from "../contracts/provider.ts";
-import type { ValidationError } from "../contracts/schema.ts";
-import { parse } from "./schema.ts";
+import type { Placement } from "../contracts/placement.ts";
+import type { DeclarationInvalid } from "../contracts/schema.ts";
+import { parseDeclaration } from "./schema.ts";
 
 /** Declare a secrets method with an Effect decoder. */
 export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
   readonly label: string;
   readonly fields: Fields;
   readonly exposure?: Readonly<Record<string, FieldExposure>>;
+  readonly request?: readonly Placement[];
 }): SecretsMethod<Fields> => new SecretsMethod(options);
+
+/**
+ * The `oauth2()` form an author chose: client credentials or authorization code by `grant`, then
+ * discovered or declared endpoints by `discover`. Only that form explains an invalid declaration.
+ */
+const clientCredentials = Schema.is(Schema.Struct({ grant: Schema.Literal("client_credentials") }));
+const oauth2Form = (config: unknown) => {
+  const [discovered, declared, discoveredMachine, declaredMachine] = OAuth2Config.members;
+  const discovers =
+    typeof config === "object" && config !== null && Object.hasOwn(config, "discover");
+  if (clientCredentials(config)) return discovers ? discoveredMachine : declaredMachine;
+  return discovers ? discovered : declared;
+};
 
 /** Validate OAuth endpoints while declaring their app-visible response projection. */
 export const oauth2 = <Response extends Schema.Decoder<unknown>>(
   config: OAuth2Config,
   response: Response,
   exposure?: Readonly<Record<string, FieldExposure>>,
-): Effect.Effect<OAuth2Method<Response>, ValidationError> =>
-  parse(OAuth2Config, config).pipe(
+  request?: readonly Placement[],
+): Effect.Effect<OAuth2Method<Response>, DeclarationInvalid> =>
+  parseDeclaration(OAuth2Config, config, "oauth2()", oauth2Form).pipe(
     Effect.map(
       (config) =>
-        new OAuth2Method({ config, response, ...(exposure === undefined ? {} : { exposure }) }),
+        new OAuth2Method({
+          config,
+          response,
+          ...(exposure === undefined ? {} : { exposure }),
+          ...(request === undefined ? {} : { request }),
+        }),
     ),
   );
 
@@ -49,11 +70,20 @@ export interface ProviderOptions<Auth extends AuthMethods> {
   readonly health?: PromiseMethod<AccountCheck<Auth>["run"]>;
 }
 
-/** Retain the provider and literal method names without registering or authenticating it. */
+/**
+ * Retain the provider and literal method names without registering or authenticating it. A
+ * method's `request` restricts where its credentials go only among the provider's `hosts`, so a
+ * provider that declares a `request` declares `hosts` too.
+ */
 export const defineProvider = <const Auth extends AuthMethods>({
   health,
   ...options
 }: ProviderOptions<Auth>): Provider<Auth> => {
+  const placed = Object.entries(options.auth).filter(([, method]) => method.request !== undefined);
+  if (options.hosts === undefined && placed.length > 0)
+    throw new TypeError(
+      `Provider "${options.name}" declares a request for ${placed.map(([name]) => name).join(", ")} but no hosts. Declare the hosts its credentials may be sent to.`,
+    );
   if (health === undefined) return new Provider(options);
   // SAFETY: the host runs a check only with an account bound against this provider: its method is
   // a key of `auth` and its fields were decoded by that method's schema, as `Auth` promises.

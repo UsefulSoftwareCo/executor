@@ -13,7 +13,8 @@ import {
   nameAccountDialog,
   nameConnectedAccount,
 } from "../support/name-account.ts";
-import { createProfile } from "../support/profiles.ts";
+import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
+import { linkedChoice } from "../support/account-choices.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -39,7 +40,7 @@ import { defineApp, defineProvider, object, router, secrets, string } from "apps
 const service = defineProvider({ name: "Naming fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
             },
             appsManifest,
@@ -90,7 +91,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             page.waitForResponse(
               (response) =>
                 response.request().method() === "POST" &&
-                new URL(response.url()).pathname.endsWith("/submit"),
+                /\/connections\/[^/]+\/submit$/.test(new URL(response.url()).pathname),
             ),
             connect.getByRole("button", { name: "Connect account", exact: true }).click(),
           ]).then(([response]) => response.json() as Promise<unknown>),
@@ -122,13 +123,14 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         yield* browser.use("Save a recognizable name", (page) =>
           nameConnectedAccount(page, "Work key"),
         );
-        yield* browser.use("The app shows the new name", (page) =>
-          page
-            .getByRole("radio", { name: "Work key", exact: true, checked: true })
-            .waitFor({ state: "visible" }),
+        yield* browser.use("The app lists the linked account by its new name", (page) =>
+          linkedChoice(page, "Naming fixture", "Work key").waitFor({ state: "visible" }),
         );
         expect(yield* savedLabel(created.id)).toBe("Work key");
-        yield* browser.checkpoint("Named account selected for the app");
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+          created.id,
+        ]);
+        yield* browser.checkpoint("Named account linked to the app");
 
         // Credentials are replaced from the app that selects the account, not from Accounts.
         yield* browser.use("Open the account's actions on the app", (page) =>
@@ -168,15 +170,16 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         expect(yield* savedLabel(created.id)).toBe("Work key");
         yield* browser.checkpoint("Updated credentials keep the account name");
 
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const submit = (label?: string) =>
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const account = yield* body(
               Account,

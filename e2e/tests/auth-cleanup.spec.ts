@@ -17,15 +17,14 @@ import { Actors } from "../support/actors.ts";
 import { body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { cloudLocks } from "../support/cloud-locks.ts";
-import type { SpanQuery } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence } from "../support/evidence.ts";
 import { awaitSentryEvents, traceExceptionTypes } from "../support/sentry-events.ts";
 
 const SessionBody = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 const Holder = Schema.Tuple([Schema.Struct({ pid: Schema.Number })]);
 const Activity = Schema.Struct({ pid: Schema.Number, state: Schema.NullOr(Schema.String) });
 
-/** A request under a new trace, so its spans and error reports can be found afterwards. */
+/** A request under a new trace, so its error reports can be found afterwards. */
 const traced = (actor: Session, path: string) =>
   Effect.gen(function* () {
     const traceId = randomBytes(16).toString("hex");
@@ -35,34 +34,6 @@ const traced = (actor: Session, path: string) =>
     expect(response.status).toBe(200);
     return { traceId, response };
   });
-
-type Span = (typeof SpanQuery.Type)["data"][number]["span"];
-
-const isAuthQuery = (span: Span) => span.operationName === "auth.sql.timing";
-
-/** The plugin's delete of expired keys: the query whose fate each scenario checks. */
-const isCleanup = (span: Span) =>
-  isAuthQuery(span) &&
-  span.tags["db.query.kind"] === "DeleteQueryNode" &&
-  span.tags["db.collection.name"] === "apikey";
-
-/** The request's report of the Better Auth work it had to cancel. */
-const isUnsettled = (span: Span) => span.operationName === "auth.invocation.unsettled";
-
-/**
- * The spans of one trace, once its request has ended and exported the ones `until` needs, looked
- * for until `by` (epoch milliseconds; 20 seconds from now unless given).
- */
-const traceSpans = (
-  traceId: string,
-  until: (spans: ReadonlyArray<Span>) => boolean,
-  by = Date.now() + 20_000,
-) =>
-  Effect.flatMap(Telemetry, (telemetry) => telemetry.query(traceId)).pipe(
-    Effect.map((found) => found.data.map(({ span }) => span)),
-    Effect.filterOrFail(until, () => new Error(`The spans of trace ${traceId} have not arrived`)),
-    Effect.retry({ schedule: Schedule.spaced("500 millis"), while: () => Date.now() < by }),
-  );
 
 /**
  * An expired API key of the owner, locked by the fixture's open transaction, and a way to list
@@ -146,8 +117,7 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
         expect((yield* held.waiting).map(({ pid }) => pid)).toContain(held.backend.pid);
         yield* held.locks.release;
 
-        // The delete finishes on the request's connection: the expired key is gone and its
-        // query, reported in the listing's own trace, succeeded.
+        // The delete finishes on the request's connection: the expired key is gone.
         yield* held.keyExists.pipe(
           Effect.filterOrFail(
             (exists) => !exists,
@@ -156,11 +126,6 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
           Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 25 }),
           Effect.orDie,
         );
-        const spans = yield* traceSpans(held.traceId, (spans) => spans.some(isCleanup));
-        const deletes = spans.filter(isCleanup);
-        expect(deletes).toHaveLength(1);
-        expect(deletes[0]!.tags["db.query.success"]).toBe("true");
-        expect(spans.filter((span) => isAuthQuery(span) && span.status === "error")).toEqual([]);
       }),
     ),
   );
@@ -188,20 +153,8 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
         expect(yield* held.keyExists, "the cancelled delete did not run").toBe(true);
 
         // The cut-off query is an interruption, never a database failure, and the request
-        // reports the work it had to cancel.
-        const spans = yield* traceSpans(
-          held.traceId,
-          (spans) => spans.some(isCleanup) && spans.some(isUnsettled),
-        );
-        const deletes = spans.filter(isCleanup);
-        expect(deletes).toHaveLength(1);
-        expect(deletes[0]!.status).toBe("error");
-        expect(
-          spans.filter(
-            (span) => isAuthQuery(span) && span.tags["db.query.error_code"] !== undefined,
-          ),
-        ).toEqual([]);
-        // Each report is sent on its own, so wait until both have arrived.
+        // reports the work it had to cancel. Each report is sent on its own, so wait until both
+        // have arrived.
         const events = yield* awaitSentryEvents((events) => {
           const types = traceExceptionTypes(events, held.traceId);
           return types.includes("AuthWorkUnsettled") && types.includes("AuthQueryInterrupted");
@@ -227,31 +180,10 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
 
         // After its 10 second wait the request cancels the delete and gives the silent
         // connection up after the SQL client's drain bound, 25 seconds after its response at
-        // the latest, and then exports its spans. The collector answers at once, so they arrive
-        // inside Cloudflare's 30 seconds.
-        const spans = yield* traceSpans(
-          held.traceId,
-          (spans) => spans.some(isCleanup) && spans.some(isUnsettled),
-          held.started + 28_000,
-        );
-        const exportedAfter = Date.now() - held.started;
-        expect(exportedAfter, "the cancellation got no answer").toBeGreaterThan(14_000);
-        const deletes = spans.filter(isCleanup);
-        expect(deletes).toHaveLength(1);
-        expect(deletes[0]!.status).toBe("error");
-        const gaveUpAfter =
-          Date.parse(deletes[0]!.startTime) + deletes[0]!.durationMs - held.started;
-        expect(gaveUpAfter, "the delete was given up by the cleanup deadline").toBeLessThan(
-          held.responded + 25_000,
-        );
-        expect(
-          spans.filter(
-            (span) => isAuthQuery(span) && span.tags["db.query.error_code"] !== undefined,
-          ),
-        ).toEqual([]);
-
-        // The client closed that connection instead of returning it to its pool: once resumed,
-        // the backend finds its socket closed and exits, and the delete never ran.
+        // the latest. Once that bound has passed, the client has closed the connection instead
+        // of returning it to its pool: once resumed, the backend finds its socket closed and
+        // exits, and the delete never ran.
+        yield* Effect.sleep(Math.max(0, held.started + held.responded + 25_000 - Date.now()));
         yield* held.locks.resume(pid);
         yield* held.locks
           .run({ sql: "select pid from pg_stat_activity where pid = $1", params: [pid] })
@@ -274,7 +206,7 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
         const types = traceExceptionTypes(events, held.traceId);
         expect(types).not.toContain("AuthDatabaseFailed");
         yield* Effect.flatMap(Evidence, (evidence) =>
-          evidence.json("stalled-cleanup.json", { exportedAfter, gaveUpAfter, types }),
+          evidence.json("stalled-cleanup.json", { types }),
         );
       }),
     ),

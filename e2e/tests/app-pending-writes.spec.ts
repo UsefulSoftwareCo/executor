@@ -28,7 +28,7 @@ export const add = mutation({ input: object({ title: string() }), output: Todo }
   sql.exec("INSERT INTO todos (id, title) VALUES (?, ?) RETURNING id, title", crypto.randomUUID(), input.title).one());
 export const remove = mutation({ input: object({ id: string() }), output: boolean() }, async ({ sql }, { id }) =>
   sql.exec("DELETE FROM todos WHERE id = ? RETURNING id", id).toArray().length > 0);
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
    list,
    add, remove,
  }) });`,

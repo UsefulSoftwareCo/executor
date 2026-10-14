@@ -15,8 +15,8 @@ import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Redirect = Schema.Struct({
   status: Schema.Literal("redirect"),
@@ -63,7 +63,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client authentication", 
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2(${JSON.stringify(config)})}});
-export default defineApp({accounts:{service}},async({accounts})=>({tools:router({read:query({input:object({})},async({fetch})=>{const result=await fetch(${JSON.stringify(`${issuer.origin}/resource`)},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}});return result.json();})})}));`,
+export default defineApp({user: { accounts:{service} }},async({user: { accounts }})=>({tools:router({read:query({input:object({})},async({fetch})=>{const result=await fetch(${JSON.stringify(`${issuer.origin}/resource`)},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}});return result.json();})})}));`,
                 },
                 appsManifest,
               ],
@@ -98,13 +98,14 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools:router(
           },
         ) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -150,7 +151,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools:router(
               actors.owner,
               "POST",
               `${prefix}/apps/${app.id}/tools/call`,
-              { profile: profile.id, tool: "read", kind: "query", input: {} },
+              { tool: "read", kind: "query", input: {} },
             );
             const renewed = yield* issuer.metrics;
             expect(
@@ -225,8 +226,13 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools:router(
         );
         expect((yield* issuer.metrics).lastRegistration?.method).toBe("client_secret_post");
 
-        // A server that advertises only Basic still matches when it compares literally.
-        yield* issuer.configure({ authMethods: ["client_secret_basic"] });
+        // A server that advertises only Basic still matches when it compares literally. Its
+        // registration asks for Basic, so it is another client: the service issues new details.
+        // (The same details would be the client already stored for this server.)
+        yield* issuer.configure({
+          authMethods: ["client_secret_basic"],
+          registeredClient: { ...doorkeeperClient, clientId: `${doorkeeperClient.clientId}-basic` },
+        });
         expect(yield* lifecycle(yield* deploy("Registered Basic client", discovered))).toBe(
           "client_secret_basic",
         );

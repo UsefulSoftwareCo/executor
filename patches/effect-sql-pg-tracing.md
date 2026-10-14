@@ -22,6 +22,14 @@ when upgrading, and remove it if upstream adds equivalent connection tracing.
 4.0.1 drains an interrupted statement through `drainAborted`; the wire span wraps
 that unchanged cancellation path.
 
+## Session object pool and batches
+
+The patch also carries the pool behaviour Cloud's MCP session objects use: statement groups, one
+caller per connection, `PgPool.held`, settling abandoned and unawaited statements, and the
+`PgConnection.pipelined` batch that sends a tool call's statements in one write and one snapshot.
+`notes/database-pool.md` describes them. Like everything else here they are in both `src/` and
+`dist/`, so a port from either copy keeps them; only `dist/` is loaded.
+
 ## Connection retries
 
 The patch also adds a `connectRetries` option (default `0`) to `PgConnection`

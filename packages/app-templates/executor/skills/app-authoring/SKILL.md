@@ -24,7 +24,7 @@ build through `execute`; source then travels as data inside tool calls.
 | Task                                                         | Reference                                              |
 | ------------------------------------------------------------ | ------------------------------------------------------ |
 | Start a new UI with storage from a checked example           | [starter.md](starter.md)                               |
-| Declare queries, mutations, schemas, approvals or app skills | [tools.md](tools.md)                                   |
+| Declare queries, mutations, schemas, approvals, skills, icon | [tools.md](tools.md)                                   |
 | Create, save, deploy, update or select dependencies          | [deploy.md](deploy.md)                                 |
 | Build a React UI and subscribe to data                       | [ui.md](ui.md)                                         |
 | Store, query or modify app data                              | [storage.md](storage.md)                               |
@@ -33,25 +33,26 @@ build through `execute`; source then travels as data inside tool calls.
 | Handle webhooks                                              | [webhooks.md](webhooks.md)                             |
 | Emit events that MCP clients such as ChatGPT subscribe to    | [events.md](events.md)                                 |
 | Run workflows or scheduled mutations                         | [workflows.md](workflows.md)                           |
-| Upgrade an app to a newer `apps` version                     | [upgrades/0.0.1-beta.38.md](upgrades/0.0.1-beta.38.md) |
+| Upgrade an app to a newer `apps` version                     | [upgrades/0.0.1-beta.90.md](upgrades/0.0.1-beta.90.md) |
+| Upgrade an app from before `apps@0.0.1-beta.38`              | [upgrades/0.0.1-beta.38.md](upgrades/0.0.1-beta.38.md) |
 
-For a new UI with storage, start with `starter.md`. It links to the topics
-needed to adapt the example. For an existing app, read its current source and
-the reference for the part being changed.
-Load files through the MCP `skills` tool using the returned app slug, profile,
+For an existing app, read its current source and the reference for the part
+being changed. Tools generated from an MCP server, OpenAPI definition or GraphQL
+schema are a starting point; when one is missing or wrong, write your own tool
+beside it with the same account ([integrations.md](integrations.md#custom-tools-beside-generated-ones)).
+
+Load files through the MCP `skills` tool using the returned app slug,
 deployment and content revision, for example
-`{ app: "executor", name: "app-authoring", file: "ui.md", deployment, profile, revision }`.
-
-The management app's `skills.list` and `skills.read` take the profile as
-`query.profile` and need it for any app that requires accounts.
+`{ app: "executor", name: "app-authoring", file: "ui.md", deployment, revision }`.
+The management app's `skills.list` and `skills.read` read with the caller's
+linked accounts.
 
 ## Discover exact contracts
 
 Use `tools.search` inside `execute` to find callable app tools. It returns their
 exact paths, one-line descriptions and input types. Read a tool's output type
 and whole description with `tools.search.describe({ paths })`. Discover
-`framework.search` and `framework.describe`
-on this Executor app to inspect library functions and methods. These queries
+`framework.search` and `framework.describe` on this Executor app to inspect library functions and methods. These queries
 return generated signatures, related types, examples and documentation links.
 Framework functions are imports or methods used in app source, not MCP tools.
 

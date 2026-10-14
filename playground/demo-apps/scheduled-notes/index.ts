@@ -2,8 +2,8 @@ import {
   defineApp,
   string,
   object,
-  interval,
-  cron,
+  userInterval,
+  userCron,
   mutation,
   query,
   type MutationContext,
@@ -13,7 +13,7 @@ import {
 import { always } from "apps/operations/approval";
 
 /** The `notes` table is created by migrations/0001_notes.sql. */
-const requirements = { accounts: {} };
+const requirements = {};
 const record = mutation(
   { input: object({ message: string() }), approval: always() },
   async (ctx: MutationContext<typeof requirements>, input) =>
@@ -36,8 +36,8 @@ export default defineApp(requirements, {
     record,
   }),
   schedules: {
-    heartbeat: interval({ minutes: 5 }, record, { message: "Heartbeat" }),
-    morning: cron({ expression: "0 9 * * MON-FRI", timezone: "America/Los_Angeles" }, record, {
+    heartbeat: userInterval({ minutes: 5 }, record, { message: "Heartbeat" }),
+    morning: userCron({ expression: "0 9 * * MON-FRI", timezone: "America/Los_Angeles" }, record, {
       message: "Good morning",
     }),
   },

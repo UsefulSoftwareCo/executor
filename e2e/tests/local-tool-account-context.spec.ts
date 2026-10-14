@@ -1,11 +1,11 @@
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
+import { linkLocal, localLinks, unlinkLocal } from "../support/local-links.ts";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { accountToolSource, checkToolAccountContext } from "../support/tool-account-context.ts";
 import { scenarios } from "../test-plan.ts";
@@ -50,41 +50,59 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
           }),
           response,
         );
-        const profile = yield* createProfile(
-          agent,
-          `/v1/apps/${app.id}`,
-          { owner: "local", subject: "local" },
-          headers,
-        );
-        const accounts: string[] = [];
+        // Saved accounts by label.
+        const accounts = new Map<string, string>();
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers);
-            for (const account of accounts)
+            for (const account of accounts.values())
               yield* session.send("DELETE", `/v1/accounts/${account}`, undefined, headers);
           }).pipe(Effect.orDie),
         );
+        // Accounts connect for the app's many-account requirement, which links them to it.
         const add = (label: string, token: string) =>
           Effect.gen(function* () {
-            const response = yield* session.send(
-              "POST",
-              "/v1/accounts",
+            const account = yield* connectLocalAccount(
+              agent,
               {
-                owner: "local",
-                provider: app.requirements.accounts.workspaces.provider,
+                app: app.id,
+                requirement: "workspaces",
                 method: "key",
                 label,
                 fields: { token },
               },
               headers,
             );
-            expect(response.status).toBe(200);
-            const account = yield* body(Resource, response);
-            accounts.push(account.id);
+            accounts.set(label, account.id);
             return account.id;
           });
-        const work = yield* add("Work GitHub", "work"),
-          personal = yield* add("Personal GitHub", "personal");
+        const roles = [
+          { label: "Work GitHub", token: "work" },
+          { label: "Personal GitHub", token: "personal" },
+        ] as const;
+        const work = yield* add(roles[0].label, roles[0].token),
+          personal = yield* add(roles[1].label, roles[1].token);
+        const role = (id: string) => (id === personal ? roles[1] : roles[0]);
+        const linked = Effect.gen(function* () {
+          const response = yield* session.send(
+            "GET",
+            `/dashboard/api/apps/${app.id}/accounts/user`,
+            undefined,
+            headers,
+          );
+          expect(response.status).toBe(200);
+          return (yield* body(
+            Schema.Array(
+              Schema.Struct({
+                requirement: Schema.Literal("workspaces"),
+                account: Schema.Struct({ label: Schema.String }),
+              }),
+            ),
+            response,
+          ))
+            .map((link) => link.account.label)
+            .sort();
+        });
         const pairing = yield* session.send("POST", "/auth/pair", undefined, headers);
         const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
         yield* browser.use("Pair the local browser", (page) => page.goto(url));
@@ -92,18 +110,23 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
           page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
         );
         yield* checkToolAccountContext({
-          url: `/apps/${app.id}?profile=${profile.id}`,
+          url: `/apps/${app.id}`,
           work,
           personal,
           catalogs: [`/dashboard/api/live/apps/${app.id}/tools`],
+          // The many() requirement uses every linked account. Choosing accounts links exactly
+          // those; the unlinked ones stay saved.
           select: (ids) =>
-            selectProfileAccounts(
-              agent,
-              `/v1/apps/${app.id}`,
-              profile.id,
-              { workspaces: ids },
-              headers,
-            ).pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
+            Effect.gen(function* () {
+              const current = yield* localLinks(agent, app.id);
+              for (const id of [work, personal]) {
+                if (ids.includes(id) && !current.includes(id))
+                  yield* linkLocal(agent, app.id, "workspaces", id);
+                if (!ids.includes(id) && current.includes(id))
+                  yield* unlinkLocal(agent, app.id, "workspaces", id);
+              }
+              expect(yield* linked).toEqual(ids.map((id) => role(id).label).sort());
+            }),
         });
       }),
     ),

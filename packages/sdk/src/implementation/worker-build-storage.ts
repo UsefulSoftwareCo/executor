@@ -6,6 +6,9 @@ import { BlobKey, BlobStore } from "../contracts/blobs.ts";
 import { RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
 import type { BuildId } from "../contracts/shared.ts";
 import type { UiBuildFile } from "../contracts/ui-build.ts";
+import type { RuntimeAsset } from "../contracts/runtime.ts";
+import { asciiJson } from "./ascii-json.ts";
+import { publicFileAsset, readPublicManifest } from "./public-files.ts";
 import { Effect, Option, Schema } from "effect";
 import {
   type FrameworkIdentity,
@@ -27,9 +30,10 @@ export const buildKey = (build: BuildId) => key(`${build}/worker.json`);
 /** Where builds with an inlined framework live. Removed with `InlinedWorkerBuild`. */
 export const inlinedBuildKey = (build: BuildId) => key(`${build}.json`);
 
+/** Written in ASCII, so a large record decodes to one-byte strings; see `asciiJson`. */
 export const encodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, value: S["Type"]) =>
   Schema.encodeEffect(Schema.fromJsonString(schema))(value).pipe(
-    Effect.map((text) => new TextEncoder().encode(text)),
+    Effect.map((text) => new TextEncoder().encode(asciiJson(text))),
   );
 export const decodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, body: Uint8Array) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(new TextDecoder().decode(body));
@@ -200,9 +204,17 @@ export const workerBuildAsset = (build: BuildId, path: string) =>
       { concurrency: 2 },
     );
     const asset = retained.ui?.find((asset) => asset.path === path);
-    if (asset === undefined) return undefined;
-    if (Option.isNone(found)) return yield* new RuntimeBuildUnavailable();
-    return { body: found.value, contentType: asset.contentType };
+    if (asset !== undefined) {
+      if (Option.isNone(found)) return yield* new RuntimeBuildUnavailable();
+      return { body: found.value, contentType: asset.contentType } satisfies RuntimeAsset;
+    }
+    // Public files stay in the lineage's store; the build's listing names the ones it serves.
+    const manifest = yield* readPublicManifest(blobs, build).pipe(
+      Effect.withSpan("runtime.cloud.asset.public"),
+    );
+    if (Option.isNone(manifest)) return undefined;
+    const entry = manifest.value.files.find((file) => file.path === path);
+    return entry === undefined ? undefined : publicFileAsset(blobs, manifest.value.code, entry);
   }).pipe(
     Effect.mapError(() => new RuntimeBuildUnavailable()),
     Effect.withSpan("runtime.cloud.asset"),

@@ -9,11 +9,12 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { second, request, call } = yield* cacheApp;
+        const { actors, request, call } = yield* cacheApp;
         expect(yield* call("expired")).not.toBe(yield* call("expired"));
         expect(yield* call("source.lazy")).toBe("resolved-without-list");
         const warm = yield* call("cached", { key: "shared" });
-        expect(yield* call("cached", { key: "shared" }, second.id)).toBe(warm);
+        // The deployment's cache is shared by every caller of the app.
+        expect(yield* call("cached", { key: "shared" }, { actor: actors.admin })).toBe(warm);
         const refreshedValue = yield* call("refresh", { key: "refresh-check" });
         expect(yield* call("cached", { key: "refresh-check" })).toBe(refreshedValue);
         const nextValue = yield* call("refresh", { key: "refresh-check" });

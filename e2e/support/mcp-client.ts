@@ -39,11 +39,12 @@ const make = Effect.gen(function* () {
           ),
           (client) => driver("close MCP client", () => client.close()).pipe(Effect.orDie),
         );
-        let elicitationCount = 0;
+        // The prompt of each request a native client was shown, in order.
+        const prompts: string[] = [];
         const whileApproving = options.whileApproving ?? Effect.void;
         if (options.mode === "native")
-          client.setRequestHandler(ElicitRequestSchema, () => {
-            elicitationCount += 1;
+          client.setRequestHandler(ElicitRequestSchema, (request) => {
+            prompts.push(request.params.message);
             // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- the MCP SDK request handler returns a Promise
             return Effect.runPromise(
               whileApproving.pipe(Effect.as({ action: "accept" as const, content: {} })),
@@ -127,7 +128,9 @@ const make = Effect.gen(function* () {
         );
         yield* driver("initialize MCP client", () => client.connect(compatible));
         return {
-          elicitationCount: Effect.sync(() => elicitationCount),
+          elicitationCount: Effect.sync(() => prompts.length),
+          /** The message of each elicitation request a native client received, in order. */
+          prompts: Effect.sync(() => [...prompts]),
           use: <A>(
             operation: string,
             action: (client: Client, signal: AbortSignal) => Promise<A>,

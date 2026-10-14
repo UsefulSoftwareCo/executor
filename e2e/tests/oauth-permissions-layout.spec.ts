@@ -44,7 +44,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth permissions", (it) => {
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service = defineProvider({name: "Permissions fixture", hosts: ${JSON.stringify([new URL(issuer.origin).host])}, auth: {oauth: oauth2({discover: ${JSON.stringify(issuer.origin + "/mcp")}, scopes: ${JSON.stringify(scopes)}, authorizationParams: {user_scope: ${JSON.stringify(userScopes.join(","))}}})}});
-export default defineApp({accounts: {service}}, async () => ({tools: router({})}));`,
+export default defineApp({user: { accounts: {service} }}, async () => ({tools: router({})}));`,
             },
             appsManifest,
           ],

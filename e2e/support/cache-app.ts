@@ -1,11 +1,10 @@
-/** A fresh deployed app and profiles for each cache scenario. */
+/** A fresh deployed app for each cache scenario, shared so a second member can call it. */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { Api, body } from "./api.ts";
+import { Api, body, type Session } from "./api.ts";
 import { Actors } from "./actors.ts";
 import { App } from "./contracts.ts";
-import { createProfile, selectProfileAccounts } from "./profiles.ts";
 import { appsManifest } from "./apps-release.ts";
 
 const files = [
@@ -14,7 +13,7 @@ const files = [
     content: `
 import { defineApp, defineProvider, secrets, dynamicRouter, query, object, string, boolean, router } from "apps";
 const provider=defineProvider({name:"Cache scope",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-export default defineApp({ accounts: { service: provider.many() } }, async ctx => ({
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ctx => ({
   tools: router({
     source: dynamicRouter({
       list: async () => [],
@@ -74,27 +73,37 @@ export const cacheApp = Effect.gen(function* () {
   const app = (yield* body(App, deployed)).id;
   const path = `${prefix}/${app}`;
   yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-  const first = yield* createProfile(actors.owner, path);
-  const second = yield* createProfile(actors.owner, path);
-  expect((yield* selectProfileAccounts(actors.owner, path, first.id, { service: [] })).status).toBe(
-    200,
+  const access = yield* body(
+    Schema.Struct({ revision: Schema.String }),
+    yield* api.request(actors.owner, "GET", `${path}/access`),
   );
   expect(
-    (yield* selectProfileAccounts(actors.owner, path, second.id, { service: [] })).status,
+    (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
+      revision: access.revision,
+      audience: { kind: "everyone" },
+    })).status,
   ).toBe(200);
-  const request = (name: string, input: Schema.Json = {}, profile = first.id) =>
-    api.request(actors.owner, "POST", `${path}/tools/call`, {
-      profile,
+  /** A call as the owner by default, with the caller's linked accounts. */
+  const request = (
+    name: string,
+    input: Schema.Json = {},
+    options: { readonly actor?: Session } = {},
+  ) =>
+    api.request(options.actor ?? actors.owner, "POST", `${path}/tools/call`, {
       tool: `${name}`,
       // Every fixture tool is a query.
       kind: "query",
       input,
     });
-  const call = (name: string, input: Schema.Json = {}, profile = first.id) =>
+  const call = (
+    name: string,
+    input: Schema.Json = {},
+    options: Parameters<typeof request>[2] = {},
+  ) =>
     Effect.gen(function* () {
-      const response = yield* request(name, input, profile);
+      const response = yield* request(name, input, options);
       expect(response.status, name).toBe(200);
       return yield* body(Schema.Json, response);
     });
-  return { api, actors, path, first, second, request, call };
+  return { api, actors, path, request, call };
 });

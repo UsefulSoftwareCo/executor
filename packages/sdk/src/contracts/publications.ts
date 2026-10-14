@@ -1,6 +1,6 @@
 /** Publishing and catalog HTTP groups. Kept apart from the registry vocabulary, which the apps contract imports. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
 import { AppNotFound } from "./apps.ts";
 import {
   PackageName,
@@ -85,4 +85,14 @@ export const RegistryGroup = HttpApiGroup.make("registry")
       success: PublicationSnapshot,
       error: [RegistryError],
     }),
+  )
+  .add(
+    HttpApiEndpoint.get("file", "/v1/registry/file", {
+      query: RegistryInputs.file,
+      success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+      error: [RegistryError],
+    }).annotate(
+      OpenApi.Description,
+      "One file of a listing's selected commit, as its exact bytes. Snapshots list public files that are not inline text by their blob; installation reads each one here.",
+    ),
   );

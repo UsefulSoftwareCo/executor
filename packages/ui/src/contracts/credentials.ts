@@ -1,4 +1,4 @@
-import type { OAuthClientInput } from "@executor-js/sdk";
+import type { OAuthClientSelection } from "@executor-js/sdk";
 import { Option, Schema, type Redacted } from "effect";
 import type { ReactNode } from "react";
 
@@ -114,5 +114,6 @@ export interface AccountOAuthProps {
 /** Client selection submitted to the product's OAuth start operation. */
 /** New accounts are named after sign-in, once the connected identity is known. */
 export interface OAuthSubmission {
-  readonly client?: OAuthClientInput;
+  /** Omitted on a reconnect that keeps its account's client. */
+  readonly client?: OAuthClientSelection;
 }

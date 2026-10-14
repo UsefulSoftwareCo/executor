@@ -15,9 +15,9 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { publishedRelease, type Release } from "../support/app-package.ts";
-import { appsManifest } from "../support/apps-release.ts";
+import { appsManifest, unscopedAccounts } from "../support/apps-release.ts";
 import { credentialUpstream } from "../support/credential-upstream.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { serverControl } from "../support/server-control.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
@@ -28,6 +28,7 @@ const health = (origin: string) => `health: async ({ account, fetch }) => {
     if (!response.ok) throw new Error("Health check failed: " + response.status);
   },`;
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /**
  * Notes in the document store every framework before SQL kept, a mutation that names the bundled
  * framework, and a workflow over both. `framework` tells the pinned release from a later one by an
@@ -50,6 +51,7 @@ const send = `const send = async (url, token) => {
   return { status: response.status, echoed: response.headers.get("x-echo-authorization") ?? "" };
 };`;
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /**
  * Single-file source written for `apps@0.0.1-beta.14`, protocol 5: a router, and a provider slot
  * whose check reads the service. `plain` arrived with credential hosts, two protocols later.
@@ -73,6 +75,7 @@ export default defineApp({ accounts: { service }, database }, {
   },
 ];
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /**
  * Single-file source written for `apps@0.0.1-beta.22`, protocol 7: a provider that declares the
  * host its token may go to, with a plain and a raw field, and tools that read and send the token.
@@ -107,6 +110,7 @@ const appMarker = "Synthetic spec is missing its paths";
 /** The error a protocol-8 app reports a service stated. */
 const statedMarker = "Synthetic token belongs to another organization";
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /**
  * Single-file source written for `apps@0.0.1-beta.33`, protocol 8: a query that throws the app's
  * own error with a code and scalar fields, one that throws the error a service stated, and a
@@ -139,7 +143,11 @@ export default defineApp({ accounts: {}, database }, {
  * Two apps of one provider: the current framework's declares the host its token may go to, the
  * protocol-5 framework's knows no hosts. Both read the token and send it as a bearer.
  */
-const credentialApp = (
+const credentialApp = (name: string, host: string | null, workflows: boolean) => {
+  const source = credentialSource(name, host, workflows);
+  return host === null ? unscopedAccounts(source) : source;
+};
+const credentialSource = (
   name: string,
   host: string | null,
   workflows: boolean,
@@ -150,14 +158,14 @@ ${host === null ? "" : `  hosts: [${JSON.stringify(host)}],\n`}
   auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
 });
 ${send}
-export default defineApp({ accounts: { service } }, {
+export default defineApp({ user: { accounts: { service } } }, {
   tools: router({
-    fields: query({ input: object({}) }, async (ctx) => ctx.accounts.service.fields),
-    send: query({ input: object({ url: string() }) }, async (ctx, { url }) => send(url, ctx.accounts.service.fields.token)),
+    fields: query({ input: object({}) }, async (ctx) => ctx.user.accounts.service.fields),
+    send: query({ input: object({ url: string() }) }, async (ctx, { url }) => send(url, ctx.user.accounts.service.fields.token)),
   }),${
     workflows
       ? `
-  workflows: { fields: workflow({ input: object({}) }, async (ctx) => ctx.step.do("fields", async (step) => step.accounts.service.fields)) },`
+  workflows: { fields: workflow({ input: object({}) }, async (ctx) => ctx.step.do("fields", async (step) => step.user.accounts.service.fields)) },`
       : ""
   }
 });`;
@@ -264,18 +272,20 @@ const harness = Effect.gen(function* () {
       );
       return { app, path: `${prefix}/apps/${app.id}` };
     });
-  /** Call a tool, naming its kind or leaving the host to find it, in a profile or without one. */
+  /**
+   * Call a tool, naming its kind or leaving the host to find it. Each app links at most one
+   * account, so no call chooses one.
+   */
   const call = (
     path: string,
     tool: string,
     input: Record<string, string>,
-    options: { readonly kind?: "query" | "mutation"; readonly profile?: string } = {},
+    options: { readonly kind?: "query" | "mutation" } = {},
   ) =>
     api.request(actors.owner, "POST", `${path}/tools/call`, {
       tool,
       input,
       ...(options.kind === undefined ? {} : { kind: options.kind }),
-      ...(options.profile === undefined ? {} : { profile: options.profile }),
     });
   /** Call a tool that must succeed and decode its result. */
   const result = <A>(
@@ -283,34 +293,24 @@ const harness = Effect.gen(function* () {
     output: Schema.Decoder<A>,
     tool: string,
     input: Record<string, string>,
-    options: { readonly kind?: "query" | "mutation"; readonly profile?: string } = {},
+    options: { readonly kind?: "query" | "mutation" } = {},
   ) =>
     Effect.gen(function* () {
       const response = yield* call(path, tool, input, options);
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(output, response);
     });
-  const catalog = (path: string, profile?: string) =>
+  const catalog = (path: string) =>
     api
-      .request(
-        actors.owner,
-        "GET",
-        `${path}/tools${profile === undefined ? "" : `?profile=${profile}`}`,
-      )
+      .request(actors.owner, "GET", `${path}/tools`)
       .pipe(Effect.flatMap((response) => body(Catalog, response)));
   /** Start a workflow run and wait until it settles. */
-  const settled = (
-    path: string,
-    workflow: string,
-    input: Record<string, string>,
-    profile?: string,
-  ) =>
+  const settled = (path: string, workflow: string, input: Record<string, string>) =>
     Effect.gen(function* () {
       const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
         workflow,
         input,
         key: randomUUID(),
-        ...(profile === undefined ? {} : { profile }),
       });
       expect(started.status, JSON.stringify(started.body)).toBe(200);
       const run = yield* body(Resource, started);
@@ -339,14 +339,15 @@ const harness = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(CredentialCheck, response);
     });
-  /** Connect one account through a fresh profile of the app, which selects it. */
+  /** Connect one account from the app, which links it to the app. */
   const connect = (path: string, label: string, fields: Record<string, string>) =>
     Effect.gen(function* () {
-      const profile = yield* createProfile(actors.owner, path);
-      const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-        requirement: "service",
-        profile: profile.id,
-      });
+      const pending = yield* api.request(
+        actors.owner,
+        "POST",
+        connectionsPath(path, "user", "service"),
+        {},
+      );
       expect(pending.status, JSON.stringify(pending.body)).toBe(200);
       const saved = yield* api.request(
         actors.owner,
@@ -359,18 +360,11 @@ const harness = Effect.gen(function* () {
       yield* Effect.addFinalizer(() =>
         api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
       );
-      return { profile: profile.id, account };
+      return account;
     });
-  /** Select an existing account in a fresh profile of another app. */
-  const select = (path: string, account: string) =>
-    Effect.gen(function* () {
-      const profile = yield* createProfile(actors.owner, path);
-      const selected = yield* selectProfileAccounts(actors.owner, path, profile.id, {
-        service: account,
-      });
-      expect(selected.status, JSON.stringify(selected.body)).toBe(200);
-      return profile.id;
-    });
+  /** Link an existing account to another app. */
+  const link = (path: string, account: string) =>
+    linkAccount(actors.owner, path, "service", account);
   /** Check a saved account with every app that can, and return the status this app reported. */
   const accountHealth = (account: string, app: string) =>
     Effect.gen(function* () {
@@ -385,10 +379,10 @@ const harness = Effect.gen(function* () {
       return entry?.check?.status;
     });
   /**
-   * An agent searches and calls the app through MCP with a real API key. An app with accounts is
-   * addressed through the profile that selects them.
+   * An agent searches and calls the app through MCP with a real API key. Each app is addressed
+   * once, under its slug, whatever accounts it links.
    */
-  const agent = (label: string, slug: string, profile?: string) =>
+  const agent = (label: string, slug: string) =>
     Effect.gen(function* () {
       const key = yield* body(
         Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
@@ -410,10 +404,7 @@ const harness = Effect.gen(function* () {
               Schema.decodeUnknownEffect(Executed)(result.structuredContent),
             ),
           );
-      const namespace =
-        profile === undefined
-          ? `tools[${JSON.stringify(slug)}]`
-          : `tools[${JSON.stringify(slug)}].profiles[${JSON.stringify(profile)}]`;
+      const namespace = `tools[${JSON.stringify(slug)}]`;
       const search = yield* execute(
         `Search the ${label} app`,
         `return await tools.search({ query: "notes", namespace: ${JSON.stringify(slug)} });`,
@@ -439,7 +430,7 @@ const harness = Effect.gen(function* () {
     settled,
     check,
     connect,
-    select,
+    link,
     accountHealth,
     agent,
   };
@@ -497,7 +488,7 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(provider?.health).toBe(true);
           const token = `synthetic-token-${randomUUID()}`;
           expect(yield* check(path, provider!.provider, { token })).toEqual({ status: "healthy" });
-          const { profile, account } = yield* connect(path, "Protocol five", { token });
+          const account = yield* connect(path, "Protocol five", { token });
           expect(yield* accountHealth(account, app.id)).toBe("healthy");
           expect(
             (yield* upstream.received)
@@ -508,13 +499,13 @@ layer(HostedLive, { excludeTestServices: true })(
             tool: string,
             input: Record<string, string>,
             kind?: "query" | "mutation",
-          ) => call(path, tool, input, { profile, ...(kind === undefined ? {} : { kind }) });
+          ) => call(path, tool, input, kind === undefined ? {} : { kind });
           expect((yield* call5("save", { text: "before" }, "mutation")).body).toBe("protocol 5");
 
           // The host restarts and loads the retained build again, without rebuilding it.
           yield* serverControl("restart");
 
-          const listed = yield* catalog(path, profile);
+          const listed = yield* catalog(path);
           expect(listed.items.map((tool) => [tool.name, tool.readOnly]).toSorted()).toEqual([
             ["notes", true],
             ["save", false],
@@ -535,7 +526,7 @@ layer(HostedLive, { excludeTestServices: true })(
           expect((yield* call5("notes", {})).body).toEqual(["before", "inferred", "named"]);
 
           // Workflow steps from the protocol-5 bundle carry their kind.
-          expect(yield* settled(path, "record", { text: "workflow" }, profile)).toEqual({
+          expect(yield* settled(path, "record", { text: "workflow" })).toEqual({
             status: "complete",
             output: ["before", "inferred", "named", "workflow"],
           });
@@ -544,7 +535,7 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(yield* accountHealth(account, app.id)).toBe("healthy");
 
           // Agents search and call the app through MCP.
-          expect((yield* agent("app-protocol-5", app.slug, profile)).execution).toEqual({
+          expect((yield* agent("app-protocol-5", app.slug)).execution).toEqual({
             ok: true,
             value: "protocol 5",
           });
@@ -557,13 +548,7 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(rebuilt.status, JSON.stringify(rebuilt.body)).toBe(200);
           expect((yield* call5("save", { text: "rebuilt" })).body).toBe("protocol 5");
           expect(
-            yield* result(
-              path,
-              Schema.Array(Schema.String),
-              "notes",
-              {},
-              { profile, kind: "query" },
-            ),
+            yield* result(path, Schema.Array(Schema.String), "notes", {}, { kind: "query" }),
           ).toEqual(["before", "inferred", "named", "workflow", "agent", "rebuilt"]);
           expect(yield* accountHealth(account, app.id)).toBe("healthy");
         }).pipe(Effect.provide(Layer.merge(McpOAuth.layer, McpClient.layer))),
@@ -599,18 +584,18 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(provider?.health).toBe(true);
           // The account check runs before the account is saved, through the same outbound network.
           expect(yield* check(path, provider!.provider, values)).toEqual({ status: "healthy" });
-          const { profile, account } = yield* connect(path, name, values);
+          const account = yield* connect(path, name, values);
           const call7 = (
             tool: string,
             input: Record<string, string>,
             kind?: "query" | "mutation",
-          ) => call(path, tool, input, { profile, ...(kind === undefined ? {} : { kind }) });
+          ) => call(path, tool, input, kind === undefined ? {} : { kind });
           expect((yield* call7("save", { text: "before" }, "mutation")).body).toBe("protocol 7");
 
           // The host restarts and loads the retained build again, without rebuilding it.
           yield* serverControl("restart");
 
-          const listed = yield* catalog(path, profile);
+          const listed = yield* catalog(path);
           expect(listed.items.map((tool) => [tool.name, tool.readOnly]).toSorted()).toEqual([
             ["fields", true],
             ["notes", true],
@@ -628,32 +613,22 @@ layer(HostedLive, { excludeTestServices: true })(
 
           // Protocol 7 declared hosts, so the bundle reads handles: the secret field is sealed, the
           // plain and raw fields keep their values, and a workflow step reads the same.
-          const fields = yield* result(path, Fields, "fields", {}, { profile });
+          const fields = yield* result(path, Fields, "fields", {});
           expect(fields.region).toBe(values.region);
           expect(fields.signing).toBe(values.signing);
           expect(fields.token).toMatch(handle);
-          const stepped = yield* settled(path, "stepped", {}, profile);
+          const stepped = yield* settled(path, "stepped", {});
           expect(stepped.status).toBe("complete");
           expect(Schema.decodeUnknownSync(Fields)(stepped.output).token).toMatch(handle);
           // The outbound network replaces the handle on a request to the declared host, and the app
           // reads the echoed value as its handle again.
-          const sent = yield* result(
-            path,
-            Sent,
-            "send",
-            { url: `${upstream.origin}/sent` },
-            { profile },
-          );
+          const sent = yield* result(path, Sent, "send", { url: `${upstream.origin}/sent` });
           expect(sent.status).toBe(200);
           expect(sent.echoed).toMatch(/^Bearer exsec_[0-9a-f]+_$/);
           // A host the provider does not declare is refused before anything is sent.
-          const refused = yield* result(
-            path,
-            Sent,
-            "send",
-            { url: `${upstream.undeclaredOrigin}/undeclared` },
-            { profile },
-          );
+          const refused = yield* result(path, Sent, "send", {
+            url: `${upstream.undeclaredOrigin}/undeclared`,
+          });
           expect(refused.status).toBe(421);
           const received = yield* upstream.received;
           expect(received.filter((entry) => entry.url.includes("/undeclared"))).toEqual([]);
@@ -664,14 +639,14 @@ layer(HostedLive, { excludeTestServices: true })(
           ).toEqual([`Bearer ${values.token}`, `Bearer ${values.token}`]);
           expect(JSON.stringify([fields, stepped, sent])).not.toContain(values.token);
 
-          expect(yield* settled(path, "record", { text: "workflow" }, profile)).toEqual({
+          expect(yield* settled(path, "record", { text: "workflow" })).toEqual({
             status: "complete",
             output: ["before", "inferred", "named", "workflow"],
           });
           expect(yield* accountHealth(account, app.id)).toBe("healthy");
 
           // Agents search and call the app through MCP.
-          expect((yield* agent("app-protocol-7", app.slug, profile)).execution).toEqual({
+          expect((yield* agent("app-protocol-7", app.slug)).execution).toEqual({
             ok: true,
             value: "protocol 7",
           });
@@ -683,15 +658,9 @@ layer(HostedLive, { excludeTestServices: true })(
           expect(rebuilt.status, JSON.stringify(rebuilt.body)).toBe(200);
           expect((yield* call7("save", { text: "rebuilt" })).body).toBe("protocol 7");
           expect(
-            yield* result(
-              path,
-              Schema.Array(Schema.String),
-              "notes",
-              {},
-              { profile, kind: "query" },
-            ),
+            yield* result(path, Schema.Array(Schema.String), "notes", {}, { kind: "query" }),
           ).toEqual(["before", "inferred", "named", "workflow", "agent", "rebuilt"]);
-          expect((yield* result(path, Fields, "fields", {}, { profile })).token).toMatch(handle);
+          expect((yield* result(path, Fields, "fields", {})).token).toMatch(handle);
         }).pipe(Effect.provide(Layer.merge(McpOAuth.layer, McpClient.layer))),
       ),
     );
@@ -797,7 +766,7 @@ layer(HostedLive, { excludeTestServices: true })(
       withHostedCase(
         context,
         Effect.gen(function* () {
-          const { deploy, result, settled, connect, select } = yield* harness;
+          const { deploy, result, settled, connect, link } = yield* harness;
           const upstream = yield* credentialUpstream;
           const name = `Shared service ${randomUUID().slice(0, 8)}`;
           // One provider in two apps: the current framework's declares the host its token may go
@@ -815,34 +784,26 @@ layer(HostedLive, { excludeTestServices: true })(
 
           // Connected through the current app, the account records the hosts it may be sent to.
           const token = `synthetic-token-${randomUUID()}`;
-          const { profile, account } = yield* connect(current.path, name, { token });
-          const sealedToken = (yield* result(current.path, Token, "fields", {}, { profile })).token;
+          const account = yield* connect(current.path, name, { token });
+          const sealedToken = (yield* result(current.path, Token, "fields", {})).token;
           expect(sealedToken).toMatch(handle);
-          const fromCurrent = yield* result(
-            current.path,
-            Sent,
-            "send",
-            { url: `${upstream.origin}/current` },
-            { profile },
-          );
+          const fromCurrent = yield* result(current.path, Sent, "send", {
+            url: `${upstream.origin}/current`,
+          });
           expect(fromCurrent.status).toBe(200);
           expect(fromCurrent.echoed).toMatch(/^Bearer exsec_[0-9a-f]+_$/);
 
-          // The same account selected into the protocol-5 app reaches its code as the real value:
+          // The same account linked to the protocol-5 app reaches its code as the real value:
           // a bundle from before credential hosts would read a handle as the secret.
-          const olderProfile = yield* select(older.path, account);
-          const read = yield* result(older.path, Token, "fields", {}, { profile: olderProfile });
+          yield* link(older.path, account);
+          const read = yield* result(older.path, Token, "fields", {});
           expect(read.token).toBe(token);
-          const stepped = yield* settled(older.path, "fields", {}, olderProfile);
+          const stepped = yield* settled(older.path, "fields", {});
           expect(stepped.status).toBe("complete");
           expect(stepped.output).toEqual({ token });
-          const fromOlder = yield* result(
-            older.path,
-            Sent,
-            "send",
-            { url: `${upstream.origin}/older` },
-            { profile: olderProfile },
-          );
+          const fromOlder = yield* result(older.path, Sent, "send", {
+            url: `${upstream.origin}/older`,
+          });
           expect(fromOlder.status).toBe(200);
           expect(fromOlder.echoed).toBe(`Bearer ${token}`);
 

@@ -3,7 +3,7 @@
  * Worker they cost startup only when someone views source, not on every API cold start.
  */
 import { formatSources } from "@executor-js/app-management/source-format";
-import { SourceFile } from "@executor-js/sdk/core";
+import { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import { withRemoteSpan } from "@executor-js/telemetry";
 import { Effect, Schema } from "effect";
 import { Formatter } from "./infrastructure/formatter-worker.ts";

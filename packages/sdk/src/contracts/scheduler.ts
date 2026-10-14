@@ -1,4 +1,3 @@
-import { ProfileId } from "./shared.ts";
 /** Effect-only host lifecycle. These privileged operations are not mounted on the SDK HTTP API. */
 import { Context, Effect } from "effect";
 import type { ScheduledRun } from "./schedules.ts";
@@ -7,9 +6,9 @@ import type { AppId, OwnerId, StorageError } from "./shared.ts";
 /** Authorize the saved actor against current product membership and app/account access before every dispatch. */
 export interface ScheduleAuthority {
   readonly app: AppId;
-  readonly profile?: ProfileId | null;
   readonly owner: OwnerId;
-  readonly actor: string;
+  /** The schedule's actor; null for an app schedule, which an app manager enabled for the app. */
+  readonly actor: string | null;
   readonly phase: "start" | "resume";
 }
 /** A host owns the named runner for its whole lifetime. Recovery requires the old runner to have stopped. */

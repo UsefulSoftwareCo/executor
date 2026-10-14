@@ -43,12 +43,12 @@ export const oauthDestination = (account: AccountId) =>
         : Schema.decodeUnknownOption(Schema.fromJsonString(OAuthReturn))(saved);
     if (Option.isNone(target))
       return { destination: { to: "/accounts", search: { account } } as const, reconnect: false };
-    const { app, profile, reconnect } = target.value;
+    const { app, reconnect } = target.value;
     return {
       destination: {
         to: "/apps/$appId",
         params: { appId: app },
-        search: { view: "accounts", profile },
+        search: { view: "accounts" },
       } as const,
       reconnect,
     };

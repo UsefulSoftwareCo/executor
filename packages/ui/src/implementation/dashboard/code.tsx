@@ -70,6 +70,9 @@ export function Code({
   );
 }
 
+const copyStates = ["idle", "copied", "failed"] as const;
+type CopyState = (typeof copyStates)[number];
+
 /** Copy the raw value with local feedback; unknown values keep the control disabled. Clipboard contents never enter logs. */
 export function CopyButton({
   code,
@@ -86,7 +89,8 @@ export function CopyButton({
   readonly variant?: ButtonProps["variant"];
   readonly size?: ButtonProps["size"];
 }) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const [state, setState] = useState<CopyState>("idle");
+  const labels: Record<CopyState, string> = { idle: text, copied: "Copied", failed: "Copy failed" };
   const timeout = useRef<number | undefined>(undefined);
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect -- reset feedback when the copied value changes
@@ -129,9 +133,22 @@ export function CopyButton({
           aria-hidden
           size={14}
         />
-        <span className={text === "" ? "sr-only" : undefined}>
-          {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : text}
-        </span>
+        {text === "" ? (
+          <span className="sr-only">{labels[state]}</span>
+        ) : (
+          // Every label stays laid out in one cell, so the feedback never resizes the button.
+          <span className="grid justify-items-center">
+            {copyStates.map((label) => (
+              <span
+                key={label}
+                aria-hidden={label === state ? undefined : true}
+                className={label === state ? "[grid-area:1/1]" : "invisible [grid-area:1/1]"}
+              >
+                {labels[label]}
+              </span>
+            ))}
+          </span>
+        )}
       </Button>
     </div>
   );

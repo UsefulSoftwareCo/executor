@@ -28,5 +28,8 @@ export const allowPrivateAppFetch = Config.Boolean("EXECUTOR_APPS_ALLOW_PRIVATE_
   Config.withDefault(false),
 );
 
+/** The official app feed's index.json that Add app lists. Without it the catalog lists only built-in apps. */
+export const catalogFeedUrl = Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option);
+
 /** A registry mirror for app builds. Apps resolve their declared packages from the public npm registry by default. */
 export const npmRegistry = Config.String("EXECUTOR_NPM_REGISTRY").pipe(Config.option);

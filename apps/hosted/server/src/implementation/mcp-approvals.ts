@@ -1,6 +1,7 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { grantAuthorization } from "@executor-js/mcp-auth";
 import { checkInvocationAccounts } from "./access.ts";
+import { invocationAccounts } from "@executor-js/sdk/core";
 import { CurrentUserId } from "../contracts/auth.ts";
 /** Browser identity selects the same MCP host partition as the original bearer grant. */
 import {
@@ -93,7 +94,13 @@ export const hostedMcpApproval = (
       );
       const restricted = restrictMcpBackend<Error, never>(backend, Effect.succeed(access.grant));
       yield* restricted.authorizeElicitation(
-        view.request.status === "approval-required" ? view.request.invocation : view.request.tool,
+        view.request.status === "approval-required"
+          ? {
+              app: view.request.invocation.app,
+              tool: view.request.invocation.tool,
+              accounts: invocationAccounts(view.request.invocation),
+            }
+          : view.request.tool,
       );
       if (view.request.status === "approval-required")
         yield* checkInvocationAccounts(

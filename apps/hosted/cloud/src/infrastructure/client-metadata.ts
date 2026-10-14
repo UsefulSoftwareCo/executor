@@ -1,6 +1,8 @@
 /** Deployed stages publish their own OAuth Client ID Metadata Document. */
-import { clientMetadataDocumentPath } from "@executor-js/hosted-server";
+import { clientMetadataDocumentPath, clientMetadataSetting } from "@executor-js/hosted-server";
 import { Config, Effect, Option } from "effect";
+import { cloudAccountRedirectUri } from "../implementation/oauth-proxy-settings.ts";
+import { cloudHosts } from "./stage.ts";
 
 /**
  * The Worker binding that turns the document on for a deployed stage. It is derived from the
@@ -24,3 +26,16 @@ export const clientMetadataBinding = (origin: URL) =>
       EXECUTOR_OAUTH_CLIENT_METADATA_URL: new URL(clientMetadataDocumentPath, origin).href,
     };
   });
+
+/**
+ * The document this deployment serves and the callback it lists, from the same settings as the
+ * account sign-ins: the document handler and the executor both read this one value.
+ */
+export const cloudClientMetadata = Effect.gen(function* () {
+  const hosts = yield* cloudHosts;
+  const redirect = yield* cloudAccountRedirectUri;
+  return yield* clientMetadataSetting({
+    origin: hosts.browser,
+    oauthRedirectUri: Option.getOrUndefined(redirect),
+  });
+});

@@ -13,7 +13,7 @@ export const holdQuery = (
   paths: readonly string[] | RegExp,
   outcome: "continue" | "fail" | "undeclared",
   options: {
-    readonly method?: "GET" | "POST" | "PATCH";
+    readonly method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
     readonly allRequests?: boolean;
     readonly query?: Readonly<Record<string, string>>;
   } = {},

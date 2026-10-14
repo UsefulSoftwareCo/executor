@@ -47,7 +47,7 @@ const RefusalBody = Schema.fromJsonString(
 
 /** `ctx.fetch` with the given options, and the platform's global `fetch` for comparison. */
 const fetchApp = `import { defineApp, json, object, string, query, router } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     fetched: query({ input: object({ url: string(), init: json() }) }, async (ctx, { url, init }) => {
       const response = await ctx.fetch(url, init);

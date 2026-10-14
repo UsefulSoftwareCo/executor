@@ -6,6 +6,7 @@ import { SourceError, SourceFiles, type AppSourceStorage } from "../contracts/so
 import { StoredApp } from "../contracts/storage.ts";
 import { database, query, type Query } from "./database.ts";
 import type { ExecutorDatabase } from "./storage.ts";
+import { storeBytes, uploadsFrom } from "./public-files.ts";
 
 const initialKey = (code: AppCodeId) => BlobKey.make(`app-source/${code}/initial.json`);
 
@@ -36,22 +37,20 @@ export const initializeAppRepository = (
 ) =>
   Effect.gen(function* () {
     if (app.repository !== null) return Option.none();
-    const files = yield* readInitialSource(blobs, app.code);
-    const source = yield* sources
+    // Stored initial files name the lineage's own public store, which a deploy or copy filled.
+    const files = uploadsFrom(
+      yield* readInitialSource(blobs, app.code),
+      storeBytes(blobs, app.code),
+    );
+    yield* sources
       .commit({ code: app.code, expected: null, files, message: "Create app" })
       .pipe(
         Effect.catchTag("SourceError", (error) =>
-          error.reason === "conflict"
-            ? sources
-                .workspace(app.code)
-                .pipe(
-                  Effect.flatMap((head) =>
-                    head === null ? Effect.fail(error) : Effect.succeed(head),
-                  ),
-                )
-            : Effect.fail(error),
+          error.reason === "conflict" ? Effect.void : Effect.fail(error),
         ),
       );
+    const source = yield* sources.workspace(app.code);
+    if (source === null) return yield* new SourceError({ reason: "not-found" });
     yield* query(() =>
       db.updateMany("apps", {
         where: (b) =>

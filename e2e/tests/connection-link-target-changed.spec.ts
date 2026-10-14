@@ -1,4 +1,7 @@
-/** A connection link issued before its app changed provider reports the change, not the old sign-in. */
+/**
+ * A connection link issued before its app changed provider reports the change, not the old
+ * sign-in. One started for a requirement that has since moved to the other scope is refused too.
+ */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -9,9 +12,11 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target, type Response } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
+import { localLinks } from "../support/local-links.ts";
+import { oauthRecoveryIssuer } from "../support/oauth-recovery-issuer.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
@@ -20,7 +25,6 @@ const App = Schema.Struct({
   }),
 });
 const Redeployed = Schema.Struct({ app: App });
-const Profile = Schema.Struct({ id: Schema.String });
 const Link = Schema.Struct({
   id: Schema.String,
   url: Schema.String,
@@ -36,20 +40,20 @@ const TargetChanged = Schema.Struct({
   app: Schema.String,
   requirement: Schema.Literal("service"),
 });
-const Selected = Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) });
+const Saved = Schema.Struct({ id: Schema.String });
 
 const oauthSource = (
   issuer: string,
 ) => `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service = defineProvider({ name: "Sample service", auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));`;
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
 const keySource = `import { defineApp, defineProvider, object, router, secrets, string } from "apps";
 const service = defineProvider({
   name: "Sample service",
   hosts: ["api.sample.example"],
   auth: { apiKey: secrets({ label: "API key", fields: object({ token: string() }) }) },
 });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));`;
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
 
 /** The request names the changed app requirement instead of offering the old provider's sign-in. */
 const targetChanged = (app: string, response: Response) =>
@@ -83,17 +87,13 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const profile = yield* api
-          .request(actors.owner, "POST", `${prefix}/apps/${app.id}/profiles`, {
-            accounts: {},
-            idempotencyKey: randomUUID(),
-          })
-          .pipe(Effect.flatMap((response) => body(Profile, response)));
         const issue = api
-          .request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          })
+          .request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          )
           .pipe(Effect.flatMap((response) => body(Link, response)));
         const stale = yield* issue;
         expect(Object.keys(stale.provider.definition.auth)).toEqual(["oauth"]);
@@ -232,7 +232,7 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
         );
         expect(signInRequests).toEqual([]);
 
-        // A new link for the same profile offers the API key and selects the saved account.
+        // A new link for the same app offers the API key and links the saved account.
         const fresh = yield* issue;
         expect(fresh.provider.id).toBe(keyProvider);
         expect(Object.keys(fresh.provider.definition.auth)).toEqual(["apiKey"]);
@@ -283,21 +283,28 @@ layer(HostedLive, { excludeTestServices: true })("Connection link target changes
           dialog.getByLabel("Token", { exact: true }).waitFor({ state: "detached" }),
         );
 
-        // Once the app asks for the key again, a new link saves it and selects the account.
+        // Once the app asks for the key again, a new link saves it and links the account to the app.
         expect((yield* redeploy(keySource)).app.requirements.accounts.service.provider).toBe(
           keyProvider,
         );
         const final = yield* issue;
-        expect(
-          (yield* api.request(actors.owner, "POST", `${prefix}/connections/${final.id}/submit`, {
-            method: "apiKey",
-            fields: { token: "synthetic-api-key" },
-          })).status,
-        ).toBe(200);
-        const selected = yield* api
-          .request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile.id}`)
-          .pipe(Effect.flatMap((response) => body(Selected, response)));
-        expect(selected.accounts.service).toMatch(/^acc_/);
+        const saved = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${final.id}/submit`,
+          { method: "apiKey", fields: { token: "synthetic-api-key" } },
+        );
+        expect(saved.status).toBe(200);
+        const account = yield* body(Saved, saved);
+        expect(account.id).toMatch(/^acc_/);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
+            .pipe(Effect.orDie),
+        );
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+          account.id,
+        ]);
       }),
     ),
   );
@@ -334,14 +341,10 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
         yield* Effect.addFinalizer(() =>
           agent.send("DELETE", `/v1/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-          owner: "local",
-          subject: "local",
-        });
         const issue = agent
           .send("POST", "/account-connect/api/requests", {
             owner: "local",
-            target: { app: app.id, profile: profile.id, requirement: "service" },
+            target: { app: app.id, requirement: "service" },
           })
           .pipe(
             Effect.flatMap((response) => {
@@ -521,6 +524,191 @@ layer(TestLive, { excludeTestServices: true })("Local connection link target cha
           ),
         ).toBe(1);
         yield* browser.checkpoint("Local connection link after returning to the tab");
+      }),
+    ),
+  );
+});
+
+/** An app whose two requirements, one signed in with OAuth and one keyed, take accounts in `scope`. */
+const scopedSource = (issuer: string, scope: "app" | "user") =>
+  `import { defineApp, defineProvider, object, oauth2, router, secrets, string } from "apps";
+const service = defineProvider({ name: "Scope service", auth: { oauth: oauth2({ discover: ${JSON.stringify(issuer)}, scopes: ["reports:read"] }) } });
+const keyed = defineProvider({ name: "Scope key", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
+export default defineApp({ ${scope}: { accounts: { service, keyed } } }, async () => ({ tools: router({}) }));`;
+const ScopedApp = Schema.Struct({
+  app: Schema.Struct({
+    id: Schema.String,
+    requirements: Schema.Struct({
+      accounts: Schema.Struct({
+        service: Schema.Struct({ provider: Schema.String, scope: Schema.Literal("user") }),
+        keyed: Schema.Struct({ provider: Schema.String, scope: Schema.Literal("user") }),
+      }),
+    }),
+  }),
+});
+const Moved = Schema.Struct({
+  app: Schema.Struct({
+    requirements: Schema.Struct({
+      accounts: Schema.Struct({
+        service: Schema.Struct({ provider: Schema.String, scope: Schema.Literal("app") }),
+        keyed: Schema.Struct({ provider: Schema.String, scope: Schema.Literal("app") }),
+      }),
+    }),
+  }),
+});
+const Accounts = Schema.Array(Schema.Struct({ id: Schema.String, provider: Schema.String }));
+
+layer(TestLive, { excludeTestServices: true })("Local connection scope changes", (it) => {
+  it.effect(scenarios.localConnectionScopeChanged.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          browser = yield* Browser,
+          target = yield* Target;
+        const session = yield* api.session();
+        const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        const agent: Session = {
+          ...session,
+          send: (method, path, data, extra = {}) => {
+            const { origin: _origin, ...rest } = extra;
+            return session.send(method, path, data, { ...rest, ...headers });
+          },
+        };
+        const issuer = yield* oauthRecoveryIssuer(target.metadata.origin, true, "redirect");
+        const deployed = yield* agent.send("POST", "/v1/apps/deploy", {
+          owner: "local",
+          name: `Scoped ${randomUUID().slice(0, 8)}`,
+          files: [{ path: "index.ts", content: scopedSource(issuer.origin, "user") }, appsManifest],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const { app } = yield* body(ScopedApp, deployed);
+        const providers = [
+          app.requirements.accounts.service.provider,
+          app.requirements.accounts.keyed.provider,
+        ];
+        const saved: string[] = [];
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            yield* agent.send("DELETE", `/v1/apps/${app.id}`);
+            for (const account of saved)
+              yield* agent.send("DELETE", `/dashboard/api/accounts/${account}`);
+          }).pipe(Effect.orDie),
+        );
+        const connect = (scope: "app" | "user", requirement: string) =>
+          agent
+            .send(
+              "POST",
+              `/account-connect/api/apps/${app.id}/accounts/${scope}/${requirement}/connections`,
+              {},
+            )
+            .pipe(
+              Effect.flatMap((response) => {
+                expect(response.status, JSON.stringify(response.body)).toBe(200);
+                return body(LocalLink, response);
+              }),
+            );
+        const grant = (link: typeof LocalLink.Type) => ({
+          connection: link.connection,
+          token: new URLSearchParams(new URL(link.url).hash.slice(1)).get("token"),
+        });
+        const submit = (link: typeof LocalLink.Type) =>
+          api.request(session, "POST", "/account-connect/api/submit", {
+            ...grant(link),
+            method: "key",
+            fields: { token: "synthetic-scope-key" },
+          });
+        /** This app's saved accounts and its links in both scopes. */
+        const footprint = Effect.gen(function* () {
+          const accounts = yield* agent
+            .send("GET", "/v1/accounts?owner=local")
+            .pipe(Effect.flatMap((response) => body(Accounts, response)));
+          return {
+            accounts: accounts
+              .filter((account) => providers.includes(account.provider))
+              .map((account) => account.id),
+            app: yield* localLinks(agent, app.id, "app"),
+            user: yield* localLinks(agent, app.id, "user"),
+          };
+        });
+
+        // The agent starts connections for the user's own accounts: a keyed one through the user
+        // route, another through the plain request route, which keeps the scope it had then, and
+        // an OAuth one the user opens and leaves at the service's consent page.
+        const keyLink = yield* connect("user", "keyed");
+        const plain = yield* agent
+          .send("POST", "/account-connect/api/requests", {
+            target: { app: app.id, requirement: "keyed" },
+          })
+          .pipe(Effect.flatMap((response) => body(LocalLink, response)));
+        const oauthLink = yield* connect("user", "service");
+        yield* browser.use("Open the OAuth link and reach the service's consent", (page) =>
+          page
+            .goto(oauthLink.url)
+            .then(() =>
+              page.getByRole("button", { name: "Connect Scope service", exact: true }).click(),
+            )
+            .then(() => page.getByRole("button", { name: "Allow access", exact: true }).waitFor()),
+        );
+
+        // The app is redeployed with the same providers, now as its own accounts for everyone.
+        const redeployed = yield* agent.send("POST", "/v1/apps/deploy", {
+          owner: "local",
+          app: app.id,
+          files: [{ path: "index.ts", content: scopedSource(issuer.origin, "app") }, appsManifest],
+        });
+        expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
+        const moved = (yield* body(Moved, redeployed)).app.requirements.accounts;
+        expect([moved.service.provider, moved.keyed.provider]).toEqual(providers);
+
+        // Neither key form saves an account or links one for everyone the user did not choose.
+        for (const link of [keyLink, plain]) {
+          const response = yield* submit(link);
+          expect(response.status, JSON.stringify(response.body)).toBe(409);
+          expect(response.body).toMatchObject({
+            _tag: "AccountConnectionTargetChanged",
+            app: app.id,
+            requirement: "keyed",
+          });
+        }
+        // The agent's status check names the change.
+        const status = yield* agent.send("GET", `/v1/account-connections/${keyLink.connection}`);
+        expect(status.status, JSON.stringify(status.body)).toBe(409);
+        expect(status.body).toMatchObject({ _tag: "AccountConnectionTargetChanged" });
+
+        // The user allows access at the service. The token exchange succeeds, and completing the
+        // connection is refused under the app's lock, rolling back the account it signed in to.
+        const contacted = (yield* issuer.observations).filter((entry) => entry.tokenAccepted);
+        const completed = yield* browser.use("Allow access after the redeploy", (page) =>
+          Promise.all([
+            page.waitForResponse(
+              (response) =>
+                new URL(response.url()).pathname === "/account-connect/api/oauth/complete",
+            ),
+            page.getByRole("button", { name: "Allow access", exact: true }).click(),
+          ]).then(([response]) =>
+            response.json().then((data: unknown) => ({ status: response.status(), body: data })),
+          ),
+        );
+        expect(completed.status, JSON.stringify(completed.body)).toBe(409);
+        expect(completed.body).toMatchObject({
+          _tag: "AccountConnectionTargetChanged",
+          app: app.id,
+          requirement: "service",
+        });
+        expect(
+          (yield* issuer.observations).filter((entry) => entry.tokenAccepted).length,
+        ).toBeGreaterThan(contacted.length);
+        expect(yield* footprint).toEqual({ accounts: [], app: [], user: [] });
+        yield* browser.checkpoint("Local connection refused after its requirement changed scope");
+
+        // A connection started for the app's own requirement saves the key and links it for everyone.
+        const fresh = yield* connect("app", "keyed");
+        const accepted = yield* submit(fresh);
+        expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+        const account = (yield* body(Saved, accepted)).id;
+        saved.push(account);
+        expect(yield* footprint).toEqual({ accounts: [account], app: [account], user: [] });
       }),
     ),
   );

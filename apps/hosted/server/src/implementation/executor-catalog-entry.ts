@@ -5,11 +5,12 @@ import { CatalogEntry } from "@executor-js/catalog/contracts";
 export const executorCatalogEntry = (origin: string) =>
   CatalogEntry.make({
     id: `${origin}/openapi.json`,
-    kind: "app",
+    package: "executor",
     name: "Executor",
     description: "Manage apps and connected accounts in Executor.",
-    domain: new URL(origin).hostname,
-    connectUrl: `${origin}/openapi.json`,
-    oauthDiscoveryUrl: `${origin}/api`,
-    feeds: ["curated"],
+    auth: [
+      { method: "oauth", kind: "oauth2" },
+      { method: "apiKey", kind: "secrets", label: "Executor API key" },
+    ],
+    icons: [{ src: "/favicon.png", mimeType: "image/png" }],
   });

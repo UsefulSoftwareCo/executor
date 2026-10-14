@@ -26,9 +26,11 @@ import {
   ToolResultObservation,
   type HostContext,
   type HostRequest,
+  scopedSlots,
 } from "apps/contracts";
 import {
   AppCacheChanges,
+  AppCodeEntered,
   DispatchTiming,
   AppEventSink,
   InvocationRun,
@@ -175,31 +177,31 @@ export const appRuntime = (host: AppRuntimeHost) =>
           // Only the trusted runner or data supervisor calls the loader. The runner may sit behind
           // RPC, so the loader keeps an unsupported protocol as this call's typed failure.
           const loader = yield* invocationBuildLoader(invocation, host.loadBuild(build));
+          const capabilities: AppCapabilities = {
+            load: loader.load,
+            elicit:
+              input.elicitation === undefined
+                ? null
+                : invocationElicitation(input.elicitation, lifetime.signal),
+            controls:
+              input.workflowControls === undefined
+                ? null
+                : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal),
+            ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
+          };
           const from = yield* Clock.currentTimeNanos;
-          const body = yield* loader
-            .refused(
-              host.invoke(invocation, {
-                load: loader.load,
-                elicit:
-                  input.elicitation === undefined
-                    ? null
-                    : invocationElicitation(input.elicitation, lifetime.signal),
-                controls:
-                  input.workflowControls === undefined
-                    ? null
-                    : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal),
-                ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
-              }),
-            )
-            .pipe(
-              Effect.ensuring(
-                Effect.flatMap(Clock.currentTimeNanos, (to) =>
-                  Effect.sync(() => {
-                    invoked = [from, to];
-                  }),
-                ),
+          // Recorded here, by the host, before the runner receives the invocation: whatever it
+          // reports afterwards came through code the app controls.
+          (yield* AppCodeEntered).entered();
+          const body = yield* loader.refused(host.invoke(invocation, capabilities)).pipe(
+            Effect.ensuring(
+              Effect.flatMap(Clock.currentTimeNanos, (to) =>
+                Effect.sync(() => {
+                  invoked = [from, to];
+                }),
               ),
-            );
+            ),
+          );
           // Telemetry is an additive transport field. Retained builds keep their original protocol.
           const collected = yield* Schema.decodeUnknownEffect(
             Schema.Struct({
@@ -230,14 +232,33 @@ export const appRuntime = (host: AppRuntimeHost) =>
             );
             yield* Effect.annotateCurrentSpan({
               "executor.runner.own_ms": runner.elapsedMs - runner.waitMs,
+              "executor.runner.wait_ms": runner.waitMs,
+              "executor.runner.gap_ms": parts.gaps.runner,
+              // The runner ran inside the app's data supervisor, which the caller reached directly.
+              ...(runner.host === undefined ? {} : { "executor.runner.host": runner.host }),
               ...(supervisor === undefined
                 ? {}
-                : { "executor.supervisor.own_ms": supervisor.elapsedMs - supervisor.waitMs }),
+                : {
+                    "executor.supervisor.own_ms": supervisor.elapsedMs - supervisor.waitMs,
+                    "executor.supervisor.wait_ms": supervisor.waitMs,
+                    "executor.supervisor.gap_ms": parts.gaps.supervisor ?? 0,
+                  }),
               "executor.app.elapsed_ms": dispatch.elapsedMs,
               "executor.app.own_ms": parts.appOwnMs,
+              "executor.app.gap_ms": parts.gaps.app,
               "executor.upstream.wait_ms": parts.upstreamMs,
               "executor.elicitation.wait_ms": parts.elicitationMs,
               "executor.authored_ms": parts.authoredMs,
+              "executor.lease.wait_ms": parts.leaseMs,
+              "executor.background_ms": parts.backgroundMs,
+              "executor.start_ms": parts.startMs,
+              "executor.unclocked_ms": parts.unclockedMs,
+              ...(parts.started === undefined
+                ? {}
+                : {
+                    "executor.runtime.cold": parts.cold === true,
+                    "executor.runtime.started": parts.started.join(","),
+                  }),
               ...(parts.staleClocks.length === 0
                 ? {}
                 : {
@@ -278,7 +299,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
               app: input.app,
               accounts: [
                 ...new Set(
-                  Object.values(Redacted.value(input.accounts)).flatMap((selected) =>
+                  scopedSlots(Redacted.value(input.accounts)).flatMap(([, selected]) =>
                     (Array.isArray(selected) ? selected : [selected]).map((account) => account.id),
                   ),
                 ),
@@ -370,7 +391,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
         ).pipe(Effect.withSpan(span("checkAccount"))),
       migrate: (input) =>
         dispatch(
-          { ...input, database: true, accounts: Redacted.make({}) },
+          { ...input, database: true, accounts: Redacted.make({ app: {} }) },
           { operation: "migrate" },
           MigrateResult,
           HostCallError,

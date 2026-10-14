@@ -31,7 +31,7 @@ layer(HostedLive, { excludeTestServices: true })("Concurrent app reads", (it) =>
             {
               path: "index.ts",
               content: `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   await new Promise((resolve) => setTimeout(resolve, 2000));
   return {
     tools: router({

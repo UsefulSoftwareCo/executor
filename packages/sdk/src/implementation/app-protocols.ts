@@ -4,26 +4,27 @@
  * builds and converts between the host's current model and that protocol's messages. The current
  * protocol's adapter is the identity. A new protocol adds an adapter here; older ones stay.
  */
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import {
   HostKindMismatch,
   HostOperationNotFound,
   protocol1,
   protocol2,
   protocol3,
+  type HostAccounts,
   type HostInvocation,
   type HostRequest,
   type WorkflowExecution,
 } from "apps/contracts";
-import type { SourceFile } from "../contracts/deployment.ts";
+import type { SourceTextFile as SourceFile } from "../contracts/source.ts";
 import { RuntimeProtocolUnsupported } from "../contracts/runtime.ts";
 import { appBridge, nodeAppEntry } from "./worker-bridge.ts";
 
 /** One released host protocol, seen from this host. */
 export interface AppProtocol {
   readonly version: number;
-  /** Server entry retained in this protocol's Worker builds. */
-  readonly workerEntry: (files: readonly SourceFile[]) => string;
+  /** Server entry retained in this protocol's Worker builds. It imports `ctx.files` as a module. */
+  readonly workerEntry: string;
   /** Entry for the SDK's in-process Node runtime. */
   readonly nodeEntry: (files: readonly SourceFile[]) => string;
   /** Encode an invocation in the host's current model as this protocol's entry body. */
@@ -56,11 +57,11 @@ export interface AppProtocol {
   readonly sealedCredentials: boolean;
 }
 
-/** Protocol 11 is the host's current protocol, so its messages need no conversion. */
-const protocol11: AppProtocol = {
-  version: 11,
+/** Protocol 13 is the host's current protocol, so its messages need no conversion. */
+const protocol13: AppProtocol = {
+  version: 13,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(11),
+  nodeEntry: nodeAppEntry(13),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
@@ -68,6 +69,71 @@ const protocol11: AppProtocol = {
   workflow: (execution) => execution,
   concurrentData: true,
   sealedCredentials: true,
+};
+
+/**
+ * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
+ * declare no app requirements, so they have no app accounts: the host sends them the invocation's
+ * user accounts, and none for work without a caller.
+ */
+const unscopedAccounts = <Slots>(accounts: {
+  readonly app: Slots;
+  readonly user?: Slots;
+}): Slots | Record<string, never> => accounts.user ?? {};
+
+const RequirementsReply = Schema.Struct({
+  ok: Schema.Literal(true),
+  value: Schema.Struct({ accounts: Schema.Unknown }),
+});
+
+/** A protocol 12 or earlier reply to `requirements`, with its requirements read as user ones. */
+const scopedRequirements = (command: HostRequest, body: unknown) =>
+  command.operation === "requirements" && Schema.is(RequirementsReply)(body)
+    ? { ...body, value: { ...body.value, accounts: { app: {}, user: body.value.accounts } } }
+    : body;
+
+/** Protocol 12 and earlier: the invocation's and each workflow step's accounts, unscoped. */
+const unscoped = {
+  invocation: <Input extends Pick<HostInvocation, "accounts">>(input: Input) =>
+    JSON.stringify({ ...input, accounts: unscopedAccounts(input.accounts) }),
+  workflow: (execution: WorkflowExecution): WorkflowExecution => ({
+    ...execution,
+    resolve: () =>
+      execution.resolve().pipe(
+        Effect.map((context) => ({
+          ...context,
+          // SAFETY: the step's accounts reach the bundle only as JSON, which a bundle of this
+          // protocol reads as the flat record it declared.
+          accounts: Redacted.make(
+            unscopedAccounts(Redacted.value(context.accounts)) as unknown as HostAccounts,
+          ),
+        })),
+      ),
+  }),
+};
+
+/**
+ * Protocol 12 is protocol 13 without account scopes. Its requirements are user requirements, read
+ * from its flat record into `accounts.user`; it receives its user accounts as that flat record.
+ * Every other message and reply is unchanged.
+ */
+const protocol12: AppProtocol = {
+  ...protocol13,
+  version: 12,
+  nodeEntry: nodeAppEntry(12),
+  invocation: unscoped.invocation,
+  response: (command, body) => Effect.succeed(scopedRequirements(command, body)),
+  workflow: unscoped.workflow,
+};
+
+/**
+ * Protocol 11 is protocol 12 without credential placements. Its providers declare none, so the
+ * accounts the host sends it carry none, and every other message and reply is unchanged.
+ */
+const protocol11: AppProtocol = {
+  ...protocol12,
+  version: 11,
+  nodeEntry: nodeAppEntry(11),
 };
 
 /**
@@ -160,7 +226,7 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
     version,
     workerEntry: appBridge,
     nodeEntry: nodeAppEntry(version),
-    invocation: (input) => JSON.stringify({ ...input, command: legacyCommand(input.command) }),
+    invocation: (input) => unscoped.invocation({ ...input, command: legacyCommand(input.command) }),
     request: legacyCommand,
     refuse: (command) => {
       if (command.operation !== "call" || command.kind === undefined) return undefined;
@@ -176,10 +242,10 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
         command.operation === "inspect" &&
           Schema.is(command.detail === "summary" ? summarized : listed)(body)
           ? { ...body, value: { tools: body.value, routers: [] } }
-          : body,
+          : scopedRequirements(command, body),
       ),
     workflow: (execution) => ({
-      ...execution,
+      ...unscoped.workflow(execution),
       invoke: (input) =>
         execution.invoke({
           ...input,
@@ -204,6 +270,8 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol9,
     protocol10,
     protocol11,
+    protocol12,
+    protocol13,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

@@ -50,10 +50,17 @@ export const localTelemetry = (directory: string, service: string) =>
             );
           }),
         );
+        // A terminal's Ctrl+C and the desktop's stop signal this process's whole group, so the
+        // bundled collector usually stops at the same moment as this process. Its final flush
+        // then has no listener, and the exporter's retries would hold shutdown for the default
+        // three seconds. A loopback collector that is still running answers within milliseconds.
+        // Metrics are never bundled: an operator's metrics endpoint is remote and keeps the
+        // default bound for its final batch.
         return telemetryLayer(
           { ...config, traces: { url: `${origin}/v1/traces` }, logs: { url: `${origin}/v1/logs` } },
           "process",
           logger,
+          { traces: "250 millis", logs: "250 millis" },
         ).pipe(Layer.provideMerge(Layer.succeed(CurrentTelemetryClient, transport)));
       }).pipe(Effect.provide(Logger.layer([logger])));
       // The sampler uses the same exporters and registry as product operations.

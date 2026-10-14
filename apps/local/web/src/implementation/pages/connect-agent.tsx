@@ -20,12 +20,10 @@ export function ConnectAgentPage() {
       save={saveMcpConnectionAtom}
       revoke={revokeMcpConnectionAtom}
       Failure={Failure}
-      renderTools={({ app, profile, names, onChange }) => (
+      renderTools={({ app, names, onChange }) => (
         <ConnectionToolPicker
           query={toolListAtom({
             app: app.id,
-            profile: profile?.id,
-            revision: profile?.revision,
             deployment: app.activeDeployment,
           })}
           Failure={Failure}

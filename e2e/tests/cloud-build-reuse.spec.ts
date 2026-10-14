@@ -1,4 +1,3 @@
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -10,6 +9,12 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
 import { accountToolSource } from "../support/tool-account-context.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import {
+  connectionsPath,
+  linkAccount,
+  linkedAccountIds,
+  unlinkAccount,
+} from "../support/app-accounts.ts";
 
 const Index = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 
@@ -71,7 +76,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
               span.tags["executor.build.cache_part"],
             ).toBe("stored");
         const app = yield* body(App, deployed);
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -84,10 +88,13 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "workspaces",
-                profile: profile.id,
-              }),
+              // Connecting from the app links the account to it.
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "workspaces"),
+                {},
+              ),
             );
             const account = yield* body(
               Resource,
@@ -124,13 +131,13 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
               (under === undefined || ancestry(trace, span).includes(under)),
           ).length;
 
-        // Each account selection is a separate Worker identity, so each selection starts a cold
-        // Worker for the same immutable build. The runner in the AppData Worker reads the build
-        // itself: the API that sends the call never loads, decodes or transfers app code.
-        // Creating the profile, adding an account and selecting accounts each wake the schedule
-        // coordinator, whose profile reconciliation calls the app with the profile's accounts.
-        // Whichever call reaches a Worker first starts it, so a selection's cold start is found
-        // by its Worker identity, in the index's trace or the coordinator's.
+        // Each linked account set is a separate Worker identity, so each index starts a cold Worker
+        // for the same immutable build. The runner in the AppData Worker reads the build itself:
+        // the API that sends the call never loads, decodes or transfers app code.
+        // Linking an account wakes the schedule coordinator, which may call the app with the
+        // linked account before the index does. Whichever call reaches a Worker first starts it,
+        // so an account's cold start is found by its Worker identity, in the index's trace
+        // or the coordinator's.
         const coldStarts = (identity: string) =>
           tracesWith("runtime.app.invoke", { "executor.worker.identity": identity }).pipe(
             Effect.map((traces) =>
@@ -161,19 +168,23 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
           );
+        /** The many() requirement uses every linked account: link exactly `account` first. */
+        const linkOnly = (account: string) =>
+          Effect.gen(function* () {
+            const path = `${prefix}/apps/${app.id}`;
+            for (const linked of yield* linkedAccountIds(actors.owner, path))
+              if (linked !== account)
+                yield* unlinkAccount(actors.owner, path, "workspaces", linked);
+            yield* linkAccount(actors.owner, path, "workspaces", account);
+            expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
+          });
         const coldIndex = (account: string, tool: string) =>
           Effect.gen(function* () {
-            const selected = yield* selectProfileAccounts(
-              actors.owner,
-              `${prefix}/apps/${app.id}`,
-              profile.id,
-              { workspaces: [account] },
-            );
-            expect(selected.status).toBe(200);
+            yield* linkOnly(account);
             const traceId = randomUUID().replaceAll("-", "");
             const response = yield* actors.owner.send(
               "GET",
-              `${prefix}/apps/${app.id}/tools/index?profile=${profile.id}`,
+              `${prefix}/apps/${app.id}/tools/index`,
               undefined,
               { traceparent: `00-${traceId}-1234567890abcdef-01` },
             );
@@ -216,7 +227,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           });
 
         const first = yield* coldIndex(work, "work");
-        // The coordinator may have loaded the build already, for another selection.
+        // The coordinator may have loaded the build already, for another linked account.
         expect(["hit", "memory"], "The runner reads a cached record").toContain(first.source);
         const second = yield* coldIndex(personal, "personal");
         expect(second.source, "The runner reuses the build it already decoded").toBe("memory");

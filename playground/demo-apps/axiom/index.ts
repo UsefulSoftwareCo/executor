@@ -22,11 +22,17 @@ export const axiom = defineProvider({
   health: (check) => mcpHealth(check, { url, headers: headers(check.account) }),
 });
 
-export default defineApp({ accounts: { axiom } }, async ({ accounts, signal }) => ({
-  tools: await mcpRouter({
-    url,
-    account: accounts.axiom,
-    headers: headers(accounts.axiom),
-    ...(signal === undefined ? {} : { signal }),
-  }),
-}));
+export default defineApp({ user: { accounts: { axiom } } }, async ({ user, signal }) => {
+  // Each member links their own Axiom account. The app has no app-scope work, so it is only
+  // evaluated for a caller.
+  if (user === undefined) return {};
+  const account = user.accounts.axiom;
+  return {
+    tools: await mcpRouter({
+      url,
+      account,
+      headers: headers(account),
+      ...(signal === undefined ? {} : { signal }),
+    }),
+  };
+});

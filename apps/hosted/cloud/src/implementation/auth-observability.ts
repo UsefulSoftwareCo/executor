@@ -3,6 +3,7 @@ import type { BetterAuthPlugin } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
 import { Clock, Effect, Exit, Option, Schema } from "effect";
 import { HttpServerRequest, type HttpServerResponse } from "effect/http";
+import type { RefreshRejection } from "@executor-js/hosted-server";
 
 const KnownError = Schema.Literals([
   "access_denied",
@@ -42,6 +43,7 @@ const TokenError = Schema.Literals([
 ]);
 const TokenErrorBody = Schema.fromJsonString(Schema.Struct({ error: Schema.String }));
 const JsonTokenRequest = Schema.fromJsonString(Schema.Struct({ grant_type: Schema.String }));
+const JsonRefreshRequest = Schema.fromJsonString(Schema.Struct({ refresh_token: Schema.String }));
 /** Token requests are a few hundred bytes; a larger body is not read a second time. */
 const tokenBodyLimit = 16_384;
 const formType = "application/x-www-form-urlencoded";
@@ -107,6 +109,38 @@ const grantType = (json: boolean, text: string) => {
   if (trimmed === "") return "unknown";
   return Option.getOrElse(Schema.decodeUnknownOption(GrantType)(trimmed), () => "other" as const);
 };
+
+/** The refresh token the body presents, read the way its grant type is. */
+const presentedRefreshToken = (json: boolean, text: string) => {
+  const value = json
+    ? Option.getOrUndefined(
+        Option.map(
+          Schema.decodeUnknownOption(JsonRefreshRequest)(text),
+          (body) => body.refresh_token,
+        ),
+      )
+    : new URLSearchParams(text).getAll("refresh_token").at(-1);
+  return value === undefined || value === "" ? undefined : value;
+};
+
+/**
+ * A short one-way reference to a presented refresh token, so repeated attempts with the same
+ * token can be told apart from distinct ones. Domain-separated so it never equals the hash
+ * Better Auth stores.
+ */
+const refreshTokenRef = (token: string) =>
+  Effect.promise(() =>
+    crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`executor-telemetry:refresh-token:${token}`),
+    ),
+  ).pipe(
+    Effect.map((digest) =>
+      Array.from(new Uint8Array(digest).slice(0, 8), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join(""),
+    ),
+  );
 
 /** The `error` of the endpoint's own JSON answer when it is a known code; never its description. */
 const tokenError = (response: HttpServerResponse.HttpServerResponse) => {
@@ -202,7 +236,8 @@ const requestedClientId = (ctx: {
 };
 const clientPaths = new Set(["/oauth2/token", "/oauth2/authorize", "/oauth2/consent"]);
 interface OAuthRequest {
-  familyRevoked: boolean;
+  /** Why Better Auth refused this request's refresh grant, if it did. */
+  rejection: RefreshRejection | undefined;
   /** Set once the request's client registration has been read, found or not. */
   client: ClientFamily | undefined;
 }
@@ -228,7 +263,7 @@ export const authObservability = () => {
   /** Run an OAuth request, then record the family of the client it named. */
   const observeClient = <E, R>(
     handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
-    observed: OAuthRequest = { familyRevoked: false, client: undefined },
+    observed: OAuthRequest = { rejection: undefined, client: undefined },
   ) =>
     Effect.gen(function* () {
       const context = yield* Effect.context<R>();
@@ -240,7 +275,7 @@ export const authObservability = () => {
       yield* Effect.annotateCurrentSpan("auth.token.client_family", observed.client ?? "unknown");
       return exit;
     });
-  /** Record the grant, the answer's OAuth error, rate limiting and any family revocation. */
+  /** Record the grant, the answer's OAuth error, rate limiting and why a refresh was refused. */
   const observeToken = <E, R>(
     handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
   ) =>
@@ -253,23 +288,45 @@ export const authObservability = () => {
         read: readBody(body),
       }));
       const span = yield* Effect.currentSpan.pipe(Effect.option);
-      const observed: OAuthRequest = { familyRevoked: false, client: undefined };
+      const observed: OAuthRequest = { rejection: undefined, client: undefined };
       const exit = yield* observeClient(handler, observed);
       // A body still arriving when the answer is ready stays unknown.
       let grant: ReturnType<typeof grantType> = "unknown";
+      let presented: string | undefined;
       if (Option.isSome(copy)) {
         const { json, read } = copy.value;
         if (read.text === undefined) read.cancel();
-        else grant = grantType(json, read.text);
+        else {
+          grant = grantType(json, read.text);
+          if (grant === "refresh_token") presented = presentedRefreshToken(json, read.text);
+        }
       }
-      if (observed.familyRevoked && Option.isSome(span))
+      const { rejection } = observed;
+      const familyRevoked = rejection?.reason === "reused";
+      if (familyRevoked && Option.isSome(span))
         span.value.event("auth.token.refresh_family_revoked", yield* Clock.currentTimeNanos);
       yield* Effect.annotateCurrentSpan({
         "auth.token.grant_type": grant,
         "auth.token.error": Exit.isSuccess(exit) ? tokenError(exit.value) : "other",
         "auth.token.rate_limited": Exit.isSuccess(exit) && exit.value.status === 429,
-        "auth.token.refresh_family_revoked": observed.familyRevoked,
+        "auth.token.refresh_family_revoked": familyRevoked,
+        "auth.token.refresh_rejection": rejection?.reason ?? "none",
       });
+      if (presented !== undefined)
+        yield* Effect.annotateCurrentSpan(
+          "auth.token.refresh_token_ref",
+          yield* refreshTokenRef(presented),
+        );
+      // How long ago the presented token stopped being current: reuse within the replay window
+      // is a sibling instance, while reuse long after it is a copy kept since then.
+      if (rejection?.revokedAt !== undefined)
+        yield* Effect.annotateCurrentSpan({
+          "auth.token.refresh_revoked_age_seconds": Math.max(
+            0,
+            Math.floor(((yield* Clock.currentTimeMillis) - rejection.revokedAt.getTime()) / 1000),
+          ),
+          "auth.token.refresh_rotated": rejection.rotated,
+        });
       return yield* exit;
     });
   const stage = async <A>(name: Stage, task: () => Promise<A>, accepted: (value: A) => boolean) => {
@@ -360,10 +417,10 @@ export const authObservability = () => {
   };
   return {
     plugin,
-    /** Better Auth's reuse detection revoked the refresh family of the current token request. */
-    refreshFamilyRevoked: () => {
+    /** Better Auth refused the current token request's refresh grant. */
+    refreshRejected: (rejection: RefreshRejection) => {
       const observed = oauthRequests.getStore();
-      if (observed !== undefined) observed.familyRevoked = true;
+      if (observed !== undefined) observed.rejection = rejection;
     },
     sessionCreated: () => {
       const observation = requests.getStore();

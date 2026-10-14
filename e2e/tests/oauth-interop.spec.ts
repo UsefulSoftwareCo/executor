@@ -14,9 +14,9 @@ import {
   oauthInteropIssuer,
   otherTenant,
 } from "../support/oauth-interop-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Failure = Schema.Struct({
@@ -54,10 +54,10 @@ const oauthApp = Effect.gen(function* () {
             path: "index.ts",
             content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service=defineProvider({name:"Interop service",auth:{oauth:oauth2(${JSON.stringify(config)})}});
-export default defineApp({accounts:{service}},async(${
+export default defineApp({user: { accounts:{service} }},async(${
               resourceUrl === undefined
                 ? ")=>({tools:router({})}));"
-                : `{accounts})=>({tools:router({read:query({input:object({})},async({fetch})=>{
+                : `{user:{accounts}})=>({tools:router({read:query({input:object({})},async({fetch})=>{
   const result=await fetch(${JSON.stringify(resourceUrl)},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}});
   return result.json();
 })})}));`
@@ -71,13 +71,14 @@ export default defineApp({accounts:{service}},async(${
       yield* Effect.addFinalizer(() =>
         api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
       );
-      const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
       const connection = yield* body(
         Resource,
-        yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        }),
+        yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+          {},
+        ),
       );
       const started = yield* api.request(
         actors.owner,
@@ -89,7 +90,7 @@ export default defineApp({accounts:{service}},async(${
           ...(client === undefined ? {} : { client }),
         },
       );
-      return { app: app.id, profile: profile.id, connection: connection.id, started };
+      return { app: app.id, connection: connection.id, started };
     });
   /** Follow the service's consent redirect and return Executor's callback URL. */
   const consent = (authorizationUrl: string) =>
@@ -127,17 +128,16 @@ export default defineApp({accounts:{service}},async(${
     resourceUrl?: string,
   ) =>
     Effect.gen(function* () {
-      const { app, profile, connection, started } = yield* start(config, client, resourceUrl);
+      const { app, connection, started } = yield* start(config, client, resourceUrl);
       expect(started.status, JSON.stringify(started.body)).toBe(200);
       const authorizationUrl = new URL((yield* body(SignIn, started)).authorizationUrl);
       const callbackUrl = yield* consent(authorizationUrl.href);
       const completed = yield* complete(connection, callbackUrl);
-      return { app, profile, authorizationUrl, callbackUrl, completed };
+      return { app, authorizationUrl, callbackUrl, completed };
     });
-  /** Call the app's `read` query, which uses the account's current access token. */
-  const read = (app: string, profile: string) =>
+  /** Call the app's `read` query, which uses its one linked account's current access token. */
+  const read = (app: string) =>
     api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
-      profile,
       tool: "read",
       kind: "query",
       input: {},
@@ -164,12 +164,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(single.completed.status, JSON.stringify(single.completed.body)).toBe(200);
         expect((yield* tenant.metrics).tokenRequests).toEqual([{ resource: null, issued: true }]);
 
-        // Multi-tenant `common`: discovery names a `{tenantid}` issuer template, and the ID
-        // token carries the signed-in user's tenant issuer.
+        // Multi-tenant `common`: discovery names a `{tenantid}` issuer template that the metadata
+        // document's own location instantiates. `openid` is requested without a nonce.
         const common = yield* oauthInteropIssuer("entra-common");
         const multi = yield* app.connect({ discover: `${common.origin}/mcp` }, entraClient);
         expect(multi.authorizationUrl.searchParams.has("resource")).toBe(false);
-        expect(multi.authorizationUrl.searchParams.get("nonce")).not.toBeNull();
+        expect(multi.authorizationUrl.searchParams.get("scope")?.split(" ")).toContain("openid");
+        expect(multi.authorizationUrl.searchParams.has("nonce")).toBe(false);
         expect(multi.completed.status, JSON.stringify(multi.completed.body)).toBe(200);
         expect((yield* common.metrics).discoveryRequests).toEqual([
           "/common/v2.0/.well-known/openid-configuration",
@@ -187,18 +188,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           200,
         );
 
-        // The token's issuer must still be its own tenant's: `iss` for another tenant than `tid`
-        // is rejected, for discovered and declared templates alike.
+        // Executor ignores ID tokens, so one whose `iss` names another tenant than its `tid`, or
+        // than a tenant-specific issuer, never fails the sign-in.
         yield* common.mismatchTenantIssuer(true);
         for (const config of [{ discover: `${common.origin}/mcp` }, declared]) {
           const mismatched = yield* app.connect(config, entraClient);
-          expect(mismatched.completed.status).toBe(400);
-          expect(mismatched.completed.body).toMatchObject({
-            _tag: "OAuthCompletionFailed",
-            reason: "incompatible_response",
-          });
+          expect(mismatched.completed.status, JSON.stringify(mismatched.completed.body)).toBe(200);
         }
-        // A tenant-specific issuer is never widened to other tenants.
         yield* tenant.mismatchTenantIssuer(true);
         const pinned = yield* app.connect(
           {
@@ -209,7 +205,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
           },
           entraClient,
         );
-        expect(pinned.completed.status).toBe(400);
+        expect(pinned.completed.status, JSON.stringify(pinned.completed.body)).toBe(200);
       }),
     ),
   );
@@ -227,26 +223,26 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         // A refreshed ID token from the tenant the user signed in to renews the grant.
         const same = yield* app.connect(discover, entraClient, `${common.origin}/resource`);
         expect(same.completed.status, JSON.stringify(same.completed.body)).toBe(200);
-        const renewed = yield* app.read(same.app, same.profile);
+        const renewed = yield* app.read(same.app);
         expect(renewed.status, JSON.stringify(renewed.body)).toBe(200);
         expect(yield* body(Echo, renewed)).toMatchObject({ refreshed: true });
         expect((yield* common.metrics).refreshes).toEqual([{ tenant: entraTenant, issued: true }]);
 
-        // Subjects are scoped to their issuer (OIDC Core 12.2). A refreshed ID token whose `tid`
-        // and `iss` both name another tenant is a different identity, even with the same `sub`.
+        // Renewals never compare ID tokens: one whose `tid` and `iss` both name another tenant
+        // still renews the grant, and the renewed access token is used from then on.
         yield* common.refreshAsTenant(otherTenant);
         const switched = yield* app.connect(discover, entraClient, `${common.origin}/resource`);
         expect(switched.completed.status, JSON.stringify(switched.completed.body)).toBe(200);
-        const refused = yield* app.read(switched.app, switched.profile);
+        const switchedRead = yield* app.read(switched.app);
         expect((yield* common.metrics).refreshes).toEqual([
           { tenant: entraTenant, issued: true },
           { tenant: otherTenant, issued: true },
         ]);
-        expect(refused.status, JSON.stringify(refused.body)).not.toBe(200);
-        expect(JSON.stringify(refused.body)).toContain("OAuthReconnectRequired");
-        // The grant stays refused; its original access token is not used again.
-        const again = yield* app.read(switched.app, switched.profile);
-        expect(again.status, JSON.stringify(again.body)).not.toBe(200);
+        expect(switchedRead.status, JSON.stringify(switchedRead.body)).toBe(200);
+        expect(yield* body(Echo, switchedRead)).toMatchObject({ refreshed: true });
+        const again = yield* app.read(switched.app);
+        expect(again.status, JSON.stringify(again.body)).toBe(200);
+        expect(yield* body(Echo, again)).toMatchObject({ refreshed: true });
         expect((yield* common.metrics).refreshes).toHaveLength(2);
       }),
     ),
@@ -369,7 +365,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(metrics.registrations).toEqual([
           { grantTypes: ["authorization_code"], accepted: true },
         ]);
-        const read = yield* app.read(signIn.app, signIn.profile);
+        const read = yield* app.read(signIn.app);
         expect(read.status, JSON.stringify(read.body)).toBe(200);
         expect(yield* body(Echo, read)).toEqual({
           refreshed: false,

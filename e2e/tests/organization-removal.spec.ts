@@ -1,4 +1,4 @@
-import { createProfile } from "../support/profiles.ts";
+import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 /** Cloud-only removal: a throwaway organization with real state is deleted by its owner alone. */
 import { expect, layer } from "@effect/vitest";
@@ -29,6 +29,8 @@ const OrganizationRemoved = Schema.Struct({
 const noun = (value: number, word: string) => `${value} ${word}${value === 1 ? "" : "s"}`;
 /** The organization row is deleted by a durable step, not by the request that accepts removal. */
 class StillListed extends Error {}
+/** A terminated run settles after its terminate request returns. */
+class StillRunning extends Error {}
 
 const files = [
   {
@@ -38,7 +40,7 @@ import { mutation, defineApp, defineProvider, secrets, object, string, router } 
 const service = defineProvider({ name: "Removal service", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
    tools: router({
      echo: mutation({ description: "Echo with the connected account", input: object({ message: string() })},
       async (_, input) => ({ message: input.message, connected: accounts.service.fields.token === "synthetic-removal-token" })),
@@ -147,12 +149,11 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             });
             expect(deployed.status).toBe(200);
             const application = yield* body(App, deployed);
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${application.id}`);
             const connection = yield* api.request(
               actors.owner,
               "POST",
-              `${prefix}/apps/${application.id}/connections`,
-              { requirement: "service", profile: profile.id },
+              connectionsPath(`${prefix}/apps/${application.id}`, "user", "service"),
+              {},
             );
             expect(connection.status).toBe(200);
             const requirement = yield* body(Resource, connection);
@@ -164,18 +165,9 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             );
             expect(saved.status).toBe(200);
             const account = yield* body(Resource, saved);
-            const selected = yield* api.request(
-              actors.owner,
-              "GET",
-              `${prefix}/apps/${application.id}/profiles/${profile.id}`,
-            );
-            expect(selected.status).toBe(200);
             expect(
-              (yield* body(
-                Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) }),
-                selected,
-              )).accounts.service,
-            ).toBe(account.id);
+              yield* linkedAccountIds(actors.owner, `${prefix}/apps/${application.id}`),
+            ).toEqual([account.id]);
             return { app: application.id, account: account.id };
           }),
         );
@@ -381,6 +373,80 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             );
           }),
         );
+      }),
+    ),
+  );
+
+  // Owner removal is reached only through a Cloud organization's removal: local's owners are
+  // fixed, and self-host has one instance organization. A running workflow refuses it.
+  it.effect(scenarios.organizationRemovalWorkflowRefusal.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors,
+          api = yield* Api;
+        const suffix = randomUUID().slice(0, 8);
+        const created = yield* body(
+          Organization,
+          yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
+            name: `Busy ${suffix}`,
+            slug: `busy-${suffix}`,
+            keepCurrentActiveOrganization: true,
+          }),
+        );
+        const prefix = `/api/organizations/${created.id}`;
+        let removed = false;
+        yield* Effect.addFinalizer(() =>
+          removed ? Effect.void : api.request(actors.owner, "DELETE", prefix).pipe(Effect.ignore),
+        );
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: `Busy ${suffix} app`,
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, object, router, workflow } from "apps";
+export const slow = workflow({ input: object({}) }, async (ctx) => {
+  await ctx.step.sleep("hold", "1 minute");
+  return null;
+});
+export default defineApp({}, { tools: router({}), workflows: { slow } });`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const app = yield* body(App, deployed);
+        const path = `${prefix}/apps/${app.id}`;
+        const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+          workflow: "slow",
+          input: {},
+          key: randomUUID(),
+        });
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+        const run = yield* body(Resource, started);
+
+        const refused = yield* api.request(actors.owner, "DELETE", prefix);
+        expect(refused.status).toBe(409);
+        expect(refused.body).toMatchObject({ _tag: "AppWorkflowsActive", app: app.id });
+        // Nothing was hidden or deleted: the app is still there.
+        expect((yield* api.request(actors.owner, "GET", path)).status).toBe(200);
+
+        expect(
+          (yield* api.request(actors.owner, "POST", `${path}/workflow-runs/${run.id}/terminate`))
+            .status,
+        ).toBe(200);
+        const accepted = yield* api.request(actors.owner, "DELETE", prefix).pipe(
+          Effect.flatMap((response) =>
+            response.status === 409 ? Effect.fail(new StillRunning()) : Effect.succeed(response),
+          ),
+          Effect.retry({
+            while: (error) => error instanceof StillRunning,
+            schedule: Schedule.spaced("250 millis"),
+          }),
+          Effect.timeout("30 seconds"),
+        );
+        expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+        removed = true;
       }),
     ),
   );

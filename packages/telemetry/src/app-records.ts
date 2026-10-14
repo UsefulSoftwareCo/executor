@@ -81,6 +81,8 @@ export const appSpanNames: ReadonlySet<string> = new Set([
   "app.cache.publish",
   "app.cache.flush",
   "app.cache.lease.renew",
+  "app.cache.lease.wait",
+  "app.cache.refresh",
   "provider.http.request",
   "provider.http.response.read",
   "provider.openapi.call",
@@ -286,7 +288,7 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "span.label": oneOf("⚠︎ Interrupted"),
   "status.interrupted": flag,
   "executor.milestone.reached": flag,
-  "executor.owner": oneOf("executor", "app", "upstream", "person"),
+  "executor.owner": oneOf("executor", "app", "upstream", "person", "lease", "background"),
   "executor.app.code": oneOf(
     "factory",
     "router",
@@ -306,6 +308,8 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "executor.upstream.wait_ms": duration,
   "executor.elicitation.wait_ms": duration,
   "executor.authored_ms": duration,
+  "executor.lease.wait_ms": duration,
+  "executor.background_ms": duration,
   "executor.overhead_ms": duration,
 };
 export const appSpanAttributeKeys: ReadonlySet<string> = new Set(Object.keys(spanAttributes));

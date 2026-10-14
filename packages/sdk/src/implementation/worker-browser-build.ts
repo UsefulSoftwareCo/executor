@@ -1,7 +1,7 @@
 /** Narrow adapter for worker-bundler's pinned esbuild plugin hook. No filesystem or Node runtime is needed. */
 import { InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
-import type { SourceFiles } from "../contracts/deployment.ts";
+import type { CodeFiles } from "../contracts/source.ts";
 import { isBrowserAppImport, isServerUiImport, uiContentType } from "./ui-build.ts";
 import type { UiBuildEntry, UiBuildFile, UiBuildPlan } from "../contracts/ui-build.ts";
 import { Effect, Option, Path, Schema } from "effect";
@@ -26,7 +26,7 @@ const decodeAssetWrapper = Schema.decodeUnknownOption(
 
 /** Collect every output because createApp 0.2.4 retains only outputFiles[0]; gate the complete browser import graph. */
 export const browserBuild = (
-  files: SourceFiles,
+  files: CodeFiles,
   filesystem: InMemoryFileSystem,
   plan: UiBuildPlan,
   pinnedFiles: Readonly<Record<string, string>>,

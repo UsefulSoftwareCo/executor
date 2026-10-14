@@ -1,4 +1,4 @@
-import { executionManagerOwner } from "./access.ts";
+import { actorManagerOwner } from "./access.ts";
 import { requireAccountAccess } from "./resource-policy.ts";
 import type { WebhookId } from "@executor-js/sdk/core";
 /** Private setup shares SDK state without making secret exchange available to MCP credentials. */
@@ -27,9 +27,11 @@ const authorized = (
     yield* executor.apps.get({ owner: organizationOwner(organization), app: input.app });
     yield* Effect.gen(function* () {
       const subscription = yield* executor.webhooks.get(input);
-      yield* executionManagerOwner(executor, input.app, subscription.profile ?? undefined);
-      for (const account of new Set(Object.values(subscription.accounts).flat()))
-        yield* requireAccountAccess(account, permission);
+      // An app-account webhook has no actor: it is the app's, so managing the app suffices, as it
+      // does for unlinking its account. A member's webhook also needs use of their account.
+      yield* actorManagerOwner(input.app, subscription.actor);
+      if (subscription.actor !== null)
+        yield* requireAccountAccess(subscription.sourceAccount, permission);
     }).pipe(
       Effect.provideService(CurrentOrganization, access),
       Effect.provideService(CurrentUserId, principal.userId),

@@ -60,7 +60,7 @@ const checked = (name: string, timeoutMs?: number) =>
 const service = checked("MCP check");
 const patient = checked("Patient MCP check", 300_000);
 
-export default defineApp({ accounts: { service, patient } }, { tools: router({}) });
+export default defineApp({ user: { accounts: { service, patient } } }, { tools: router({}) });
 `;
 
 layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {

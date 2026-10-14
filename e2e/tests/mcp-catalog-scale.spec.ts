@@ -12,7 +12,12 @@ import { saveAndDeploy } from "../support/app-authoring.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import {
+  connectionsPath,
+  linkAccount,
+  linkAccountResponse,
+  linkedAccountIds,
+} from "../support/app-accounts.ts";
 import { appsManifest, withApps, mcpSdkVersion } from "../support/apps-release.ts";
 
 /**
@@ -25,11 +30,10 @@ const toolsPerApp = 175;
 const largeApp = appCount;
 const largeAppTools = 2_100;
 /**
- * Stalled apps and the enabled profiles each one has. Every profile is a separate tool listing,
- * so together they hold more listings than discovery runs at once (eight).
+ * Stalled apps. Each is one tool listing, so together they hold every listing discovery runs at
+ * once (eight), and each is running when discovery gives up on it.
  */
-const stalledApps = 3;
-const profilesPerStalledApp = 2;
+const stalledApps = 8;
 
 /** Tool schemas are generated when the app evaluates, so each deploy uploads a small source. */
 const scaleAppSource = (
@@ -56,7 +60,7 @@ const schema = (t) => {
     body: { type: "object", properties: body },
   }, required: ["path"] };
 };
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   const tools = {};
   for (let t = 0; t < ${tools}; t++)
     tools["op" + t] = query(
@@ -69,7 +73,7 @@ export default defineApp({ accounts: {} }, async () => {
 // An MCP server on a machine that accepts the connection and then never answers.
 const stalledAppSource = (origin: string) => `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(`${origin}/mcp`)} }) }));`;
+export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(`${origin}/mcp`)} }) }));`;
 
 /** A loopback listener that accepts every connection and never responds. */
 const stalledServer = Effect.acquireRelease(
@@ -241,7 +245,7 @@ const slowAppSource = (
   url: string,
   marker = "zqslowq",
 ) => `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async (ctx) => {
+export default defineApp({}, async (ctx) => {
   const response = await ctx.fetch(${JSON.stringify(url)}, { signal: ctx.signal });
   const names = await response.json();
   return { tools: router(Object.fromEntries(names.map((name) => [name, query(
@@ -258,7 +262,7 @@ const sleepingAppSource = (
   sleepMs: number,
   marker: string,
 ) => `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   const evaluation = crypto.randomUUID();
   await new Promise((resolve) => setTimeout(resolve, ${sleepMs}));
   return { tools: router(Object.fromEntries(["alpha", "beta", "gamma"].map((name) => [name, query(
@@ -289,10 +293,10 @@ const probeAppSource = (
   version: string,
 ) => `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 const service = defineProvider({ name: "Listing fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service } }, async (ctx) => {
+export default defineApp({ user: { accounts: { service } } }, async (ctx) => {
   const evaluation = crypto.randomUUID();
   return { tools: router({ probe: query(
-    { description: "Listing probe ${version} token " + ctx.accounts.service.fields.token + " evaluation " + evaluation + ".", input: object({}) },
+    { description: "Listing probe ${version} token " + ctx.user.accounts.service.fields.token + " evaluation " + evaluation + ".", input: object({}) },
     async () => evaluation,
   ) }) };
 });`;
@@ -446,7 +450,7 @@ return { items: [...small.items, ...large.items] };`;
         }
 
         // MCP apps on a machine that accepts connections and never answers join the catalog. Each
-        // is listed for the app and for every enabled profile, and every listing stalls.
+        // is listed once, and every listing stalls.
         const origin = yield* stalledServer;
         const stalled = yield* Effect.forEach(
           Array.from({ length: stalledApps }, (_, index) => index),
@@ -461,10 +465,9 @@ return { items: [...small.items, ...large.items] };`;
                 },
                 { path: "index.ts", content: stalledAppSource(origin) },
               ]);
-              for (let profile = 0; profile < profilesPerStalledApp; profile++)
-                yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
               return app.id;
             }),
+          { concurrency: 4 },
         );
 
         // Programs that do not touch the stalled apps are not delayed by them.
@@ -897,27 +900,33 @@ return { items: [...small.items, ...large.items] };`;
             expect(response.status).toBe(200);
             return (yield* body(Resource, response)).id;
           });
-        /** Connect a new personal account and select it in the profile. */
-        const connect = (actor: Session, profile: string, token: string) =>
+        /** Connect a new personal account from the app, which links it for the actor. */
+        const connect = (actor: Session, token: string) =>
           Effect.gen(function* () {
-            const response = yield* api.request(actor, "POST", `${path}/connections`, {
-              profile,
-              requirement: "service",
-              destination: { kind: "personal" },
-            });
+            const response = yield* api.request(
+              actor,
+              "POST",
+              connectionsPath(path, "user", "service"),
+              {
+                destination: { kind: "personal" },
+              },
+            );
             expect(response.status).toBe(200);
             const account = yield* submit(actor, (yield* body(Resource, response)).id, token);
             accounts.push({ actor, id: account });
             return account;
           });
-        /** Replace an account's stored credential; its ID and selection stay. */
-        const reconnect = (actor: Session, profile: string, account: string, token: string) =>
+        /** Replace an account's stored credential; its ID and links stay. */
+        const reconnect = (actor: Session, account: string, token: string) =>
           Effect.gen(function* () {
-            const response = yield* api.request(actor, "POST", `${path}/connections`, {
-              profile,
-              requirement: "service",
-              account,
-            });
+            const response = yield* api.request(
+              actor,
+              "POST",
+              connectionsPath(path, "user", "service"),
+              {
+                account,
+              },
+            );
             expect(response.status).toBe(200);
             expect(yield* submit(actor, (yield* body(Resource, response)).id, token)).toBe(account);
           });
@@ -927,7 +936,7 @@ return { items: [...small.items, ...large.items] };`;
           "Member listings",
           actors.organization.id,
         );
-        /** The one probe tool this actor's profile lists, and which evaluation described it. */
+        /** The one probe tool this actor's listing has, and which evaluation described it. */
         const probe = (execute: typeof owner, step: string) =>
           Effect.gen(function* () {
             const result = yield* execute(
@@ -962,20 +971,18 @@ return { items: [...small.items, ...large.items] };`;
             return listed.evaluation;
           });
 
-        const ownerProfile = (yield* createProfile(actors.owner, path)).id;
-        yield* connect(actors.owner, ownerProfile, "alpha");
+        const alpha = yield* connect(actors.owner, "alpha");
         const seen: string[] = [];
         seen.push(
           yield* evaluated(owner, "First listing", { version: "first", token: "alpha" }, seen),
         );
 
-        // Another member's profile is listed with that member's own account, and neither
-        // profile's listing is served to the other.
-        const memberProfile = (yield* createProfile(actors.member, path)).id;
-        yield* connect(actors.member, memberProfile, "delta");
+        // Another member is listed with that member's own linked account, and neither caller's
+        // listing is served to the other.
+        yield* connect(actors.member, "delta");
         const memberEvaluation = yield* evaluated(
           member,
-          "Another member's profile",
+          "Another member's listing",
           { version: "first", token: "delta" },
           seen,
         );
@@ -986,38 +993,16 @@ return { items: [...small.items, ...large.items] };`;
         });
         seen.push(memberEvaluation);
 
-        // A new profile revision with the same selection.
-        const Profile = Schema.Struct({
-          accounts: Schema.Record(
-            Schema.String,
-            Schema.Union([Schema.String, Schema.Array(Schema.String)]),
-          ),
-        });
-        const current = yield* body(
-          Profile,
-          yield* api.request(actors.owner, "GET", `${path}/profiles/${ownerProfile}`),
-        );
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, ownerProfile, current.accounts)).status,
-        ).toBe(200);
+        // A link change: connecting another account from the app replaces the linked one, which
+        // stays saved, and lists with the new one.
+        const gamma = yield* connect(actors.owner, "gamma");
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([gamma]);
         seen.push(
-          yield* evaluated(
-            owner,
-            "New profile revision",
-            { version: "first", token: "alpha" },
-            seen,
-          ),
-        );
-
-        // A changed account selection. Every selection change also moves the profile revision, so
-        // through the product this cannot be told apart from the revision step above.
-        yield* connect(actors.owner, ownerProfile, "gamma");
-        seen.push(
-          yield* evaluated(owner, "Changed selection", { version: "first", token: "gamma" }, seen),
+          yield* evaluated(owner, "Changed links", { version: "first", token: "gamma" }, seen),
         );
 
         // A reconnected account: same account, new stored credential.
-        yield* reconnect(actors.owner, ownerProfile, accounts.at(-1)!.id, "rotated");
+        yield* reconnect(actors.owner, gamma, "rotated");
         seen.push(
           yield* evaluated(
             owner,
@@ -1044,15 +1029,15 @@ return { items: [...small.items, ...large.items] };`;
         );
         seen.push(memberLatest);
 
-        // The dashboard's full listing is the same kept listing MCP discovery reads. One member's
-        // second profile with the same account is another listing: the key holds the profile,
-        // not only the credential.
+        // The dashboard's full listing is the same kept listing MCP discovery reads. Linking
+        // another account in place of the linked one is another listing.
         const Listing = Schema.Struct({
           items: Schema.Array(Schema.Struct({ description: Schema.String })),
         });
-        const listed = (actor: Session, profile: string) =>
+        const listing = (actor: Session) => api.request(actor, "GET", `${path}/tools`);
+        const listed = (actor: Session) =>
           Effect.gen(function* () {
-            const response = yield* api.request(actor, "GET", `${path}/tools?profile=${profile}`);
+            const response = yield* listing(actor);
             expect(response.status, JSON.stringify(response.body)).toBe(200);
             const { items } = yield* body(Listing, response);
             expect(items).toHaveLength(1);
@@ -1062,28 +1047,30 @@ return { items: [...small.items, ...large.items] };`;
             return { version, token, evaluation };
           });
         const ownerLatest = seen.at(-2)!;
-        expect(yield* listed(actors.owner, ownerProfile)).toEqual({
+        expect(yield* listed(actors.owner)).toEqual({
           version: "second",
           token: "rotated",
           evaluation: ownerLatest,
         });
-        const secondProfile = (yield* createProfile(actors.owner, path)).id;
-        const selected = yield* body(
-          Profile,
-          yield* api.request(actors.owner, "GET", `${path}/profiles/${ownerProfile}`),
-        );
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, secondProfile, selected.accounts))
-            .status,
-        ).toBe(200);
-        const second = yield* listed(actors.owner, secondProfile);
-        expect(second).toMatchObject({ version: "second", token: "rotated" });
-        expect(seen).not.toContain(second.evaluation);
-        expect(yield* listed(actors.owner, secondProfile)).toEqual(second);
-        expect((yield* listed(actors.owner, ownerProfile)).evaluation).toBe(ownerLatest);
+        // Linking the saved account again replaces the other: it lists with its own listing.
+        yield* linkAccount(actors.owner, path, "service", alpha);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([alpha]);
+        const relinked = yield* listed(actors.owner);
+        expect(relinked).toMatchObject({ version: "second", token: "alpha" });
+        expect(seen).not.toContain(relinked.evaluation);
+        expect(yield* listed(actors.owner)).toEqual(relinked);
+        // Linking the other account back returns to its kept listing.
+        yield* linkAccount(actors.owner, path, "service", gamma);
+        expect((yield* listed(actors.owner)).evaluation).toBe(ownerLatest);
+
+        // Another caller can neither link the owner's account nor read the owner's listing.
+        expect((yield* listed(actors.member)).evaluation).toBe(memberLatest);
+        const foreign = yield* linkAccountResponse(actors.member, path, "service", alpha);
+        expect(foreign.status, JSON.stringify(foreign.body)).toBeGreaterThanOrEqual(400);
+        expect(JSON.stringify(foreign.body)).not.toContain(relinked.evaluation);
+        expect((yield* listed(actors.member)).evaluation).toBe(memberLatest);
 
         // Revoking the member's access to the app refuses the member's kept listing at once.
-        expect((yield* listed(actors.member, memberProfile)).evaluation).toBe(memberLatest);
         const revision = (yield* body(
           Access,
           yield* api.request(actors.owner, "GET", `${path}/access`),
@@ -1094,11 +1081,7 @@ return { items: [...small.items, ...large.items] };`;
             audience: { kind: "private" },
           })).status,
         ).toBe(200);
-        const refused = yield* api.request(
-          actors.member,
-          "GET",
-          `${path}/tools?profile=${memberProfile}`,
-        );
+        const refused = yield* listing(actors.member);
         expect(refused.status, JSON.stringify(refused.body)).toBeGreaterThanOrEqual(400);
         expect(JSON.stringify(refused.body)).not.toContain(memberLatest);
       }).pipe(Effect.provide(McpClient.layer)),

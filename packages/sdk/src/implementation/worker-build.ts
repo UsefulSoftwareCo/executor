@@ -6,7 +6,7 @@ import {
   RuntimeAppsDependencyMissing,
   RuntimeBuildFailed,
 } from "../contracts/runtime.ts";
-import type { SourceFiles } from "../contracts/deployment.ts";
+import type { CodeFiles } from "../contracts/source.ts";
 import { prepareUiBuild } from "./ui-build.ts";
 import { Effect, Option, Path, Schema } from "effect";
 import type { Plugin } from "esbuild";
@@ -16,6 +16,8 @@ import { browserBuild } from "./worker-browser-build.ts";
 import { sourceImports } from "./worker-source-imports.ts";
 import { serverSourceMap, sourceLocation } from "./worker-source-map.ts";
 import { wasmBuild } from "./worker-wasm-build.ts";
+import { jsonModules } from "./worker-json-modules.ts";
+import { serverFilesModule, serverFilesSource } from "./worker-bridge.ts";
 import { workerDependencies } from "./worker-dependencies.ts";
 import apps from "apps/package.json" with { type: "json" };
 
@@ -143,7 +145,11 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
  * bundle holds only the app's modules; `framework` holds the release's server modules, which a
  * host stores once and links on load (see `assembleWorkerBundle`).
  */
-export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
+export const compileWorkerApp = (
+  files: CodeFiles,
+  host: WorkerHost,
+  publicPaths: ReadonlyArray<string> = [],
+) =>
   Effect.gen(function* () {
     const vendored = files.find((file) => file.path.split("/").includes("node_modules"));
     if (vendored !== undefined)
@@ -162,14 +168,15 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
     const selected = yield* selectedFramework(filesystem);
     const protocol = yield* appProtocol(selected.protocol);
     const entry = "__executor_worker.ts";
-    filesystem.write(entry, protocol.workerEntry(files));
-    const plan = yield* prepareUiBuild(files);
+    filesystem.write(entry, protocol.workerEntry);
+    const plan = yield* prepareUiBuild(files, publicPaths);
     const browser =
       plan === undefined
         ? undefined
         : yield* browserBuild(files, filesystem, plan, selected.browser);
     const path = yield* Path.Path;
     const wasm = wasmBuild(filesystem, path);
+    const json = jsonModules(files, entry);
     const sourceMap = serverSourceMap(entry);
     const compiled = yield* Effect.tryPromise({
       try: () =>
@@ -187,13 +194,14 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
             dependencies.plugin,
             wasm.plugin,
             sourceMap.plugin,
+            json.plugin,
             // The browser plugin wraps script-imported assets in a module-relative URL first; its
             // own lookup of the asset file then reaches the source resolver.
             ...(browser === undefined ? [] : [browser.plugin]),
             sourceImports(filesystem, path),
           ],
         }),
-      catch: compileFailure,
+      catch: (cause) => json.failure() ?? compileFailure(cause),
     });
     const map = sourceMap.map();
     if (map === undefined)
@@ -203,7 +211,13 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
       });
     const bundle = yield* Schema.decodeUnknownEffect(Schema.toType(WorkerBundle))({
       ...compiled,
-      modules: { ...compiled.modules, ...frameworkEntries, ...wasm.modules },
+      modules: {
+        ...compiled.modules,
+        ...frameworkEntries,
+        ...wasm.modules,
+        ...json.modules,
+        [serverFilesModule]: serverFilesSource(files),
+      },
     }).pipe(
       Effect.mapError(
         (cause) =>

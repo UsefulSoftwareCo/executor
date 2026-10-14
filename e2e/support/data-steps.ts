@@ -51,6 +51,22 @@ const passOf = (line: string): Option.Option<DataStepPass> => {
   return Option.none();
 };
 
+/** Every message in the host's log: each JSON record's text parts, or a plain line itself. */
+export const logMessages = (log: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const text = (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
+    return text.split("\n").flatMap((line) =>
+      Option.match(Schema.decodeUnknownOption(LogRecord)(line.slice(line.indexOf("{"))), {
+        onNone: () => [line],
+        onSome: ({ message }) =>
+          typeof message === "string"
+            ? [message]
+            : message.filter((part): part is string => typeof part === "string"),
+      }),
+    );
+  });
+
 /** Every finished pass in the log for one step, oldest first. */
 export const dataStepPasses = (log: string, step: string) =>
   Effect.gen(function* () {

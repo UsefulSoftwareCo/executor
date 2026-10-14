@@ -1,10 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { AppId } from "@executor-js/sdk";
-import type { SetupSearch } from "../../contracts/navigation.ts";
 import { useNavigate } from "@tanstack/react-router";
 
-/** Setup links land on the app's Accounts tab, where accounts are connected and chosen. */
-export function AccountSelectionPage({ id, profile }: { readonly id: AppId } & SetupSearch) {
+/** Setup links land on the app's Accounts tab, where accounts are connected and linked. */
+export function AccountSelectionPage({ id }: { readonly id: AppId }) {
   const navigate = useNavigate();
   const done = useRef(false);
   useEffect(() => {
@@ -13,7 +12,7 @@ export function AccountSelectionPage({ id, profile }: { readonly id: AppId } & S
     void navigate({
       to: "/apps/$appId",
       params: { appId: id },
-      search: { view: "accounts", profile },
+      search: { view: "accounts" },
       replace: true,
     });
   });

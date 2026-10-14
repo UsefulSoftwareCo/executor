@@ -23,6 +23,8 @@ const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof t
     readonly phase?: "call" | "discover";
     readonly headers?: Record<string, string>;
     readonly code?: string;
+    /** Answer this JSON body instead of the default one, as a service's own error format. */
+    readonly body?: unknown;
     readonly accounts?: "all";
     /** Answer the failure only after this long, as a slow or distant service does. */
     readonly delayMs?: number;
@@ -79,7 +81,7 @@ const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof t
           ) {
             if (failure.delayMs !== undefined) yield* Effect.sleep(failure.delayMs);
             return yield* HttpServerResponse.json(
-              {
+              failure.body ?? {
                 message: providerSecretMarker,
                 errors: [{ message: providerSecretMarker, extensions: { code: failure.code } }],
               },

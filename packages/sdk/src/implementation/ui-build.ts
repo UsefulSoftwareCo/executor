@@ -1,7 +1,9 @@
 /** Shared HTML planning and output checks for Node and Worker browser compilers. */
 import { Effect, Path, Schema } from "effect";
 import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
-import { SourceFilePath, type SourceFiles } from "../contracts/deployment.ts";
+import { SourceFilePath } from "../contracts/deployment.ts";
+import type { CodeFiles } from "../contracts/source.ts";
+import { publicFileContentType } from "../contracts/public-files.ts";
 import { RuntimeBuildFailed } from "../contracts/runtime.ts";
 import type { UiBuildFile, UiBuildPlan } from "../contracts/ui-build.ts";
 
@@ -17,29 +19,29 @@ const browserExports = new Set(["apps", "apps/client", "apps/effect", "apps/reac
 export const isBrowserAppImport = (specifier: string) => browserExports.has(specifier);
 /** Authored server implementation cannot enter the executable browser graph. */
 export const isServerUiImport = (path: string) => path === "index.ts" || path.startsWith("server/");
-/** Content types for the text-source and compiler-generated asset formats supported today. */
-export const uiContentType = (file: string) =>
-  file.endsWith(".js")
-    ? "text/javascript"
-    : file.endsWith(".css")
-      ? "text/css"
-      : file.endsWith(".svg")
-        ? "image/svg+xml"
-        : file.endsWith(".json") || file.endsWith(".map")
-          ? "application/json"
-          : file.endsWith(".woff2")
-            ? "font/woff2"
-            : "text/plain";
+/** Content types for compiled output, from the same table public files are served with. */
+export const uiContentType = (file: string) => publicFileContentType(file, "text/plain");
 
-/** Discover module/style entries without evaluating server code; finish preserves public files and the host context marker. */
+/** A compiled file and a public file claim one path. */
+class PublicPathTaken extends Schema.TaggedError<PublicPathTaken>()("PublicPathTaken", {
+  path: Schema.String,
+}) {}
+
+/**
+ * Discover module/style entries without evaluating server code; finish adds the host context
+ * marker. `publicPaths` are the public files served beside the build, relative to `ui/public/`:
+ * the page may reference them as they are, and no compiled file may take one of their paths.
+ */
 export const prepareUiBuild = (
-  files: SourceFiles,
+  files: CodeFiles,
+  publicPaths: ReadonlyArray<string> = [],
 ): Effect.Effect<UiBuildPlan | undefined, RuntimeBuildFailed> =>
   Effect.gen(function* () {
     const entry = files.find((file) => file.path === "ui/index.html");
     if (entry === undefined) return undefined;
     const path = yield* Path.Path;
     const document = parse(entry.content);
+    const served = new Set(publicPaths);
     const entries: Array<{ element: Element; attribute: string; source: string }> = [];
     for (const element of elements(document)) {
       const attribute =
@@ -54,8 +56,12 @@ export const prepareUiBuild = (
       if (attribute === undefined || value === undefined || /^(?:https?:|\/\/|data:)/.test(value))
         continue;
       const location = path.resolve("/ui", value.replace(/^\//, ""));
-      if (!location.startsWith("/ui/") || !files.some((file) => file.path === location.slice(1)))
+      if (!location.startsWith("/ui/")) return yield* failed();
+      if (!files.some((file) => file.path === location.slice(1))) {
+        // A prebuilt script or stylesheet among the public files is served as it is.
+        if (served.has(location.slice("/ui/".length))) continue;
         return yield* failed();
+      }
       entries.push({ element, attribute, source: location.slice(1) });
     }
     return {
@@ -117,18 +123,23 @@ export const prepareUiBuild = (
             contentType: "text/html",
             body: new TextEncoder().encode(serialize(document)),
           });
-          for (const file of files.filter((file) => file.path.startsWith("ui/public/"))) {
-            const relative = yield* Schema.decodeUnknownEffect(SourceFilePath)(
-              file.path.slice("ui/public/".length),
-            );
-            if (assets.has(relative) || relative.startsWith("_executor/")) return yield* failed();
-            assets.set(relative, {
-              path: relative,
-              body: new TextEncoder().encode(file.content),
-              contentType: uiContentType(relative),
-            });
-          }
+          const taken = [...assets.keys()].find((path) => served.has(path));
+          if (taken !== undefined) return yield* new PublicPathTaken({ path: taken });
           return [...assets.values()];
-        }).pipe(Effect.mapError(failed)),
+        }).pipe(
+          Effect.catchTag("PublicPathTaken", ({ path }) =>
+            Effect.fail(
+              new RuntimeBuildFailed({
+                stage: "compile",
+                location: { file: `ui/public/${path}` },
+                message: `ui/public/${path} has the same path as a file the browser build produced. Rename it.`,
+              }),
+            ),
+          ),
+          Effect.mapError((error) => (Schema.is(RuntimeBuildFailed)(error) ? error : failed())),
+        ),
     } satisfies UiBuildPlan;
-  }).pipe(Effect.provide(Path.layer), Effect.mapError(failed));
+  }).pipe(
+    Effect.provide(Path.layer),
+    Effect.mapError((error) => (Schema.is(RuntimeBuildFailed)(error) ? error : failed())),
+  );

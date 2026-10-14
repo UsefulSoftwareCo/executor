@@ -18,8 +18,10 @@ import {
 } from "apps/contracts";
 import { DatabaseFieldReserved } from "@executor-js/app-data/contracts";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
-import { BuildStage, SourceFiles, SourceLocation, type BuildMemoryExceeded } from "./deployment.ts";
+import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./deployment.ts";
+import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
+import type { BlobKey, BlobRange } from "./blobs.ts";
 
 /**
  * Runtimes report that an invocation invalidated or explicitly refreshed the app's cached
@@ -33,12 +35,44 @@ export const AppCacheChanges = Context.Reference<{
 }>("executor/AppCacheChanges", { defaultValue: () => ({ changed: () => Effect.void }) });
 
 /**
+ * A part of a call's path that started for it, rather than serving it warm. `runner`: the runner's
+ * isolate. `app`: the app's Worker, a Worker Loader cold start. `supervisor`: the data supervisor's
+ * object, before its clock started; `supervisor-isolate` when its isolate started too. `facet`: the
+ * app's data facet, inside the supervisor's wait; `facet-worker` when its Worker cold-started too.
+ * The isolate starts (`runner`, `app`, `supervisor-isolate`, `facet-worker`) are the costly ones;
+ * an object starting in a warm isolate is cheap.
+ */
+export const StartedPart = Schema.Literals([
+  "runner",
+  "app",
+  "supervisor",
+  "supervisor-isolate",
+  "facet",
+  "facet-worker",
+]);
+export type StartedPart = typeof StartedPart.Type;
+/** The parts whose start is an isolate's: what makes a call cold. */
+export const isolateStarts: ReadonlySet<StartedPart> = new Set([
+  "runner",
+  "app",
+  "supervisor-isolate",
+  "facet-worker",
+]);
+
+/**
  * One isolate's own part of an invocation, on its own clock: how long it took and how much of that
  * it waited on the next isolate. The runner and the data supervisor report it beside their reply.
  */
 export const IsolateTiming = Schema.Struct({
   elapsedMs: Schema.Finite,
   waitMs: Schema.Finite,
+  /** What started for this call, as this isolate saw it; see `StartedPart`. */
+  started: Schema.optionalKey(Schema.Array(StartedPart)),
+  /**
+   * `supervisor`: the runner ran inside the app's data supervisor, so the caller's hop to it, not
+   * the runner's to the supervisor, holds the supervisor's start.
+   */
+  host: Schema.optionalKey(Schema.Literal("supervisor")),
 });
 export type IsolateTiming = typeof IsolateTiming.Type;
 
@@ -69,6 +103,38 @@ export interface RuntimeCallTiming {
     readonly upstreamMs: number;
     readonly elicitationMs: number;
     readonly authoredMs: number;
+    /** Waiting on another call's load of a cache entry. */
+    readonly leaseMs: number;
+    /**
+     * How long background work no caller waited on, such as refreshing a stale cache entry, ran
+     * beside the call. Not part of any other part.
+     */
+    readonly backgroundMs: number;
+    /**
+     * Isolate start-up that ran while a caller waited, before the started isolate's clock began:
+     * the gap between a caller's wait and the started isolate's elapsed time. `ownMs` includes it.
+     * It is a cross-isolate bound, and a facet's includes the app's synchronous code on that call.
+     */
+    readonly startMs: number;
+    /**
+     * The hops' gaps that `startMs` does not count: transit between isolates, and a warm data
+     * facet's synchronous SQL and code, which no clock sees. Not part of `ownMs`; with it, an
+     * upper bound on the call's Executor time.
+     */
+    readonly unclockedMs: number;
+    /**
+     * What started for the call, in `StartedPart` order. Undefined when a runner or supervisor
+     * that predates it did not say, so the call is not known to be warm.
+     */
+    readonly started: readonly StartedPart[] | undefined;
+    /** An isolate on the call's path started for it (`isolateStarts`); undefined when unknown. */
+    readonly cold: boolean | undefined;
+    /** Each hop's wait not covered by its child's elapsed time: start-up and transit. */
+    readonly gaps: {
+      readonly runner: number;
+      readonly supervisor?: number;
+      readonly app: number;
+    };
     /** Adjacent isolates whose clocks disagree, such as `runner/app`: a lower bound. */
     readonly staleClocks: readonly string[];
   };
@@ -78,6 +144,17 @@ export interface RuntimeCallTiming {
 export const RuntimeCallTimings = Context.Reference<
   ((timing: RuntimeCallTiming) => void) | undefined
 >("executor/RuntimeCallTimings", { defaultValue: () => undefined });
+
+/**
+ * Told when the host hands an invocation to the app's runner. From then on the app's code may have
+ * run, its factory included, and may have made external changes, whatever the invocation later
+ * reports: every failure it reports passes through code the app controls. Only the host calls it,
+ * before the runner receives the invocation, so the app cannot withhold or forge it.
+ */
+export const AppCodeEntered = Context.Reference<{ readonly entered: () => void }>(
+  "executor/AppCodeEntered",
+  { defaultValue: () => ({ entered: () => undefined }) },
+);
 
 /**
  * Where an invocation's emitted events go once it succeeds. The executor provides it around every
@@ -120,11 +197,23 @@ export const BuiltApp = Schema.Struct({
   requirements: DeclaredRequirements,
   ui: Schema.optional(Schema.Array(UiAsset)),
 });
-/** A private browser asset returned to an authenticated serving host. */
-export interface RuntimeAsset {
-  readonly body: Uint8Array;
+/**
+ * A deployment's public file, which its deploy copied to the host's store. Hosts stream it, or
+ * one range of it, after authorizing the request; `object` names its exact bytes.
+ */
+export interface RuntimePublicFile {
   readonly contentType: string;
+  readonly size: number;
+  readonly object: string;
+  readonly key: BlobKey;
+  readonly read: (
+    range?: BlobRange,
+  ) => Effect.Effect<Stream.Stream<Uint8Array, RuntimeBuildUnavailable>, RuntimeBuildUnavailable>;
 }
+/** A private browser asset returned to an authenticated serving host. */
+export type RuntimeAsset =
+  | { readonly body: Uint8Array; readonly contentType: string }
+  | RuntimePublicFile;
 /** Parsed successful build result. */
 export type BuiltApp = typeof BuiltApp.Type;
 
@@ -198,6 +287,7 @@ export const RuntimeFailure = Schema.Literals([
   "data",
   "build",
   "unsupported",
+  "managed",
   "unrecognized",
 ]);
 export type RuntimeFailure = typeof RuntimeFailure.Type;
@@ -216,6 +306,8 @@ export const runtimeFailures: Record<RuntimeFailure, string> = {
   data: "The app's data supervisor failed the call",
   build: "The app's build could not be read",
   unsupported: "The app's build speaks a host protocol this host does not run",
+  managed:
+    "The app's build reads account fields as real values, so it cannot receive an account connected through this instance's own OAuth client",
   unrecognized: "The app's Worker failed for a reason the runtime did not recognize",
 };
 /**
@@ -277,8 +369,14 @@ export interface Runtime<Requirements = never> {
    */
   readonly changes?: (app: string) => Stream.Stream<number | void, RuntimeLoadError>;
   /** Sources build with the `apps` package they declare; sources without one are rejected. */
+  /**
+   * Build the code files only. `public` lists the paths, relative to `ui/public/`, of the public
+   * files served beside the build: the page may reference them, and compiled output may not
+   * reuse their paths. Their bytes never reach the build.
+   */
   readonly build: (input: {
-    readonly files: SourceFiles;
+    readonly files: CodeFiles;
+    readonly public?: ReadonlyArray<string>;
   }) => Effect.Effect<
     BuiltApp,
     | RuntimeBuildFailed

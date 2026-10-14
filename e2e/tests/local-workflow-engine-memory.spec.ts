@@ -29,7 +29,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflow engine memory", (
               {
                 path: "index.ts",
                 content: `import { defineApp, workflow, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   workflows: { once: workflow({ input: object({}) }, async (ctx) => ctx.step.do("once", async () => ctx.runId)) },
 });`,
               },

@@ -1,11 +1,11 @@
 ---
 title: Connect an account
-description: "Save a credential once as an account, from the app you are configuring or through an agent, then select it in a profile of any app that needs that provider."
+description: "Save a credential once as an account, from the app you are configuring or through an agent, then link it to any app that needs that provider, for yourself or for everyone who uses the app."
 ---
 
 An **account** is one saved set of credentials for one **provider**. You connect
-it once. Your profile for every app that needs that provider can select it, and
-none of them holds a second copy.
+it once. Every app that needs that provider can use it, and none of them holds
+a second copy.
 
 There are two kinds of credential, and the provider decides which it accepts:
 
@@ -52,20 +52,37 @@ Closing it keeps the default. Reconnecting keeps the existing name. You can also
 rename an account later from its menu on the app's **Accounts** tab, or with **Edit
 details** on the **Accounts** page.
 
-Completing a connection saves the account and selects it in your profile for
-this app. There is no separate selection to save. Browser sign-in returns to the app's Accounts tab;
+Completing a connection saves the account and links it to this app. There is
+no separate step. Browser sign-in returns to the app's Accounts tab;
 cancelling or failing sign-in offers a direct way back to the app.
 
-The Accounts tab lists every compatible saved account under each provider. Choose
-one for a single-account requirement, or check the accounts to use for a
-multiple-account requirement. Each change is saved immediately. **Connect new
-account** at the end of the list adds an account and selects it. Members who can
-view an app but not use it see only the profile's current accounts.
+The Accounts tab has two sections. **Your accounts** ("Linked for you") holds
+the accounts you linked for your own calls. **App accounts** ("Linked for
+everyone") holds the accounts the app uses for every caller and its background
+work; it appears only when the app requires accounts of its own.
 
-Removing an account from a single-account requirement, or unchecking it, changes only
-the profile's selection. It keeps the saved account available to other apps. The global
-**Accounts** page lists saved accounts and the apps that use them; it does not connect
-accounts or change their credentials.
+Each requirement lists every saved account of its provider you can use. A
+single-account requirement shows a radio button per account: selecting one
+links it and replaces the account linked before, which stays saved in
+**Accounts**. A `.many()` requirement shows checkboxes: checking one links it,
+unchecking one unlinks it, and the app uses every checked account. **Connect new
+account** at the end of the list adds an account and links it. Each change is
+saved immediately. Members who can view an app but not use it cannot change its
+links.
+
+Only people who can edit the app (organization owners and admins, and the app's
+creator; on local, the owner) change **App accounts**, and only with accounts
+they can use. Everyone else sees that section greyed out and read-only: which
+account fills each requirement and whether it works, without the account's
+email, username or other details from the provider. The same account may be
+linked in both sections.
+
+Unlinking keeps the saved account available to other apps. When no app uses it
+any more, Executor offers to delete it. The global **Accounts** page lists saved
+accounts and the apps that use them; it does not connect accounts or change
+their credentials.
+
+Local has the same Accounts tab. See "Which accounts a call uses" below.
 
 ## From an agent
 
@@ -76,66 +93,100 @@ link and gives you the link; you finish in your browser.
 <CodeGroup>
 
 ```js Hosted
-return await tools.executor.profiles["<management-profile-id>"].accounts.connect({
-  path: { organization: "<organization-id>", app: "<app-id>" },
-  body: { profile: "<profile-id>", requirement: "vercel" },
+return await tools.executor.appAccounts.userConnect({
+  path: { organization: "<organization-id>", app: "<app-id>", requirement: "vercel" },
 });
 ```
 
 ```js Local
-return await tools.executor.profiles["<management-profile-id>"].accountConnect.issue({
-  body: { owner: "alice", target: { app: "<app-id>", profile: "<profile-id>", requirement: "vercel" } },
+return await tools.executor.appAccounts.userConnect({
+  path: { app: "<app-id>", requirement: "vercel" },
+  body: {},
 });
 ```
 
 </CodeGroup>
 
-Create a profile first, or use the ID of your existing profile. Hosted uses
-`profiles.create`; local uses `appProfiles.create`. Read their discovered schemas
-for the required fields.
+Neither request names an account owner: hosted saves the account under your
+organization and local under the app's owner.
 
-Every request names the profile requirement it fills. To replace the credentials of an
-account the app already uses, add its ID as `account` in the same body. The account keeps its ID, name and every app's selection.
+Every request names the app requirement it connects for. Use
+`appAccounts.userConnect` for a user requirement and `appAccounts.appConnect`
+for one of the app's own requirements; on hosted, only people who can edit the
+app can start the second. To replace the credentials of an account the app already
+uses, add its ID as `account` in the body. The account keeps its ID, name and
+links.
 
 Check whether you finished:
 
-```js
-const connection = await tools.executor.profiles["<management-profile-id>"].accountConnections.get({
+<CodeGroup>
+
+```js Hosted
+const connection = await tools.executor.accounts.connection({
+  path: { organization: "<organization-id>", connection: "<connection-id>" },
+});
+return connection.state;
+```
+
+```js Local
+const connection = await tools.executor.accountConnections.get({
   path: { connection: "<connection-id>" },
 });
 return connection.state;
 ```
 
-`Completed` means the account is saved and selected for that requirement.
+</CodeGroup>
+
+`Completed` means the account is saved and linked to the requirement, for you
+or for everyone, in the same transaction. If the app's requirement changed while
+the request was open, such as moving between user and app accounts, the request
+fails with `AccountConnectionTargetChanged` rather than saving the account. If
+you can no longer link the account in that scope, it fails with
+`AccountConnectionRefused`.
 
 A pending request expires after thirty minutes. Issue a new one if it does.
 
-## How a targeted request fills a slot
+An agent manages links with the same five tools in each scope,
+`appAccounts.user.*` for your own links and `appAccounts.app.*` for the app's.
+Local takes the same paths without `organization`:
 
-- A single-account requirement is **replaced** by the new account.
-- A `.many()` requirement **appends** the new account, and does not duplicate
-  one that is already selected.
-- If the app's requirement changed while the request was open, the request fails
-  rather than filling the wrong slot.
+- `list({ path: { organization, app } })` lists the links.
+- `get({ path: { organization, app, requirement } })` lists the requirement's
+  linked accounts, then the other accounts you could link.
+- `link({ path: { organization, app, requirement, account } })` links an
+  account. For a single-account requirement it replaces the one before.
+- `unlink({ path: { organization, app, requirement, account } })` unlinks it.
+- `connect({ path: { organization, app, requirement } })` connects a new account,
+  as above.
+
+Linking fails with `RequirementMismatch` when the app has no such requirement in
+that scope or the account's provider differs. Changing app links needs edit
+access to the app.
+
+## Which accounts a call uses
+
+Calls never choose accounts. Every call, schedule and page runs with the
+accounts linked to the app: for each of your requirements, the one account you
+linked to a single-account requirement and every account you linked to a
+`.many()` requirement; for each of the app's own requirements, the accounts
+linked for everyone. A single-account requirement with no account fails with
+`AccountRequired`, which says whether you need to link one or someone who can
+edit the app does. A tool input that passes `$accounts` fails with
+`AccountChoiceUnsupported`.
+
+To use a different account, link it on the app's **Accounts** tab. To use two
+accounts of one provider side by side, copy the app and link one to each copy.
 
 ## Changing and removing an account
 
 You can rename an account, replace its credentials, and remove it. Replace credentials
 from an app that uses the account: open its menu on the app's **Accounts** tab and choose
 **Reconnect** or **Update credentials**. A **Needs sign-in** account also has a
-**Reconnect** button there. Replacing credentials keeps the same account, so every profile
-that selected it keeps working.
+**Reconnect** button there. Replacing credentials keeps the same account, so every app
+linked to it keeps working.
 
-What removing an account does to the profiles that selected it depends on where
-Executor runs:
-
-- **Cloud and self-host** remove the account from every profile's selections.
-  A `.many()` requirement that still holds other accounts keeps working with
-  them. A single-account requirement, or a `.many()` requirement that held only
-  this account, is left empty, and the profile's tool calls fail until someone
-  selects another account.
-- **Local** keeps the reference. A profile that selected the account fails
-  every tool call, even when a `.many()` requirement still holds other
-  accounts, until you remove or replace the account in its selection. This makes
-  a broken app visible instead of quietly changing which credentials an agent
-  uses.
+Removing an account removes your links to it. An account linked to an app for
+everyone cannot be removed until someone who can edit the app unlinks it
+(`AccountLinkedToApp`). An app left with no account
+for a requirement exposes no tools until you link or connect another. Executor
+does not substitute a different account.

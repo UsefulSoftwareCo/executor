@@ -1,5 +1,5 @@
 /** Static source assets shared by ordinary local and hosted Executor apps. */
-import { SourceFile } from "@executor-js/sdk/core";
+import { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import { Effect, FileSystem, Path } from "effect";
 import { TemplateError } from "../contracts/templates.ts";
 

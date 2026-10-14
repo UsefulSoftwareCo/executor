@@ -20,6 +20,8 @@ export const postgresUrl = (origin: Neon.PostgresOrigin) => {
 
 type PreviewConnection = {
   readonly runtimeUrl: Output.Output<Redacted.Redacted<string>, never>;
+  /** What Hyperdrive connects to; Neon previews are not behind Hyperdrive. */
+  readonly hyperdriveOrigin: Option.Option<Output.Output<Planetscale.PostgresOrigin, never>>;
   readonly migrationUrl: Output.Output<Redacted.Redacted<string>, never>;
   readonly branchName: Output.Output<string, never>;
   readonly username: Output.Output<string, never>;
@@ -29,9 +31,10 @@ type PreviewConnection = {
 /**
  * PgBouncer server connections for a PlanetScale preview's runtime role. The branch allows 25
  * connections, three reserved for superusers; PgBouncer's default of 20 left none for the
- * migration login on the next deploy. Hyperdrive previously capped previews at five.
+ * migration login on the next deploy. Hyperdrive connects through the same PgBouncer, so this
+ * caps the runtime role's backends whatever Hyperdrive and the Durable Objects open.
  */
-const previewPoolConnections = 10;
+export const previewPoolConnections = 10;
 
 /** Preview provider selection is shared by database allocation and Worker transport. */
 export const previewDatabaseProvider = Config.Literals(
@@ -75,6 +78,7 @@ export const previewDatabase = (stage: TestStage) =>
       const connection: PreviewConnection = {
         // Workers use the branch's PgBouncer; migrations keep the direct schema-owner connection.
         runtimeUrl: runtime.pooledOrigin.pipe(Output.map(postgresUrl)),
+        hyperdriveOrigin: Option.some(runtime.pooledOrigin),
         migrationUrl: migration.origin.pipe(
           Output.map((origin) => {
             const url = new URL(Redacted.value(postgresUrl(origin)));
@@ -131,6 +135,7 @@ export const previewDatabase = (stage: TestStage) =>
           postgresUrl({ ...origin, user: "executor_runtime", password }),
         ),
       ),
+      hyperdriveOrigin: Option.none(),
       migrationUrl: branch.origin.pipe(Output.map(postgresUrl)),
       branchName: branch.branchName,
       username: branch.roleName,

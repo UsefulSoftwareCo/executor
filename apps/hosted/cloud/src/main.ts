@@ -39,10 +39,8 @@ import { publishedSkillRoutes } from "@executor-js/app-templates/executor";
 import { hideRemovedOrganizations } from "./implementation/organization-removal.ts";
 import {
   browserTelemetry,
-  hostedOAuthCallback,
   clientMetadataDocument,
   clientMetadataDocumentPath,
-  clientMetadataSetting,
   hostedWebhookCallback,
   catalogLive,
   hostedMiddlewareLive,
@@ -60,10 +58,12 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Config, Effect, Layer, Option, Path, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
-import { cloudOnboarding } from "./infrastructure/onboarding.ts";
+import { cloudAccountCallback } from "./implementation/account-callback.ts";
+import { cloudOnboarding, cloudV1Import } from "./infrastructure/onboarding.ts";
 import { Onboarding } from "./contracts/onboarding.ts";
 import { cloudMcp } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
+import { cachedFeedClient } from "./implementation/catalog-feed-cache.ts";
 import { billingLive } from "./implementation/billing.ts";
 import {
   cloudSchedules,
@@ -119,15 +119,17 @@ import {
 import { roleHostRoutes } from "./infrastructure/role-hosts.ts";
 import { redirectTo, withRoleHosts } from "./implementation/host-roles.ts";
 import { hasSessionCookie } from "./contracts/browser.ts";
-import { clientMetadataBinding } from "./infrastructure/client-metadata.ts";
+import { clientMetadataBinding, cloudClientMetadata } from "./infrastructure/client-metadata.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
 import { requestServices } from "@executor-js/hosted-server";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 
+import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
 import { Api } from "./infrastructure/api-worker.ts";
 import { Dashboard } from "./infrastructure/dashboard-worker.ts";
 import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
+import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts";
 export { Api } from "./infrastructure/api-worker.ts";
 
 export default Api.make(
@@ -169,6 +171,8 @@ export default Api.make(
         ...(yield* authRateLimitSwitchBindings),
         // A deployed stage identifies Executor to authorization servers by its own document.
         ...(origin === undefined ? {} : yield* clientMetadataBinding(origin)),
+        // Every deployed stage lists production's official app feed.
+        ...(origin === undefined ? {} : yield* appCatalogBinding),
       },
       build: workerBuild("api"),
       // Auth callbacks and the dashboard share the configured canonical origin.
@@ -178,6 +182,9 @@ export default Api.make(
       // The database's cloud region is a proximity hint, not a Cloudflare data center or a
       // change to local development routing.
       ...(placement === undefined ? {} : { placement }),
+      // A deploy copies each changed ui/public/ file from Git into R2: a read and a write per
+      // file, up to `publicFileLimits.files` (10,000) of them, beyond the default 10,000.
+      limits: { subrequests: 50_000 },
       compatibility: {
         date: "2026-09-08",
         flags: ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
@@ -209,6 +216,7 @@ export default Api.make(
     const errorTunnel = yield* cloudErrorTunnel;
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
+    const v1Import = yield* cloudV1Import.pipe(Effect.orDie);
     const auth = yield* cloudAuth(email.send, yield* Onboarding.pipe(Effect.provide(onboarding)));
     const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
     yield* AppWorkflows;
@@ -235,7 +243,7 @@ export default Api.make(
     // here, so a failure is only logged.
     const installTeam = (job: string) =>
       provisionTeamNow(job).pipe(
-        // The installation saves default profiles; their setup starts at once, not on a later wake.
+        // The installation links managed keys; their webhook sources start at once, not on a later wake.
         // It already runs after its request's response.
         Effect.provide(schedules.immediateLayer),
         Effect.timeoutOption("15 seconds"),
@@ -289,7 +297,7 @@ export default Api.make(
         );
       });
     const dataSteps = (yield* cloudDataSteps(auth.agentGrants)).pipe(
-      // A step's redeploys wake profile setup once, after the job's request answers.
+      // A step's redeploys wake webhook source reconciliation once, after the job's request answers.
       Effect.provide(schedules.layer),
       Effect.provide(executor),
       reportErrors,
@@ -390,25 +398,38 @@ export default Api.make(
     } satisfies Record<BackgroundJob, unknown>;
 
     const egress = yield* cloudEgress;
-    const clientMetadata = yield* clientMetadataSetting(auth.origin).pipe(Effect.orDie);
+    const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
+    // The official app feed Add app lists; without it, only the built-in Executor app is listed.
+    const catalogFeedUrl = Option.getOrUndefined(
+      yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
+    );
     // Only /openapi.json and preparing the Executor catalog app read the document.
     // Clients and the Executor app call the API at its canonical origin.
     const apiOrigin = auth.resourceOrigins.api[0];
     const document = lazyHostedApiDocument(() => executorCloudApiDocument(apiOrigin));
     // Only framework lookups and the published skills read the large authoring reference.
-    const authoring = Effect.promise(() => import("./implementation/executor-authoring.ts")).pipe(
-      Effect.map(({ executorAuthoringSkills }) => executorAuthoringSkills),
-    );
+    const authoring = yield* cloudAuthoringReference;
     const api = cloudApi(document).pipe(
       Layer.provide(frameworkDocumentation(authoring)),
       HttpRouter.provideRequest(yield* cloudSourceFormatter),
       Layer.provide(appUi.dashboard),
       Layer.provide(requestServices(auth.appSessions).layer),
-      HttpRouter.provideRequest(catalogLive(document.document, egress, clientMetadata, apiOrigin)),
+      HttpRouter.provideRequest(
+        catalogLive(
+          document.document,
+          catalogFeedUrl === undefined
+            ? egress
+            : { ...egress, client: cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client) },
+          clientMetadata,
+          apiOrigin,
+          catalogFeedUrl,
+        ),
+      ),
       Layer.provide(schedules.layer),
       Layer.provide(billing),
       Layer.provide(removals),
       Layer.provide(onboarding),
+      Layer.provide(v1Import),
       Layer.provide(hostedMiddlewareLive),
       // Organization middleware reads the product's removal tombstones when it is built.
       Layer.provide(executor),
@@ -466,7 +487,11 @@ export default Api.make(
       "*",
       "/api/webhooks/:appId/:subscriptionId",
       hostedWebhookCallback,
-    ).pipe(HttpRouter.provideRequest(executor));
+    ).pipe(
+      HttpRouter.provideRequest(executor),
+      // A delivery can hand a webhook source to another actor; that change wakes reconciliation.
+      HttpRouter.provideRequest(schedules.layer),
+    );
     const withGitAccess = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
       layer.pipe(
         HttpRouter.provideRequest(hostedAppGitAccess),
@@ -548,9 +573,11 @@ export default Api.make(
       ),
       HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(auth.handler)),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
-      HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
-        HttpRouter.provideRequest(auth.identity),
-      ),
+      HttpRouter.add(
+        "GET",
+        "/api/oauth/callback",
+        cloudAccountCallback(auth.returnsStageAccountCallback),
+      ).pipe(HttpRouter.provideRequest(auth.identity)),
       HttpRouter.add(
         "GET",
         clientMetadataDocumentPath,
@@ -604,10 +631,13 @@ export default Api.make(
     const edgeHost = yield* Layer.mergeAll(
       authorizationServerRoutes,
       HttpRouter.add("GET", "/api/auth/callback/:provider", redirectTo(auth.origin, 302)),
-      // A connected-account sign-in's return opens the browser origin's callback page.
-      HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
-        HttpRouter.provideRequest(auth.identity),
-      ),
+      // A connected-account sign-in's return opens the browser origin's callback page, or a
+      // stage's when the sign-in is the stage's.
+      HttpRouter.add(
+        "GET",
+        "/api/oauth/callback",
+        cloudAccountCallback(auth.returnsStageAccountCallback),
+      ).pipe(HttpRouter.provideRequest(auth.identity)),
       withGitAccess(gitRoutes),
       // The public site. Nobody is signed in to v2 on the edge, so `/` is always the site's.
       HttpRouter.add("GET", "/", staticDocument("/index.html")),

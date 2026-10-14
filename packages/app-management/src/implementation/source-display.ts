@@ -1,5 +1,11 @@
 import { Array as Arr, Effect } from "effect";
-import { SourceError, type SourceFile, type SourceFiles } from "@executor-js/sdk/core";
+import {
+  SourceError,
+  isTextFile,
+  sourceFileBytes,
+  type SourceFiles,
+  type SourceTextFile,
+} from "@executor-js/sdk/core";
 import {
   SourceFormatter,
   sourceDisplayInlineLimits,
@@ -12,14 +18,14 @@ import {
 const byteSize = (content: string) => new TextEncoder().encode(content).byteLength;
 
 /** Format the given files and return each formatted text by path. */
-const formatted = (files: ReadonlyArray<SourceFile>) =>
+const formatted = (files: ReadonlyArray<SourceTextFile>) =>
   (files.length === 0
     ? Effect.succeed(files)
     : Effect.flatMap(SourceFormatter, (formatter) => formatter.format(files))
   ).pipe(Effect.map((files) => new Map(files.map((file) => [file.path, file.content]))));
 
 /** A formatter returns every file it was given; anything else is a host defect. */
-const formattedContent = (contents: ReadonlyMap<string, string>, file: SourceFile) => {
+const formattedContent = (contents: ReadonlyMap<string, string>, file: SourceTextFile) => {
   const content = contents.get(file.path);
   return content === undefined
     ? Effect.die(new Error(`Source formatter omitted ${file.path}`))
@@ -42,20 +48,24 @@ export const sourceDisplay = <A extends { readonly files: SourceFiles }>(
   Effect.gen(function* () {
     let remaining = sourceDisplayInlineLimits.requestBytes;
     const listed = Arr.map(source.files, (file) => {
-      const size = byteSize(file.content);
-      const inline = size <= sourceDisplayInlineLimits.fileBytes && size <= remaining;
+      const size = sourceFileBytes(file);
+      const text = isTextFile(file) ? file : undefined;
+      const inline =
+        text !== undefined && size <= sourceDisplayInlineLimits.fileBytes && size <= remaining;
       if (inline) remaining -= size;
-      return { file, size, inline };
+      return { file, text, size, inline };
     });
     const contents = yield* formatted(
-      listed.filter(({ inline }) => inline).map(({ file }) => file),
+      listed.flatMap(({ text, inline }) => (inline && text !== undefined ? [text] : [])),
     );
-    const entry = ({ file, size, inline }: (typeof listed)[number]) =>
-      inline
-        ? formattedContent(contents, file).pipe(
-            Effect.map((content): SourceDisplayEntry => ({ path: file.path, size, content })),
-          )
-        : Effect.succeed<SourceDisplayEntry>({ path: file.path, size });
+    const entry = ({ file, text, size, inline }: (typeof listed)[number]) =>
+      text === undefined
+        ? Effect.succeed<SourceDisplayEntry>({ path: file.path, size, binary: true })
+        : inline
+          ? formattedContent(contents, text).pipe(
+              Effect.map((content): SourceDisplayEntry => ({ path: file.path, size, content })),
+            )
+          : Effect.succeed<SourceDisplayEntry>({ path: file.path, size });
     const [first, ...rest] = listed;
     return {
       ...source,
@@ -74,6 +84,7 @@ export const sourceDisplayFile = (
   Effect.gen(function* () {
     const file = files.find((file) => file.path === path);
     if (file === undefined) return yield* new SourceError({ reason: "not-found" });
+    if (!isTextFile(file)) return { path: file.path, size: sourceFileBytes(file), binary: true };
     const size = byteSize(file.content);
     const content =
       size <= sourceDisplayLimits.fileBytes

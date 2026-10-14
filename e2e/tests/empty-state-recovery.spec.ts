@@ -1,4 +1,4 @@
-import { Profile } from "../support/profiles.ts";
+import { linkedAccountIds } from "../support/app-accounts.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,7 +11,7 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 const source = `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({}) }));`;
+export default defineApp({}, async () => ({ tools: router({}) }));`;
 
 layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) => {
   it.effect(scenarios.emptyStateRecovery.title, (context) =>
@@ -276,7 +276,7 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
                 path: "index.ts",
                 content: `import { accountRouter, defineApp, defineProvider, object, router, secrets, string } from "apps";
 const service = defineProvider({ name: "Per-account service", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service: service.many() } }, async ({ accounts, signal }) => ({
+export default defineApp({ user: { accounts: { service: service.many() } } }, async ({ user: { accounts }, signal }) => ({
   tools: await accountRouter(accounts.service, async () => router({}), { signal }),
 }));`,
               },
@@ -287,25 +287,18 @@ export default defineApp({ accounts: { service: service.many() } }, async ({ acc
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${deployed.id}`).pipe(Effect.orDie),
         );
-        // A many-account slot with nothing selected is a valid profile, so tool discovery runs
+        // A many-account requirement with no linked account is valid, so tool discovery runs
         // and the app lists nothing. The page must ask for an account rather than report no tools.
-        const profile = yield* body(
-          Profile,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${deployed.id}/profiles`, {
-            accounts: { service: [] },
-            idempotencyKey: randomUUID(),
-          }),
-        );
-        expect(profile.accounts).toEqual({ service: [] });
+        const appPath = `${prefix}/apps/${deployed.id}`,
+          url = `/org/${actors.organization.slug}/apps/${deployed.id}`;
+        expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([]);
         yield* browser.login(actors.owner);
         yield* browser.use("Use dark theme", (page) => page.emulateMedia({ colorScheme: "dark" }));
-        yield* browser.use("Open the tools of a profile without accounts", (page) =>
-          page.goto(
-            `/org/${actors.organization.slug}/apps/${deployed.id}?view=tools&profile=${profile.id}`,
-          ),
+        yield* browser.use("Open the tools of an app without linked accounts", (page) =>
+          page.goto(`${url}?view=tools`),
         );
         yield* browser.use("Tools ask for an account", (page) =>
-          page.getByRole("heading", { name: "No accounts connected", exact: true }).waitFor(),
+          page.getByRole("heading", { name: "No accounts linked", exact: true }).waitFor(),
         );
         expect(
           yield* browser.use("Tools do not claim the app exposes nothing", (page) =>
@@ -319,20 +312,22 @@ export default defineApp({ accounts: { service: service.many() } }, async ({ acc
             .getByRole("link", { name: "Accounts", exact: true })
             .click(),
         );
-        yield* browser.use("Accounts opens for the same profile", (page) =>
+        yield* browser.use("Accounts opens for the same app", (page) =>
           page.waitForURL(
-            (url) =>
-              url.searchParams.get("view") === "accounts" &&
-              url.searchParams.get("profile") === profile.id,
+            (next) =>
+              next.pathname === url &&
+              next.searchParams.get("view") === "accounts" &&
+              // The page made no account choice, so none is carried.
+              (next.searchParams.get("accounts") ?? "{}") === "{}",
           ),
         );
-        yield* browser.use("Open the overview of a profile without accounts", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}?profile=${profile.id}`),
+        yield* browser.use("Open the overview of an app without linked accounts", (page) =>
+          page.goto(url),
         );
         yield* browser.use("The overview tools card asks for an account", (page) =>
           page
             .getByRole("region", { name: "App tools preview", exact: true })
-            .getByRole("heading", { name: "No accounts connected", exact: true })
+            .getByRole("heading", { name: "No accounts linked", exact: true })
             .waitFor(),
         );
         yield* browser.checkpoint("Overview tools ask for an account");

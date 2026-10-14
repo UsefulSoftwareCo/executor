@@ -4,6 +4,7 @@ export * from "./provider.ts";
 export * from "./account.ts";
 export * from "./account-connection.ts";
 export * from "./oauth.ts";
+export * from "./oauth-clients.ts";
 export * from "./deployment.ts";
 export * from "./skill-source.ts";
 export * from "./skills.ts";
@@ -24,7 +25,6 @@ export * from "./blobs.ts";
 export * from "./schedules.ts";
 export * from "./scheduler.ts";
 export * from "./source.ts";
+export * from "./public-files.ts";
 export * from "./registry.ts";
 export * from "./publications.ts";
-
-export * from "./profiles.ts";

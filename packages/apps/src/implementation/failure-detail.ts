@@ -1,5 +1,5 @@
 import { Match, Option, Predicate, Redacted, Schema } from "effect";
-import { CacheError } from "@executor-js/app-cache/contracts";
+import { CacheError, cacheLimits } from "@executor-js/app-cache/contracts";
 import { OpenapiError } from "../contracts/openapi.ts";
 import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
 import { FetchOptionUnsupported, NetworkRefused } from "../contracts/network.ts";
@@ -38,10 +38,21 @@ export interface FailureDetail {
 const cacheMessages = {
   capacity: "A cache key, value or batch exceeded the app cache's size limits.",
   invalid: "The app made a cache request the app cache could not accept.",
-  unavailable: "The app cache is not available on this host.",
+  unavailable: "The app cache was not available for this operation.",
   storage: "The app cache failed to complete the operation.",
   timeout: "The app cache did not respond in time.",
 } satisfies Record<CacheError["reason"], string>;
+
+const count = (value: number) => value.toLocaleString("en-US");
+/** Fixed text per exceeded limit, with the limit's value. */
+const cacheLimitMessages = {
+  keyBytes: `A cache key exceeded the app cache's limit of ${count(cacheLimits.keyBytes)} bytes per key.`,
+  entryBytes: `A cache value exceeded the app cache's limit of ${count(cacheLimits.entryBytes)} bytes per entry.`,
+  batchBytes: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchBytes)} bytes per batch.`,
+  batchEntries: `A cache read or write exceeded the app cache's limit of ${count(cacheLimits.batchEntries)} entries per batch.`,
+  totalBytes: `The app cache is full: it holds at most ${count(cacheLimits.totalBytes)} bytes.`,
+  totalEntries: `The app cache is full: it holds at most ${count(cacheLimits.totalEntries)} entries.`,
+} satisfies Record<NonNullable<CacheError["limit"]>, string>;
 
 /** What the client was doing when an MCP server failed. */
 const mcpStages = {
@@ -101,15 +112,18 @@ const secretValues = (value: unknown, found: Set<string>): Set<string> => {
 };
 
 /**
- * Every credential field value of a slot-to-account record, longest first. Accepts both resolved
- * host accounts and bound author accounts; each account keeps its credential values in `fields`.
+ * Every credential field value of an invocation's accounts by scope, longest first. The accounts
+ * may not have been checked yet, so each scope is read only when it is a slot-to-account record;
+ * each account keeps its credential values in `fields`.
  */
 export const accountFieldSecrets = (accounts: unknown) => {
   const found = new Set<string>();
   if (Predicate.isObject(accounts))
-    for (const slot of Object.values(accounts))
-      for (const account of Array.isArray(slot) ? slot : [slot])
-        if (Predicate.hasProperty(account, "fields")) secretValues(account.fields, found);
+    for (const scope of [accounts["app"], accounts["user"]])
+      if (Predicate.isObject(scope))
+        for (const slot of Object.values(scope))
+          for (const account of Array.isArray(slot) ? slot : [slot])
+            if (Predicate.hasProperty(account, "fields")) secretValues(account.fields, found);
   return [...found].sort((a, b) => b.length - a.length);
 };
 
@@ -302,7 +316,8 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       source: "storage",
       errorName: "CacheError",
       code: error.reason,
-      message: cacheMessages[error.reason],
+      message:
+        error.limit === undefined ? cacheMessages[error.reason] : cacheLimitMessages[error.limit],
     };
   if (Schema.is(OpenapiError)(error))
     return {
