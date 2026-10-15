@@ -1,6 +1,7 @@
 import { PageFrame, PageHeader } from "./page.tsx";
 import { Option } from "effect";
 import { AppCardsSkeleton } from "./loading.tsx";
+import { useHydrated } from "../hooks/hydrated.ts";
 import { Card } from "@executor-js/ui/components/card";
 import { useState, type ReactNode } from "react";
 import { QueryResult, useQuery, useDashboard } from "./context.tsx";
@@ -17,7 +18,17 @@ import {
 import { AppIcon, Empty, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 
-/** A card for each configured app and its linked accounts. */
+type AppsView = "cards" | "list";
+const viewKey = "executor.apps.view";
+const savedView = (): AppsView => {
+  try {
+    return localStorage.getItem(viewKey) === "cards" ? "cards" : "list";
+  } catch {
+    return "list";
+  }
+};
+
+/** Installed apps and their linked accounts, as cards or a compact list. */
 export function AppsPage<E>({
   action,
   connect,
@@ -35,6 +46,17 @@ export function AppsPage<E>({
 }) {
   const { result, data, refresh } = useQuery(query);
   const [search, setSearch] = useState("");
+  const hydrated = useHydrated();
+  const [chosenView, setChosenView] = useState<AppsView>();
+  const view = chosenView ?? (hydrated ? savedView() : "list");
+  const chooseView = (next: AppsView) => {
+    setChosenView(next);
+    try {
+      localStorage.setItem(viewKey, next);
+    } catch {
+      // The current page still switches when browser storage is unavailable.
+    }
+  };
   return (
     <PageFrame>
       <PageHeader
@@ -46,8 +68,8 @@ export function AppsPage<E>({
         {(!Option.isSome(data) || data.value.apps.length > 0 || pending) && action}
       </PageHeader>
       {/* Controls above cards should use half-card or full-card widths. Search uses a full
-          card and Filters uses half a card at each grid breakpoint. Phones share one row. */}
-      <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4 max-[600px]:mb-3 max-[600px]:flex-nowrap max-[600px]:gap-2">
+          card and Filters uses half a card at each grid breakpoint. The view picker wraps on phones. */}
+      <div className="list-toolbar apps-toolbar mb-4 flex flex-wrap items-center gap-4 max-[600px]:mb-3 max-[600px]:gap-2">
         {(!Option.isSome(data) || data.value.apps.length > 0 || pending || search.length > 0) && (
           <div className="w-[calc((100%_-_2rem)/3)] shrink-0 max-[1100px]:w-[calc((100%_-_1rem)/2)] max-[600px]:w-auto max-[600px]:min-w-0 max-[600px]:flex-1">
             <SearchInput value={search} onChange={setSearch} placeholder="Search apps…" />
@@ -58,11 +80,38 @@ export function AppsPage<E>({
             {filters}
           </div>
         )}
+        {(!Option.isSome(data) || data.value.apps.length > 0 || pending || search.length > 0) && (
+          <div
+            role="group"
+            aria-label="Apps view"
+            className="ml-auto flex justify-end max-[600px]:w-full"
+          >
+            <div className="inline-flex rounded-lg border p-1">
+              {(["cards", "list"] as const).map((option) => (
+                <Button
+                  key={option}
+                  size="sm"
+                  variant={view === option ? "secondary" : "ghost"}
+                  aria-pressed={view === option}
+                  onClick={() => chooseView(option)}
+                >
+                  {option === "cards" ? "Cards" : "List"}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
-      <QueryResult result={result} Failure={Failure} retry={refresh} pending={<AppCardsSkeleton />}>
+      <QueryResult
+        result={result}
+        Failure={Failure}
+        retry={refresh}
+        pending={<AppCardsSkeleton view={view} />}
+      >
         {(data) => (
           <AppsList
             data={data}
+            view={view}
             search={search}
             clearSearch={() => setSearch("")}
             pending={search.length === 0 ? pending : undefined}
@@ -83,10 +132,12 @@ function AppsList({
   data,
   search,
   clearSearch,
+  view,
   empty,
   pending,
 }: {
   readonly data: Inventory;
+  readonly view: AppsView;
   readonly search: string;
   readonly clearSearch: () => void;
   readonly empty: ReactNode;
@@ -110,7 +161,10 @@ function AppsList({
           Try another name.
         </Empty>
       ) : (
-        <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1 max-[600px]:gap-2">
+        <div
+          data-apps-view={view}
+          className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1 max-[600px]:gap-2"
+        >
           {pending}
           {apps.map((app) => {
             const ids = linkedAccountIds(data.links, app.id);

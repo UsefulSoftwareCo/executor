@@ -9,7 +9,7 @@ export function AppCardSkeleton() {
   return (
     <div
       aria-hidden
-      className="flex min-h-[137px] flex-col rounded-lg border p-4 max-[600px]:grid max-[600px]:min-h-0 max-[600px]:grid-cols-[auto_minmax(0,1fr)] max-[600px]:items-center max-[600px]:gap-x-3 max-[600px]:gap-y-1.5 max-[600px]:px-3.5 max-[600px]:py-3"
+      className="app-card-skeleton flex min-h-[137px] flex-col rounded-lg border p-4 max-[600px]:grid max-[600px]:min-h-0 max-[600px]:grid-cols-[auto_minmax(0,1fr)] max-[600px]:items-center max-[600px]:gap-x-3 max-[600px]:gap-y-1.5 max-[600px]:px-3.5 max-[600px]:py-3"
     >
       <div className="flex items-center gap-3 max-[600px]:contents">
         <Skeleton className="size-8.5 shrink-0 rounded-md max-[600px]:row-span-2" />
@@ -20,12 +20,13 @@ export function AppCardSkeleton() {
   );
 }
 
-/** Card-shaped placeholders use the same grid and footprint as installed apps. */
-export function AppCardsSkeleton() {
+/** Placeholders follow the selected layout of the installed apps. */
+export function AppCardsSkeleton({ view = "list" }: { readonly view?: "cards" | "list" }) {
   return (
     <div
       role="status"
       aria-label="Loading apps"
+      data-apps-view={view}
       className="grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1 max-[600px]:gap-2"
     >
       {Array.from({ length: 6 }, (_, index) => (
