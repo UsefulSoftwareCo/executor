@@ -9,6 +9,10 @@ An **app** has a name, an owner, Git source and its stored data. It can have
 source before it is deployed. Once deployed, it also points to the version it
 currently runs.
 
+The **Apps** page starts in a compact **List** view. Choose **Cards** for a grid;
+your browser remembers the view you choose. Both views show the same apps and
+linked accounts, with the same search and filters.
+
 **Make a copy** creates a new app with its own source and fresh Git history.
 It does not copy connected accounts or app data. A running app is copied from
 its deployed source, even when its working files have newer changes. The copy

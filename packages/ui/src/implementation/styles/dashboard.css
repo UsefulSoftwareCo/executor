@@ -13,3 +13,97 @@ body:has([data-name-account-handoff][data-state="open"])
   :is([data-slot="dialog-content"], [data-slot="dialog-overlay"])[data-state="closed"] {
   display: none;
 }
+
+/* The list shares app links and account state with Cards, changing only their presentation. */
+[data-apps-view="list"] {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+[data-apps-view="list"] :is(.app-card, .app-card-skeleton) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 44px;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 0;
+}
+[data-apps-view="list"] > :first-child,
+[data-apps-view="list"] > :first-child .app-card-skeleton {
+  border-radius: 7px 7px 0 0;
+}
+[data-apps-view="list"] > :last-child,
+[data-apps-view="list"] > :last-child .app-card-skeleton {
+  border-radius: 0 0 7px 7px;
+}
+[data-apps-view="list"] > :only-child,
+[data-apps-view="list"] > :only-child .app-card-skeleton {
+  border-radius: 7px;
+}
+[data-apps-view="list"] > :not(.sr-only) + :not(.sr-only) {
+  border-top: 1px solid var(--border);
+}
+[data-apps-view="list"] .app-card-heading {
+  display: contents;
+}
+[data-apps-view="list"] .app-cell {
+  display: flex;
+  grid-column: 1;
+  grid-row: 1;
+  gap: 10px;
+}
+[data-apps-view="list"] .app-cell > div {
+  grid-area: auto;
+  align-self: center;
+}
+[data-apps-view="list"] .provider-icon {
+  width: 24px;
+  height: 24px;
+}
+[data-apps-view="list"] .app-cell strong {
+  font-size: 13px;
+}
+[data-apps-view="list"] .app-card-footer {
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+  padding: 0;
+  align-self: center;
+}
+[data-apps-view="list"] .app-card-arrow {
+  grid-column: 3;
+  grid-row: 1;
+}
+[data-apps-view="list"] .app-card-skeleton > div {
+  display: flex;
+}
+[data-apps-view="list"] .app-card-skeleton > div > :first-child {
+  width: 24px;
+  height: 24px;
+}
+[data-apps-view="list"] .app-card-skeleton > :last-child {
+  margin: 0;
+}
+@media (max-width: 600px) {
+  [data-apps-view="list"] :is(.app-card, .app-card-skeleton) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+  }
+  [data-apps-view="list"] .app-card-footer {
+    grid-column: 1;
+    grid-row: 2;
+    padding-left: 34px;
+  }
+  [data-apps-view="list"] .app-card-arrow {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+  [data-apps-view="list"] .app-card-skeleton > :last-child {
+    grid-column: 1;
+    padding-left: 34px;
+  }
+}

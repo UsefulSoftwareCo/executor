@@ -4463,6 +4463,17 @@ export const scenarios = plan({
       local: na("Local has no auth rate limit."),
     },
   },
+  appsViews: {
+    fixtures: "actors",
+    file: "apps-views.spec.ts",
+    title:
+      "Apps default to List and remember Cards across search and navigation without hydration errors",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted deployment fixture; local shares the same Apps page"),
+    },
+  },
   serverRenderedDashboard: {
     fixtures: "actors",
     file: "server-rendered-dashboard.spec.ts",
