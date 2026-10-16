@@ -911,6 +911,16 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  providerIcons: {
+    fixtures: "actors",
+    file: "provider-icons.spec.ts",
+    title: "Renamed providers use only an unambiguous public host for their fallback logo",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted deployment fixture; the shared dashboard renders local provider icons"),
+    },
+  },
   appIcons: {
     fixtures: "actors",
     file: "app-icons.spec.ts",
