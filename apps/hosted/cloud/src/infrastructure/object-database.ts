@@ -103,7 +103,8 @@ const applicationName = (owner: string) => `executor ${owner}`.slice(0, 63);
  * window's connections; other calls use the rest and never join the transaction. A connection
  * the server drops is replaced on its next use, by the pool itself. Opening a connection gets a
  * second attempt when the first fails or times out ({@link cloudDatabasePool}). When the last
- * call ends, the window closes after {@link idleWindow}; the next call opens a new one. A caller
+ * call ends, the window closes after the owner's linger, {@link idleWindow} unless the owner
+ * gives another; the next call opens a new one. A caller
  * that gives up a connection retires the window instead: later calls open a new one, and the
  * retired window closes as soon as its last call ends, closing that connection with it. A call
  * that never ends therefore keeps its retired window open, and the object's windows together can
@@ -112,7 +113,7 @@ const applicationName = (owner: string) => `executor ${owner}`.slice(0, 63);
  */
 export const cloudObjectDatabase = Effect.gen(function* () {
   const connection = yield* cloudDirectDatabaseConnection;
-  return Effect.fn(function* (owner: string) {
+  return Effect.fn(function* (owner: string, linger: Duration.Duration = idleWindow) {
     // Owned by the object for its whole life; only windows are ever closed.
     const root = Scope.makeUnsafe();
     const lock = yield* Semaphore.make(1);
@@ -193,7 +194,8 @@ export const cloudObjectDatabase = Effect.gen(function* () {
           if (leased.leases > 0) return;
           // A retired window closes once its last caller is done.
           if (window !== leased) return yield* Scope.close(leased.scope, Exit.void);
-          leased.idle = yield* Effect.sleep(idleWindow).pipe(
+          if (Duration.isZero(linger)) return yield* close(leased);
+          leased.idle = yield* Effect.sleep(linger).pipe(
             Effect.andThen(lock.withPermits(1)(close(leased))),
             Effect.forkIn(root),
           );
