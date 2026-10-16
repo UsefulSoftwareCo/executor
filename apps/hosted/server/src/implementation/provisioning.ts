@@ -210,6 +210,8 @@ export const drainProvisioning = (services: ProvisioningServices) =>
       Effect.flatMap(
         Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
       ),
+      // Self-host polls every second. The poll records nothing; the jobs it finds are traced.
+      Effect.withTracerEnabled(false),
     );
     for (const job of jobs)
       yield* provision(job.id, services).pipe(
