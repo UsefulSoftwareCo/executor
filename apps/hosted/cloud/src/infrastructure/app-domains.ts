@@ -11,6 +11,7 @@ import { AppDomainController } from "./app-domain-controller-worker.ts";
 import { appDomainControlSecret } from "./app-domain-control.ts";
 import { cloudAppUiBase } from "../contracts/app-ui.ts";
 import { readAppDomainRecord } from "../implementation/app-domain-records.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 
 export const Team = Schema.Struct({ id: OrganizationId, slug: OrganizationSlug });
 
@@ -50,7 +51,7 @@ const staleAfter = 15 * 60_000;
  * schedule if it was lost.
  */
 export const cloudAppDomains = Effect.gen(function* () {
-  const coordinator = yield* AppDomainCoordinator.from(AppDomainController);
+  const coordinator = yield* inJurisdiction(AppDomainCoordinator.from(AppDomainController));
   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
   // Local development serves apps over HTTP and provisions no domains.
   const suffix =
