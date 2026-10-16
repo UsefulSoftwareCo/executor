@@ -490,7 +490,7 @@ export const SearchToolResult = Schema.Struct({
 /** The catalog search a program reaches as tools.search, as its own MCP tool. */
 export const SearchTool = McpTool.make("search", {
   description:
-    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace; pass next to read the following page.",
+    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace. To read the following page, call search again with the returned next object as the whole input; next is null on the last page.",
   parameters: SearchInput,
   success: SearchToolResult,
   failure: CatalogUnavailable,
