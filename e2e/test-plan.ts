@@ -2015,6 +2015,16 @@ export const scenarios = plan({
       local: na("Exercises the hosted app deploy and tool call APIs."),
     },
   },
+  mcpRefusedEventStream: {
+    fixtures: "actors",
+    file: "mcp-event-stream.spec.ts",
+    title: "Remote MCP tools stay available when the server refuses the optional event stream",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker MCP transport."),
+      local: na("Exercises the hosted app deploy and tool call APIs."),
+    },
+  },
   templateAccounts: {
     fixtures: "actors",
     file: "template-accounts.spec.ts",

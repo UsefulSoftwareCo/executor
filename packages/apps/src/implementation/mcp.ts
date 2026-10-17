@@ -154,6 +154,7 @@ const transportFetch =
     telemetry: Effect.Success<typeof captureTelemetry>,
     rejected: Deferred.Deferred<never, ProviderError | NetworkRefused>,
     answered: Ref.Ref<ErrorResponses>,
+    kind: "http" | "sse",
   ): FetchLike =>
   (url, init) =>
     Effect.runPromiseWith(telemetry.context)(
@@ -197,7 +198,11 @@ const transportFetch =
           );
         const { body, upstream } = yield* errorBody(response);
         const provider = httpProviderError(response.status, response.headers);
-        if (provider !== undefined) {
+        // The Streamable HTTP client's GET only opens the optional server-initiated stream. A
+        // server can refuse it and still answer every POST, and the client carries on without the
+        // stream, so its refusal does not fail the session. The SSE transport's GET is the session.
+        const optionalStream = kind === "http" && request.method === "GET";
+        if (provider !== undefined && !optionalStream) {
           // EventSource replaces rejected fetch errors. Retain our safe failure
           // within this session so SSE cannot erase its status or reason.
           const refused = providerErrorDetail(provider, { upstream });
@@ -293,7 +298,7 @@ function withClient<A, E>(
         const pending = new Set<Promise<void>>();
         const { client, transport } = yield* Effect.acquireRelease(
           Effect.sync(() => {
-            const fetch = transportFetch(connection, telemetry, rejected, answered);
+            const fetch = transportFetch(connection, telemetry, rejected, answered, kind);
             const client = new Client(
               { name: "executor-apps", version: "0.1.0" },
               {
