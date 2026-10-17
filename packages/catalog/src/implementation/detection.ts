@@ -256,18 +256,28 @@ export const detectMcpAccess = (
       signals.push(signalOf("initialize", initialized));
       if (!successful(initialized)) return yield* unsuccessful(initialized, "not_mcp");
       const session = initialized.session;
+      // The release names the version the server negotiated, as every request after initialize
+      // does. A server that predates the version requested refuses a DELETE naming it, and keeps
+      // the session. Without a negotiated version the header is left out.
+      let negotiatedVersion: string | undefined;
       if (session !== undefined)
         // A public server can allocate a session for this check; release it.
         yield* Effect.addFinalizer(() =>
           Effect.scoped(
             HttpClient.withScope(egress.client).del(input.url, {
-              headers: { "mcp-session-id": session, "mcp-protocol-version": protocolVersion },
+              headers: {
+                "mcp-session-id": session,
+                ...(negotiatedVersion === undefined
+                  ? {}
+                  : { "mcp-protocol-version": negotiatedVersion }),
+              },
             }),
           ).pipe(Effect.timeout("1 second"), Effect.ignore),
         );
       if (initialized.answer === "error") return undetermined("initialize_error");
       const negotiated = Schema.decodeUnknownOption(InitializeResult)(initialized.result);
       if (Option.isNone(negotiated)) return undetermined("not_mcp");
+      negotiatedVersion = negotiated.value.protocolVersion;
       const headers = {
         "mcp-protocol-version": negotiated.value.protocolVersion,
         ...(session === undefined ? {} : { "mcp-session-id": session }),
