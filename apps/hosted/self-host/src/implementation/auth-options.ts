@@ -3,6 +3,7 @@ import { authOptions, authSettings, singleResourceOrigin } from "@executor-js/ho
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { organization } from "better-auth/plugins/organization";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
+import { ssoUserInfo } from "./sso-user-info.ts";
 
 const Sso = Schema.Struct({
   discoveryUrl: Schema.String.check(
@@ -74,6 +75,7 @@ export const selfHostAuthOptions = (
                   clientSecret: Redacted.value(settings.sso.clientSecret),
                   requireIdTokenVerification: true,
                   scopes: ["openid", "email", "profile"],
+                  getUserInfo: ssoUserInfo(settings.sso.discoveryUrl),
                 },
               ],
       }),
