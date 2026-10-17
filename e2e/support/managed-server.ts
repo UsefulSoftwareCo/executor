@@ -545,25 +545,29 @@ const startIsolatedSelfHost = (
   target: typeof Target.Service,
   entry: "product" | "development",
   environment: Readonly<Record<string, string>> = {},
+  /** A port the scenario chose, for a product whose origin a fixture must know before it starts. */
+  listen?: number,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const port =
-      entry === "product"
-        ? 0
-        : yield* Effect.scoped(
-            Effect.gen(function* () {
-              const services = yield* Layer.build(
-                NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
-              );
-              const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
-              if (!("port" in server.address))
-                return yield* new ServerFailed({
-                  message: "Isolated self-host listener must use TCP",
-                });
-              return server.address.port;
-            }),
-          );
+      listen !== undefined
+        ? listen
+        : entry === "product"
+          ? 0
+          : yield* Effect.scoped(
+              Effect.gen(function* () {
+                const services = yield* Layer.build(
+                  NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
+                );
+                const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+                if (!("port" in server.address))
+                  return yield* new ServerFailed({
+                    message: "Isolated self-host listener must use TCP",
+                  });
+                return server.address.port;
+              }),
+            );
     const directory = yield* fs.makeTempDirectory({ directory: target.directory, prefix: entry });
     const origin = `http://127.0.0.1:${port}`;
     const server = yield* startManagedServer(
@@ -587,7 +591,12 @@ export const startDevelopmentServer = (
 export const startFreshSelfHost = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
-) => startIsolatedSelfHost(target, "product", environment).pipe(Effect.map(({ origin }) => origin));
+  /** A port the scenario chose, for a product whose origin a fixture must know before it starts. */
+  port?: number,
+) =>
+  startIsolatedSelfHost(target, "product", environment, port).pipe(
+    Effect.map(({ origin }) => origin),
+  );
 
 /**
  * Start an unconfigured product instance as `startFreshSelfHost` does, and return the target that

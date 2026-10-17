@@ -7334,6 +7334,16 @@ export const scenarios = plan({
       ),
     },
   },
+  selfHostSsoUserinfo: {
+    file: "self-host-sso.spec.ts",
+    title:
+      "Self-host SSO admits a verified user whose ID token leaves email_verified to the userinfo endpoint, and refuses the others",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud customer SSO has its own journeys."),
+      local: na("Local has no operator SSO."),
+    },
+  },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
     title: "Self-host administrator setup opens the agent handoff before Apps",

@@ -1,19 +1,32 @@
 /** Disposable external identity provider for the real Cloud SSO journeys. */
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { generateKeyPairSync, createHash, randomUUID, sign } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import samlify from "samlify";
-import { Config, Deferred, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
+import { Config, Deferred, Effect, FileSystem, Layer, Option, Redacted, Schema } from "effect";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const Control = Schema.Struct({
   email: Schema.String.check(Schema.isPattern(/^[a-z0-9-]+@[a-z0-9.-]+$/u)),
-  mode: Schema.Literals(["valid", "tamper", "wrong-audience"]),
+  /**
+   * The `userinfo-*` modes answer the token exchange with an ID token that carries `sub` and
+   * `email` but no `email_verified`, as an Okta tenant-root issuer does, and leave that claim to
+   * the userinfo endpoint: verified, unverified, or for a different subject than the token named.
+   */
+  mode: Schema.Literals([
+    "valid",
+    "tamper",
+    "wrong-audience",
+    "userinfo-verified",
+    "userinfo-unverified",
+    "userinfo-other-subject",
+  ]),
 });
 const { IdentityProvider, ServiceProvider, SamlLib } = samlify;
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown) =>
@@ -24,8 +37,11 @@ const escape = (text: string) =>
 const command = Command.make("sso-idp", {
   directory: Flag.String("directory"),
   application: Flag.String("application"),
+  // With both, the issuer also listens over HTTPS, for an instance that accepts only HTTPS issuers.
+  tlsKey: Flag.String("tls-key").pipe(Flag.optional),
+  tlsCert: Flag.String("tls-cert").pipe(Flag.optional),
 }).pipe(
-  Command.withHandler(({ directory, application }) =>
+  Command.withHandler(({ directory, application, tlsKey, tlsCert }) =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* Config.String("NODE_ENV").pipe(
@@ -34,6 +50,9 @@ const command = Command.make("sso-idp", {
         const fs = yield* FileSystem.FileSystem;
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
         const address = yield* Deferred.make<string>();
+        // Where the browser is sent to sign in. Only the issuer's own endpoints need the TLS
+        // listener; the browser visits this one and trusts no certificate issued for a scenario.
+        const browserAddress = yield* Deferred.make<string>();
         const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
         const certificateDirectory = yield* fs.makeTempDirectoryScoped();
         const keyFile = `${certificateDirectory}/key.pem`,
@@ -104,13 +123,17 @@ const command = Command.make("sso-idp", {
               const origin = yield* Deferred.await(address);
               return yield* HttpServerResponse.json({
                 issuer: origin,
-                authorization_endpoint: `${origin}/authorize`,
+                authorization_endpoint: `${yield* Deferred.await(browserAddress)}/authorize`,
                 token_endpoint: `${origin}/token`,
                 jwks_uri: `${origin}/jwks`,
+                userinfo_endpoint: `${origin}/userinfo`,
                 response_types_supported: ["code"],
                 subject_types_supported: ["public"],
                 id_token_signing_alg_values_supported: ["RS256"],
-                token_endpoint_auth_methods_supported: ["client_secret_basic"],
+                token_endpoint_auth_methods_supported: [
+                  "client_secret_basic",
+                  "client_secret_post",
+                ],
                 code_challenge_methods_supported: ["S256"],
               });
             }),
@@ -171,18 +194,25 @@ const command = Command.make("sso-idp", {
                   code: Schema.String,
                   code_verifier: Schema.String,
                   redirect_uri: Schema.String,
+                  client_id: Schema.optionalKey(Schema.String),
+                  client_secret: Schema.optionalKey(Schema.String),
                 }),
                 Object.fromEntries(form),
               );
               const code = codes.get(input.code);
               codes.delete(input.code);
+              // Real issuers take the client's secret in the Authorization header or in the form.
+              const authenticated =
+                request.headers.authorization ===
+                  `Basic ${Buffer.from("synthetic-sso-client:synthetic-sso-secret").toString("base64")}` ||
+                (input.client_id === "synthetic-sso-client" &&
+                  input.client_secret === "synthetic-sso-secret");
               if (
                 !code ||
                 code.redirect !== input.redirect_uri ||
                 code.challenge !==
                   createHash("sha256").update(input.code_verifier).digest("base64url") ||
-                request.headers.authorization !==
-                  `Basic ${Buffer.from("synthetic-sso-client:synthetic-sso-secret").toString("base64")}`
+                !authenticated
               )
                 return HttpServerResponse.empty({ status: 401 });
               const origin = yield* Deferred.await(address);
@@ -199,7 +229,7 @@ const command = Command.make("sso-idp", {
                       : "synthetic-sso-client",
                   sub: code.identity.email,
                   email: code.identity.email,
-                  email_verified: true,
+                  ...(code.identity.mode.startsWith("userinfo-") ? {} : { email_verified: true }),
                   name: "Synthetic SSO Member",
                   nonce: code.nonce,
                   iat: now,
@@ -215,6 +245,24 @@ const command = Command.make("sso-idp", {
                 token_type: "Bearer",
                 expires_in: 300,
                 id_token: `${signed}.${code.identity.mode === "tamper" ? signature.slice(1) : signature}`,
+              });
+            }),
+          ),
+          HttpRouter.add(
+            "GET",
+            "/userinfo",
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              if (request.headers.authorization !== "Bearer synthetic-access-token")
+                return HttpServerResponse.empty({ status: 401 });
+              return yield* HttpServerResponse.json({
+                sub:
+                  control.mode === "userinfo-other-subject"
+                    ? "another-subject@sso.example.test"
+                    : control.email,
+                email: control.email,
+                email_verified: control.mode !== "userinfo-unverified",
+                name: "Synthetic SSO Member",
               });
             }),
           ),
@@ -325,19 +373,36 @@ const command = Command.make("sso-idp", {
             }),
           ),
         );
-        const services = yield* Layer.build(
-          HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-            Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
-          ),
-        );
-        const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
-        if (!("port" in server.address))
-          return yield* Effect.die("Expected a loopback TCP listener");
-        const origin = `http://127.0.0.1:${server.address.port}`;
+        const listen = (create: () => ReturnType<typeof createServer>, scheme: string) =>
+          Effect.gen(function* () {
+            const services = yield* Layer.build(
+              HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+                Layer.provideMerge(NodeHttpServer.layer(create, { host: "127.0.0.1", port: 0 })),
+              ),
+            );
+            const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+            if (!("port" in server.address))
+              return yield* Effect.die("Expected a loopback TCP listener");
+            return `${scheme}://127.0.0.1:${server.address.port}`;
+          });
+        // The control plane stays on plain HTTP; the issuer is the HTTPS listener when there is one.
+        const controlOrigin = yield* listen(createServer, "http");
+        const tls =
+          Option.isSome(tlsKey) && Option.isSome(tlsCert)
+            ? {
+                key: yield* fs.readFileString(tlsKey.value),
+                cert: yield* fs.readFileString(tlsCert.value),
+              }
+            : undefined;
+        const origin =
+          tls === undefined ? controlOrigin : yield* listen(() => createHttpsServer(tls), "https");
         yield* Deferred.succeed(address, origin);
-        yield* fs.writeFileString(`${directory}/sso-idp.json`, JSON.stringify({ origin }), {
-          mode: 0o600,
-        });
+        yield* Deferred.succeed(browserAddress, controlOrigin);
+        yield* fs.writeFileString(
+          `${directory}/sso-idp.json`,
+          JSON.stringify({ origin, control: controlOrigin }),
+          { mode: 0o600 },
+        );
         return yield* Effect.never;
       }),
     ),
