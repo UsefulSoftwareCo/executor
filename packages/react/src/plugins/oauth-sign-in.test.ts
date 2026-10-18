@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "@effect/vitest";
 
-import { oauthCallbackUrl, oauthClientIdMetadataDocumentUrl } from "./oauth-sign-in";
+import {
+  canUseClientIdMetadataDocument,
+  isPubliclyReachableUrl,
+  oauthCallbackUrl,
+  oauthClientIdMetadataDocumentUrl,
+} from "./oauth-sign-in";
 
 // The legacy query-param org selector the metadata-document URL must NOT use
 // (org is carried in the path instead). Mirrors the server-side constant.
@@ -87,5 +92,79 @@ describe("oauthClientIdMetadataDocumentUrl", () => {
 
     expect(url.toString()).toBe("https://executor.sh/api/oauth/client-id-metadata/acme.json");
     expect(url.searchParams.has(OAUTH_CALLBACK_ORG_QUERY_PARAM)).toBe(false);
+  });
+});
+
+describe("isPubliclyReachableUrl", () => {
+  it("accepts public https hosts", () => {
+    expect(
+      isPubliclyReachableUrl("https://executor.sh/api/oauth/client-id-metadata/default.json"),
+    ).toBe(true);
+    expect(isPubliclyReachableUrl("https://8.8.8.8:8446/x.json")).toBe(true);
+  });
+
+  it("rejects hosts an authorization server can't fetch", () => {
+    for (const url of [
+      "/api/oauth/client-id-metadata/default.json",
+      "http://executor.example.com/x.json",
+      "https://localhost:4788/x.json",
+      "https://executor/x.json",
+      "https://box.example.ts.net:8446/x.json",
+      "https://nas.local/x.json",
+      "https://10.0.0.5/x.json",
+      "https://192.168.1.20/x.json",
+      "https://172.20.0.3/x.json",
+      "https://100.64.0.7/x.json",
+      "https://[::1]/x.json",
+      "https://[fd7a:115c:a1e0::1]/x.json",
+    ]) {
+      expect(isPubliclyReachableUrl(url), url).toBe(false);
+    }
+  });
+});
+
+describe("canUseClientIdMetadataDocument", () => {
+  const privateDocument =
+    "https://box.example.ts.net:8446/api/oauth/client-id-metadata/default.json";
+
+  it("uses CIMD when the document is public", () => {
+    expect(
+      canUseClientIdMetadataDocument({
+        clientIdMetadataDocumentUrl:
+          "https://executor.sh/api/oauth/client-id-metadata/default.json",
+        authorizationUrl: "https://auth.example.com/authorize",
+      }),
+    ).toBe(true);
+  });
+
+  it("uses DCR when a public provider can't fetch a private document", () => {
+    expect(
+      canUseClientIdMetadataDocument({
+        clientIdMetadataDocumentUrl: privateDocument,
+        authorizationUrl: "https://auth.example.com/authorize",
+      }),
+    ).toBe(false);
+  });
+
+  it("uses CIMD when the provider is on a private host too", () => {
+    expect(
+      canUseClientIdMetadataDocument({
+        clientIdMetadataDocumentUrl:
+          "http://localhost:4788/api/oauth/client-id-metadata/default.json",
+        authorizationUrl: "http://localhost:9000/authorize",
+      }),
+    ).toBe(true);
+    expect(
+      canUseClientIdMetadataDocument({
+        clientIdMetadataDocumentUrl: privateDocument,
+        authorizationUrl: "https://sso.example.ts.net/authorize",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps CIMD when the provider is unknown", () => {
+    expect(canUseClientIdMetadataDocument({ clientIdMetadataDocumentUrl: privateDocument })).toBe(
+      true,
+    );
   });
 });
