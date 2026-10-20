@@ -1,5 +1,6 @@
 import {
   Context,
+  ConnectionAddress,
   definePlugin,
   definePluginStorageCollection,
   dynamicToolScopeForPattern,
@@ -8,6 +9,7 @@ import {
   isValidPattern,
   matchPattern,
   Schema,
+  sha256Hex,
   type DynamicToolScope,
   type EffectivePolicy,
   type Owner,
@@ -19,6 +21,7 @@ import {
   type ToolPolicyAction,
   type ToolPolicyProvider,
   type ToolPolicyProviderRule,
+  ToolAddress,
 } from "@executor-js/sdk/core";
 import { addGroup, capture } from "@executor-js/api";
 import { generateKeyBetween } from "fractional-indexing";
@@ -180,16 +183,23 @@ const digestToolkitRules = (
   };
 };
 
+const canonicalToolkitToolId = (toolId: string): string =>
+  toolId.startsWith("tools.") ? toolId.slice("tools.".length) : toolId;
+
 const resolveToolkitPolicy = (
   toolId: string,
   rules: ToolkitRuleSnapshot,
   defaultRequiresApproval?: boolean,
 ): EffectivePolicy => {
-  const connected = rules.accessPatterns.some((pattern) => matchPattern(pattern, toolId));
+  // Dynamic catalog rows use the public `tools.` address prefix while toolkit
+  // patterns are stored as connection addresses. Keep the prefix at the
+  // catalog/scope boundary, and normalize only for policy matching.
+  const canonicalToolId = canonicalToolkitToolId(toolId);
+  const connected = rules.accessPatterns.some((pattern) => matchPattern(pattern, canonicalToolId));
   if (!connected) return blockedPolicy();
 
   for (const policy of rules.orderedPolicies) {
-    if (!matchPattern(policy.pattern, toolId)) continue;
+    if (!matchPattern(policy.pattern, canonicalToolId)) continue;
     return {
       action: policy.action,
       source: "user",
@@ -237,7 +247,14 @@ const legacyConnectionPolicyIds = (
   );
 };
 
-const isPersonalDynamicToolId = (toolId: string): boolean => toolId.split(".")[1] === "user";
+const isPersonalDynamicToolId = (toolId: string): boolean =>
+  canonicalToolkitToolId(toolId).split(".")[1] === "user";
+
+const connectionAddressForTool = (toolId: string): ConnectionAddress | null => {
+  if (!toolId.startsWith("tools.")) return null;
+  const parts = canonicalToolkitToolId(toolId).split(".");
+  return parts.length >= 4 ? ConnectionAddress.make(parts.slice(0, 3).join(".")) : null;
+};
 
 const toolkitToResponse = (entry: { readonly owner: Owner; readonly data: ToolkitRecord }) => ({
   id: entry.data.id,
@@ -585,6 +602,72 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
       };
     });
 
+  /** Freeze the currently resolved catalog into exact addresses. A delegated
+   * grant stores this result and never re-expands these patterns after a
+   * toolkit edit. */
+  const snapshotForSlug = (slug: string) =>
+    Effect.gen(function* () {
+      const toolkit = yield* getBySlugEntry(slug);
+      if (!toolkit) return null;
+      const policies = yield* listPoliciesForRecord(toolkit.data.id);
+      const connections = yield* listConnectionsForRecord(toolkit.data.id);
+      const rules = digestToolkitRules(connections, policies);
+      const tools = yield* ctx.core.tools.list({ includeBlocked: true });
+      const toolAddresses = tools
+        .filter((tool) => {
+          const policy = resolveToolkitPolicy(
+            String(tool.address),
+            rules,
+            tool.annotations?.requiresApproval,
+          );
+          return policy.action !== "block";
+        })
+        .map((tool) => ToolAddress.make(String(tool.address)))
+        .sort((a, b) => String(a).localeCompare(String(b)));
+      const connectionAddresses = [
+        ...new Set(
+          toolAddresses
+            .map((tool) => connectionAddressForTool(String(tool)))
+            .filter((address): address is ConnectionAddress => address !== null)
+            .map(String),
+        ),
+      ]
+        .sort()
+        .map((value) => ConnectionAddress.make(value));
+      const revision = yield* sha256Hex(
+        JSON.stringify({
+          toolkit: {
+            id: toolkit.data.id,
+            updatedAt: toolkit.data.updatedAt,
+          },
+          connections: connections.map((connection) => ({
+            id: connection.id,
+            pattern: connection.pattern,
+            position: connection.position,
+            createdAt: connection.createdAt,
+            updatedAt: connection.updatedAt,
+          })),
+          policies: policies.map((policy) => ({
+            id: policy.id,
+            pattern: policy.pattern,
+            action: policy.action,
+            position: policy.position,
+            createdAt: policy.createdAt,
+            updatedAt: policy.updatedAt,
+          })),
+          toolAddresses: toolAddresses.map(String),
+          connectionAddresses: connectionAddresses.map(String),
+        }),
+      );
+      return {
+        actions: ["discover", "invoke"] as const,
+        toolkitId: toolkit.data.id,
+        revision,
+        toolAddresses,
+        connectionAddresses,
+      } as const;
+    });
+
   return {
     list,
     create,
@@ -604,6 +687,7 @@ const makeToolkitsExtension = (ctx: PluginCtx<ToolkitStorage>) => {
     policyRulesForSlug,
     resolvePolicyForSlug,
     preparePolicyResolverForSlug,
+    snapshotForSlug,
   };
 };
 

@@ -36,6 +36,17 @@ export interface BlobStore {
     key: string,
     value: string,
   ) => Effect.Effect<void, StorageError>;
+  /**
+   * Create a value exactly once. Backends must make the existence check and
+   * insert atomic; a false result means another writer already claimed the
+   * key. This is deliberately separate from `put`, whose overwrite semantics
+   * are needed by ordinary plugin storage.
+   */
+  readonly claim: (
+    namespace: string,
+    key: string,
+    value: string,
+  ) => Effect.Effect<boolean, StorageError>;
   readonly delete: (namespace: string, key: string) => Effect.Effect<void, StorageError>;
   readonly has: (namespace: string, key: string) => Effect.Effect<boolean, StorageError>;
 }
@@ -149,6 +160,13 @@ export const makeInMemoryBlobStore = (): BlobStore => {
       Effect.sync(() => {
         store.set(k(ns, key), value);
       }),
+    claim: (ns, key, value) =>
+      Effect.sync(() => {
+        const id = k(ns, key);
+        if (store.has(id)) return false;
+        store.set(id, value);
+        return true;
+      }),
     delete: (ns, key) =>
       Effect.sync(() => {
         store.delete(k(ns, key));
@@ -232,6 +250,24 @@ export const makeFumaBlobStore = (fuma: IFumaClient): BlobStore => ({
         (cause) => new StorageError({ message: "FumaDB blob operation failed", cause }),
       ),
     ),
+  claim: (namespace, key, value) =>
+    fuma
+      .use("blob.claim", (db) =>
+        db
+          .create("blob", {
+            id: blobId(namespace, key),
+            namespace,
+            key,
+            value,
+          })
+          .then(() => true),
+      )
+      .pipe(
+        Effect.catchTag("UniqueViolationError", () => Effect.succeed(false)),
+        Effect.mapError(
+          (cause) => new StorageError({ message: "FumaDB blob operation failed", cause }),
+        ),
+      ),
   delete: (namespace, key) =>
     fuma
       .use("blob.delete", (db) =>

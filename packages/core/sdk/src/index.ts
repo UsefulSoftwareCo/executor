@@ -515,7 +515,7 @@ export {
 export { buildToolTypeScriptPreview } from "./schema-types";
 
 // Wire-level HTTP error schemas usable by plugin HttpApiGroup definitions.
-export { InternalError } from "./api-errors";
+export { DelegationForbiddenError, InternalError } from "./api-errors";
 
 // ToolResult — typed value-based discriminated union for tool outcomes.
 export {

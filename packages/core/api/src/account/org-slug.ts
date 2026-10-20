@@ -58,6 +58,7 @@ export const RESERVED_ORG_SLUGS: ReadonlySet<string> = new Set([
   "resume",
   "plugins",
   "api-keys",
+  "delegated-credentials",
   "billing",
   "create-org",
   "setup-mcp",

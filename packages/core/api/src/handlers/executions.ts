@@ -1,13 +1,22 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { Schema } from "effect";
 
 import { ExecutorApi } from "../api";
-import { formatExecuteResult, formatPausedExecution } from "@executor-js/execution";
+import {
+  formatExecuteResult,
+  formatPausedExecution,
+  type ExecutionResult,
+} from "@executor-js/execution";
 import { resolveArtifactAction } from "@executor-js/host-mcp/artifact-action";
 import { TOOL_CALL_CONTRACT_MESSAGE } from "@executor-js/host-mcp/tool-call-code";
-import { PENDING_APPROVAL_TTL_MS } from "@executor-js/sdk";
-import { ExecutionEngineService, ExecutorService } from "../services";
+import {
+  PENDING_APPROVAL_TTL_MS,
+  type DelegationBinding,
+  type PendingApprovalRecord as PendingApproval,
+} from "@executor-js/sdk";
+import { DelegatedExecutionResumer, ExecutionEngineService, ExecutorService } from "../services";
+import { AuthContext } from "../server/identity";
 import { capture, captureEngineError } from "@executor-js/api";
 
 class ExecutionNotFoundError extends Schema.TaggedErrorClass<ExecutionNotFoundError>()(
@@ -111,13 +120,76 @@ const recordPendingApproval = (approval: {
   readonly artifactId: string;
   readonly code: string;
   readonly address: string;
+  readonly delegationBinding?: DelegationBinding;
 }): Effect.Effect<void, never, ExecutorService> =>
   Effect.gen(function* () {
     const executor = yield* ExecutorService;
     yield* executor.pendingApprovals
-      .put({ ...approval, expiresAt: Date.now() + PENDING_APPROVAL_TTL_MS })
+      .put({
+        ...approval,
+        expiresAt: Date.now() + PENDING_APPROVAL_TTL_MS,
+        ...(approval.delegationBinding === undefined
+          ? {}
+          : { delegationBinding: approval.delegationBinding }),
+      })
       .pipe(Effect.catchCause(() => Effect.void));
   });
+
+const sameDelegationBinding = (left: DelegationBinding, right: DelegationBinding): boolean =>
+  String(left.tenant) === String(right.tenant) &&
+  String(left.grantId) === String(right.grantId) &&
+  String(left.credentialId) === String(right.credentialId) &&
+  left.credentialRef === right.credentialRef &&
+  String(left.actorSubject) === String(right.actorSubject) &&
+  String(left.effectiveSubject) === String(right.effectiveSubject) &&
+  String(left.scopeVersion) === String(right.scopeVersion);
+
+const bindingFromAuth = (auth: AuthContext["Service"] | null): DelegationBinding | undefined => {
+  if (auth === null) return undefined;
+  if (auth.kind !== "delegated" || auth.delegation === undefined) return undefined;
+  return {
+    tenant: auth.delegation.tenant,
+    grantId: auth.delegation.grantId,
+    credentialId: auth.delegation.credentialId,
+    credentialRef: auth.delegation.credentialRef,
+    actorSubject: auth.delegation.actorSubject,
+    effectiveSubject: auth.delegation.effectiveSubject,
+    scopeVersion: auth.delegation.scopeVersion,
+  };
+};
+
+/** The pending record is in the effective subject's owner partition. A
+ * delegated machine must match every persisted grant field; a human target or
+ * admin may approve a grant through the host resumer, which rebuilds the
+ * original scoped engine. */
+const canResumePending = (
+  approval: PendingApproval,
+  auth: AuthContext["Service"] | null,
+): boolean => {
+  const binding = approval.delegationBinding;
+  if (binding === undefined) {
+    return auth === null || (auth.kind !== "delegated" && auth.accountId !== null);
+  }
+  if (auth === null) return false;
+  const current = bindingFromAuth(auth);
+  if (current !== undefined) return sameDelegationBinding(current, binding);
+  return (
+    auth.kind === "member" &&
+    auth.accountId !== null &&
+    (auth.accountId === String(binding.effectiveSubject) || auth.roles.includes("admin"))
+  );
+};
+
+const samePendingRecord = (left: PendingApproval, right: PendingApproval): boolean =>
+  left.executionId === right.executionId &&
+  left.artifactId === right.artifactId &&
+  left.code === right.code &&
+  left.address === right.address &&
+  left.expiresAt === right.expiresAt &&
+  (left.delegationBinding === undefined
+    ? right.delegationBinding === undefined
+    : right.delegationBinding !== undefined &&
+      sameDelegationBinding(left.delegationBinding, right.delegationBinding));
 
 /**
  * Honour an approval whose paused fiber is no longer reachable.
@@ -134,9 +206,42 @@ const resumeFromPendingApproval = (executionId: string, action: "accept" | "decl
   Effect.gen(function* () {
     const executor = yield* ExecutorService;
     const engine = yield* ExecutionEngineService;
+    const auth = yield* Effect.serviceOption(AuthContext).pipe(
+      Effect.map((value) => Option.getOrElse(value, () => null)),
+    );
+    const resumer = yield* DelegatedExecutionResumer;
+
+    const pending = yield* executor.pendingApprovals
+      .get(executionId)
+      .pipe(Effect.catchCause(() => Effect.succeed(null)));
+    if (!pending || !canResumePending(pending, auth)) return null;
+
+    const binding = pending.delegationBinding;
+    if (binding !== undefined && auth?.kind === "member") {
+      if (action === "accept" && resumer === null) return null;
+      if (resumer !== null) {
+        const authorized = yield* captureEngineError(
+          resumer.authorize({
+            binding,
+            executionId,
+            approver: {
+              kind: "member",
+              accountId: auth.accountId,
+              organizationId: auth.organizationId,
+              roles: auth.roles,
+            },
+          }),
+        );
+        if (!authorized) return null;
+      }
+    } else if (binding !== undefined && auth?.kind === "delegated" && auth.delegation) {
+      // Revalidate before consuming the one-shot record. A revoked grant must
+      // not lose its approval record and must never be dispatched.
+      yield* auth.delegation.revalidate({ operation: "approval", executionId });
+    }
 
     const approval = yield* executor.pendingApprovals
-      .consume(executionId)
+      .consume(executionId, (candidate) => samePendingRecord(candidate, pending))
       .pipe(Effect.catchCause(() => Effect.succeed(null)));
     if (!approval) return null;
 
@@ -149,32 +254,57 @@ const resumeFromPendingApproval = (executionId: string, action: "accept" | "decl
       };
     }
 
-    // The human approved, so run the recorded call with the gate satisfied.
+    if (binding !== undefined && auth?.kind === "member") {
+      if (resumer === null) return null;
+      const outcome = yield* captureEngineError(
+        resumer.resume({
+          code: approval.code,
+          binding,
+          executionId,
+          approver: {
+            kind: "member",
+            accountId: auth.accountId,
+            organizationId: auth.organizationId,
+            roles: auth.roles,
+          },
+        }),
+      );
+      if (outcome === null) return null;
+      return formatResumedOutcome(outcome);
+    }
+
+    // The exact delegated caller approved, so run the recorded call with the
+    // gate satisfied on the already grant-scoped engine. A human never reaches
+    // this branch: rebuilding their engine is the resumer path above.
     // `code` is the address the server itself resolved at pause time, so this
     // runs exactly the call that was described in the approval prompt.
     const outcome = yield* captureEngineError(
       engine.executeWithPause(approval.code, { autoApprove: true }),
     );
 
-    if (outcome.status === "completed") {
-      const formatted = formatExecuteResult(outcome.result);
-      return {
-        status: "completed" as const,
-        text: formatted.text,
-        structured: formatted.structured,
-        isError: formatted.isError,
-      };
-    }
+    return formatResumedOutcome(outcome);
+  });
 
-    // `autoApprove` accepts every gate inline, so a second pause is not
-    // reachable here; surface it rather than silently dropping the call.
-    const formatted = formatPausedExecution(outcome.execution);
+const formatResumedOutcome = (outcome: ExecutionResult) => {
+  if (outcome.status === "completed") {
+    const formatted = formatExecuteResult(outcome.result);
     return {
-      status: "paused" as const,
+      status: "completed" as const,
       text: formatted.text,
       structured: formatted.structured,
+      isError: formatted.isError,
     };
-  });
+  }
+
+  // `autoApprove` accepts every gate inline, so a second pause is not
+  // reachable here; surface it rather than silently dropping the call.
+  const formatted = formatPausedExecution(outcome.execution);
+  return {
+    status: "paused" as const,
+    text: formatted.text,
+    structured: formatted.structured,
+  };
+};
 
 export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions", (handlers) =>
   handlers
@@ -196,6 +326,10 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
       capture(
         Effect.gen(function* () {
           const engine = yield* ExecutionEngineService;
+          const auth = yield* Effect.serviceOption(AuthContext).pipe(
+            Effect.map((value) => Option.getOrElse(value, () => null)),
+          );
+          const delegationBinding = bindingFromAuth(auth);
           // An artifact-originated request is not arbitrary code. It is parsed
           // against the shell proxy's one grammar and rewritten through the
           // artifact's connection bindings, exactly as `execute-action` does in
@@ -206,7 +340,14 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
               ? payload.code
               : yield* resolveArtifactCode(payload.code, payload.artifactId);
           const outcome = yield* captureEngineError(
-            engine.executeWithPause(code, { autoApprove: payload.autoApprove }),
+            engine.executeWithPause(code, {
+              // `autoApprove` means the caller is a verified human approver.
+              // A delegated credential is a machine actor and may never turn
+              // an approval policy into an unconditional execution through a
+              // request body flag. Durable human approval has its own
+              // grant-bound resumer path above.
+              autoApprove: auth?.kind === "delegated" ? false : payload.autoApprove,
+            }),
           );
 
           if (outcome.status === "completed") {
@@ -231,6 +372,7 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
               artifactId: payload.artifactId,
               code,
               address: String(outcome.execution.elicitationContext.address),
+              ...(delegationBinding === undefined ? {} : { delegationBinding }),
             });
           }
 
@@ -248,11 +390,16 @@ export const ExecutionsHandlers = HttpApiBuilder.group(ExecutorApi, "executions"
         Effect.gen(function* () {
           const engine = yield* ExecutionEngineService;
           const result = yield* captureEngineError(
-            engine.resume(path.executionId, {
-              action: payload.action,
-              content: payload.content as Record<string, unknown> | undefined,
-              ...(payload.persist === undefined ? {} : { meta: { persist: payload.persist } }),
-            }),
+            engine
+              .resume(path.executionId, {
+                action: payload.action,
+                content: payload.content as Record<string, unknown> | undefined,
+                ...(payload.persist === undefined ? {} : { meta: { persist: payload.persist } }),
+              })
+              // A human may be answering a live delegated pause. Let the
+              // durable path resolve the original binding instead of turning
+              // the denial into an opaque engine error or running as human.
+              .pipe(Effect.catchTag("DelegationDeniedError", () => Effect.succeed(null))),
           );
 
           // No live pause: either this resume landed on a different engine

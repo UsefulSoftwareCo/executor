@@ -47,6 +47,7 @@ import type {
   SaveArtifactInput,
   ToolFileValue,
   Executor,
+  StorageFailure,
   ToolSchemaView,
 } from "@executor-js/sdk";
 import type * as Tracer from "effect/Tracer";
@@ -1675,7 +1676,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const executeCode = (
       code: string,
       extra: McpRequestJoinKeys,
-    ): Effect.Effect<McpToolResult, E> =>
+    ): Effect.Effect<McpToolResult, E | StorageFailure> =>
       Effect.gen(function* () {
         yield* startMarker("mcp.host.tool.execute.start", {
           "mcp.tool.name": "execute",
@@ -1842,7 +1843,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       executionId: string,
       response: ResumeResponse,
       extra: McpRequestJoinKeys,
-    ): Effect.Effect<McpToolResult, E> =>
+    ): Effect.Effect<McpToolResult, E | StorageFailure> =>
       Effect.gen(function* () {
         yield* startMarker("mcp.host.tool.resume.start", {
           "mcp.tool.name": "resume",
@@ -1936,7 +1937,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
     const resumeAfterBrowserApproval = (
       executionId: string,
       extra: McpRequestJoinKeys,
-    ): Effect.Effect<McpToolResult, E> =>
+    ): Effect.Effect<McpToolResult, E | StorageFailure> =>
       Effect.gen(function* () {
         yield* startMarker("mcp.host.tool.resume.browser_approval.start", {
           "mcp.tool.name": "resume",

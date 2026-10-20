@@ -21,3 +21,10 @@ export class InternalError extends Schema.TaggedErrorClass<InternalError>()(
   },
   { httpApiStatus: 500 },
 ) {}
+
+/** A valid delegated credential requested an action outside its consent. */
+export class DelegationForbiddenError extends Schema.TaggedErrorClass<DelegationForbiddenError>()(
+  "DelegationForbiddenError",
+  { message: Schema.String },
+  { httpApiStatus: 403 },
+) {}

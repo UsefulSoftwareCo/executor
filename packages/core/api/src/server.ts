@@ -1,8 +1,11 @@
 export {
   ArtifactUsageObserver,
+  DelegatedExecutionResumer,
   ExecutorService,
   ExecutionEngineService,
   type ArtifactUsageAction,
+  type DelegatedExecutionApprover,
+  type DelegatedExecutionResumer as DelegatedExecutionResumerShape,
 } from "./services";
 export {
   CoreHandlers,
@@ -22,7 +25,22 @@ export {
   providePluginExtensions,
   type PluginExtensionServices,
 } from "./plugin-routes";
-export { AccountProvider, type AccountProviderShape, type AccountHeaders } from "./account/service";
+export {
+  AccountProvider,
+  DelegationProvider,
+  type AccountProviderShape,
+  type AccountHeaders,
+  type DelegationProviderShape,
+  type DelegationRequestContext,
+} from "./account/service";
+export {
+  makeDelegationProvider,
+  type DelegationAccountHost,
+  type DelegationAccountKeyStore,
+  type DelegationProviderKey,
+  type DelegationHuman,
+  type DelegationProof,
+} from "./account/delegation-provider";
 export { AccountHandlers } from "./account/handlers";
 export {
   AdminUsersProvider,
@@ -100,8 +118,10 @@ export {
   ReadOnlyCredential,
   authContextFromPrincipal,
   authContextFromPlatform,
+  isDelegatedPrincipal,
   isPlatformPrincipal,
   type Principal,
+  type DelegatedPrincipal,
   type PlatformPrincipal,
   type ResolvedPrincipal,
   type IdentityProviderShape,
@@ -120,6 +140,8 @@ export {
 export { adminUserDirectoryFromMembers } from "./admin/member-directory";
 export {
   makeExecutionStackMiddleware,
+  isDelegatedManagementPath,
+  isDelegatedExecutionPath,
   textFailureStrategy,
   type FailureRenderingStrategy,
   type MakeExecutionStackMiddlewareOptions,

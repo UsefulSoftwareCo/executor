@@ -90,8 +90,9 @@ export interface PendingApprovalStore {
   readonly put: (approval: PendingApproval) => Effect.Effect<void, StorageError>;
   /** Read without consuming. Expired or malformed records read as absent. */
   readonly get: (executionId: string) => Effect.Effect<PendingApproval | null, StorageError>;
-  /** Read and DELETE in one step — an approval authorizes exactly one run.
-   * An optional matcher is evaluated before deletion. This lets a resume
+  /** Atomically claim and then delete — an approval authorizes exactly one
+   * run, including when two isolates resume the same record concurrently. An
+   * optional matcher is evaluated before the durable claim. This lets a resume
    * caller prove it owns the exact delegated binding without consuming a
    * different grant that happens to share the same owner partition. */
   readonly consume: (
@@ -116,6 +117,14 @@ export const makePendingApprovalStore = (
   now: () => number = Date.now,
 ): PendingApprovalStore => {
   const namespace = `${partition}/@pending-approval`;
+  // Claims are durable tombstones in a separate namespace. Keeping the marker
+  // after deleting the approval is what makes a replay fail across executor
+  // instances, rather than only while one process happens to be alive.
+  const claimNamespace = `${namespace}/@claim`;
+  // The claim tombstone is deliberately a constant. The approval payload can
+  // contain code and user arguments, so retaining it after the approval row is
+  // consumed would unnecessarily extend the lifetime of sensitive data.
+  const claimMarker = "claimed";
 
   return {
     put: (approval) => blobs.put(namespace, approval.executionId, encodePendingApproval(approval)),
@@ -147,6 +156,8 @@ export const makePendingApprovalStore = (
         // place. The authorized human or exact delegated caller may still
         // approve it; a same-partition caller must not be able to burn it.
         if (matches !== undefined && !matches(approval)) return null;
+        const claimed = yield* blobs.claim(claimNamespace, executionId, claimMarker);
+        if (!claimed) return null;
         yield* blobs.delete(namespace, executionId);
         return approval;
       }),

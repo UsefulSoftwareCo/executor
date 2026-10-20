@@ -42,6 +42,7 @@ import {
   type Executor,
   type ExecutorConfig,
   type FirstPartyOAuthClientConfig,
+  type DelegationContext,
   type StorageFailure,
 } from "@executor-js/sdk";
 import {
@@ -264,6 +265,8 @@ export const makeScopedExecutor = <
      *  `ExecutorConfig.orgWrites`). Hosts derive it from the acting member's
      *  role; omitted -> allowed (hosts with no role model). */
     readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+    /** Host-verified delegated grant bound to this effective subject. */
+    readonly delegation?: DelegationContext;
   },
 ): Effect.Effect<Executor<TPlugins>, StorageFailure, DbProvider | PluginsProvider | HostConfig> =>
   Effect.gen(function* () {
@@ -337,6 +340,7 @@ export const makeScopedExecutor = <
       ...(waitUntil !== undefined ? { waitUntil } : {}),
       onElicitation: "accept-all",
       ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+      ...(options?.delegation === undefined ? {} : { delegation: options.delegation }),
       redirectUri,
       oauthCallbackStateOrgSlug: orgSlug,
       firstPartyOAuthClients: config.firstPartyOAuthClients,
