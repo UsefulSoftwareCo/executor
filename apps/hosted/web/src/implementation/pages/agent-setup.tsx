@@ -29,6 +29,7 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { Spinner } from "@executor-js/ui/components/spinner";
 import { useHydrated } from "@executor-js/ui/hooks/hydrated";
 import { cn } from "@executor-js/ui/lib/utils";
+import { randomUuid } from "@executor-js/utils/random-uuid";
 import { inventoryAtom, organizationsAtom } from "../../contracts/organization.ts";
 import {
   AgentBaseline,
@@ -132,11 +133,11 @@ export function AgentSetupPage() {
  */
 function useBaselineCapture(screen: string) {
   const hydrated = useHydrated();
-  const [capture, setCapture] = useState(() => (hydrated ? crypto.randomUUID() : "document"));
+  const [capture, setCapture] = useState(() => (hydrated ? randomUuid() : "document"));
   const [shown, setShown] = useState(screen);
   if (screen !== shown) {
     setShown(screen);
-    setCapture(crypto.randomUUID());
+    setCapture(randomUuid());
   }
   return capture;
 }
