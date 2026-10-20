@@ -1,10 +1,12 @@
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 
 import { makeConsoleMcpErrorReporter, makeMcpBuildServer } from "@executor-js/api/server";
 import type { McpErrorReporter } from "@executor-js/host-mcp";
+import type { DelegationCapability } from "@executor-js/sdk";
 import {
   inMemoryMcpSessionsLayer,
   makeInMemoryMcpSessionStore,
+  type BrowserApprovalAuditInput,
   type InMemoryMcpSessionStore,
 } from "@executor-js/host-mcp/in-memory-session-store";
 
@@ -37,6 +39,11 @@ export const makeSelfHostMcpSessionStore = (
   db: SelfHostDbHandle,
   webBaseUrl?: string,
   sessionIdleTtlMs?: number,
+  onBrowserApproval?: (input: BrowserApprovalAuditInput) => Effect.Effect<void, unknown, never>,
+  revalidateDelegation?: (
+    principal: Extract<import("@executor-js/host-mcp").Principal, { readonly kind: "delegated" }>,
+    capability: DelegationCapability,
+  ) => Effect.Effect<void, unknown, never>,
 ): InMemoryMcpSessionStore =>
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
@@ -52,6 +59,8 @@ export const makeSelfHostMcpSessionStore = (
     {
       ...(webBaseUrl === undefined ? {} : { webBaseUrl }),
       ...(sessionIdleTtlMs === undefined ? {} : { sessionIdleTtlMs }),
+      ...(onBrowserApproval === undefined ? {} : { onBrowserApproval }),
+      ...(revalidateDelegation === undefined ? {} : { revalidateDelegation }),
     },
   );
 

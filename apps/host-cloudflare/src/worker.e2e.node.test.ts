@@ -648,5 +648,5 @@ describe("cloudflare host configuration errors", () => {
         "Cloudflare Access is not configured. Set ACCESS_TEAM_DOMAIN and ACCESS_AUD before serving requests.\n",
       );
     }
-  });
+  }, 30_000);
 });

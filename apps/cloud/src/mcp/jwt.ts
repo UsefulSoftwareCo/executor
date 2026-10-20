@@ -33,6 +33,8 @@ export type VerifiedToken = {
   accountId: string;
   /** The WorkOS organization ID, if the session has org context. */
   organizationId: string | null;
+  /** Stable provider key id when this token was a verified API key. */
+  apiKeyId?: string;
 };
 
 export class McpJwtVerificationError extends Data.TaggedError("McpJwtVerificationError")<{

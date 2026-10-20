@@ -11,7 +11,9 @@ import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import type { ExecutorDbHandle } from "@executor-js/api/server";
 import {
   McpAgentSessionDOBase,
+  McpDelegationUnavailableError,
   type BuiltMcpServer,
+  type McpApprovalPrincipal,
   type McpModelResumeCaller,
   type McpSessionModelResumeResult,
   type McpSessionInit,
@@ -25,8 +27,20 @@ import {
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import type { ResumeResponse } from "@executor-js/execution";
+import {
+  CredentialId,
+  DelegationId,
+  DelegationScopeVersion,
+  makeVerifiedHumanSubjectRegistry,
+  Subject,
+  Tenant,
+  type DelegationBinding,
+  type DelegationCapability,
+} from "@executor-js/sdk";
+import type { McpDelegationBinding } from "@executor-js/cloudflare/mcp/do-headers";
 
 import { loadConfig, type CloudflareConfig, type CloudflareEnv } from "../config";
+import { makeCloudflareDelegationService } from "../auth/delegation";
 import { createD1ExecutorDb } from "../db/d1";
 import { makeCloudflareExecutionStackLayer, makeExecutionStack } from "../execution";
 import { preloadQuickJs } from "../quickjs";
@@ -134,7 +148,118 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
       artifactsEnabled: token.artifactsEnabled,
       searchToolsEnabled: token.searchToolsEnabled,
       toolMode: token.toolMode,
+      ...(token.delegation === undefined ? {} : { delegation: token.delegation }),
     } satisfies SessionMeta);
+  }
+
+  private delegationBinding(binding: McpDelegationBinding): DelegationBinding {
+    return {
+      tenant: Tenant.make(binding.tenant),
+      grantId: DelegationId.make(binding.grantId),
+      credentialId: CredentialId.make(binding.credentialId),
+      credentialRef: binding.credentialRef,
+      actorSubject: Subject.make(binding.actorSubject),
+      effectiveSubject: Subject.make(binding.effectiveSubject),
+      scopeVersion: DelegationScopeVersion.make(binding.scopeVersion),
+    };
+  }
+
+  private delegationService(dbHandle: Pick<CfSessionDbHandle, "db">) {
+    const config = this.cfConfig;
+    const registry = makeVerifiedHumanSubjectRegistry(dbHandle.db);
+    return makeCloudflareDelegationService(dbHandle, this.cfConfig, {
+      isVerifiedHuman: (subject) =>
+        registry.isVerifiedHuman({
+          tenant: config.organizationId,
+          subject: String(subject),
+        }),
+      // The Worker verifies the current Access service-token JWT before every
+      // machine request reaches this DO. A cold restore has no bearer to
+      // recheck; this durable check therefore covers grant revocation, expiry,
+      // scope changes, and target disablement. Cloudflare does not expose an
+      // offline query for upstream Access-token revocation, so this adapter
+      // does not claim to observe that external lifecycle event. Each new
+      // request still requires a valid JWT at the Worker edge.
+      isCurrentlyAuthorized: (grant) =>
+        registry.isVerifiedHuman({
+          tenant: config.organizationId,
+          subject: String(grant.effectiveSubject),
+        }),
+      isManagementAuthorized: (actorSubject, targetSubject) =>
+        Effect.gen(function* () {
+          const actor = yield* registry.isVerifiedHuman({
+            tenant: config.organizationId,
+            subject: String(actorSubject),
+          });
+          if (!actor) return false;
+          if (targetSubject === undefined) return true;
+          return yield* registry.isVerifiedHuman({
+            tenant: config.organizationId,
+            subject: String(targetSubject),
+          });
+        }),
+      verifyProof: () => Effect.succeed(false),
+    });
+  }
+
+  private resolveDelegation(
+    binding: McpDelegationBinding,
+    dbHandle: Pick<CfSessionDbHandle, "db">,
+  ) {
+    return this.delegationService(dbHandle).resolveBinding(this.delegationBinding(binding));
+  }
+
+  protected override revalidateDelegation(
+    binding: McpDelegationBinding,
+    capability: DelegationCapability,
+  ): Effect.Effect<void, McpDelegationUnavailableError> {
+    return Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: () => this.openSessionDb(),
+        catch: () => new McpDelegationUnavailableError(),
+      }),
+      (dbHandle) => {
+        const service = this.delegationService(dbHandle);
+        return service.resolveBinding(this.delegationBinding(binding)).pipe(
+          Effect.flatMap((grant) => service.revalidate(grant, capability)),
+          Effect.mapError(() => new McpDelegationUnavailableError()),
+        );
+      },
+      (dbHandle) => Effect.promise(() => dbHandle.end()).pipe(Effect.ignore),
+    );
+  }
+
+  protected override auditBrowserApproval(
+    binding: McpDelegationBinding | undefined,
+    approver: McpApprovalPrincipal,
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<void, McpDelegationUnavailableError> {
+    if (binding === undefined) return Effect.void;
+    return Effect.acquireUseRelease(
+      Effect.tryPromise({
+        try: () => this.openSessionDb(),
+        catch: () => new McpDelegationUnavailableError(),
+      }),
+      (dbHandle) => {
+        const service = this.delegationService(dbHandle);
+        return service.resolveBinding(this.delegationBinding(binding)).pipe(
+          Effect.flatMap((grant) =>
+            service.audit({
+              grantId: grant.grantId,
+              credentialId: grant.credentialId,
+              actorSubject: Subject.make(approver.accountId),
+              effectiveSubject: grant.effectiveSubject,
+              action: "approval",
+              outcome: response.action === "accept" ? "allowed" : "denied",
+              executionId,
+            }),
+          ),
+          Effect.mapError(() => new McpDelegationUnavailableError()),
+        );
+      },
+      (dbHandle) => Effect.promise(() => dbHandle.end()).pipe(Effect.ignore),
+    );
   }
 
   protected override buildMcpServer(
@@ -151,7 +276,13 @@ export class McpSessionDO extends McpAgentSessionDOBase<CloudflareEnv, CfSession
         sessionMeta.userId,
         sessionMeta.organizationId,
         sessionMeta.organizationName,
-        { mcpResource: sessionMeta.resource, orgWrites: "request" },
+        {
+          mcpResource: sessionMeta.resource,
+          orgWrites: "request",
+          ...(sessionMeta.delegation === undefined
+            ? {}
+            : { delegation: yield* self.resolveDelegation(sessionMeta.delegation, dbHandle) }),
+        },
       ).pipe(Effect.provide(makeCloudflareExecutionStackLayer(config, dbHandle)));
       // Browser elicitation mode (the base owns the approval store + the HTTP
       // approval RPCs): a gated execution pauses and returns an approvalUrl into

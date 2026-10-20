@@ -168,13 +168,17 @@ describe("toolkitsPlugin", () => {
       });
       yield* executor.toolkits.createPolicy(toolkit.id, {
         pattern: "snapshot-test.org.main.read",
+        action: "block",
+      });
+      yield* executor.toolkits.createPolicy(toolkit.id, {
+        pattern: "snapshot-test.org.main.*",
         action: "require_approval",
       });
 
       const snapshot = yield* executor.toolkits.snapshotForSlug(toolkit.slug);
       expect(snapshot).not.toBeNull();
       expect(snapshot?.toolAddresses.map(String)).toContain("tools.snapshot-test.org.main.read");
-      expect(snapshot?.connectionAddresses.map(String)).toContain("snapshot-test.org.main");
+      expect(snapshot?.connectionAddresses.map(String)).toContain("tools.snapshot-test.org.main");
       const resolved = yield* executor.toolkits.resolvePolicyForSlug(
         toolkit.slug,
         "tools.snapshot-test.org.main.read",

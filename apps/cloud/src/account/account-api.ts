@@ -5,9 +5,10 @@ import { Clock, Effect, Layer } from "effect";
 
 import {
   AccountProvider,
+  DelegationProvider,
   makeAccountApiLayer,
   requestScopedMiddleware,
-  type MemberDirectory,
+  MemberDirectory,
 } from "@executor-js/api/server";
 
 import { ApiKeyService } from "../auth/api-keys";
@@ -18,6 +19,7 @@ import { WorkOSClient } from "../auth/workos";
 import { AutumnService } from "../extensions/billing/service";
 import { DbService } from "../db/db";
 import { AccountCaller, workosAccountProvider } from "./workos-account-service";
+import { cloudDelegationProvider } from "./delegation-provider";
 
 // ---------------------------------------------------------------------------
 // Cloud account API — the shared, provider-neutral `AccountHandlers` backed by
@@ -115,6 +117,38 @@ const AccountProviderMiddleware = HttpRouter.middleware<{
 export const workosAccountMiddleware = (
   rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
 ) => AccountProviderMiddleware.combine(requestScopedMiddleware(rsLive)).layer;
+
+/** Cloud's delegated account plane. It shares the account request scope but
+ * keeps a separate provider so ordinary cookie account routes retain their
+ * existing behavior. The provider is rebuilt per request over that request's
+ * database socket and WorkOS directory. */
+const DelegationProviderMiddleware = HttpRouter.middleware<{
+  provides: DelegationProvider;
+}>()(
+  Effect.gen(function* () {
+    const longLived = yield* Effect.context<WorkOSClient>();
+    return (httpEffect) =>
+      Effect.gen(function* () {
+        const workos = yield* WorkOSClient;
+        // Build the WorkOS API-key facade in the request fiber, like the
+        // ordinary account provider, so this seam carries only the shared
+        // WorkOS boot dependency and does not leak an unbound ApiKeyService
+        // through ExecutorApp's account residual.
+        const apiKeys = yield* Effect.provide(ApiKeyService.asEffect(), ApiKeyService.WorkOS);
+        const db = yield* DbService;
+        const directory = yield* MemberDirectory;
+        const provider = yield* Effect.provide(
+          DelegationProvider.asEffect(),
+          cloudDelegationProvider({ db, directory, apiKeys, workos }),
+        );
+        return yield* Effect.provideService(httpEffect, DelegationProvider, provider);
+      }).pipe(Effect.provideContext(longLived));
+  }),
+);
+
+export const workosDelegationMiddleware = (
+  rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
+) => DelegationProviderMiddleware.combine(requestScopedMiddleware(rsLive)).layer;
 
 export const makeAccountApiLive = (
   rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,

@@ -253,7 +253,11 @@ const isPersonalDynamicToolId = (toolId: string): boolean =>
 const connectionAddressForTool = (toolId: string): ConnectionAddress | null => {
   if (!toolId.startsWith("tools.")) return null;
   const parts = canonicalToolkitToolId(toolId).split(".");
-  return parts.length >= 4 ? ConnectionAddress.make(parts.slice(0, 3).join(".")) : null;
+  // ConnectionAddress is the same callable prefix used by the persisted
+  // connection row and SDK dispatch capability. Toolkit policy patterns omit
+  // `tools.` for matching, but the frozen snapshot must retain it so scope
+  // options and delegated revalidation join the real catalog row exactly.
+  return parts.length >= 4 ? ConnectionAddress.make(`tools.${parts.slice(0, 3).join(".")}`) : null;
 };
 
 const toolkitToResponse = (entry: { readonly owner: Owner; readonly data: ToolkitRecord }) => ({

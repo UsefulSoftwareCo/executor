@@ -22,7 +22,7 @@ import { sessionOrgRoleMetadata } from "@executor-js/cloudflare/mcp/role-metadat
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
-import { cloudflareAccessMcpAuth } from "./auth";
+import { cloudflareDelegatedAccessMcpAuth } from "./auth";
 import { mcpResourceFromPath } from "./resource";
 import { McpSessionDO } from "./session-durable-object";
 
@@ -67,12 +67,12 @@ const renderAuthError = (
   return jsonRpcResponse(503, -32001, outcome.message);
 };
 
-const authenticate = (request: Request, config: CloudflareConfig) =>
+const authenticate = (request: Request, config: CloudflareConfig, env: CloudflareEnv) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
     const outcome = yield* auth.authenticate(request);
     return { auth, outcome };
-  }).pipe(Effect.provide(cloudflareAccessMcpAuth(config)));
+  }).pipe(Effect.provide(cloudflareDelegatedAccessMcpAuth(config, env)));
 
 const propsForPrincipal = (
   request: Request,
@@ -81,6 +81,18 @@ const propsForPrincipal = (
 ): Effect.Effect<McpSessionProps> =>
   Effect.gen(function* () {
     const propagation = yield* currentPropagationHeaders(request);
+    const delegation =
+      principal.kind === "delegated"
+        ? {
+            tenant: principal.tenant,
+            grantId: principal.grantId,
+            credentialId: principal.credentialId,
+            credentialRef: principal.credentialRef,
+            actorSubject: principal.actorSubject,
+            effectiveSubject: principal.effectiveSubject,
+            scopeVersion: principal.scopeVersion,
+          }
+        : undefined;
     return {
       session: {
         organizationId: principal.organizationId,
@@ -92,6 +104,7 @@ const propsForPrincipal = (
         toolMode: readToolMode(request),
         resource,
         webOrigin: new URL(request.url).origin,
+        ...(delegation === undefined ? {} : { delegation }),
       },
       propagation,
     };
@@ -109,7 +122,7 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
     if (request.method === "OPTIONS") return corsPreflightResponse();
     const sessionId = request.headers.get("mcp-session-id");
 
-    const { auth, outcome } = await Effect.runPromise(authenticate(request, config));
+    const { auth, outcome } = await Effect.runPromise(authenticate(request, config, env));
     if (!Predicate.isTagged(outcome, "Authenticated")) {
       if (Predicate.isTagged(outcome, "Forbidden") && sessionId) {
         await Effect.runPromise(
@@ -137,6 +150,19 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
         {
           accountId: outcome.principal.accountId,
           organizationId: outcome.principal.organizationId,
+          ...(outcome.principal.kind === "delegated"
+            ? {
+                delegation: {
+                  tenant: outcome.principal.tenant,
+                  grantId: outcome.principal.grantId,
+                  credentialId: outcome.principal.credentialId,
+                  credentialRef: outcome.principal.credentialRef,
+                  actorSubject: outcome.principal.actorSubject,
+                  effectiveSubject: outcome.principal.effectiveSubject,
+                  scopeVersion: outcome.principal.scopeVersion,
+                },
+              }
+            : {}),
         },
         resource,
       );
@@ -161,6 +187,19 @@ export const makeCloudflareMcpAgentHandler = (config: CloudflareConfig) => {
         {
           accountId: outcome.principal.accountId,
           organizationId: outcome.principal.organizationId,
+          ...(outcome.principal.kind === "delegated"
+            ? {
+                delegation: {
+                  tenant: outcome.principal.tenant,
+                  grantId: outcome.principal.grantId,
+                  credentialId: outcome.principal.credentialId,
+                  credentialRef: outcome.principal.credentialRef,
+                  actorSubject: outcome.principal.actorSubject,
+                  effectiveSubject: outcome.principal.effectiveSubject,
+                  scopeVersion: outcome.principal.scopeVersion,
+                },
+              }
+            : {}),
         },
         resource,
       ),

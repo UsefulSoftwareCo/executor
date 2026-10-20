@@ -49,6 +49,133 @@ export const subject = pgTable(
   (table) => [uniqueIndex("subject_uidx").on(table.tenant, table.external_id)],
 );
 
+export const credential_delegation = pgTable(
+  "credential_delegation",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    label: varchar("label", { length: 255 }).notNull(),
+    created_by: varchar("created_by", { length: 255 }).notNull(),
+    credential_id: varchar("credential_id", { length: 255 }).notNull(),
+    credential_kind: varchar("credential_kind", { length: 255 }).notNull(),
+    adapter: varchar("adapter", { length: 255 }).notNull(),
+    issuer: text("issuer").notNull(),
+    audience: text("audience").notNull(),
+    credential_subject: text("credential_subject").notNull(),
+    credential_ref: varchar("credential_ref", { length: 255 }).notNull(),
+    issued_key_ref: varchar("issued_key_ref", { length: 255 }),
+    key_hash: varchar("key_hash", { length: 255 }),
+    actor_subject: varchar("actor_subject", { length: 255 }).notNull(),
+    effective_subject: varchar("effective_subject", { length: 255 }).notNull(),
+    toolkit_membership: json("toolkit_membership").notNull(),
+    scope: json("scope").notNull(),
+    scope_version: varchar("scope_version", { length: 255 }).notNull(),
+    expires_at: bigint("expires_at", { mode: "bigint" }).notNull(),
+    revoked_at: bigint("revoked_at", { mode: "bigint" }),
+    revoke_reason: text("revoke_reason"),
+    created_at: timestamp("created_at").notNull(),
+    last_used_at: bigint("last_used_at", { mode: "bigint" }),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("credential_delegation_uidx").on(table.tenant, table.id),
+    uniqueIndex("credential_delegation_binding_uidx").on(
+      table.tenant,
+      table.adapter,
+      table.issuer,
+      table.audience,
+      table.credential_subject,
+      table.credential_ref,
+    ),
+    uniqueIndex("credential_delegation_issued_key_ref_uidx").on(table.tenant, table.issued_key_ref),
+  ],
+);
+
+export const delegation_challenge = pgTable(
+  "delegation_challenge",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    created_by: varchar("created_by", { length: 255 }).notNull(),
+    label: varchar("label", { length: 255 }).notNull(),
+    credential_id: varchar("credential_id", { length: 255 }),
+    credential_kind: varchar("credential_kind", { length: 255 }),
+    adapter: varchar("adapter", { length: 255 }).notNull(),
+    issuer: text("issuer"),
+    audience: text("audience"),
+    credential_subject: text("credential_subject"),
+    credential_ref: varchar("credential_ref", { length: 255 }),
+    actor_subject: varchar("actor_subject", { length: 255 }),
+    effective_subject: varchar("effective_subject", { length: 255 }).notNull(),
+    scope: json("scope").notNull(),
+    proof_hash: varchar("proof_hash", { length: 255 }).notNull(),
+    expires_at: bigint("expires_at", { mode: "bigint" }).notNull(),
+    grant_expires_at: bigint("grant_expires_at", { mode: "bigint" }).notNull(),
+    proof_consumed_at: bigint("proof_consumed_at", { mode: "bigint" }),
+    consent_consumed_at: bigint("consent_consumed_at", { mode: "bigint" }),
+    created_at: timestamp("created_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [uniqueIndex("delegation_challenge_uidx").on(table.tenant, table.id)],
+);
+
+export const delegation_audit = pgTable(
+  "delegation_audit",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    grant_id: varchar("grant_id", { length: 255 }),
+    credential_id: varchar("credential_id", { length: 255 }),
+    actor_subject: varchar("actor_subject", { length: 255 }).notNull(),
+    effective_subject: varchar("effective_subject", { length: 255 }).notNull(),
+    action: varchar("action", { length: 255 }).notNull(),
+    tool: text("tool"),
+    outcome: varchar("outcome", { length: 255 }).notNull(),
+    request_id: text("request_id"),
+    execution_id: text("execution_id"),
+    occurred_at: timestamp("occurred_at").notNull(),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [uniqueIndex("delegation_audit_uidx").on(table.tenant, table.id)],
+);
+
+export const delegation_notification = pgTable(
+  "delegation_notification",
+  {
+    id: varchar("id", { length: 255 }).notNull(),
+    grant_id: varchar("grant_id", { length: 255 }).notNull(),
+    credential_id: varchar("credential_id", { length: 255 }).notNull(),
+    created_by: varchar("created_by", { length: 255 }).notNull(),
+    target_subject: varchar("target_subject", { length: 255 }).notNull(),
+    label: varchar("label", { length: 255 }).notNull(),
+    credential_kind: varchar("credential_kind", { length: 255 }).notNull(),
+    created_at: timestamp("created_at").notNull(),
+    read_at: bigint("read_at", { mode: "bigint" }),
+    row_id: varchar("row_id", { length: 255 })
+      .primaryKey()
+      .notNull()
+      .$defaultFn(() => createId()),
+    tenant: varchar("tenant", { length: 255 }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("delegation_notification_uidx").on(table.tenant, table.id),
+    uniqueIndex("delegation_notification_grant_target_uidx").on(
+      table.tenant,
+      table.grant_id,
+      table.target_subject,
+    ),
+  ],
+);
+
 export const connection = pgTable(
   "connection",
   {
