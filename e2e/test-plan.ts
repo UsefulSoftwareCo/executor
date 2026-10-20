@@ -1430,6 +1430,15 @@ export const scenarios = plan({
       "self-host": na("Local process startup"),
     },
   },
+  localWithoutTelemetryCollector: {
+    file: "local-startup-observability.spec.ts",
+    title: "local server without a built telemetry collector warns once and keeps serving",
+    targets: {
+      local: scheduled,
+      cloud: na("Local process startup"),
+      "self-host": na("Local process startup"),
+    },
+  },
   optimisticObservability: {
     fixtures: "actors",
     file: "optimistic-observability.spec.ts",

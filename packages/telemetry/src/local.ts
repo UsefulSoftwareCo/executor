@@ -1,5 +1,5 @@
 /** Local composition owns persistent files and its optional bundled collector. */
-import { Config, Effect, Layer, Logger, Path } from "effect";
+import { Config, Effect, FileSystem, Layer, Logger, Path } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryClient } from "./transport.ts";
 import { telemetryConfig } from "./config.ts";
@@ -12,6 +12,7 @@ import { startProcessMetrics } from "./process.ts";
 export const localTelemetry = (directory: string, service: string) =>
   Layer.unwrap(
     Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const diagnostics = path.resolve(directory, "diagnostics");
       const { logger: file } = yield* rotatingJsonLogger(diagnostics, service);
@@ -28,6 +29,14 @@ export const localTelemetry = (directory: string, service: string) =>
         const bundle = yield* Config.String("EXECUTOR_MOTEL_BUNDLE").pipe(
           Config.withDefault(defaultBundle),
         );
+        // A missing bundle never appears by itself, and the collector's restart loop would
+        // retry it every 3 seconds. Run without the bundled collector, as with explicit exporters.
+        if (!(yield* fs.exists(path.join(bundle, "motel.capnp")))) {
+          yield* Effect.logWarning(
+            `Local telemetry collector is not built at ${bundle}; running without it. Run "bun run telemetry:build" or set EXECUTOR_MOTEL_BUNDLE.`,
+          );
+          return telemetryLayer(config, "process", logger);
+        }
         const ready = yield* startCollector(diagnostics, bundle);
         const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
         // This internal address never reaches the network. Resolve only telemetry
