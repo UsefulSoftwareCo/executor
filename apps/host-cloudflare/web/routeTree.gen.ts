@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRouteImport } from './../../../packages/react/src/routes/index'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteImport } from './../../../packages/react/src/routes/artifacts'
+import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRouteImport } from './../../../packages/react/src/routes/delegated-credentials'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport } from './../../../packages/react/src/routes/policies'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRouteImport } from './../../../packages/react/src/routes/secrets'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteImport } from './../../../packages/react/src/routes/toolkits'
@@ -36,6 +37,14 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute =
     path: '/{-$orgSlug}/artifacts',
     getParentRoute: () => rootRouteImport,
   } as any)
+const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute =
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRouteImport.update(
+    {
+      id: '/{-$orgSlug}/delegated-credentials',
+      path: '/{-$orgSlug}/delegated-credentials',
+      getParentRoute: () => rootRouteImport,
+    } as any,
+  )
 const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute =
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport.update({
     id: '/{-$orgSlug}/policies',
@@ -129,6 +138,7 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPluginsDotpluginIdDotsplatRo
 
 export interface FileRoutesByFullPath {
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  '/{-$orgSlug}/delegated-credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -145,6 +155,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  '/{-$orgSlug}/delegated-credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -162,6 +173,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  '/{-$orgSlug}/delegated-credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -180,6 +192,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -196,6 +209,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -212,6 +226,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -229,6 +244,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren
@@ -256,6 +272,13 @@ declare module '@tanstack/react-router' {
       path: '/{-$orgSlug}/artifacts'
       fullPath: '/{-$orgSlug}/artifacts'
       preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/{-$orgSlug}/delegated-credentials': {
+      id: '/{-$orgSlug}/delegated-credentials'
+      path: '/{-$orgSlug}/delegated-credentials'
+      fullPath: '/{-$orgSlug}/delegated-credentials'
+      preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/policies': {
@@ -378,6 +401,8 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren,
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute:
+    DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesSecretsRoute:
