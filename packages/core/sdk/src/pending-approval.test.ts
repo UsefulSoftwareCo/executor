@@ -7,6 +7,18 @@ import {
   PENDING_APPROVAL_TTL_MS,
   type PendingApproval,
 } from "./pending-approval";
+import { CredentialId, DelegationId, DelegationScopeVersion, Subject, Tenant } from "./ids";
+import type { DelegationBinding } from "./delegation";
+
+const delegationBinding: DelegationBinding = {
+  tenant: Tenant.make("tenant-a"),
+  grantId: DelegationId.make("grant_1"),
+  credentialId: CredentialId.make("credential_1"),
+  credentialRef: "service-token-1",
+  actorSubject: Subject.make("machine-1"),
+  effectiveSubject: Subject.make("human-1"),
+  scopeVersion: DelegationScopeVersion.make("scope_1"),
+};
 
 const approval = (overrides?: Partial<PendingApproval>): PendingApproval => ({
   executionId: "exec_1",
@@ -25,6 +37,45 @@ describe("makePendingApprovalStore", () => {
       yield* store.put(recorded);
 
       expect(yield* store.consume("exec_1")).toStrictEqual(recorded);
+    }),
+  );
+
+  it.effect("round-trips the exact delegated binding when present", () =>
+    Effect.gen(function* () {
+      const store = makePendingApprovalStore(makeInMemoryBlobStore(), "u:t:s");
+      const recorded = approval({ delegationBinding });
+      yield* store.put(recorded);
+
+      expect(yield* store.consume("exec_1")).toStrictEqual(recorded);
+    }),
+  );
+
+  it.effect("does not consume a same-partition record for another grant", () =>
+    Effect.gen(function* () {
+      const store = makePendingApprovalStore(makeInMemoryBlobStore(), "u:t:s");
+      yield* store.put(approval({ delegationBinding }));
+
+      const otherGrant: DelegationBinding = {
+        ...delegationBinding,
+        grantId: DelegationId.make("grant_other"),
+      };
+      expect(
+        yield* store.consume(
+          "exec_1",
+          (candidate) =>
+            candidate.delegationBinding !== undefined &&
+            candidate.delegationBinding.grantId === otherGrant.grantId,
+        ),
+      ).toBeNull();
+
+      expect(
+        yield* store.consume(
+          "exec_1",
+          (candidate) =>
+            candidate.delegationBinding !== undefined &&
+            candidate.delegationBinding.grantId === delegationBinding.grantId,
+        ),
+      ).not.toBeNull();
     }),
   );
 
