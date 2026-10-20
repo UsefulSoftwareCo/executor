@@ -37,7 +37,12 @@
       },
       {
         "group": "Concepts",
-        "pages": ["concepts/integrations", "concepts/connections", "concepts/policies"]
+        "pages": [
+          "concepts/integrations",
+          "concepts/connections",
+          "concepts/policies",
+          "concepts/delegated-credentials"
+        ]
       }
     ]
   },

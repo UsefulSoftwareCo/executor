@@ -54,6 +54,10 @@ export const bootSelfhost = async (options: SelfhostBootOptions): Promise<Booted
           EXECUTOR_BOOTSTRAP_ADMIN_EMAIL: options.admin.email,
           EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD: options.admin.password,
           EXECUTOR_WEB_BASE_URL: options.webBaseUrl,
+          // Keep issuance fail-closed for ordinary runs; an isolated local
+          // issuance run may opt in explicitly after the host adapters land.
+          EXECUTOR_DELEGATED_CREDENTIAL_ISSUANCE:
+            process.env.EXECUTOR_DELEGATED_CREDENTIAL_ISSUANCE ?? "false",
           // The harness boots loopback MCP/OAuth test servers and points the
           // instance at them; the hosted SSRF guard would otherwise block
           // outbound probes/dials to localhost. Hermetic test instance only.

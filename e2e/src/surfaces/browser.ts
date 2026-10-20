@@ -14,20 +14,56 @@ import { chromium, type Locator, type Page, type Response } from "playwright";
 import { beat, enterFocus, markNavigation, markRecordingStart } from "../timeline";
 import { appendTraces, type TraceEntry } from "../trace-harvest";
 import { installRecordingUrlBar } from "../recording-url-bar";
+import { redactTraceArchive } from "../trace-redaction";
 import type { Identity, Target } from "../target";
 
 export interface BrowserSession {
   readonly page: Page;
   /** Perform one user-visible step; names the trace group + saves a screenshot. */
   readonly step: (label: string, action: (page: Page) => Promise<void>) => Promise<void>;
+  /** Mark a one-time secret for removal from the trace archive. Keep it out of the DOM. */
+  readonly redact: (secret: string) => void;
 }
 
 export interface BrowserSurface {
   readonly session: (
     identity: Identity,
     drive: (session: BrowserSession) => Promise<void>,
+    options?: BrowserSessionOptions,
   ) => Effect.Effect<void>;
 }
+
+export interface BrowserSessionOptions {
+  /**
+   * Do not produce snapshots, screenshots, video, or a Playwright trace.
+   * Use only for a step that must inspect a one-time secret in memory.
+   */
+  readonly sensitive?: boolean;
+}
+
+/** Values carried by an identity that must never survive in recorded traces. */
+export const collectIdentitySecrets = (identity: Identity): readonly string[] => {
+  const values = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value === "string" && value.length > 0) values.add(value);
+  };
+  for (const [name, value] of Object.entries(identity.headers ?? {})) {
+    if (!/authorization|cookie|token|api[-_]?key/i.test(name)) continue;
+    add(value);
+    if (/cookie/i.test(name)) {
+      for (const pair of value.split(";")) {
+        const equals = pair.indexOf("=");
+        if (equals >= 0) add(pair.slice(equals + 1).trim());
+      }
+    } else {
+      const separator = value.indexOf(" ");
+      if (separator >= 0) add(value.slice(separator + 1).trim());
+    }
+  }
+  for (const cookie of identity.cookies ?? []) add(cookie.value);
+  add(identity.credentials?.password);
+  return [...values];
+};
 
 const slug = (text: string): string =>
   text
@@ -161,11 +197,13 @@ export const clickToReveal = async (
 // acquireUseRelease so a vitest timeout (fiber interruption) still closes the
 // browser and flushes video + trace — a bare promise would leak Chromium.
 export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface => ({
-  session: (identity, drive) =>
+  session: (identity, drive, options) =>
     Effect.acquireUseRelease(
       Effect.promise(async () => {
+        const sensitive = options?.sensitive === true;
         const videoTmp = join(dir, ".video-tmp");
-        mkdirSync(videoTmp, { recursive: true });
+        if (!sensitive) mkdirSync(videoTmp, { recursive: true });
+        const redactions = new Set(collectIdentitySecrets(identity));
 
         // Watchable mode (E2E_FILM / E2E_DESK): slow each Playwright action so
         // the recording is readable instead of flickering through states at
@@ -189,17 +227,21 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         const context = await browser.newContext({
           colorScheme: "dark",
           viewport: { width: 1280, height: 800 },
-          recordVideo: { dir: videoTmp, size: { width: 1280, height: 800 } },
+          ...(sensitive
+            ? {}
+            : { recordVideo: { dir: videoTmp, size: { width: 1280, height: 800 } } }),
           baseURL: target.baseUrl,
         });
-        await context.tracing.start({
-          screenshots: true,
-          snapshots: true,
-          sources: true,
-        });
+        if (!sensitive) {
+          await context.tracing.start({
+            screenshots: true,
+            snapshots: true,
+            sources: true,
+          });
+        }
         // Bake a synthetic URL bar into the recording so a shared session.mp4
         // (and the step screenshots) shows which page each moment was on.
-        await installRecordingUrlBar(context);
+        if (!sensitive) await installRecordingUrlBar(context);
         if (identity.cookies?.length) {
           await context.addCookies(
             identity.cookies.map((cookie) => ({
@@ -211,13 +253,15 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         const page = await context.newPage();
         // The session video's clock starts with the page; anchor it for the
         // run's focus timeline (scripts/film.ts cuts on these).
-        markRecordingStart(dir, "browser");
+        if (!sensitive) markRecordingStart(dir, "browser");
         // Main-frame navigations feed the viewer's synthetic URL bar — the
         // recording itself is chromeless, so this is the only place the
         // address the developer "typed" survives.
-        page.on("framenavigated", (frame) => {
-          if (frame === page.mainFrame()) markNavigation(dir, frame.url());
-        });
+        if (!sensitive) {
+          page.on("framenavigated", (frame) => {
+            if (frame === page.mainFrame()) markNavigation(dir, frame.url());
+          });
+        }
         // Harvest distributed-trace ids: every app API request carries a W3C
         // traceparent (Effect's HttpClient), and each id names one
         // click→server→DB trace in whatever OTLP store the run exported to
@@ -228,33 +272,35 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
         // without leaving the run page.
         const traceIds: Array<TraceEntry & { ms?: number; status?: number }> = [];
         const inflight = new Map<unknown, (typeof traceIds)[number]>();
-        page.on("request", (request) => {
-          const traceparent = request.headers()["traceparent"];
-          const match = traceparent ? /^[0-9a-f]{2}-([0-9a-f]{32})-/.exec(traceparent) : null;
-          if (match?.[1]) {
-            const entry: (typeof traceIds)[number] = {
-              id: match[1],
-              at: Date.now(),
-              url: request.url(),
-              source: "browser",
-            };
-            traceIds.push(entry);
-            inflight.set(request, entry);
-          }
-        });
-        page.on("requestfinished", async (request) => {
-          const entry = inflight.get(request);
-          if (!entry) return;
-          inflight.delete(request);
-          entry.ms = Date.now() - entry.at;
-          entry.status = (await request.response().catch(() => null))?.status();
-        });
-        page.on("requestfailed", (request) => {
-          const entry = inflight.get(request);
-          if (!entry) return;
-          inflight.delete(request);
-          entry.ms = Date.now() - entry.at;
-        });
+        if (!sensitive) {
+          page.on("request", (request) => {
+            const traceparent = request.headers()["traceparent"];
+            const match = traceparent ? /^[0-9a-f]{2}-([0-9a-f]{32})-/.exec(traceparent) : null;
+            if (match?.[1]) {
+              const entry: (typeof traceIds)[number] = {
+                id: match[1],
+                at: Date.now(),
+                url: request.url(),
+                source: "browser",
+              };
+              traceIds.push(entry);
+              inflight.set(request, entry);
+            }
+          });
+          page.on("requestfinished", async (request) => {
+            const entry = inflight.get(request);
+            if (!entry) return;
+            inflight.delete(request);
+            entry.ms = Date.now() - entry.at;
+            entry.status = (await request.response().catch(() => null))?.status();
+          });
+          page.on("requestfailed", (request) => {
+            const entry = inflight.get(request);
+            if (!entry) return;
+            inflight.delete(request);
+            entry.ms = Date.now() - entry.at;
+          });
+        }
         return {
           browser,
           context,
@@ -262,43 +308,76 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
           videoTmp,
           shots: { count: 0 },
           traceIds,
+          redactions,
+          sensitive,
         };
       }),
-      ({ page, context, shots }) =>
+      ({ page, context, shots, redactions, sensitive }) =>
         Effect.promise(async () => {
           const step = async (label: string, action: (page: Page) => Promise<void>) => {
             // Acting on the page IS focusing the browser window — and when
             // filming, enterFocus lingers a beat on whatever the developer was
             // looking at before tabbing here.
-            await enterFocus(dir, "browser");
-            await context.tracing.group(label);
+            if (!sensitive) await enterFocus(dir, "browser");
+            if (!sensitive) await context.tracing.group(label);
             try {
               await action(page);
             } finally {
-              await context.tracing.groupEnd();
+              if (!sensitive) await context.tracing.groupEnd();
             }
-            await page.screenshot({
-              path: join(dir, `${String(shots.count++).padStart(2, "0")}-${slug(label)}.png`),
-            });
+            if (!sensitive) {
+              await page.screenshot({
+                path: join(dir, `${String(shots.count++).padStart(2, "0")}-${slug(label)}.png`),
+              });
+            }
             // Hold this step's result on screen so the film is readable (the
             // consent screen, the success page, …). No-op unless filming.
             await beat();
           };
           try {
-            await drive({ page, step });
+            await drive({
+              page,
+              step,
+              redact: (secret) => {
+                if (secret.length > 0) redactions.add(secret);
+              },
+            });
           } catch (error) {
             // Freeze the scene: the artifact dir shows the screen at failure.
-            await page.screenshot({ path: join(dir, "failure.png") }).catch(() => {});
+            if (!sensitive) {
+              await page.screenshot({ path: join(dir, "failure.png") }).catch(() => {});
+            }
             throw error;
           }
         }),
-      ({ browser, context, page, videoTmp, traceIds }) =>
+      ({ browser, context, page, videoTmp, traceIds, redactions, sensitive }) =>
         Effect.promise(async () => {
-          appendTraces(dir, traceIds);
-          await context.tracing.stop({ path: join(dir, "trace.zip") }).catch(() => {});
-          const video = page.video();
-          await context.close(); // flushes the recording
-          await browser.close();
+          let cleanupFailure: unknown;
+          const tracePath = join(dir, "trace.zip");
+          const video = sensitive ? undefined : page.video();
+          try {
+            appendTraces(dir, traceIds);
+            if (!sensitive) {
+              await context.tracing.stop({ path: tracePath });
+              await redactTraceArchive(tracePath, [...redactions]);
+            }
+          } catch (error) {
+            cleanupFailure = error;
+            // If redaction or trace finalization failed, the archive may still
+            // contain a bearer value. Remove it before closing the session.
+            rmSync(tracePath, { force: true });
+          } finally {
+            try {
+              await context.close(); // flushes the recording
+            } catch (error) {
+              cleanupFailure ??= error;
+            }
+            try {
+              await browser.close();
+            } catch (error) {
+              cleanupFailure ??= error;
+            }
+          }
           const recordedPath = await video?.path().catch(() => undefined);
           if (recordedPath) {
             try {
@@ -324,6 +403,7 @@ export const makeBrowserSurface = (dir: string, target: Target): BrowserSurface 
             }
           }
           rmSync(videoTmp, { recursive: true, force: true });
+          if (cleanupFailure) throw cleanupFailure;
         }),
     ),
 });

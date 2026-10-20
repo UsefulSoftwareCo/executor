@@ -16,6 +16,63 @@ paths, different injected providers:
 Single-tenant: every Access-verified principal belongs to the one configured
 org. Members and credentials are managed in Cloudflare Access, not in-app.
 
+## Delegated machine access
+
+When delegated binding is enabled, Cloudflare Access service tokens can be
+bound to an Executor delegated grant.
+The grant is a separate, bounded permission for a verified member: it names
+the exact tools and optional connections the machine may use, has an expiry,
+and is checked again for every call and continuation. A service token does not
+inherit the Access user's administrator role.
+
+In an enabled deployment, the human starts the binding from the account's
+delegated-credential surface.
+Executor requires a one-time possession proof before the external token is
+accepted. Store the Access client secret only in the machine's secret manager;
+Executor stores a reference and proof digest, not the secret. Disable the
+service token in Access and revoke the Executor grant during offboarding.
+
+The existing personal API-key routes remain separate. This host's source
+contract exposes `/account/api-keys`; an enabled delegated surface uses
+`/account/delegated-credentials`.
+
+Issuance is gated by `DELEGATED_CREDENTIAL_ISSUANCE`, which defaults to
+disabled. Keep the gate unset during rollout and local runs that do not provide
+the account and proof adapters; a missing adapter fails closed. The local
+Cloudflare worker still uses dev auth and cannot stand in for Access proof.
+
+The worker accepts these delegated-credential settings (durations are integer
+milliseconds):
+
+```text
+DELEGATED_CREDENTIAL_ISSUANCE=true       # explicit opt-in; default is disabled
+DELEGATED_MAX_TTL_MS=7776000000          # default and hard maximum: 90 days
+DELEGATED_RECENT_AUTH_MAX_AGE_MS=300000  # default: 5 minutes
+DELEGATED_RECENT_AUTH_CLAIM=auth_time    # signed Access/IdP claim name
+```
+
+`DELEGATED_RECENT_AUTH_CLAIM` may name a signed top-level JWT claim or a claim
+inside Access's signed `custom` object. The default `auth_time` represents the
+IdP authentication event. `iat` is token issuance time and is not accepted as
+recent-login proof. Missing or stale assurance fails closed. A configured TTL
+must be a positive integer no greater than the 90-day hard maximum; malformed
+configuration stops worker startup.
+
+Revoke-all ordinarily leaves a verified member eligible to consent again. An
+organization administrator may request `disableTarget: true` to revoke all
+current grants and create a durable Access verification tombstone after the
+revocation commits. Use that explicit action when offboarding a member; later
+requests for that target fail closed until the host's verified-member registry
+allows it again.
+
+Human management also requires a recent login assurance in the signed Access
+JWT. Cloudflare's standard application token documents `iat` as token issuance
+time, so this host never treats `iat` as a fresh-login signal. Configure the
+identity provider to emit a signed Unix-seconds claim (for example `auth_time`,
+including under Access's signed `custom` claim) and set
+`DELEGATED_RECENT_AUTH_CLAIM` to that name. Requests without the claim fail
+closed; `DELEGATED_RECENT_AUTH_MAX_AGE_MS` controls the accepted age.
+
 ## Surfaces
 
 - `GET /` — the shared Executor web UI (Sources, Connections, Secrets,
@@ -80,6 +137,12 @@ running `wrangler dev` if you need live data.
 
 `ENABLE_DEV_AUTH` is a dev-only escape hatch — never set it in a deployed
 environment (it disables the Access gate).
+
+The local Cloudflare harness uses `ENABLE_DEV_AUTH=true`, which intentionally
+represents one fixed administrator and cannot prove Access service-token
+claims, issuer checks, or machine identity. Run the Access-specific checks
+against a local Access-compatible issuer when one is available; do not point
+the harness at a live Cloudflare tenant from an e2e run.
 
 ## Notes
 
