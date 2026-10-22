@@ -82,6 +82,7 @@ import {
   type ApiHandler,
 } from "./host-foundation";
 import { makeOAuthClientIdMetadataRoute } from "./oauth-client-metadata";
+import type { DelegatedExecutionResumer } from "../services";
 
 // A fully-resolved route/app Layer with its channels erased. Used at the
 // assembly boundaries (mirrors `toApiHandler`'s loose typing): each host's
@@ -174,6 +175,10 @@ export interface CommonProviders<RAcct, RIdentity = never, RMcpAuth = never> {
    * contravariant, so `never` accepts any middleware-marker layer).
    */
   readonly account?: Layer.Layer<never, never, RAcct>;
+  /** Optional provider-neutral delegated-credential account middleware. The
+   * layer may carry HttpRouter request markers in addition to the service tag
+   * because hosts construct it with requestScopedMiddleware. */
+  readonly delegation?: Layer.Layer<never, never, RAcct>;
   /** The MCP serving seams; omit to serve no `/mcp` envelope. */
   readonly mcp?: McpProviders<RMcpAuth>;
   /** The `ErrorCapture` seam (console vs Sentry) — the core resolves it. */
@@ -324,6 +329,10 @@ export interface ExecutorAppOptions<
   readonly boot: Layer.Layer<RBoot>;
   /** Optional per-request Layer (cloud's request-scoped postgres socket). */
   readonly requestScoped?: Layer.Layer<RReq>;
+  /** Optional durable delegated approval fallback. Scoped hosts provide a
+   * fresh grant-bound engine when a paused HTTP execution outlives its first
+   * request. */
+  readonly delegatedExecutionResumer?: DelegatedExecutionResumer;
 }
 
 export interface ExecutorApp<TPlugins extends readonly AnyPlugin[], McpExport> {
@@ -503,6 +512,7 @@ export const make = <
           never,
           RDb
         >,
+        delegatedExecutionResumer: options.delegatedExecutionResumer,
       });
 
   // ---- (3) the protected (plugin) API, wrapped by the middleware ---------
@@ -538,10 +548,10 @@ export const make = <
   const apiLive: AppRouteLayer = providers.account
     ? Layer.merge(
         pluginApiLive,
-        makeAccountApiLayer(
-          providers.account as Layer.Layer<unknown, never, RAcct>,
-          prefixedRouter ? { router: prefixedRouter } : {},
-        ) as AppRouteLayer,
+        makeAccountApiLayer(providers.account as Layer.Layer<unknown, never, RAcct>, {
+          ...(prefixedRouter ? { router: prefixedRouter } : {}),
+          ...(providers.delegation ? { delegationProviderMiddleware: providers.delegation } : {}),
+        }) as AppRouteLayer,
       )
     : pluginApiLive;
 

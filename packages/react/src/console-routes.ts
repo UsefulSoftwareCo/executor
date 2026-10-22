@@ -39,6 +39,7 @@ export const CONSOLE_ROUTE_PATHS = [
   "/integrations/add/$pluginKey",
   "/integrations/browse",
   "/policies",
+  "/delegated-credentials",
   "/secrets",
   "/tools",
   "/users",
@@ -81,6 +82,7 @@ export const consoleRoutes = (options: ConsoleRoutesOptions): Array<VirtualRoute
     ],
     ["/integrations/browse", route("/integrations/browse", file("integrations.browse.tsx"))],
     ["/policies", route("/policies", file("policies.tsx"))],
+    ["/delegated-credentials", route("/delegated-credentials", file("delegated-credentials.tsx"))],
     ["/secrets", route("/secrets", file("secrets.tsx"))],
     ["/tools", route("/tools", file("tools.tsx"))],
     // The admin users view. Hosts that don't serve `/admin/users*` (local /

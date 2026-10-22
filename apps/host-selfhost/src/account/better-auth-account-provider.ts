@@ -4,6 +4,9 @@ import { AccountProvider, type AccountHeaders } from "@executor-js/api/server";
 import { AccountError, AccountUnauthorized } from "@executor-js/api";
 
 import { BetterAuth } from "../auth/better-auth";
+import { classifySelfHostDelegatedBoundary } from "../auth/delegated-boundary";
+import type { SelfHostConfig } from "../config";
+import type { SelfHostDbHandle } from "../db/self-host-db";
 
 // ---------------------------------------------------------------------------
 // Self-host AccountProvider â€” implements the provider-neutral account surface
@@ -34,21 +37,49 @@ const masked = (start: string | null | undefined): string => (start ? `${start}â
 const orgRole = (slug: string | undefined): "owner" | "admin" | "member" =>
   slug === "owner" ? "owner" : slug === "admin" ? "admin" : "member";
 
-export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, BetterAuth> =
+export const betterAuthAccountProvider = (
+  db: SelfHostDbHandle,
+  config: SelfHostConfig,
+): Layer.Layer<AccountProvider, never, BetterAuth> =>
   Layer.effect(AccountProvider)(
     Effect.gen(function* () {
-      const { auth, organizationId, organizationName, organizationSlug } = yield* BetterAuth;
+      const betterAuth = yield* BetterAuth;
+      const { auth, organizationId, organizationName, organizationSlug } = betterAuth;
 
-      const getSession = (headers: AccountHeaders) =>
-        Effect.tryPromise({
-          try: () => auth.api.getSession({ headers: toHeaders(headers) }),
-          catch: () => new AccountError({ message: "Failed to resolve session" }),
-        }).pipe(Effect.orElseSucceed(() => null));
+      const getSession = (headers: AccountHeaders) => {
+        return Effect.gen(function* () {
+          const boundary = yield* classifySelfHostDelegatedBoundary(
+            db,
+            betterAuth,
+            config,
+            toHeaders(headers),
+          );
+          if (boundary !== "unmapped") return null;
+          return yield* Effect.tryPromise({
+            try: () => auth.api.getSession({ headers: toHeaders(headers) }),
+            catch: () => new AccountError({ message: "Failed to resolve session" }),
+          }).pipe(Effect.orElseSucceed(() => null));
+        });
+      };
 
       // Run a Better Auth api call, mapping any rejection to a neutral
       // AccountError with a stable, user-facing message.
-      const call = <A>(message: string, run: () => Promise<A>) =>
-        Effect.tryPromise({ try: run, catch: () => new AccountError({ message }) });
+      const call = <A>(
+        headers: AccountHeaders,
+        message: string,
+        run: () => Promise<A>,
+      ): Effect.Effect<A, AccountError | AccountUnauthorized> => {
+        return Effect.gen(function* () {
+          const boundary = yield* classifySelfHostDelegatedBoundary(
+            db,
+            betterAuth,
+            config,
+            toHeaders(headers),
+          );
+          if (boundary !== "unmapped") return yield* new AccountUnauthorized();
+          return yield* Effect.tryPromise({ try: run, catch: () => new AccountError({ message }) });
+        });
+      };
 
       return AccountProvider.of({
         me: (headers) =>
@@ -71,7 +102,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           }),
 
         listApiKeys: (headers) =>
-          call("Failed to list API keys", () =>
+          call(headers, "Failed to list API keys", () =>
             auth.api.listApiKeys({ headers: toHeaders(headers) }),
           ).pipe(
             Effect.map((result) => ({
@@ -87,7 +118,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           ),
 
         createApiKey: (headers, name) =>
-          call("Failed to create API key", () =>
+          call(headers, "Failed to create API key", () =>
             auth.api.createApiKey({ body: { name }, headers: toHeaders(headers) }),
           ).pipe(
             Effect.map((key) => ({
@@ -102,7 +133,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           ),
 
         revokeApiKey: (headers, apiKeyId) =>
-          call("Failed to revoke API key", () =>
+          call(headers, "Failed to revoke API key", () =>
             auth.api.deleteApiKey({ body: { keyId: apiKeyId }, headers: toHeaders(headers) }),
           ).pipe(Effect.as({ success: true })),
 
@@ -137,7 +168,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           Effect.gen(function* () {
             const resolved = yield* getSession(headers);
             const currentUserId = resolved?.user.id;
-            const result = yield* call("Failed to list members", () =>
+            const result = yield* call(headers, "Failed to list members", () =>
               auth.api.listMembers({ headers: toHeaders(headers) }),
             ).pipe(
               Effect.catchTag("AccountError", () => Effect.succeed({ members: [], total: 0 })),
@@ -171,7 +202,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           }),
 
         inviteMember: (headers, body) =>
-          call("Failed to invite member", () =>
+          call(headers, "Failed to invite member", () =>
             auth.api.createInvitation({
               // Narrow the free-form slug to the org plugin's role union (no cast).
               body: { email: body.email, role: orgRole(body.roleSlug) },
@@ -180,7 +211,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           ).pipe(Effect.map((invite) => ({ id: invite.id, email: invite.email }))),
 
         removeMember: (headers, membershipId) =>
-          call("Failed to remove member", () =>
+          call(headers, "Failed to remove member", () =>
             auth.api.removeMember({
               body: { memberIdOrEmail: membershipId },
               headers: toHeaders(headers),
@@ -188,7 +219,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           ).pipe(Effect.as({ success: true })),
 
         updateMemberRole: (headers, membershipId, roleSlug) =>
-          call("Failed to update member role", () =>
+          call(headers, "Failed to update member role", () =>
             auth.api.updateMemberRole({
               body: { memberId: membershipId, role: roleSlug },
               headers: toHeaders(headers),
@@ -196,7 +227,7 @@ export const betterAuthAccountProvider: Layer.Layer<AccountProvider, never, Bett
           ).pipe(Effect.as({ success: true })),
 
         updateOrgName: (headers, name) =>
-          call("Failed to update organization name", () =>
+          call(headers, "Failed to update organization name", () =>
             auth.api.updateOrganization({
               body: { data: { name }, organizationId },
               headers: toHeaders(headers),

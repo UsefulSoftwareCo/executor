@@ -12,6 +12,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { Schema } from "effect";
 import {
   ConnectionName,
+  DelegationForbiddenError,
   IntegrationSlug,
   InternalError,
   Owner,
@@ -73,13 +74,13 @@ export const ToolsApi = HttpApiGroup.make("tools")
     HttpApiEndpoint.get("list", "/tools", {
       query: ListToolsQuery,
       success: Schema.Array(ToolMetadataResponse),
-      error: InternalError,
+      error: [InternalError, DelegationForbiddenError],
     }),
   )
   .add(
     HttpApiEndpoint.get("schema", "/tools/schema", {
       query: SchemaQuery,
       success: ToolSchemaView,
-      error: [InternalError, ToolNotFound],
+      error: [InternalError, DelegationForbiddenError, ToolNotFound],
     }),
   );

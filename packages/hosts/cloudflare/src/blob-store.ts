@@ -57,6 +57,17 @@ export const makeR2BlobStore = (bucket: R2Bucket): BlobStore => ({
       },
       catch: storeError("put"),
     }),
+  // R2's conditional put is the storage-level compare-and-claim primitive.
+  // `etagDoesNotMatch: "*"` only succeeds when the marker object is absent,
+  // so two isolates cannot both win the same pending-approval claim.
+  claim: (namespace, key, value) =>
+    Effect.tryPromise({
+      try: async () =>
+        (await bucket.put(objectName(namespace, key), value, {
+          onlyIf: { etagDoesNotMatch: "*" },
+        })) !== null,
+      catch: storeError("claim"),
+    }),
   delete: (namespace, key) =>
     Effect.tryPromise({
       try: () => bucket.delete(objectName(namespace, key)),

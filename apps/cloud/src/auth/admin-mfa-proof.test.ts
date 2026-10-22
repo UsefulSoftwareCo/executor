@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { SignJWT } from "jose";
-import { readAdminMfaProof, signAdminMfaProof } from "./admin-mfa-proof";
+import { readAdminMfaProof, readRecentAdminMfaProof, signAdminMfaProof } from "./admin-mfa-proof";
 
 const secret = "a-test-only-cookie-password-of-32-characters";
 const identity = { userId: "user_test", sessionId: "session_test" };
@@ -106,6 +106,27 @@ describe("admin verification cookie", () => {
       expect(
         yield* readAdminMfaProof(secret, identity, "verified", token, now + 7 * 86400_000),
       ).toBeNull();
+    }),
+  );
+
+  it.effect("distinguishes fresh delegation assurance from a still-valid unlock", () =>
+    Effect.gen(function* () {
+      const token = yield* signAdminMfaProof(
+        secret,
+        identity,
+        "verified",
+        { ...proof, exp: now / 1000 + 7 * 86400 },
+        now,
+      );
+      expect(
+        yield* readRecentAdminMfaProof(secret, identity, token, now + 4 * 60_000, 5 * 60_000),
+      ).not.toBeNull();
+      expect(
+        yield* readRecentAdminMfaProof(secret, identity, token, now + 6 * 60_000, 5 * 60_000),
+      ).toBeNull();
+      expect(
+        yield* readAdminMfaProof(secret, identity, "verified", token, now + 6 * 60_000),
+      ).not.toBeNull();
     }),
   );
 

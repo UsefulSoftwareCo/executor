@@ -35,7 +35,7 @@
 // ---------------------------------------------------------------------------
 
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { Context, Data, Effect, Layer } from "effect";
+import { Context, Data, Effect, Layer, Option } from "effect";
 import type * as Cause from "effect/Cause";
 
 import type { AnyPlugin } from "@executor-js/sdk";
@@ -48,7 +48,12 @@ import {
   type HostConfig,
   type PluginsProvider,
 } from "./scoped-executor";
-import { ExecutionEngineService, ExecutorService } from "../services";
+import {
+  DelegatedExecutionResumer as DelegatedExecutionResumerTag,
+  ExecutionEngineService,
+  ExecutorService,
+} from "../services";
+import type { DelegatedExecutionResumer } from "../services";
 import { providePluginExtensions, type PluginExtensionServices } from "../plugin-routes";
 import {
   authContextFromPlatform,
@@ -141,6 +146,10 @@ export interface MakeExecutionStackMiddlewareOptions<
     never,
     RStack
   >;
+  /** Optional host callback used when a human approves a durable delegated
+   * artifact pause. It must resolve the persisted binding and rebuild the
+   * original grant-scoped stack before executing. */
+  readonly delegatedExecutionResumer?: DelegatedExecutionResumer;
 }
 
 /**
@@ -208,6 +217,28 @@ export const makeExecutionStackMiddleware = <
                     message: "Organization API keys are read-only",
                   }),
               ),
+              Effect.filterOrFail(
+                (principal) => principal.kind !== "delegated" || principal.delegation !== undefined,
+                () =>
+                  // A serialized MCP binding is identity metadata only. The
+                  // live grant context is required before any API executor is
+                  // built; otherwise a delegated principal could fall through
+                  // to an unrestricted member executor.
+                  new ReadOnlyCredential({
+                    code: "delegated_context_missing",
+                    message: "Delegated credential context is unavailable",
+                  }),
+              ),
+              Effect.filterOrFail(
+                (principal) =>
+                  principal.kind !== "delegated" ||
+                  isDelegatedExecutionPath(webRequest.method, new URL(webRequest.url).pathname),
+                () =>
+                  new ReadOnlyCredential({
+                    code: "delegated_route_denied",
+                    message: "Delegated credentials cannot access this route",
+                  }),
+              ),
             ),
           );
           // The strategy recovered the failure into a Response — return it.
@@ -251,6 +282,9 @@ export const makeExecutionStackMiddleware = <
                 resolved.orgRoleModel === "none" || resolved.orgRole === "admin"
                   ? "allowed"
                   : "denied",
+              ...(resolved.kind === "delegated" && resolved.delegation
+                ? { delegation: resolved.delegation }
+                : {}),
             },
           ).pipe(
             Effect.provide(options.stackLayer, { local: true }),
@@ -267,7 +301,16 @@ export const makeExecutionStackMiddleware = <
                 Effect.withSpan("executor.stack.http.resolve"),
               )
             : stack.pipe(Effect.withSpan("executor.stack.http.resolve"));
-          return yield* httpEffect.pipe(
+          const withDelegatedResumer =
+            options.delegatedExecutionResumer === undefined
+              ? httpEffect
+              : httpEffect.pipe(
+                  Effect.provideService(
+                    DelegatedExecutionResumerTag,
+                    options.delegatedExecutionResumer,
+                  ),
+                );
+          return yield* withDelegatedResumer.pipe(
             Effect.provideService(AuthContext, auth),
             Effect.provideService(ExecutorService, executor),
             Effect.provideService(ExecutionEngineService, engine),
@@ -324,6 +367,60 @@ const isPrincipal = (
  */
 const isPlatformSafeRequest = (method: string, pathname: string): boolean =>
   (method === "GET" || method === "HEAD") && !pathname.endsWith("/oauth/callback");
+
+/** Management and account routes always require a human session. Executor
+ * catalog/invocation routes remain governed by the delegated scope snapshot. */
+const DELEGATED_MANAGEMENT_ROOTS = new Set([
+  "account",
+  "admin",
+  "api-keys",
+  "connections",
+  "integrations",
+  "oauth",
+  "policies",
+  "providers",
+  "org",
+  "org-api-keys",
+  "secrets",
+  "toolkits",
+  "users",
+  "artifacts",
+]);
+
+const decodedPathSegments = (pathname: string): readonly string[] | undefined => {
+  const decoded = Option.getOrElse(Option.liftThrowable(decodeURIComponent)(pathname), () => null);
+  return decoded === null ? undefined : decoded.split("/").filter(Boolean);
+};
+
+export const isDelegatedManagementPath = (pathname: string): boolean => {
+  const segments = decodedPathSegments(pathname);
+  // A malformed escape cannot be classified safely. Treat it as a management
+  // path so a delegated credential never gets a parser-specific route through
+  // a host or router that normalizes it differently.
+  if (segments === undefined) return true;
+  const first = segments[0]?.toLowerCase() === "api" ? segments[1] : segments[0];
+  return DELEGATED_MANAGEMENT_ROOTS.has(first?.toLowerCase() ?? "");
+};
+
+/** The only product-plane routes a delegated credential may reach. New API
+ * routes stay denied by default until they are deliberately added here. */
+export const isDelegatedExecutionPath = (method: string, pathname: string): boolean => {
+  const segments = decodedPathSegments(pathname);
+  if (segments === undefined) return false;
+  const offset = segments[0]?.toLowerCase() === "api" ? 1 : 0;
+  const route = segments.slice(offset).map((segment) => segment.toLowerCase());
+  if (route[0] === "tools") {
+    return (
+      method === "GET" && (route.length === 1 || (route.length === 2 && route[1] === "schema"))
+    );
+  }
+  if (route[0] !== "executions") return false;
+  return (
+    (method === "POST" && route.length === 1) ||
+    (method === "GET" && route.length === 2) ||
+    (method === "POST" && route.length === 3 && route[2] === "resume")
+  );
+};
 
 /** Reaching an engine member the platform branch cannot honestly serve is a
  *  wiring bug (the safe-request gate keeps those paths unreachable), so it

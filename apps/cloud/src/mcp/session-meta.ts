@@ -123,6 +123,7 @@ const metaFromIdentity = (
     ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
     ...sessionOrgRoleMetadata(token),
     userId: token.userId,
+    ...(token.delegation === undefined ? {} : { delegation: token.delegation }),
     resource: token.resource,
     elicitationMode: token.elicitationMode,
     artifactsEnabled: token.artifactsEnabled,

@@ -8,9 +8,8 @@ import type {
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
-import { makeAccessVerifier } from "../auth/cloudflare-access";
+import { classifyAccessClaims, makeAccessVerifier } from "../auth/cloudflare-access";
 
-export { cloudflareAccessMcpAuth } from "./auth";
 export { McpSessionDO } from "./session-durable-object";
 export { McpExecutionOwnerDirectoryDO } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 
@@ -24,15 +23,22 @@ export const makeCloudflareApprovalHandler = (
   config: CloudflareConfig,
   env: CloudflareEnv,
 ): ((request: Request) => Promise<Response>) => {
-  const { verify } = makeAccessVerifier(config);
+  const { verifyWithClaims } = makeAccessVerifier(config);
   const stubFor = (sessionId: string) => mcpSessionStub(env.MCP_SESSION, sessionId);
 
   return async (request) => {
-    const principal = await Effect.runPromise(verify(request));
-    if (!principal) return jsonResponse({ error: "Unauthorized" }, 401);
+    const verified = await Effect.runPromise(verifyWithClaims(request));
+    // Access service-token assertions are valid machine identities, but they
+    // are never browser approvers. The approval endpoint must be reached by a
+    // positively classified human assertion (or the explicit local dev mode).
+    if (!verified || (!config.enableDevAuth && classifyAccessClaims(verified.claims) !== "human")) {
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    }
+    const principal = verified.principal;
     const owner: McpApprovalOwner = {
       accountId: principal.accountId,
       organizationId: principal.organizationId,
+      orgRole: principal.orgRole === "admin" ? "admin" : "member",
     };
     const { pathname } = new URL(request.url);
 

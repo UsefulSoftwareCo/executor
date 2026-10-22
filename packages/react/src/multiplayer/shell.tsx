@@ -53,6 +53,7 @@ export const defaultShellNavItems: ReadonlyArray<ShellNavItem> = [
   { to: "/", label: "Integrations" },
   { to: "/secrets", label: "Providers" },
   { to: "/policies", label: "Policies" },
+  { to: "/delegated-credentials", label: "Delegated credentials" },
   { to: "/toolkits", label: "Toolkits" },
   { to: "/artifacts", label: "Artifacts" },
 ];

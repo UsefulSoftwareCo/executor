@@ -61,7 +61,7 @@ import type {
   ToolPolicy,
   UpdateToolPolicyInput,
 } from "./policies";
-import type { Tool, ToolAnnotations, ToolDef } from "./tool";
+import type { Tool, ToolAnnotations, ToolDef, ToolListFilter } from "./tool";
 
 // ---------------------------------------------------------------------------
 // OwnerBinding — replaces v1's scope stack. The (tenant, subject?) the executor
@@ -229,6 +229,10 @@ export interface PluginCtx<TStore = unknown> {
       readonly remove: (
         input: RemoveToolPolicyInput,
       ) => Effect.Effect<void, OrgWriteDeniedError | StorageFailure>;
+    };
+    /** Read-only exact catalog seam used by consent snapshot producers. */
+    readonly tools: {
+      readonly list: (filter?: ToolListFilter) => Effect.Effect<readonly Tool[], StorageFailure>;
     };
   };
 

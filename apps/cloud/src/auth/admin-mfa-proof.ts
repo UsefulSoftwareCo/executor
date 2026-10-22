@@ -59,7 +59,18 @@ export const readAdminMfaProof = (
   purpose: Purpose,
   token: string | undefined,
   now: number,
-) => {
+): Effect.Effect<typeof Proof.Type | null> =>
+  readAdminMfaProofDetails(secret, identity, purpose, token, now).pipe(
+    Effect.map((details) => details?.proof ?? null),
+  );
+
+const readAdminMfaProofDetails = (
+  secret: string,
+  identity: AdminMfaIdentity,
+  purpose: Purpose,
+  token: string | undefined,
+  now: number,
+): Effect.Effect<{ readonly proof: typeof Proof.Type; readonly issuedAt: number } | null> => {
   if (!token) return Effect.succeed(null);
   return Effect.tryPromise({
     try: () =>
@@ -82,8 +93,30 @@ export const readAdminMfaProof = (
         payload.exp > payload.iat + maxAge
       )
         return null;
-      return Option.getOrNull(decodeProof(payload));
+      const proof = Option.getOrNull(decodeProof(payload));
+      return proof === null ? null : { proof, issuedAt: payload.iat * 1000 };
     }),
     Effect.catchTag("AdminMfaProofError", () => Effect.succeed(null)),
   );
 };
+
+/**
+ * A verified MFA cookie remains useful for the administrative unlock flow for
+ * seven days, but delegation issuance and expansion require a fresh assurance
+ * event. The age check uses the signed `iat` from the MFA proof itself; a
+ * session-cookie timestamp is not an authentication event.
+ */
+export const readRecentAdminMfaProof = (
+  secret: string,
+  identity: AdminMfaIdentity,
+  token: string | undefined,
+  now: number,
+  maxAgeMs: number,
+): Effect.Effect<typeof Proof.Type | null> =>
+  readAdminMfaProofDetails(secret, identity, "verified", token, now).pipe(
+    Effect.map((details) =>
+      details !== null && details.issuedAt <= now && now - details.issuedAt <= maxAgeMs
+        ? details.proof
+        : null,
+    ),
+  );

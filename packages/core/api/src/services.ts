@@ -1,7 +1,7 @@
 import { Context, type Effect } from "effect";
 import type * as Cause from "effect/Cause";
-import type { Executor } from "@executor-js/sdk";
-import type { ExecutionEngine } from "@executor-js/execution";
+import type { DelegationBinding, Executor } from "@executor-js/sdk";
+import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
 export class ExecutorService extends Context.Service<ExecutorService, Executor>()(
   "ExecutorService",
@@ -33,3 +33,48 @@ export class ExecutionEngineService extends Context.Service<
   ExecutionEngineService,
   ExecutionEngine<Cause.YieldableError>
 >()("ExecutionEngineService") {}
+
+/**
+ * Host seam for the durable approval fallback. A request that contains the
+ * human approver's session has an ordinary execution engine, so it cannot
+ * safely re-run a recorded delegated call itself. Hosts that support durable
+ * delegated approvals provide this optional callback; it resolves the exact
+ * binding against durable state, rebuilds the original scoped executor and
+ * engine, and records the approver independently from the machine actor.
+ *
+ * The reference is optional to preserve existing hosts. If it is absent, a
+ * delegated pending approval fails closed instead of falling back to the
+ * approver's unrestricted engine.
+ */
+export interface DelegatedExecutionApprover {
+  readonly kind: "member" | "delegated";
+  readonly accountId: string | null;
+  readonly organizationId: string;
+  /** The live role set from the authenticated request. Hosts must re-check
+   * membership; this is an input to the host resumer, never grant evidence. */
+  readonly roles?: readonly string[];
+  /** Human account id is the approver identity; machine actor is retained on
+   * the binding and must never be replaced by this field. */
+  readonly actorSubject?: string;
+}
+
+export interface DelegatedExecutionResumer {
+  /** Check the target/admin human and resolve the exact binding before the
+   * one-shot pending record is consumed. */
+  readonly authorize: (input: {
+    readonly binding: DelegationBinding;
+    readonly executionId: string;
+    readonly approver: DelegatedExecutionApprover;
+  }) => Effect.Effect<boolean, Cause.YieldableError>;
+  readonly resume: (input: {
+    readonly code: string;
+    readonly binding: DelegationBinding;
+    readonly executionId: string;
+    readonly approver: DelegatedExecutionApprover;
+  }) => Effect.Effect<ExecutionResult | null, Cause.YieldableError>;
+}
+
+export const DelegatedExecutionResumer = Context.Reference<DelegatedExecutionResumer | null>(
+  "@executor-js/api/DelegatedExecutionResumer",
+  { defaultValue: () => null },
+);

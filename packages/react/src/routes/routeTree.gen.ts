@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './__root'
 import { Route as DotIndexRouteImport } from './index'
 import { Route as DotArtifactsRouteImport } from './artifacts'
+import { Route as DotDelegatedCredentialsRouteImport } from './delegated-credentials'
 import { Route as DotPoliciesRouteImport } from './policies'
 import { Route as DotSecretsRouteImport } from './secrets'
 import { Route as DotToolkitsRouteImport } from './toolkits'
@@ -33,6 +34,11 @@ const DotIndexRoute = DotIndexRouteImport.update({
 const DotArtifactsRoute = DotArtifactsRouteImport.update({
   id: '/{-$orgSlug}/artifacts',
   path: '/{-$orgSlug}/artifacts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DotDelegatedCredentialsRoute = DotDelegatedCredentialsRouteImport.update({
+  id: '/{-$orgSlug}/delegated-credentials',
+  path: '/{-$orgSlug}/delegated-credentials',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DotPoliciesRoute = DotPoliciesRouteImport.update({
@@ -110,6 +116,7 @@ const DotPluginsDotpluginIdDotsplatRoute =
 
 export interface FileRoutesByFullPath {
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
+  '/{-$orgSlug}/delegated-credentials': typeof DotDelegatedCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
@@ -127,6 +134,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
+  '/{-$orgSlug}/delegated-credentials': typeof DotDelegatedCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
@@ -145,6 +153,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/{-$orgSlug}/artifacts': typeof DotArtifactsRouteWithChildren
+  '/{-$orgSlug}/delegated-credentials': typeof DotDelegatedCredentialsRoute
   '/{-$orgSlug}/policies': typeof DotPoliciesRoute
   '/{-$orgSlug}/secrets': typeof DotSecretsRoute
   '/{-$orgSlug}/toolkits': typeof DotToolkitsRouteWithChildren
@@ -164,6 +173,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -181,6 +191,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -198,6 +209,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/{-$orgSlug}/artifacts'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
     | '/{-$orgSlug}/toolkits'
@@ -216,6 +228,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   DotArtifactsRoute: typeof DotArtifactsRouteWithChildren
+  DotDelegatedCredentialsRoute: typeof DotDelegatedCredentialsRoute
   DotPoliciesRoute: typeof DotPoliciesRoute
   DotSecretsRoute: typeof DotSecretsRoute
   DotToolkitsRoute: typeof DotToolkitsRouteWithChildren
@@ -244,6 +257,13 @@ declare module '@tanstack/react-router' {
       path: '/{-$orgSlug}/artifacts'
       fullPath: '/{-$orgSlug}/artifacts'
       preLoaderRoute: typeof DotArtifactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/{-$orgSlug}/delegated-credentials': {
+      id: '/{-$orgSlug}/delegated-credentials'
+      path: '/{-$orgSlug}/delegated-credentials'
+      fullPath: '/{-$orgSlug}/delegated-credentials'
+      preLoaderRoute: typeof DotDelegatedCredentialsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/policies': {
@@ -366,6 +386,7 @@ const DotToolkitsRouteWithChildren = DotToolkitsRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   DotArtifactsRoute: DotArtifactsRouteWithChildren,
+  DotDelegatedCredentialsRoute: DotDelegatedCredentialsRoute,
   DotPoliciesRoute: DotPoliciesRoute,
   DotSecretsRoute: DotSecretsRoute,
   DotToolkitsRoute: DotToolkitsRouteWithChildren,

@@ -167,7 +167,11 @@ const makeAuthOptions = (client: Client, getOrganizationId: () => string, gate?:
       // through that path).
       organization({ allowUserToCreateOrganization: false }),
       admin(),
-      apiKey({ enableSessionForAPIKeys: true, rateLimit: { enabled: false } }),
+      apiKey({
+        enableSessionForAPIKeys: true,
+        enableMetadata: true,
+        rateLimit: { enabled: false },
+      }),
       bearer(),
       // RFC 8628 device authorization, the CLI `executor login` flow. Registers
       // /device/code + /device/token + the approval endpoints; the issued token

@@ -48,6 +48,7 @@ import {
 import { ApiKeyService } from "../auth/api-keys";
 import { isDefinitiveWorkOSDenial } from "../auth/errors";
 import { CoreSharedServices } from "../auth/workos";
+import { isDelegationUnmapped } from "../auth/delegation";
 import {
   bearerChallengeFor,
   mcpOrganizationFromRequest,
@@ -56,6 +57,8 @@ import {
   toolkitSlugFromRequest,
   McpAuth,
   McpAuthLive,
+  McpDelegationAuth,
+  McpDelegationAuthLive,
   McpOrganizationAuth,
   McpOrganizationAuthLive,
   type AuthorizedMcpOrganization,
@@ -107,28 +110,54 @@ const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
 const principalFromToken = (
   token: VerifiedToken,
   organization: AuthorizedMcpOrganization,
+  delegation: import("@executor-js/sdk").DelegationGrant | null,
 ): Principal => ({
-  accountId: token.accountId,
-  organizationId: organization.id,
-  organizationName: organization.name,
-  ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
-  orgRoleModel: "organization",
-  orgRole: organization.memberRole,
-  email: "",
-  name: null,
-  avatarUrl: null,
-  roles: [],
+  ...(delegation === null
+    ? {
+        kind: "member" as const,
+        accountId: token.accountId,
+        organizationId: organization.id,
+        organizationName: organization.name,
+        ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
+        orgRoleModel: "organization" as const,
+        orgRole: organization.memberRole,
+        email: "",
+        name: null,
+        avatarUrl: null,
+        roles: [],
+      }
+    : {
+        kind: "delegated" as const,
+        accountId: String(delegation.effectiveSubject),
+        organizationId: organization.id,
+        organizationName: organization.name,
+        ...(organization.slug === undefined ? {} : { organizationSlug: organization.slug }),
+        orgRoleModel: "organization" as const,
+        orgRole: "member" as const,
+        email: "" as const,
+        name: null,
+        avatarUrl: null,
+        roles: [] as const,
+        tenant: String(delegation.tenant),
+        grantId: String(delegation.grantId),
+        credentialId: String(delegation.credentialId),
+        credentialRef: delegation.credentialRef,
+        actorSubject: String(delegation.actorSubject),
+        effectiveSubject: String(delegation.effectiveSubject),
+        scopeVersion: String(delegation.scopeVersion),
+      }),
 });
 
 export const cloudMcpAuthProviderLayer: Layer.Layer<
   McpAuthProvider,
   never,
-  McpAuth | McpOrganizationAuth
+  McpAuth | McpOrganizationAuth | McpDelegationAuth
 > = Layer.effect(
   McpAuthProvider,
   Effect.gen(function* () {
     const auth = yield* McpAuth;
     const orgAuth = yield* McpOrganizationAuth;
+    const delegationAuth = yield* McpDelegationAuth;
 
     const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
       {
@@ -242,7 +271,17 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         // session.
         const organization = authorizeResult.success;
         if (!organization) return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
-        return authenticated(principalFromToken(token, organization));
+        const delegationResult = yield* delegationAuth.resolve(token).pipe(Effect.result);
+        if (Result.isFailure(delegationResult)) {
+          if (
+            Predicate.isTagged(delegationResult.failure, "DelegationDeniedError") &&
+            !isDelegationUnmapped(delegationResult.failure)
+          ) {
+            return forbidden("Delegated credential is no longer authorized", -32001);
+          }
+          return unavailable(ORGANIZATION_AUTHORIZE_UNAVAILABLE);
+        }
+        return authenticated(principalFromToken(token, organization, delegationResult.success));
       });
 
     const toOutcome = (request: Request, result: McpAuthResult): Effect.Effect<AuthOutcome> => {
@@ -318,6 +357,7 @@ export const cloudMcpAuth: Layer.Layer<McpAuthProvider> = cloudMcpAuthProviderLa
     Layer.mergeAll(
       McpAuthLive.pipe(Layer.provide(ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices)))),
       McpOrganizationAuthLive,
+      McpDelegationAuthLive,
     ),
   ),
   // A boot-time WorkOS misconfiguration (the `WorkOSClient.Default` config error)

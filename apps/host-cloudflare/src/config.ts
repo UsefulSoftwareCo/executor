@@ -1,6 +1,7 @@
 import type { D1Database, DurableObjectNamespace, R2Bucket } from "@cloudflare/workers-types";
 
 import { isValidOrgSlug } from "@executor-js/api";
+import { MAX_DELEGATION_TTL_MS } from "@executor-js/sdk";
 import { missingPublicOriginWarning, resolvePublicOrigin } from "@executor-js/sdk/public-origin";
 
 let warnedNoCloudflareOrigin = false;
@@ -56,6 +57,14 @@ export interface CloudflareEnv {
    * behind Access, or the instance is wide open.
    */
   readonly ENABLE_DEV_AUTH?: string;
+  /** Explicit rollout gate for delegated credential issuance. */
+  readonly DELEGATED_CREDENTIAL_ISSUANCE?: string;
+  /** Maximum age of a signed Access `auth_time` used for human management. */
+  readonly DELEGATED_RECENT_AUTH_MAX_AGE_MS?: string;
+  /** Signed IdP/custom claim used as the recent-login assurance. */
+  readonly DELEGATED_RECENT_AUTH_CLAIM?: string;
+  /** Operator cap for delegated grants, bounded by the SDK hard maximum. */
+  readonly DELEGATED_MAX_TTL_MS?: string;
 }
 
 export interface CloudflareConfig {
@@ -74,6 +83,13 @@ export interface CloudflareConfig {
    *  static URL — the per-request origin is used instead (see RequestWebOrigin). */
   readonly webBaseUrl?: string;
   readonly enableDevAuth: boolean;
+  readonly delegatedIssuanceEnabled: boolean;
+  readonly delegatedRecentAuthMaxAgeMs: number;
+  /** Signed IdP assurance claim carrying login time in Unix seconds. Access
+   * application JWTs expose `iat`, which is token issuance time and is not
+   * sufficient; configure a signed IdP/custom claim such as `auth_time`. */
+  readonly delegatedRecentAuthClaim?: string;
+  readonly delegatedMaxTtlMs: number;
 }
 
 type CloudflareConfigEnv = Omit<
@@ -97,6 +113,23 @@ const normalizeAccessTeamDomain = (value: string | undefined): string =>
     .trim()
     .replace(/^https?:\/\//, "")
     .replace(/\/+$/, "");
+
+// These claims describe token identity or token lifetime, not a fresh IdP
+// authentication event. Allowing one as the operator-selected assurance
+// field would turn issuance time (`iat`) or expiry (`exp`) into a login proof.
+const RESERVED_RECENT_AUTH_CLAIMS = new Set([
+  "iss",
+  "sub",
+  "aud",
+  "exp",
+  "nbf",
+  "iat",
+  "jti",
+  "typ",
+  "email",
+  "common_name",
+  "type",
+]);
 
 export const missingCloudflareAccessVars = (env: CloudflareAccessEnv): readonly string[] => {
   if (env.ENABLE_DEV_AUTH === "true") return [];
@@ -138,6 +171,33 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
     );
   }
   const enableDevAuth = env.ENABLE_DEV_AUTH === "true";
+  const delegatedRecentAuthMaxAgeMs = Number(env.DELEGATED_RECENT_AUTH_MAX_AGE_MS ?? "300000");
+  if (!Number.isSafeInteger(delegatedRecentAuthMaxAgeMs) || delegatedRecentAuthMaxAgeMs <= 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error("DELEGATED_RECENT_AUTH_MAX_AGE_MS must be a positive integer");
+  }
+  const delegatedRecentAuthClaim = (env.DELEGATED_RECENT_AUTH_CLAIM ?? "auth_time").trim();
+  if (
+    !delegatedRecentAuthClaim ||
+    !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(delegatedRecentAuthClaim) ||
+    RESERVED_RECENT_AUTH_CLAIMS.has(delegatedRecentAuthClaim.toLowerCase())
+  ) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: an assurance claim must be an unambiguous signed field name
+    throw new Error(
+      "DELEGATED_RECENT_AUTH_CLAIM must be a non-reserved signed claim name (for example auth_time)",
+    );
+  }
+  const delegatedMaxTtlMs = Number(env.DELEGATED_MAX_TTL_MS ?? String(MAX_DELEGATION_TTL_MS));
+  if (
+    !Number.isSafeInteger(delegatedMaxTtlMs) ||
+    delegatedMaxTtlMs <= 0 ||
+    delegatedMaxTtlMs > MAX_DELEGATION_TTL_MS
+  ) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `DELEGATED_MAX_TTL_MS must be a positive integer no greater than ${MAX_DELEGATION_TTL_MS}`,
+    );
+  }
   const accessTeamDomain = normalizeAccessTeamDomain(env.ACCESS_TEAM_DOMAIN);
   const accessAud = (env.ACCESS_AUD ?? "").trim();
   const missingAccessVars = missingCloudflareAccessVars(env);
@@ -174,5 +234,9 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
     // mirroring self-host (gated on enableDevAuth = local `wrangler dev`).
     webBaseUrl,
     enableDevAuth,
+    delegatedIssuanceEnabled: env.DELEGATED_CREDENTIAL_ISSUANCE === "true",
+    delegatedRecentAuthMaxAgeMs,
+    delegatedRecentAuthClaim,
+    delegatedMaxTtlMs,
   };
 };

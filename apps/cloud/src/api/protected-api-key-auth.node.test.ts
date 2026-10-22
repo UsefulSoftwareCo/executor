@@ -3,11 +3,11 @@ import { Effect, Layer } from "effect";
 
 import { MemberDirectory } from "@executor-js/api/server";
 
-import { ApiKeyService } from "../auth/api-keys";
+import { ApiKeyService, ApiKeyValidationError } from "../auth/api-keys";
 import { UserStoreService } from "../auth/context";
 import { WorkOSClient, type WorkOSClientService } from "../auth/workos";
 import { WorkOsMirror, type WorkOsMirrorShape } from "../auth/workos-mirror";
-import { resolveProtectedPrincipal } from "./protected";
+import { resolveProtectedPrincipal, resolveProtectedPrincipalWithDelegation } from "./protected";
 
 const createdAt = new Date("2026-01-01T00:00:00.000Z");
 
@@ -43,6 +43,40 @@ const stubApiKeys = Layer.succeed(ApiKeyService)({
   createOrgKey: () => Effect.die("auth resolution test does not create org API keys"),
   revokeOrgKey: () => Effect.die("auth resolution test does not revoke org API keys"),
 });
+
+const racingApiKeys = (second: "missing" | "outage" | "changed") =>
+  Layer.succeed(ApiKeyService)({
+    validate: (() => {
+      let calls = 0;
+      return () => {
+        calls += 1;
+        if (calls === 1) {
+          return Effect.succeed({
+            scope: "user" as const,
+            accountId: "user_123",
+            organizationId: "org_123",
+            keyId: "api_key_123",
+          });
+        }
+        if (second === "missing") return Effect.succeed(null);
+        if (second === "changed") {
+          return Effect.succeed({
+            scope: "user" as const,
+            accountId: "different_user",
+            organizationId: "org_123",
+            keyId: "api_key_other",
+          });
+        }
+        return Effect.fail(new ApiKeyValidationError({ cause: "test outage" }));
+      };
+    })(),
+    listUserKeys: () => Effect.succeed([]),
+    createUserKey: () => Effect.die("protected API auth test does not create API keys"),
+    revokeUserKey: () => Effect.void,
+    listOrgKeys: () => Effect.die("auth resolution test does not list org API keys"),
+    createOrgKey: () => Effect.die("auth resolution test does not create org API keys"),
+    revokeOrgKey: () => Effect.die("auth resolution test does not revoke org API keys"),
+  });
 
 const stubWorkOS = Layer.succeed(
   WorkOSClient,
@@ -133,6 +167,11 @@ const run = (request: Request) =>
     Effect.provide(Layer.mergeAll(stubApiKeys, stubWorkOS, stubUsers, stubDirectory, stubMirror)),
   );
 
+const runDelegated = (request: Request, apiKeys: Layer.Layer<ApiKeyService>) =>
+  resolveProtectedPrincipalWithDelegation(request, null).pipe(
+    Effect.provide(Layer.mergeAll(apiKeys, stubWorkOS, stubUsers, stubDirectory, stubMirror)),
+  );
+
 describe("protected API key auth", () => {
   it.effect("resolves a valid bearer API key into protected identity", () =>
     Effect.gen(function* () {
@@ -177,6 +216,69 @@ describe("protected API key auth", () => {
         _tag: "Unauthorized",
         code: "invalid_api_key",
         message: "Invalid API key",
+      });
+    }),
+  );
+
+  it.effect("does not promote a key that disappears between validation reads", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        runDelegated(
+          new Request("https://executor.test/api/tools", {
+            headers: {
+              authorization: "Bearer racing_key",
+              cookie: "wos-session=owner-session",
+            },
+          }),
+          racingApiKeys("missing"),
+        ),
+      );
+
+      expect(error).toMatchObject({
+        _tag: "Unauthorized",
+        code: "invalid_api_key",
+      });
+    }),
+  );
+
+  it.effect("does not promote a key when the second validation is unavailable", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        runDelegated(
+          new Request("https://executor.test/api/tools", {
+            headers: {
+              authorization: "Bearer racing_key",
+              cookie: "wos-session=owner-session",
+            },
+          }),
+          racingApiKeys("outage"),
+        ),
+      );
+
+      expect(error).toMatchObject({
+        _tag: "Unavailable",
+        code: "api_key_validation_unavailable",
+      });
+    }),
+  );
+
+  it.effect("does not mix the subject from two validation reads", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        runDelegated(
+          new Request("https://executor.test/api/tools", {
+            headers: {
+              authorization: "Bearer racing_key",
+              cookie: "wos-session=owner-session",
+            },
+          }),
+          racingApiKeys("changed"),
+        ),
+      );
+
+      expect(error).toMatchObject({
+        _tag: "Unauthorized",
+        code: "invalid_api_key",
       });
     }),
   );

@@ -225,6 +225,7 @@ export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | I
               ? ("admin" as const)
               : ("member" as const);
           return {
+            kind: "member" as const,
             accountId: user.id,
             // Single-org self-host: OAuth tokens carry no active org, so pin to
             // the seeded org (same default as the cookie/api-key path).

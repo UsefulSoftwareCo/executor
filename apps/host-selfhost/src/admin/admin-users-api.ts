@@ -54,6 +54,7 @@ import type { Executor } from "@executor-js/sdk";
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import { requireInstanceAdmin } from "./require-admin";
 import { SelfHostDb, SelfHostDbProvider, type SelfHostDbHandle } from "../db/self-host-db";
+import type { SelfHostConfig } from "../config";
 import { SelfHostHostConfig, SelfHostPluginsProvider } from "../execution";
 
 /**
@@ -63,8 +64,8 @@ import { SelfHostHostConfig, SelfHostPluginsProvider } from "../execution";
  * of some OTHER organization: this plane reports every user in the instance, so
  * the org it authorizes against is the instance's own (see require-admin.ts).
  */
-const requireAdmin = (headers: AdminUsersHeaders) =>
-  requireInstanceAdmin(new Headers(headers)).pipe(
+const requireAdmin = (headers: AdminUsersHeaders, db: SelfHostDbHandle, config: SelfHostConfig) =>
+  requireInstanceAdmin(new Headers(headers), db, config).pipe(
     Effect.mapError((denial) =>
       denial === "unauthorized" ? new AdminUsersUnauthorized() : new AdminUsersForbidden(),
     ),
@@ -73,6 +74,8 @@ const requireAdmin = (headers: AdminUsersHeaders) =>
 const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = AdminUsersError>(
   headers: AdminUsersHeaders,
   organizationId: string,
+  db: SelfHostDbHandle,
+  config: SelfHostConfig,
   body: (executor: Executor) => Effect.Effect<A, E>,
 ): Effect.Effect<
   A,
@@ -82,52 +85,58 @@ const withPlatformView = <A, E extends AdminUsersError | AdminUserNotFound = Adm
   BetterAuth | DbProvider | PluginsProvider | HostConfig
 > =>
   Effect.gen(function* () {
-    yield* requireAdmin(headers);
+    yield* requireAdmin(headers, db, config);
     const executor = yield* makePlatformExecutor(organizationId).pipe(
       Effect.mapError(() => new AdminUsersError({ message: "Failed to open the platform view" })),
     );
     return yield* Effect.ensuring(body(executor), executor.close().pipe(Effect.ignore));
   });
 
-export const betterAuthAdminUsersProvider: Layer.Layer<
+export const betterAuthAdminUsersProvider = (
+  config: SelfHostConfig,
+): Layer.Layer<
   AdminUsersProvider,
   never,
-  BetterAuth | MemberDirectory | DbProvider | PluginsProvider | HostConfig
-> = Layer.effect(AdminUsersProvider)(
-  Effect.gen(function* () {
-    const context = yield* Effect.context<BetterAuth | DbProvider | PluginsProvider | HostConfig>();
-    const { organizationId } = yield* BetterAuth;
-    // Scoped to the INSTANCE's org — the same one the platform view is opened
-    // for, never the caller's `activeOrganizationId` (see require-admin.ts).
-    const directory = adminUserDirectoryFromMembers(yield* MemberDirectory, organizationId);
-    return AdminUsersProvider.of({
-      listUsers: (headers, options) =>
-        withPlatformView(headers, organizationId, (executor) =>
-          platformViewOf(executor).pipe(
-            Effect.flatMap((admin) => listAdminUsers(admin, options, directory)),
-          ),
-        ).pipe(Effect.provideContext(context)),
-      listUsersWithConnections: (headers, options) =>
-        withPlatformView(headers, organizationId, (executor) =>
-          platformViewOf(executor).pipe(
-            Effect.flatMap((admin) => listAdminUsersWithConnections(admin, options, directory)),
-          ),
-        ).pipe(Effect.provideContext(context)),
-      listUserConnections: (headers, externalId) =>
-        withPlatformView(headers, organizationId, (executor) =>
-          platformViewOf(executor).pipe(
-            Effect.flatMap((admin) => listAdminUserConnections(admin, externalId)),
-          ),
-        ).pipe(Effect.provideContext(context)),
-      getUser: (headers, identifier) =>
-        withPlatformView(headers, organizationId, (executor) =>
-          platformViewOf(executor).pipe(
-            Effect.flatMap((admin) => getAdminUser(admin, identifier, directory)),
-          ),
-        ).pipe(Effect.provideContext(context)),
-    });
-  }),
-);
+  BetterAuth | MemberDirectory | DbProvider | PluginsProvider | HostConfig | SelfHostDb
+> =>
+  Layer.effect(AdminUsersProvider)(
+    Effect.gen(function* () {
+      const context = yield* Effect.context<
+        BetterAuth | DbProvider | PluginsProvider | HostConfig | SelfHostDb
+      >();
+      const { organizationId } = yield* BetterAuth;
+      const db = yield* SelfHostDb;
+      // Scoped to the INSTANCE's org — the same one the platform view is opened
+      // for, never the caller's `activeOrganizationId` (see require-admin.ts).
+      const directory = adminUserDirectoryFromMembers(yield* MemberDirectory, organizationId);
+      return AdminUsersProvider.of({
+        listUsers: (headers, options) =>
+          withPlatformView(headers, organizationId, db, config, (executor) =>
+            platformViewOf(executor).pipe(
+              Effect.flatMap((admin) => listAdminUsers(admin, options, directory)),
+            ),
+          ).pipe(Effect.provideContext(context)),
+        listUsersWithConnections: (headers, options) =>
+          withPlatformView(headers, organizationId, db, config, (executor) =>
+            platformViewOf(executor).pipe(
+              Effect.flatMap((admin) => listAdminUsersWithConnections(admin, options, directory)),
+            ),
+          ).pipe(Effect.provideContext(context)),
+        listUserConnections: (headers, externalId) =>
+          withPlatformView(headers, organizationId, db, config, (executor) =>
+            platformViewOf(executor).pipe(
+              Effect.flatMap((admin) => listAdminUserConnections(admin, externalId)),
+            ),
+          ).pipe(Effect.provideContext(context)),
+        getUser: (headers, identifier) =>
+          withPlatformView(headers, organizationId, db, config, (executor) =>
+            platformViewOf(executor).pipe(
+              Effect.flatMap((admin) => getAdminUser(admin, identifier, directory)),
+            ),
+          ).pipe(Effect.provideContext(context)),
+      });
+    }),
+  );
 
 export interface SelfHostAdminUsersApiDeps {
   readonly betterAuth: BetterAuthHandle;
@@ -135,6 +144,7 @@ export interface SelfHostAdminUsersApiDeps {
    *  plane reads the same directory instance every other plane does. */
   readonly memberDirectory: Layer.Layer<MemberDirectory>;
   readonly db: SelfHostDbHandle;
+  readonly config: SelfHostConfig;
   readonly mountPrefix: `/${string}`;
 }
 
@@ -149,12 +159,13 @@ export const makeSelfHostAdminUsersApiLayer = ({
   betterAuth,
   memberDirectory,
   db,
+  config,
   mountPrefix,
 }: SelfHostAdminUsersApiDeps) => {
   const prefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
     Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed(mountPrefix)),
   );
-  const provider = betterAuthAdminUsersProvider.pipe(
+  const provider = betterAuthAdminUsersProvider(config).pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
     Layer.provide(memberDirectory),
     Layer.provide(SelfHostDbProvider),

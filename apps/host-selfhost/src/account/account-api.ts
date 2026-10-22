@@ -4,6 +4,8 @@ import { accountProviderMiddlewareLayer } from "@executor-js/api/server";
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import { betterAuthAccountProvider } from "./better-auth-account-provider";
+import type { SelfHostConfig } from "../config";
+import type { SelfHostDbHandle } from "../db/self-host-db";
 
 // ---------------------------------------------------------------------------
 // Self-host account seam: the per-request `AccountProvider` middleware backed by
@@ -21,7 +23,13 @@ import { betterAuthAccountProvider } from "./better-auth-account-provider";
 // `requestScopedMiddleware`).
 // ---------------------------------------------------------------------------
 
-export const selfHostAccountMiddleware = (betterAuth: BetterAuthHandle) =>
+export const selfHostAccountMiddleware = (
+  betterAuth: BetterAuthHandle,
+  db: SelfHostDbHandle,
+  config: SelfHostConfig,
+) =>
   accountProviderMiddlewareLayer(
-    betterAuthAccountProvider.pipe(Layer.provide(Layer.succeed(BetterAuth)(betterAuth))),
+    betterAuthAccountProvider(db, config).pipe(
+      Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
+    ),
   );

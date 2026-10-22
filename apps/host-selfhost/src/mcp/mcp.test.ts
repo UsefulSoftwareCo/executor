@@ -10,6 +10,7 @@ process.env.EXECUTOR_DATA_DIR = mkdtempSync(join(tmpdir(), "eh-mcp-"));
 process.env.BETTER_AUTH_SECRET = "mcp-test-secret-0123456789-abcdefghij-klmnop";
 process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL = "admin@mcp.test";
 process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD = "admin-pass-123456";
+process.env.EXECUTOR_DELEGATED_CREDENTIAL_ISSUANCE = "true";
 
 const { makeSelfHostApiHandler } = await import("../app");
 
@@ -128,6 +129,177 @@ test("an authenticated MCP client initializes, lists tools, and executes code", 
   );
   expect(call.status).toBe(200);
   expect(JSON.stringify(await call.json())).toContain("42");
+});
+
+test("a provider-issued delegated key owns an MCP session until revocation", async () => {
+  const admin = await signInBootstrap();
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const created = await handler(
+    new Request(`${BASE}/api/account/delegated-credentials/keys`, {
+      method: "POST",
+      headers: {
+        cookie: admin.cookie,
+        origin: BASE,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        label: "mcp-machine",
+        target: { kind: "self" },
+        scope: { scopes: ["discover", "invoke"], toolkitIds: [], connectionIds: [] },
+        expiresAt,
+      }),
+    }),
+  );
+  expect(created.status).toBe(200);
+  const body = (await created.json()) as { credential: { id: string }; value: string };
+  const sessionId = await initSession(body.value);
+  const listed = await mcp(body.value, { jsonrpc: "2.0", id: 2, method: "tools/list" }, sessionId);
+  expect(listed.status).toBe(200);
+
+  const revoked = await handler(
+    new Request(`${BASE}/api/account/delegated-credentials/${body.credential.id}`, {
+      method: "DELETE",
+      headers: { cookie: admin.cookie, origin: BASE },
+    }),
+  );
+  expect(revoked.status).toBe(200);
+  const afterRevoke = await mcp(
+    body.value,
+    { jsonrpc: "2.0", id: 3, method: "tools/list" },
+    sessionId,
+  );
+  expect(afterRevoke.status).toBe(401);
+});
+
+test("browser approval audits the human while retaining the delegated scope", async () => {
+  const admin = await signInBootstrap();
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const scope = { scopes: ["discover", "invoke"], toolkitIds: [], connectionIds: [] } as const;
+  const created = await handler(
+    new Request(`${BASE}/api/account/delegated-credentials/keys`, {
+      method: "POST",
+      headers: { cookie: admin.cookie, origin: BASE, "content-type": "application/json" },
+      body: JSON.stringify({
+        label: "approval-machine",
+        target: { kind: "self" },
+        scope,
+        expiresAt,
+      }),
+    }),
+  );
+  expect(created.status).toBe(200);
+  const createdBody = (await created.json()) as {
+    credential: { id: string; scope: typeof scope };
+    value: string;
+  };
+  const gate = await account(admin.token, "/api/policies", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      owner: "org",
+      pattern: "selfhost-browser-audit.*",
+      action: "require_approval",
+    }),
+  });
+  expect(gate.status).toBe(200);
+  const gateBody = (await gate.json()) as { id: string };
+  const sessionId = await initSession(createdBody.value, true);
+  const pausedResponse = await mcp(
+    createdBody.value,
+    {
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/call",
+      params: {
+        name: "execute",
+        arguments: {
+          code: [
+            "return await tools.executor.coreTools.policies.create({",
+            '  owner: "org",',
+            '  pattern: "selfhost-browser-audit.result",',
+            '  action: "block"',
+            "});",
+          ].join("\n"),
+        },
+      },
+    },
+    sessionId,
+    true,
+  );
+  const pausedBody = (await pausedResponse.json()) as {
+    result?: { structuredContent?: { executionId?: string } };
+  };
+  const executionId = pausedBody.result?.structuredContent?.executionId;
+  expect(executionId).toBeTruthy();
+  if (!executionId) return;
+  const resume = mcp(
+    createdBody.value,
+    {
+      jsonrpc: "2.0",
+      id: 11,
+      method: "tools/call",
+      params: { name: "resume", arguments: { executionId } },
+    },
+    sessionId,
+    true,
+  );
+  await Promise.resolve();
+  const decision = await handler(
+    new Request(
+      `${BASE}/api/mcp-sessions/${encodeURIComponent(sessionId)}/executions/${encodeURIComponent(executionId)}/resume`,
+      {
+        method: "POST",
+        headers: { cookie: admin.cookie, origin: BASE, "content-type": "application/json" },
+        body: JSON.stringify({ action: "accept", content: {} }),
+      },
+    ),
+  );
+  expect(decision.status).toBe(200);
+  expect((await resume).status).toBe(200);
+
+  const auditResponse = await handler(
+    new Request(
+      `${BASE}/api/account/delegated-credentials/audit?credentialId=${encodeURIComponent(createdBody.credential.id)}`,
+      { headers: { cookie: admin.cookie, origin: BASE } },
+    ),
+  );
+  expect(auditResponse.status).toBe(200);
+  const audit = (await auditResponse.json()) as {
+    events: ReadonlyArray<{
+      action: string;
+      outcome: string;
+      executionId: string | null;
+      actor: { kind: string; id?: string };
+    }>;
+  };
+  expect(
+    audit.events.some(
+      (event) =>
+        event.action === "approval" &&
+        event.outcome === "allowed" &&
+        event.executionId === executionId &&
+        event.actor.kind === "human",
+    ),
+  ).toBe(true);
+
+  const listed = await handler(
+    new Request(`${BASE}/api/account/delegated-credentials`, {
+      headers: { cookie: admin.cookie, origin: BASE },
+    }),
+  );
+  expect(listed.status).toBe(200);
+  const listedBody = (await listed.json()) as {
+    credentials: ReadonlyArray<{ id: string; scope: typeof scope }>;
+  };
+  expect(
+    listedBody.credentials.find((item) => item.id === createdBody.credential.id)?.scope,
+  ).toEqual(scope);
+
+  await account(admin.token, `/api/policies/${encodeURIComponent(gateBody.id)}`, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ owner: "org" }),
+  });
 });
 
 test("an MCP session cannot be reused by another user, and unauth is rejected", async () => {
