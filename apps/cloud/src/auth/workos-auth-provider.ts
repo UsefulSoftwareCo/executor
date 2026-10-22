@@ -32,7 +32,8 @@
 // forced a forked tag before).
 // ---------------------------------------------------------------------------
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
+import { env } from "cloudflare:workers";
 import { HttpServerResponse } from "effect/unstable/http";
 import type { JWTVerifyGetKey } from "jose";
 
@@ -66,6 +67,14 @@ import { UserStoreService } from "./context";
 import { sealedSessionDisplayName } from "./middleware";
 import type { UserStoreError, WorkOSError, WorkOsMirrorError } from "./errors";
 import { WorkOSClient } from "./workos";
+import {
+  isDelegationUnmapped,
+  makeCloudDelegationService,
+  workosDelegatedCredential,
+} from "./delegation";
+import { collectTables } from "@executor-js/sdk";
+import { createDrizzleFumaDb, CLOUD_NAMESPACE } from "../db/fuma";
+import { DbService } from "../db/db";
 import { verifyWorkosUserManagementToken } from "../mcp/jwt";
 
 /**
@@ -390,6 +399,106 @@ export const resolveProtectedPrincipal = (
     return yield* resolveSessionPrincipal(request);
   });
 
+/** Resolve a validated WorkOS user key to a live delegated grant when one is
+ * registered. Ordinary user keys retain the existing member path; a grant
+ * denial other than the explicit unmapped case fails closed rather than
+ * silently downgrading a revoked binding to ordinary member access. */
+export const resolveProtectedPrincipalWithDelegation = (
+  request: Request,
+  jwt: JwtBearerConfig | null,
+) =>
+  Effect.gen(function* () {
+    const principal = yield* resolveProtectedPrincipal(request, jwt);
+    if (principal.kind !== "member") return principal;
+    const authHeader = request.headers.get("authorization");
+    if (!authHeader?.startsWith(BEARER_PREFIX)) return principal;
+    const value = authHeader.slice(BEARER_PREFIX.length).trim();
+    if (!value || looksLikeJwt(value)) return principal;
+
+    const apiKeys = yield* ApiKeyService;
+    const owner = yield* apiKeys.validate(value).pipe(
+      // The first resolver already accepted this explicit bearer. A second
+      // validation is still required to obtain the provider key reference for
+      // grant resolution, but a race or provider outage must fail closed. It
+      // must never fall through to the ordinary cookie-derived member.
+      Effect.catchTag("ApiKeyValidationError", () =>
+        Effect.fail(new Unavailable(API_KEY_VALIDATION_UNAVAILABLE)),
+      ),
+    );
+    if (
+      owner === null ||
+      owner.scope !== "user" ||
+      owner.accountId === null ||
+      owner.accountId !== principal.accountId ||
+      owner.organizationId !== principal.organizationId
+    ) {
+      return yield* new Unauthorized(INVALID_API_KEY);
+    }
+    const credential = workosDelegatedCredential(
+      owner,
+      env.WORKOS_API_URL ?? "https://api.workos.com",
+    );
+    if (credential === null) return principal;
+    const db = yield* Effect.serviceOption(DbService);
+    if (Option.isNone(db)) {
+      return yield* new Unavailable(API_KEY_VALIDATION_UNAVAILABLE);
+    }
+    const directory = yield* MemberDirectory;
+    const fuma = createDrizzleFumaDb({
+      db: db.value.db,
+      tables: collectTables(),
+      namespace: CLOUD_NAMESPACE,
+      provider: "postgresql",
+    });
+    const service = makeCloudDelegationService({
+      db: fuma.db,
+      tenant: owner.organizationId,
+      directory,
+      apiKeys,
+      issuanceEnabled: env.DELEGATED_ISSUANCE_ENABLED === "true",
+    });
+    const grant = yield* service.resolve(credential).pipe(
+      Effect.catchTag("DelegationDeniedError", (error) =>
+        isDelegationUnmapped(error)
+          ? Effect.succeed(null)
+          : Effect.fail(new Unauthorized(INVALID_API_KEY)),
+      ),
+      Effect.catchTag("StorageError", () =>
+        Effect.fail(new Unavailable(API_KEY_VALIDATION_UNAVAILABLE)),
+      ),
+      Effect.catchTags({
+        CredentialWriteIncompleteError: () =>
+          Effect.fail(new Unavailable(API_KEY_VALIDATION_UNAVAILABLE)),
+        StorageConnectionError: () => Effect.fail(new Unavailable(API_KEY_VALIDATION_UNAVAILABLE)),
+        UniqueViolationError: () => Effect.fail(new Unavailable(API_KEY_VALIDATION_UNAVAILABLE)),
+      }),
+    );
+    if (grant === null) return principal;
+    return {
+      kind: "delegated",
+      accountId: String(grant.effectiveSubject),
+      organizationId: principal.organizationId,
+      organizationName: principal.organizationName,
+      ...(principal.organizationSlug === undefined
+        ? {}
+        : { organizationSlug: principal.organizationSlug }),
+      email: "",
+      name: null,
+      avatarUrl: null,
+      roles: [],
+      orgRoleModel: "organization",
+      orgRole: "member",
+      tenant: String(grant.tenant),
+      grantId: String(grant.grantId),
+      credentialId: String(grant.credentialId),
+      credentialRef: grant.credentialRef,
+      actorSubject: String(grant.actorSubject),
+      effectiveSubject: String(grant.effectiveSubject),
+      scopeVersion: String(grant.scopeVersion),
+      delegation: grant,
+    } satisfies Principal;
+  });
+
 /**
  * Cloud's NEUTRAL `IdentityProvider` Layer. Closes over the long-lived
  * `WorkOSClient` + `ApiKeyService`; the request-scoped `UserStoreService` +
@@ -403,16 +512,16 @@ export const resolveProtectedPrincipal = (
 export const workosIdentityLayer: Layer.Layer<
   IdentityProvider,
   never,
-  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
+  WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror | DbService
 > = Layer.effect(
   IdentityProvider,
   Effect.gen(function* () {
     const context = yield* Effect.context<
-      WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror
+      WorkOSClient | ApiKeyService | UserStoreService | MemberDirectory | WorkOsMirror | DbService
     >();
     return IdentityProvider.of({
       authenticate: (request) =>
-        resolveProtectedPrincipal(request, workosApiJwtBearerConfig).pipe(
+        resolveProtectedPrincipalWithDelegation(request, workosApiJwtBearerConfig).pipe(
           // `UserStoreError` / `WorkOSError` are org-resolution infra failures —
           // surface as a 500 defect, exactly as the old inline resolver let them
           // bubble. The narrow `die` here is the runtime edge for that infra

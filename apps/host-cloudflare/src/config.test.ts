@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "@effect/vitest";
 import { parse } from "jsonc-parser";
+import { MAX_DELEGATION_TTL_MS } from "@executor-js/sdk";
 
 import { loadConfig } from "./config";
 
@@ -55,6 +56,41 @@ describe("loadConfig", () => {
       adminEmails: [],
       enableDevAuth: false,
     });
+  });
+
+  it("honors a positive operator TTL cap within the SDK maximum", () => {
+    expect(
+      loadConfig(
+        makeEnv({
+          ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+          ACCESS_AUD: "aud-tag",
+          DELEGATED_MAX_TTL_MS: "604800000",
+        }),
+      ).delegatedMaxTtlMs,
+    ).toBe(604800000);
+    expect(() =>
+      loadConfig(
+        makeEnv({
+          ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+          ACCESS_AUD: "aud-tag",
+          DELEGATED_MAX_TTL_MS: String(MAX_DELEGATION_TTL_MS + 1),
+        }),
+      ),
+    ).toThrowError("DELEGATED_MAX_TTL_MS");
+  });
+
+  it("rejects token lifecycle claims as recent-auth evidence", () => {
+    for (const claim of ["iat", "exp", "nbf", "sub"]) {
+      expect(() =>
+        loadConfig(
+          makeEnv({
+            ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+            ACCESS_AUD: "aud-tag",
+            DELEGATED_RECENT_AUTH_CLAIM: claim,
+          }),
+        ),
+      ).toThrowError("DELEGATED_RECENT_AUTH_CLAIM");
+    }
   });
 });
 

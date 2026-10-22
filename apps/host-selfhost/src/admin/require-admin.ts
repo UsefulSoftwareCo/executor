@@ -48,6 +48,9 @@
 import { Effect } from "effect";
 
 import { BetterAuth } from "../auth/better-auth";
+import { classifySelfHostDelegatedBoundary } from "../auth/delegated-boundary";
+import type { SelfHostConfig } from "../config";
+import type { SelfHostDbHandle } from "../db/self-host-db";
 
 /**
  * Why the caller was refused, in the vocabulary both planes share.
@@ -108,9 +111,21 @@ export const isPrivileged = (role: string): boolean =>
  */
 export const requireInstanceAdmin = (
   headers: Headers,
+  db: SelfHostDbHandle,
+  config: SelfHostConfig,
 ): Effect.Effect<InstanceAdmin, AdminGateDenial, BetterAuth> =>
   Effect.gen(function* () {
-    const { auth, organizationId } = yield* BetterAuth;
+    const betterAuth = yield* BetterAuth;
+    const { auth, organizationId } = betterAuth;
+    const delegatedBoundary = yield* classifySelfHostDelegatedBoundary(
+      db,
+      betterAuth,
+      config,
+      headers,
+    );
+    if (delegatedBoundary !== "unmapped") {
+      return yield* Effect.fail<AdminGateDenial>("forbidden");
+    }
 
     const session = yield* Effect.tryPromise(() => auth.api.getSession({ headers })).pipe(
       Effect.orElseSucceed(() => null),

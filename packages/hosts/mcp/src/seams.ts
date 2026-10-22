@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Data, Effect, Layer, Schema } from "effect";
 import type { Cause } from "effect";
 
 import type { OrgWriteAccess } from "@executor-js/sdk";
@@ -52,29 +52,74 @@ const PrincipalFields = {
   roles: Schema.Array(Schema.String),
 } as const;
 
+/** Serializable delegated-grant binding carried by an authenticated MCP
+ * principal. The live scope/revalidator never crosses the host boundary; a
+ * session store rebuilds it from the authoritative delegation service. */
+const DelegationFields = {
+  tenant: Schema.String,
+  grantId: Schema.String,
+  credentialId: Schema.String,
+  credentialRef: Schema.String,
+  actorSubject: Schema.String,
+  effectiveSubject: Schema.String,
+  scopeVersion: Schema.String,
+} as const;
+
 export const Principal = Schema.Union([
   Schema.Struct({
+    kind: Schema.optional(Schema.Literal("member")),
     ...PrincipalFields,
     orgRoleModel: Schema.Literal("organization"),
     /** Missing at a legacy boundary fails closed. */
     orgRole: Schema.optional(Schema.Literals(["admin", "member"])),
   }),
   Schema.Struct({
+    kind: Schema.optional(Schema.Literal("member")),
     ...PrincipalFields,
     orgRoleModel: Schema.Literal("none"),
     /** Reject contradictory role-bearing values on a role-less host. */
     orgRole: Schema.optional(Schema.Never),
   }),
+  Schema.Struct({
+    kind: Schema.Literal("delegated"),
+    accountId: Schema.String,
+    organizationId: Schema.String,
+    organizationName: Schema.String,
+    organizationSlug: Schema.optional(Schema.String),
+    // Delegated callers never inherit the target's email, groups, or admin
+    // role. The target subject is carried only in the explicit binding fields.
+    email: Schema.Literal(""),
+    name: Schema.Null,
+    avatarUrl: Schema.Null,
+    roles: Schema.Array(Schema.Never),
+    ...DelegationFields,
+    orgRoleModel: Schema.Literal("organization"),
+    orgRole: Schema.Literal("member"),
+  }),
 ]);
 
 export type Principal = Schema.Schema.Type<typeof Principal>;
+
+/** A host without an authoritative grant resolver must reject delegated
+ * requests instead of silently treating the serialized binding as trust. */
+export class McpDelegationUnavailableError extends Data.TaggedError(
+  "McpDelegationUnavailableError",
+)<{}> {
+  override get message(): string {
+    return "Delegated session authorization is unavailable";
+  }
+}
 
 /** Internal header overwritten by a trusted session store before MCP dispatch. */
 export const MCP_ORG_WRITE_ACCESS_HEADER = "x-executor-org-write-access";
 
 /** Derive the effective workspace-write access for one authenticated request. */
 export const orgWriteAccessForPrincipal = (principal: Principal): OrgWriteAccess =>
-  principal.orgRoleModel === "none" || principal.orgRole === "admin" ? "allowed" : "denied";
+  principal.kind === "delegated"
+    ? "denied"
+    : principal.orgRoleModel === "none" || principal.orgRole === "admin"
+      ? "allowed"
+      : "denied";
 
 /**
  * Stamp request-bound workspace-write access for the MCP SDK request handler.
@@ -87,9 +132,32 @@ export const withOrgWriteAccess = (request: Request, access: OrgWriteAccess): Re
   return new Request(request, { headers });
 };
 
-/** Ownership is keyed on (accountId, organizationId) — a subset of the principal. */
-export const principalOwns = (owner: Principal, principal: Principal): boolean =>
-  owner.accountId === principal.accountId && owner.organizationId === principal.organizationId;
+/**
+ * Ownership is keyed on the complete authentication binding. Two delegated
+ * machine credentials may target the same human subject while remaining
+ * isolated sessions; account/org equality alone is insufficient.
+ */
+export const principalOwns = (owner: Principal, principal: Principal): boolean => {
+  const ownerKind = owner.kind === "delegated" ? "delegated" : "member";
+  const principalKind = principal.kind === "delegated" ? "delegated" : "member";
+  if (
+    owner.accountId !== principal.accountId ||
+    owner.organizationId !== principal.organizationId ||
+    ownerKind !== principalKind
+  ) {
+    return false;
+  }
+  if (owner.kind !== "delegated" || principal.kind !== "delegated") return true;
+  return (
+    owner.tenant === principal.tenant &&
+    owner.grantId === principal.grantId &&
+    owner.credentialId === principal.credentialId &&
+    owner.credentialRef === principal.credentialRef &&
+    owner.actorSubject === principal.actorSubject &&
+    owner.effectiveSubject === principal.effectiveSubject &&
+    owner.scopeVersion === principal.scopeVersion
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Shared MCP resource identity.

@@ -75,6 +75,18 @@ export type Tenant = typeof Tenant.Type;
 export const Subject = Schema.String.pipe(Schema.brand("Subject"));
 export type Subject = typeof Subject.Type;
 
+/** Immutable identifier for one delegated authorization grant. */
+export const DelegationId = Schema.String.pipe(Schema.brand("DelegationId"));
+export type DelegationId = typeof DelegationId.Type;
+
+/** Identifier for the credential binding a delegated grant. */
+export const CredentialId = Schema.String.pipe(Schema.brand("CredentialId"));
+export type CredentialId = typeof CredentialId.Type;
+
+/** Monotonic/opaque scope version captured at consent. */
+export const DelegationScopeVersion = Schema.String.pipe(Schema.brand("DelegationScopeVersion"));
+export type DelegationScopeVersion = typeof DelegationScopeVersion.Type;
+
 /**
  * Who owns a connection: the org (tenant-shared, everyone uses it) or the acting
  * user (this subject's own). The `<owner>` segment of an address. Maps onto the

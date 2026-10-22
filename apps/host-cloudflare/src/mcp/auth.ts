@@ -5,10 +5,21 @@ import {
   McpAuthProvider,
   unauthorized,
   type McpDiscoveryRoute,
+  type Principal,
 } from "@executor-js/host-mcp";
+import { type DelegationGrant, makeVerifiedHumanSubjectRegistry } from "@executor-js/sdk";
 
-import { makeAccessVerifier } from "../auth/cloudflare-access";
-import type { CloudflareConfig } from "../config";
+import {
+  classifyAccessClaims,
+  delegatedCredentialFromAccessClaims,
+  makeAccessVerifier,
+} from "../auth/cloudflare-access";
+import {
+  makeCloudflareDelegationAuthority,
+  makeCloudflareDelegationService,
+} from "../auth/delegation";
+import { createD1ExecutorDb } from "../db/d1";
+import type { CloudflareConfig, CloudflareEnv } from "../config";
 
 const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
 const MCP_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp`;
@@ -53,24 +64,81 @@ const protectedResourceMetadataResponse = (request: Request): Response => {
   );
 };
 
-// ---------------------------------------------------------------------------
-// Cloudflare Access McpAuthProvider — the `/mcp` gate, identical identity to the
-// API gate. Cloudflare Access sits in front of the Worker and forwards the
-// signed `Cf-Access-Jwt-Assertion` on every request, including `/mcp`. So the
-// MCP auth seam reuses the SAME `makeAccessVerifier` the IdentityProvider uses:
-// validate the JWT, map claims onto the neutral `Principal`, done.
-//
-// There is no MCP OAuth here. Auth is Access's browser/service-token flow, not
-// the MCP `/authorize`+`/token` dance — so `discoveryRoutes` is empty and the
-// 401 challenge points at a nominal protected-resource URL only to satisfy
-// clients that probe for it. An external MCP client authenticates by presenting
-// an Access JWT (or `Cf-Access-Client-Id`/`-Secret` service-token headers, which
-// Access converts to one). When MCP OAuth-over-Access is needed, add the
-// discovery docs + a token endpoint here behind this same seam.
-// ---------------------------------------------------------------------------
+/** Rebuild the neutral delegated principal only after the current Access JWT
+ * and the durable grant both resolve. The MCP worker is a separate entrypoint
+ * from the HTTP app, so it opens the request's D1 handle here and closes it
+ * before forwarding to the session DO. `unmapped` is the one compatibility
+ * case: a valid, previously unseen Access service token remains an ordinary
+ * machine principal. Every mapped failure (revoked, expired, mismatched, or
+ * storage failure) returns null and therefore 401s; it never falls back. */
+const delegatedPrincipalFrom = (grant: DelegationGrant, config: CloudflareConfig): Principal => ({
+  kind: "delegated",
+  accountId: String(grant.effectiveSubject),
+  organizationId: config.organizationId,
+  organizationName: config.organizationName,
+  organizationSlug: config.organizationSlug,
+  email: "",
+  name: null,
+  avatarUrl: null,
+  roles: [],
+  orgRoleModel: "organization",
+  orgRole: "member",
+  tenant: String(grant.tenant),
+  grantId: String(grant.grantId),
+  credentialId: String(grant.credentialId),
+  credentialRef: grant.credentialRef,
+  actorSubject: String(grant.actorSubject),
+  effectiveSubject: String(grant.effectiveSubject),
+  scopeVersion: String(grant.scopeVersion),
+});
 
-export const cloudflareAccessMcpAuth = (config: CloudflareConfig): Layer.Layer<McpAuthProvider> => {
-  const { verify } = makeAccessVerifier(config);
+export const resolveCloudflareAccessMcpPrincipal = (
+  request: Request,
+  env: CloudflareEnv,
+  config: CloudflareConfig,
+): Effect.Effect<Principal | null> =>
+  Effect.gen(function* () {
+    const { verifyWithClaims } = makeAccessVerifier(config);
+    const verified = yield* verifyWithClaims(request);
+    if (verified === null) return null;
+    if (classifyAccessClaims(verified.claims) !== "service-token") return verified.principal;
+
+    const credential = delegatedCredentialFromAccessClaims(verified.claims, config);
+    if (credential === null) return null;
+
+    const dbHandle = yield* Effect.tryPromise({
+      try: () => createD1ExecutorDb(env.DB, env.BLOBS),
+      catch: () => null,
+    }).pipe(Effect.orElseSucceed(() => null));
+    if (dbHandle === null) return null;
+
+    const registry = makeVerifiedHumanSubjectRegistry(dbHandle.db);
+    const service = makeCloudflareDelegationService(
+      dbHandle,
+      config,
+      makeCloudflareDelegationAuthority(config, registry, request),
+    );
+    return yield* Effect.acquireUseRelease(
+      Effect.succeed(dbHandle),
+      () =>
+        service.resolve(credential).pipe(
+          Effect.map((grant) => delegatedPrincipalFrom(grant, config)),
+          Effect.catchTag("DelegationDeniedError", (error) =>
+            error.reason === "unmapped" ? Effect.succeed(verified.principal) : Effect.succeed(null),
+          ),
+          Effect.catch(() => Effect.succeed(null)),
+        ),
+      (handle) => Effect.promise(() => handle.close()),
+    );
+  });
+
+/** Access MCP auth with the same delegated resolver used by the HTTP identity
+ * cheap generic verifier while the actual MCP worker request performs the
+ * durable grant lookup and live revalidation. */
+export const cloudflareDelegatedAccessMcpAuth = (
+  config: CloudflareConfig,
+  env: CloudflareEnv,
+): Layer.Layer<McpAuthProvider> => {
   const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
     {
       path: PROTECTED_RESOURCE_METADATA_PATH,
@@ -90,7 +158,7 @@ export const cloudflareAccessMcpAuth = (config: CloudflareConfig): Layer.Layer<M
     resourceMetadataUrl: (request) =>
       new URL(metadataPathForRequest(request), new URL(request.url).origin).toString(),
     authenticate: (request) =>
-      verify(request).pipe(
+      resolveCloudflareAccessMcpPrincipal(request, env, config).pipe(
         Effect.map((principal) => (principal ? authenticated(principal) : unauthorized())),
       ),
   });

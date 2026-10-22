@@ -17,6 +17,10 @@ import { makeSelfHostAdminApiLayer } from "./admin/handlers";
 import { makeSelfHostAdminUsersApiLayer } from "./admin/admin-users-api";
 import { makeSelfHostSystemApiLayer } from "./system/handlers";
 import { selfHostAccountMiddleware } from "./account";
+import {
+  makeSelfHostDelegatedExecutionResumer,
+  selfHostDelegationProvider,
+} from "./account/delegation-provider";
 import { loadConfig, SELF_HOST_NAMESPACE, SELF_HOST_SCHEMA_VERSION } from "./config";
 import { createSelfHostDb, SelfHostDb, SelfHostDbProvider } from "./db/self-host-db";
 import { selfHostAnalytics, SelfHostAnalyticsEngineDecorator } from "./analytics";
@@ -101,7 +105,8 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     plugins: selfHostPlugins,
     providers: {
       identity: identityLayer,
-      account: selfHostAccountMiddleware(betterAuth),
+      account: selfHostAccountMiddleware(betterAuth, dbHandle, config),
+      delegation: selfHostDelegationProvider(dbHandle, betterAuth, config),
       db: SelfHostDbProvider,
       engine: {
         codeExecutor: SelfHostCodeExecutorProvider,
@@ -127,7 +132,12 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
         // session-cookie-gated, delegating to the in-process MCP store.
         HttpRouter.add("*", "/api/mcp-sessions/*", HttpEffect.fromWebHandler(mcp.approvalHandler)),
         // App-local admin (invite-code) API, served under /api/admin/*.
-        makeSelfHostAdminApiLayer({ betterAuth, db: dbHandle, mountPrefix: "/api" }),
+        makeSelfHostAdminApiLayer({
+          betterAuth,
+          db: dbHandle,
+          config,
+          mountPrefix: "/api",
+        }),
         // Tenant-wide admin users API (/api/admin/users*): the owner's view of
         // who uses this instance and what they've connected. Owner/admin-gated,
         // same as the invite routes above.
@@ -135,6 +145,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
           betterAuth,
           memberDirectory: memberDirectoryLayer,
           db: dbHandle,
+          config,
           mountPrefix: "/api",
         }),
         // Public system API: /api/health + /api/setup-status (unauthenticated).
@@ -144,6 +155,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
       ],
     },
     config: { mountPrefix: "/api", failure: textFailureStrategy },
+    delegatedExecutionResumer: makeSelfHostDelegatedExecutionResumer(dbHandle, betterAuth, config),
     // The boot-scoped context provideMerge'd under everything: the long-lived DB
     // handle (read by the DbProvider seam, Better Auth, and the MCP store) + the
     // resolved identity (captured once by the execution middleware + MCP auth)

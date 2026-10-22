@@ -1,12 +1,27 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
-import { makeInMemoryBlobStore } from "./blob";
+import { makeFumaBlobStore, makeInMemoryBlobStore } from "./blob";
+import { collectTables } from "./executor";
+import { makeFumaClient } from "./fuma-runtime";
 import {
   makePendingApprovalStore,
   PENDING_APPROVAL_TTL_MS,
   type PendingApproval,
 } from "./pending-approval";
+import { CredentialId, DelegationId, DelegationScopeVersion, Subject, Tenant } from "./ids";
+import { createSqliteTestFumaDb } from "./sqlite-test-db";
+import type { DelegationBinding } from "./delegation";
+
+const delegationBinding: DelegationBinding = {
+  tenant: Tenant.make("tenant-a"),
+  grantId: DelegationId.make("grant_1"),
+  credentialId: CredentialId.make("credential_1"),
+  credentialRef: "service-token-1",
+  actorSubject: Subject.make("machine-1"),
+  effectiveSubject: Subject.make("human-1"),
+  scopeVersion: DelegationScopeVersion.make("scope_1"),
+};
 
 const approval = (overrides?: Partial<PendingApproval>): PendingApproval => ({
   executionId: "exec_1",
@@ -25,6 +40,45 @@ describe("makePendingApprovalStore", () => {
       yield* store.put(recorded);
 
       expect(yield* store.consume("exec_1")).toStrictEqual(recorded);
+    }),
+  );
+
+  it.effect("round-trips the exact delegated binding when present", () =>
+    Effect.gen(function* () {
+      const store = makePendingApprovalStore(makeInMemoryBlobStore(), "u:t:s");
+      const recorded = approval({ delegationBinding });
+      yield* store.put(recorded);
+
+      expect(yield* store.consume("exec_1")).toStrictEqual(recorded);
+    }),
+  );
+
+  it.effect("does not consume a same-partition record for another grant", () =>
+    Effect.gen(function* () {
+      const store = makePendingApprovalStore(makeInMemoryBlobStore(), "u:t:s");
+      yield* store.put(approval({ delegationBinding }));
+
+      const otherGrant: DelegationBinding = {
+        ...delegationBinding,
+        grantId: DelegationId.make("grant_other"),
+      };
+      expect(
+        yield* store.consume(
+          "exec_1",
+          (candidate) =>
+            candidate.delegationBinding !== undefined &&
+            candidate.delegationBinding.grantId === otherGrant.grantId,
+        ),
+      ).toBeNull();
+
+      expect(
+        yield* store.consume(
+          "exec_1",
+          (candidate) =>
+            candidate.delegationBinding !== undefined &&
+            candidate.delegationBinding.grantId === delegationBinding.grantId,
+        ),
+      ).not.toBeNull();
     }),
   );
 
@@ -52,6 +106,69 @@ describe("makePendingApprovalStore", () => {
       expect(yield* store.consume("exec_1")).not.toBeNull();
       expect(yield* store.consume("exec_1")).toBeNull();
     }),
+  );
+
+  it.effect("keeps sensitive approval payloads out of the replay tombstone", () =>
+    Effect.gen(function* () {
+      const blobs = makeInMemoryBlobStore();
+      const store = makePendingApprovalStore(blobs, "u:t:s");
+      yield* store.put(approval({ code: 'return await tools.secret({ token: "private" })' }));
+
+      expect(yield* store.consume("exec_1")).not.toBeNull();
+      const marker = yield* blobs.get("u:t:s/@pending-approval/@claim", "exec_1");
+      expect(marker).toBe("claimed");
+      expect(marker).not.toContain("private");
+    }),
+  );
+
+  it.effect("allows only one concurrent resume to claim a record", () =>
+    Effect.gen(function* () {
+      const base = makeInMemoryBlobStore();
+      let reads = 0;
+      let release!: () => void;
+      const bothReadersStarted = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const gated = {
+        ...base,
+        get: (namespace: string, key: string) =>
+          base.get(namespace, key).pipe(
+            Effect.flatMap((value) =>
+              Effect.promise(async () => {
+                reads += 1;
+                if (reads === 2) release();
+                await bothReadersStarted;
+                return value;
+              }),
+            ),
+          ),
+      };
+      const store = makePendingApprovalStore(gated, "u:t:s");
+      yield* store.put(approval());
+
+      const results = yield* Effect.all([store.consume("exec_1"), store.consume("exec_1")], {
+        concurrency: "unbounded",
+      });
+      expect(results.filter(Predicate.isNotNull)).toHaveLength(1);
+    }),
+  );
+
+  it.effect("uses the database uniqueness claim across concurrent resumes", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => createSqliteTestFumaDb({ tables: collectTables() })),
+      (db) =>
+        Effect.gen(function* () {
+          const blobs = makeFumaBlobStore(makeFumaClient(db.db));
+          const store = makePendingApprovalStore(blobs, "u:t:s");
+          yield* store.put(approval());
+
+          const results = yield* Effect.all([store.consume("exec_1"), store.consume("exec_1")], {
+            concurrency: "unbounded",
+          });
+          expect(results.filter(Predicate.isNotNull)).toHaveLength(1);
+        }),
+      (db) => Effect.promise(() => db.close()),
+    ),
   );
 
   // Ownership is the partition, not a separate check that could drift from it.

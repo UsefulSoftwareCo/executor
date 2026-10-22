@@ -26,12 +26,26 @@ import { Effect, Option, Schema } from "effect";
 
 import type { BlobStore } from "./blob";
 import type { StorageError } from "./fuma-runtime";
+import { CredentialId, DelegationId, DelegationScopeVersion, Subject, Tenant } from "./ids";
 
 /** How long a recorded approval stays valid. Human-scale: someone reading an
  *  argument preview and deciding takes minutes, not seconds. Past this the
  *  record is treated as absent and the shell asks the user to trigger the
  *  action again, which is safe because nothing has run yet. */
 export const PENDING_APPROVAL_TTL_MS = 15 * 60 * 1000;
+
+/** The immutable grant identity captured when a delegated execution pauses.
+ * Branded ids keep this boundary aligned with the SDK's resolver rather than
+ * allowing a resume caller to supply a looser, look-alike object. */
+const DelegationBindingSchema = Schema.Struct({
+  tenant: Tenant,
+  grantId: DelegationId,
+  credentialId: CredentialId,
+  credentialRef: Schema.String,
+  actorSubject: Subject,
+  effectiveSubject: Subject,
+  scopeVersion: DelegationScopeVersion,
+});
 
 /**
  * The resolved call an approval authorizes.
@@ -52,8 +66,15 @@ export const PendingApproval = Schema.Struct({
   address: Schema.String,
   /** Epoch ms after which this record is ignored. */
   expiresAt: Schema.Number,
+  /** Optional for records written before delegated execution retention was
+   * introduced. When present, a resume must resolve this exact binding again;
+   * it is never a bearer credential or a replacement for live revalidation. */
+  delegationBinding: Schema.optional(DelegationBindingSchema),
 });
 export type PendingApproval = typeof PendingApproval.Type;
+/** Type-only alias for package barrels, where the runtime schema and its
+ * inferred type cannot be re-exported under the same name. */
+export type PendingApprovalRecord = PendingApproval;
 
 const encodePendingApproval = Schema.encodeUnknownSync(Schema.fromJsonString(PendingApproval));
 const decodePendingApproval = Schema.decodeUnknownOption(Schema.fromJsonString(PendingApproval));
@@ -67,8 +88,17 @@ const decodePendingApproval = Schema.decodeUnknownOption(Schema.fromJsonString(P
  */
 export interface PendingApprovalStore {
   readonly put: (approval: PendingApproval) => Effect.Effect<void, StorageError>;
-  /** Read and DELETE in one step — an approval authorizes exactly one run. */
-  readonly consume: (executionId: string) => Effect.Effect<PendingApproval | null, StorageError>;
+  /** Read without consuming. Expired or malformed records read as absent. */
+  readonly get: (executionId: string) => Effect.Effect<PendingApproval | null, StorageError>;
+  /** Atomically claim and then delete — an approval authorizes exactly one
+   * run, including when two isolates resume the same record concurrently. An
+   * optional matcher is evaluated before the durable claim. This lets a resume
+   * caller prove it owns the exact delegated binding without consuming a
+   * different grant that happens to share the same owner partition. */
+  readonly consume: (
+    executionId: string,
+    matches?: (approval: PendingApproval) => boolean,
+  ) => Effect.Effect<PendingApproval | null, StorageError>;
   /** Drop a record without running it (decline/cancel). */
   readonly discard: (executionId: string) => Effect.Effect<void, StorageError>;
 }
@@ -87,21 +117,48 @@ export const makePendingApprovalStore = (
   now: () => number = Date.now,
 ): PendingApprovalStore => {
   const namespace = `${partition}/@pending-approval`;
+  // Claims are durable tombstones in a separate namespace. Keeping the marker
+  // after deleting the approval is what makes a replay fail across executor
+  // instances, rather than only while one process happens to be alive.
+  const claimNamespace = `${namespace}/@claim`;
+  // The claim tombstone is deliberately a constant. The approval payload can
+  // contain code and user arguments, so retaining it after the approval row is
+  // consumed would unnecessarily extend the lifetime of sensitive data.
+  const claimMarker = "claimed";
 
   return {
     put: (approval) => blobs.put(namespace, approval.executionId, encodePendingApproval(approval)),
 
-    consume: (executionId) =>
+    get: (executionId) =>
       Effect.gen(function* () {
         const raw = yield* blobs.get(namespace, executionId);
         if (raw === null) return null;
-        // Consume before validating: a record we are about to reject is a record
-        // nobody should be able to retry against.
-        yield* blobs.delete(namespace, executionId);
         const decoded = decodePendingApproval(raw);
         if (Option.isNone(decoded)) return null;
         const approval = decoded.value;
         if (approval.expiresAt <= now()) return null;
+        return approval;
+      }),
+
+    consume: (executionId, matches) =>
+      Effect.gen(function* () {
+        const raw = yield* blobs.get(namespace, executionId);
+        if (raw === null) return null;
+        const decoded = decodePendingApproval(raw);
+        if (Option.isNone(decoded)) return null;
+        const approval = decoded.value;
+        if (approval.expiresAt <= now()) {
+          // Consume before returning an expired record: it cannot be retried.
+          yield* blobs.delete(namespace, executionId);
+          return null;
+        }
+        // A failed ownership/binding check deliberately leaves the record in
+        // place. The authorized human or exact delegated caller may still
+        // approve it; a same-partition caller must not be able to burn it.
+        if (matches !== undefined && !matches(approval)) return null;
+        const claimed = yield* blobs.claim(claimNamespace, executionId, claimMarker);
+        if (!claimed) return null;
+        yield* blobs.delete(namespace, executionId);
         return approval;
       }),
 

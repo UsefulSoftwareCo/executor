@@ -11,6 +11,11 @@
 
 import { env } from "cloudflare:workers";
 import { Context, Effect, Layer, Predicate } from "effect";
+import {
+  collectTables,
+  type DelegationGrant,
+  type VerifiedDelegatedCredential,
+} from "@executor-js/sdk";
 
 import { createCachedRemoteJWKSet } from "../auth/jwks-cache";
 import { ApiKeyService } from "../auth/api-keys";
@@ -18,9 +23,12 @@ import { BEARER_PREFIX } from "../auth/bearer";
 import { authorizeOrganization } from "../auth/organization";
 import { UserStoreService, makeUserStoreLayer } from "../auth/context";
 import { makeMemberDirectoryLayer } from "../auth/member-directory";
+import { MemberDirectory } from "@executor-js/api/server";
 import { makeWorkOsMirrorLayer } from "../auth/workos-mirror";
 import { CoreSharedServices } from "../auth/workos";
-import { makeDbLayer } from "../db/db";
+import { DbService, makeDbLayer } from "../db/db";
+import { CLOUD_NAMESPACE, createDrizzleFumaDb } from "../db/fuma";
+import { isDelegationUnmapped, makeCloudDelegationService } from "../auth/delegation";
 import { bearerChallenge } from "./responses";
 import { McpJwtVerificationError, verifyWorkOSMcpAccessToken, type VerifiedToken } from "./jwt";
 
@@ -192,6 +200,19 @@ export class McpOrganizationAuth extends Context.Service<
   }
 >()("@executor-js/cloud/McpOrganizationAuth") {}
 
+/**
+ * Request-scoped delegation lookup for MCP API keys. The bearer verifier has
+ * already authenticated the provider key and supplies only its stable id;
+ * this seam resolves the full grant against the authoritative database and
+ * current key ownership before the session is created or reused.
+ */
+export class McpDelegationAuth extends Context.Service<
+  McpDelegationAuth,
+  {
+    readonly resolve: (token: VerifiedToken) => Effect.Effect<DelegationGrant | null, unknown>;
+  }
+>()("@executor-js/cloud/McpDelegationAuth") {}
+
 const verifyJwt = (token: string) =>
   verifyWorkOSMcpAccessToken(token, jwks, {
     issuer: AUTHKIT_DOMAIN,
@@ -302,6 +323,7 @@ export const McpAuthLive = Layer.effect(
       return mcpAuthorized({
         accountId: principal.accountId,
         organizationId: principal.organizationId,
+        apiKeyId: principal.keyId,
       });
     });
 
@@ -355,3 +377,64 @@ export const McpAuthLive = Layer.effect(
     };
   }),
 );
+
+/** Build the live MCP delegation resolver over the request-scoped mirror and
+ * API-key verifier. A provider key which has no grant remains ordinary MCP
+ * member compatibility; every mapped revoked/expired/storage failure is
+ * surfaced to the auth provider for a fail-closed outcome. */
+export const McpDelegationAuthLive = Layer.succeed(McpDelegationAuth)({
+  resolve: (token) => {
+    const apiKeyId = token.apiKeyId;
+    const organizationId = token.organizationId;
+    if (!apiKeyId || !organizationId) return Effect.succeed(null);
+    return Effect.gen(function* () {
+      const db = yield* DbService;
+      const directory = yield* MemberDirectory;
+      const apiKeys = yield* ApiKeyService;
+      const fuma = createDrizzleFumaDb({
+        db: db.db,
+        tables: collectTables(),
+        namespace: CLOUD_NAMESPACE,
+        provider: "postgresql",
+      });
+      const credential: VerifiedDelegatedCredential = {
+        kind: "issued-key",
+        adapter: "workos-api-key",
+        issuer: env.WORKOS_API_URL ?? "https://api.workos.com",
+        audience: organizationId,
+        subject: token.accountId,
+        credentialRef: apiKeyId,
+      };
+      const service = makeCloudDelegationService({
+        db: fuma.db,
+        tenant: organizationId,
+        directory,
+        apiKeys,
+        issuanceEnabled: env.DELEGATED_ISSUANCE_ENABLED === "true",
+      });
+      // Provider-issued keys use the stronger `issued-key` descriptor. An
+      // existing WorkOS PAT can also be proof-bound as an `external`
+      // credential; try that descriptor only when the issued-key lookup did
+      // not identify a usable issued binding. Revoked/expired mapped rows are
+      // returned immediately and therefore cannot fall through to ordinary
+      // member compatibility.
+      return yield* service.resolve(credential).pipe(
+        Effect.catchTag("DelegationDeniedError", (error) =>
+          error.reason === "unmapped" || error.reason === "invalid"
+            ? service.resolve({ ...credential, kind: "external" })
+            : Effect.fail(error),
+        ),
+        Effect.catchTag("DelegationDeniedError", (error) =>
+          isDelegationUnmapped(error) ? Effect.succeed(null) : Effect.fail(error),
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ApiKeyService.WorkOS.pipe(Layer.provide(CoreSharedServices)),
+          makeMcpOrganizationAuthServices(),
+        ),
+      ),
+    );
+  },
+});

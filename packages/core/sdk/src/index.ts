@@ -41,6 +41,7 @@ export {
   StorageError,
   StorageConnectionError,
   UniqueViolationError,
+  DelegationDeniedError,
   isStorageFailure,
 } from "./fuma-runtime";
 
@@ -61,8 +62,51 @@ export {
   ArtifactId,
   Tenant,
   Subject,
+  DelegationId,
+  CredentialId,
+  DelegationScopeVersion,
   Owner,
 } from "./ids";
+export {
+  DEFAULT_DELEGATION_TTL_MS,
+  MAX_DELEGATION_TTL_MS,
+  PROOF_CHALLENGE_TTL_MS,
+  assertDelegationCapability,
+  generateDelegatedKey,
+  isDelegatedContext,
+  makeDelegationService,
+  type CreateDelegationInput,
+  type CreateIssuedDelegationInput,
+  type ExpandDelegationInput,
+  type DelegatedPrincipal,
+  type DelegationBinding,
+  type DelegationAuditEvent,
+  type DelegationAuditRecord,
+  type DelegationCapability,
+  type DelegationChallengeView,
+  type DelegationContext,
+  type DelegationGrant,
+  type DelegationGrantView,
+  type DelegationOperation,
+  type DelegationNotificationRecord,
+  type DelegationScopeAction,
+  type DelegationScope,
+  type DelegationService,
+  type DelegationStoreOptions,
+  type IssuedDelegationKey,
+  type ProofChallenge,
+  type ProofCompletion,
+  type RegisterProviderIssuedDelegationInput,
+  type RotateIssuedDelegationInput,
+  type RotateProviderIssuedDelegationInput,
+  type VerifiedDelegatedCredential,
+} from "./delegation";
+export {
+  makeVerifiedHumanSubjectRegistry,
+  REVOKED_HUMAN_SUBJECT_STATUS,
+  VERIFIED_HUMAN_SUBJECT_STATUS,
+  type VerifiedHumanSubjectRegistry,
+} from "./subject-registry";
 export { connectionIdentifier, isConnectionIdentifier } from "./connection-name-identifier";
 
 // Errors (tagged) — the ExecuteError set + integration lifecycle.
@@ -157,6 +201,10 @@ export {
   type CoreSchema,
   type IntegrationRow,
   type SubjectRow,
+  type CredentialDelegationRow,
+  type DelegationChallengeRow,
+  type DelegationAuditRow,
+  type DelegationNotificationRow,
   type ConnectionRow,
   type OAuthClientRow,
   type OAuthSessionRow,
@@ -262,6 +310,7 @@ export {
   PendingApproval,
   PENDING_APPROVAL_TTL_MS,
   type PendingApprovalStore,
+  type PendingApprovalRecord,
 } from "./pending-approval";
 
 // Plugin storage.
@@ -466,7 +515,7 @@ export {
 export { buildToolTypeScriptPreview } from "./schema-types";
 
 // Wire-level HTTP error schemas usable by plugin HttpApiGroup definitions.
-export { InternalError } from "./api-errors";
+export { DelegationForbiddenError, InternalError } from "./api-errors";
 
 // ToolResult — typed value-based discriminated union for tool outcomes.
 export {

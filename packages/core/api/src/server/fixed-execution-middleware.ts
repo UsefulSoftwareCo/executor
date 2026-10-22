@@ -123,7 +123,8 @@ export const makeFixedExecutionMiddleware = <
               // platform view to serve an org credential, so it is refused
               // rather than silently acting as the boot subject.
               Effect.filterOrFail(
-                (principal): principal is Principal => !isPlatformPrincipal(principal),
+                (principal): principal is Principal =>
+                  !isPlatformPrincipal(principal) && principal.kind !== "delegated",
                 () =>
                   new ReadOnlyCredential({
                     code: "read_only_credential",

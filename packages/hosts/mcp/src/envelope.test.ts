@@ -23,6 +23,7 @@ import {
   McpDiscoveryRoutes,
   McpSessionStore,
   orgWriteAccessForPrincipal,
+  principalOwns,
   Principal as PrincipalSchema,
   preInitializeMethodNotFound,
   type McpResource,
@@ -33,6 +34,7 @@ import {
 const DISCOVERY_PATH = "/.well-known/oauth-protected-resource" as const;
 
 const TEST_PRINCIPAL: Principal = {
+  kind: "member",
   accountId: "acct_test",
   organizationId: "org_test",
   organizationName: "Test Org",
@@ -59,6 +61,53 @@ it.effect("rejects a role on the no-role principal arm", () =>
     orgRole: "member",
   }).pipe(Effect.flip, Effect.asVoid),
 );
+
+it("keeps legacy member ownership equivalent to explicitly tagged members", () => {
+  const legacy = { ...TEST_PRINCIPAL };
+  delete (legacy as { kind?: "member" }).kind;
+  expect(principalOwns(legacy, TEST_PRINCIPAL)).toBe(true);
+  expect(principalOwns(TEST_PRINCIPAL, legacy)).toBe(true);
+});
+
+it("isolates delegated ownership by grant and strips target authority", async () => {
+  const delegated: Extract<Principal, { readonly kind: "delegated" }> = {
+    kind: "delegated",
+    accountId: TEST_PRINCIPAL.accountId,
+    organizationId: TEST_PRINCIPAL.organizationId,
+    organizationName: TEST_PRINCIPAL.organizationName,
+    email: "",
+    name: null,
+    avatarUrl: null,
+    roles: [],
+    tenant: "tenant_test",
+    grantId: "grant_a",
+    credentialId: "credential_a",
+    credentialRef: "key_a",
+    actorSubject: "actor_test",
+    effectiveSubject: "target_test",
+    scopeVersion: "scope_1",
+    orgRoleModel: "organization" as const,
+    orgRole: "member" as const,
+  };
+  const otherGrant = { ...delegated, grantId: "grant_b" };
+  expect(principalOwns(delegated, otherGrant)).toBe(false);
+  expect(principalOwns(delegated, { ...delegated })).toBe(true);
+  expect(principalOwns(TEST_PRINCIPAL, delegated)).toBe(false);
+  expect(principalOwns(delegated, TEST_PRINCIPAL)).toBe(false);
+  expect(orgWriteAccessForPrincipal(delegated)).toBe("denied");
+
+  const decoded = await Effect.runPromise(Schema.decodeUnknownEffect(PrincipalSchema)(delegated));
+  expect(decoded.kind).toBe("delegated");
+
+  await expect(
+    Effect.runPromise(
+      Schema.decodeUnknownEffect(PrincipalSchema)({
+        ...delegated,
+        email: "target@example.com",
+      }),
+    ),
+  ).rejects.toBeDefined();
+});
 
 /** An auth provider that authenticates everything (so dispatch is reached). */
 const AuthProviderLive = Layer.succeed(McpAuthProvider)({

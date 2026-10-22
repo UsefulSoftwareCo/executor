@@ -27,7 +27,13 @@ import { Context, Effect, Layer } from "effect";
 import type * as Cause from "effect/Cause";
 
 import type { McpResource } from "@executor-js/host-mcp";
-import type { AnyPlugin, Executor, ExecutorConfig, StorageFailure } from "@executor-js/sdk";
+import type {
+  AnyPlugin,
+  DelegationContext,
+  Executor,
+  ExecutorConfig,
+  StorageFailure,
+} from "@executor-js/sdk";
 import {
   createExecutionEngine,
   type ExecutionEngine,
@@ -117,6 +123,8 @@ export const makeExecutionStack = <
     /** Workspace-settings permission for this binding (see
      *  `ExecutorConfig.orgWrites`), derived from the acting member's role. */
     readonly orgWrites?: ExecutorConfig<TPlugins>["orgWrites"];
+    /** Host-verified delegated grant, retained through executor and engine. */
+    readonly delegation?: DelegationContext;
   },
 ): Effect.Effect<
   { readonly executor: Executor<TPlugins>; readonly engine: ExecutionEngine<Cause.YieldableError> },
@@ -131,6 +139,7 @@ export const makeExecutionStack = <
       {
         plugins: { mcpResource: options?.mcpResource },
         ...(options?.orgWrites === undefined ? {} : { orgWrites: options.orgWrites }),
+        ...(options?.delegation === undefined ? {} : { delegation: options.delegation }),
       },
     ).pipe(Effect.withSpan("executor.stack.scoped_executor"));
     const codeExecutor = yield* CodeExecutorProvider.asEffect().pipe(

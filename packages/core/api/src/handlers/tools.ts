@@ -1,6 +1,6 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { Effect } from "effect";
-import { ToolNotFoundError, type Tool } from "@executor-js/sdk";
+import { DelegationForbiddenError, ToolNotFoundError, type Tool } from "@executor-js/sdk";
 
 import { ExecutorApi } from "../api";
 import { ExecutorService } from "../services";
@@ -26,14 +26,24 @@ export const ToolsHandlers = HttpApiBuilder.group(ExecutorApi, "tools", (handler
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const tools = yield* executor.tools.list({
-            integration: query.integration,
-            owner: query.owner,
-            connection: query.connection,
-            query: query.query,
-            includeAnnotations: query.includeAnnotations === "true",
-            includeBlocked: query.includeBlocked !== "false",
-          });
+          const tools = yield* executor.tools
+            .list({
+              integration: query.integration,
+              owner: query.owner,
+              connection: query.connection,
+              query: query.query,
+              includeAnnotations: query.includeAnnotations === "true",
+              includeBlocked: query.includeBlocked !== "false",
+            })
+            .pipe(
+              Effect.catchTag("DelegationDeniedError", () =>
+                Effect.fail(
+                  new DelegationForbiddenError({
+                    message: "Delegated credential is not authorized for this operation.",
+                  }),
+                ),
+              ),
+            );
           return tools.map(toMetadata);
         }),
       ),
@@ -42,7 +52,15 @@ export const ToolsHandlers = HttpApiBuilder.group(ExecutorApi, "tools", (handler
       capture(
         Effect.gen(function* () {
           const executor = yield* ExecutorService;
-          const schema = yield* executor.tools.schema(query.address);
+          const schema = yield* executor.tools.schema(query.address).pipe(
+            Effect.catchTag("DelegationDeniedError", () =>
+              Effect.fail(
+                new DelegationForbiddenError({
+                  message: "Delegated credential is not authorized for this operation.",
+                }),
+              ),
+            ),
+          );
           if (schema === null) {
             return yield* new ToolNotFoundError({ address: query.address });
           }

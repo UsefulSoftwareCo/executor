@@ -9,7 +9,19 @@ import type {
 } from "@executor-js/host-mcp";
 
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
+import {
+  auditSelfHostBrowserApproval,
+  makeSelfHostDelegationServiceForHeaders,
+} from "../account/delegation-provider";
+import {
+  CredentialId,
+  DelegationId,
+  DelegationScopeVersion,
+  Subject,
+  Tenant,
+} from "@executor-js/sdk";
 import { resolveSelfHostOrgRole } from "../auth/identity";
+import { classifySelfHostDelegatedBoundary } from "../auth/delegated-boundary";
 import type { SelfHostDbHandle } from "../db/self-host-db";
 import type { SelfHostConfig } from "../config";
 import { selfHostMcpAuth } from "./auth";
@@ -92,6 +104,7 @@ const principalFromSession = (
   const organizationId = resolved.session.activeOrganizationId ?? betterAuth.organizationId;
   return resolveSelfHostOrgRole(betterAuth, headers, organizationId).pipe(
     Effect.map((orgRole) => ({
+      kind: "member" as const,
       accountId: resolved.user.id,
       organizationId,
       organizationName: betterAuth.organizationName,
@@ -116,8 +129,18 @@ const makeApprovalHandler =
   (
     store: ReturnType<typeof makeSelfHostMcpSessionStore>,
     betterAuth: BetterAuthHandle,
+    db: SelfHostDbHandle,
+    config: SelfHostConfig,
   ): ((request: Request) => Promise<Response>) =>
   async (request) => {
+    const delegatedBoundary = await Effect.runPromise(
+      classifySelfHostDelegatedBoundary(db, betterAuth, config, request.headers).pipe(
+        Effect.orElseSucceed(() => "denied" as const),
+      ),
+    );
+    if (delegatedBoundary !== "unmapped") {
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    }
     // A malformed cookie must read as unauthenticated, not 500.
     const session = await Effect.runPromise(
       Effect.tryPromise({
@@ -160,6 +183,43 @@ export const makeSelfHostMcpSeams = (
     dbHandle,
     config.webBaseUrl,
     config.mcpSessionIdleTtlMs,
+    (input) =>
+      input.owner.kind === "delegated" && input.approver.kind !== "delegated"
+        ? auditSelfHostBrowserApproval(
+            dbHandle,
+            betterAuth,
+            config,
+            {
+              owner: input.owner,
+              approver: input.approver,
+              executionId: input.executionId,
+              response: input.response,
+            },
+            new Headers(),
+          )
+        : Effect.void,
+    (principal, capability) => {
+      const service = makeSelfHostDelegationServiceForHeaders(
+        dbHandle,
+        betterAuth,
+        config,
+        new Headers(),
+      );
+      return service
+        .resolveBinding({
+          tenant: Tenant.make(principal.tenant),
+          grantId: DelegationId.make(principal.grantId),
+          credentialId: CredentialId.make(principal.credentialId),
+          credentialRef: principal.credentialRef,
+          actorSubject: Subject.make(principal.actorSubject),
+          effectiveSubject: Subject.make(principal.effectiveSubject),
+          scopeVersion: DelegationScopeVersion.make(principal.scopeVersion),
+        })
+        .pipe(
+          Effect.flatMap((grant) => service.revalidate(grant, capability)),
+          Effect.asVoid,
+        );
+    },
   );
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
@@ -168,7 +228,7 @@ export const makeSelfHostMcpSeams = (
     auth,
     sessions: selfHostMcpSessions(sessionStore),
     reporter: selfHostMcpReporter,
-    approvalHandler: makeApprovalHandler(sessionStore, betterAuth),
+    approvalHandler: makeApprovalHandler(sessionStore, betterAuth, dbHandle, config),
     close: sessionStore.close,
   };
 };

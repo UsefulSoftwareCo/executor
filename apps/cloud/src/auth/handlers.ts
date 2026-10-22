@@ -833,6 +833,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
             stub.getPausedExecutionForApproval(params.executionId, {
               accountId: owner.accountId,
               organizationId: owner.organizationId,
+              orgRole: owner.memberRole,
             }),
           );
 

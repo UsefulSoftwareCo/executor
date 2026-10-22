@@ -8,7 +8,7 @@ import { CoreSharedServices } from "./auth/workos";
 import { makeCloudExtensionRoutes } from "./extensions/routes";
 import { RequestScopedServicesLive } from "./api/layers";
 import { CloudMeteringEngineDecorator } from "./engine/execution-stack-metered";
-import { workosAccountMiddleware } from "./account/account-api";
+import { workosAccountMiddleware, workosDelegationMiddleware } from "./account/account-api";
 import { ApiKeyService } from "./auth/api-keys";
 import { cloudIdentityFailureStrategy, workosIdentityLayer } from "./auth/workos-auth-provider";
 import { DbService } from "./db/db";
@@ -82,6 +82,7 @@ const { appLayer, toWebHandler } = ExecutorApp.make({
     // service closes over the per-request postgres socket; carries the Autumn
     // seat-gate. Self-combines `requestScopedMiddleware`.
     account: workosAccountMiddleware(RequestScopedServicesLive),
+    delegation: workosDelegationMiddleware(RequestScopedServicesLive),
     db: cloudDb,
     engine: {
       codeExecutor: CloudCodeExecutorProvider,
