@@ -9,14 +9,14 @@
 #     -e EXECUTOR_WEB_BASE_URL=https://your.domain \
 #     -v executor-data:/data executor-selfhost
 
-FROM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 AS prod-deps
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS prod-deps
 WORKDIR /app
 COPY . .
 RUN bun install --frozen-lockfile --production --ignore-scripts --filter @executor-js/host-selfhost \
   && bun run apps/host-selfhost/scripts/package-runtime.ts \
   && mkdir -p /runtime-data
 
-FROM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 AS build
+FROM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS build
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
