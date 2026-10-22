@@ -7,6 +7,7 @@ import {
   makeInMemoryMcpSessionStore,
   type InMemoryMcpSessionStore,
 } from "@executor-js/host-mcp/in-memory-session-store";
+import type { McpClientSessionResolver } from "@executor-js/host-mcp/in-memory-client-bridge";
 
 import { selfHostAnalytics } from "../analytics";
 import { ErrorCaptureLive } from "../observability";
@@ -37,6 +38,7 @@ export const makeSelfHostMcpSessionStore = (
   db: SelfHostDbHandle,
   webBaseUrl?: string,
   sessionIdleTtlMs?: number,
+  clientSessionResolver?: McpClientSessionResolver,
 ): InMemoryMcpSessionStore =>
   makeInMemoryMcpSessionStore(
     makeMcpBuildServer(
@@ -52,6 +54,7 @@ export const makeSelfHostMcpSessionStore = (
     {
       ...(webBaseUrl === undefined ? {} : { webBaseUrl }),
       ...(sessionIdleTtlMs === undefined ? {} : { sessionIdleTtlMs }),
+      ...(clientSessionResolver === undefined ? {} : { clientSessionResolver }),
     },
   );
 

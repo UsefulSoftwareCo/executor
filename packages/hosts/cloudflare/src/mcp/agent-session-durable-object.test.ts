@@ -14,6 +14,7 @@ import {
   McpAgentSessionDOBase,
   type McpApprovalOwner,
   type McpApprovalPrincipal,
+  type McpSessionOwnerIdentity,
   type McpSessionResumeApprovalResult,
   type McpSessionModelResumeResult,
   type SessionMeta,
@@ -196,10 +197,7 @@ type HarnessSession = {
     readonly orgWriteAccess: "allowed" | "denied";
   } | null>;
   validateMcpSessionOwner: (
-    identity: {
-      readonly accountId: string;
-      readonly organizationId: string;
-    },
+    identity: McpSessionOwnerIdentity,
     resource: McpResource,
   ) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
 };
@@ -682,6 +680,50 @@ describe("McpAgentSessionDOBase transport restore", () => {
     ).resolves.toBe("forbidden");
   });
 
+  it("rejects a different authenticated client for the same owner and resource", async () => {
+    const session = await makeHarnessSession();
+    session.sessionMeta = {
+      ...session.sessionMeta!,
+      clientIdentity: "client-a",
+      clientManifestGeneration: 1,
+    };
+
+    await expect(
+      session.validateMcpSessionOwner(
+        { accountId: "user-1", organizationId: "org-1", clientIdentity: "client-b" },
+        defaultMcpResource,
+      ),
+    ).resolves.toBe("forbidden");
+    await expect(
+      session.validateMcpSessionOwner(
+        { accountId: "user-1", organizationId: "org-1", clientIdentity: "client-a" },
+        defaultMcpResource,
+      ),
+    ).resolves.toBe("forbidden");
+    await expect(
+      session.validateMcpSessionOwner(
+        {
+          accountId: "user-1",
+          organizationId: "org-1",
+          clientIdentity: "client-a",
+          clientManifestGeneration: 1,
+        },
+        defaultMcpResource,
+      ),
+    ).resolves.toBe("ok");
+    await expect(
+      session.validateMcpSessionOwner(
+        {
+          accountId: "user-1",
+          organizationId: "org-1",
+          clientIdentity: "client-a",
+          clientManifestGeneration: 2,
+        },
+        defaultMcpResource,
+      ),
+    ).resolves.toBe("forbidden");
+  });
+
   it("single-flights concurrent same-session restore after idle disposal", async () => {
     const session = await makeHarnessSession();
     const firstRestoreEntered = makeDeferred();
@@ -858,7 +900,10 @@ describe("McpAgentSessionDOBase init survives a platform reset of its bookkeepin
     buildMcpServer: () => Effect.Effect<{ mcpServer: McpServer; engine: unknown }>;
     openSessionDb: () => { readonly end: () => void };
     resolveSessionMeta: () => Effect.Effect<SessionMeta>;
-    validateMcpSessionOwner: (identity: McpApprovalOwner, resource: McpResource) => Promise<string>;
+    validateMcpSessionOwner: (
+      identity: McpSessionOwnerIdentity,
+      resource: McpResource,
+    ) => Promise<string>;
   };
 
   const sessionMeta: SessionMeta = {

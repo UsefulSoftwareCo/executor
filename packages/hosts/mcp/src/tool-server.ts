@@ -92,6 +92,7 @@ import {
   SEARCH_INVOKE_SKILL,
 } from "./passthrough-tools";
 import type { McpToolMode } from "./browser-approval";
+import type { McpClientManifest, McpClientRequest } from "./in-memory-client-bridge";
 
 // ---------------------------------------------------------------------------
 // Workers-compatible JSON Schema validator (replaces Ajv which uses new Function())
@@ -111,11 +112,87 @@ class CfWorkerJsonSchemaValidator implements jsonSchemaValidator {
   }
 }
 
+const normalizeClientResult = (
+  value: unknown,
+): Effect.Effect<{ content: ContentBlock[]; isError?: boolean }, McpPassthroughUnavailableError> =>
+  Effect.gen(function* () {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("content" in value) ||
+      !Array.isArray(value.content)
+    ) {
+      return yield* new McpPassthroughUnavailableError({
+        reason: "Client tool result must contain a content array",
+      });
+    }
+    return {
+      content: value.content as ContentBlock[],
+      ...("isError" in value && typeof value.isError === "boolean"
+        ? { isError: value.isError }
+        : {}),
+    };
+  });
+
+const normalizeClientResourceResult = (
+  value: unknown,
+  _uri: string,
+): Effect.Effect<
+  {
+    contents: (
+      | { uri: string; text: string; mimeType?: string }
+      | { uri: string; blob: string; mimeType?: string }
+    )[];
+  },
+  McpPassthroughUnavailableError
+> =>
+  Effect.gen(function* () {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("contents" in value) ||
+      !Array.isArray(value.contents)
+    ) {
+      return yield* new McpPassthroughUnavailableError({
+        reason: "Client resource result must contain a contents array",
+      });
+    }
+    return {
+      contents: value.contents as (
+        | { uri: string; text: string; mimeType?: string }
+        | { uri: string; blob: string; mimeType?: string }
+      )[],
+    };
+  });
+
+const normalizeClientPromptResult = (
+  value: unknown,
+): Effect.Effect<
+  { messages: { role: "user" | "assistant"; content: ContentBlock }[] },
+  McpPassthroughUnavailableError
+> =>
+  Effect.gen(function* () {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("messages" in value) ||
+      !Array.isArray(value.messages)
+    ) {
+      return yield* new McpPassthroughUnavailableError({
+        reason: "Client prompt result must contain a messages array",
+      });
+    }
+    return { messages: value.messages as { role: "user" | "assistant"; content: ContentBlock }[] };
+  });
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 type SharedMcpServerConfig = {
+  /** Session-scoped capabilities routed to the authenticated client. */
+  readonly clientManifest?: McpClientManifest;
+  readonly invokeClient?: (request: McpClientRequest) => Promise<unknown>;
   /**
    * Pre-built `execute` tool description. When provided, the factory skips
    * its internal `engine.getDescription` yield. Useful when the caller
@@ -2915,6 +2992,121 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
       syncToolAvailability();
       server.server.oninitialized = syncToolAvailability;
     }).pipe(Effect.withSpan("mcp.host.sync_tool_availability"));
+
+    if (config.clientManifest) {
+      if (!config.invokeClient) {
+        return yield* new McpPassthroughUnavailableError({
+          reason: "client manifest requires an invocation callback",
+        });
+      }
+      const manifest = config.clientManifest;
+      const assertUnique = (kind: string, names: readonly string[]) =>
+        Effect.gen(function* () {
+          const seen = new Set<string>();
+          for (const name of names) {
+            if (!name.trim() || seen.has(name)) {
+              return yield* new McpPassthroughUnavailableError({
+                reason: `Invalid client ${kind} name: ${name}`,
+              });
+            }
+            seen.add(name);
+          }
+        });
+      yield* assertUnique(
+        "tool",
+        manifest.tools.map((item) => item.name),
+      );
+      yield* assertUnique(
+        "resource",
+        manifest.resources.map((item) => item.uri),
+      );
+      yield* assertUnique(
+        "prompt",
+        manifest.prompts.map((item) => item.name),
+      );
+      const invokeClient = config.invokeClient;
+      const clientContext = yield* Effect.context<never>();
+      const registeredCapabilities = [
+        ["tool", manifest.tools.map((item) => item.name), Reflect.get(server, "_registeredTools")],
+        [
+          "resource",
+          manifest.resources.map((item) => item.uri),
+          Reflect.get(server, "_registeredResources"),
+        ],
+        [
+          "prompt",
+          manifest.prompts.map((item) => item.name),
+          Reflect.get(server, "_registeredPrompts"),
+        ],
+      ] as const;
+      for (const [kind, names, existing] of registeredCapabilities) {
+        for (const name of names) {
+          if (Object.hasOwn(existing, name)) {
+            return yield* new McpPassthroughUnavailableError({
+              reason: `Client ${kind} collides with a built-in registration: ${name}`,
+            });
+          }
+        }
+      }
+      yield* Effect.sync(() => {
+        for (const item of manifest.tools) {
+          const inputSchema = item.inputSchema
+            ? z.fromJSONSchema(item.inputSchema as Parameters<typeof z.fromJSONSchema>[0])
+            : {};
+          server.registerTool(
+            item.name,
+            { description: item.description, inputSchema },
+            async (args) => {
+              const result = await invokeClient({
+                method: "tools/call",
+                params: { name: item.name, arguments: args },
+              });
+              return Effect.runPromiseWith(clientContext)(normalizeClientResult(result));
+            },
+          );
+        }
+        for (const item of manifest.resources) {
+          server.registerResource(
+            item.name ?? item.uri,
+            item.uri,
+            {
+              description: item.description,
+              mimeType: item.mimeType,
+            },
+            async (uri) =>
+              Effect.runPromiseWith(clientContext)(
+                normalizeClientResourceResult(
+                  await invokeClient({ method: "resources/read", params: { uri: uri.href } }),
+                  uri.href,
+                ),
+              ),
+          );
+        }
+        for (const item of manifest.prompts) {
+          server.registerPrompt(
+            item.name,
+            {
+              description: item.description,
+              argsSchema: Object.fromEntries(
+                (item.arguments ?? []).map((argument) => [
+                  argument.name,
+                  z.string().describe(argument.description ?? ""),
+                ]),
+              ),
+            },
+            async (args) =>
+              Effect.runPromiseWith(clientContext)(
+                normalizeClientPromptResult(
+                  await invokeClient({
+                    method: "prompts/get",
+                    params: { name: item.name, arguments: args },
+                  }),
+                ),
+              ),
+          );
+        }
+      });
+    }
 
     return server;
   }).pipe(Effect.withSpan("mcp.host.create_executor_server"));

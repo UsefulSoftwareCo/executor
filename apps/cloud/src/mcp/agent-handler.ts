@@ -30,7 +30,7 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 
 import { wrapMcpSseResponse } from "../observability/memory-metrics";
 import { WorkerTelemetryLive } from "../observability/telemetry";
-import { cloudMcpAuth } from "./auth-provider";
+import { authenticateClientChannelToken, cloudMcpAuth } from "./auth-provider";
 import { isMcpSessionMetaUnavailable } from "./session-meta";
 import { McpSessionDOSqlite } from "./session-durable-object";
 import { parseTraceparent } from "./traceparent";
@@ -44,7 +44,7 @@ const corsPreflightResponse = (): Response =>
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
       "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version, x-executor-client-token",
       "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
     },
   });
@@ -171,6 +171,8 @@ const resourceFromPath = (request: Request): McpResource => {
 const propsForPrincipal = (
   request: Request,
   principal: Extract<AuthOutcome, { readonly _tag: "Authenticated" }>["principal"],
+  clientIdentity: string | undefined,
+  clientManifestGeneration: number | undefined,
   resource: McpResource,
 ): Effect.Effect<McpSessionProps> =>
   Effect.gen(function* () {
@@ -187,6 +189,8 @@ const propsForPrincipal = (
         ...(principal.organizationSlug ? { organizationSlug: principal.organizationSlug } : {}),
         ...sessionOrgRoleMetadata(principal),
         userId: principal.accountId,
+        ...(clientIdentity === undefined ? {} : { clientIdentity }),
+        ...(clientManifestGeneration === undefined ? {} : { clientManifestGeneration }),
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
         searchToolsEnabled: readSearchToolsEnabled(request),
@@ -246,6 +250,23 @@ export const makeCloudMcpAgentHandler = () => {
       return renderAuthError(auth, request, outcome);
     }
 
+    // A channel token is only a session binding layered on top of the normal
+    // cloud bearer auth above. Its opaque value selects a DO; identity is read
+    // from durable server-side state and must match the bearer principal.
+    const channelToken = request.headers.get("x-executor-client-token");
+    let clientIdentity = outcome.clientIdentity;
+    let clientManifestGeneration = outcome.clientManifestGeneration;
+    if (channelToken !== null) {
+      const channelIdentity = await authenticateClientChannelToken(
+        env.MCP_CLIENT_CHANNEL,
+        channelToken,
+        outcome.principal,
+      );
+      if (!channelIdentity) return jsonRpcResponse(401, -32001, "Invalid client channel token");
+      clientIdentity = channelIdentity.binding;
+      clientManifestGeneration = channelIdentity.generation;
+    }
+
     if (!sessionId && request.method === "DELETE") {
       // Matches the old envelope's contract (@modelcontextprotocol/sdk's
       // `WebStandardStreamableHTTPServerTransport.handleDeleteRequest`): 200,
@@ -266,6 +287,8 @@ export const makeCloudMcpAgentHandler = () => {
           {
             accountId: outcome.principal.accountId,
             organizationId: outcome.principal.organizationId,
+            ...(clientIdentity === undefined ? {} : { clientIdentity }),
+            ...(clientManifestGeneration === undefined ? {} : { clientManifestGeneration }),
           },
           resource,
         );
@@ -297,7 +320,16 @@ export const makeCloudMcpAgentHandler = () => {
       }
     }
 
-    const props = await runTraced(request, propsForPrincipal(request, outcome.principal, resource));
+    const props = await runTraced(
+      request,
+      propsForPrincipal(
+        request,
+        outcome.principal,
+        clientIdentity,
+        clientManifestGeneration,
+        resource,
+      ),
+    );
     (ctx as ExecutionContext & { props?: McpSessionProps }).props = props;
     const forwarded = withOrgWriteAccess(
       withVerifiedIdentityHeaders(

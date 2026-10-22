@@ -103,6 +103,10 @@ export const bootCloud = async (options: CloudBootOptions): Promise<CloudBooted>
     EXECUTOR_DIRECT_DATABASE_URL: "true",
     CLOUDFLARE_INCLUDE_PROCESS_ENV: "true",
     VITE_PUBLIC_SITE_URL: options.publicUrl,
+    // Keep the Google OAuth rollout disabled in E2E. CI may provide the
+    // production PostHog project key, but this scenario verifies the
+    // non-rollout path and must not depend on a user/org's flag assignment.
+    VITE_PUBLIC_POSTHOG_KEY: "",
     // The AuthKit domain (MCP OAuth metadata + JWKS) is the emulator too.
     MCP_AUTHKIT_DOMAIN: workosUrl,
     MCP_RESOURCE_ORIGIN: options.publicUrl,

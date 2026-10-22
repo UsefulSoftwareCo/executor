@@ -187,13 +187,11 @@ scenario(
         });
       });
 
-      // The Executor-owned Google app is withheld from every listing: it is no
-      // longer offered for new connections, so connecting Google means bringing
-      // your own OAuth app. It stays fully resolvable by slug, which the
-      // `oauth.start` cases below exercise — that is the guarantee for everyone
-      // already connected through it. Its reviewed consumer scope bundle, no
-      // longer introspectable from here, is asserted on the config it is built
-      // from, in apps/cloud/src/engine/first-party-oauth-clients.test.ts.
+      // The cloud E2E boot disables the Google rollout flag, so the app is
+      // withheld from listings here while remaining resolvable by slug. The
+      // `oauth.start` cases below prove existing connections can still use it.
+      // The reviewed consumer scope bundle is asserted on its config in
+      // apps/cloud/src/engine/first-party-oauth-clients.test.ts.
       const clients = yield* client.oauth.listClients();
       expect(
         clients.find((candidate) => String(candidate.slug) === "first-party:google"),
