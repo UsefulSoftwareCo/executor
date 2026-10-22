@@ -16,6 +16,7 @@ import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRouteImport
 import { Route as ApiKeysRouteImport } from './routes/app/api-keys'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteImport } from './../../../packages/react/src/routes/artifacts'
 import { Route as BillingRouteImport } from './routes/app/billing'
+import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRouteImport } from './../../../packages/react/src/routes/delegated-credentials'
 import { Route as OrgRouteImport } from './routes/app/org'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRouteImport } from './../../../packages/react/src/routes/policies'
 import { Route as SecretsRouteImport } from './routes/app/secrets'
@@ -68,6 +69,14 @@ const BillingRoute = BillingRouteImport.update({
   path: '/{-$orgSlug}/billing',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute =
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRouteImport.update(
+    {
+      id: '/{-$orgSlug}/delegated-credentials',
+      path: '/{-$orgSlug}/delegated-credentials',
+      getParentRoute: () => rootRouteImport,
+    } as any,
+  )
 const OrgRoute = OrgRouteImport.update({
   id: '/{-$orgSlug}/org',
   path: '/{-$orgSlug}/org',
@@ -170,6 +179,7 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
+  '/{-$orgSlug}/delegated-credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   '/{-$orgSlug}/org': typeof OrgRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof SecretsRoute
@@ -193,6 +203,7 @@ export interface FileRoutesByTo {
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
+  '/{-$orgSlug}/delegated-credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   '/{-$orgSlug}/org': typeof OrgRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof SecretsRoute
@@ -217,6 +228,7 @@ export interface FileRoutesById {
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
+  '/{-$orgSlug}/delegated-credentials': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   '/{-$orgSlug}/org': typeof OrgRoute
   '/{-$orgSlug}/policies': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   '/{-$orgSlug}/secrets': typeof SecretsRoute
@@ -242,6 +254,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/org'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
@@ -265,6 +278,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/org'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
@@ -288,6 +302,7 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
+    | '/{-$orgSlug}/delegated-credentials'
     | '/{-$orgSlug}/org'
     | '/{-$orgSlug}/policies'
     | '/{-$orgSlug}/secrets'
@@ -312,6 +327,7 @@ export interface RootRouteChildren {
   ApiKeysRoute: typeof ApiKeysRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   BillingRoute: typeof BillingRoute
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute
   OrgRoute: typeof OrgRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute
   SecretsRoute: typeof SecretsRoute
@@ -376,6 +392,13 @@ declare module '@tanstack/react-router' {
       path: '/{-$orgSlug}/billing'
       fullPath: '/{-$orgSlug}/billing'
       preLoaderRoute: typeof BillingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/{-$orgSlug}/delegated-credentials': {
+      id: '/{-$orgSlug}/delegated-credentials'
+      path: '/{-$orgSlug}/delegated-credentials'
+      fullPath: '/{-$orgSlug}/delegated-credentials'
+      preLoaderRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/org': {
@@ -517,6 +540,8 @@ const rootRouteChildren: RootRouteChildren = {
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren,
   BillingRoute: BillingRoute,
+  DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute:
+    DotDotDotDotDotDotDotDotPackagesReactSrcRoutesDelegatedCredentialsRoute,
   OrgRoute: OrgRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesPoliciesRoute,
@@ -545,15 +570,11 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-
 import type { startInstance } from './start.ts'
-
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
-
     router: Awaited<ReturnType<typeof getRouter>>
-
     config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

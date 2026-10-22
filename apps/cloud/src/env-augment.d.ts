@@ -155,6 +155,12 @@ declare global {
 
       // Shared with frontend
       VITE_PUBLIC_SITE_URL?: string;
+      /** Delegated credentials stay disabled unless explicitly enabled. */
+      DELEGATED_ISSUANCE_ENABLED?: string;
+      /** Optional delegated grant cap in milliseconds, bounded by the SDK's 90-day maximum. */
+      DELEGATED_MAX_TTL_MS?: string;
+      /** Maximum age of the verified human management proof, in milliseconds. */
+      DELEGATED_RECENT_AUTH_MAX_AGE_MS?: string;
       VITE_PUBLIC_OTLP_TRACES_URL?: string;
       VITE_PUBLIC_OTLP_SAMPLE_RATIO?: string;
     }

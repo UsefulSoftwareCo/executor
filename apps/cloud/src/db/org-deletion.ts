@@ -28,6 +28,10 @@ import { memberships, organizations } from "./schema";
 import {
   artifact,
   blob,
+  credential_delegation,
+  delegation_audit,
+  delegation_challenge,
+  delegation_notification,
   connection,
   definition,
   integration,
@@ -68,6 +72,12 @@ export const purgeOrganizationData = (
     await tx.delete(plugin_storage).where(eq(plugin_storage.tenant, organizationId));
     await tx.delete(subject).where(eq(subject.tenant, organizationId));
     await tx.delete(artifact).where(eq(artifact.tenant, organizationId));
+    await tx.delete(credential_delegation).where(eq(credential_delegation.tenant, organizationId));
+    await tx.delete(delegation_challenge).where(eq(delegation_challenge.tenant, organizationId));
+    await tx.delete(delegation_audit).where(eq(delegation_audit.tenant, organizationId));
+    await tx
+      .delete(delegation_notification)
+      .where(eq(delegation_notification.tenant, organizationId));
 
     // Secrets, OAuth tokens, and cached specs live in `blob`, namespaced by
     // owner: `o:<org>/<plugin>` (org scope) and `u:<org>:<subject>/<plugin>`

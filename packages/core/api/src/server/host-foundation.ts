@@ -33,13 +33,18 @@
 
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 import type { AnyPlugin } from "@executor-js/sdk";
 
 import { observabilityMiddleware, type ErrorCapture } from "../observability";
 import { AccountHttpApi } from "../account/api";
 import { AccountHandlers } from "../account/handlers";
-import type { AccountProvider } from "../account/service";
+import {
+  DelegationProvider,
+  type AccountProvider,
+  type DelegationProviderShape,
+} from "../account/service";
+import { AccountForbidden } from "../account/api";
 import { AdminUsersHttpApi } from "../admin/api";
 import { AdminUsersHandlers } from "../admin/handlers";
 import { composePluginApi, composePluginHandlerLayer } from "../plugin-routes";
@@ -130,7 +135,59 @@ export interface MakeAccountApiLayerOptions {
    * the account routes register on the same `/api`-prefixed router.
    */
   readonly router?: RouterLayer;
+  /** Optional per-request delegated-credential provider. Hosts without a
+   *  delegation adapter receive the disabled, fail-closed provider below. */
+  /** Hosts may supply a request middleware layer; its output includes the
+   * router's request markers alongside DelegationProvider. */
+  readonly delegationProviderMiddleware?: Layer.Layer<never, never, unknown>;
 }
+
+const delegationDisabled = <A>(): Effect.Effect<A, AccountForbidden> =>
+  Effect.fail(
+    new AccountForbidden({
+      message: "Delegated credential issuance is disabled on this host.",
+    }),
+  );
+
+const disabledDelegationProvider: DelegationProviderShape = {
+  listDelegatedCredentials: () =>
+    Effect.succeed({
+      credentials: [],
+      nextCursor: null,
+      notifications: [],
+      capabilities: {
+        issuanceEnabled: false,
+        localKeysEnabled: false,
+        externalAdapters: [],
+        canFilterTargets: false,
+      },
+    }),
+  listDelegationTargets: () => Effect.succeed({ targets: [] }),
+  listDelegationScopeOptions: () =>
+    Effect.succeed({
+      actions: ["discover", "invoke"] as const,
+      toolkits: [],
+      connections: [],
+      maxExpiresAt: new Date().toISOString(),
+    }),
+  listDelegationNotifications: () => Effect.succeed({ notifications: [] }),
+  markDelegationNotificationRead: () => Effect.succeed({ success: true }),
+  createDelegatedKey: () => delegationDisabled(),
+  startDelegationChallenge: () => delegationDisabled(),
+  getDelegationChallenge: () => delegationDisabled(),
+  completeDelegationProof: () => delegationDisabled(),
+  consentDelegationChallenge: () => delegationDisabled(),
+  consentDelegatedCredential: () => delegationDisabled(),
+  rotateDelegatedKey: () => delegationDisabled(),
+  revokeDelegatedCredential: () => delegationDisabled(),
+  revokeAllDelegatedCredentials: () => delegationDisabled(),
+  listDelegationAudit: () => Effect.succeed({ events: [], nextCursor: null }),
+};
+
+const disabledDelegationProviderLayer = Layer.succeed(
+  DelegationProvider,
+  disabledDelegationProvider,
+);
 
 /**
  * Mount the shared, provider-neutral `AccountHandlers` (me / API keys / org)
@@ -166,7 +223,12 @@ export const makeAccountApiLayer = <MOut, ME, MR>(
 ) => {
   const base = HttpApiBuilder.layer(AccountHttpApi).pipe(
     Layer.provide(AccountHandlers),
-    Layer.provide(accountProviderMiddleware),
+    Layer.provide(
+      Layer.merge(
+        accountProviderMiddleware,
+        options.delegationProviderMiddleware ?? disabledDelegationProviderLayer,
+      ),
+    ),
   );
   return options.router ? base.pipe(Layer.provide(options.router)) : base;
 };

@@ -18,11 +18,25 @@ import { mcpResourceKey, type McpResource } from "@executor-js/host-mcp";
 export const INTERNAL_ACCOUNT_ID_HEADER = "x-executor-mcp-account-id";
 export const INTERNAL_ORGANIZATION_ID_HEADER = "x-executor-mcp-organization-id";
 export const INTERNAL_RESOURCE_KEY_HEADER = "x-executor-mcp-resource-key";
+export const INTERNAL_DELEGATION_BINDING_HEADER = "x-executor-mcp-delegation-binding";
+
+/** Serializable identity binding stamped by the authenticated worker and
+ * persisted by the session DO. It contains no bearer material or live scope. */
+export type McpDelegationBinding = {
+  readonly tenant: string;
+  readonly grantId: string;
+  readonly credentialId: string;
+  readonly credentialRef: string;
+  readonly actorSubject: string;
+  readonly effectiveSubject: string;
+  readonly scopeVersion: string;
+};
 
 /** The verified identity used to stamp the DO's internal owner headers. */
 export type VerifiedTokenHeaders = {
   readonly accountId: string;
   readonly organizationId: string;
+  readonly delegation?: McpDelegationBinding;
 };
 
 // Worker and DO run in separate isolates with independent WebSdk tracer
@@ -110,6 +124,11 @@ export const withVerifiedIdentityHeaders = (
   headers.set(INTERNAL_ACCOUNT_ID_HEADER, token.accountId);
   headers.set(INTERNAL_ORGANIZATION_ID_HEADER, token.organizationId ?? "");
   headers.set(INTERNAL_RESOURCE_KEY_HEADER, mcpResourceKey(resource));
+  if (token.delegation === undefined) {
+    headers.delete(INTERNAL_DELEGATION_BINDING_HEADER);
+  } else {
+    headers.set(INTERNAL_DELEGATION_BINDING_HEADER, JSON.stringify(token.delegation));
+  }
   return new Request(request, { headers });
 };
 

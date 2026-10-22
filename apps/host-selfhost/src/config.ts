@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { isValidOrgSlug } from "@executor-js/api";
+import { MAX_DELEGATION_TTL_MS } from "@executor-js/sdk";
 import {
   missingPublicOriginWarning,
   resolvePublicOrigin,
@@ -95,6 +96,12 @@ export interface SelfHostConfig {
    * re-sync, leaving stale-marking and config revision as the only triggers.
    */
   readonly toolsSyncTtlMs: number | null | undefined;
+  /** Explicit rollout gate for delegated credential issuance. */
+  readonly delegatedIssuanceEnabled: boolean;
+  /** Maximum age of the Better Auth session creation time used for human management. */
+  readonly delegatedRecentAuthMaxAgeMs: number;
+  /** Operator cap for delegated grants, bounded by the SDK hard maximum. */
+  readonly delegatedMaxTtlMs: number;
 }
 
 export const resolveDataDir = (): string =>
@@ -207,7 +214,37 @@ export const loadConfig = (): SelfHostConfig => {
     sso: resolveSso(),
     mcpSessionIdleTtlMs: resolveMcpSessionIdleTtlMs(),
     toolsSyncTtlMs: resolveToolsSyncTtlMs(),
+    delegatedIssuanceEnabled: process.env.EXECUTOR_DELEGATED_CREDENTIAL_ISSUANCE === "true",
+    delegatedRecentAuthMaxAgeMs: resolveDelegatedRecentAuthMaxAgeMs(),
+    delegatedMaxTtlMs: resolveDelegatedMaxTtlMs(),
   };
+};
+
+export const parseDelegatedMaxTtlMs = (rawInput: string | undefined): number => {
+  const raw = rawInput ?? String(MAX_DELEGATION_TTL_MS);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_DELEGATION_TTL_MS) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `EXECUTOR_DELEGATED_MAX_TTL_MS ${JSON.stringify(raw)} must be a positive integer no greater than ${MAX_DELEGATION_TTL_MS}`,
+    );
+  }
+  return value;
+};
+
+const resolveDelegatedMaxTtlMs = (): number =>
+  parseDelegatedMaxTtlMs(process.env.EXECUTOR_DELEGATED_MAX_TTL_MS);
+
+const resolveDelegatedRecentAuthMaxAgeMs = (): number => {
+  const raw = process.env.EXECUTOR_DELEGATED_RECENT_AUTH_MAX_AGE_MS ?? "300000";
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `EXECUTOR_DELEGATED_RECENT_AUTH_MAX_AGE_MS ${JSON.stringify(raw)} must be a positive integer`,
+    );
+  }
+  return value;
 };
 
 // Well-known discovery documents for providers an operator can name without

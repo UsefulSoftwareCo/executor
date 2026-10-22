@@ -1,8 +1,12 @@
 import { Effect, Layer } from "effect";
 
 import { IdentityProvider, Unauthorized } from "@executor-js/api/server";
+import type { DelegationGrant, VerifiedDelegatedCredential } from "@executor-js/sdk";
 
 import { isPrivileged } from "../admin/require-admin";
+import { makeSelfHostDelegationServiceForHeaders } from "../account/delegation-provider";
+import type { SelfHostConfig } from "../config";
+import type { SelfHostDbHandle } from "../db/self-host-db";
 import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 
 // ---------------------------------------------------------------------------
@@ -16,8 +20,7 @@ import { BetterAuth, type BetterAuthHandle } from "./better-auth";
 //   - fails Unauthorized             -> no/invalid credential (renders 401)
 //   - fails NoOrganization           -> valid credential, no org (renders 403)
 //
-// `betterAuthIdentityLayer` is the only production provider. The trivial fake
-// identities tests inject live in `src/testing/test-app.ts`.
+// The trivial fake identities tests inject live in `src/testing/test-app.ts`.
 // ---------------------------------------------------------------------------
 
 const bearerToken = (headers: Headers): string | undefined => {
@@ -50,19 +53,112 @@ export const resolveSelfHostOrgRole = (
     Effect.map((membership) => (membership && isPrivileged(membership.role) ? "admin" : "member")),
   );
 
-// ---------------------------------------------------------------------------
-// The production IdentityProvider: resolve a request to a Better Auth session
-// and map it to a neutral Principal. Three credential shapes resolve here:
-//   - session cookie (browser SPA)
-//   - Bearer session token (bearer plugin)
-//   - Bearer API key — the apiKey plugin reads `x-api-key`, so when the normal
-//     resolution fails we retry with the Bearer value as x-api-key, which (with
-//     enableSessionForAPIKeys) mints the owner's session. This is what lets a
-//     generated API key authenticate the API + MCP endpoint as a Bearer token.
-// Single-org instance, so organizationName is the boot-cached org name.
-// ---------------------------------------------------------------------------
+const delegatedPrincipalFrom = (
+  grant: DelegationGrant,
+  betterAuth: BetterAuthHandle,
+): import("@executor-js/api/server").Principal => ({
+  kind: "delegated",
+  accountId: String(grant.effectiveSubject),
+  organizationId: betterAuth.organizationId,
+  organizationName: betterAuth.organizationName,
+  organizationSlug: betterAuth.organizationSlug,
+  email: "",
+  name: null,
+  avatarUrl: null,
+  roles: [],
+  orgRoleModel: "organization",
+  orgRole: "member",
+  tenant: String(grant.tenant),
+  grantId: String(grant.grantId),
+  credentialId: String(grant.credentialId),
+  credentialRef: grant.credentialRef,
+  actorSubject: String(grant.actorSubject),
+  effectiveSubject: String(grant.effectiveSubject),
+  scopeVersion: String(grant.scopeVersion),
+  delegation: grant,
+});
 
-export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, BetterAuth> =
+const bearerValue = (request: Request): string | undefined => {
+  const authorization = request.headers.get("authorization");
+  if (authorization?.toLowerCase().startsWith("bearer ")) {
+    return authorization.slice(7).trim() || undefined;
+  }
+  return request.headers.get("x-api-key") ?? undefined;
+};
+
+// Core-issued keys are intentionally a reserved local format. Self-host uses
+// Better Auth API keys as its provider credentials, so a malformed or revoked
+// local key must not fall through to the cookie/session resolver.
+const isReservedLocalIssuedKey = (token: string): boolean =>
+  /^key_[0-9a-f]{32}\.[0-9a-f]{64}$/.test(token);
+
+// An explicit x-api-key header is always an API-key attempt. A bearer paired
+// with a browser cookie is also treated as an API-key attempt: this prevents a
+// revoked provider key from falling through to the valid human cookie. Bare
+// bearer tokens retain Better Auth session compatibility because Better Auth
+// does not give session and API-key token strings distinct prefixes.
+const isExplicitBetterAuthApiKey = (request: Request): boolean =>
+  request.headers.has("x-api-key") || request.headers.has("cookie");
+
+const isProviderIssuedDelegationKey = (metadata: unknown): boolean => {
+  if (typeof metadata !== "object" || metadata === null) return false;
+  const value = (metadata as Record<string, unknown>).executorDelegationCredentialId;
+  return typeof value === "string" && value.length > 0;
+};
+
+const delegatedApiKey = (
+  request: Request,
+  betterAuth: BetterAuthHandle,
+  service: ReturnType<typeof makeSelfHostDelegationServiceForHeaders>,
+): Effect.Effect<import("@executor-js/api/server").Principal | null, Unauthorized> => {
+  const token = bearerValue(request);
+  if (!token) return Effect.succeed(null);
+  if (isReservedLocalIssuedKey(token)) return Effect.fail(new Unauthorized());
+  const explicitApiKey = isExplicitBetterAuthApiKey(request);
+  // Keep the verifier failure boundary separate from delegation resolution.
+  // A verifier result with no key is the compatibility case for a normal
+  // Better Auth session bearer. Once a key tuple has resolved, however, any
+  // revoked/expired/tuple-mismatched/storage failure must remain Unauthorized;
+  // swallowing that failure for a bare bearer would let getSession turn the
+  // revoked provider key back into its owner's unrestricted member session.
+  const verify = Effect.tryPromise({
+    try: () =>
+      betterAuth.auth.api.verifyApiKey({
+        body: { key: token },
+        headers: request.headers,
+      }),
+    catch: () => new Unauthorized(),
+  });
+  return verify.pipe(
+    Effect.flatMap((result) => {
+      if (!result?.valid || !result.key) {
+        return explicitApiKey ? Effect.fail(new Unauthorized()) : Effect.succeed(null);
+      }
+      const credential: VerifiedDelegatedCredential = {
+        kind: isProviderIssuedDelegationKey(result.key.metadata) ? "issued-key" : "external",
+        adapter: "better-auth-api-key",
+        issuer: betterAuth.auth.options.baseURL,
+        audience: betterAuth.organizationId,
+        subject: result.key.referenceId,
+        credentialRef: result.key.id,
+      };
+      return service.resolve(credential).pipe(
+        Effect.map((grant) => delegatedPrincipalFrom(grant, betterAuth)),
+        Effect.catchTags({
+          DelegationDeniedError: (error) =>
+            error.reason === "unmapped" ? Effect.succeed(null) : Effect.fail(new Unauthorized()),
+        }),
+        Effect.mapError(() => new Unauthorized()),
+      );
+    }),
+  );
+};
+
+/** Identity seam with the live delegated external-credential resolver. */
+export const makeBetterAuthDelegatingIdentityLayer = (
+  db: SelfHostDbHandle,
+  config: SelfHostConfig,
+): Layer.Layer<IdentityProvider, never, BetterAuth> =>
   Layer.effect(IdentityProvider)(
     Effect.gen(function* () {
       const betterAuth = yield* BetterAuth;
@@ -70,11 +166,15 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
       return IdentityProvider.of({
         authenticate: (request) =>
           Effect.gen(function* () {
+            const delegated = yield* delegatedApiKey(
+              request,
+              betterAuth,
+              makeSelfHostDelegationServiceForHeaders(db, betterAuth, config, request.headers),
+            );
+            if (delegated) return delegated;
             let resolved = yield* Effect.promise(() =>
               auth.api.getSession({ headers: request.headers }),
             );
-            // The credential shape that resolved the session — the SAME headers
-            // are what the membership-role lookup below must present.
             let sessionHeaders: Headers | Record<string, string> = request.headers;
             if (!resolved) {
               const token = bearerToken(request.headers);
@@ -87,19 +187,8 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
                 sessionHeaders = apiKeyHeaders;
               }
             }
-            // No session resolved from any credential shape -> unauthenticated.
-            // The middleware's failure strategy renders this as a 401.
             if (!resolved) return yield* new Unauthorized();
-            // Single-org instance: every authenticated user belongs to the one
-            // seeded org. Cookie/bearer-session logins are pinned to it by the
-            // session hook; API-key-minted sessions carry no active org, so we
-            // default to the seeded org rather than rejecting with NoOrganization.
             const resolvedOrganizationId = resolved.session.activeOrganizationId ?? organizationId;
-            // The workspace role, resolved against the INSTANCE org exactly as
-            // the admin gate does (require-admin.ts): the explicit
-            // `organizationId` query keeps a caller-controlled active org from
-            // answering for an org they own elsewhere. FAIL CLOSED to "member"
-            // — an infra fault demotes rather than escalates.
             const orgRole = yield* resolveSelfHostOrgRole(
               betterAuth,
               sessionHeaders,
@@ -118,7 +207,7 @@ export const betterAuthIdentityLayer: Layer.Layer<IdentityProvider, never, Bette
                 .split(",")
                 .map((role) => role.trim())
                 .filter((role) => role.length > 0),
-              orgRoleModel: "organization",
+              orgRoleModel: "organization" as const,
               orgRole,
             };
           }),

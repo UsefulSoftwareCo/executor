@@ -197,6 +197,131 @@ export const coreTables = defineTables({
     ["tenant", "external_id"],
   ),
 
+  // Delegated credentials are deliberately tenant-scoped and are only exposed
+  // through the delegation service. They are not owner rows: the row belongs
+  // to the grant, while the effective subject is an immutable field inside it.
+  // `scope` contains the exact consent snapshot; it is never re-expanded from
+  // mutable toolkit rows during dispatch.
+  credential_delegation: (() => {
+    const out = tenantExecutorTable(
+      "credential_delegation",
+      {
+        id: keyColumn("id"),
+        label: keyColumn("label"),
+        created_by: keyColumn("created_by"),
+        credential_id: keyColumn("credential_id"),
+        credential_kind: keyColumn("credential_kind"),
+        adapter: keyColumn("adapter"),
+        issuer: textColumn("issuer"),
+        audience: textColumn("audience"),
+        credential_subject: textColumn("credential_subject"),
+        credential_ref: keyColumn("credential_ref"),
+        issued_key_ref: nullableKeyColumn("issued_key_ref"),
+        key_hash: nullableKeyColumn("key_hash"),
+        actor_subject: keyColumn("actor_subject"),
+        effective_subject: keyColumn("effective_subject"),
+        toolkit_membership: jsonColumn("toolkit_membership"),
+        scope: jsonColumn("scope"),
+        scope_version: keyColumn("scope_version"),
+        expires_at: bigintColumn("expires_at"),
+        revoked_at: nullableBigintColumn("revoked_at"),
+        revoke_reason: nullableTextColumn("revoke_reason"),
+        created_at: dateColumn("created_at"),
+        last_used_at: nullableBigintColumn("last_used_at"),
+      },
+      ["tenant", "id"],
+    );
+    out.unique("credential_delegation_binding_uidx", [
+      "tenant",
+      "adapter",
+      "issuer",
+      "audience",
+      "credential_subject",
+      "credential_ref",
+    ]);
+    // Provider/local key references are the durable revocation and rotation
+    // handle. Keep them unique inside a tenant even when a malformed adapter
+    // attempts to present the same reference under a different tuple.
+    out.unique("credential_delegation_issued_key_ref_uidx", ["tenant", "issued_key_ref"]);
+    return out;
+  })(),
+
+  // Single-use proof challenges. Only the digest is persisted; proof material
+  // is supplied by the host adapter and is never written to this table.
+  delegation_challenge: tenantExecutorTable(
+    "delegation_challenge",
+    {
+      id: keyColumn("id"),
+      created_by: keyColumn("created_by"),
+      label: keyColumn("label"),
+      credential_id: nullableKeyColumn("credential_id"),
+      credential_kind: nullableKeyColumn("credential_kind"),
+      adapter: keyColumn("adapter"),
+      issuer: nullableTextColumn("issuer"),
+      audience: nullableTextColumn("audience"),
+      credential_subject: nullableTextColumn("credential_subject"),
+      credential_ref: nullableKeyColumn("credential_ref"),
+      actor_subject: nullableKeyColumn("actor_subject"),
+      effective_subject: keyColumn("effective_subject"),
+      scope: jsonColumn("scope"),
+      proof_hash: keyColumn("proof_hash"),
+      expires_at: bigintColumn("expires_at"),
+      grant_expires_at: bigintColumn("grant_expires_at"),
+      proof_consumed_at: nullableBigintColumn("proof_consumed_at"),
+      consent_consumed_at: nullableBigintColumn("consent_consumed_at"),
+      created_at: dateColumn("created_at"),
+    },
+    ["tenant", "id"],
+  ),
+
+  // Append-only operational audit. The service accepts identifiers and
+  // outcomes only; arguments, results, tokens, and authorization headers are
+  // intentionally absent from this schema.
+  delegation_audit: tenantExecutorTable(
+    "delegation_audit",
+    {
+      id: keyColumn("id"),
+      grant_id: nullableKeyColumn("grant_id"),
+      credential_id: nullableKeyColumn("credential_id"),
+      actor_subject: keyColumn("actor_subject"),
+      effective_subject: keyColumn("effective_subject"),
+      action: keyColumn("action"),
+      tool: nullableTextColumn("tool"),
+      outcome: keyColumn("outcome"),
+      request_id: nullableTextColumn("request_id"),
+      execution_id: nullableTextColumn("execution_id"),
+      occurred_at: dateColumn("occurred_at"),
+    },
+    ["tenant", "id"],
+  ),
+
+  // Durable target-owned notices for grants created by another subject. The
+  // service writes these in the same transaction as the grant, so a notice
+  // failure cannot leave an active delegated credential without a notification.
+  delegation_notification: (() => {
+    const out = tenantExecutorTable(
+      "delegation_notification",
+      {
+        id: keyColumn("id"),
+        grant_id: keyColumn("grant_id"),
+        credential_id: keyColumn("credential_id"),
+        created_by: keyColumn("created_by"),
+        target_subject: keyColumn("target_subject"),
+        label: keyColumn("label"),
+        credential_kind: keyColumn("credential_kind"),
+        created_at: dateColumn("created_at"),
+        read_at: nullableBigintColumn("read_at"),
+      },
+      ["tenant", "id"],
+    );
+    out.unique("delegation_notification_grant_target_uidx", [
+      "tenant",
+      "grant_id",
+      "target_subject",
+    ]);
+    return out;
+  })(),
+
   // THE saved credential, one per (owner, integration, name). Resolves each named
   // input via `provider` + the `item_ids` map (variable → provider item id). A
   // single-secret connection is `{ "token": <id> }`; an apiKey method with two
@@ -444,6 +569,10 @@ export type CoreSchema = typeof coreTables;
 
 export type IntegrationRow = FumaRow<CoreSchema["integration"]>;
 export type SubjectRow = FumaRow<CoreSchema["subject"]>;
+export type CredentialDelegationRow = FumaRow<CoreSchema["credential_delegation"]>;
+export type DelegationChallengeRow = FumaRow<CoreSchema["delegation_challenge"]>;
+export type DelegationAuditRow = FumaRow<CoreSchema["delegation_audit"]>;
+export type DelegationNotificationRow = FumaRow<CoreSchema["delegation_notification"]>;
 export type ConnectionRow = FumaRow<CoreSchema["connection"]>;
 export type OAuthClientRow = FumaRow<CoreSchema["oauth_client"]>;
 export type OAuthSessionRow = FumaRow<CoreSchema["oauth_session"]>;

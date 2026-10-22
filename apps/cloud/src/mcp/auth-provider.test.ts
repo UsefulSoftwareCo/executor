@@ -23,12 +23,21 @@ import { describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Layer, Predicate } from "effect";
 
 import { McpAuthProvider, orgWriteAccessForPrincipal } from "@executor-js/host-mcp";
+import {
+  CredentialId,
+  DelegationId,
+  DelegationScopeVersion,
+  Subject,
+  Tenant,
+  type DelegationGrant,
+} from "@executor-js/sdk";
 
 import { WorkOSError } from "../auth/errors";
 import { cloudMcpAuthProviderLayer } from "./auth-provider";
 import {
   MCP_ORGANIZATION_HEADER,
   McpAuth,
+  McpDelegationAuth,
   McpOrganizationAuth,
   mcpAuthorized,
   mcpUnauthorized,
@@ -59,6 +68,32 @@ const stubAuthMissingBearer = Layer.succeed(McpAuth)({
   verifyBearer: () => Effect.succeed(mcpUnauthorized("missing_bearer")),
 });
 
+const stubDelegationAuth = Layer.succeed(McpDelegationAuth)({
+  resolve: () => Effect.succeed(null),
+});
+
+const delegatedGrant: DelegationGrant = {
+  kind: "delegated",
+  tenant: Tenant.make(ORG_ID),
+  grantId: DelegationId.make("grant_test"),
+  credentialId: CredentialId.make("credential_test"),
+  credentialRef: "key_test",
+  actorSubject: Subject.make("user_machine-owner"),
+  effectiveSubject: Subject.make(ACCOUNT_ID),
+  scopeVersion: DelegationScopeVersion.make("1"),
+  expiresAt: Date.now() + 60_000,
+  scope: {
+    actions: ["discover", "invoke"],
+    toolkitMembership: [],
+    toolAddresses: [],
+  },
+  revalidate: () => Effect.void,
+};
+
+const stubDelegatedAuth = Layer.succeed(McpDelegationAuth)({
+  resolve: () => Effect.succeed(delegatedGrant),
+});
+
 // `authorize` failing with the REAL `WorkOSError` the service boundary mints:
 // with `status` when WorkOS answered (its SDK exceptions all carry one), without
 // when the failure never reached WorkOS (network error / timeout).
@@ -87,12 +122,15 @@ class StubInfraError extends Data.TaggedError("StubInfraError")<{
 const authenticateWith = (
   orgAuth: Layer.Layer<McpOrganizationAuth>,
   auth: Layer.Layer<McpAuth> = stubAuth,
+  delegation: Layer.Layer<McpDelegationAuth> = stubDelegationAuth,
 ) =>
   Effect.gen(function* () {
     const provider = yield* McpAuthProvider;
     return yield* provider.authenticate(request());
   }).pipe(
-    Effect.provide(cloudMcpAuthProviderLayer.pipe(Layer.provide(Layer.mergeAll(auth, orgAuth)))),
+    Effect.provide(
+      cloudMcpAuthProviderLayer.pipe(Layer.provide(Layer.mergeAll(auth, orgAuth, delegation))),
+    ),
   );
 
 describe("cloud MCP org-authorization classification", () => {
@@ -166,12 +204,41 @@ describe("cloud MCP org-authorization classification", () => {
       expect(principal?.organizationId).toBe(ORG_ID);
       expect(principal?.orgRoleModel).toBe("organization");
       expect(principal?.orgRole, "the live membership role reaches the MCP session").toBe("admin");
-      const legacyAccess = principal
-        ? orgWriteAccessForPrincipal(
-            (({ orgRole: _orgRole, ...legacyMissingRole }) => legacyMissingRole)(principal),
-          )
-        : null;
+      const legacyAccess =
+        principal?.kind === "member"
+          ? orgWriteAccessForPrincipal(
+              (({ orgRole: _orgRole, ...legacyMissingRole }) => legacyMissingRole)(principal),
+            )
+          : null;
       expect(legacyAccess).toBe("denied");
+    }),
+  );
+
+  it.effect("mapped API key -> delegated principal with member-only claims", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(
+        stubOrgAuthActive,
+        Layer.succeed(McpAuth)({
+          verifyBearer: () =>
+            Effect.succeed(
+              mcpAuthorized({
+                accountId: ACCOUNT_ID,
+                organizationId: ORG_ID,
+                apiKeyId: "key_test",
+              }),
+            ),
+        }),
+        stubDelegatedAuth,
+      );
+      expect(Predicate.isTagged(outcome, "Authenticated")).toBe(true);
+      if (!Predicate.isTagged(outcome, "Authenticated")) return;
+      if (outcome.principal.kind !== "delegated") return;
+      expect(outcome.principal.kind).toBe("delegated");
+      expect(outcome.principal.accountId).toBe(ACCOUNT_ID);
+      expect(outcome.principal.orgRole).toBe("member");
+      expect(outcome.principal.roles).toEqual([]);
+      expect(outcome.principal.email).toBe("");
+      expect(outcome.principal.grantId).toBe("grant_test");
     }),
   );
 

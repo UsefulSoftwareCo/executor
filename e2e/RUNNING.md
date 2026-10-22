@@ -105,6 +105,97 @@ const r = yield * session.call("execute", { code: "return 1 + 1;" });
 // human-in-the-loop: session.approvePaused(r.text) resumes a paused execution
 ```
 
+## Delegated credential scenarios
+
+Delegated-credential scenarios must run against the local application targets
+and the published `@executor-js/emulate` package. Start provider emulators with
+the local `createEmulator({ service, port })` factory; do not create hosted
+`/_emulate/instances` or use a live provider. Issuance is disabled by default.
+The self-host gate is `EXECUTOR_DELEGATED_CREDENTIAL_ISSUANCE=true`, the Cloud
+gate is `DELEGATED_ISSUANCE_ENABLED=true`, and the Cloudflare gate is
+`DELEGATED_CREDENTIAL_ISSUANCE=true`. Keep all three unset for ordinary runs
+and enable one only in an isolated local issuance run after that host's account
+and proof adapters are wired; the fail-closed provider remains the expected
+result while either adapter is missing. Host operators can cap grant lifetime
+with `EXECUTOR_DELEGATED_MAX_TTL_MS` (self-host) or `DELEGATED_MAX_TTL_MS`
+(Cloud/Cloudflare), and tune recent human-auth windows with
+`EXECUTOR_DELEGATED_RECENT_AUTH_MAX_AGE_MS` (self-host) or
+`DELEGATED_RECENT_AUTH_MAX_AGE_MS` (Cloud/Cloudflare). Cloudflare additionally
+uses `DELEGATED_RECENT_AUTH_CLAIM` for its signed Access freshness claim and
+never uses `iat` as a login event.
+
+The coverage contract requires issuance and one-time reveal, exact allowed and
+denied tool calls, proof and replay rejection, tenant isolation, administrator
+non-inheritance, grant revocation while a session exists, and session binding
+through approval or resume. Each host must use its local auth/emulator path;
+Cloudflare's default `ENABLE_DEV_AUTH` target proves one fixed admin and does
+not prove Access JWT or service-token claims.
+
+The current runnable delegated scenarios are in
+`selfhost/delegated-credentials.test.ts`. The default path proves the account
+API fails closed, while the opt-in path covers local issuance, a zero-tool
+consent snapshot, masked listing, and revocation through the real browser and
+account API when the self-host route tree and adapter are enabled.
+The SDK enforcement tests cover the deterministic allow/deny, tenant, admin,
+revocation, and session-binding edges without a network. The remaining host
+and MCP journeys below are coverage requirements, not claims that their
+adapters are already runnable:
+
+| Target     | Browser/API journey                                                                                                                                                                                           | MCP journey                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Cloud      | Pending cloud account adapter: create a local key through the API, then verify masked listing, target and tenant isolation.                                                                                   | Pending cloud machine-auth wiring: allowed/denied calls, proof replay, and revocation during an existing session. |
+| Self-host  | Runnable when the generated host route is present: local issuance, masked listing, empty snapshot, and revocation. Target selection, member non-inheritance, revoke-all, and audit remain follow-up coverage. | Pending machine-auth/session binding: allowed/denied calls, proof replay, and approval/resume binding.            |
+| Cloudflare | Pending worker account adapter; the default dev-auth target is insufficient to claim Access-managed issuance or member behavior.                                                                              | Explicitly skipped until a local Access-compatible issuer exists; never use a live tenant.                        |
+
+Run the target suite from this directory with the narrowest target while the
+delegated scenario is enabled in that target's configuration:
+
+```sh
+bun run test:cloud
+bun run test:selfhost
+bun run test:cloudflare
+```
+
+The self-host delegated issuance journey is opt-in and runs as a narrow
+scenario after its generated host route and adapter are enabled:
+
+```sh
+EXECUTOR_DELEGATED_CREDENTIAL_ISSUANCE=true \
+  bun run test:selfhost -- selfhost/delegated-credentials.test.ts
+```
+
+The local archive-safety checks do not boot a host or contact a provider:
+
+```sh
+bun run test:local -- local/trace-redaction.test.ts
+```
+
+Set `TMPDIR` to any writable temporary directory when the host environment
+requires an explicit location.
+
+Each run writes `runs/<target>/<slug>/result.json` relative to `e2e/` (the
+repository path is `e2e/runs/<target>/<slug>/result.json`). Browser coverage
+also writes `trace.zip`, `session.mp4`, and step screenshots. Build and serve the
+browsable matrix with `bun run viewer:build` followed by `bun run serve`; the
+run page links to the trace viewer. Check the trace and request ledger before
+sharing evidence. Authorization headers, issued keys, proof material, and
+credential bodies must be redacted or absent from captured artifacts.
+When a test receives a one-time key, call the browser session's `redact` hook
+for the in-memory value before the session closes. That rewrites textual trace
+entries and request or response metadata; binary screenshots and video remain
+byte-identical. Keep the value out of the DOM, screenshots, video, result JSON,
+and logs as well.
+The published emulator's local request ledger also redacts authorization
+headers and sensitive credential fields; delegated scenarios check that its
+serialized entries contain none of the machine secret, provider secret, or
+proof nonce.
+
+If a browser assertion must inspect the one-time value itself, open a separate
+`browser.session(identity, drive, { sensitive: true })`. That opt-in session
+does not start Playwright tracing or video and does not save screenshots. Keep
+the assertion in memory, then use a normal session for the masked listing and
+the post-issuance browser journey.
+
 ## Telemetry scenarios (cloud)
 
 The suite boots a motel OTLP store and points the target's real exporter at

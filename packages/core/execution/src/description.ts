@@ -19,11 +19,27 @@ export const INTEGRATION_INVENTORY_HEADER = "## Available integrations";
 
 export const buildExecuteDescription = (executor: Executor): Effect.Effect<string> =>
   Effect.gen(function* () {
-    const connections: readonly Connection[] = yield* executor.connections.list().pipe(
-      // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ExecutionEngine.getDescription currently exposes no error channel; engine typed-error widening is covered separately
-      Effect.orDie,
-      Effect.withSpan("executor.connections.list"),
-    );
+    // Delegated executors cannot enumerate connections: that is a management
+    // surface, and the grant's live scope intentionally denies it. Discovery
+    // still has a narrow catalog projection, so derive the inventory from the
+    // already grant-filtered tools list. A grant without discovery receives the
+    // generic description and never probes either catalog surface.
+    const delegatedDiscovery =
+      executor.delegation !== undefined && executor.delegation.scope.actions.includes("discover");
+    const connections: readonly Connection[] = executor.delegation
+      ? []
+      : yield* executor.connections.list().pipe(
+          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ExecutionEngine.getDescription currently exposes no error channel; engine typed-error widening is covered separately
+          Effect.orDie,
+          Effect.withSpan("executor.connections.list"),
+        );
+    const delegatedTools = delegatedDiscovery
+      ? yield* executor.tools.list().pipe(
+          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: ExecutionEngine.getDescription currently exposes no error channel; engine typed-error widening is covered separately
+          Effect.orDie,
+          Effect.withSpan("executor.tools.list"),
+        )
+      : [];
 
     const description = yield* Effect.sync(() => {
       const lines = [
@@ -31,7 +47,9 @@ export const buildExecuteDescription = (executor: Executor): Effect.Effect<strin
         "",
         'Before writing code, call `skills({ name: "execute" })` for the workflow on how to use this tool.',
       ];
-      const inventory = formatIntegrationInventory(connections);
+      const inventory = executor.delegation
+        ? formatIntegrationInventory(delegatedTools)
+        : formatIntegrationInventory(connections);
       if (inventory.length > 0) {
         lines.push("");
         lines.push(inventory);
@@ -96,9 +114,11 @@ export const parseIntegrationInventory = (description: string): readonly string[
   return slugs;
 };
 
-const formatIntegrationInventory = (connections: readonly Connection[]): string => {
-  const slugs = [...new Set(connections.map((connection) => String(connection.integration)))].sort(
-    (a, b) => a.localeCompare(b),
+const formatIntegrationInventory = (
+  entries: readonly { readonly integration: unknown }[],
+): string => {
+  const slugs = [...new Set(entries.map((entry) => String(entry.integration)))].sort((a, b) =>
+    a.localeCompare(b),
   );
   if (slugs.length === 0) return "";
   const shown = slugs.slice(0, INVENTORY_LIMIT);

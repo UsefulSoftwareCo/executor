@@ -148,6 +148,20 @@
       "when": 1789575639971,
       "tag": "0020_workos_sync_drained_at",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792462467039,
+      "tag": "0021_funny_tombstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792465038054,
+      "tag": "0022_mature_exodus",
+      "breakpoints": true
     }
   ]
 }

@@ -28,7 +28,7 @@ import { Effect } from "effect";
 import { withQueryContext, type Condition, type ConditionBuilder } from "@executor-js/fumadb/query";
 import type { AnyColumn } from "@executor-js/fumadb/schema";
 
-import { makeFumaClient, type FumaDb } from "./fuma-runtime";
+import { makeFumaClient, type FumaDb, type StorageFailure } from "./fuma-runtime";
 import type { ExecutorOwnerPolicyContext } from "./owner-policy";
 
 type AnyCb = ConditionBuilder<Record<string, AnyColumn>>;
@@ -106,6 +106,162 @@ export interface TouchSubjectInput {
    *  sides of the throttle; production callers take the default. */
   readonly lastSeenThrottleMs?: number;
 }
+
+export const VERIFIED_HUMAN_SUBJECT_STATUS = "verified-human";
+/**
+ * A revoked human is deliberately represented by a durable tombstone. A
+ * later browser sighting can prove that the subject exists, but it must not
+ * silently re-enable delegation after an operator offboards the account.
+ */
+export const REVOKED_HUMAN_SUBJECT_STATUS = "delegation-revoked";
+
+/**
+ * Small persistent seam for hosts that keep their authoritative membership
+ * directory outside the SDK. Hosts may wrap this with their membership read;
+ * an absent or non-verified row always returns false.
+ */
+export interface VerifiedHumanSubjectRegistry {
+  readonly isVerifiedHuman: (input: {
+    readonly tenant: string;
+    readonly subject: string;
+  }) => Effect.Effect<boolean, StorageFailure>;
+  readonly markVerifiedHuman: (input: {
+    readonly tenant: string;
+    readonly subject: string;
+  }) => Effect.Effect<void, StorageFailure>;
+  readonly revokeVerifiedHuman: (input: {
+    readonly tenant: string;
+    readonly subject: string;
+  }) => Effect.Effect<void, StorageFailure>;
+}
+
+/** Build the SDK's persistent registry seam. The caller remains responsible
+ * for proving the human before calling markVerifiedHuman. */
+export const makeVerifiedHumanSubjectRegistry = (db: FumaDb<any>): VerifiedHumanSubjectRegistry => {
+  const lookup = (input: { readonly tenant: string; readonly subject: string }) =>
+    makeFumaClient(
+      withQueryContext(db, {
+        tenant: input.tenant,
+        subject: null,
+      } satisfies ExecutorOwnerPolicyContext),
+    );
+  const where =
+    (input: { readonly tenant: string; readonly subject: string }) =>
+    (builder: AnyCb): Condition | boolean =>
+      builder.and(builder("tenant", "=", input.tenant), builder("external_id", "=", input.subject));
+  const writableWhere =
+    (input: { readonly tenant: string; readonly subject: string }) =>
+    (builder: AnyCb): Condition | boolean =>
+      builder.and(
+        where(input)(builder),
+        // SQL NULL does not satisfy `!=`, so explicitly include the ordinary
+        // sighting state as well as any non-revoked lifecycle value.
+        builder.or(builder.isNull("status"), builder("status", "!=", REVOKED_HUMAN_SUBJECT_STATUS)),
+      );
+  const isVerifiedHuman = (input: { readonly tenant: string; readonly subject: string }) =>
+    lookup(input)
+      .use("subject.verifiedHuman.get", (query) =>
+        asLooseSubjectDb(query).findFirst("subject", { where: where(input) }),
+      )
+      .pipe(Effect.map((row) => row?.["status"] === VERIFIED_HUMAN_SUBJECT_STATUS));
+  const markVerifiedHuman = (input: { readonly tenant: string; readonly subject: string }) =>
+    Effect.gen(function* () {
+      const fuma = lookup(input);
+      const existing = yield* fuma.use("subject.verifiedHuman.get", (query) =>
+        asLooseSubjectDb(query).findFirst("subject", { where: where(input) }),
+      );
+      if (existing?.["status"] === REVOKED_HUMAN_SUBJECT_STATUS) return;
+
+      if (existing) {
+        // The lifecycle predicate makes this a no-op if a revoke wins a race
+        // between the read and this update. The reread also makes that race
+        // explicit for drivers whose updateMany does not return a row count.
+        yield* fuma.use("subject.verifiedHuman.set", (query) =>
+          asLooseSubjectDb(query).updateMany("subject", {
+            where: writableWhere(input),
+            set: { status: VERIFIED_HUMAN_SUBJECT_STATUS },
+          }),
+        );
+        const after = yield* fuma.use("subject.verifiedHuman.get", (query) =>
+          asLooseSubjectDb(query).findFirst("subject", { where: where(input) }),
+        );
+        if (after?.["status"] === REVOKED_HUMAN_SUBJECT_STATUS) return;
+        return;
+      }
+
+      // Account flows can reach the verified browser boundary before the
+      // request sighting seam has created a subject row. Upsert here so that
+      // direct account management does not remain permanently unverified.
+      yield* fuma
+        .use("subject.verifiedHuman.create", (query) =>
+          asLooseSubjectDb(query).create("subject", {
+            tenant: input.tenant,
+            external_id: input.subject,
+            created_at: new Date(),
+            last_seen_at: null,
+            status: VERIFIED_HUMAN_SUBJECT_STATUS,
+          }),
+        )
+        .pipe(
+          // A concurrent revoke may create the tombstone first. In that case
+          // the guarded update below observes the tombstone and leaves it in
+          // place; a concurrent sighting may likewise win the insert race.
+          Effect.catchTag("UniqueViolationError", () =>
+            fuma.use("subject.verifiedHuman.set", (query) =>
+              asLooseSubjectDb(query).updateMany("subject", {
+                where: writableWhere(input),
+                set: { status: VERIFIED_HUMAN_SUBJECT_STATUS },
+              }),
+            ),
+          ),
+        );
+    });
+
+  const revokeVerifiedHuman = (input: { readonly tenant: string; readonly subject: string }) =>
+    Effect.gen(function* () {
+      const fuma = lookup(input);
+      const existing = yield* fuma.use("subject.verifiedHuman.get", (query) =>
+        asLooseSubjectDb(query).findFirst("subject", { where: where(input) }),
+      );
+      if (existing?.["status"] === REVOKED_HUMAN_SUBJECT_STATUS) return;
+
+      if (existing) {
+        yield* fuma.use("subject.verifiedHuman.revoke", (query) =>
+          asLooseSubjectDb(query).updateMany("subject", {
+            where: where(input),
+            set: { status: REVOKED_HUMAN_SUBJECT_STATUS },
+          }),
+        );
+        return;
+      }
+
+      yield* fuma
+        .use("subject.verifiedHuman.createRevocation", (query) =>
+          asLooseSubjectDb(query).create("subject", {
+            tenant: input.tenant,
+            external_id: input.subject,
+            created_at: new Date(),
+            last_seen_at: null,
+            status: REVOKED_HUMAN_SUBJECT_STATUS,
+          }),
+        )
+        .pipe(
+          Effect.catchTag("UniqueViolationError", () =>
+            fuma.use("subject.verifiedHuman.revoke", (query) =>
+              asLooseSubjectDb(query).updateMany("subject", {
+                where: where(input),
+                set: { status: REVOKED_HUMAN_SUBJECT_STATUS },
+              }),
+            ),
+          ),
+        );
+    });
+  return {
+    isVerifiedHuman,
+    markVerifiedHuman,
+    revokeVerifiedHuman,
+  };
+};
 
 /**
  * Record that `externalId` was seen under `tenant`: create the row on first

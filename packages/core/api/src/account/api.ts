@@ -46,6 +46,18 @@ export class AccountUnauthorized extends Schema.TaggedErrorClass<AccountUnauthor
   { httpApiStatus: 401 },
 ) {}
 
+export class AccountBadRequest extends Schema.TaggedErrorClass<AccountBadRequest>()(
+  "AccountBadRequest",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
+) {}
+
+export class AccountConflict extends Schema.TaggedErrorClass<AccountConflict>()(
+  "AccountConflict",
+  { message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
 // ── Shared shapes ────────────────────────────────────────────────────────────
 
 export const AccountUser = Schema.Struct({
@@ -176,8 +188,264 @@ export const SuccessResponse = Schema.Struct({
   success: Schema.Boolean,
 });
 
+// ── Delegated credentials ──────────────────────────────────────────────────
+//
+// A delegated credential is deliberately represented as a grant plus a
+// provider reference. The API never returns an external client secret, and a
+// local key's plaintext value is only present in the create/rotate response.
+// `scope` is the exact membership snapshot the operator consented to; hosts
+// must not silently widen it while resolving a request.
+
+export const DelegationScope = Schema.Struct({
+  /** Closed v1 actions. Discovery covers catalog/schema; invocation covers
+   * approval/resume for an already-authorized execution. Management is never
+   * consentable. */
+  scopes: Schema.Array(Schema.Literals(["discover", "invoke"])),
+  toolkitIds: Schema.Array(Schema.String),
+  /** Omitted means frozen toolkit membership; [] denies all connections. */
+  connectionIds: Schema.optional(Schema.Array(Schema.String)),
+});
+
+export const DelegationTarget = Schema.Struct({
+  id: Schema.String,
+  email: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  isCurrentUser: Schema.Boolean,
+  status: Schema.Literals(["verified", "suspended", "removed"]),
+});
+
+export const DelegationTargetSelector = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("self") }),
+  Schema.Struct({ kind: Schema.Literal("verified-human"), id: Schema.String }),
+]);
+
+export const DelegationCredentialReference = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("local-key"), prefix: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("external"),
+    adapter: Schema.String,
+    /** Masked provider reference; never a raw secret or full binding tuple. */
+    reference: Schema.String,
+  }),
+]);
+
+export const DelegationLifecycle = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("active"),
+    expiresAt: Schema.String,
+    revokedAt: Schema.NullOr(Schema.String),
+    revokeReason: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    status: Schema.Literals(["expired", "revoked"]),
+    expiresAt: Schema.String,
+    revokedAt: Schema.NullOr(Schema.String),
+    revokeReason: Schema.NullOr(Schema.String),
+  }),
+]);
+
+/** Audit actors are separate from grant targets: an administrator can create
+ * a grant for another human, and a machine actor must retain its own kind. */
+export const DelegationActor = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("human"),
+    id: Schema.String,
+    email: Schema.String,
+    name: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("machine"),
+    adapter: Schema.String,
+    reference: Schema.String,
+  }),
+]);
+
+export const DelegationNotification = Schema.Struct({
+  id: Schema.String,
+  target: DelegationTarget,
+  title: Schema.String,
+  message: Schema.String,
+  createdAt: Schema.String,
+  readAt: Schema.NullOr(Schema.String),
+});
+
+export const DelegationDelivery = Schema.Struct({
+  status: Schema.Literals(["queued", "sent", "unavailable", "failed"]),
+  channel: Schema.NullOr(Schema.String),
+  occurredAt: Schema.NullOr(Schema.String),
+});
+
+export const DelegatedCredentialSummary = Schema.Struct({
+  id: Schema.String,
+  grantId: Schema.String,
+  label: Schema.String,
+  credentialKind: Schema.Literals(["local-key", "external"]),
+  reference: DelegationCredentialReference,
+  target: DelegationTarget,
+  scope: DelegationScope,
+  lifecycle: DelegationLifecycle,
+  createdAt: Schema.String,
+  createdBy: DelegationActor,
+  lastUsedAt: Schema.NullOr(Schema.String),
+  supportsRotation: Schema.Boolean,
+  notification: Schema.NullOr(DelegationDelivery),
+});
+
+export const DelegationCapabilities = Schema.Struct({
+  issuanceEnabled: Schema.Boolean,
+  localKeysEnabled: Schema.Boolean,
+  externalAdapters: Schema.Array(Schema.String),
+  canFilterTargets: Schema.Boolean,
+});
+
+export const DelegatedCredentialsResponse = Schema.Struct({
+  credentials: Schema.Array(DelegatedCredentialSummary),
+  nextCursor: Schema.NullOr(Schema.String),
+  capabilities: DelegationCapabilities,
+  notifications: Schema.Array(DelegationNotification),
+});
+
+export const DelegatedTargetsResponse = Schema.Struct({
+  targets: Schema.Array(DelegationTarget),
+});
+
+/** Human-readable, target-scoped choices for an exact delegation snapshot.
+ * IDs are stable executor IDs/addresses; labels are display-only and never
+ * accepted as authorization input. */
+export const DelegationScopeConnectionOption = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  description: Schema.NullOr(Schema.String),
+  toolkitIds: Schema.Array(Schema.String),
+});
+
+export const DelegationScopeToolkitOption = Schema.Struct({
+  id: Schema.String,
+  slug: Schema.String,
+  name: Schema.String,
+});
+
+export const DelegationScopeOptionsResponse = Schema.Struct({
+  actions: Schema.Array(Schema.Literals(["discover", "invoke"])),
+  toolkits: Schema.Array(DelegationScopeToolkitOption),
+  connections: Schema.Array(DelegationScopeConnectionOption),
+  /** The host's effective maximum, including operator configuration. */
+  maxExpiresAt: Schema.String,
+});
+
+export const CreateDelegatedKeyBody = Schema.Struct({
+  label: Schema.String,
+  target: DelegationTargetSelector,
+  scope: DelegationScope,
+  expiresAt: Schema.String,
+});
+
+export const CreatedDelegatedKeyResponse = Schema.Struct({
+  credential: DelegatedCredentialSummary,
+  /** One-time local key value. Never populated for an external credential. */
+  value: Schema.String,
+});
+
+export const StartDelegationChallengeBody = Schema.Struct({
+  adapter: Schema.String,
+  label: Schema.String,
+  target: DelegationTargetSelector,
+  scope: DelegationScope,
+  expiresAt: Schema.String,
+});
+
+export const DelegationChallengeResponse = Schema.Struct({
+  id: Schema.String,
+  /** One-time challenge nonce. It is not a credential secret; the machine
+   * must still authenticate through the host adapter when presenting it. */
+  nonce: Schema.String,
+  status: Schema.Literals(["awaiting-proof", "proof-complete", "consented", "expired"]),
+  expiresAt: Schema.String,
+  adapter: Schema.String,
+  target: DelegationTargetSelector,
+  scope: DelegationScope,
+  label: Schema.String,
+  instructions: Schema.NullOr(Schema.String),
+  /** The masked machine identity that proved possession, before final human
+   * consent creates the durable credential. */
+  provenCredential: Schema.NullOr(DelegationCredentialReference),
+  credential: Schema.NullOr(DelegatedCredentialSummary),
+});
+
+/** Provider-specific proof metadata. Possession is established from the
+ * authenticated request; this body is intentionally not a client-id
+ * registration or a place to submit a raw secret. */
+export const CompleteDelegationProofBody = Schema.Struct({
+  nonce: Schema.String,
+  proofType: Schema.String,
+});
+
+export const ConsentDelegationBody = Schema.Struct({
+  scope: DelegationScope,
+  expiresAt: Schema.String,
+});
+
+export const RotateDelegatedKeyResponse = Schema.Struct({
+  credential: DelegatedCredentialSummary,
+  value: Schema.String,
+});
+
+export const RevokeAllDelegatedCredentialsBody = Schema.Struct({
+  target: DelegationTargetSelector,
+  /** Explicit operator action that disables future delegations for the target.
+   * Ordinary revoke-all keeps the target eligible for later consent. */
+  disableTarget: Schema.optional(Schema.Boolean),
+});
+
+export const RevokeAllDelegatedCredentialsResponse = Schema.Struct({
+  revokedCount: Schema.Number,
+});
+
+export const DelegationAuditEvent = Schema.Struct({
+  id: Schema.String,
+  grantId: Schema.NullOr(Schema.String),
+  credentialId: Schema.NullOr(Schema.String),
+  actor: DelegationActor,
+  effectiveTarget: DelegationTarget,
+  action: Schema.String,
+  outcome: Schema.String,
+  tool: Schema.NullOr(Schema.String),
+  requestId: Schema.NullOr(Schema.String),
+  executionId: Schema.NullOr(Schema.String),
+  occurredAt: Schema.String,
+});
+
+export const DelegationAuditResponse = Schema.Struct({
+  events: Schema.Array(DelegationAuditEvent),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+
+export const DelegatedCredentialsQuery = Schema.Struct({
+  targetId: Schema.optional(Schema.String),
+  includeRevoked: Schema.optional(Schema.Literals(["true", "false"])),
+  cursor: Schema.optional(Schema.String),
+});
+
+export const DelegationScopeOptionsQuery = Schema.Struct({
+  targetId: Schema.optional(Schema.String),
+});
+
+export const DelegationAuditQuery = Schema.Struct({
+  targetId: Schema.optional(Schema.String),
+  credentialId: Schema.optional(Schema.String),
+  cursor: Schema.optional(Schema.String),
+});
+
+export const DelegationNotificationsResponse = Schema.Struct({
+  notifications: Schema.Array(DelegationNotification),
+});
+
+export const DelegationNotificationParams = { notificationId: Schema.String };
+
 const ApiKeyParams = { apiKeyId: Schema.String };
 const MembershipParams = { membershipId: Schema.String };
+const DelegationCredentialParams = { credentialId: Schema.String };
+const DelegationChallengeParams = { challengeId: Schema.String };
 
 // ── Group ────────────────────────────────────────────────────────────────────
 
@@ -277,6 +545,257 @@ export const AccountApi = HttpApiGroup.make("account")
       payload: UpdateOrgNameBody,
       success: UpdateOrgNameResponse,
       error: [AccountError, AccountUnauthorized, AccountForbidden, AccountNoOrganization],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listDelegatedCredentials", "/account/delegated-credentials", {
+      query: DelegatedCredentialsQuery,
+      success: DelegatedCredentialsResponse,
+      error: [
+        AccountError,
+        AccountUnauthorized,
+        AccountForbidden,
+        AccountNoOrganization,
+        AccountBadRequest,
+        AccountConflict,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("listDelegationTargets", "/account/delegated-credentials/targets", {
+      success: DelegatedTargetsResponse,
+      error: [
+        AccountError,
+        AccountUnauthorized,
+        AccountForbidden,
+        AccountNoOrganization,
+        AccountBadRequest,
+        AccountConflict,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "listDelegationScopeOptions",
+      "/account/delegated-credentials/scope-options",
+      {
+        query: DelegationScopeOptionsQuery,
+        success: DelegationScopeOptionsResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "listDelegationNotifications",
+      "/account/delegated-credentials/notifications",
+      {
+        success: DelegationNotificationsResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "markDelegationNotificationRead",
+      "/account/delegated-credentials/notifications/:notificationId/read",
+      {
+        params: DelegationNotificationParams,
+        success: SuccessResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post("createDelegatedKey", "/account/delegated-credentials/keys", {
+      payload: CreateDelegatedKeyBody,
+      success: CreatedDelegatedKeyResponse,
+      error: [
+        AccountError,
+        AccountUnauthorized,
+        AccountForbidden,
+        AccountNoOrganization,
+        AccountBadRequest,
+        AccountConflict,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("startDelegationChallenge", "/account/delegated-credentials/challenges", {
+      payload: StartDelegationChallengeBody,
+      success: DelegationChallengeResponse,
+      error: [
+        AccountError,
+        AccountUnauthorized,
+        AccountForbidden,
+        AccountNoOrganization,
+        AccountBadRequest,
+        AccountConflict,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get(
+      "getDelegationChallenge",
+      "/account/delegated-credentials/challenges/:challengeId",
+      {
+        params: DelegationChallengeParams,
+        success: DelegationChallengeResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "completeDelegationProof",
+      "/account/delegated-credentials/challenges/:challengeId/proof",
+      {
+        params: DelegationChallengeParams,
+        payload: CompleteDelegationProofBody,
+        success: DelegationChallengeResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "consentDelegationChallenge",
+      "/account/delegated-credentials/challenges/:challengeId/consent",
+      {
+        params: DelegationChallengeParams,
+        payload: ConsentDelegationBody,
+        success: DelegationChallengeResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "consentDelegatedCredential",
+      "/account/delegated-credentials/:credentialId/consent",
+      {
+        params: DelegationCredentialParams,
+        payload: ConsentDelegationBody,
+        success: DelegatedCredentialSummary,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "rotateDelegatedKey",
+      "/account/delegated-credentials/:credentialId/rotate",
+      {
+        params: DelegationCredentialParams,
+        success: RotateDelegatedKeyResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.delete(
+      "revokeDelegatedCredential",
+      "/account/delegated-credentials/:credentialId",
+      {
+        params: DelegationCredentialParams,
+        success: SuccessResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.post(
+      "revokeAllDelegatedCredentials",
+      "/account/delegated-credentials/revoke-all",
+      {
+        payload: RevokeAllDelegatedCredentialsBody,
+        success: RevokeAllDelegatedCredentialsResponse,
+        error: [
+          AccountError,
+          AccountUnauthorized,
+          AccountForbidden,
+          AccountNoOrganization,
+          AccountBadRequest,
+          AccountConflict,
+        ],
+      },
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("listDelegationAudit", "/account/delegated-credentials/audit", {
+      query: DelegationAuditQuery,
+      success: DelegationAuditResponse,
+      error: [
+        AccountError,
+        AccountUnauthorized,
+        AccountForbidden,
+        AccountNoOrganization,
+        AccountBadRequest,
+        AccountConflict,
+      ],
     }),
   );
 

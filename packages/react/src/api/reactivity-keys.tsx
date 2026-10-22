@@ -45,6 +45,9 @@ export const ReactivityKey = {
    *  writes), so nothing invalidates it — it exists so the pages refresh
    *  together and so a future lifecycle mutation has a key to publish. */
   adminUsers: "admin:users",
+  /** Delegated credential grants, proof challenges, and lifecycle changes. */
+  delegatedCredentials: "delegated:credentials",
+  delegationAudit: "delegated:audit",
 } as const;
 
 /** Mutations that add/remove/refresh an integration also affect tool listings. */
@@ -102,3 +105,5 @@ export const authWriteKeys = [
   ReactivityKey.orgMembers,
   ReactivityKey.orgDomains,
 ] as const;
+
+export const delegatedCredentialWriteKeys = [ReactivityKey.delegatedCredentials] as const;

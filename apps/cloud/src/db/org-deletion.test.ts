@@ -32,6 +32,10 @@ import {
   artifact,
   blob,
   connection,
+  credential_delegation,
+  delegation_audit,
+  delegation_challenge,
+  delegation_notification,
   definition,
   integration,
   oauth_client,
@@ -159,6 +163,60 @@ const seedTenant = async (db: DrizzleDb, tenant: string, tag: string) => {
     subject: "s",
   });
 
+  await db.insert(credential_delegation).values({
+    id: `grant-${tag}`,
+    label: "seed grant",
+    created_by: "user-owner",
+    credential_id: `credential-${tag}`,
+    credential_kind: "external",
+    adapter: "test",
+    issuer: "https://issuer.test",
+    audience: tenant,
+    credential_subject: "user-owner",
+    credential_ref: `ref-${tag}`,
+    actor_subject: "machine:test",
+    effective_subject: "user-owner",
+    toolkit_membership: [],
+    scope: { actions: [], toolkitMembership: [], toolAddresses: [] },
+    scope_version: "1",
+    expires_at: BigInt(now.getTime() + 60_000),
+    created_at: now,
+    tenant,
+  });
+  await db.insert(delegation_challenge).values({
+    id: `challenge-${tag}`,
+    created_by: "user-owner",
+    label: "seed challenge",
+    adapter: "test",
+    effective_subject: "user-owner",
+    scope: { actions: [], toolkitMembership: [], toolAddresses: [] },
+    proof_hash: `hash-${tag}`,
+    expires_at: BigInt(now.getTime() + 60_000),
+    grant_expires_at: BigInt(now.getTime() + 60_000),
+    created_at: now,
+    tenant,
+  });
+  await db.insert(delegation_audit).values({
+    id: `audit-${tag}`,
+    actor_subject: "user-owner",
+    effective_subject: "user-owner",
+    action: "created",
+    outcome: "created",
+    occurred_at: now,
+    tenant,
+  });
+  await db.insert(delegation_notification).values({
+    id: `notice-${tag}`,
+    grant_id: `grant-${tag}`,
+    credential_id: `credential-${tag}`,
+    created_by: "user-owner",
+    target_subject: "user-owner",
+    label: "seed grant",
+    credential_kind: "external",
+    created_at: now,
+    tenant,
+  });
+
   const orgNs = `o:${tenant}/plugin`;
   const userNs = `u:${tenant}:subject/plugin`;
   await db.insert(blob).values({
@@ -186,6 +244,10 @@ const TENANT_TABLES = [
   plugin_storage,
   subject,
   artifact,
+  credential_delegation,
+  delegation_challenge,
+  delegation_audit,
+  delegation_notification,
 ] as const;
 
 // Tables that are NOT purged by org id, each with the reason it is exempt. Any

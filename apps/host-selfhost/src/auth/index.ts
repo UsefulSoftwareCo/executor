@@ -1,17 +1,18 @@
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 
 import { IdentityProvider, MemberDirectory } from "@executor-js/api/server";
 
 import { loadConfig } from "../config";
 import type { SelfHostDbHandle } from "../db/self-host-db";
 import { BetterAuth, buildBetterAuth, type BetterAuthHandle } from "./better-auth";
-import { betterAuthIdentityLayer } from "./identity";
+import { makeBetterAuthDelegatingIdentityLayer } from "./identity";
 import { betterAuthMemberDirectoryLayer } from "./member-directory";
 import { consentRedirectClientId, withClientName, withForcedMcpConsent } from "./force-mcp-consent";
 import { rewriteInvalidOrigin } from "./invalid-origin-help";
+import { classifySelfHostDelegatedBoundary } from "./delegated-boundary";
 
 export { BetterAuth, buildBetterAuth, type BetterAuthHandle } from "./better-auth";
-export { betterAuthIdentityLayer } from "./identity";
+export { makeBetterAuthDelegatingIdentityLayer } from "./identity";
 export { betterAuthMemberDirectoryLayer } from "./member-directory";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,17 @@ export const resolveAuthProviders = async (
   // resulting consent redirect with the registered client name.
   const config = loadConfig();
   const authHandler = async (request: Request): Promise<Response> => {
+    const delegatedBoundary = await Effect.runPromise(
+      classifySelfHostDelegatedBoundary(dbHandle, betterAuth, config, request.headers).pipe(
+        Effect.orElseSucceed(() => "denied" as const),
+      ),
+    );
+    if (delegatedBoundary !== "unmapped") {
+      return new Response(
+        JSON.stringify({ error: "Delegated credentials cannot access auth routes" }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      );
+    }
     const response = await betterAuth.handler(withForcedMcpConsent(request));
     // Turn Better Auth's bare 403 "Invalid origin" into a setup instruction —
     // on a fresh deploy it almost always means the public URL needs configuring.
@@ -83,7 +95,9 @@ export const resolveAuthProviders = async (
   };
 
   return {
-    identityLayer: betterAuthIdentityLayer.pipe(Layer.provide(betterAuthLayer)),
+    identityLayer: makeBetterAuthDelegatingIdentityLayer(dbHandle, config).pipe(
+      Layer.provide(betterAuthLayer),
+    ),
     memberDirectoryLayer: betterAuthMemberDirectoryLayer.pipe(Layer.provide(betterAuthLayer)),
     authHandler,
     betterAuth,

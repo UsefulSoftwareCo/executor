@@ -30,7 +30,9 @@ import { makeAssetsShellHtmlLoader } from "@executor-js/mcp-apps-shell/worker";
 import { smokeRenderArtifact } from "@executor-js/mcp-apps-shell/smoke-render";
 import {
   McpAgentSessionDOBase,
+  McpDelegationUnavailableError,
   type BuiltMcpServer,
+  type McpApprovalPrincipal,
   type IncomingTraceHeaders,
   type McpApprovalOwner,
   type McpModelResumeCaller,
@@ -49,6 +51,18 @@ import {
   parseIntegrationInventory,
   type ResumeResponse,
 } from "@executor-js/execution";
+import {
+  collectTables,
+  CredentialId,
+  DelegationId,
+  DelegationScopeVersion,
+  Subject,
+  Tenant,
+  type DelegationBinding,
+  type DelegationCapability,
+  type DelegationService,
+} from "@executor-js/sdk";
+import type { McpDelegationBinding } from "@executor-js/cloudflare/mcp/do-headers";
 import { acquireBuildSlot, type BuildSlotHandle } from "./session-build-semaphore";
 
 // The DO meters executions just like the HTTP `/api/*` plane: it builds its
@@ -64,6 +78,10 @@ import { acquireBuildSlot, type BuildSlotHandle } from "./session-build-semaphor
 // `SessionAuthLive` instead.)
 import { CoreSharedServices } from "../auth/workos";
 import { UserStoreService } from "../auth/context";
+import { ApiKeyService } from "../auth/api-keys";
+import { makeMemberDirectoryLayer } from "../auth/member-directory";
+import { MemberDirectory } from "@executor-js/api/server";
+import { makeCloudDelegationService } from "../auth/delegation";
 import { resolveSessionMetaForToken } from "./session-meta";
 import {
   DbService,
@@ -72,6 +90,7 @@ import {
   type DrizzleDb,
   type DbServiceShape,
 } from "../db/db";
+import { CLOUD_NAMESPACE, createDrizzleFumaDb } from "../db/fuma";
 import { AutumnService } from "../extensions/billing/service";
 import { DoTelemetryLive, flushTracerProvider } from "../observability/telemetry";
 import {
@@ -157,7 +176,14 @@ const makeEphemeralDb = (): CloudSessionDbHandle =>
 const makeSessionServices = (dbHandle: CloudSessionDbHandle) => {
   const DbLive = Layer.succeed(DbService)({ sql: dbHandle.sql, db: dbHandle.db });
   const UserStoreLive = UserStoreService.Live.pipe(Layer.provide(DbLive));
-  return Layer.mergeAll(DbLive, UserStoreLive, CoreSharedServices);
+  const MemberDirectoryLive = makeMemberDirectoryLayer().pipe(Layer.provide(DbLive));
+  const ApiKeyLive = ApiKeyService.WorkOS.pipe(
+    Layer.provide(CoreSharedServices),
+    Layer.catchCause(() =>
+      Layer.effect(ApiKeyService)(Effect.fail(new McpDelegationUnavailableError())),
+    ),
+  );
+  return Layer.mergeAll(DbLive, UserStoreLive, MemberDirectoryLive, ApiKeyLive, CoreSharedServices);
 };
 
 // The `ui://executor/shell.html` resource, over the ASSETS binding: the
@@ -258,6 +284,113 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
     });
   }
 
+  private delegationBinding(binding: McpDelegationBinding): DelegationBinding {
+    return {
+      tenant: Tenant.make(binding.tenant),
+      grantId: DelegationId.make(binding.grantId),
+      credentialId: CredentialId.make(binding.credentialId),
+      credentialRef: binding.credentialRef,
+      actorSubject: Subject.make(binding.actorSubject),
+      effectiveSubject: Subject.make(binding.effectiveSubject),
+      scopeVersion: DelegationScopeVersion.make(binding.scopeVersion),
+    };
+  }
+
+  private delegationService(
+    dbHandle: CloudSessionDbHandle,
+    tenant: string,
+  ): Effect.Effect<DelegationService, never, MemberDirectory | ApiKeyService> {
+    return Effect.gen(function* () {
+      const directory = yield* MemberDirectory;
+      const apiKeys = yield* ApiKeyService;
+      const fuma = createDrizzleFumaDb({
+        db: dbHandle.db,
+        tables: collectTables(),
+        namespace: CLOUD_NAMESPACE,
+        provider: "postgresql",
+      });
+      return makeCloudDelegationService({
+        db: fuma.db,
+        tenant,
+        directory,
+        apiKeys,
+        issuanceEnabled: env.DELEGATED_ISSUANCE_ENABLED === "true",
+      });
+    });
+  }
+
+  private resolveDelegation(
+    binding: McpDelegationBinding,
+    dbHandle: CloudSessionDbHandle,
+  ): Effect.Effect<
+    import("@executor-js/sdk").DelegationGrant,
+    unknown,
+    MemberDirectory | ApiKeyService
+  > {
+    return this.delegationService(dbHandle, binding.tenant).pipe(
+      Effect.flatMap((service) => service.resolveBinding(this.delegationBinding(binding))),
+    );
+  }
+
+  protected override revalidateDelegation(
+    binding: McpDelegationBinding,
+    capability: DelegationCapability,
+  ): Effect.Effect<void, McpDelegationUnavailableError> {
+    return Effect.acquireUseRelease(
+      Effect.try({
+        try: () => this.openSessionDb(),
+        catch: () => new McpDelegationUnavailableError(),
+      }),
+      (dbHandle) =>
+        this.resolveDelegation(binding, dbHandle).pipe(
+          Effect.flatMap((grant) =>
+            this.delegationService(dbHandle, binding.tenant).pipe(
+              Effect.flatMap((service) => service.revalidate(grant, capability)),
+            ),
+          ),
+          Effect.provide(makeSessionServices(dbHandle)),
+          Effect.mapError(() => new McpDelegationUnavailableError()),
+        ),
+      (dbHandle) => Effect.promise(() => dbHandle.end()).pipe(Effect.ignore),
+    );
+  }
+
+  protected override auditBrowserApproval(
+    binding: McpDelegationBinding | undefined,
+    approver: McpApprovalPrincipal,
+    executionId: string,
+    response: ResumeResponse,
+  ): Effect.Effect<void, McpDelegationUnavailableError> {
+    if (binding === undefined) return Effect.void;
+    return Effect.acquireUseRelease(
+      Effect.try({
+        try: () => this.openSessionDb(),
+        catch: () => new McpDelegationUnavailableError(),
+      }),
+      (dbHandle) =>
+        this.resolveDelegation(binding, dbHandle).pipe(
+          Effect.flatMap((grant) =>
+            this.delegationService(dbHandle, binding.tenant).pipe(
+              Effect.flatMap((service) =>
+                service.audit({
+                  grantId: grant.grantId,
+                  credentialId: grant.credentialId,
+                  actorSubject: Subject.make(approver.accountId),
+                  effectiveSubject: grant.effectiveSubject,
+                  action: "approval",
+                  outcome: response.action === "accept" ? "allowed" : "denied",
+                  executionId,
+                }),
+              ),
+            ),
+          ),
+          Effect.provide(makeSessionServices(dbHandle)),
+          Effect.mapError(() => new McpDelegationUnavailableError()),
+        ),
+      (dbHandle) => Effect.promise(() => dbHandle.end()).pipe(Effect.ignore),
+    );
+  }
+
   protected override resolveSessionMeta(
     token: McpSessionInit,
     storedMeta: SessionMeta | null,
@@ -344,6 +477,10 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
           >,
       );
 
+      const delegation =
+        sessionMeta.delegation === undefined
+          ? undefined
+          : yield* self.resolveDelegation(sessionMeta.delegation, dbHandle);
       const { executor, engine } = yield* makeExecutionStack(
         sessionMeta.userId,
         sessionMeta.organizationId,
@@ -351,6 +488,7 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         {
           mcpResource: sessionMeta.resource,
           orgWrites: "request",
+          ...(delegation === undefined ? {} : { delegation }),
         },
       ).pipe(
         // The metered stack tracks each execution to Autumn. It requires

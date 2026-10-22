@@ -1,14 +1,46 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Predicate, Result } from "effect";
-import { makeTestExecutor } from "@executor-js/sdk/testing";
+import {
+  AuthTemplateSlug,
+  ConnectionName,
+  definePlugin,
+  IntegrationSlug,
+  ProviderItemId,
+  ProviderKey,
+  ToolName,
+} from "@executor-js/sdk";
+import { makeTestExecutor, memoryCredentialsPlugin } from "@executor-js/sdk/testing";
 
 import { toolkitsPlugin } from "./server";
+
+const SNAPSHOT_INTEGRATION = IntegrationSlug.make("snapshot-test");
+const SNAPSHOT_CONNECTION = ConnectionName.make("main");
+const SNAPSHOT_TEMPLATE = AuthTemplateSlug.make("apiKey");
+
+const snapshotToolPlugin = definePlugin(() => ({
+  id: "snapshotTool" as const,
+  storage: () => ({}),
+  resolveTools: () =>
+    Effect.succeed({
+      tools: [{ name: ToolName.make("read"), description: "Read a snapshot fixture" }],
+    }),
+  invokeTool: () => Effect.succeed({ ok: true }),
+  extension: (ctx) => ({
+    seed: () =>
+      ctx.core.integrations.register({
+        slug: SNAPSHOT_INTEGRATION,
+        description: "Toolkit snapshot fixture",
+        config: {},
+      }),
+  }),
+}))();
 
 describe("toolkitsPlugin", () => {
   it.effect("creates toolkits and manages ordered policy rules", () =>
     Effect.gen(function* () {
       const executor = yield* makeTestExecutor({
         plugins: [toolkitsPlugin()] as const,
+        coreTools: {},
       });
 
       const toolkit = yield* executor.toolkits.create({
@@ -61,6 +93,97 @@ describe("toolkitsPlugin", () => {
       expect(Result.isFailure(duplicate)).toBe(true);
       if (!Result.isFailure(duplicate)) return;
       expect(Predicate.isTagged("ToolkitError")(duplicate.failure)).toBe(true);
+    }),
+  );
+
+  it.effect("exports an exact membership snapshot that does not expand after edits", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin()] as const,
+        coreTools: {},
+      });
+      const toolkit = yield* executor.toolkits.create({ owner: "org", name: "Snapshot Kit" });
+      yield* executor.toolkits.createConnection(toolkit.id, {
+        pattern: "executor.coreTools.*",
+      });
+      yield* executor.toolkits.createPolicy(toolkit.id, {
+        pattern: "executor.coreTools.*",
+        action: "approve",
+      });
+      for (let index = 0; index < 8; index += 1) {
+        yield* executor.toolkits.createConnection(toolkit.id, {
+          pattern: `executor.coreTools.connection-${index}.*`,
+        });
+      }
+      for (let index = 0; index < 32; index += 1) {
+        yield* executor.toolkits.createPolicy(toolkit.id, {
+          pattern: `executor.coreTools.policy-${index}.*`,
+          action: index % 2 === 0 ? "approve" : "require_approval",
+        });
+      }
+
+      const before = yield* executor.toolkits.snapshotForSlug(toolkit.slug);
+      expect(before).not.toBeNull();
+      if (!before) return;
+      expect(before.actions).toEqual(["discover", "invoke"]);
+      expect(before.revision).toMatch(/^[0-9a-f]{64}$/);
+      expect(before.toolAddresses.length).toBeGreaterThan(0);
+      const frozenTools = [...before.toolAddresses];
+
+      yield* executor.toolkits.createPolicy(toolkit.id, {
+        pattern: "executor.coreTools.*",
+        action: "block",
+      });
+      const after = yield* executor.toolkits.snapshotForSlug(toolkit.slug);
+      expect(after).not.toBeNull();
+      expect(after?.revision).not.toBe(before.revision);
+      expect(before.toolAddresses).toEqual(frozenTools);
+    }),
+  );
+
+  it.effect("matches full tools addresses when freezing a dynamic catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeTestExecutor({
+        plugins: [toolkitsPlugin(), memoryCredentialsPlugin(), snapshotToolPlugin] as const,
+        coreTools: {},
+      });
+      yield* executor.snapshotTool.seed();
+      yield* executor.connections.create({
+        owner: "org",
+        name: SNAPSHOT_CONNECTION,
+        integration: SNAPSHOT_INTEGRATION,
+        template: SNAPSHOT_TEMPLATE,
+        from: {
+          provider: ProviderKey.make("memory"),
+          id: ProviderItemId.make("snapshot-test-credential"),
+        },
+      });
+
+      const toolkit = yield* executor.toolkits.create({
+        owner: "org",
+        name: "Dynamic Snapshot Kit",
+      });
+      yield* executor.toolkits.createConnection(toolkit.id, {
+        pattern: "snapshot-test.org.main.*",
+      });
+      yield* executor.toolkits.createPolicy(toolkit.id, {
+        pattern: "snapshot-test.org.main.read",
+        action: "block",
+      });
+      yield* executor.toolkits.createPolicy(toolkit.id, {
+        pattern: "snapshot-test.org.main.*",
+        action: "require_approval",
+      });
+
+      const snapshot = yield* executor.toolkits.snapshotForSlug(toolkit.slug);
+      expect(snapshot).not.toBeNull();
+      expect(snapshot?.toolAddresses.map(String)).toContain("tools.snapshot-test.org.main.read");
+      expect(snapshot?.connectionAddresses.map(String)).toContain("tools.snapshot-test.org.main");
+      const resolved = yield* executor.toolkits.resolvePolicyForSlug(
+        toolkit.slug,
+        "tools.snapshot-test.org.main.read",
+      );
+      expect(resolved.action).toBe("require_approval");
     }),
   );
 

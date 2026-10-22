@@ -15,6 +15,7 @@ import { defaultMcpResource, type Principal } from "./seams";
 import { createExecutorMcpServer } from "./tool-server";
 
 const TEST_PRINCIPAL: Principal = {
+  kind: "member",
   accountId: "acct_test",
   organizationId: "org_test",
   organizationName: "Test Org",

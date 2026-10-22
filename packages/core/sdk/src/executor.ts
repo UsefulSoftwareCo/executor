@@ -227,6 +227,7 @@ import { connectionIdentifier } from "./connection-name-identifier";
 import { annotateToolResultOutcome, isToolResult } from "./tool-result";
 import { makeShapeMemory, observedShapeToJsonSchema, SHAPE_MEMORY_PLUGIN_ID } from "./shape-memory";
 import { isUnauthorizedToolFailure } from "./auth-tool-failure";
+import { assertDelegationCapability, type DelegationContext } from "./delegation";
 
 const PLUGIN_STORAGE_DELETE_KEY_BATCH_SIZE = 90;
 const MAX_APPROVAL_ARGUMENT_PREVIEW_CHARS = 4_000;
@@ -369,6 +370,8 @@ interface OwnedKeys {
 // ---------------------------------------------------------------------------
 
 export type Executor<TPlugins extends readonly AnyPlugin[] = readonly []> = {
+  /** Verified delegated identity, when this executor is bound to one. */
+  readonly delegation?: DelegationContext;
   readonly integrations: {
     readonly list: () => Effect.Effect<readonly Integration[], StorageFailure>;
     readonly get: (slug: IntegrationSlug) => Effect.Effect<Integration | null, StorageFailure>;
@@ -707,6 +710,8 @@ export interface ExecutorConfig<TPlugins extends readonly AnyPlugin[] = readonly
   readonly tenant: Tenant;
   /** The acting member, or omit for a pure-org executor (no `owner:"user"`). */
   readonly subject?: Subject;
+  /** Host-verified delegated context. `subject` must equal its effective subject. */
+  readonly delegation?: DelegationContext;
   readonly db?: ExecutorDbInput | ExecutorDbFactory;
   /**
    * Backend for the plugin blob seam (`StorageDeps.blobs`). Defaults to the
@@ -1904,6 +1909,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
 
     const tenant = String(config.tenant);
     const subject = config.subject != null ? String(config.subject) : null;
+    const delegation = config.delegation;
+
+    if (
+      delegation !== undefined &&
+      (String(delegation.tenant) !== tenant ||
+        subject === null ||
+        String(delegation.effectiveSubject) !== subject)
+    ) {
+      return yield* new StorageError({
+        message: "Delegated executor subject does not match its effective subject.",
+        cause: undefined,
+      });
+    }
+
+    const guardDelegated = (
+      capability: Parameters<typeof assertDelegationCapability>[1],
+    ): Effect.Effect<void, StorageFailure> => assertDelegationCapability(delegation, capability);
+    const guardDelegatedManagement = (): Effect.Effect<void, StorageFailure> =>
+      guardDelegated({ operation: "management" });
 
     const ownerBinding: OwnerBinding = {
       tenant: config.tenant,
@@ -2083,6 +2107,29 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       annotations: entry.tool.annotations,
       static: true,
     });
+
+    // Built-in management wrappers are not a delegated capability. A static
+    // plugin tool may still use its private context internally, but a caller
+    // cannot invoke these account/provider/OAuth wrappers directly.
+    const isProtectedStaticManagementTool = (address: ToolAddress): boolean => {
+      const value = String(address);
+      return (
+        value.startsWith("executor.coreTools.integrations.") ||
+        value.startsWith("executor.coreTools.connections.") ||
+        value.startsWith("executor.coreTools.providers.") ||
+        value.startsWith("executor.coreTools.oauth.") ||
+        value.startsWith("executor.coreTools.policies.")
+      );
+    };
+
+    // Delegated catalog reads are projections of the consent snapshot. The
+    // top-level catalog gate proves the grant is current; this second filter
+    // removes tools added after consent (including static tools, which do not
+    // pass through the database scope query).
+    const delegationAllowsTool = (tool: Tool): boolean =>
+      delegation === undefined ||
+      (!isProtectedStaticManagementTool(tool.address) &&
+        delegation.scope.toolAddresses.some((address) => String(address) === String(tool.address)));
 
     /** How long a credential provider gets to answer one call.
      *
@@ -5791,6 +5838,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         for (const row of rows) {
           if (!catalogSlugs.has(String(row.integration))) continue;
           const tool = rowToTool(row);
+          if (!delegationAllowsTool(tool)) continue;
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
             const effective = yield* resolvePolicyFromRuleSet(
@@ -5804,6 +5852,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         for (const entry of staticTools.values()) {
           const tool = staticToolToTool(entry);
+          if (!delegationAllowsTool(tool)) continue;
           if (!matchesToolFilter(tool, filter)) continue;
           if (!includeBlocked) {
             const effective = yield* resolvePolicyFromRuleSet(
@@ -5819,12 +5868,23 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     const toolsList = (filter?: ToolListFilter): Effect.Effect<readonly Tool[], StorageFailure> =>
-      readTools(filter, { awaitStaleSync: true });
+      Effect.gen(function* () {
+        yield* guardDelegated({ operation: "catalog" });
+        return yield* readTools(filter, { awaitStaleSync: true });
+      });
 
     const toolSchema = (
       address: ToolAddress,
     ): Effect.Effect<ToolSchemaView | null, StorageFailure> =>
       Effect.gen(function* () {
+        const parsed = parseToolAddress(String(address));
+        yield* guardDelegated({
+          operation: "schema",
+          tool: address,
+          ...(parsed
+            ? { connection: connectionAddress(parsed.owner, parsed.integration, parsed.connection) }
+            : {}),
+        });
         const policyRules = yield* listActivePolicyRuleSet();
         const staticEntry = staticTools.get(String(address));
         if (staticEntry) {
@@ -5858,15 +5918,15 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           });
         }
 
-        const parsed = parseToolAddress(String(address));
-        if (!parsed) return null;
+        const parsedAddress = parseToolAddress(String(address));
+        if (!parsedAddress) return null;
         const row = yield* core.findFirst("tool", {
           where: (b: AnyCb) =>
             b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
-              b("name", "=", String(parsed.tool)),
+              byOwner(parsedAddress.owner)(b),
+              b("integration", "=", String(parsedAddress.integration)),
+              b("connection", "=", String(parsedAddress.connection)),
+              b("name", "=", String(parsedAddress.tool)),
             ),
         });
         if (!row) return null;
@@ -5908,7 +5968,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // The schema's description marks it as observed.
         const observed =
           outputSchema === undefined
-            ? yield* shapeMemory.recall(String(address), parsed.owner)
+            ? yield* shapeMemory.recall(String(address), parsedAddress.owner)
             : null;
         const effectiveOutputSchema =
           outputSchema !== undefined
@@ -5920,9 +5980,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         const definitionRows = yield* core.findMany("definition", {
           where: (b: AnyCb) =>
             b.and(
-              byOwner(parsed.owner)(b),
-              b("integration", "=", String(parsed.integration)),
-              b("connection", "=", String(parsed.connection)),
+              byOwner(parsedAddress.owner)(b),
+              b("integration", "=", String(parsedAddress.integration)),
+              b("connection", "=", String(parsedAddress.connection)),
             ),
         });
         const defs = new Map<string, unknown>();
@@ -6447,6 +6507,20 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     ): Effect.Effect<unknown, ExecuteError> => {
       const handler = pickHandler(options);
       return Effect.gen(function* () {
+        const parsedAddress = parseToolAddress(String(address));
+        yield* guardDelegated({
+          operation: isProtectedStaticManagementTool(address) ? "management" : "invoke",
+          tool: address,
+          ...(parsedAddress
+            ? {
+                connection: connectionAddress(
+                  parsedAddress.owner,
+                  parsedAddress.integration,
+                  parsedAddress.connection,
+                ),
+              }
+            : {}),
+        });
         // oxlint-disable executor/no-instanceof-error, executor/no-unknown-error-message, executor/no-manual-tag-check -- boundary: normalize arbitrary unknown plugin failures into a human-readable message for ToolInvocationError/telemetry
         const formatInvocationCauseMessage = (cause: unknown): string => {
           if (cause instanceof Error && cause.message.length > 0) return cause.message;
@@ -6813,7 +6887,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
     // OAuth service seam.
     // ------------------------------------------------------------------
 
-    const oauth = makeOAuthService({
+    const oauthService = makeOAuthService({
       fuma,
       owner: ownerBinding,
       tenant,
@@ -6875,6 +6949,36 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       firstPartyClients: config.firstPartyOAuthClients,
     });
 
+    const guardManagementCall = <A, E>(
+      effect: Effect.Effect<A, E>,
+    ): Effect.Effect<A, E | StorageFailure> =>
+      Effect.gen(function* () {
+        yield* guardDelegatedManagement();
+        return yield* effect;
+      });
+    const oauth = delegation
+      ? {
+          createClient: (input: Parameters<typeof oauthService.createClient>[0]) =>
+            guardManagementCall(oauthService.createClient(input)),
+          registerDynamicClient: (
+            input: Parameters<typeof oauthService.registerDynamicClient>[0],
+          ) => guardManagementCall(oauthService.registerDynamicClient(input)),
+          listClients: () => guardManagementCall(oauthService.listClients()),
+          removeClient: (owner: Owner, slug: OAuthClientSlug) =>
+            guardManagementCall(oauthService.removeClient(owner, slug)),
+          start: (input: Parameters<typeof oauthService.start>[0]) =>
+            guardManagementCall(oauthService.start(input)),
+          complete: (
+            input: Parameters<typeof oauthService.complete>[0],
+            options?: Parameters<typeof oauthService.complete>[1],
+          ) => guardManagementCall(oauthService.complete(input, options)),
+          cancel: (state: Parameters<typeof oauthService.cancel>[0]) =>
+            guardManagementCall(oauthService.cancel(state)),
+          probe: (input: Parameters<typeof oauthService.probe>[0]) =>
+            guardManagementCall(oauthService.probe(input)),
+        }
+      : oauthService;
+
     // ------------------------------------------------------------------
     // Plugin wiring — build ctx, run extension, populate static pools,
     // register credential providers.
@@ -6908,6 +7012,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         pluginId: plugin.id,
         owner: ownerBinding,
       });
+
       const storageDeps: StorageDeps = {
         owner: ownerBinding,
         blobs: pluginBlobStore(blobs, blobPartitions, plugin.id),
@@ -6960,6 +7065,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             create: (input) => policiesCreate(input),
             update: (input) => policiesUpdate(input),
             remove: (input) => policiesRemove(input),
+          },
+          tools: {
+            list: (filter) => toolsList(filter),
           },
         },
         connections: {
@@ -7267,27 +7375,37 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       });
 
     const base = {
+      ...(delegation ? { delegation } : {}),
       integrations: {
-        list: integrationsList,
-        get: integrationsGet,
-        update: integrationsUpdatePublic,
-        remove: integrationsRemove,
-        detect: integrationsDetect,
+        list: () => guardManagementCall(integrationsList()),
+        get: (slug: IntegrationSlug) => guardManagementCall(integrationsGet(slug)),
+        update: (
+          slug: IntegrationSlug,
+          patch: { readonly name?: string; readonly description?: string },
+        ) => guardManagementCall(integrationsUpdatePublic(slug, patch)),
+        remove: (slug: IntegrationSlug) => guardManagementCall(integrationsRemove(slug)),
+        detect: (url: string) => guardManagementCall(integrationsDetect(url)),
         healthCheck: {
-          get: integrationHealthCheckGet,
-          candidates: integrationHealthCheckCandidates,
-          set: integrationSetHealthCheck,
+          get: (slug: IntegrationSlug) => guardManagementCall(integrationHealthCheckGet(slug)),
+          candidates: (slug: IntegrationSlug) =>
+            guardManagementCall(integrationHealthCheckCandidates(slug)),
+          set: (slug: IntegrationSlug, spec: HealthCheckSpec | null) =>
+            guardManagementCall(integrationSetHealthCheck(slug, spec)),
         },
       },
       connections: {
-        create: connectionsCreate,
-        list: connectionsList,
-        get: connectionsGet,
-        update: connectionsUpdate,
-        remove: connectionsRemove,
-        refresh: connectionsRefresh,
-        checkHealth: connectionCheckHealth,
-        validate: connectionValidate,
+        create: (input: CreateConnectionInput) => guardManagementCall(connectionsCreate(input)),
+        list: (filter?: { readonly integration?: IntegrationSlug; readonly owner?: Owner }) =>
+          guardManagementCall(connectionsList(filter)),
+        get: (ref: ConnectionRef) => guardManagementCall(connectionsGet(ref)),
+        update: (ref: ConnectionRef, input: UpdateConnectionInput) =>
+          guardManagementCall(connectionsUpdate(ref, input)),
+        remove: (ref: ConnectionRef) => guardManagementCall(connectionsRemove(ref)),
+        refresh: (ref: ConnectionRef) => guardManagementCall(connectionsRefresh(ref)),
+        checkHealth: (ref: ConnectionRef, options?: { readonly ifStaleMs?: number }) =>
+          guardManagementCall(connectionCheckHealth(ref, options)),
+        validate: (input: ValidateConnectionInput) =>
+          guardManagementCall(connectionValidate(input)),
       },
       oauth,
       tools: {
@@ -7295,24 +7413,25 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         schema: toolSchema,
       },
       providers: {
-        list: providersList,
-        items: providersItems,
+        list: () => guardManagementCall(providersList()),
+        items: (key: ProviderKey) => guardManagementCall(providersItems(key)),
       },
       policies: {
-        list: policiesList,
-        create: policiesCreate,
-        update: policiesUpdate,
-        remove: policiesRemove,
-        resolve: policiesResolve,
+        list: () => guardManagementCall(policiesList()),
+        create: (input: CreateToolPolicyInput) => guardManagementCall(policiesCreate(input)),
+        update: (input: UpdateToolPolicyInput) => guardManagementCall(policiesUpdate(input)),
+        remove: (input: RemoveToolPolicyInput) => guardManagementCall(policiesRemove(input)),
+        resolve: (address: ToolAddress) => guardManagementCall(policiesResolve(address)),
       },
       ...(admin ? { admin } : {}),
       artifacts: {
-        list: artifactsList,
-        get: artifactsGet,
-        save: artifactsSave,
-        rename: artifactsRename,
-        remove: artifactsRemove,
-        setPreview: artifactsSetPreview,
+        list: () => guardManagementCall(artifactsList()),
+        get: (id: string) => guardManagementCall(artifactsGet(id)),
+        save: (input: SaveArtifactInput) => guardManagementCall(artifactsSave(input)),
+        rename: (input: RenameArtifactInput) => guardManagementCall(artifactsRename(input)),
+        remove: (input: RemoveArtifactInput) => guardManagementCall(artifactsRemove(input)),
+        setPreview: (input: SetArtifactPreviewInput) =>
+          guardManagementCall(artifactsSetPreview(input)),
       },
       pendingApprovals,
       execute,

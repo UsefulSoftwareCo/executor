@@ -12,6 +12,7 @@ import {
 import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import { requireInstanceAdmin } from "./require-admin";
 import { SelfHostDb, type SelfHostDbHandle } from "../db/self-host-db";
+import type { SelfHostConfig } from "../config";
 import {
   createInviteCode,
   listInviteCodes,
@@ -38,8 +39,8 @@ const requestHeaders = Effect.map(
 // Resolve + authorize the caller, rendering the shared gate's denial in THIS
 // plane's error vocabulary (the HttpApi group declares these, not the users
 // plane's).
-const requireAdmin = (headers: Headers) =>
-  requireInstanceAdmin(headers).pipe(
+const requireAdmin = (headers: Headers, db: SelfHostDbHandle, config: SelfHostConfig) =>
+  requireInstanceAdmin(headers, db, config).pipe(
     Effect.mapError((denial) =>
       denial === "unauthorized" ? new AdminUnauthorized() : new AdminForbidden(),
     ),
@@ -60,55 +61,60 @@ const toWire = (row: InviteCodeRow): typeof InviteCodeSchema.Type => ({
   usedAt: row.usedAt,
 });
 
-export const AdminHandlers = HttpApiBuilder.group(AdminHttpApi, "admin", (handlers) =>
-  handlers
-    .handle("listInvites", () =>
-      Effect.gen(function* () {
-        yield* requireAdmin(yield* requestHeaders);
-        const { client } = yield* SelfHostDb;
-        const rows = yield* Effect.tryPromise({
-          try: () => listInviteCodes(client),
-          catch: () => new AdminError({ message: "Failed to list invites" }),
-        });
-        return { invites: rows.map(toWire) };
-      }),
-    )
-    .handle("createInvite", ({ payload }) =>
-      Effect.gen(function* () {
-        const member = yield* requireAdmin(yield* requestHeaders);
-        const { client } = yield* SelfHostDb;
-        const days = payload.expiresInDays ?? null;
-        const expiresAt =
-          days && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
-        const row = yield* Effect.tryPromise({
-          try: () =>
-            createInviteCode(client, {
-              createdBy: member.userId,
-              role: narrowRole(payload.role),
-              label: payload.label?.trim() ? payload.label.trim() : null,
-              expiresAt,
-            }),
-          catch: () => new AdminError({ message: "Failed to create invite" }),
-        });
-        return toWire(row);
-      }),
-    )
-    .handle("revokeInvite", ({ params }) =>
-      Effect.gen(function* () {
-        yield* requireAdmin(yield* requestHeaders);
-        const { client } = yield* SelfHostDb;
-        yield* Effect.tryPromise({
-          try: () => revokeInviteCode(client, params.inviteId),
-          catch: () => new AdminError({ message: "Failed to revoke invite" }),
-        });
-        return { success: true };
-      }),
-    ),
-);
+const makeAdminHandlers = (config: SelfHostConfig) =>
+  HttpApiBuilder.group(AdminHttpApi, "admin", (handlers) =>
+    handlers
+      .handle("listInvites", () =>
+        Effect.gen(function* () {
+          const db = yield* SelfHostDb;
+          yield* requireAdmin(yield* requestHeaders, db, config);
+          const { client } = db;
+          const rows = yield* Effect.tryPromise({
+            try: () => listInviteCodes(client),
+            catch: () => new AdminError({ message: "Failed to list invites" }),
+          });
+          return { invites: rows.map(toWire) };
+        }),
+      )
+      .handle("createInvite", ({ payload }) =>
+        Effect.gen(function* () {
+          const db = yield* SelfHostDb;
+          const member = yield* requireAdmin(yield* requestHeaders, db, config);
+          const { client } = db;
+          const days = payload.expiresInDays ?? null;
+          const expiresAt =
+            days && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
+          const row = yield* Effect.tryPromise({
+            try: () =>
+              createInviteCode(client, {
+                createdBy: member.userId,
+                role: narrowRole(payload.role),
+                label: payload.label?.trim() ? payload.label.trim() : null,
+                expiresAt,
+              }),
+            catch: () => new AdminError({ message: "Failed to create invite" }),
+          });
+          return toWire(row);
+        }),
+      )
+      .handle("revokeInvite", ({ params }) =>
+        Effect.gen(function* () {
+          const db = yield* SelfHostDb;
+          yield* requireAdmin(yield* requestHeaders, db, config);
+          const { client } = db;
+          yield* Effect.tryPromise({
+            try: () => revokeInviteCode(client, params.inviteId),
+            catch: () => new AdminError({ message: "Failed to revoke invite" }),
+          });
+          return { success: true };
+        }),
+      ),
+  );
 
 export interface SelfHostAdminApiDeps {
   readonly betterAuth: BetterAuthHandle;
   readonly db: SelfHostDbHandle;
+  readonly config: SelfHostConfig;
   readonly mountPrefix: `/${string}`;
 }
 
@@ -124,13 +130,14 @@ export interface SelfHostAdminApiDeps {
 export const makeSelfHostAdminApiLayer = ({
   betterAuth,
   db,
+  config,
   mountPrefix,
 }: SelfHostAdminApiDeps) => {
   const prefixedRouter = Layer.effect(HttpRouter.HttpRouter)(
     Effect.map(HttpRouter.HttpRouter.asEffect(), (router) => router.prefixed(mountPrefix)),
   );
   return HttpApiBuilder.layer(AdminHttpApi).pipe(
-    Layer.provide(AdminHandlers),
+    Layer.provide(makeAdminHandlers(config)),
     Layer.provide(prefixedRouter),
     HttpRouter.provideRequest(
       Layer.mergeAll(Layer.succeed(BetterAuth)(betterAuth), Layer.succeed(SelfHostDb)(db)),

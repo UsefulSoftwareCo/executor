@@ -6,4 +6,4 @@ export {
   type MakeSelfHostAppOptions,
 } from "./app";
 export { loadConfig, type SelfHostConfig } from "./config";
-export { BetterAuth, buildBetterAuth, betterAuthIdentityLayer } from "./auth";
+export { BetterAuth, buildBetterAuth, makeBetterAuthDelegatingIdentityLayer } from "./auth";
