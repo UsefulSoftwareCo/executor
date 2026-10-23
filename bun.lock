@@ -694,6 +694,7 @@
         "@effect/vitest": "catalog:",
         "@types/node": "catalog:",
         "bun-types": "catalog:",
+        "miniflare": "4.20260424.0",
         "typescript": "catalog:",
         "urlpattern-polyfill": "^10.1.0",
         "vitest": "catalog:",

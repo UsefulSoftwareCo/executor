@@ -26,6 +26,22 @@ export class UniqueViolationError extends Data.TaggedError("UniqueViolationError
   readonly model?: string;
 }> {}
 
+/** A delegated credential cannot use the requested SDK surface. This is a
+ * storage-shaped failure so every existing executor boundary fails closed
+ * without widening each public method's error union. */
+export class DelegationDeniedError extends Data.TaggedError("DelegationDeniedError")<{
+  readonly message: string;
+  readonly reason:
+    | "expired"
+    | "revoked"
+    | "unmapped"
+    | "unauthorized"
+    | "scope"
+    | "management"
+    | "proof"
+    | "invalid";
+}> {}
+
 /**
  * The database connection itself failed — the statement never got a verdict.
  * Distinct from `StorageError` (a query the backend answered with an error)
@@ -60,7 +76,8 @@ export type StorageFailure =
   | StorageError
   | CredentialWriteIncompleteError
   | StorageConnectionError
-  | UniqueViolationError;
+  | UniqueViolationError
+  | DelegationDeniedError;
 
 export type FumaTables = Record<string, AnyTable>;
 type EmptyFumaSchema = FumaSchema<"latest", Record<never, never>>;
@@ -196,7 +213,8 @@ export const isStorageFailure = (error: unknown): error is StorageFailure =>
   Predicate.isTagged(error, "StorageError") ||
   Predicate.isTagged(error, "CredentialWriteIncompleteError") ||
   Predicate.isTagged(error, "StorageConnectionError") ||
-  Predicate.isTagged(error, "UniqueViolationError");
+  Predicate.isTagged(error, "UniqueViolationError") ||
+  Predicate.isTagged(error, "DelegationDeniedError");
 
 export const fumaFailureFromCause = (label: string, cause: unknown): StorageFailure => {
   if (isStorageFailure(cause)) return cause;

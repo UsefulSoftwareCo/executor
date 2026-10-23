@@ -1,15 +1,19 @@
 import { DurableObject } from "cloudflare:workers";
 import { Data, Effect } from "effect";
+import type { McpDelegationBinding } from "./do-headers";
 
 export type McpExecutionOwnerRoute = {
   readonly sessionId: string;
 };
 
+/** Persisted, serializable delegated binding. Live grant scopes are rebuilt
+ * from the authoritative service after a Durable Object restore. */
 export type McpExecutionOwnerRecord = {
   readonly executionId: string;
   readonly owner: McpExecutionOwnerRoute;
   readonly accountId: string;
   readonly organizationId: string;
+  readonly delegation?: McpDelegationBinding;
   readonly expiresAt: string;
   readonly ttlMs: number;
 };
@@ -53,12 +57,23 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isOwnerRoute = (value: unknown): value is McpExecutionOwnerRoute =>
   isRecord(value) && typeof value.sessionId === "string";
 
+const isDelegationBinding = (value: unknown): value is McpDelegationBinding =>
+  isRecord(value) &&
+  typeof value.tenant === "string" &&
+  typeof value.grantId === "string" &&
+  typeof value.credentialId === "string" &&
+  typeof value.credentialRef === "string" &&
+  typeof value.actorSubject === "string" &&
+  typeof value.effectiveSubject === "string" &&
+  typeof value.scopeVersion === "string";
+
 const isOwnerRecord = (value: unknown): value is McpExecutionOwnerRecord =>
   isRecord(value) &&
   typeof value.executionId === "string" &&
   isOwnerRoute(value.owner) &&
   typeof value.accountId === "string" &&
   typeof value.organizationId === "string" &&
+  (value.delegation === undefined || isDelegationBinding(value.delegation)) &&
   typeof value.expiresAt === "string" &&
   typeof value.ttlMs === "number";
 

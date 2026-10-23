@@ -4,16 +4,25 @@ import { Effect } from "effect";
 import {
   AuthTemplateSlug,
   ConnectionName,
+  CredentialId,
+  DelegationId,
+  DelegationScopeVersion,
   IntegrationSlug,
   ProviderItemId,
   ProviderKey,
+  Subject,
+  Tenant,
+  ToolAddress,
   createExecutor,
   definePlugin,
+  tool,
   type CredentialProvider,
 } from "@executor-js/sdk";
 import { makeTestConfig } from "@executor-js/sdk/testing";
+import { makeQuickJsExecutor } from "@executor-js/runtime-quickjs";
 
 import { buildExecuteDescription, parseIntegrationInventory } from "./description";
+import { createExecutionEngine } from "./engine";
 
 const memoryProvider = (): CredentialProvider => {
   const store = new Map<string, string>();
@@ -36,6 +45,9 @@ const memoryProvider = (): CredentialProvider => {
 const GITHUB = IntegrationSlug.make("github");
 const SLACK = IntegrationSlug.make("slack");
 const TEMPLATE = AuthTemplateSlug.make("apiKey");
+const DELEGATED_TENANT = Tenant.make("delegated-description-tenant");
+const DELEGATED_SUBJECT = Subject.make("delegated-description-subject");
+const DELEGATED_TOOL = ToolAddress.make("github.allowed");
 
 // The execute description lists the top-level integrations the user has
 // connected: one bare line per integration slug, deduped across connections,
@@ -66,6 +78,37 @@ const slackPlugin = definePlugin(() => ({
         config: {},
       }),
   }),
+}))();
+
+const delegatedCatalogPlugin = definePlugin(() => ({
+  id: "delegated-catalog-plugin" as const,
+  storage: () => ({}),
+  staticIntegrations: () => [
+    {
+      id: "github",
+      kind: "test",
+      name: "GitHub",
+      tools: [
+        tool({
+          name: "allowed",
+          description: "Allowed discovery tool",
+          execute: () => Effect.void,
+        }),
+      ],
+    },
+    {
+      id: "slack",
+      kind: "test",
+      name: "Slack",
+      tools: [
+        tool({
+          name: "hidden",
+          description: "Hidden discovery tool",
+          execute: () => Effect.void,
+        }),
+      ],
+    },
+  ],
 }))();
 
 const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
@@ -187,6 +230,46 @@ describe("buildExecuteDescription", () => {
 
       expect(description).toContain("Execute TypeScript in a sandboxed runtime");
       expect(description).not.toContain("## Available integrations");
+    }),
+  );
+
+  it.effect("uses only the delegated discovery catalog", () =>
+    Effect.gen(function* () {
+      const executor = yield* createExecutor({
+        ...makeTestConfig({
+          tenant: String(DELEGATED_TENANT),
+          subject: String(DELEGATED_SUBJECT),
+          plugins: [delegatedCatalogPlugin] as const,
+        }),
+        delegation: {
+          kind: "delegated" as const,
+          tenant: DELEGATED_TENANT,
+          grantId: DelegationId.make("delegated-description-grant"),
+          credentialId: CredentialId.make("delegated-description-credential"),
+          actorSubject: Subject.make("delegated-description-machine"),
+          effectiveSubject: DELEGATED_SUBJECT,
+          scopeVersion: DelegationScopeVersion.make("delegated-description-scope"),
+          credentialRef: "delegated-description-ref",
+          expiresAt: Date.now() + 60_000,
+          scope: {
+            actions: ["discover"] as const,
+            toolkitMembership: [],
+            toolAddresses: [DELEGATED_TOOL],
+            connectionAddresses: [],
+          },
+          revalidate: () => Effect.void,
+        },
+      });
+      const engine = createExecutionEngine({
+        executor,
+        codeExecutor: makeQuickJsExecutor(),
+      });
+
+      const description = yield* engine.getDescription;
+
+      expect(description).toContain("- `github`");
+      expect(description).not.toContain("- `slack`");
+      expect(description).not.toContain("Hidden discovery tool");
     }),
   );
 });

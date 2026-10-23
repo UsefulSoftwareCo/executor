@@ -1,9 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Data, Effect, Fiber, Schema } from "effect";
+import { Data, Effect, Fiber, Result, Schema } from "effect";
 
 import {
   AuthTemplateSlug,
   ConnectionName,
+  CredentialId,
+  DelegationDeniedError,
+  DelegationId,
+  DelegationScopeVersion,
   ElicitationResponse,
   FormElicitation,
   IntegrationSlug,
@@ -13,6 +17,8 @@ import {
   ProviderKey,
   ToolName,
   ToolResult,
+  Subject,
+  Tenant,
   createExecutor,
   definePlugin,
   type AnyPlugin,
@@ -2027,6 +2033,87 @@ describe("pause/resume with multiple elicitations", () => {
       yield* engine.shutdown;
       yield* engine.shutdown;
       expect(yield* engine.pausedExecutionCount()).toBe(0);
+    }),
+  );
+});
+
+describe("delegated pause/resume authorization", () => {
+  const makeElicitingExecutor = () =>
+    Effect.gen(function* () {
+      const executor = yield* makeExecutorWith([apiPlugin] as const);
+      yield* provision(executor as never, [{ pluginId: "api-test", integration: "api" }]);
+      return executor;
+    });
+
+  it.effect("rechecks the retained grant before waking a paused execution", () =>
+    Effect.gen(function* () {
+      const executor = yield* makeElicitingExecutor();
+      let allowed = true;
+      const delegation = {
+        kind: "delegated" as const,
+        tenant: Tenant.make("test-tenant"),
+        grantId: DelegationId.make("grant_execution_test"),
+        credentialId: CredentialId.make("credential_execution_test"),
+        actorSubject: Subject.make("machine"),
+        effectiveSubject: Subject.make("test-subject"),
+        scopeVersion: DelegationScopeVersion.make("scope_execution_test"),
+        credentialRef: "machine-ref",
+        expiresAt: Date.now() + 60_000,
+        scope: {
+          actions: ["discover", "invoke"] as const,
+          toolkitMembership: [],
+          toolAddresses: ["tools.api.org.main.singleApproval"],
+          connectionAddresses: ["tools.api.org.main"],
+        },
+        revalidate: () =>
+          allowed
+            ? Effect.void
+            : Effect.fail(
+                new DelegationDeniedError({
+                  reason: "revoked",
+                  message: "Delegation revoked.",
+                }),
+              ),
+      };
+      const engine = createExecutionEngine({ executor, codeExecutor, delegation });
+      const paused = yield* engine.executeWithPause(
+        "return await tools.api.org.main.singleApproval({});",
+      );
+      expect(paused.status).toBe("paused");
+      if (paused.status !== "paused") return;
+      allowed = false;
+      const resumed = yield* Effect.result(
+        engine.resume(paused.execution.id, { action: "accept" }),
+      );
+      expect(Result.isFailure(resumed)).toBe(true);
+      expect(
+        Result.match(resumed, {
+          onFailure: (failure) => failure,
+          onSuccess: () => undefined,
+        }),
+      ).toBeInstanceOf(DelegationDeniedError);
+
+      allowed = true;
+      const completedPause = yield* engine.executeWithPause(
+        "return await tools.api.org.main.singleApproval({});",
+      );
+      expect(completedPause.status).toBe("paused");
+      if (completedPause.status !== "paused") return;
+      const completed = yield* engine.resume(completedPause.execution.id, {
+        action: "accept",
+      });
+      expect(completed?.status).toBe("completed");
+      allowed = false;
+      const replayed = yield* Effect.result(
+        engine.resume(completedPause.execution.id, { action: "accept" }),
+      );
+      expect(Result.isFailure(replayed)).toBe(true);
+      expect(
+        Result.match(replayed, {
+          onFailure: (failure) => failure,
+          onSuccess: () => undefined,
+        }),
+      ).toBeInstanceOf(DelegationDeniedError);
     }),
   );
 });

@@ -11,8 +11,13 @@ import type {
   ElicitationContext,
 } from "@executor-js/sdk/core";
 import {
+  assertDelegationCapability,
   CurrentOrgWriteAccess,
+  DelegationDeniedError,
   offeredPersistence,
+  type DelegatedPrincipal,
+  type DelegationContext,
+  type StorageFailure,
   type OrgWriteAccessState,
 } from "@executor-js/sdk/core";
 import { CodeExecutionError } from "@executor-js/codemode-core";
@@ -36,6 +41,7 @@ export type ExecutionEngineConfig<E extends Cause.YieldableError = CodeExecution
   readonly executor: Executor;
   readonly codeExecutor: CodeExecutor<E>;
   readonly toolDiscoveryProvider?: ToolDiscoveryProvider;
+  readonly delegation?: DelegationContext;
 };
 
 export type ExecutionResult =
@@ -45,6 +51,7 @@ export type ExecutionResult =
 export type PausedExecution = {
   readonly id: string;
   readonly elicitationContext: ElicitationContext;
+  readonly delegation?: DelegatedPrincipal;
 };
 
 export type PausedExecutionDeadline = {
@@ -58,6 +65,7 @@ type InternalPausedExecution<E> = PausedExecution & {
   readonly orgWriteAccess: OrgWriteAccessState;
   readonly fiber: Fiber.Fiber<ExecuteResult, E>;
   readonly pauseQueue: Queue.Queue<InternalPausedExecution<E>>;
+  readonly delegationContext?: DelegationContext;
 };
 
 export type ResumeResponse = {
@@ -66,6 +74,11 @@ export type ResumeResponse = {
   /** The answer's terms — `persist`, when the paused request offered a
    *  choice of scopes and the approver picked one. */
   readonly meta?: ElicitationResponseMeta;
+};
+
+type SettledOutcome<E> = {
+  readonly outcome: Exit.Exit<ExecutionResult, E>;
+  readonly delegation?: DelegationContext;
 };
 
 // Auto-accept every elicitation. Used by the `autoApprove` path where the
@@ -529,7 +542,7 @@ export type ExecutionEngine<E extends Cause.YieldableError = CodeExecutionError>
   readonly resume: (
     executionId: string,
     response: ResumeResponse,
-  ) => Effect.Effect<ExecutionResult | null, E>;
+  ) => Effect.Effect<ExecutionResult | null, E | StorageFailure>;
 
   /**
    * True when the engine remembers that an executionId has already settled, even
@@ -574,6 +587,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
   config: ExecutionEngineConfig<E>,
 ): ExecutionEngine<E> => {
   const { executor, codeExecutor, toolDiscoveryProvider = defaultToolDiscoveryProvider } = config;
+  const delegation = config.delegation ?? executor.delegation;
   const pausedExecutions = new Map<string, InternalPausedExecution<E>>();
   // Every sandbox fiber `startPausableExecution` still has in flight.
   //
@@ -592,7 +606,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
   // already-delivered resume answers "no paused execution" (observed in
   // production seconds after a successful resume). Bounded FIFO — pause
   // volume is tiny (human approvals), so a small window is plenty.
-  const settledOutcomes = new Map<string, Exit.Exit<ExecutionResult, E>>();
+  const settledOutcomes = new Map<string, SettledOutcome<E>>();
   const SETTLED_OUTCOME_LIMIT = 64;
   const settledExecutionIds = new Set<string>();
   const SETTLED_EXECUTION_ID_LIMIT = 1024;
@@ -603,20 +617,36 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     {
       readonly outcome: Deferred.Deferred<ExecutionResult, E>;
       readonly orgWriteAccess: OrgWriteAccessState;
+      readonly delegation?: DelegationContext;
     }
   >();
 
   // Exits (not just successes) so a replayed failure re-fails through the
   // typed channel — hosts render engine failures opaquely, and a replay must
   // not bypass that by flattening the cause into result text.
-  const recordSettledOutcome = (executionId: string, exit: Exit.Exit<ExecutionResult, E>): void => {
+  const sameDelegationIdentity = (left: DelegatedPrincipal, right: DelegatedPrincipal): boolean =>
+    String(left.tenant) === String(right.tenant) &&
+    String(left.grantId) === String(right.grantId) &&
+    String(left.credentialId) === String(right.credentialId) &&
+    String(left.actorSubject) === String(right.actorSubject) &&
+    String(left.effectiveSubject) === String(right.effectiveSubject) &&
+    String(left.scopeVersion) === String(right.scopeVersion);
+
+  const recordSettledOutcome = (
+    executionId: string,
+    exit: Exit.Exit<ExecutionResult, E>,
+    retainedDelegation?: DelegationContext,
+  ): void => {
     settledExecutionIds.add(executionId);
     while (settledExecutionIds.size > SETTLED_EXECUTION_ID_LIMIT) {
       const oldest = settledExecutionIds.keys().next().value;
       if (oldest === undefined) break;
       settledExecutionIds.delete(oldest);
     }
-    settledOutcomes.set(executionId, exit);
+    settledOutcomes.set(executionId, {
+      outcome: exit,
+      ...(retainedDelegation === undefined ? {} : { delegation: retainedDelegation }),
+    });
     while (settledOutcomes.size > SETTLED_OUTCOME_LIMIT) {
       const oldest = settledOutcomes.keys().next().value;
       if (oldest === undefined) break;
@@ -707,6 +737,9 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
         const paused: InternalPausedExecution<E> = {
           id,
           elicitationContext: ctx,
+          ...(delegation
+            ? { delegation: delegation as DelegatedPrincipal, delegationContext: delegation }
+            : {}),
           response: responseDeferred,
           orgWriteAccess,
           fiber: fiber!,
@@ -758,7 +791,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
             for (const [id, paused] of pausedExecutions) {
               if (paused.fiber !== sandboxFiber) continue;
               pausedExecutions.delete(id);
-              recordSettledOutcome(id, outcome);
+              recordSettledOutcome(id, outcome, paused.delegationContext);
             }
           }),
         ),
@@ -789,10 +822,23 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 
     const settled = settledOutcomes.get(executionId);
     if (settled) {
+      if (settled.delegation !== undefined) {
+        yield* assertDelegationCapability(settled.delegation, {
+          operation: "resume",
+          executionId,
+        });
+        if (delegation === undefined || !sameDelegationIdentity(delegation, settled.delegation)) {
+          return yield* new DelegationDeniedError({
+            reason: "unauthorized",
+            message: "Resume grant does not match the settled execution.",
+          });
+        }
+        yield* assertDelegationCapability(delegation, { operation: "resume", executionId });
+      }
       yield* Effect.annotateCurrentSpan({
         "mcp.execute.resume.replayed": true,
       });
-      const replayed = (yield* settled) as ExecutionResult;
+      const replayed = (yield* settled.outcome) as ExecutionResult;
       yield* annotateExecutionOutcome(replayed);
       return replayed;
     }
@@ -802,6 +848,19 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
       yield* Effect.annotateCurrentSpan({
         "mcp.execute.resume.joined_inflight": true,
       });
+      if (pending.delegation) {
+        yield* assertDelegationCapability(pending.delegation, {
+          operation: "resume",
+          executionId,
+        });
+        if (delegation === undefined || !sameDelegationIdentity(delegation, pending.delegation)) {
+          return yield* new DelegationDeniedError({
+            reason: "unauthorized",
+            message: "Resume grant does not match the paused execution.",
+          });
+        }
+        yield* assertDelegationCapability(delegation, { operation: "resume", executionId });
+      }
       const joiningOrgWriteAccess = yield* CurrentOrgWriteAccess;
       yield* Ref.set(pending.orgWriteAccess.current, yield* Ref.get(joiningOrgWriteAccess.current));
       const joined = (yield* Deferred.await(pending.outcome)) as ExecutionResult;
@@ -811,12 +870,26 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
 
     const paused = pausedExecutions.get(executionId);
     if (!paused) return null;
+    if (paused.delegationContext) {
+      yield* assertDelegationCapability(paused.delegationContext, {
+        operation: "resume",
+        executionId,
+      });
+      if (!delegation || !sameDelegationIdentity(delegation, paused.delegationContext)) {
+        return yield* new DelegationDeniedError({
+          reason: "unauthorized",
+          message: "Resume grant does not match the paused execution.",
+        });
+      }
+      yield* assertDelegationCapability(delegation, { operation: "resume", executionId });
+    }
     pausedExecutions.delete(executionId);
 
     const inflight = yield* Deferred.make<ExecutionResult, E>();
     pendingResumes.set(executionId, {
       outcome: inflight,
       orgWriteAccess: paused.orgWriteAccess,
+      delegation: paused.delegationContext,
     });
 
     // The detached sandbox inherited the starter's request context. Replace
@@ -835,7 +908,7 @@ export const createExecutionEngine = <E extends Cause.YieldableError = CodeExecu
     const outcome = (yield* awaitCompletionOrPause(paused.fiber, paused.pauseQueue).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
-          recordSettledOutcome(executionId, exit);
+          recordSettledOutcome(executionId, exit, paused.delegationContext);
           pendingResumes.delete(executionId);
           yield* Deferred.done(inflight, exit);
         }),
