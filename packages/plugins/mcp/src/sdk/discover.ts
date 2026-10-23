@@ -25,11 +25,29 @@ const MAX_LIST_TOOLS_PAGES = 100;
 // carries a deadline of its own against a server that never answers (a
 // closed/half-open loopback socket, a server wedged mid-handshake), so
 // without a bound here a single unresponsive endpoint hangs the calling
-// fiber forever. Mirrors the shape-probe fallback's default
-// (`probeMcpEndpointShape`'s `timeoutMs = 8_000`) at a slightly longer
-// bound since a real handshake + listTools round-trip is heavier than the
-// shape probe's single unauth POST.
-const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(15);
+// fiber forever. Longer than the shape-probe fallback's default
+// (`probeMcpEndpointShape`'s `timeoutMs = 8_000`) since a real handshake +
+// listTools round-trip is heavier than the shape probe's single unauth POST,
+// and generous enough for servers that cold-start or build a large tool
+// catalog on first connect.
+const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(30);
+
+// Operators with servers that legitimately take longer (or that want a probe
+// to give up sooner) override the default without a rebuild.
+const DISCOVER_TIMEOUT_ENV = "EXECUTOR_MCP_DISCOVERY_TIMEOUT_MS";
+
+/** The discovery deadline in milliseconds: `EXECUTOR_MCP_DISCOVERY_TIMEOUT_MS`
+ *  when it is a positive integer, otherwise `DEFAULT_DISCOVER_TIMEOUT`. Read on
+ *  every call so a changed environment applies without a restart, and guarded
+ *  for runtimes without `process` (Workers). */
+export const resolveDiscoverTimeoutMs = (): number => {
+  const raw =
+    typeof process === "undefined" ? undefined : process.env?.[DISCOVER_TIMEOUT_ENV]?.trim();
+  const parsed = raw ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT);
+};
 
 // Teardown is best-effort and paid for by the request that performed discovery.
 // A remote transport may accept close and then never settle, so use the same
@@ -164,7 +182,7 @@ export const discoverToolsFromInput = (
  * Connect to an MCP server and discover all available tools.
  * Returns the parsed manifest containing server metadata and tool entries.
  *
- * Bounded by `timeoutMs` (default `DEFAULT_DISCOVER_TIMEOUT`): every caller
+ * Bounded by `timeoutMs` (default `resolveDiscoverTimeoutMs()`): every caller
  * is dialing a server we don't control, and neither the connect handshake
  * nor `listTools` has a deadline of its own, so an unresponsive endpoint
  * (dead loopback port, wedged mid-handshake) would otherwise hang the
@@ -182,7 +200,7 @@ export const discoverToolsFromInput = (
  */
 export const discoverTools = (
   connector: McpConnector,
-  timeoutMs: number = Duration.toMillis(DEFAULT_DISCOVER_TIMEOUT),
+  timeoutMs: number = resolveDiscoverTimeoutMs(),
 ): Effect.Effect<McpToolManifest, McpToolDiscoveryError> =>
   Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
