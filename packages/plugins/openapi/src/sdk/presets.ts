@@ -57,6 +57,139 @@ export const FIGMA_SPEC_OVERRIDES: SpecOverrides = [
   },
 ];
 
+/** Vercel's published spec lacks the Observability events endpoint the Vercel
+ *  CLI uses for `vercel logs` (runtime logs and CDN requests over a past time
+ *  range). Its only runtime-log operation, `getRuntimeLogs`, follows a live
+ *  stream, so past logs are otherwise unreachable. The request and response
+ *  shapes mirror the CLI's own client. */
+export const VERCEL_SPEC_OVERRIDES: SpecOverrides = [
+  {
+    op: "add",
+    path: "/paths/~1v1~1observability~1events",
+    value: {
+      post: {
+        operationId: "queryObservabilityEvents",
+        summary: "Query observability events",
+        description:
+          "Returns runtime log entries (event `vercel.log`) or CDN request records (event `vercel.proxy_response`) for a time range, newest first by default. Page with `pagination.nextCursor`. This is the endpoint behind `vercel logs`.",
+        tags: ["logs"],
+        security: [{ bearerToken: [] }],
+        parameters: [
+          {
+            name: "teamId",
+            in: "query",
+            required: true,
+            description: "The Team identifier that owns the events. Must match `scope.ownerId`.",
+            schema: { type: "string", example: "team_1a2b3c4d5e6f7g8h9i0j1k2l" },
+          },
+          {
+            name: "x-vercel-observability-query-reason",
+            in: "header",
+            required: false,
+            description: "Free-form label for why the query runs, e.g. `agent/logs-runtime`.",
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["event", "scope", "timeRange", "select"],
+                properties: {
+                  event: {
+                    type: "string",
+                    enum: ["vercel.log", "vercel.proxy_response"],
+                    description:
+                      "`vercel.log` for runtime log entries, `vercel.proxy_response` for CDN request records.",
+                  },
+                  scope: {
+                    type: "object",
+                    required: ["ownerId"],
+                    properties: {
+                      ownerId: { type: "string", description: "The Team identifier." },
+                      projectIds: { type: "array", items: { type: "string" } },
+                    },
+                  },
+                  timeRange: {
+                    type: "object",
+                    required: ["start", "end"],
+                    properties: {
+                      start: { type: "string", format: "date-time" },
+                      end: { type: "string", format: "date-time" },
+                    },
+                  },
+                  select: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                      "Fields to return, e.g. `level`, `message`, `source`, `environment`, `deploymentId`, `requestId`, `requestPath`.",
+                  },
+                  filter: {
+                    type: "string",
+                    description:
+                      'KQL-style filter, e.g. `level:warning AND environment:production AND "some text"`.',
+                  },
+                  order: { type: "string", enum: ["asc", "desc"], default: "desc" },
+                  limit: { type: "integer", minimum: 1, maximum: 1000 },
+                  cursor: {
+                    type: "string",
+                    description: "`pagination.nextCursor` from the previous page.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "One page of events.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["events", "pagination"],
+                  properties: {
+                    events: {
+                      type: "array",
+                      items: { type: "object", additionalProperties: true },
+                    },
+                    pagination: {
+                      type: "object",
+                      required: ["hasMore", "nextCursor"],
+                      properties: {
+                        hasMore: { type: "boolean" },
+                        nextCursor: { type: "string", nullable: true },
+                      },
+                    },
+                    meta: {
+                      type: "object",
+                      additionalProperties: true,
+                      properties: {
+                        excludedIntervals: {
+                          type: "array",
+                          items: {
+                            type: "object",
+                            properties: {
+                              start: { type: "string" },
+                              end: { type: "string" },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+];
+
 const openApiOnlyPresets: readonly OpenApiPreset[] = [
   {
     id: "figma",
@@ -92,6 +225,7 @@ const openApiOnlyPresets: readonly OpenApiPreset[] = [
     url: "https://openapi.vercel.sh",
     icon: "https://integrations.sh/logo/vercel.com",
     featured: true,
+    specOverrides: VERCEL_SPEC_OVERRIDES,
   },
   {
     id: "neon",
