@@ -13,6 +13,25 @@ import { Browser } from "../support/browser.ts";
 const source = `import {
   defineApp, dynamicRouter, mutation, object, query, router, string, workflow
 } from "apps";
+import { createAppHandler, hostContext } from "apps/host";
+const portable = createAppHandler(defineApp({}, {
+  tools: router({ who: query({ input: object({}) }, async (ctx) => ({
+    hasUser: "user" in ctx, id: ctx.user?.id ?? null,
+  })) }),
+}));
+const direct = query({ input: object({}) }, async (ctx) => {
+  const invoke = async (accounts, caller) => {
+    const response = await portable(new Request("https://app.invalid", {
+      method: "POST", body: JSON.stringify({ operation: "call", tool: "who", input: {} }),
+    }), hostContext(accounts, undefined, caller));
+    return { status: response.status, body: await response.json() };
+  };
+  return {
+    caller: await invoke({ app: {} }, ctx.user.id),
+    app: await invoke({ app: {} }, undefined),
+    subjectless: await invoke({ app: {}, user: {} }, undefined),
+  };
+});
 const who = query({ input: object({}) }, async (ctx) => ctx.user.id ?? "missing");
 const spoof = mutation({ input: object({ userId: string() }) }, async (ctx, input) => ({
   callerId: ctx.user.id ?? "missing",
@@ -35,7 +54,7 @@ export default defineApp({}, async (ctx) => {
     }],
     resolve: async (requested) => requested === name ? fromFactory : undefined,
   });
-  return { tools: router({ who, spoof, generated, launch }), workflows: { record } };
+  return { tools: router({ who, direct, spoof, generated, launch }), workflows: { record } };
 });`;
 
 const SessionIdentity = Schema.NullOr(
@@ -139,6 +158,15 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) => 
         expect(yield* query(actors.owner)).toBe(ownerId);
         expect(yield* query(actors.member)).toBe(memberId);
         expect(yield* query(actors.owner)).toBe(ownerId);
+
+        // Portable hosts can supply a caller without any user-account requirements.
+        const direct = yield* call(actors.member, "direct", "query", {});
+        expect(direct.status).toBe(200);
+        expect(direct.body).toEqual({
+          caller: { status: 200, body: { ok: true, value: { hasUser: true, id: memberId } } },
+          app: { status: 200, body: { ok: true, value: { hasUser: false, id: null } } },
+          subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
+        });
 
         // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
         const subscribe = (actor: Session) =>
