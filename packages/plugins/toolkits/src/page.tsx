@@ -1102,7 +1102,7 @@ function ToolkitWorkspace(props: {
         const id = toolMatchId(tool);
         return {
           id,
-          name: id,
+          name: tool.static ? id : `${tool.integration}.${tool.name}`,
           description: tool.description,
           policy: resolveToolkitPolicy(id, accessPolicies, tool.requiresApproval),
           owner: toolOwner(tool),
