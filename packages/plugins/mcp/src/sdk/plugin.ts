@@ -19,7 +19,6 @@ import {
   tool,
   ToolResult,
   type AuthMethodDescriptor,
-  classifyHttpStatus,
   type HealthCheckResult,
   type Integration,
   type IntegrationConfig,
@@ -30,6 +29,7 @@ import {
   type PluginCtx,
   type StaticToolSchema,
   type StorageFailure,
+  type Tool,
   type ToolAnnotations,
   type ToolDef,
   ToolName,
@@ -49,10 +49,11 @@ import { createMcpConnectionPool } from "./connection-pool";
 import { discoverToolsFromInput } from "./discover";
 import {
   McpConnectionError,
-  type McpConnectionFailureKind,
   McpOAuthReauthorizationRequired,
   McpToolDiscoveryError,
 } from "./errors";
+import { compatibleHealthCandidates, findProbeTool } from "./health-candidates";
+import { classifyMcpHealthFailure, classifyMcpHealthProbe } from "./health-probe";
 import { invokeMcpTool, isUnknownToolMessage } from "./invoke";
 import { deriveMcpNamespace, type McpToolManifestEntry } from "./manifest";
 import { mcpPresets } from "./presets";
@@ -77,43 +78,16 @@ import {
 
 const MCP_PLUGIN_ID = "mcp" as const;
 
-/** Classify a failed liveness probe. The structural `httpStatus` carried on the
- *  connect error is the primary signal (401/403 = auth wall = expired); message
- *  substrings are only a fallback for causes with no status (OAuth
- *  re-authorization, servers whose auth rejection isn't an HTTP status).
- *  Anything else (server down, wrong transport) is degraded, not a credential
- *  problem. */
-const mcpLivenessFailureStatus = (failure: {
-  readonly message: string;
-  readonly httpStatus?: number;
-}): "expired" | "degraded" => {
-  if (failure.httpStatus !== undefined) {
-    // A failed connect can't be healthy; the shared classifier decides
-    // expired vs degraded so "which statuses mean expired" lives in one place.
-    const classified = classifyHttpStatus(failure.httpStatus);
-    return classified === "expired" ? "expired" : "degraded";
-  }
-  const lower = failure.message.toLowerCase();
-  const authWalled =
+/** Last-resort signal for a failure that carries no HTTP status: its own text
+ *  says the server refused authorization. Used only to choose the status; the
+ *  message is never copied into health detail. */
+const authRefusedWithoutStatus = (message: string): boolean => {
+  const lower = message.toLowerCase();
+  return (
     lower.includes("oauth re-authorization") ||
     lower.includes("unauthorized") ||
-    lower.includes("forbidden");
-  return authWalled ? "expired" : "degraded";
-};
-
-/** Enumerable failure MECHANISM for a failed liveness probe, beside the status
- *  classifier above: a hit deadline is `probe_timeout` (a slow-but-alive
- *  server, not a dead one), an HTTP verdict is `upstream_status`, and anything
- *  else (transport, protocol, config) is `probe_failed`. Structural fields
- *  only — never the message. */
-const mcpLivenessFailureReason = (failure: {
-  readonly httpStatus?: number;
-  readonly timedOut?: boolean;
-  readonly failureKind?: McpConnectionFailureKind;
-}): "probe_timeout" | "upstream_status" | "probe_failed" => {
-  if (failure.timedOut === true || failure.failureKind === "timeout") return "probe_timeout";
-  if (failure.httpStatus !== undefined) return "upstream_status";
-  return "probe_failed";
+    lower.includes("forbidden")
+  );
 };
 
 const legacyOAuthClientSlugCandidate = (value: string): string | null => {
@@ -531,6 +505,14 @@ const mcpCallToolResultOutputSchema = (structuredContentSchema?: unknown): JsonS
   };
 };
 
+const McpCallToolResultOutputSchema = Schema.Struct({
+  properties: Schema.Struct({ structuredContent: Schema.Unknown }),
+  required: Schema.Array(Schema.String),
+});
+const decodeMcpCallToolResultOutputSchema = Schema.decodeUnknownOption(
+  McpCallToolResultOutputSchema,
+);
+
 /** Build the executor-facing ToolDef for one discovered MCP tool, stamping the
  *  real MCP tool name, the upstream annotations, and the tool's `_meta` map
  *  into the persisted annotations so they survive to invokeTool with no
@@ -555,6 +537,27 @@ const toToolDef = (entry: McpToolManifestEntry): ToolDef => {
     outputSchema: mcpCallToolResultOutputSchema(entry.outputSchema),
     annotations: annotations as ToolAnnotations,
   };
+};
+
+/** Invert `toToolDef` for a persisted tool: the tool as discovered, its own
+ *  output schema unwrapped from the CallToolResult envelope (undefined when
+ *  it declared none, since the envelope then requires only `content`). */
+const fromToolDef = (tool: Tool): McpToolManifestEntry[] => {
+  const stamp = readStamp(tool.annotations);
+  if (!stamp) return [];
+  const envelope = Option.getOrUndefined(decodeMcpCallToolResultOutputSchema(tool.outputSchema));
+  return [
+    {
+      toolId: String(tool.name),
+      toolName: stamp.toolName,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      outputSchema: envelope?.required.includes("structuredContent")
+        ? envelope.properties.structuredContent
+        : undefined,
+      ...(stamp.upstream ? { annotations: stamp.upstream } : {}),
+    },
+  ];
 };
 
 const McpTextContent = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String });
@@ -1931,14 +1934,34 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
         return out;
       }),
 
-    // Liveness-only health check. MCP has no usable identity source (no
-    // id_token/userinfo, no standard whoami), so this answers "is this
-    // credential still alive?" by dialing the server and listing tools (the same
-    // path resolveTools uses); identity stays the user-supplied connection label.
-    // Only checkHealth is implemented (no candidates/describe/set), so the
-    // operation/identity editor stays hidden while the status dot + "Check now"
-    // light up.
-    checkHealth: ({ ctx, credential }) =>
+    // One spec probes every connection, so candidates are the read-only tools
+    // all of them agree on. Listing reads each connection's catalog
+    // (tools/list) and never calls a tool. A catalog that cannot be read —
+    // including a failed listing where core kept the prior catalog — counts as
+    // empty, which empties the intersection rather than guessing.
+    listHealthCheckCandidates: ({ ctx, integration }) =>
+      Effect.gen(function* () {
+        const connections = yield* ctx.connections.list({ integration: integration.slug });
+        const catalogs = yield* Effect.forEach(connections, (connection) =>
+          ctx.connections
+            .refreshCatalog({
+              owner: connection.owner,
+              integration: integration.slug,
+              name: connection.name,
+            })
+            .pipe(
+              Effect.map(({ tools, complete }) => (complete ? tools.flatMap(fromToolDef) : [])),
+              Effect.orElseSucceed((): McpToolManifestEntry[] => []),
+            ),
+        );
+        return compatibleHealthCandidates(catalogs);
+      }),
+
+    // Without a spec this is a liveness check: dial the server and list tools
+    // (the resolveTools path); identity stays the user-supplied label. With a
+    // spec, it also calls exactly that tool, provided the live catalog still
+    // declares it read-only.
+    checkHealth: ({ ctx, credential, spec }) =>
       Effect.gen(function* () {
         const parsed = parseMcpIntegrationConfig(credential.config);
         if (!parsed) {
@@ -1969,40 +1992,99 @@ export const mcpPlugin = definePlugin((options?: McpPluginOptions) => {
             }
           }
         }
-        const connector = yield* buildConnectorInput(
+        const built = yield* buildConnectorInput(
           parsed,
           credential.values,
           credential.template === null ? null : String(credential.template),
           allowStdio,
           options?.httpClientLayer ?? ctx.httpClientLayer,
-        );
-
-        return yield* discoverToolsFromInput(connector).pipe(
-          Effect.map(
-            () =>
-              ({ status: "healthy" as const, checkedAt: Date.now() }) satisfies HealthCheckResult,
-          ),
-          Effect.catchTag("McpToolDiscoveryError", (error) =>
-            Effect.succeed({
-              status: mcpLivenessFailureStatus(error),
-              checkedAt: Date.now(),
-              ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
-              detail: error.message,
-              reason: mcpLivenessFailureReason(error),
-            } satisfies HealthCheckResult),
-          ),
-        );
-      }).pipe(
-        // buildConnectorInput rejects (e.g. stdio disabled / missing config).
-        Effect.catchTag("McpConnectionError", (error) =>
-          Effect.succeed({
-            status: mcpLivenessFailureStatus(error),
+        ).pipe(Effect.option);
+        if (Option.isNone(built)) {
+          // The only rejection is a stdio server on a host that disallows it.
+          return {
+            status: "degraded" as const,
             checkedAt: Date.now(),
-            ...(error.httpStatus !== undefined ? { httpStatus: error.httpStatus } : {}),
-            detail: error.message,
-            reason: mcpLivenessFailureReason(error),
-          } satisfies HealthCheckResult),
-        ),
+            detail: "MCP stdio transport is disabled on this host.",
+            reason: "probe_failed" as const,
+          } satisfies HealthCheckResult;
+        }
+        const connector = built.value;
+        const { manifest } = yield* discoverToolsFromInput(connector);
+
+        if (!spec) {
+          return {
+            status: "healthy" as const,
+            checkedAt: Date.now(),
+            detail: "MCP discovery only; no upstream session probe configured.",
+          } satisfies HealthCheckResult;
+        }
+        // The same rule as candidate listing, against the live catalog.
+        const tool = findProbeTool(manifest.tools, spec.operation);
+        if (!tool) {
+          return {
+            status: "degraded" as const,
+            checkedAt: Date.now(),
+            detail:
+              "Configured MCP health probe is unavailable or not read-only. Update the server or choose a different probe.",
+            reason: "probe_failed" as const,
+          } satisfies HealthCheckResult;
+        }
+        // A tools/call is never replayed (see invoke.ts), so a rejected
+        // credential surfaces as a failure here rather than being retried.
+        const raw = yield* invokeMcpTool({
+          toolId: tool.toolId,
+          toolName: tool.toolName,
+          args: spec.args ?? {},
+          transport: parsed.transport,
+          connector: createMcpConnector(connector),
+          // Nobody is present to answer an unattended probe.
+          elicit: () => Effect.succeed({ action: "decline" as const }),
+        });
+        return classifyMcpHealthProbe(raw, {
+          identityField: spec.identityField,
+          secrets: Object.values(credential.values).filter(
+            (value): value is string => typeof value === "string",
+          ),
+        });
+      }).pipe(
+        // Discovery fails only with McpToolDiscoveryError; the probe call fails
+        // with the invoke errors. buildConnectorInput's McpConnectionError is
+        // already absorbed by Effect.option, so each tag has exactly one origin.
+        Effect.catchTags({
+          McpToolDiscoveryError: (error) =>
+            Effect.succeed(
+              classifyMcpHealthFailure({
+                stage: error.stage,
+                httpStatus: error.httpStatus,
+                timedOut: error.timedOut,
+                reauthorizationRequired: error.reauthorizationRequired,
+                insufficientScope: error.insufficientScope,
+                authRefusedWithoutStatus: authRefusedWithoutStatus(error.message),
+              }),
+            ),
+          McpInvocationError: (error) =>
+            Effect.succeed(
+              classifyMcpHealthFailure({
+                stage: "call_tool",
+                httpStatus: error.status,
+                insufficientScope: error.insufficientScope,
+              }),
+            ),
+          // The probe dials its own session, whose handshake can fail too.
+          McpConnectionError: (error) =>
+            Effect.succeed(
+              classifyMcpHealthFailure({
+                stage: "connect",
+                httpStatus: error.httpStatus,
+                timedOut: error.failureKind === "timeout",
+                insufficientScope: error.insufficientScope,
+              }),
+            ),
+          McpOAuthReauthorizationRequired: () =>
+            Effect.succeed(
+              classifyMcpHealthFailure({ stage: "connect", reauthorizationRequired: true }),
+            ),
+        }),
         // Every failure above folds onto the SUCCESS channel, so without this
         // the span ends green on an expired credential — a 401 auth wall and a
         // healthy dial were indistinguishable in traces.

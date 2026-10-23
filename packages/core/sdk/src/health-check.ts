@@ -187,6 +187,14 @@ export const HealthCheckCandidate = Schema.Struct({
   /** True for mutating methods (post/put/patch/delete), ranked last and shown
    *  with a warning, since a health check should be safe to run repeatedly. */
   destructive: Schema.Boolean,
+  /** The user must pick this candidate themselves: surfaces never pre-select
+   *  it, run it, or save it as the check on their own. Set when "read-only"
+   *  is the upstream's own claim (MCP tool annotations are hints) rather than
+   *  a protocol guarantee such as HTTP GET. */
+  explicitSelectionOnly: Schema.optional(Schema.Boolean),
+  /** The arguments are one typed JSON object (MCP tool arguments), edited
+   *  whole rather than as one text field per parameter. */
+  jsonArguments: Schema.optional(Schema.Boolean),
   /** Operation summary / description for display, when known. */
   summary: Schema.optional(Schema.String),
   /** The operation's parameters, so the editor can offer pinned-arg inputs. */

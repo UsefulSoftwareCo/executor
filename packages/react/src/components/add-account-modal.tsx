@@ -89,6 +89,8 @@ import {
 import { RemoveOAuthAppDialog } from "./remove-oauth-app-dialog";
 import { AddCustomMethodForm, type CreateCustomMethod } from "./add-custom-method-modal";
 import { CredentialGuidancePanel } from "./credential-guidance";
+import { JsonArgumentsField } from "./health-check-editor";
+import { parseJsonArguments } from "../lib/health-check-args";
 import { PlacementLine, type AuthMethod } from "../lib/auth-placements";
 import { connectionIdentifier } from "../lib/connection-name";
 import { Badge } from "./badge";
@@ -628,6 +630,20 @@ export const connectionExistsMessage = (label: string): string =>
 /** The default owner a new connection is saved under when the user makes no
  *  explicit choice. Personal: a connection is most often a personal credential. */
 export const DEFAULT_CONNECTION_OWNER: Owner = "user";
+
+/** The candidate the key check starts from: the best one that runs without
+ *  arguments, else the best non-destructive one. Continue may run the seed and
+ *  save it as the integration's check, so a candidate that must be picked
+ *  explicitly (an MCP tool, whose read-only claim is only a hint) is never
+ *  seeded. */
+export const seedHealthCheckCandidate = (
+  candidates: readonly HealthCheckCandidate[],
+): HealthCheckCandidate | null => {
+  const seedable = candidates.filter(
+    (candidate) => !candidate.destructive && candidate.explicitSelectionOnly !== true,
+  );
+  return seedable.find((candidate) => candidate.requiredArgCount === 0) ?? seedable[0] ?? null;
+};
 
 /** Prefer OAuth only when its picker has a matching, usable client. Otherwise
  *  prefer a credential method; OAuth-only integrations still expose setup. */
@@ -1291,6 +1307,8 @@ function RequestCheckPanel(props: {
   readonly configuredOperation: string | null;
   readonly args: Record<string, string>;
   readonly onArgChange: (name: string, value: string) => void;
+  readonly jsonArgs: string;
+  readonly onJsonArgsChange: (text: string) => void;
   readonly ready: boolean;
   readonly validating: boolean;
   readonly result: HealthCheckResult | null;
@@ -1308,7 +1326,9 @@ function RequestCheckPanel(props: {
         })),
     [candidates],
   );
-  const requiredParams = (selected?.parameters ?? []).filter((p) => p.required);
+  const requiredParams = selected?.jsonArguments
+    ? []
+    : (selected?.parameters ?? []).filter((p) => p.required);
   const healthy = result?.status === "healthy";
   // Identity-looking fields first, then response order; capped so a chatty
   // response can't blow the modal up (the hidden tail adds nothing, since the
@@ -1357,6 +1377,18 @@ function RequestCheckPanel(props: {
           Check
         </Button>
       </div>
+
+      {!configuredOperation && selected?.jsonArguments ? (
+        <div className="border-t border-border px-3 py-2.5">
+          <JsonArgumentsField
+            id="hc-pick-arguments"
+            parameters={selected.parameters ?? []}
+            value={props.jsonArgs}
+            onChange={props.onJsonArgsChange}
+            disabled={props.validating}
+          />
+        </div>
+      ) : null}
 
       {/* Required args, only when the chosen call needs them. */}
       {!configuredOperation && requiredParams.length > 0 ? (
@@ -1481,6 +1513,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   const [validationResult, setValidationResult] = useState<HealthCheckResult | null>(null);
   const [hcOperation, setHcOperation] = useState("");
   const [hcArgs, setHcArgs] = useState<Record<string, string>>({});
+  const [hcJsonArgs, setHcJsonArgs] = useState("");
   // Credential methods run as a TWO-STEP wizard in the same modal: step 1 is
   // the key + proving it works (the request/response panel sits right below
   // the key, which stays visible and editable the whole time); step 2 is
@@ -1699,12 +1732,7 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // the seed is simply the best one that can run without arguments, falling
   // back to the best non-destructive one.
   const hcBestCandidate = useMemo(
-    () =>
-      healthCheckCandidates.find(
-        (candidate) => !candidate.destructive && candidate.requiredArgCount === 0,
-      ) ??
-      healthCheckCandidates.find((candidate) => !candidate.destructive) ??
-      null,
+    () => seedHealthCheckCandidate(healthCheckCandidates),
     [healthCheckCandidates],
   );
   useEffect(() => {
@@ -1731,13 +1759,25 @@ function AddAccountModalView(props: AddAccountModalProps) {
       }));
   }, [validationResult]);
   const hcRequiredParams = (hcSelected?.parameters ?? []).filter((p) => p.required);
-  const hcMissingRequired = hcRequiredParams.some(
-    (p) => (hcArgs[p.name] ?? "").trim().length === 0,
-  );
+  // Trimmed text per HTTP parameter, blanks dropped; a tool's arguments as one
+  // JSON object.
+  const hcParsedArgs = hcSelected?.jsonArguments
+    ? parseJsonArguments(hcJsonArgs)
+    : {
+        ok: true as const,
+        args: Object.fromEntries(
+          Object.entries(hcArgs)
+            .map(([key, value]) => [key, value.trim()] as const)
+            .filter(([, value]) => value.length > 0),
+        ),
+      };
   const canCheckKey = !isOAuth && !isNoAuth && (hasHealthCheck || healthCheckCandidates.length > 0);
-  // Pick mode's probe is runnable once an operation is chosen and its required
-  // args are filled.
-  const hcCandidateReady = hcOperation.length > 0 && !hcMissingRequired;
+  // Pick mode's probe is runnable once an operation is chosen and its
+  // arguments are valid, required ones included.
+  const hcCandidateReady =
+    hcOperation.length > 0 &&
+    hcParsedArgs.ok &&
+    hcRequiredParams.every((p) => Object.hasOwn(hcParsedArgs.args, p.name));
 
   // The distinct credential inputs the selected method needs — one per variable
   // across its placements. A single-input method yields one field (`token`); a
@@ -2171,13 +2211,10 @@ function AddAccountModalView(props: AddAccountModalProps) {
   };
 
   const candidateHealthSpec = (): HealthCheckSpec | null => {
-    if (!hcCandidateReady) return null;
-    const argEntries = Object.entries(hcArgs)
-      .map(([key, value]) => [key, value.trim()] as const)
-      .filter(([, value]) => value.length > 0);
+    if (!hcCandidateReady || !hcParsedArgs.ok) return null;
     return {
       operation: hcOperation,
-      ...(argEntries.length > 0 ? { args: Object.fromEntries(argEntries) } : {}),
+      ...(Object.keys(hcParsedArgs.args).length > 0 ? { args: hcParsedArgs.args } : {}),
     };
   };
 
@@ -3221,12 +3258,18 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     onOperationChange={(next) => {
                       setHcOperation(next);
                       setHcArgs({});
+                      setHcJsonArgs("");
                       clearKeyCheck();
                     }}
                     configuredOperation={configuredHealthCheck?.operation ?? null}
                     args={hcArgs}
                     onArgChange={(name, value) => {
                       setHcArgs((prev) => ({ ...prev, [name]: value }));
+                      clearKeyCheck();
+                    }}
+                    jsonArgs={hcJsonArgs}
+                    onJsonArgsChange={(text) => {
+                      setHcJsonArgs(text);
                       clearKeyCheck();
                     }}
                     ready={

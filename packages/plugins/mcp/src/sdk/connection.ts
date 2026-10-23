@@ -430,6 +430,40 @@ const connectionFromClient = (client: Client): McpConnection => ({
   close: () => client.close(),
 });
 
+type Transport = Parameters<Client["connect"]>[0];
+
+/**
+ * Every MCP revision requires `content` on a `tools/call` result, and the
+ * 2026 codec refuses a result without it. The 2025 codec instead defaults it
+ * to `[]` for SDK v1 parity, so `{}` or a bare `structuredContent` would reach
+ * callers as an empty success. Marking the absence as `null` on the raw
+ * response lets the SDK's own result validation refuse it there too. Call
+ * after a legacy-era `connect`, which installs the handler this wraps.
+ */
+const requireToolCallContent = (sdk: McpClientSdk, transport: Transport): void => {
+  const toolCalls = new Set<string | number>();
+  const send = transport.send.bind(transport);
+  transport.send = (message, options) => {
+    if (sdk.client.isJSONRPCRequest(message) && message.method === "tools/call") {
+      toolCalls.add(message.id);
+    }
+    return send(message, options);
+  };
+  const deliver = transport.onmessage;
+  transport.onmessage = (message, extra) => {
+    // Any response, result or error, settles its request; only a result is refined.
+    if (
+      sdk.client.isJSONRPCResponse(message) &&
+      message.id !== undefined &&
+      toolCalls.delete(message.id) &&
+      sdk.client.isJSONRPCResultResponse(message)
+    ) {
+      message.result.content ??= null;
+    }
+    deliver?.(message, extra);
+  };
+};
+
 const connectionFailure = (
   transport: string,
   message: string,
@@ -540,6 +574,7 @@ const connectClient = (input: {
         attributes: { "plugin.mcp.transport": input.transport },
       }),
     );
+    if (client.getProtocolEra() === "legacy") requireToolCallContent(sdk, transportInstance);
 
     return connectionFromClient(client);
   });
