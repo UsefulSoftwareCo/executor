@@ -57,11 +57,11 @@ export interface AppProtocol {
   readonly sealedCredentials: boolean;
 }
 
-/** Protocol 13 is the host's current protocol, so its messages need no conversion. */
-const protocol13: AppProtocol = {
-  version: 13,
+/** Protocol 14 adds the caller's host identity beside the invocation's account bindings. */
+const protocol14: AppProtocol = {
+  version: 14,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(13),
+  nodeEntry: nodeAppEntry(14),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
@@ -69,6 +69,15 @@ const protocol13: AppProtocol = {
   workflow: (execution) => execution,
   concurrentData: true,
   sealedCredentials: true,
+};
+
+/** Earlier builds have no caller identity field. Keep their retained entry body unchanged. */
+const withoutCaller = ({ caller: _caller, ...input }: HostInvocation) => input;
+const protocol13: AppProtocol = {
+  ...protocol14,
+  version: 13,
+  nodeEntry: nodeAppEntry(13),
+  invocation: (input) => JSON.stringify(withoutCaller(input)),
 };
 
 /**
@@ -94,8 +103,8 @@ const scopedRequirements = (command: HostRequest, body: unknown) =>
 
 /** Protocol 12 and earlier: the invocation's and each workflow step's accounts, unscoped. */
 const unscoped = {
-  invocation: <Input extends Pick<HostInvocation, "accounts">>(input: Input) =>
-    JSON.stringify({ ...input, accounts: unscopedAccounts(input.accounts) }),
+  invocation: (input: HostInvocation) =>
+    JSON.stringify({ ...withoutCaller(input), accounts: unscopedAccounts(input.accounts) }),
   workflow: (execution: WorkflowExecution): WorkflowExecution => ({
     ...execution,
     resolve: () =>
@@ -214,7 +223,7 @@ type LegacyVersion = keyof typeof legacyProtocols;
  */
 const prefixKind = (tool: string) =>
   tool.startsWith("queries.") ? "query" : tool.startsWith("mutations.") ? "mutation" : undefined;
-const legacyCommand = (command: HostRequest) =>
+const legacyCommand = (command: HostRequest): HostRequest =>
   command.operation === "call"
     ? { operation: "call", tool: command.tool, input: command.input }
     : command;
@@ -272,6 +281,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol11,
     protocol12,
     protocol13,
+    protocol14,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

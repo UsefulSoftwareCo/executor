@@ -132,6 +132,8 @@ export const makeDeclarations = (options: {
             appCacheNamespace(state.version.build, versionHostApi(options.hostApi, state.version)),
             // A caller's evaluation and actorless work see different contexts: only one has `user`.
             state.scope,
+            // Factories may vary tools and skills by caller, even with no user accounts.
+            state.scope === "user" ? state.actor : undefined,
             selections,
           ]),
         ),

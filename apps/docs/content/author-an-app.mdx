@@ -140,6 +140,7 @@ const requirements = {
 
 async (ctx: MutationContext<typeof requirements>) => {
   ctx.app.accounts.datadog; // linked for everyone by people who can edit the app
+  ctx.user.id; // the host's opaque caller identity, independent of linked accounts
   ctx.user.accounts.github; // the caller's own linked account
 };
 ```

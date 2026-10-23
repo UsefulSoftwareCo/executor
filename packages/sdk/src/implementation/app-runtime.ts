@@ -171,6 +171,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
             database: input.database,
             command,
             accounts: Redacted.value(input.accounts),
+            ...(input.caller === undefined ? {} : { caller: input.caller }),
             // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
             headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
             ...(input.hostApi === undefined ? {} : { hostApi: input.hostApi }),

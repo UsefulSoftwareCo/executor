@@ -352,7 +352,11 @@ function bindAccounts(
         const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
         if (selected.user === undefined) return { app: { accounts: app } };
         const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
-        return { app: { accounts: app }, user: { accounts: user } };
+        const id =
+          context.caller === undefined
+            ? undefined
+            : yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(context.caller);
+        return { app: { accounts: app }, user: { id, accounts: user } };
       }),
     new HostAccountsInvalid(),
   );
@@ -715,7 +719,12 @@ function dispatch(
             Effect.gen(function* () {
               const current = yield* execution.resolve();
               const accounts = yield* safe(
-                () => bindAccounts(native.accounts, declared, current),
+                // A run keeps its initiating caller; each step refreshes only the accounts.
+                () =>
+                  bindAccounts(native.accounts, declared, {
+                    ...current,
+                    ...(context.caller === undefined ? {} : { caller: context.caller }),
+                  }),
                 new WorkflowFailure({ reason: "credentials", retryable: false }),
               );
               return {

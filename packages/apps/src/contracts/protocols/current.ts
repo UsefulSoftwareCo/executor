@@ -575,6 +575,8 @@ export type HostResponse = typeof HostResponse.Type;
 export const HostInvocation = Schema.Struct({
   command: HostRequest,
   accounts: ResolvedAccounts,
+  /** Trusted host identity; never part of the public command. */
+  caller: Schema.optionalKey(Schema.NonEmptyString),
   approval: Schema.optionalKey(TrustedToolApproval),
   replay: Schema.optionalKey(WorkflowReplay),
   deadline: Schema.optionalKey(InvocationDeadline),
