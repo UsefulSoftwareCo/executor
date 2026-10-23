@@ -1,5 +1,13 @@
 # @executor-js/react
 
+## 1.4.75
+
+### Patch Changes
+
+- Updated dependencies [[`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3)]:
+  - @executor-js/sdk@1.6.12
+  - @executor-js/api@1.4.75
+
 ## 1.4.74
 
 ### Patch Changes

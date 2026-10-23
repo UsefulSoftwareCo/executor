@@ -1,5 +1,19 @@
 # @executor-js/example-all-plugins
 
+## 0.0.73
+
+### Patch Changes
+
+- Updated dependencies [[`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3)]:
+  - @executor-js/sdk@1.6.12
+  - @executor-js/plugin-file-secrets@1.6.12
+  - @executor-js/plugin-graphql@1.6.12
+  - @executor-js/plugin-keychain@1.6.12
+  - @executor-js/plugin-mcp@1.6.12
+  - @executor-js/plugin-onepassword@1.6.12
+  - @executor-js/plugin-openapi@1.6.12
+  - @executor-js/plugin-workos-vault@0.0.2
+
 ## 0.0.72
 
 ### Patch Changes

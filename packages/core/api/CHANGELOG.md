@@ -1,5 +1,16 @@
 # @executor-js/api
 
+## 1.4.75
+
+### Patch Changes
+
+- [#2337](https://github.com/UsefulSoftwareCo/executor/pull/2337) [`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Hosts can pause every change to a workspace with `workspaceWriteGate`: connection and OAuth writes, OAuth completion (before the code is exchanged) and OAuth token refreshes are refused with the host's message, while reads and tool calls keep working. The OAuth callback popup now shows why a refusal the user can act on happened. Executor Cloud uses this to freeze an organization while it moves to Executor v2, refuses changes to it once it has moved, and opens a moved organization's dashboard in v2.
+
+- Updated dependencies [[`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3)]:
+  - @executor-js/sdk@1.6.12
+  - @executor-js/execution@1.6.12
+  - @executor-js/host-mcp@1.4.4
+
 ## 1.4.74
 
 ### Patch Changes
