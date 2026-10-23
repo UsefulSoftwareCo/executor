@@ -5,6 +5,7 @@ import {
   OAuthClientSlug,
   ProviderItemId,
   ProviderKey,
+  type HealthCheckCandidate,
   type OAuthProbeResult,
   type Owner,
 } from "@executor-js/sdk/shared";
@@ -24,6 +25,7 @@ import {
   oauthIdentityLabelFromHealth,
   runAutomaticOAuthConnect,
   runCimdConnect,
+  seedHealthCheckCandidate,
   typedIdentityLabel,
   uniqueConnectionName,
 } from "./add-account-modal";
@@ -257,6 +259,41 @@ describe("oauthIdentityLabelFromHealth", () => {
         storedIdentityLabel: null,
       }),
     ).toBeNull();
+  });
+});
+
+describe("seedHealthCheckCandidate", () => {
+  const candidate = (
+    operation: string,
+    overrides: Partial<HealthCheckCandidate> = {},
+  ): HealthCheckCandidate => ({
+    operation,
+    method: "get",
+    requiredArgCount: 0,
+    destructive: false,
+    ...overrides,
+  });
+
+  it("prefers a zero-argument read, then any non-destructive candidate", () => {
+    expect(
+      seedHealthCheckCandidate([
+        candidate("delete", { destructive: true }),
+        candidate("search", { requiredArgCount: 1 }),
+        candidate("me"),
+      ])?.operation,
+    ).toBe("me");
+    expect(
+      seedHealthCheckCandidate([
+        candidate("delete", { destructive: true }),
+        candidate("search", { requiredArgCount: 1 }),
+      ])?.operation,
+    ).toBe("search");
+  });
+
+  it("never seeds a candidate that must be picked explicitly", () => {
+    const tool = candidate("whoami", { method: "mcp", explicitSelectionOnly: true });
+    expect(seedHealthCheckCandidate([tool])).toBeNull();
+    expect(seedHealthCheckCandidate([tool, candidate("me")])?.operation).toBe("me");
   });
 });
 

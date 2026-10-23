@@ -177,6 +177,7 @@ import type {
   OwnerBinding,
   PluginCtx,
   PluginExtensions,
+  RefreshedToolCatalog,
   ResolveToolsResult,
   StaticIntegrationDecl,
   StaticToolDecl,
@@ -3518,7 +3519,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
       mode: () => "explicit" | "background",
-    ): Effect.Effect<readonly Tool[], IntegrationNotFoundError | StorageFailure> =>
+    ): Effect.Effect<RefreshedToolCatalog, IntegrationNotFoundError | StorageFailure> =>
       Effect.gen(function* () {
         const runtime = runtimes.get(integrationRow.plugin_id);
         const keys = yield* Effect.try({
@@ -3638,7 +3639,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               yield* stampSynced(existingRow);
             }),
           );
-          return [];
+          return { tools: [], complete: true };
         }
 
         if (!runtime?.plugin.resolveTools) {
@@ -3650,7 +3651,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               yield* stampSynced(existingRow);
             }),
           );
-          return [];
+          return { tools: [], complete: true };
         }
 
         const result: ResolveToolsResult = yield* runtime.plugin
@@ -3685,7 +3686,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             connection: String(ref.name),
           });
           const keptRows = yield* core.findMany("tool", { where });
-          return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
+          return {
+            tools: keptRows.map((row) => rowToTool(row as ConnectionToolRow)),
+            complete: false,
+          };
         }
 
         if (
@@ -3704,7 +3708,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               connection: String(ref.name),
               existingToolCount: keptRows.length,
             });
-            return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
+            return {
+              tools: keptRows.map((row) => rowToTool(row as ConnectionToolRow)),
+              complete: false,
+            };
           }
         }
 
@@ -3747,7 +3754,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           }),
         );
 
-        return result.tools.map((tool: ToolDef) =>
+        const tools = result.tools.map((tool: ToolDef) =>
           rowToTool(
             {
               tenant: keys.tenant,
@@ -3767,11 +3774,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tool.annotations,
           ),
         );
+        return { tools, complete: true };
       });
 
     type ToolProductionError = IntegrationNotFoundError | StorageFailure;
     interface ToolProductionInFlight {
-      readonly deferred: Deferred.Deferred<readonly Tool[], ToolProductionError>;
+      readonly deferred: Deferred.Deferred<RefreshedToolCatalog, ToolProductionError>;
       mode: "explicit" | "background";
     }
     const toolProductionInFlight = new Map<string, ToolProductionInFlight>();
@@ -3779,7 +3787,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
       integrationRow: IntegrationRow,
       ref: ConnectionRef,
       requestedMode: "explicit" | "background" = "explicit",
-    ): Effect.Effect<readonly Tool[], ToolProductionError> =>
+    ): Effect.Effect<RefreshedToolCatalog, ToolProductionError> =>
       Effect.suspend(() => {
         const key = `${ref.owner}:${String(ref.integration)}:${String(ref.name)}`;
         const existing = toolProductionInFlight.get(key);
@@ -3789,7 +3797,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
 
         const entry: ToolProductionInFlight = {
-          deferred: Deferred.makeUnsafe<readonly Tool[], ToolProductionError>(),
+          deferred: Deferred.makeUnsafe<RefreshedToolCatalog, ToolProductionError>(),
           mode: requestedMode,
         };
         toolProductionInFlight.set(key, entry);
@@ -4863,10 +4871,10 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }),
       );
 
-    const connectionsRefresh = (
+    const connectionsRefreshCatalog = (
       ref: ConnectionRef,
     ): Effect.Effect<
-      readonly Tool[],
+      RefreshedToolCatalog,
       ConnectionNotFoundError | IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure
     > =>
       Effect.gen(function* () {
@@ -4885,6 +4893,9 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         }
         return yield* produceConnectionTools(integrationRow, ref);
       });
+
+    const connectionsRefresh = (ref: ConnectionRef) =>
+      connectionsRefreshCatalog(ref).pipe(Effect.map((catalog) => catalog.tools));
 
     // No health-check capability ⇒ "unknown" rather than an error: the caller
     // can still render the connection, just without a liveness verdict.
@@ -5603,8 +5614,8 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // runs entirely in the background and the read answers from the
         // persisted rows at once. Without that split every read after the TTL
         // paid the grace budget for MCP listings it had no reason to wait on.
-        const urgent: Effect.Effect<readonly Tool[]>[] = [];
-        const deferred: Effect.Effect<readonly Tool[]>[] = [];
+        const urgent: Effect.Effect<void>[] = [];
+        const deferred: Effect.Effect<void>[] = [];
         for (const connection of connections) {
           const integrationRow = integrationBySlug.get(connection.integration);
           if (!integrationRow) continue;
@@ -5641,6 +5652,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               },
               "background",
             ).pipe(
+              Effect.asVoid,
               // Best-effort, but never silent: the read still succeeds on the
               // stale-but-working catalog and the peer rebuilds still finish,
               // while the operator gets the connection that failed and why.
@@ -5651,7 +5663,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   integration: connection.integration,
                   connection: connection.name,
                   errorTag: Predicate.isTagged(error, "StorageError") ? "StorageError" : "Unknown",
-                }).pipe(Effect.as([] as readonly Tool[])),
+                }),
               ),
               Effect.withSpan("executor.tools.sync_stale", {
                 attributes: {
@@ -6969,6 +6981,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
           update: (ref, input) => connectionsUpdate(ref, input),
           remove: (ref) => connectionsRemove(ref),
           refresh: (ref) => connectionsRefresh(ref),
+          refreshCatalog: (ref) => connectionsRefreshCatalog(ref),
           checkHealth: (ref, options) => connectionCheckHealth(ref, options),
           markToolsStale: (ref) => connectionsMarkToolsStale(ref),
           resolveValue: (ref) => resolveConnectionValueByRef(ref),

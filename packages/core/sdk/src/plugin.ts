@@ -265,6 +265,16 @@ export interface PluginCtx<TStore = unknown> {
       readonly Tool[],
       ConnectionNotFoundError | IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure
     >;
+    /** `refresh`, also reporting whether the listing was authoritative. When
+     *  discovery came back incomplete, `tools` is the retained prior catalog
+     *  and `complete` is false — for callers that must not treat a stale
+     *  catalog as the live one. */
+    readonly refreshCatalog: (
+      ref: ConnectionRef,
+    ) => Effect.Effect<
+      RefreshedToolCatalog,
+      ConnectionNotFoundError | IntegrationNotFoundError | OrgWriteDeniedError | StorageFailure
+    >;
     /** Run the integration's declared health check against a saved connection
      *  and persist the verdict. `ifStaleMs` serves the persisted verdict when
      *  younger than that window, so concurrent readers collapse to one probe;
@@ -403,6 +413,13 @@ export interface ResolveToolsResult {
    *  catalog. Core persists it while preserving the prior non-authoritative
    *  catalog. Omit for ordinary transient discovery failures. */
   readonly health?: HealthCheckResult;
+}
+
+/** A connection's catalog after a refresh. `complete` is false when the
+ *  listing was non-authoritative and core kept the prior persisted catalog. */
+export interface RefreshedToolCatalog {
+  readonly tools: readonly Tool[];
+  readonly complete: boolean;
 }
 
 export interface ProjectToolSchemaInput<TStore = unknown> {
