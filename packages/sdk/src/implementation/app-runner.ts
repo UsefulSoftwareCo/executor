@@ -124,6 +124,7 @@ export interface AppRunnerHost {
 
 /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
 export interface AppInvocation {
+  readonly caller?: string;
   readonly app: string;
   readonly build: string;
   readonly database: boolean;
@@ -837,6 +838,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         const body = protocol.invocation({
           command: invocation.command,
           accounts,
+          ...(invocation.caller === undefined ? {} : { caller: invocation.caller }),
           ...(invocation.approval === undefined ? {} : { approval: invocation.approval }),
           ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
           ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),

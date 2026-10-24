@@ -115,6 +115,8 @@ export const makeDeclarations = (options: {
             state.version.build,
             // A caller's evaluation and actorless work see different contexts: only one has `user`.
             state.scope,
+            // Factories may vary tools and skills by caller, even with no user accounts.
+            state.scope === "user" ? state.actor : undefined,
             selections,
           ]),
         ),
