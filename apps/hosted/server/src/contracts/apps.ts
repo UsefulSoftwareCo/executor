@@ -114,7 +114,7 @@ export const HostedApps = HttpApiGroup.make("apps")
       .annotate(RequiredAction, "manage")
       .annotate(
         OpenApi.Description,
-        "Add a remote MCP server by its URL as a new app, as the dashboard's Connect a service form does. Executor checks the server first and adds it when the server confirms it needs OAuth sign-in or no sign-in; connect an OAuth account afterwards with appAccounts.userConnect. A server that needs an API key or other setup is refused with agent_setup_required, and its recovery says how to write the app. Only MCP servers are added by URL.",
+        "Add a remote MCP server by its URL as a new app, or add a public OpenAPI JSON/YAML definition or GraphQL endpoint. Use this quick add when the app catalog has no matching entry. Set source.kind to mcp, openapi, or graphql, and provide name and url. OpenAPI derives authentication from the definition; baseUrl optionally overrides its server. GraphQL has no authentication discovery: omit auth for a public API, or set auth to {kind: 'bearer'} or {kind: 'apiKey', header}. Connect credentials afterwards with appAccounts.userConnect, never in the URL or source. Public APIs are checked before installation; protected GraphQL schemas are read after connecting an account. MCP imports still require confirmed anonymous access or discoverable OAuth; other MCP setup returns agent_setup_required.",
       ),
   )
   .add(

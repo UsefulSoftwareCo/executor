@@ -912,6 +912,38 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  apiUrlImportOpenapi: {
+    fixtures: "actors",
+    file: "api-url-import.spec.ts",
+    title: "OpenAPI JSON and YAML URL imports connect accounts and call the published API emulator",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The YAML definition fixture is hosted on loopback."),
+      local: na("Exercises the shared importer through the hosted browser and account APIs."),
+    },
+  },
+  apiUrlImportGraphql: {
+    fixtures: "actors",
+    file: "api-url-import.spec.ts",
+    title:
+      "GraphQL URL imports connect bearer and API-key accounts and call the published API emulator",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Hosted browser and account flow is covered on self-host."),
+      local: na("Exercises the shared importer through the hosted browser and account APIs."),
+    },
+  },
+  apiUrlImportRejected: {
+    fixtures: "actors",
+    file: "api-url-import.spec.ts",
+    title:
+      "API URL imports reject invalid definitions, embedded credentials and blocked destinations",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Invalid definition fixtures are hosted on loopback."),
+      local: na("Exercises the shared importer through the hosted HTTP API."),
+    },
+  },
   liveOpenapiCache: {
     fixtures: "actors",
     file: "live-openapi-cache.spec.ts",

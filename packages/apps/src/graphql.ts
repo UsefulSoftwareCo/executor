@@ -2,7 +2,11 @@
 import type { OperationKinds } from "./implementation/protocol-operations.ts";
 import { Effect } from "effect";
 import { graphqlCatalog, type GraphqlCatalogOptions } from "./implementation/graphql-catalog.ts";
-export { GraphqlError, type GraphqlToolsOptions } from "./contracts/graphql.ts";
+export {
+  GraphqlError,
+  GraphqlIntrospection,
+  type GraphqlToolsOptions,
+} from "./contracts/graphql.ts";
 export type { GraphqlCatalogOptions } from "./implementation/graphql-catalog.ts";
 
 /** Lazy tools with optional persistent metadata caching for the selected account. */

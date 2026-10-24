@@ -497,6 +497,44 @@ const sourceDocument = (
     );
   });
 
+/**
+ * Prepare a URL import with the router's own YAML reader, server selection and authentication
+ * compiler. The host fetches the text through its egress; no credentials enter preparation.
+ */
+export const prepareOpenapiImport = (options: {
+  readonly text: string;
+  readonly url: string;
+  readonly baseUrl?: string;
+  readonly signal?: AbortSignal;
+}) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const document = yield* Effect.try({
+        try: () =>
+          Schema.decodeUnknownSync(JsonObject)(
+            options.text.trimStart().startsWith("{")
+              ? JSON.parse(options.text)
+              : parseYaml(options.text),
+          ),
+        catch: invalid,
+      });
+      const compiled = yield* compileOpenApiDocument(
+        { name: "API", connectUrl: options.url },
+        document,
+        options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl },
+      );
+      return {
+        securitySchemes: compiled.schemes,
+        methods: compiled.methods,
+        secrets: compiled.secrets,
+        oauth: compiled.oauth,
+        allowedOrigins: compiled.pinnedOrigins,
+        skipped: [...compiled.skipped, ...compiled.unsupported],
+      };
+    }),
+    options.signal === undefined ? {} : { signal: options.signal },
+  );
+
 /** Compile a definition with the source's static settings. */
 const compileSource = (options: OpenapiCompileSettings, document: JsonObject) =>
   compileOpenApiDocument(

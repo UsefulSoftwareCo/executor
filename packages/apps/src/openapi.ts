@@ -66,6 +66,7 @@ export const openapiOperationNames = (
   );
 export {
   liveOpenapiRouter,
+  prepareOpenapiImport,
   openapiToolNames,
   type OpenapiSourceOptions,
   type OpenapiToolNamesOptions,

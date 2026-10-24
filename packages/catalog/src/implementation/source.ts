@@ -19,7 +19,7 @@ const entryMissing = (id: string) =>
   new CatalogImportFailed({
     code: "entry_missing",
     reason: URL.canParse(id)
-      ? "This URL is not a catalog entry. Install takes the id of an entry the catalog lists; add a remote MCP server by its URL with the custom MCP import."
+      ? "This URL is not a catalog entry. Install takes the id of an entry the catalog lists; add a service by URL with apps.importCustom."
       : "This entry is no longer in the catalog. Refresh and choose another app.",
     recovery: unknownEntryRecovery,
   });

@@ -21,10 +21,10 @@ export const customSetupRecovery: CatalogRecovery = {
 /** Recovery for an install whose entry the catalog does not list. */
 export const unknownEntryRecovery: CatalogRecovery = {
   action:
-    "Install takes the id of an entry the catalog lists. Add a remote MCP server by its URL with the custom MCP import instead.",
+    "Install takes the id of an entry the catalog lists. Add an MCP server, OpenAPI definition, or GraphQL endpoint by URL with apps.importCustom instead.",
   instructions: [
     "Find the entry in the catalog listing first: search it by text (`search`) and pass the listed `id` as `entry`.",
     "",
-    "To add a remote MCP server that is not listed, call the custom MCP import (the API's `apps.importCustom`) with `{ source: { kind: \"mcp\", name, url } }`. For any other service, write an app with the Executor app's app-authoring skill.",
+    "To add a service by URL, call apps.importCustom with { source: { kind, name, url } }, where kind is mcp, openapi, or graphql. For MCP, use { source: { kind: \"mcp\", name, url } }. OpenAPI definitions must be public; GraphQL auth is optional, either { kind: 'bearer' } or { kind: 'apiKey', header }. Connect credentials afterwards through the app's account requirements. For private definitions or other authentication, write an app with the Executor app's app-authoring skill.",
   ].join("\n"),
 };

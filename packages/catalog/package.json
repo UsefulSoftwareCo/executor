@@ -11,6 +11,8 @@
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
-    "effect": "4.0.1"
+    "apps": "workspace:*",
+    "effect": "4.0.1",
+    "graphql": "16.11.0"
   }
 }

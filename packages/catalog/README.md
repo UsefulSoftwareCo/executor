@@ -33,8 +33,25 @@ again, fetches the app's source and checks that its `package.json` names the
 listed package. Redirects are not followed, and nothing is cached between
 reads.
 
-`catalog.custom(input)` prepares a remote MCP server a user entered by URL. It
-is added only when the server itself confirms how to connect: anonymous
+`catalog.custom(input)` prepares an MCP server, OpenAPI definition, or GraphQL
+endpoint by URL, with no authored code. The input has `kind`, `name`, and `url`.
+URLs contain no credentials, query parameters, or fragments.
+
+For `kind: "openapi"`, the public JSON or YAML definition is read through the
+host's egress and prepared with the app framework's own compiler. It selects
+the API origin and derives supported API-key, bearer, Basic and authorization-code
+OAuth methods. `baseUrl` optionally overrides the definition's server. The
+retained app uses the live URL, its pinned origin and authentication bindings.
+Definitions with unsupported operations are refused with a prompt to use agent
+setup, rather than installing an incomplete set of tools.
+
+For `kind: "graphql"`, public endpoints are checked with schema introspection.
+GraphQL does not declare authentication: omit `auth` for a public endpoint, or
+set it to `{ kind: "bearer" }` or `{ kind: "apiKey", header: "X-API-Key" }`.
+Protected schemas are read after the caller connects an account. All credentials
+are connected through the generated app's ordinary account requirements.
+
+An MCP server is added only when it confirms how to connect: anonymous
 `initialize` and `tools/list` succeed, or the server rejects anonymous use and
 advertises OAuth that the SDK can discover. `detectMcpAccess` returns that typed
 decision with the signals behind it. It inspects OAuth with account setup's own
@@ -57,7 +74,7 @@ read-only [sweep of public servers](../../playground/catalog/sweep.ts) with
 - `src/contracts/catalog.ts`: entries, listing filters, the feed's wire format, prepared files, and
   source interface.
 - `src/contracts/setup.ts`: the recovery steps refusals carry.
-- `src/contracts/imports.ts`: the custom MCP URL input, without credentials.
+- `src/contracts/imports.ts`: custom protocol URL inputs, without credentials.
 - `src/implementation/catalog.ts`: catalog construction. The MCP source generator loads on the
   first `custom` call.
 - `src/implementation/source.ts`: the official app feed.
@@ -65,7 +82,8 @@ read-only [sweep of public servers](../../playground/catalog/sweep.ts) with
 - `src/contracts/detection.ts`: detected outcomes and their signals.
 - `src/implementation/detection.ts`: the MCP connection check.
 - `src/implementation/mcp.ts`: outcome reasons and source generation.
-- `src/implementation/custom.ts`: a user-entered MCP URL.
+- `src/implementation/custom.ts`: dispatch for user-entered protocol URLs.
+- `src/implementation/api.ts`: OpenAPI preparation and GraphQL URL imports.
 
 `@executor-js/catalog/contracts` is the schema-only entry point for forms and
 product HTTP contracts. It does not import the network or template implementations.

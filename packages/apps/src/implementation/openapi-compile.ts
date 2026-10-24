@@ -1055,21 +1055,21 @@ export const compileOpenApiDocument = (
           reason: `Executor cannot authenticate with any of its security requirements: ${security.map(unsupportedBy).join("; ")}.`,
         };
       };
-      if (imported.every(({ operation }) => unusable(operation) !== undefined))
+      const unsupported = imported.flatMap(({ operation, declared }) => {
+        const cause = unusable(operation);
+        return cause === undefined ? [] : [{ ...declared, ...cause }];
+      });
+      if (unsupported.length === imported.length)
         throw new TemplateError({
           code: "no_supported_operations",
           reason:
             "No operation can be called: each one is left out, streams its response, or needs authentication Executor does not support.",
-          skipped: inDefinitionOrder([
-            ...skipped,
-            ...imported.flatMap(({ operation, declared }) => {
-              const cause = unusable(operation);
-              return cause === undefined ? [] : [{ ...declared, ...cause }];
-            }),
-          ]),
+          skipped: inDefinitionOrder([...skipped, ...unsupported]),
         });
       return {
         operations,
+        /** Operations present in the compiled document that no account can call. */
+        unsupported,
         /** Declared operations left out of `operations`, in definition order. */
         skipped: inDefinitionOrder(skipped),
         definitions: Object.fromEntries(document.definitions),

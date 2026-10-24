@@ -6,6 +6,7 @@
  */
 import { Effect, Schema } from "effect";
 import { CredentialHost } from "apps/contracts";
+import type { OpenapiSourceOptions } from "apps/openapi";
 import { asciiJson } from "@executor-js/sdk/core";
 import {
   TemplateError,
@@ -555,15 +556,20 @@ export const target = (account: Account) => {
  * sent to its own server, as the document declares it.
  */
 export const openapiAppSource = (
-  options: ProtocolAppOptions & {
-    readonly document: Readonly<Record<string, unknown>>;
-    readonly baseUrl?: string | undefined;
-    /**
-     * The origins operations are sent to, which receive the credentials and are the provider's
-     * hosts. Operations on any other origin are left out.
-     */
-    readonly allowedOrigins: readonly [string, ...string[]];
-  },
+  options: ProtocolAppOptions &
+    (
+      | { readonly document: Readonly<Record<string, unknown>>; readonly sourceUrl?: never }
+      /** Public definitions are fetched live without sending account credentials. */
+      | { readonly sourceUrl: string; readonly document?: never }
+    ) & {
+      readonly security?: Pick<OpenapiSourceOptions, "securitySchemes" | "methods" | "oauth">;
+      readonly baseUrl?: string | undefined;
+      /**
+       * The origins operations are sent to, which receive the credentials and are the provider's
+       * hosts. Operations on any other origin are left out.
+       */
+      readonly allowedOrigins: readonly [string, ...string[]];
+    },
 ) =>
   Effect.gen(function* () {
     const tools = toolsFile(options.tools);
@@ -583,21 +589,24 @@ export const openapiAppSource = (
     const router = `liveOpenapiRouter({
       ...configuration,
       cache,
-      fetch: send(fetch, ${accounts ? scopes.sent("account") : "{ headers: {}, query: {} }"}),
+      fetch: ${options.security === undefined ? `send(fetch, ${accounts ? scopes.sent("account") : "{ headers: {}, query: {} }"})` : "fetch"},
+      ${accounts && options.security !== undefined ? "account," : ""}
       ...(signal === undefined ? {} : { signal }),
     })`;
     const index = `${appImports(["defineApp", ...routerImports])}
 import { liveOpenapiRouter } from "apps/openapi"
 import { always } from "apps/operations/approval"
 import configuration from "./openapi.json"
-${accounts ? `import { ${[...scopes.imports, "fixed", "provider"].sort().join(", ")} } from "./provider.ts"\n` : ""}${rules ? `import { approval, exposedName } from "./tools.ts"\n` : ""}${
-      accounts
+${accounts ? `import { ${[...(options.security === undefined ? [...scopes.imports, "fixed"] : []), "provider"].sort().join(", ")} } from "./provider.ts"\n` : ""}${rules ? `import { approval, exposedName } from "./tools.ts"\n` : ""}${
+      accounts || options.security !== undefined
         ? ""
         : `
 const fixed = ${json({ headers: options.headers ?? {}, query: options.queryParams ?? {} })}
 `
     }
-/** Add the fixed values and an account's credentials to requests for the API's origins only. */
+${
+  options.security === undefined
+    ? `/** Add the fixed values and an account's credentials to requests for the API's origins only. */
 const send =
   (
     fetch: typeof globalThis.fetch,
@@ -611,7 +620,9 @@ const send =
     const sending = new Request(url, request)
     for (const [name, value] of Object.entries({ ...fixed.headers, ...sent.headers })) sending.headers.set(name, value)
     return fetch(sending)
-  }
+  }`
+    : ""
+}
 
 ${
   accounts
@@ -638,13 +649,16 @@ ${
           // API's source; the settings after it stay one per line. The whole file is ASCII, so a
           // non-ASCII base URL or description cannot double the memory of the document's text.
           content: asciiJson(
-            `{\n  "source": { "document": ${JSON.stringify(options.document)} },\n${json({
-              allowedOrigin: origins.length === 1 ? origins[0] : origins,
-              securitySchemes: {},
-              methods: {},
-              oauth: [],
-              ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-            }).slice(2)}`,
+            `{\n  "source": ${JSON.stringify(options.sourceUrl === undefined ? { document: options.document } : { url: options.sourceUrl })},\n${json(
+              {
+                allowedOrigin: origins.length === 1 ? origins[0] : origins,
+                securitySchemes: {},
+                methods: {},
+                oauth: [],
+                ...options.security,
+                ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
+              },
+            ).slice(2)}`,
           ),
         },
         ...(hosts === undefined

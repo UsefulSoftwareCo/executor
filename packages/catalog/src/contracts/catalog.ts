@@ -186,6 +186,6 @@ export interface Catalog {
   readonly prepare: (
     input: CatalogImport,
   ) => Effect.Effect<PreparedApp, CatalogImportFailed | CatalogUnavailable>;
-  /** Prepare source for an MCP URL a user supplied, using the same host egress as an install. */
+  /** Prepare source for a protocol URL a user supplied, using the same host egress as an install. */
   readonly custom: (input: CustomAppInput) => Effect.Effect<PreparedApp, CatalogImportFailed>;
 }

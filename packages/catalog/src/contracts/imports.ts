@@ -12,13 +12,30 @@ export const ImportUrl = HttpUrl.check(
     { expected: "an HTTP(S) URL without credentials, query parameters, fragments or placeholders" },
   ),
 );
-/**
- * A remote MCP server added by URL. Its connection method is confirmed from the server, never
- * chosen in the form; other services are set up with the user's agent.
- */
-export const CustomAppInput = Schema.Struct({
-  kind: Schema.Literal("mcp"),
-  name: Schema.NonEmptyString,
-  url: ImportUrl,
-});
+/** Public configuration only. Credentials are connected through the app's account requirements. */
+export const CustomAppInput = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("mcp"), name: Schema.NonEmptyString, url: ImportUrl }),
+  Schema.Struct({
+    kind: Schema.Literal("openapi"),
+    name: Schema.NonEmptyString,
+    url: ImportUrl,
+    /** Override a definition's server when it does not describe the intended API endpoint. */
+    baseUrl: Schema.optionalKey(ImportUrl),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("graphql"),
+    name: Schema.NonEmptyString,
+    url: ImportUrl,
+    /** GraphQL has no standard authentication declaration to discover. */
+    auth: Schema.optionalKey(
+      Schema.Union([
+        Schema.Struct({ kind: Schema.Literal("bearer") }),
+        Schema.Struct({
+          kind: Schema.Literal("apiKey"),
+          header: Schema.String.check(Schema.isPattern(/^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/u)),
+        }),
+      ]),
+    ),
+  }),
+]);
 export type CustomAppInput = typeof CustomAppInput.Type;
