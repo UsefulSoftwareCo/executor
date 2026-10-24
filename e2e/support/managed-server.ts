@@ -71,6 +71,10 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SLACK_CLIENT_ID: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_PRODUCT_NAME: Schema.optionalKey(Schema.NonEmptyString),
+  EXECUTOR_ZENDESK_SUBDOMAIN: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
 });
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (

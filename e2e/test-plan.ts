@@ -4603,6 +4603,22 @@ export const scenarios = plan({
       local: na("Exercises shared OAuth through the hosted API."),
     },
   },
+  zendeskHostedOAuth: {
+    fixtures: "actors",
+    file: "zendesk-oauth.spec.ts",
+    title: "Hosted Zendesk OAuth uses trusted tenant settings and keeps user consent private",
+    serverEnvironment: {
+      EXECUTOR_PRODUCT_NAME: "Synthetic Product",
+      EXECUTOR_ZENDESK_SUBDOMAIN: "",
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "",
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "",
+    },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses an isolated self-host process with synthetic operator settings."),
+      local: na("Exercises hosted account connections, not Local's account flow."),
+    },
+  },
   oauthCompletionReasons: {
     fixtures: "actors",
     file: "oauth-completion-reasons.spec.ts",

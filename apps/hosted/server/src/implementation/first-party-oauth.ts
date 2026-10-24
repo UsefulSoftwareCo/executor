@@ -2,7 +2,8 @@
  * The operator's own OAuth clients (`notes/oauth.md`, "First-party clients"). What each client is,
  * its authorization server, scope menu and placement, is reviewed here in code. Only its
  * credentials are settings, `EXECUTOR_OAUTH_<ID>_CLIENT_ID` and `EXECUTOR_OAUTH_<ID>_CLIENT_SECRET`
- * (the ID in upper case, `-` as `_`), and a client is offered only when both are set.
+ * (the ID in upper case, `-` as `_`), and a client is offered only when both are set. Zendesk also
+ * needs `EXECUTOR_ZENDESK_SUBDOMAIN`.
  */
 import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
 import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
@@ -102,6 +103,32 @@ const slackMcpUserScopes = [
   "lists:write",
   "files:write",
 ];
+
+/** The scopes the hosted Zendesk client may request and keep on a grant. */
+const zendeskScopes = ["tickets:read", "tickets:write", "users:read"];
+const zendeskSubdomainSetting = "EXECUTOR_ZENDESK_SUBDOMAIN";
+const zendeskSubdomainPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+
+/** Build Zendesk's native OAuth configuration from the trusted host tenant. */
+const zendeskClientDefinition = (
+  subdomain: string,
+  productName: string,
+): FirstPartyOAuthClientDefinition => {
+  const host = `${subdomain}.zendesk.com`;
+  return {
+    id: "zendesk",
+    label: `${productName} for Zendesk`,
+    server: {
+      authorizationUrl: `https://${host}/oauth/authorizations/new`,
+      tokenUrl: `https://${host}/oauth/tokens`,
+      tokenRequestFormat: "json",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: zendeskScopes,
+    allowedScopes: zendeskScopes,
+    placement: { hosts: [host] },
+  };
+};
 
 /**
  * The clients an operator can turn on by setting their credentials.
@@ -235,9 +262,31 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
     const reviewed = yield* Schema.decodeUnknownEffect(Definitions)(
       firstPartyOAuthClientDefinitions,
     ).pipe(Effect.orDie);
-    const definitions = [...reviewed, ...(yield* testDefinitions(options.testDefinitions))];
-    const seen = new Set<string>();
     const problems: string[] = [];
+    const zendeskNames = firstPartyOAuthCredentialSettings("zendesk");
+    const subdomain = yield* setting(zendeskSubdomainSetting);
+    const clientId = yield* setting(zendeskNames.clientId);
+    const clientSecret = yield* setting(zendeskNames.clientSecret);
+    const zendeskDefinitions: FirstPartyOAuthClientDefinition[] = [];
+    if (Option.isSome(subdomain) && Option.isSome(clientId) && Option.isSome(clientSecret)) {
+      const tenant = Redacted.value(subdomain.value);
+      if (!zendeskSubdomainPattern.test(tenant)) {
+        problems.push(`${zendeskSubdomainSetting} must be one lowercase DNS label.`);
+      } else {
+        const configuredProductName = yield* Config.String("EXECUTOR_PRODUCT_NAME").pipe(
+          Config.option,
+          Effect.map(Option.filter((value) => value !== "")),
+        );
+        const productName = Option.getOrElse(configuredProductName, () => "Executor");
+        zendeskDefinitions.push(zendeskClientDefinition(tenant, productName));
+      }
+    }
+    const definitions = [
+      ...reviewed,
+      ...zendeskDefinitions,
+      ...(yield* testDefinitions(options.testDefinitions)),
+    ];
+    const seen = new Set<string>();
     const clients: FirstPartyOAuthClient[] = [];
     for (const definition of definitions) {
       if (seen.has(definition.id)) {
