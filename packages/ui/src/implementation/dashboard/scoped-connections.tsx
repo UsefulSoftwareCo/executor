@@ -11,6 +11,7 @@ import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import type { AccountId, App, AppId, ToolName } from "@executor-js/sdk";
 import { ConnectionId, type ConnectionView } from "@executor-js/mcp-auth/connections";
+import { randomUuid } from "@executor-js/utils/random-uuid";
 import type { AccountSummary, FailureProps, Inventory, Query } from "../../contracts/dashboard.ts";
 import {
   type ConnectionApp,
@@ -107,7 +108,7 @@ const connectionDraft = (
 });
 
 const newDraft = (): ConnectionDraft => ({
-  id: ConnectionId.make(crypto.randomUUID()),
+  id: ConnectionId.make(randomUuid()),
   name: "",
   apps: [],
 });

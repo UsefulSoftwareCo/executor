@@ -563,9 +563,22 @@ return { first, second };`,
           .request(actors.owner, "GET", `${prefix}/mcp-connections`)
           .pipe(Effect.flatMap((response) => body(Schema.Array(ConnectionView), response)));
         yield* browser.login(actors.owner);
+        // LAN HTTP exposes getRandomValues, but not randomUUID. Keep the real API and UI.
+        if (target.metadata.target === "self-host")
+          yield* browser.use("Reproduce missing native UUIDs on HTTP", (page) =>
+            page.addInitScript(() => {
+              Reflect.deleteProperty(Crypto.prototype, "randomUUID");
+            }),
+          );
         yield* browser.use("Open Connections", (page) =>
           page.goto(`/org/${actors.organization.slug}/connect`),
         );
+        if (target.metadata.target === "self-host")
+          expect(
+            yield* browser.use("Native browser UUIDs are unavailable", (page) =>
+              page.evaluate(() => typeof crypto.randomUUID),
+            ),
+          ).toBe("undefined");
         yield* browser.use("Show assistant-specific instructions", (page) =>
           page.getByRole("heading", { name: "Connect an assistant", exact: true }).waitFor(),
         );
@@ -694,6 +707,9 @@ return { first, second };`,
             .waitFor({ state: "visible" }),
         );
         const [saved] = yield* list;
+        expect(saved?.id).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
         expect(saved?.policy.apps).toEqual([
           { app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "readOnly" } },
         ]);
