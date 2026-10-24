@@ -125,3 +125,54 @@ export function ChangePassword() {
     </Card>
   );
 }
+
+/** Starts the existing authenticated SSO linking flow. */
+export function ConnectSso() {
+  const [error, setError] = useState<string>();
+  return (
+    <Card className={accountSettingClass}>
+      <CardHeader>
+        <CardTitle>
+          <h2>Single sign-on</h2>
+        </CardTitle>
+        <CardDescription>
+          Connect a Google or other OIDC account so you can sign in without your password.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {error && (
+          <p role="alert" className="auth-error text-destructive text-[13px]">
+            {error}
+          </p>
+        )}
+      </CardContent>
+      <CardFooter>
+        <div className="flex items-center gap-2.5 text-[12px] [&_>_button]:h-7.5 [&_>_button]:py-0 [&_>_button]:px-[12px] [&_>_button]:text-[12px] [&_>_button]:bg-transparent [&_>_button]:shadow-none max-[640px]:[&_>_button]:min-h-10">
+          <Button
+            variant="outline"
+            onClick={async () => {
+              setError(undefined);
+              const response = await fetch("/api/auth/link-social", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  provider: "sso",
+                  callbackURL: `${location.origin}/account/security`,
+                }),
+              });
+              const result = await response.json().catch(() => ({}));
+              if (!response.ok || !result.url) {
+                setError("Could not start SSO linking. Try again.");
+                return;
+              }
+              location.assign(result.url);
+            }}
+          >
+            Connect SSO
+          </Button>
+        </div>
+      </CardFooter>
+    </Card>
+  );
+}
