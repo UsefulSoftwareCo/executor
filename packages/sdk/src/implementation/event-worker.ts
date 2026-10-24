@@ -12,7 +12,8 @@ export const deliverEvents = (executor: Executor) =>
     yield* Effect.flatten(ScheduleHostReady);
     yield* executor.events.deliver({ maxDeliveries: batch }).pipe(
       Effect.repeat({ while: (more) => more }),
-      Effect.withSpan("events.dispatch"),
+      // A pass runs every two seconds; one that finds nothing to deliver records nothing.
+      Effect.withTracerEnabled(false),
       Effect.catch(() => Effect.logError("Event delivery failed")),
       Effect.repeat(Schedule.spaced("2 seconds")),
     );
