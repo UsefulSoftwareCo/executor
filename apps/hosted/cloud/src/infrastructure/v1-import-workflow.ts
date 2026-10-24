@@ -46,6 +46,16 @@ import { makeImportStore } from "../implementation/v1-import/store.ts";
 import { importRefusal, movedFlag, writesRefused } from "../implementation/v1-import/writes.ts";
 import { AppBuilds } from "./blobs.ts";
 import type { V1ImportSettings } from "./onboarding.ts";
+import {
+  encryptedWorkflowParams,
+  workflowEncryptionEnabled,
+  encryptedWorkflowResult,
+  encryptedWorkflowTask,
+  type WorkflowResults,
+  workflowEncryptionKey,
+  workflowResults,
+  workflowResultInput,
+} from "./workflow-results.ts";
 
 /** The importer this deployment runs, with where it keeps reports; none where v1 is unreachable. */
 export class V1ImportConfiguration extends Context.Service<
@@ -112,43 +122,79 @@ const runner =
   (
     params: V1ImportParams,
     retries: V1ImportSettings["stepRetries"],
+    results?: WorkflowResults,
   ): V1ImportStep<Cloudflare.Workflows.WorkflowStep> =>
-  (name, work) =>
-    Cloudflare.Workflows.task(
-      name,
-      work.pipe(
-        Effect.scoped,
-        Effect.withSpan("v1_import.step", {
-          attributes: {
-            "executor.v1_import.organization": params.v1OrgId,
-            "executor.v1_import.mode": params.mode,
-            "executor.v1_import.step": name.split(" ")[0] ?? name,
-          },
-        }),
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.interrupt
-            : Cause.hasFails(cause)
-              ? Effect.logWarning("v1 import step attempt failed", {
-                  step: name,
-                  error: failureTag(cause),
-                }).pipe(
-                  Effect.andThen(
-                    Effect.fail(new V1ImportAttemptFailed({ failure: failureTag(cause) })),
-                  ),
-                )
-              : Effect.failCause(cause),
-        ),
-      ),
-      {
-        retries: {
-          limit: retries.limit,
-          delay: `${retries.delaySeconds} seconds`,
-          backoff: "exponential",
+  (name, work) => {
+    const stepWork = work.pipe(
+      Effect.scoped,
+      Effect.withSpan("v1_import.step", {
+        attributes: {
+          "executor.v1_import.organization": params.v1OrgId,
+          "executor.v1_import.mode": params.mode,
+          "executor.v1_import.step": name.split(" ")[0] ?? name,
         },
-        timeout: "15 minutes",
+      }),
+    );
+    const logRetryableFailure = (cause: Cause.Cause<unknown>) =>
+      Effect.logWarning("v1 import step attempt failed", {
+        step: name,
+        error: failureTag(cause),
+      }).pipe(
+        Effect.andThen(Effect.fail(new V1ImportAttemptFailed({ failure: failureTag(cause) }))),
+      );
+    const legacyAttempt = stepWork.pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Cause.hasFails(cause)
+            ? logRetryableFailure(cause)
+            : Effect.failCause(cause),
+      ),
+    );
+    const retryableCause = (cause: Cause.Cause<unknown>) =>
+      cause.reasons.length > 0 &&
+      cause.reasons.every(
+        (reason) =>
+          Cause.isFailReason(reason) &&
+          (!Predicate.hasProperty(reason.error, "retryable") || reason.error.retryable !== false),
+      );
+    const encryptedAttempt = stepWork.pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : retryableCause(cause)
+            ? logRetryableFailure(cause)
+            : Effect.failCause(cause),
+      ),
+    );
+    const options = {
+      retries: {
+        limit: retries.limit,
+        delay: `${retries.delaySeconds} seconds`,
+        backoff: "exponential" as const,
       },
-    ).pipe(
+      timeout: "15 minutes",
+    };
+    const step =
+      results === undefined
+        ? Cloudflare.Workflows.task(name, legacyAttempt, options)
+        : encryptedWorkflowTask({
+            results,
+            name,
+            options,
+            work: () => encryptedAttempt,
+            encodeFailure: (error) =>
+              Predicate.hasProperty(error, "failure") && typeof error.failure === "string"
+                ? error.failure
+                : error instanceof Error
+                  ? error.message
+                  : "V1 import step failed",
+            isRetryable: (error) =>
+              !Predicate.hasProperty(error, "retryable") || error.retryable !== false,
+            restoreFailure: (failure) =>
+              new V1ImportAttemptFailed({ failure: failure.failure ?? "unknown" }),
+          });
+    return step.pipe(
       Effect.mapError(
         (error) =>
           new V1ImportStepFailed({
@@ -161,6 +207,7 @@ const runner =
           }),
       ),
     );
+  };
 
 export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
   "V1Import",
@@ -168,6 +215,7 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
   { limits: { steps: 10_000 } },
   Effect.gen(function* () {
     const reportErrors = yield* cloudSentry;
+    const encryptionKey = yield* workflowEncryptionKey;
     // Only these services: the Worker's context also holds its own scope, which a run must not take.
     const services = yield* Effect.context<
       HostedExecutor | V1ImportDatabase | McpAuthentication | V1ImportConfiguration
@@ -180,10 +228,16 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
     const connections = Context.get(services, McpAuthentication).connections;
     return (input: unknown) =>
       Effect.gen(function* () {
-        const params = yield* Schema.decodeUnknownEffect(V1ImportParams)(input);
+        const request = yield* workflowResultInput(input);
+        const params = yield* Schema.decodeUnknownEffect(V1ImportParams)(request.params);
         if (Option.isNone(configuration))
           return yield* Effect.die(new Error("This deployment has no v1 importer."));
         const { settings, reports } = configuration.value;
+        const instance = v1ImportInstance(params);
+        const results =
+          request.mode === "encrypted"
+            ? yield* workflowResults(`v1-import:${instance}`, encryptionKey)
+            : undefined;
         const environment = V1ImportEnvironment.of({
           source: settings.source.pipe(
             Effect.flatMap(makeV1Source),
@@ -197,8 +251,18 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
           v1FirstPartyClients: settings.v1FirstPartyClients,
           slugKey: settings.slugKey,
         });
-        return yield* runV1Import(params, runner(params, settings.stepRetries), (name, seconds) =>
-          Cloudflare.Workflows.sleep(name, seconds * 1000),
+        const work = runV1Import(
+          params,
+          runner(params, settings.stepRetries, results),
+          (name, seconds) =>
+            results === undefined
+              ? Cloudflare.Workflows.sleep(name, seconds * 1000)
+              : results.storedStepName(name).pipe(
+                  Effect.flatMap((storedName) =>
+                    Cloudflare.Workflows.sleep(storedName, seconds * 1000),
+                  ),
+                  Effect.orDie,
+                ),
         ).pipe(
           Effect.provideService(V1ImportEnvironment, environment),
           Effect.provide(services),
@@ -210,6 +274,14 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
             },
           }),
         );
+        if (results === undefined) return yield* work;
+        return yield* encryptedWorkflowResult({
+          results,
+          work,
+          encodeFailure: (error) =>
+            error instanceof Error ? error.message : "V1 import workflow failed",
+          isRetryable: () => false,
+        });
       }).pipe(reportErrors, Effect.orDie);
   }),
 ) {}
@@ -270,6 +342,7 @@ const aggregationId = /^[0-9a-f]{32}$/u;
 export const v1ImportRoutes = (workflow: Workflow) =>
   Effect.gen(function* () {
     const configuration = yield* V1ImportConfiguration;
+    const encrypted = yield* workflowEncryptionEnabled;
     const authorized = Effect.gen(function* () {
       if (Option.isNone(configuration)) return Option.none();
       const token = configuration.value.settings.operatorToken;
@@ -292,21 +365,26 @@ export const v1ImportRoutes = (workflow: Workflow) =>
 
     const create = (params: V1ImportParams) => {
       const instance = v1ImportInstance(params);
-      return workflow.create({ id: instance, params }).pipe(
-        Effect.timeout(callDeadline),
-        Effect.asVoid,
-        // A refused create may have taken, or an earlier start made the instance: the status decides.
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.interrupt
-            : status(instance).pipe(
-                Effect.flatMap((state) =>
-                  state === "unknown" ? Effect.fail(new V1ImportUnavailable()) : Effect.void,
+      return workflow
+        .create({
+          id: instance,
+          params: encryptedWorkflowParams(params, encrypted),
+        })
+        .pipe(
+          Effect.timeout(callDeadline),
+          Effect.asVoid,
+          // A refused create may have taken, or an earlier start made the instance: the status decides.
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : status(instance).pipe(
+                  Effect.flatMap((state) =>
+                    state === "unknown" ? Effect.fail(new V1ImportUnavailable()) : Effect.void,
+                  ),
                 ),
-              ),
-        ),
-        Effect.as({ organization: params.v1OrgId, instance }),
-      );
+          ),
+          Effect.as({ organization: params.v1OrgId, instance }),
+        );
     };
 
     const keys = (reports: V1ImportReports, prefix: string) =>

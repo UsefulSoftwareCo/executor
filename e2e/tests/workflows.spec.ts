@@ -247,6 +247,7 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           after: "synthetic-refreshed",
           count: 3,
         });
+        expect(JSON.stringify(completed)).not.toContain("ExecutorEncryptedWorkflow");
         expect(output.first.key.length).toBe(64);
         expect(
           (yield* body(Rows, yield* call("rows")))
@@ -355,6 +356,9 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           errorName: "NonRetryableError",
           message: "Rejected token [redacted]",
         });
+        expect(JSON.stringify([fatal, exploded, leaked])).not.toContain(
+          "ExecutorEncryptedWorkflow",
+        );
         expect(JSON.stringify(leaked)).not.toContain("synthetic-original");
       }),
     ),
