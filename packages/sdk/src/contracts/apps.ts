@@ -149,11 +149,17 @@ export const sameAccounts = (left: AppAccounts, right: AppAccounts) => {
 /** AppAccounts in a GET query: JSON text, so an empty requirement survives as []. */
 export const AppAccountsQuery = Schema.optional(Schema.fromJsonString(AppAccounts));
 
-/** Display names are nonblank and bounded; they do not replace stable app identities. */
+/**
+ * Display names are one bounded line with a visible character; they do not replace stable app
+ * identities. Control characters are refused because storage cannot hold NUL, and names made only
+ * of invisible characters would list as blank. Names already stored are read with `NonEmptyString`,
+ * so this only narrows what new writes accept.
+ */
 export const AppName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(120),
-  Schema.isPattern(/\S/u),
+  Schema.isPattern(/^[^\p{Cc}\p{Zl}\p{Zp}]*$/u),
+  Schema.isPattern(/[^\s\p{Cc}\p{Cf}]/u),
 );
 
 /** Informational origin captured when a copy is made. It never grants access or drives updates. */

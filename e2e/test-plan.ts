@@ -3538,6 +3538,16 @@ export const scenarios = plan({
       local: na("Exercises the shared importer and OAuth setup through hosted APIs."),
     },
   },
+  appNameValidation: {
+    fixtures: "actors",
+    file: "app-name-validation.spec.ts",
+    title: "App names with control or invisible-only characters are refused with a bad request",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("Exercises the shared importer and app rename through hosted APIs."),
+    },
+  },
   importApprovals: {
     fixtures: "actors",
     file: "import-approvals.spec.ts",
