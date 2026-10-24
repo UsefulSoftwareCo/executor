@@ -22,6 +22,14 @@ export const CatalogAuth = Schema.Struct({
 });
 export type CatalogAuth = typeof CatalogAuth.Type;
 
+/** Operator-provided context shown before connecting a catalog app's provider. */
+export const CatalogConnectionNotice = Schema.Struct({
+  /** Matches the provider definition's display name, not its content-derived provider ID. */
+  providerName: Schema.NonEmptyString,
+  message: Schema.NonEmptyString,
+});
+export type CatalogConnectionNotice = typeof CatalogConnectionNotice.Type;
+
 /**
  * An official, vetted Executor app, or a host's own built-in app. Every entry installs its source
  * directly; the user then connects an account through the app's own providers.
@@ -35,6 +43,8 @@ export const CatalogEntry = Schema.Struct({
   auth: Schema.Array(CatalogAuth),
   category: Schema.optionalKey(Schema.String),
   icons: Schema.Array(CatalogIcon),
+  /** Optional operator notes; they do not change the installed app or its provider. */
+  connectionNotices: Schema.optionalKey(Schema.Array(CatalogConnectionNotice)),
 });
 export type CatalogEntry = typeof CatalogEntry.Type;
 /** Optional filters for a catalog listing, as URL query parameters. Without them, all entries. */

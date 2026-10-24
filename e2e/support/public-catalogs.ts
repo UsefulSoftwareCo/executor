@@ -63,6 +63,12 @@ export const officialApps = {
       { method: "token", kind: "secrets", label: "Personal token" },
     ],
     icons: [{ src: "icons/tracker.svg", mimeType: "image/svg+xml" }],
+    connectionNotices: [
+      {
+        providerName: "Synthetic Tracker",
+        message: "Use a workspace that has approved the app before signing in.",
+      },
+    ],
     source: "apps/synthetic-tracker.json",
   },
   mismatched: {

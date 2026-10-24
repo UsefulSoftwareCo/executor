@@ -26,6 +26,12 @@ app's id, package, title, description, auth methods, category and icons; `apps/<
 files beside them. Paths in the index are relative to it. Hosts read the feed at
 `EXECUTOR_CATALOG_URL`. Without one, the catalog lists no feed apps.
 
+An entry may include `connectionNotices`, an array of `{ providerName, message }`
+records. `providerName` matches the provider definition's display name. Hosts
+show each message before a person chooses to connect. These notices are operator
+metadata: they do not change app source or provider identity. Entries without
+the field keep the usual connection flow.
+
 Every entry installs directly: nothing has to be guessed, because the package
 already declares its providers and auth methods. The user connects an account
 through the app's own providers after install. Preparation reads the index

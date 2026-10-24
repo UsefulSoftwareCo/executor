@@ -142,6 +142,11 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
             ]),
           ),
         ).toEqual(["Connect", "Connect"]);
+        expect(
+          yield* browser.use("The tracker restriction is visible before Connect", (page) =>
+            appRow(page, officialApps.tracker.name).innerText(),
+          ),
+        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
         // On a desktop the search has focus, so typing finds an app; the list ends with what to do
         // about an app it does not show.
         expect(yield* browser.use("The search has focus on a desktop", focused)).toBe(
@@ -367,6 +372,14 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
         yield* browser.use("Connect the tracker with OAuth", (page) =>
           appRow(page, officialApps.tracker.name).getByRole("button", { name: "Connect" }).click(),
         );
+        expect(
+          yield* browser.use("The tracker restriction remains before OAuth setup", (page) =>
+            page
+              .getByRole("dialog", { name: `Connect ${officialApps.tracker.name}` })
+              .getByRole("note", { name: `${officialApps.tracker.name} connection notices` })
+              .innerText(),
+          ),
+        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
         yield* browser.use("Enter OAuth client details", enterClientDetails);
         yield* browser.use("Provide a synthetic public client", (page) =>
           page.getByRole("textbox", { name: "Client ID", exact: true }).fill("synthetic-client"),

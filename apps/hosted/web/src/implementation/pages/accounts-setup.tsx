@@ -6,7 +6,7 @@ import { AsyncResult, type Atom } from "effect/reactivity";
 import { Cancel01Icon, Search01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Account, AccountRequirement, App } from "@executor-js/sdk";
-import type { CatalogEntry } from "@executor-js/catalog/contracts";
+import type { CatalogConnectionNotice, CatalogEntry } from "@executor-js/catalog/contracts";
 import { executorCatalogPackage } from "@executor-js/hosted-server/catalog";
 import { Button } from "@executor-js/ui/components/button";
 import { DialogDescription, DialogTitle } from "@executor-js/ui/components/dialog";
@@ -439,6 +439,9 @@ function AppList({
             slot={connection.slot}
             requirement={connection.requirement}
             method={connection.method}
+            connectionNotices={
+              apps.find((item) => item.entry.id === connection.entry)?.entry.connectionNotices ?? []
+            }
             redirectUri={redirectUri}
             onPendingChange={setPending}
             onSaved={() => setConnection(undefined)}
@@ -485,9 +488,7 @@ const Check = () => (
 );
 
 /**
- * One app in one fixed-height row: its logo, its name over one line of detail, and one button of a
- * fixed width. Connecting changes only the detail line and the button; more accounts open over the
- * list instead of growing the row.
+ * One app row: its logo, name, details and notices beside one fixed-width action.
  */
 function AppRow({
   item,
@@ -507,10 +508,10 @@ function AppRow({
     <div
       role="group"
       aria-label={entry.name}
-      className="flex h-[70px] shrink-0 items-center gap-3.5 border-t px-4 first:border-t-0 max-sm:gap-3 max-sm:px-6"
+      className="flex min-h-[70px] shrink-0 items-center gap-3.5 border-t px-4 py-3 first:border-t-0 max-sm:gap-3 max-sm:px-6"
     >
       <ProviderIcon name={entry.name} icons={entry.icons} />
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 space-y-1">
         <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
           <span className="truncate">{entry.name}</span>
           {!oauth && first === undefined && (
@@ -536,6 +537,7 @@ function AppRow({
             )}
           </div>
         )}
+        <CatalogNotices notices={entry.connectionNotices} />
       </div>
       <Button
         type="button"
@@ -559,6 +561,24 @@ function AppRow({
         )}
       </Button>
     </div>
+  );
+}
+
+function CatalogNotices({
+  notices,
+}: {
+  readonly notices: readonly CatalogConnectionNotice[] | undefined;
+}) {
+  if (notices === undefined || notices.length === 0) return null;
+  return (
+    <ul className="space-y-1 text-xs text-muted-foreground">
+      {notices.map((notice, index) => (
+        <li key={`${notice.providerName}:${index}`}>
+          <span className="font-medium text-foreground/80">{notice.providerName}: </span>
+          {notice.message}
+        </li>
+      ))}
+    </ul>
   );
 }
 

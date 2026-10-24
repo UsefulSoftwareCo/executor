@@ -1,10 +1,11 @@
 import { use, useContext, useState } from "react";
 import { RegistryContext, useAtomSet, useAtomMount } from "@effect/atom-react";
-import { AtomRegistry } from "effect/reactivity";
+import { AsyncResult, AtomRegistry } from "effect/reactivity";
 import { Effect, Option } from "effect";
 import { useQuery } from "@executor-js/ui/dashboard/context";
 import { appAccessAtom } from "../../contracts/resource-access.ts";
 import type { Provider, AccountRequirement, AccountScope, App } from "@executor-js/sdk";
+import type { CatalogConnectionNotice } from "@executor-js/catalog/contracts";
 import {
   AppAccounts as SharedAccounts,
   LinkedAccountMenu,
@@ -16,7 +17,11 @@ import type { RequirementLink } from "@executor-js/ui/contracts/app-accounts";
 import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
 import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
 import { Button } from "@executor-js/ui/components/button";
-import { ConnectionDialogHeader, ConnectionModal } from "./connection-dialog.tsx";
+import {
+  ConnectionDialogHeader,
+  ConnectionModal,
+  ConnectionNotices,
+} from "./connection-dialog.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
@@ -35,6 +40,7 @@ import {
 } from "../../contracts/accounts.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 import { HostedAccountDialog } from "./account-actions.tsx";
+import { catalogAtom } from "../../contracts/api.ts";
 
 /** A requirement's sign-in methods, OAuth first: connecting a new account starts with the first. */
 export const methodsOf = (requirement: AccountRequirement) =>
@@ -69,8 +75,17 @@ export function AppAccounts({
 }) {
   const { organization } = useOrganizationRoute();
   const { data } = useQuery(appAccessAtom({ organization, app: app.id }));
+  const catalog = useQuery(catalogAtom);
   const canUse = Option.isSome(data) && data.value.canUse;
   const deployed = app.activeVersion !== null;
+  const copiedPackage = app.copiedFrom?.name;
+  const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
+  const catalogEntry = catalogEntries?.find((entry) => entry.package === copiedPackage);
+  const catalogUnavailable =
+    copiedPackage !== undefined &&
+    (catalogEntries === undefined ||
+      catalog.result.waiting ||
+      AsyncResult.isFailure(catalog.result));
   const registry = useContext(RegistryContext);
   const revalidate = (account: AccountSummary["id"]) => {
     const check = checkAppAccountAtom({ organization, app: app.id, account });
@@ -94,10 +109,16 @@ export function AppAccounts({
   }>();
   const [renaming, setRenaming] = useState<AccountSummary["id"]>();
   const [connecting, setConnecting] = useState(false);
+  const connectionDisabled = connecting || connection !== undefined || catalogUnavailable;
+  const noticesFor = (requirement: AccountRequirement): readonly CatalogConnectionNotice[] =>
+    catalogEntry?.connectionNotices?.filter(
+      (notice) => notice.providerName === requirement.definition.name,
+    ) ?? [];
   // Reconnecting through the app shows the hosts this app's declaration grants. Replacing an
   // account's credentials needs use of the account.
   const usable = (account: AccountSummary) => accounts.some((item) => item.id === account.id);
   const reconnect = (scope: AccountScope, slot: string, account: AccountSummary) => {
+    if (connectionDisabled) return;
     const requirement = app.requirements.accounts[slot];
     if (requirement !== undefined)
       setConnection({ scope, slot, requirement, method: account.method, account });
@@ -114,11 +135,12 @@ export function AppAccounts({
     link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
     unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
     connect: (slot, requirement) => {
+      if (connectionDisabled) return;
       const [preferred] = methodsOf(requirement);
       if (preferred !== undefined)
         setConnection({ scope, slot, requirement, method: preferred[0] });
     },
-    connecting,
+    connecting: connectionDisabled,
     onUnlinked: (account) => void unused.check(account),
   });
   const scopeAccounts = (
@@ -151,7 +173,7 @@ export function AppAccounts({
                 )}
                 {usable(account) && (
                   <DropdownMenuItem
-                    disabled={connecting}
+                    disabled={connectionDisabled}
                     onSelect={() => reconnect(scope, slot, account)}
                   >
                     {requirement.definition.auth[account.method]?.type === "oauth2"
@@ -166,7 +188,7 @@ export function AppAccounts({
               <Button
                 variant="outline"
                 size="sm"
-                disabled={connecting}
+                disabled={connectionDisabled}
                 onClick={() => reconnect(scope, slot, account)}
               >
                 Reconnect
@@ -177,6 +199,17 @@ export function AppAccounts({
   const notDeployed = "Deploy this app to link accounts.";
   return (
     <>
+      {catalogUnavailable && (
+        <div className="mb-4">
+          {AsyncResult.isFailure(catalog.result) ? (
+            <HostedFailure cause={catalog.result.cause} retry={catalog.refresh} layout="compact" />
+          ) : (
+            <p role="status" className="text-sm text-muted-foreground">
+              Loading connection details…
+            </p>
+          )}
+        </div>
+      )}
       {Object.values(app.requirements.accounts).flatMap((requirement) =>
         deployed && (requirement.scope === "app" ? canManage : canUse)
           ? methodsOf(requirement)
@@ -215,6 +248,7 @@ export function AppAccounts({
             slot={connection.slot}
             requirement={connection.requirement}
             method={connection.method}
+            connectionNotices={noticesFor(connection.requirement)}
             redirectUri={redirectUri}
             account={connection.account}
             onPendingChange={setConnecting}
@@ -254,6 +288,7 @@ export function AppConnectionDialogContent({
   slot,
   requirement,
   method,
+  connectionNotices = [],
   redirectUri,
   account,
   onPendingChange,
@@ -266,6 +301,7 @@ export function AppConnectionDialogContent({
   readonly slot: string;
   readonly requirement: AccountRequirement;
   readonly method: string;
+  readonly connectionNotices?: readonly CatalogConnectionNotice[] | undefined;
   readonly redirectUri: string;
   readonly onPendingChange: (pending: boolean) => void;
   readonly onSaved: () => void;
@@ -282,6 +318,7 @@ export function AppConnectionDialogContent({
         action={account ? "Reconnect" : "Connect"}
         notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
       />
+      <ConnectionNotices provider={form.provider} notices={connectionNotices} />
       <AppConnectionFields
         app={app}
         account={account}

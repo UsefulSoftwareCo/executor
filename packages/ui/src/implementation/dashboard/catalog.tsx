@@ -3,7 +3,7 @@ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-reac
 import { useContext, useState, type ReactNode } from "react";
 import { Cause, Effect, Exit, Option, Predicate } from "effect";
 import type { App, DeployedApp } from "@executor-js/sdk";
-import type { CatalogEntry } from "@executor-js/catalog/contracts";
+import type { CatalogEntry, CatalogConnectionNotice } from "@executor-js/catalog/contracts";
 import type {
   QueryProps,
   MutationProps,
@@ -189,6 +189,7 @@ export function CatalogPage<E, IE>({
                 <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
                   <strong>{entry.name}</strong>
                   <span className="line-clamp-1">{entry.description}</span>
+                  <CatalogNotices notices={entry.connectionNotices} />
                 </div>
                 {(() => {
                   const installed = installedByPackage.get(entry.package);
@@ -270,5 +271,24 @@ export function CatalogPage<E, IE>({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** Show provider restrictions before an app is added from the catalog. */
+function CatalogNotices({
+  notices,
+}: {
+  readonly notices: readonly CatalogConnectionNotice[] | undefined;
+}) {
+  if (notices === undefined || notices.length === 0) return null;
+  return (
+    <ul className="space-y-1 text-[12px] text-muted-foreground">
+      {notices.map((notice, index) => (
+        <li key={`${notice.providerName}:${index}`}>
+          <span className="font-medium text-foreground/80">{notice.providerName}: </span>
+          {notice.message}
+        </li>
+      ))}
+    </ul>
   );
 }

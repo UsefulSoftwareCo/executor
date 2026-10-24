@@ -28,6 +28,9 @@ const Catalog = Schema.Array(
     icons: Schema.Array(
       Schema.Struct({ src: Schema.String, theme: Schema.optionalKey(Schema.String) }),
     ),
+    connectionNotices: Schema.optional(
+      Schema.Array(Schema.Struct({ providerName: Schema.String, message: Schema.String })),
+    ),
   }),
 );
 const Installed = Schema.Struct({
@@ -50,6 +53,7 @@ const Rejected = Schema.Struct({
   _tag: Schema.Literal("CatalogImportFailed"),
   code: Schema.String,
 });
+const ConnectionLink = Schema.Struct({ id: Schema.String, url: Schema.String });
 
 layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) => {
   it.effect(scenarios.catalogOfficialApps.title, (context) =>
@@ -79,6 +83,9 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
           ["dark", "/catalog/icons/mail-dark.svg"],
         ]);
         expect(mail.auth).toEqual([{ method: "apiKey", kind: "secrets", label: "API key" }]);
+        expect(mail.connectionNotices).toBeUndefined();
+        const trackerEntry = entries.find((entry) => entry.id === officialApps.tracker.id);
+        expect(trackerEntry?.connectionNotices).toEqual(officialApps.tracker.connectionNotices);
 
         // A listing whose source names another package is refused before anything is created.
         const refusedName = `Mismatched ${randomUUID().slice(0, 8)}`;
@@ -191,6 +198,81 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.checkpoint("The tracker shows its catalog icon");
         expect(logos).toEqual([]);
+        yield* browser.use("Start a tracker connection from the app accounts", (page) =>
+          provider(page).getByRole("button", { name: "Connect new account" }).click(),
+        );
+        expect(
+          yield* browser.use("The app account dialog shows its catalog notice", (page) =>
+            page
+              .getByRole("dialog", { name: `Connect ${officialApps.tracker.name}` })
+              .getByRole("note", { name: `${officialApps.tracker.name} connection notices` })
+              .innerText(),
+          ),
+        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
+        yield* browser.use("Close the tracker connection dialog", (page) =>
+          page.keyboard.press("Escape"),
+        );
+
+        const handoff = yield* body(
+          ConnectionLink,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/apps/${tracker.id}/accounts/user/tracker/connections`,
+            {},
+          ),
+        );
+        const handoffUrl = new URL(handoff.url);
+        yield* browser.use("Open the agent-created connection handoff", (page) =>
+          page.goto(`${handoffUrl.pathname}${handoffUrl.search}`),
+        );
+        yield* browser.use("The handoff opens tracker account setup", (page) =>
+          page.waitForURL(new RegExp(`/apps/${tracker.id}\\?`, "u")),
+        );
+        expect(
+          yield* browser.use("The resumed dialog shows its catalog notice", (page) =>
+            page
+              .getByRole("dialog", { name: `Connect ${officialApps.tracker.name}` })
+              .getByRole("note", { name: `${officialApps.tracker.name} connection notices` })
+              .innerText(),
+          ),
+        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
+        yield* browser.checkpoint("Agent-created connections show restrictions before Connect");
+
+        yield* browser.use("Return to tracker accounts", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${tracker.id}?view=accounts`),
+        );
+        yield* browser.use("Make the catalog unavailable after reload", (page) =>
+          page.route("**/api/catalog", (route) =>
+            route.fulfill({
+              status: 502,
+              contentType: "application/json",
+              body: JSON.stringify({
+                _tag: "CatalogUnavailable",
+                message: "Executor could not read the app catalog. Try again.",
+              }),
+            }),
+          ),
+        );
+        yield* browser.use("Reload tracker accounts without catalog metadata", (page) =>
+          page.reload(),
+        );
+        yield* browser.use("Show the catalog error and block a new connection", (page) =>
+          page
+            .getByText("The app catalog could not be reached. Try again.", { exact: true })
+            .waitFor(),
+        );
+        expect(
+          yield* browser.use(
+            "The account dialog stays closed while metadata is unavailable",
+            (page) =>
+              Promise.all([
+                provider(page).getByRole("button", { name: "Connect new account" }).isDisabled(),
+                page.getByRole("dialog").count(),
+              ]),
+          ),
+        ).toEqual([true, 0]);
+        yield* browser.use("Restore the catalog request", (page) => page.unroute("**/api/catalog"));
         yield* browser.use("Open Add app", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/add`),
         );
@@ -206,6 +288,11 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         yield* browser.use("An installed app offers Open", (page) =>
           row(page, officialApps.tracker.name).getByRole("link", { name: "Open" }).waitFor(),
         );
+        expect(
+          yield* browser.use("The catalog shows the tracker restriction before Add", (page) =>
+            row(page, officialApps.tracker.name).innerText(),
+          ),
+        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
         yield* browser.use("An app not yet added offers Add", (page) =>
           row(page, officialApps.mail.name)
             .getByRole("button", { name: `Add ${officialApps.mail.name}`, exact: true })

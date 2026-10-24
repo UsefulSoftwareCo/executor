@@ -1082,6 +1082,16 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         });
         expect(wider.setup.firstParty).toBeUndefined();
         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+
+        // Hosted product naming changes only reviewed client labels. The optional OAuth App
+        // keeps the same permissions and endpoints when the operator names their product.
+        yield* restartWith({
+          EXECUTOR_PRODUCT_NAME: "Synthetic Host",
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
+        });
+        const branded = yield* signIn("branded", [calendar]);
+        expect(branded.setup.firstParty).toEqual({ label: "Synthetic Host for Google" });
       }),
     ),
   );

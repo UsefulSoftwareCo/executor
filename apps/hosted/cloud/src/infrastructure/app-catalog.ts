@@ -2,7 +2,8 @@
  * The official app feed Add app lists (`notes/catalog-imports.md`). The executor-apps repository
  * builds it and publishes it into this bucket on every push to its `main`
  * (`.github/workflows/publish.yml` there); production owns the bucket and serves it read-only at
- * `catalog.executor.sh`. Every deployed stage reads that one feed.
+ * `catalog.executor.sh`. Deployed stages use it by default; an operator may supply another feed
+ * through `EXECUTOR_CATALOG_URL`.
  *
  * The bucket's hostname is an R2 custom domain. R2 custom domains use Cloudflare for SaaS
  * certificates, not the Advanced certificates Workers Custom Domains order, so it cannot replace
@@ -36,17 +37,11 @@ export const AppCatalog = Effect.gen(function* () {
 
 /**
  * The API Worker binding that lists the feed on a deployed stage. Test stages share production's
- * read-only feed rather than publishing their own.
+ * read-only feed by default rather than publishing their own.
  */
 export const appCatalogBinding = Effect.gen(function* () {
-  // A second, hand-set value would leave two bindings for one name.
   const configured = yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option);
-  if (Option.isSome(configured))
-    return yield* Effect.die(
-      new Error(
-        `Deployed stages read the feed at ${appCatalogOrigin}. ` +
-          "Remove EXECUTOR_CATALOG_URL from the deploy environment.",
-      ),
-    );
-  return { EXECUTOR_CATALOG_URL: `${appCatalogOrigin}/index.json` };
+  return {
+    EXECUTOR_CATALOG_URL: Option.getOrElse(configured, () => `${appCatalogOrigin}/index.json`),
+  };
 });

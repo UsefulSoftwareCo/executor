@@ -2,6 +2,7 @@
 export {
   CatalogAuth,
   CatalogEntry,
+  CatalogConnectionNotice,
   CatalogFeed,
   CatalogFeedSource,
   CatalogIcon,

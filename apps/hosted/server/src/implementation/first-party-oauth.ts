@@ -2,7 +2,8 @@
  * The operator's own OAuth clients (`notes/oauth.md`, "First-party clients"). What each client is,
  * its authorization server, scope menu and placement, is reviewed here in code. Only its
  * credentials are settings, `EXECUTOR_OAUTH_<ID>_CLIENT_ID` and `EXECUTOR_OAUTH_<ID>_CLIENT_SECRET`
- * (the ID in upper case, `-` as `_`), and a client is offered only when both are set.
+ * (the ID in upper case, `-` as `_`), and a client is offered only when both are set. Reviewed
+ * client labels use `EXECUTOR_PRODUCT_NAME`, which defaults to `Executor`.
  */
 import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
 import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
@@ -103,6 +104,17 @@ const slackMcpUserScopes = [
   "files:write",
 ];
 
+/** OAuth App scopes declared by the official GitHub REST app. */
+const githubRestScopes = [
+  "repo",
+  "read:org",
+  "workflow",
+  "gist",
+  "notifications",
+  "read:user",
+  "user:email",
+];
+
 /**
  * The clients an operator can turn on by setting their credentials.
  *
@@ -112,6 +124,9 @@ const slackMcpUserScopes = [
  *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
  *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
  *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
+ * - `github-oauth` is an optional OAuth App for the official GitHub REST app. It requests that
+ *   app's declared scopes and sends its managed token only to `api.github.com`. It is separate
+ *   from the GitHub App client above, whose permission model remains unchanged.
  * - `google` is Executor for Google, v1's Google client. `access_type=offline` and
  *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
  *   revokes every grant a user gave the client at once, so removing one account would end the
@@ -144,6 +159,19 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
         "api.githubcopilot.com",
       ],
     },
+  },
+  {
+    id: "github-oauth",
+    label: "Executor for GitHub",
+    server: {
+      authorizationUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+      grantedScopeSeparator: ",",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: githubRestScopes,
+    allowedScopes: githubRestScopes,
+    placement: { hosts: ["api.github.com"] },
   },
   {
     id: "google",
@@ -232,6 +260,9 @@ const testDefinitions = (allowed: boolean) =>
  */
 export const firstPartyOAuthClients = (options: { readonly testDefinitions: boolean }) =>
   Effect.gen(function* () {
+    const productName = yield* Config.NonEmptyString("EXECUTOR_PRODUCT_NAME").pipe(
+      Config.withDefault("Executor"),
+    );
     const reviewed = yield* Schema.decodeUnknownEffect(Definitions)(
       firstPartyOAuthClientDefinitions,
     ).pipe(Effect.orDie);
@@ -275,7 +306,19 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
         problems.push(`The ${definition.id} client's definition or client ID is invalid.`);
         continue;
       }
-      clients.push(client.value);
+      const service =
+        definition.id === "google"
+          ? "Google"
+          : definition.id === "github" || definition.id === "github-oauth"
+            ? "GitHub"
+            : definition.id === "slack"
+              ? "Slack"
+              : undefined;
+      clients.push(
+        service === undefined
+          ? client.value
+          : { ...client.value, label: `${productName} for ${service}` },
+      );
     }
     if (problems.length > 0) return yield* invalid(problems);
     return clients;

@@ -3263,7 +3263,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "credential-placement.spec.ts",
     title:
-      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set",
+      "The reviewed Google client follows provider scopes and uses the configured product name when its credentials are set",
     targets: {
       "self-host": scheduled,
       cloud: na(
