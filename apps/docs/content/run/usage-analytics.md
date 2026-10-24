@@ -37,6 +37,8 @@ send `desktop`.
   the HTTP status, the API operation name, the kind of sign-in an account uses,
   the client application's name and whether the request came from MCP, the API
   or the dashboard.
+- **Empty tool searches:** when the first page of a query has no matches,
+  without the query text. Browsing and exhausted pages are not counted.
 - **Feedback:** only the text you or your agent submit through
   `feedback.submit`.
 

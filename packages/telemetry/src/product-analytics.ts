@@ -106,6 +106,7 @@ export const analyticsEvents = {
     resumed: Schema.optional(Schema.Boolean),
     duration_ms: Schema.optional(Duration),
   }),
+  tool_search_empty: Schema.Struct({ ...usage, result_count: Schema.Literal(0) }),
   account_connected: Schema.Struct({
     ...usage,
     auth_kind: Schema.Literals(["credentials", "oauth"]),
