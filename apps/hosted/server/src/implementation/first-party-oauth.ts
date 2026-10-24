@@ -7,6 +7,7 @@
 import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
 import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
 import { FirstPartyOAuthClientsInvalid } from "../contracts/oauth-client-metadata.ts";
+import { isZohoOAuthClient, zohoOAuthClients } from "./zoho-oauth.ts";
 
 /** A first-party client without its credentials: everything about it that code reviews. */
 export const FirstPartyOAuthClientDefinition = FirstPartyOAuthClient.mapFields(
@@ -123,8 +124,12 @@ const slackMcpUserScopes = [
  *   It is unlisted, as in v1: Slack lets an app use MCP outside its own workspace only once it is
  *   published in the Slack Marketplace, so it signs in no new accounts, but reconnects and renews
  *   those it already holds. Its tokens go only to Slack's MCP server.
+ * - `zoho-*` are the eight data centers for one Zoho CRM Multi-DC client. Each regional method
+ *   uses the same credentials and scope list, and places its token only on that region's CRM API
+ *   host with Zoho's `Zoho-oauthtoken` scheme.
  */
 export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
+  ...zohoOAuthClients,
   {
     id: "github",
     label: "Executor for GitHub",
@@ -178,7 +183,8 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
 
 /** The two settings that hold the credentials of the client `id`. */
 export const firstPartyOAuthCredentialSettings = (id: string) => {
-  const prefix = `EXECUTOR_OAUTH_${id.toUpperCase().replaceAll("-", "_")}`;
+  const credentialId = isZohoOAuthClient(id) ? "zoho" : id;
+  const prefix = `EXECUTOR_OAUTH_${credentialId.toUpperCase().replaceAll("-", "_")}`;
   return { clientId: `${prefix}_CLIENT_ID`, clientSecret: `${prefix}_CLIENT_SECRET` };
 };
 

@@ -69,6 +69,33 @@ const Run = Schema.Struct({
 const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 /** A placed or managed handle, which an outbound from before placements never opens. */
 const handle = /^exsec2_[0-9a-f]+_$/;
+/** The official Zoho CRM app's 14 scopes and eight data-center endpoints. */
+const zohoScopes = [
+  "ZohoCRM.modules.ALL",
+  "ZohoCRM.settings.ALL",
+  "ZohoCRM.users.ALL",
+  "ZohoCRM.org.ALL",
+  "ZohoCRM.bulk.ALL",
+  "ZohoCRM.coql.READ",
+  "ZohoCRM.notifications.READ",
+  "ZohoCRM.notifications.CREATE",
+  "ZohoCRM.notifications.UPDATE",
+  "ZohoCRM.notifications.DELETE",
+  "ZohoCRM.features.READ",
+  "ZohoCRM.send_mail.all.CREATE",
+  "ZohoCRM.Files.CREATE",
+  "ZohoCRM.Files.READ",
+];
+const zohoRegions = [
+  { id: "us", accounts: "accounts.zoho.com", api: "www.zohoapis.com" },
+  { id: "eu", accounts: "accounts.zoho.eu", api: "www.zohoapis.eu" },
+  { id: "in", accounts: "accounts.zoho.in", api: "www.zohoapis.in" },
+  { id: "au", accounts: "accounts.zoho.com.au", api: "www.zohoapis.com.au" },
+  { id: "jp", accounts: "accounts.zoho.jp", api: "www.zohoapis.jp" },
+  { id: "ca", accounts: "accounts.zohocloud.ca", api: "www.zohoapis.ca" },
+  { id: "sa", accounts: "accounts.zoho.sa", api: "www.zohoapis.sa" },
+  { id: "cn", accounts: "accounts.zoho.com.cn", api: "www.zohoapis.com.cn" },
+] as const;
 /** A failure as the API answers it. */
 const Failure = Schema.Struct({ _tag: Schema.String, message: Schema.String });
 /**
@@ -858,7 +885,14 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         scopes: ["mail.read"],
         resourceTokens: "issued",
       });
-      yield* store.issue([{ in: "header", name: "authorization", value: `Bearer ${token}` }]);
+      const scheme = options.scheme === null ? "" : (options.scheme ?? "Bearer");
+      yield* store.issue([
+        {
+          in: "header",
+          name: options.header ?? "authorization",
+          value: scheme === "" ? token : `${scheme} ${token}`,
+        },
+      ]);
       const hosts = options.hosts?.({ issuerHost, storeHost }) ?? [issuerHost, storeHost];
       yield* restartWith(operatorClients(issuer.origin, hosts, options));
       return { issuer, store, issuerHost, storeHost };
@@ -1086,6 +1120,107 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
+  it.effect(scenarios.credentialManagedZoho.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, connection } = yield* harness;
+        const cleared = {
+          EXECUTOR_OAUTH_ZOHO_CLIENT_ID: "",
+          EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: "",
+        };
+        const clientId = "synthetic-zoho-multi-dc-client";
+        yield* Effect.addFinalizer(() => restartWith(cleared).pipe(Effect.orDie));
+        yield* restartWith(cleared);
+
+        /** Deploy the unchanged provider contract shape for one Zoho data center. */
+        const deployRegion = (region: (typeof zohoRegions)[number]) =>
+          Effect.gen(function* () {
+            const name = `Zoho CRM ${region.id} ${randomUUID().slice(0, 8)}`;
+            const { path, app } = yield* deploy(
+              name,
+              endpointsApp(
+                "Zoho CRM",
+                [region.api],
+                {
+                  authorizationUrl: `https://${region.accounts}/oauth/v2/auth`,
+                  tokenUrl: `https://${region.accounts}/oauth/v2/token`,
+                  revocationUrl: `https://${region.accounts}/oauth/v2/token/revoke`,
+                },
+                zohoScopes,
+              ),
+            );
+            return { path, app };
+          });
+
+        // No client pair is required to deploy. A new sign-in reports that the operator must
+        // supply a client instead of making the host refuse startup.
+        const eu = zohoRegions.find((region) => region.id === "eu")!;
+        const euApp = yield* deployRegion(eu);
+        const euProvider = euApp.app.requirements.accounts.mail!.provider;
+        const unset = yield* body(
+          Setup,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/providers/${euProvider}/oauth/oauth/setup`,
+          ),
+        );
+        expect(unset.mode).toBe("client-required");
+        expect(unset.firstParty).toBeUndefined();
+        const unsetConnection = yield* connection(euApp.path, "mail");
+        const unsetStart = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${unsetConnection}/oauth/start`,
+          { method: "oauth", label: "Zoho CRM EU" },
+        );
+        expect(unsetStart.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+
+        yield* restartWith({
+          EXECUTOR_OAUTH_ZOHO_CLIENT_ID: clientId,
+          EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: "synthetic-zoho-multi-dc-secret",
+        });
+        for (const region of zohoRegions) {
+          const deployed = region.id === "eu" ? euApp : yield* deployRegion(region);
+          const provider = deployed.app.requirements.accounts.mail!.provider;
+          const setup = yield* body(
+            Setup,
+            yield* api.request(
+              actors.owner,
+              "GET",
+              `${prefix}/providers/${provider}/oauth/oauth/setup`,
+            ),
+          );
+          expect(setup).toMatchObject({
+            mode: "automatic",
+            firstParty: { label: `Executor for Zoho CRM (${region.id.toUpperCase()})` },
+            scopes: zohoScopes,
+          });
+
+          const id = yield* connection(deployed.path, "mail");
+          const started = yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${id}/oauth/start`,
+            { method: "oauth", label: `Zoho CRM ${region.id.toUpperCase()}` },
+          );
+          const redirect = yield* body(Redirect, started);
+          const authorization = new URL(redirect.authorizationUrl);
+          expect(`${authorization.origin}${authorization.pathname}`).toBe(
+            `https://${region.accounts}/oauth/v2/auth`,
+          );
+          expect(authorization.searchParams.get("client_id")).toBe(clientId);
+          expect(authorization.searchParams.get("redirect_uri")).toBe(redirect.redirectUri);
+          expect(authorization.searchParams.get("response_type")).toBe("code");
+          expect(authorization.searchParams.get("scope")).toBe(zohoScopes.join(","));
+          expect(authorization.searchParams.get("access_type")).toBe("offline");
+          expect(authorization.searchParams.get("prompt")).toBe("consent");
+        }
+      }),
+    ),
+  );
+
   /** An app on the operator client's issuer, and an account connected through its client. */
   const managedAccount = (rawToken: boolean, configured = operator) =>
     Effect.gen(function* () {
@@ -1130,6 +1265,38 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       expect((yield* issuer.metrics).tokenChecks).toMatchObject({ authSecret: true });
       return { name, options, path, app, account, store, issuer, issuerHost, storeHost };
     });
+
+  it.effect(scenarios.credentialManagedZohoScheme.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix } = yield* harness;
+        const configured = Effect.gen(function* () {
+          const value = yield* operatorWith({
+            scheme: "Zoho-oauthtoken",
+            grantedScopeSeparator: ",",
+            allowedScopes: ["mail.read", "mail.compose"],
+          });
+          yield* value.issuer.configure({
+            scopeGrant: { defaults: [], exchange: ["mail.compose"], separator: "," },
+          });
+          return value;
+        });
+        const { account, store } = yield* managedAccount(true, configured);
+        const health = yield* body(
+          Health,
+          yield* api.request(actors.owner, "POST", `${prefix}/accounts/${account}/health`),
+        );
+        // Completion accepted the issuer's comma-separated grant, and the health call reached the
+        // local service only with `Zoho-oauthtoken <access token>` from the managed placement.
+        expect(health.apps.map((entry) => entry.check?.status)).toEqual(["healthy"]);
+        const received = yield* store.received;
+        expect(received).toHaveLength(1);
+        expect(received[0]!.authorization).toBe("Zoho-oauthtoken synthetic-access-token");
+        expect(received[0]!.authenticated).toBe(true);
+      }),
+    ),
+  );
 
   it.effect(scenarios.credentialManagedPlaced.title, (context) =>
     withHostedCase(

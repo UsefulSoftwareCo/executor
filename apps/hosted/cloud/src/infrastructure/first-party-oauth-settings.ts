@@ -24,6 +24,12 @@ export const firstPartySlackSettings = {
   clientSecret: "EXECUTOR_OAUTH_SLACK_CLIENT_SECRET",
 } as const;
 
+/** Zoho CRM's Multi-DC client, offered only when both credentials are set. */
+export const firstPartyZohoSettings = {
+  clientId: "EXECUTOR_OAUTH_ZOHO_CLIENT_ID",
+  clientSecret: "EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET",
+} as const;
+
 /** The Agents vault item holding the GitHub App's client ID (`username`) and secret (`credential`). */
 export const firstPartyGitHubItem = "Executor.sh GitHub App";
 
@@ -50,3 +56,6 @@ export const partialFirstPartySlackClient =
   `Set ${firstPartySlackSettings.clientId} and ${firstPartySlackSettings.clientSecret} in ` +
   ".env.ci.op together, from the Executor vault item `Slack OAuth - Production` (`username` and " +
   "`credential`), or set neither.";
+
+/** What to set if only one Zoho Multi-DC credential is configured. */
+export const partialFirstPartyZohoClient = `Set ${firstPartyZohoSettings.clientId} and ${firstPartyZohoSettings.clientSecret} together, or leave both unset.`;

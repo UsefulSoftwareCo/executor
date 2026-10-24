@@ -3272,6 +3272,28 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedZoho: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Zoho CRM's shared Multi-DC client is offered for all eight regional OAuth methods and requests its exact scopes",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This case changes self-host operator settings between regional OAuth starts."),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedZohoScheme: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the hosted runtime sends an operator-managed OAuth token with Zoho's authorization scheme",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This case uses a self-host synthetic OAuth issuer and operator settings."),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedPlaced: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
