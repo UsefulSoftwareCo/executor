@@ -3538,6 +3538,16 @@ export const scenarios = plan({
       local: na("Exercises the shared importer and OAuth setup through hosted APIs."),
     },
   },
+  mcpQuickAddRename: {
+    fixtures: "actors",
+    file: "mcp-quick-add-rename.spec.ts",
+    title: "Renaming a quick-added OAuth MCP app keeps its provider name and linked account",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("Exercises the shared importer and app rename through hosted APIs."),
+    },
+  },
   importApprovals: {
     fixtures: "actors",
     file: "import-approvals.spec.ts",

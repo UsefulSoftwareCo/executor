@@ -60,7 +60,8 @@ export interface McpSourceOptions {
  * All runtime behavior is retained in editable files and public app-framework helpers, including
  * the approval rule: tools the server marks `destructiveHint: true` ask before running. An OAuth
  * provider declares the server's host, so app code holds token handles rather than real values,
- * and checks an account by connecting to the server with it.
+ * and checks an account by connecting to the server with it. The provider is named after that
+ * host, not the app: its name is part of the provider's identity, which renaming the app keeps.
  */
 export const generateMcpSource = (
   name: string,
@@ -159,7 +160,7 @@ export const headers = (account: { fields: { access_token: string } }) => ({
 })
 
 export const provider = defineProvider({
-  name: ${serialize(name)},
+  name: ${serialize(host)},
   hosts: [${serialize(host)}],
   auth: {
     oauth: oauth2(${serialize(oauth)})
