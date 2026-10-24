@@ -20,11 +20,11 @@ import {
 import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Context, Effect, FiberSet, Option, Schema } from "effect";
+import { Context, Effect, FiberSet, Option, Schema, Stream } from "effect";
 import { CurrentOrganization, CurrentUserId } from "@executor-js/hosted-server";
 import { dataChanges } from "../implementation/data-changes.ts";
+import { durableNamespace } from "./jurisdiction.ts";
 import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { CloudCompileResult } from "../contracts/builds.ts";
 import { AppCompiler } from "./compiler.ts";
 import { AppData } from "./app-data-worker.ts";
@@ -80,14 +80,6 @@ const withActor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       }),
     );
   });
-const NativeNamespace = Schema.declare(
-  (value): value is Pick<DurableObjectNamespace, "getByName"> =>
-    typeof value === "object" &&
-    value !== null &&
-    "getByName" in value &&
-    typeof value.getByName === "function",
-);
-
 /**
  * What a supervisor's `run` answers: the call's encoded result. The Durable Object bridge answers a
  * method its object does not define with `undefined`, before and instead of running anything, so
@@ -102,7 +94,7 @@ export const cloudRuntime = Effect.fn(function* (
 ) {
   const compiler = yield* Cloudflare.Workers.bindWorker(AppCompiler);
   const appData = yield* Cloudflare.Workers.bindWorker(AppData);
-  const environment = yield* Cloudflare.WorkerEnvironment;
+  const supervisors = yield* durableNamespace("AppDataSupervisor");
   return Effect.gen(function* () {
     // App Workers run in AppData, whose own entrypoint can be their outbound network.
     const runner = remoteAppRunner({
@@ -248,7 +240,7 @@ export const cloudRuntime = Effect.fn(function* (
         cloudBuildAsset(build, path).pipe(Effect.provide(RuntimeContext.phantom)),
       // Native fetch retains the upgrade response; Alchemy's typed HTTP stub omits it.
       changes: (app) =>
-        dataChanges(Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor), app),
+        Stream.unwrap(Effect.map(supervisors, (namespace) => dataChanges(namespace, app))),
     });
     return runtimeAdapter(runtime);
   });

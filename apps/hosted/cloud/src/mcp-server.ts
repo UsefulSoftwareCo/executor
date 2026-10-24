@@ -4,11 +4,12 @@
  * the API with its routes, dashboard, sign-in, email, billing and schedules.
  */
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer } from "effect";
 import { Api } from "./infrastructure/api-worker.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
-import { McpSession, SessionNamespace } from "./infrastructure/mcp.ts";
+import { McpSession } from "./infrastructure/mcp.ts";
+import { durableNamespace } from "./infrastructure/jurisdiction.ts";
 import { cloudMcpIdentity } from "./infrastructure/mcp-auth.ts";
 import { McpServer } from "./infrastructure/mcp-server-worker.ts";
 import { makeMcpSession } from "./infrastructure/mcp-session.ts";
@@ -26,11 +27,11 @@ import { workerBuild } from "./infrastructure/worker-build.ts";
 /** The executor and MCP identity are built once per isolate and shared by its objects. */
 const mcpSession = Effect.gen(function* () {
   const executor = yield* cloudServingProduct(yield* appDataSupervisors);
-  const environment = yield* Cloudflare.WorkerEnvironment;
   // `McpSession.make` binds this Worker's own namespace; an object names itself through it.
-  const idFromName = Schema.decodeUnknownEffect(SessionNamespace)(environment.McpSession).pipe(
-    Effect.map((namespace) => (name: string) => namespace.idFromName(name)),
-    Effect.orDie,
+  const sessions = yield* durableNamespace("McpSession");
+  const idFromName = Effect.map(
+    sessions,
+    (namespace) => (name: string) => namespace.idFromName(name),
   );
   return yield* makeMcpSession({
     executor,
