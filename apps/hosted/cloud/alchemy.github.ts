@@ -40,6 +40,7 @@ import {
   firstPartyGitHubSettings,
   firstPartyGoogleSettings,
   firstPartySlackSettings,
+  firstPartySlackRestSettings,
   missingFirstPartyGitHubClient,
   partialFirstPartyGoogleClient,
   partialFirstPartySlackClient,
@@ -404,8 +405,9 @@ export default Alchemy.Stack(
     /**
      * The operator's OAuth clients' credentials (`first-party-oauth-settings.ts`). Production
      * offers v1's Executor.sh GitHub App, so this stack refuses to apply without its client ID and
-     * secret and says which Agents vault item to reference. Executor for Google and Executor for
-     * Slack are each turned on once both of their values are set; one without the other is refused.
+     * secret and says which Agents vault item to reference. Executor for Google and Slack MCP are
+     * each turned on once both values are set; one without the other is refused. Slack REST is
+     * optional, and this settings layer stores its credentials only when both values are present.
      */
     const credentials = (names: { readonly clientId: string; readonly clientSecret: string }) =>
       Effect.all([nonEmptySecret(names.clientId), nonEmptySecret(names.clientSecret)]);
@@ -418,6 +420,7 @@ export default Alchemy.Stack(
     const [slackId, slackSecret] = yield* credentials(firstPartySlackSettings);
     if (Option.isSome(slackId) !== Option.isSome(slackSecret))
       return yield* Effect.die(new Error(partialFirstPartySlackClient));
+    const [slackRestId, slackRestSecret] = yield* credentials(firstPartySlackRestSettings);
     const firstPartySecrets = [
       [firstPartyGitHubSettings.clientId, githubId.value],
       [firstPartyGitHubSettings.clientSecret, githubSecret.value],
@@ -431,6 +434,12 @@ export default Alchemy.Stack(
         ? ([
             [firstPartySlackSettings.clientId, slackId.value],
             [firstPartySlackSettings.clientSecret, slackSecret.value],
+          ] as const)
+        : []),
+      ...(Option.isSome(slackRestId) && Option.isSome(slackRestSecret)
+        ? ([
+            [firstPartySlackRestSettings.clientId, slackRestId.value],
+            [firstPartySlackRestSettings.clientSecret, slackRestSecret.value],
           ] as const)
         : []),
     ] as const;

@@ -1,7 +1,7 @@
 /**
- * Sign in and renew against a loopback issuer that answers with the token responses real services
- * send: Slack's `bot` type, Shopify and Mailchimp without a type, null or array members, and
- * an empty scope. Declared options read Slack's nested user grant and send JSON token requests.
+ * Sign in and renew against a loopback issuer that answers with token responses real services
+ * send, including Slack's bot and nested user grants. Declared options read the nested user grant,
+ * reject a missing one when required on exchange, and retain top-level refresh responses.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -64,6 +64,29 @@ const slackUser: TokenShape = (tokens) => ({
   enterprise: null,
   is_enterprise_install: false,
 });
+/** Slack's dual-grant answer; a strict user-token path must discard the complete bot grant. */
+const slackDual: TokenShape = (tokens, refreshing) =>
+  refreshing
+    ? {
+        access_token: tokens.access_token,
+        token_type: "user",
+        scope: "search:read,chat:write",
+        ...(tokens.expires_in === undefined ? {} : { expires_in: tokens.expires_in }),
+        ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
+      }
+    : {
+        ...slack(tokens, false),
+        access_token: "synthetic-bot-token",
+        refresh_token: "synthetic-bot-refresh-token",
+        authed_user: {
+          id: "U0SYNTHETIC",
+          scope: "search:read,chat:write",
+          access_token: tokens.access_token,
+          token_type: "user",
+          ...(tokens.expires_in === undefined ? {} : { expires_in: tokens.expires_in }),
+          ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
+        },
+      };
 /** Shopify's expiring offline token: no `token_type`, comma-separated scopes. */
 const shopify: TokenShape = (tokens) => ({
   access_token: tokens.access_token,
@@ -402,8 +425,9 @@ const emptyScope = (context: TestContext) =>
 
 /**
  * A provider that declares `tokenResponse: { path: "authed_user" }` signs in and renews with
- * Slack's user-only response, and app code sees the nested grant's scopes space-separated. A
- * top-level grant with a scope still wins. Without the option the nested grant is not read.
+ * Slack's user-only response, and app code sees the nested grant's scopes space-separated. By
+ * default, a complete top-level grant still wins; strict exchange mode selects only the nested
+ * user grant and rejects a response that does not contain it, while refresh keeps the fallback.
  */
 const nestedTokenResponse = (context: TestContext) =>
   withHostedCase(
@@ -460,6 +484,41 @@ const nestedTokenResponse = (context: TestContext) =>
       const refused = yield* standard.signIn("Slack user token without the option");
       expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
       expect(refused.failure._tag).toBe("OAuthCompletionFailed");
+
+      const strict = yield* serviceApp(issuer, {
+        scope: true,
+        oauth: {
+          tokenResponse: { path: "authed_user", requiredOnExchange: true },
+        },
+      });
+      yield* issuer.configure({ tokenShape: slackDual, refreshTokens: true, expiresIn: 3600 });
+      const dual = yield* strict.signIn("Strict nested user grant beside a bot grant");
+      expect(dual.completed.status, JSON.stringify(dual.failure)).toBe(200);
+      const initial = yield* strict.read(dual);
+      expect(initial.response.status, JSON.stringify(initial.response.body)).toBe(200);
+      expect(initial.refreshes).toBe(0);
+      const initialEcho = yield* body(ScopeEcho, initial.response);
+      expect(initialEcho.authorization).toBe("Bearer synthetic-access-token");
+      expect(initialEcho.scope).toBe("search:read chat:write");
+
+      // The same strict declaration still accepts Slack's top-level token response on refresh.
+      yield* issuer.configure({ tokenShape: slackDual, refreshTokens: true, expiresIn: 10 });
+      const refresh = yield* strict.signIn("Strict nested exchange with top-level refresh");
+      expect(refresh.completed.status, JSON.stringify(refresh.failure)).toBe(200);
+      const renewed = yield* strict.read(refresh);
+      expect(renewed.response.status, JSON.stringify(renewed.response.body)).toBe(200);
+      expect(renewed.refreshes).toBe(1);
+      const renewedEcho = yield* body(ScopeEcho, renewed.response);
+      expect(renewedEcho.refreshed).toBe(true);
+      expect(renewedEcho.authorization).toMatch(/^Bearer synthetic-refreshed-token-\d+$/);
+      // Top-level response fields keep the provider's wire format, as in the default path above.
+      expect(renewedEcho.scope).toBe("search:read,chat:write");
+
+      // A complete bot grant cannot rescue an exchange without the configured user grant.
+      yield* issuer.configure({ tokenShape: slack, refreshTokens: true, expiresIn: 3600 });
+      const missing = yield* strict.signIn("Strict nested exchange missing a user grant");
+      expect(missing.completed.status, JSON.stringify(missing.failure)).toBe(400);
+      expect(missing.failure._tag).toBe("OAuthCompletionFailed");
     }),
   );
 

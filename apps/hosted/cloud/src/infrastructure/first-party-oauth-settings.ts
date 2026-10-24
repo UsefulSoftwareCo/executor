@@ -2,7 +2,8 @@
  * The credentials of the operator's OAuth clients on Cloud (`notes/oauth.md`, "First-party
  * clients"), shared by the CI stack that stores production's and the deploy that reads them. The
  * clients themselves are defined in `@executor-js/hosted-server`; these are the settings named by
- * `firstPartyOAuthCredentialSettings` for its `github`, `google` and `slack` clients. Production (`v2`)
+ * `firstPartyOAuthCredentialSettings` for its `github`, `google`, `slack` and `slack-rest`
+ * clients. Production (`v2`)
  * requires the GitHub App's, so a deploy without them fails instead of silently dropping it.
  */
 
@@ -22,6 +23,12 @@ export const firstPartyGoogleSettings = {
 export const firstPartySlackSettings = {
   clientId: "EXECUTOR_OAUTH_SLACK_CLIENT_ID",
   clientSecret: "EXECUTOR_OAUTH_SLACK_CLIENT_SECRET",
+} as const;
+
+/** Executor for Slack REST: `slack-rest`, a separate user-token client from Slack MCP. */
+export const firstPartySlackRestSettings = {
+  clientId: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID",
+  clientSecret: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET",
 } as const;
 
 /** The Agents vault item holding the GitHub App's client ID (`username`) and secret (`credential`). */

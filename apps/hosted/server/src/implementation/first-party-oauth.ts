@@ -103,6 +103,49 @@ const slackMcpUserScopes = [
   "files:write",
 ];
 
+/** Slack REST user scopes approved for the separate `slack-rest` client. */
+const slackRestUserScopes = [
+  "calls:read",
+  "calls:write",
+  "channels:history",
+  "channels:read",
+  "channels:write",
+  "chat:write",
+  "dnd:read",
+  "dnd:write",
+  "emoji:read",
+  "files:read",
+  "files:write",
+  "groups:history",
+  "groups:read",
+  "groups:write",
+  "im:history",
+  "im:read",
+  "im:write",
+  "links:write",
+  "mpim:history",
+  "mpim:read",
+  "mpim:write",
+  "pins:read",
+  "pins:write",
+  "reactions:read",
+  "reactions:write",
+  "reminders:read",
+  "reminders:write",
+  "remote_files:read",
+  "remote_files:share",
+  "search:read",
+  "team:read",
+  "tokens.basic",
+  "usergroups:read",
+  "usergroups:write",
+  "users.profile:read",
+  "users.profile:write",
+  "users:read",
+  "users:read.email",
+  "users:write",
+];
+
 /**
  * The clients an operator can turn on by setting their credentials.
  *
@@ -123,6 +166,8 @@ const slackMcpUserScopes = [
  *   It is unlisted, as in v1: Slack lets an app use MCP outside its own workspace only once it is
  *   published in the Slack Marketplace, so it signs in no new accounts, but reconnects and renews
  *   those it already holds. Its tokens go only to Slack's MCP server.
+ * - `slack-rest` is a separate OAuth client for Slack REST. It requests user scopes through
+ *   `user_scope` and requires the user's nested grant during exchange.
  */
 export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
   {
@@ -173,6 +218,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     allowedScopes: slackMcpUserScopes,
     placement: { hosts: ["mcp.slack.com"] },
     unlisted: true,
+  },
+  {
+    id: "slack-rest",
+    label: "Executor for Slack",
+    server: {
+      authorizationUrl: "https://slack.com/oauth/v2/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.access",
+      authorizationParams: { user_scope: slackRestUserScopes.join(",") },
+      grantedScopeSeparator: ",",
+      tokenResponse: { path: "authed_user", requiredOnExchange: true },
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: [],
+    allowedScopes: slackRestUserScopes,
+    placement: { hosts: ["slack.com"] },
   },
 ];
 

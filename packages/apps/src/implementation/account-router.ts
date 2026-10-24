@@ -45,7 +45,7 @@ const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) =
   return {
     type: "object",
     ...($defs === undefined ? {} : { $defs }),
-    anyOf: schemas.map((input, index) => {
+    anyOf: schemas.map((input, index): JsonObject => {
       const { first, rest } = branches[index]!;
       return {
         type: "object",

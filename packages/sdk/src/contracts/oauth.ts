@@ -357,6 +357,7 @@ export const FirstPartyOAuthServer = Schema.Struct({
   /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
   authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
   tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
+  /** How the token response carries its grant; strict path requirements apply only on exchange. */
   tokenResponse: Schema.optionalKey(OAuthTokenResponse),
   /**
    * The RFC 8707 resource sent on the authorization request, the code exchange and every renewal,
@@ -1330,7 +1331,7 @@ export const OAuthAttempt = Schema.Struct({
   /** An entered client registered under the attempt's owner once it completes. */
   saveClient: Schema.optionalKey(Schema.Literal(true)),
   resource: Schema.optional(HttpUrl),
-  /** Token request encoding and nested grant location, as the provider declared them. */
+  /** Token request encoding and nested grant location; strict path requirements apply on exchange. */
   tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
   tokenResponse: Schema.optional(OAuthTokenResponse),
 });
@@ -1387,7 +1388,7 @@ export const OAuthGrant = Schema.Union([
      * granted (RFC 6749 §6).
      */
     scopes: Schema.optionalKey(Schema.Array(Schema.String)),
-    /** Nested grant location frozen at sign-in; renewals read the same member. */
+    /** Nested grant location frozen at sign-in; renewals keep the top-level fallback. */
     tokenResponse: Schema.optional(OAuthTokenResponse),
     generation: grantGeneration,
   }),
