@@ -7,6 +7,12 @@ import { Config, Effect, Option, Schema } from "effect";
 
 export const testStagePrefix = "test-";
 
+/** Password sign-in is an explicit capability for dedicated test stages only. */
+export const previewEmailAndPassword = (stage: string | undefined, enabled: boolean) =>
+  enabled && stage?.startsWith(testStagePrefix) === true
+    ? { enabled: true as const, disableSignUp: true as const }
+    : { enabled: false as const };
+
 /** The stage every push to `main` deploys. It serves real customers. */
 export const productionStage = "v2";
 

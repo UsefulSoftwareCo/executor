@@ -3,7 +3,7 @@ import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { authOptions, type GrantObservers } from "@executor-js/hosted-server";
-import { cloudHosts } from "../infrastructure/stage.ts";
+import { cloudHosts, previewEmailAndPassword, stageName } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { organization } from "better-auth/plugins/organization";
@@ -32,6 +32,10 @@ const emailCodeSignInPath = "/sign-in/email-otp";
 /** Require both cloud social providers and reject blank credentials at startup. */
 export const cloudAuthSettings = Effect.gen(function* () {
   const hosts = yield* cloudHosts;
+  const stage = Option.getOrUndefined(yield* stageName);
+  const testStagePasswordSignIn = yield* Config.Boolean("TEST_STAGE_PASSWORD_SIGN_IN").pipe(
+    Config.withDefault(false),
+  );
   const url = hosts.browser;
   const resourceOrigins = hosts.resourceOrigins;
   const callbackOrigin = socialCallbackOrigin(hosts);
@@ -96,6 +100,8 @@ export const cloudAuthSettings = Effect.gen(function* () {
   });
   return {
     url,
+    stage,
+    testStagePasswordSignIn,
     hosts,
     resourceOrigins,
     issuer: hosts.issuer,
@@ -142,6 +148,7 @@ export const cloudAuthOptions = (
       : { redirectURI: `${settings.callbackOrigin}/api/auth/callback/${provider}` };
   return {
     ...base,
+    emailAndPassword: previewEmailAndPassword(settings.stage, settings.testStagePasswordSignIn),
     rateLimit: { ...base.rateLimit, enabled: settings.rateLimitEnabled },
     account: { ...base.account, storeStateStrategy: "database" as const },
     advanced: {
