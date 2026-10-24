@@ -194,6 +194,19 @@ export const scenarios = plan({
       local: na("Local does not serve the marketing site."),
     },
   },
+  crossRegistryRefusal: {
+    fixtures: "actors",
+    file: "cross-registry-publish.spec.ts",
+    title:
+      "Cross-registry publish copies the selected source with separate sign-in and retains a refused copy for retry",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "This scenario verifies self-host publication refusal; publishing needs deployed Cloud Git storage",
+      ),
+      local: na("The destination needs hosted device sign-in"),
+    },
+  },
   packageScopes: {
     fixtures: "actors",
     file: "package-scopes.spec.ts",

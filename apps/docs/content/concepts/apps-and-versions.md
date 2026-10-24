@@ -58,6 +58,31 @@ listing; there is no public version catalog. Making a copy uses the exact
 published revision you reviewed and creates a normal, independently owned app.
 Republishing or unpublishing the original does not update or revoke your copy.
 
+### Publish to another host
+
+Sign in to the destination with your own account, then copy a selected source
+commit and publish it there:
+
+```sh
+executor apps login --host https://api.executor.sh
+executor apps publish --host <source-host> --app <source-app> --commit <source-commit> \
+  --registry https://api.executor.sh --package @<destination-scope>/<app>
+```
+
+The destination uses its saved sign-in. `EXECUTOR_API_KEY`,
+`EXECUTOR_ACCESS_TOKEN` and `--organization` apply to the source host.
+The package name changes only in the copy. Review the selected source before
+publishing: its files become public. Git history, accounts and app data stay on
+the source host, and the destination app stays undeployed.
+
+If publication fails after creating the copy, the CLI prints its app ID. Add
+`--registry-app <destination-app>` to reuse that app on retry or for an update.
+This replaces its working files with the selected source; its running version,
+accounts and data stay as they were. Use a destination app you own and intend
+to publish. The host still checks publishing rights and the package scope.
+Only Cloud supports publication; self-hosted instances can supply source and
+keep a copy, but refuse to publish it.
+
 ## Getting an app
 
 - **From a public listing.** Make your own copy, then link its accounts.

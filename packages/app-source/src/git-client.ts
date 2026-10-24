@@ -10,7 +10,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import * as Git from "isomorphic-git";
 // The fetch client: the Node one parses URLs with the deprecated url.parse, which Bun reports.
 import http from "isomorphic-git/http/web";
-import { SourceError } from "@executor-js/sdk/core";
+import { SourceError, SourceFilePath } from "@executor-js/sdk/core";
 import {
   buildTrees,
   commitObject,
@@ -181,6 +181,56 @@ export const readCommitBlobs = (input: {
             catch: () => new SourceError({ reason: "not-found" }),
           });
           yield* input.write(object, blob);
+        }
+      }),
+    (dir) => Effect.promise(() => fs.promises.rm(dir, { recursive: true, force: true })),
+  );
+
+/** Read only the selected commit's files, including retained commits behind the working branch. */
+export const readCommitFiles = (input: {
+  readonly url: string;
+  readonly authorization: string;
+  readonly commit: string;
+  readonly write: (path: SourceFilePath, bytes: Uint8Array) => Effect.Effect<void, SourceError>;
+}) =>
+  Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: () => fs.promises.mkdtemp(nodePath.join(os.tmpdir(), "executor-publication-")),
+      catch: () => new SourceError({ reason: "storage" }),
+    }),
+    (dir) =>
+      Effect.gen(function* () {
+        yield* Effect.tryPromise({
+          try: async () => {
+            await Git.init({ fs, dir, defaultBranch: "main" });
+            await Git.addRemote({ fs, dir, remote: "origin", url: input.url });
+            await Git.fetch({
+              fs,
+              http,
+              dir,
+              url: input.url,
+              ref: input.commit,
+              singleBranch: true,
+              depth: 1,
+              tags: false,
+              headers: { authorization: input.authorization },
+            });
+          },
+          catch: () => new SourceError({ reason: "git" }),
+        });
+        const paths = yield* Effect.tryPromise({
+          try: () => Git.listFiles({ fs, dir, ref: input.commit }),
+          catch: () => new SourceError({ reason: "git" }),
+        });
+        for (const file of paths) {
+          const path = yield* Schema.decodeUnknownEffect(SourceFilePath)(file).pipe(
+            Effect.mapError(() => new SourceError({ reason: "git" })),
+          );
+          const { blob } = yield* Effect.tryPromise({
+            try: () => Git.readBlob({ fs, dir, oid: input.commit, filepath: path }),
+            catch: () => new SourceError({ reason: "not-found" }),
+          });
+          yield* input.write(path, blob);
         }
       }),
     (dir) => Effect.promise(() => fs.promises.rm(dir, { recursive: true, force: true })),

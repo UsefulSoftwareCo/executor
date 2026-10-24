@@ -175,9 +175,9 @@ export const appsCli = Effect.gen(function* () {
       ),
     );
   /** Run `executor apps <args>`. */
-  const cli = (args: ReadonlyArray<string>) =>
+  const cli = (args: ReadonlyArray<string>, environment: Record<string, string> = {}) =>
     run(`executor apps ${args.join(" ")}`, launch.command, [...launch.prefix, "apps", ...args], {
-      env,
+      env: { ...env, ...environment },
     });
   // Git runs the CLI as its credential helper, configured as the docs configure it.
   const helper = `!${[launch.command, ...launch.prefix].map((part) => `'${part}'`).join(" ")} apps credential`;
@@ -266,9 +266,9 @@ export const appsCli = Effect.gen(function* () {
    * `executor apps login --host <host>`, approved for the test organization by the synthetic
    * owner. The grant is revoked with the caller's scope.
    */
-  const login = (host: string) =>
+  const login = (host: string, browser: "opens" | "remote" = "opens") =>
     Effect.gen(function* () {
-      const started = yield* deviceLogin(host, "opens");
+      const started = yield* deviceLogin(host, browser);
       const lookup = yield* api.request(
         actors.owner,
         "GET",
