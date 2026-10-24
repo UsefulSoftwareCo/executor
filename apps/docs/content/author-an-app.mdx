@@ -165,6 +165,26 @@ running keep their members' schedules. Deploying a schedule as `appCron` or
 history and pending approvals, and the app schedule starts paused until an app
 manager enables it.
 
+### Caller identity
+
+`ctx.user.id` identifies the caller in the host product. It is an opaque value
+that stays the same across that person's calls, including calls to apps with
+no account requirements. `ctx.user.accounts` still holds the caller's linked
+accounts declared under `user: { accounts }`. The caller ID is independent of
+those accounts and of the accounts linked for everyone under `app`.
+
+Use the ID to attribute app records or enforce per-user limits. It is not an
+account ID or an app owner, and grants no permissions. The host supplies it
+after authentication; tool input cannot choose another caller.
+
+In a factory, use `ctx.user?.id`: app-scoped background work evaluates the
+factory without `ctx.user`. App-scoped handlers and workflow steps also have
+no `ctx.user`. A host without user identities may leave `ctx.user.id` undefined
+even in user scope; require an ID before relying on per-user attribution.
+
+The app database and `ctx.cache` are shared by callers. Include the caller ID
+in cache keys and filter stored rows when their contents belong to one caller.
+
 ## Queries and mutations
 
 Both become tools. The difference is what they may do to the app's own stored
