@@ -103,6 +103,14 @@ const slackMcpUserScopes = [
   "files:write",
 ];
 
+/** Read-only Jira and Confluence access, renewed through Atlassian's rotating refresh tokens. */
+const atlassianScopes = [
+  "offline_access",
+  "read:jira-work",
+  "read:confluence-content.all",
+  "search:confluence",
+];
+
 /**
  * The clients an operator can turn on by setting their credentials.
  *
@@ -157,6 +165,20 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     defaultScopes: ["openid", "email", "profile"],
     allowedScopes: googleAllowedScopes,
     placement: { hosts: ["*.googleapis.com"] },
+  },
+  {
+    id: "atlassian",
+    label: "Atlassian",
+    server: {
+      authorizationUrl: "https://auth.atlassian.com/authorize",
+      tokenUrl: "https://auth.atlassian.com/oauth/token",
+      authorizationParams: { audience: "api.atlassian.com", prompt: "consent" },
+      tokenRequestFormat: "json",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: atlassianScopes,
+    allowedScopes: atlassianScopes,
+    placement: { hosts: ["api.atlassian.com"] },
   },
   {
     id: "slack",

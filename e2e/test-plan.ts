@@ -3272,6 +3272,19 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedAtlassian: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the hosted Atlassian client offers personal read scopes only after both credentials are configured",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product; Cloud composes the same reviewed client definitions.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedPlaced: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",

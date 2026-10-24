@@ -69,6 +69,8 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SLACK_CLIENT_ID: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
 });

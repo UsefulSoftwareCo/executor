@@ -1086,6 +1086,85 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
+  it.effect(scenarios.credentialManagedAtlassian.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, connection } = yield* harness;
+        const endpoints = {
+          authorizationUrl: "https://auth.atlassian.com/authorize",
+          tokenUrl: "https://auth.atlassian.com/oauth/token",
+          authorizationParams: { audience: "api.atlassian.com", prompt: "consent" },
+          tokenRequestFormat: "json",
+        };
+        const scopes = [
+          "offline_access",
+          "read:jira-work",
+          "read:confluence-content.all",
+          "search:confluence",
+        ];
+        const signIn = (key: string, requested = scopes, server = endpoints) =>
+          Effect.gen(function* () {
+            const name = `Atlassian ${key} ${randomUUID().slice(0, 8)}`;
+            const { path, app } = yield* deploy(
+              name,
+              endpointsApp(name, ["api.atlassian.com"], server, requested),
+            );
+            const id = yield* connection(path, "mail");
+            const started = yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/connections/${id}/oauth/start`,
+              {
+                method: "oauth",
+                label: "Atlassian",
+              },
+            );
+            const provider = app.requirements.accounts.mail!.provider;
+            const setup = yield* body(
+              Setup,
+              yield* api.request(
+                actors.owner,
+                "GET",
+                `${prefix}/providers/${provider}/oauth/oauth/setup`,
+              ),
+            );
+            return { started, setup };
+          });
+        const cleared = {
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: "",
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: "",
+        };
+        yield* Effect.addFinalizer(() => restartWith(cleared).pipe(Effect.orDie));
+        yield* restartWith(cleared);
+        expect((yield* signIn("unset")).setup.firstParty).toBeUndefined();
+        yield* restartWith({
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: "synthetic-atlassian-client",
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: "synthetic-atlassian-secret",
+        });
+        const allowed = yield* signIn("read");
+        expect(allowed.setup).toMatchObject({ firstParty: { label: "Atlassian" }, scopes });
+        expect(allowed.started.status, JSON.stringify(allowed.started.body)).toBe(200);
+        const sent = new URL((yield* body(Redirect, allowed.started)).authorizationUrl);
+        expect(`${sent.origin}${sent.pathname}`).toBe(endpoints.authorizationUrl);
+        expect(sent.searchParams.get("client_id")).toBe("synthetic-atlassian-client");
+        expect(new Set(sent.searchParams.get("scope")?.split(" "))).toEqual(new Set(scopes));
+        expect(sent.searchParams.get("audience")).toBe("api.atlassian.com");
+        expect(sent.searchParams.get("prompt")).toBe("consent");
+        const wider = yield* signIn("write", [...scopes, "write:jira-work"]);
+        expect(wider.setup.firstParty).toBeUndefined();
+        expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+        const otherServer = yield* signIn("other-server", scopes, {
+          ...endpoints,
+          authorizationUrl: "https://example.invalid/authorize",
+          tokenUrl: "https://example.invalid/oauth/token",
+        });
+        expect(otherServer.setup.firstParty).toBeUndefined();
+        expect(otherServer.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+      }),
+    ),
+  );
+
   /** An app on the operator client's issuer, and an account connected through its client. */
   const managedAccount = (rawToken: boolean, configured = operator) =>
     Effect.gen(function* () {
