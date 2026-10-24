@@ -1,10 +1,13 @@
-/** Start the actual local entry with failing resources and inspect its retained diagnostic. */
+/** Start the actual local entry with failing or missing resources and inspect its retained diagnostic. */
 import { expect, layer } from "@effect/vitest";
-import { Config, Effect, FileSystem, Option, Stream, Schema } from "effect";
+import { Config, Effect, FileSystem, Layer, Option, Stream, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
+import { Api, SessionClients } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";
+import { startManagedServer } from "../support/managed-server.ts";
+import { freePort } from "../support/ports.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
 import { localEntryCommand } from "../support/local-entry.ts";
@@ -72,6 +75,48 @@ layer(TestLive, { excludeTestServices: true })("Local startup diagnostics", (it)
           expect(logs).not.toContain("synthetic invalid resource");
           yield* evidence.json(`startup-${stage}.json`, { logs });
         }
+      }),
+    ),
+  );
+
+  it.effect(scenarios.localWithoutTelemetryCollector.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem,
+          evidence = yield* Evidence,
+          target = yield* Target;
+        const directory = yield* fs.makeTempDirectory({
+          directory: target.directory,
+          prefix: "no-collector-",
+        });
+        const origin = `http://127.0.0.1:${yield* freePort}`;
+        yield* startManagedServer(
+          { ...target, directory, metadata: { ...target.metadata, origin, target: "local" } },
+          "product",
+          { EXECUTOR_MOTEL_BUNDLE: `${directory}/not-built` },
+        );
+        const api = yield* Api.pipe(
+          Effect.provide(Layer.fresh(Api.layer)),
+          Effect.provide(Layer.fresh(SessionClients.layer)),
+          Effect.provideService(Target, { ...target, metadata: { ...target.metadata, origin } }),
+        );
+        expect((yield* api.request(yield* api.session(), "GET", "/auth/session")).status).toBe(200);
+        // A collector restarted every 3 seconds, or an export waiting 3 seconds for one, would
+        // have logged by now.
+        yield* Effect.sleep("7 seconds");
+        const messages = (yield* fs.readFileString(`${directory}/server.log`))
+          .split("\n")
+          .flatMap((line) => {
+            const parsed = Schema.decodeUnknownOption(
+              Schema.fromJsonString(Schema.Struct({ message: Schema.String })),
+            )(line);
+            return Option.isSome(parsed) ? [parsed.value.message] : [];
+          });
+        yield* evidence.json("no-collector.json", { messages });
+        expect(messages.filter((message) => message.includes("is not built at"))).toHaveLength(1);
+        expect(messages).not.toContain("Local telemetry collector failed");
+        expect(messages).not.toContain("Telemetry export failed");
       }),
     ),
   );
