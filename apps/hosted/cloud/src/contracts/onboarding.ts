@@ -131,7 +131,7 @@ export const OnboardingCreated = Schema.Union([
 export const OnboardingUnavailable = ApiError.define({
   tag: "OnboardingUnavailable",
   status: 503,
-  message: "Executor could not complete onboarding. Try again.",
+  message: "Onboarding could not be completed. Try again.",
 });
 export type OnboardingUnavailable = typeof OnboardingUnavailable.Type;
 /** A company suggestion is optional; a failed lookup never prevents confirmation. */

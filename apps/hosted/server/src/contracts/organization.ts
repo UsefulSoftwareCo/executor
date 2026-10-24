@@ -146,7 +146,7 @@ export type OrganizationIconInvalid = typeof OrganizationIconInvalid.Type;
 export const OrganizationIconUnavailable = ApiError.define({
   tag: "OrganizationIconUnavailable",
   status: 503,
-  message: "Executor's image storage could not complete this request. Try again.",
+  message: "Image storage could not complete this request. Try again.",
 });
 export type OrganizationIconUnavailable = typeof OrganizationIconUnavailable.Type;
 /** Missing uploaded image; membership is checked independently before reading. */

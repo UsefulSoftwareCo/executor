@@ -27,6 +27,7 @@ import {
   resolveSchema,
   ToolInputForm,
 } from "./tool-input-form.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 const isJson = Schema.is(Json);
 const decodeJson = Schema.decodeUnknownExit(Schema.fromJsonString(Json));
@@ -102,26 +103,26 @@ export const runningAs = <A extends AccountSummary>(
  * needs approval and may already have made changes, so this states only what Executor did with the
  * saved call: never that the tool did not run.
  */
-const answered = (result: ToolResumeResultReceived) =>
+const answered = (result: ToolResumeResultReceived, product: string) =>
   Match.value(result).pipe(
     Match.discriminatorsExhaustive("status")({
       completed: ({ toolError }) =>
         toolError === true
           ? "Approved. The tool ran and reported an error, shown below."
           : "Approved. The tool ran, and its result is below.",
-      denied: () => "Declined. Executor will not resume this saved call.",
-      cancelled: () => "Cancelled. Executor will not resume this saved call.",
+      denied: () => `Declined. ${product} will not resume this saved call.`,
+      cancelled: () => `Cancelled. ${product} will not resume this saved call.`,
       failed: (failed) =>
         Match.value(failed).pipe(
           Match.when(
             { reason: "context-changed" },
             () =>
-              "The app or its accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
+              `The app or its accounts changed since this call was saved, so ${product} did not resume it. Run it again to review the current call.`,
           ),
           Match.when(
             { reason: "execution-failed", context: "unconfirmed" },
             () =>
-              "Executor could not read the app or its accounts to confirm they match the call you reviewed, because its storage failed, so it did not resume it. Run it again in a moment to review it.",
+              `${product} could not read the app or its accounts to confirm they match the call you reviewed, because its storage failed, so it did not resume it. Run it again in a moment to review it.`,
           ),
           Match.when(
             { reason: "execution-failed" },
@@ -130,7 +131,7 @@ const answered = (result: ToolResumeResultReceived) =>
           ),
           Match.when(
             { reason: "expired" },
-            () => "This request expired, so Executor will not resume this saved call.",
+            () => `This request expired, so ${product} will not resume this saved call.`,
           ),
           Match.exhaustive,
         ),
@@ -140,6 +141,7 @@ const answered = (result: ToolResumeResultReceived) =>
 
 /** The person reviews their own call; approving runs the saved call and shows its result here. */
 function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
+  const brand = useProductBrand();
   const answer = useAtomValue(atoms.answer);
   const result =
     AsyncResult.isSuccess(answer) && answer.value.status === "answered"
@@ -149,7 +151,7 @@ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
     <>
       <BrowserApprovalCard
         atoms={atoms}
-        completion={result === undefined ? undefined : answered(result)}
+        completion={result === undefined ? undefined : answered(result, brand.name)}
       />
       {result?.status === "completed" && (
         <section aria-label="Tool result">

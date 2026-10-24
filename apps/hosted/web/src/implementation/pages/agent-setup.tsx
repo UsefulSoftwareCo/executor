@@ -54,6 +54,7 @@ import {
 import { SetupLink, useSetupSequence, useSetupViewed } from "../components/setup-sequence.tsx";
 import { useDocumentationUrl } from "../documentation.ts";
 import { useMcpOrigin } from "../resource-origin.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /** Moves focus to a screen's heading when it replaces the previous one, without scrolling to it. */
 const focusHeading = (node: HTMLHeadingElement | null) => node?.focus({ preventScroll: true });
@@ -152,6 +153,7 @@ interface ScreenBaseline {
  * that connects from here, by the URL, leads on to its first prompt like a guide's.
  */
 function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & ScreenBaseline) {
+  const brand = useProductBrand();
   const navigate = useNavigate();
   const [agent, setAgent] = useState<ConnectedAgent>();
   useSetupViewed("setup_assistant");
@@ -162,7 +164,7 @@ function ChooseStep({ endpoint, ...baseline }: { readonly endpoint: string } & S
         Connect your assistant
       </SetupTitle>
       <SetupLede>
-        Executor works inside the AI assistant you already use. Pick yours to see how to add it.
+        {brand.name} works inside the AI assistant you already use. Pick yours to see how to add it.
       </SetupLede>
       <div className="mt-6">
         <AssistantChoices
@@ -208,6 +210,7 @@ function GuideStep({
   readonly endpoint: string;
   readonly assistant: AssistantId;
 } & ScreenBaseline) {
+  const brand = useProductBrand();
   useSetupViewed("setup_guide", assistant);
   const guide = useAssistantGuide(endpoint, assistant);
   const name = assistantName(assistant);
@@ -215,7 +218,7 @@ function GuideStep({
   return (
     <>
       <SetupTitle id="agent-setup-title" ref={focusHeading}>
-        Add Executor to {name}
+        Add {brand.name} to {name}
       </SetupTitle>
       <SetupLede>
         <span className="max-sm:hidden">Takes about a minute. </span>This page updates once {name}{" "}
@@ -525,6 +528,7 @@ function StatusView({
   /** A hidden copy that only reserves space keeps a still placeholder in place of the spinner. */
   readonly reserved?: boolean;
 }) {
+  const brand = useProductBrand();
   const spinner = reserved ? (
     <span className="size-4" />
   ) : (
@@ -582,7 +586,7 @@ function StatusView({
               <HugeiconsIcon icon={Tick02Icon} strokeWidth={2.5} size={12} aria-hidden />
             </span>
           }
-          title="Executor is connected"
+          title={`${brand.name} is connected`}
           detail={state.agent.name === null ? undefined : `Approved for ${state.agent.name}`}
           singleLineDetail
         />
@@ -657,6 +661,7 @@ function PromptStep({
   readonly assistant: AssistantId;
   readonly agent: GrantId;
 }) {
+  const brand = useProductBrand();
   const { organization, slug } = useOrganizationRoute();
   const sequence = useSetupSequence();
   useSetupViewed("setup_prompt", assistant);
@@ -683,7 +688,7 @@ function PromptStep({
               // it usually takes, above the copy button it will enable.
               <div aria-busy="true" aria-label="Loading your prompt">
                 <PromptText>
-                  {promptOpening(endpoint)}
+                  {promptOpening(endpoint, brand.name)}
                   {"\n\n"}
                   <span className="flex h-6 items-center">
                     <Skeleton className="h-3.5 w-full" />
@@ -696,7 +701,7 @@ function PromptStep({
               </div>
             ),
           onSome: (accounts) => {
-            const prompt = firstPrompt(endpoint, docsUrl, accounts);
+            const prompt = firstPrompt(endpoint, brand.name, docsUrl, accounts);
             return (
               <>
                 <PromptText>{prompt}</PromptText>
@@ -775,15 +780,16 @@ function connectedAccounts(inventory: Inventory) {
 const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" });
 
 /** The prompt's first paragraph, which names only the MCP URL. */
-const promptOpening = (endpoint: string) =>
-  `Use Executor, which I connected over MCP at ${endpoint}. If you cannot see its tools yet, connect to that server first.`;
+const promptOpening = (endpoint: string, product: string) =>
+  `Use ${product}, which I connected over MCP at ${endpoint}. If you cannot see its tools yet, connect to that server first.`;
 
 const firstPrompt = (
   endpoint: string,
+  product: string,
   docsUrl: string,
   connected: ReturnType<typeof connectedAccounts>,
 ) =>
-  `${promptOpening(endpoint)}\n\n${
+  `${promptOpening(endpoint, product)}\n\n${
     connected === undefined
       ? `Read the docs to understand the product at ${docsUrl}, then help me get my first app set up.`
       : `I've connected ${list.format(

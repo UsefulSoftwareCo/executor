@@ -20,9 +20,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@executor-js/ui/components/dropdown-menu";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /** Gate page rendering on a live session. The server independently protects API access. */
 export function AuthBoundary({ children }: { readonly children: ReactNode }) {
+  const brand = useProductBrand();
   const session = useAtomValue(sessionAtom);
   const refresh = useAtomRefresh(sessionAtom);
   const location = useLocation();
@@ -62,7 +64,7 @@ export function AuthBoundary({ children }: { readonly children: ReactNode }) {
     return pathname === "/mcp/authorize" || pathname === "/device" ? (
       <McpConsentLoading />
     ) : (
-      <div className="min-h-dvh" aria-busy="true" aria-label="Opening Executor" />
+      <div className="min-h-dvh" aria-busy="true" aria-label={`Opening ${brand.name}`} />
     );
   }
   // Keep signed OAuth queries intact instead of using the router's reserialized href.

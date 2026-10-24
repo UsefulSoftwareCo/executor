@@ -23,12 +23,14 @@ import {
 import { McpConnectionFailed, mcpClientAtom, mcpConsentAtom } from "../../contracts/mcp.ts";
 import { organizationsAtom } from "../../contracts/organization.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /**
  * The user approves the URL's requested connection. App/tool scoping remains a backend capability.
  * The request may name a resource at any of the deployment's resource origins.
  */
 export function McpAuthorizePage() {
+  const brand = useProductBrand();
   const page = usePageUrl();
   const resourceOrigins = useResourceOrigins();
   // Keep the signed query intact; repeated OAuth fields must not be reserialized by the router.
@@ -87,8 +89,8 @@ export function McpAuthorizePage() {
     <McpConsentLayout
       description={
         <p>
-          <strong>{client.value.client_name ?? "An application"}</strong> wants to connect to
-          Executor.
+          <strong>{client.value.client_name ?? "An application"}</strong> wants to connect to{" "}
+          {brand.name}.
         </p>
       }
     >

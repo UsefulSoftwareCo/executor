@@ -59,6 +59,7 @@ import {
 import { useIncrementalList } from "./incremental-list.tsx";
 import { McpInstallInstructions } from "./connect.tsx";
 import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 /** Each host supplies its existing authorized catalog read of the app's tools. */
 export interface ConnectionToolPickerProps {
@@ -137,6 +138,7 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
   readonly docs?: string;
   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
 }) {
+  const brand = useProductBrand();
   const [view, setView] = useState<View>({ kind: "list" });
   const [revoking, setRevoking] = useState<ConnectionView>();
   const submitRevoke = useAtomSet(revoke, { mode: "promiseExit" });
@@ -168,7 +170,7 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
               className="mt-2 rounded-xl border bg-muted/20 px-6 pt-5 pb-6 shadow-xs"
             >
               <div className="mb-4 flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-medium">Executor MCP server</h2>
+                <h2 className="text-sm font-medium">{brand.name} MCP server</h2>
                 <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                   Every app you can use
                 </span>

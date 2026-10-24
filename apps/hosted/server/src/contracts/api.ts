@@ -150,7 +150,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
             authorizationCode: {
               authorizationUrl: "/api/auth/oauth2/authorize",
               tokenUrl: "/api/auth/oauth2/token",
-              scopes: { executor: "Use Executor in the selected organization" },
+              scopes: { executor: "Act in the selected organization" },
             },
           },
         },

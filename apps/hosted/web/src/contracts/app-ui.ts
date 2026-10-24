@@ -101,11 +101,11 @@ const message = Match.type<AppUiError>().pipe(
     AppNotFound: () => "This app no longer exists.",
     AppNotDeployed: () => "Deploy this app before opening its page.",
     VersionNotFound: () => "This app’s version is no longer available. Reload the app.",
-    StorageError: () => "Executor could not read this app. Try again.",
+    StorageError: () => "This app could not be read. Try again.",
     AppUiUnavailable: () =>
       "The app page is unavailable. Check its version and the server’s app URL settings.",
     Unauthorized: () => "Your session ended. Sign in again.",
-    Forbidden: () => "Open Executor from its configured address.",
+    Forbidden: () => "Open this page from the site’s configured address.",
     AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
     HttpClientError: () =>
       pageOutdated() ? outdatedPageMessage : "Could not reach the server. Try again.",

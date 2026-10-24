@@ -15,6 +15,7 @@ import { McpLimits, defaultMcpLimits } from "@executor-js/mcp";
 import { PgliteClient } from "@effect/sql-pglite";
 import { Config, Effect, RcMap, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 
 /** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
 export const selfHostMcp = Effect.gen(function* () {
@@ -25,13 +26,17 @@ export const selfHostMcp = Effect.gen(function* () {
       Config.withDefault(defaultMcpLimits.timeoutMs),
     ),
   });
+  const brand = yield* productBrandConfig;
   const sessions = yield* RcMap.make({
     // Each session keeps what its callers' last tool calls read (CallStateCache).
     lookup: (_key: string) =>
-      Effect.map(makeHostedMcp(undefined, limits), (handler) => ({
-        ...handler,
-        calls: new Map<string, CallState>(),
-      })),
+      Effect.map(
+        makeHostedMcp(undefined, limits).pipe(Effect.provideService(CurrentProductBrand, brand)),
+        (handler) => ({
+          ...handler,
+          calls: new Map<string, CallState>(),
+        }),
+      ),
     idleTimeToLive: "30 minutes",
     capacity: 256,
   });

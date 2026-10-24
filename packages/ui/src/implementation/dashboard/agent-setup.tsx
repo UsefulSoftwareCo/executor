@@ -1,19 +1,19 @@
 import { CopyButton } from "./code.tsx";
 
 /**
- * Services Executor cannot add without guessing are set up by the user's agent, which can read the
+ * Services the product cannot add without guessing are set up by the user's agent, which can read the
  * service's documentation and ask the user how they sign in.
  */
-export const agentSetupPrompt = (endpoint?: string) =>
+export const agentSetupPrompt = (product: string, endpoint?: string) =>
   [
-    "Help me add a service to Executor as an app. Ask me which service I want to connect.",
+    `Help me add a service to ${product} as an app. Ask me which service I want to connect.`,
     "",
     "Start with the Executor app's executor skill, then follow its app-authoring skill. Read the service's API and authentication documentation, ask me how I sign in and anything else you need, then write and deploy the app and help me connect my account.",
     ...(endpoint === undefined
       ? []
       : [
           "",
-          `If you are not connected to Executor yet, connect to its MCP server at ${endpoint} first.`,
+          `If you are not connected to ${product} yet, connect to its MCP server at ${endpoint} first.`,
         ]),
   ].join("\n");
 

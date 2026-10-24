@@ -317,7 +317,7 @@ export const makeMcp = (options: McpOptions) =>
         ).pipe(
           Layer.provide(
             McpServer.layerHttp({
-              name: "Executor",
+              name: options.name ?? "Executor",
               version: "0.1.0",
               instructions: options.instructions,
               path: "/mcp",

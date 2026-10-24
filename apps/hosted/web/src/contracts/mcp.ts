@@ -38,7 +38,7 @@ const request = <A>(
   Effect.flatMap(authCallOptions, (options) =>
     Effect.tryPromise({
       try: () => run(options),
-      catch: () => new McpConnectionFailed({ message: "Cannot reach Executor. Try again." }),
+      catch: () => new McpConnectionFailed({ message: "Cannot reach the server. Try again." }),
     }),
   ).pipe(
     Effect.flatMap((result) =>
@@ -104,7 +104,7 @@ const deviceCall = <A>(
   Effect.flatMap(authCallOptions, (options) =>
     Effect.tryPromise({
       try: () => run(options),
-      catch: () => new McpConnectionFailed({ message: "Cannot reach Executor. Try again." }),
+      catch: () => new McpConnectionFailed({ message: "Cannot reach the server. Try again." }),
     }),
   ).pipe(
     Effect.flatMap((result) =>

@@ -28,6 +28,7 @@ import {
 } from "./infrastructure/telemetry.ts";
 
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { productBrandBindings } from "./infrastructure/product-brand.ts";
 
 /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
@@ -53,6 +54,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         }),
         ...(yield* telemetryBindings),
         ...(yield* sentryBindings).env,
+        ...(yield* productBrandBindings),
       },
       compatibility: {
         date: "2026-09-08",

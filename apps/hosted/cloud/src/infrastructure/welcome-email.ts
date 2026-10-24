@@ -7,6 +7,7 @@ import type { SendWelcomeEmail } from "../contracts/email.ts";
 import { cloudHosts } from "./stage.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
+import { CurrentProductBrand, isDefaultProductBrand } from "@executor-js/utils/product-brand";
 
 /** The cron invocation owns its database connection and closes it after the batch. */
 export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
@@ -22,18 +23,22 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
         Effect.map((url) => PgClient.layer({ url, maxConnections: 1, prepare: false })),
       ),
     );
+    // The welcome is a personal note from Executor's founder, so another brand sends none.
+    const welcomes = isDefaultProductBrand(yield* CurrentProductBrand);
     const deliverUser = (user?: string) =>
-      Effect.scoped(
-        deliverWelcomeEmails(
-          send,
-          (id, email) =>
-            secrets.authSecret.pipe(
-              Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
-            ),
-          { site: hosts.site, resourceOrigin },
-          user,
-        ).pipe(Effect.provide(database)),
-      );
+      welcomes
+        ? Effect.scoped(
+            deliverWelcomeEmails(
+              send,
+              (id, email) =>
+                secrets.authSecret.pipe(
+                  Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
+                ),
+              { site: hosts.site, resourceOrigin },
+              user,
+            ).pipe(Effect.provide(database)),
+          )
+        : Effect.void;
     return {
       deliver: deliverUser().pipe(
         Effect.catch(() => Effect.logError("Welcome email queue processing failed")),

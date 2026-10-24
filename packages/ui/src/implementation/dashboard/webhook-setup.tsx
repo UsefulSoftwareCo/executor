@@ -17,6 +17,7 @@ import { Card, CardContent } from "../components/card.tsx";
 import { Checkbox } from "../components/checkbox.tsx";
 import { Textarea } from "../components/textarea.tsx";
 import { CopyButton } from "./code.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 type Action<E> = () => Promise<Exit.Exit<WebhookSubscription, E>>;
 /** Compact setup UI shared by every product; authentication and exact error types stay in the caller. */
@@ -97,6 +98,7 @@ function SetupForm<E>({
   readonly confirmRemoval: Action<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
+  const brand = useProductBrand();
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<Cause.Cause<E>>();
   const [confirmed, setConfirmed] = useState(false);
@@ -139,8 +141,8 @@ function SetupForm<E>({
         <CardContent className="space-y-4 px-4">
           <h1 className="text-xl font-semibold">Webhook disabled</h1>
           <p>
-            Executor has stopped accepting deliveries. If you added this webhook in your provider,
-            remove it there before confirming.
+            {brand.name} has stopped accepting deliveries. If you added this webhook in your
+            provider, remove it there before confirming.
           </p>
           <CopyValue label="Callback URL" value={view.subscription.callbackUrl} />
           <label className="flex items-start gap-2 text-sm">

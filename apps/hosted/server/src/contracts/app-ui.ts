@@ -71,7 +71,7 @@ export type AppUiAddressInvalid = typeof AppUiAddressInvalid.Type;
 export const AppUiUnavailable = ApiError.define({
   tag: "AppUiUnavailable",
   status: 503,
-  message: "Executor could not read the app's page build or domain right now. Try again.",
+  message: "The app's page build or domain could not be read right now. Try again.",
 });
 export type AppUiUnavailable = typeof AppUiUnavailable.Type;
 /**
@@ -85,7 +85,7 @@ export const AppUiLocation = Schema.Union([
     url: Schema.Null,
     reason: Schema.Literals(["no_ui", "no_app_domain"]).annotate({
       description:
-        "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this Executor has no app domain configured, so no app UI has an address.",
+        "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this deployment has no app domain configured, so no app UI has an address.",
     }),
   }),
   Schema.Struct({ status: Schema.Literals(["pending", "failed"]), url: Schema.Null }),

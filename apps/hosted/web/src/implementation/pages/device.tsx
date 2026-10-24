@@ -34,6 +34,7 @@ import {
 } from "../../contracts/mcp.ts";
 import { organizationsAtom } from "../../contracts/organization.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /** `verification_uri_complete` carries the code; the plain `verification_uri` asks for it. */
 export const deviceSearch = (search: Record<string, unknown>) => ({
@@ -132,6 +133,7 @@ function DeviceLookup({ code }: { readonly code: string }) {
 }
 
 function DeviceReview({ code, view }: { readonly code: string; readonly view: DeviceRequestView }) {
+  const brand = useProductBrand();
   const resourceOrigins = useResourceOrigins();
   const target = grantTarget(resourceOrigins, [view.resource]);
   const client = useAtomValue(mcpClientAtom(view.clientId));
@@ -198,7 +200,7 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
       description={
         <p>
           <strong>{client.value.client_name ?? "An application"}</strong> on another device wants to
-          connect to Executor.
+          connect to {brand.name}.
         </p>
       }
     >

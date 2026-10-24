@@ -25,7 +25,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@executor-js/ui/components/dialog";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import {
   Select,
   SelectContent,
@@ -73,7 +73,7 @@ export function TokensPage({
           name: "Organization you left",
           logo: null,
         });
-  useDocumentTitle(productTitle(tokensTitle));
+  useDocumentTitle(tokensTitle);
   const [offset, setOffset] = useState(0);
   const query = apiKeysAtom(offset);
   const keys = useAtomValue(query);

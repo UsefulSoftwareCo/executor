@@ -6,6 +6,7 @@ import { acceptInvitationAtom } from "../../contracts/organization.ts";
 import { organizationError, OrganizationDestination } from "../components/organization.tsx";
 import { Button } from "@executor-js/ui/components/button";
 import { LoginFrame } from "./login-frame.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /** Invitation IDs are untrusted; Better Auth verifies recipient email and expiry. */
 export const inviteSearch = (search: Record<string, unknown>) => ({
@@ -13,6 +14,7 @@ export const inviteSearch = (search: Record<string, unknown>) => ({
 });
 /** Accept after authentication, including users who have no organization yet. */
 export function InvitePage({ invitation }: { readonly invitation: string }) {
+  const brand = useProductBrand();
   const accept = useAtomSet(acceptInvitationAtom, { mode: "promiseExit" });
   const state = useAtomValue(acceptInvitationAtom);
   const [joined, setJoined] = useState<{
@@ -33,7 +35,7 @@ export function InvitePage({ invitation }: { readonly invitation: string }) {
       <div className="flex flex-col gap-6 text-center">
         <p className="text-sm leading-6 text-balance text-muted-foreground">
           {invitation
-            ? "You've been invited to an organization on Executor. Accept with the email this invitation was sent to."
+            ? `You've been invited to an organization on ${brand.name}. Accept with the email this invitation was sent to.`
             : "This invitation link is incomplete. Ask for a new link."}
         </p>
         <Button
