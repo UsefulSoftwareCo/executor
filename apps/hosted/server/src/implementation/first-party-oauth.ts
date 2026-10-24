@@ -112,6 +112,10 @@ const slackMcpUserScopes = [
  *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
  *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
  *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
+ * - `gitlab` uses GitLab.com's OAuth application and the official REST app's scopes. It does
+ *   not cover self-managed GitLab installations, which have their own authorization servers.
+ * - `miro` matches the official Miro app, including its optional organization tools. A grant
+ *   covers the team selected by the person; organization administration still needs permission.
  * - `google` is Executor for Google, v1's Google client. `access_type=offline` and
  *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
  *   revokes every grant a user gave the client at once, so removing one account would end the
@@ -125,6 +129,35 @@ const slackMcpUserScopes = [
  *   those it already holds. Its tokens go only to Slack's MCP server.
  */
 export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
+  {
+    id: "gitlab",
+    label: "Executor for GitLab",
+    server: {
+      authorizationUrl: "https://gitlab.com/oauth/authorize",
+      tokenUrl: "https://gitlab.com/oauth/token",
+      revocationUrl: "https://gitlab.com/oauth/revoke",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: ["api", "read_user"],
+    placement: { hosts: ["gitlab.com"] },
+  },
+  {
+    id: "miro",
+    label: "Executor for Miro",
+    server: {
+      authorizationUrl: "https://miro.com/oauth/authorize",
+      tokenUrl: "https://api.miro.com/v1/oauth/token",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: [
+      "boards:read",
+      "boards:write",
+      "organizations:read",
+      "organizations:teams:read",
+      "organizations:teams:write",
+    ],
+    placement: { hosts: ["api.miro.com"] },
+  },
   {
     id: "github",
     label: "Executor for GitHub",

@@ -1740,6 +1740,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       server: OAuthServer;
       client: OAuthRegistration;
       refreshToken: string;
+      redirectUri?: string | undefined;
       resource?: string | undefined;
       /** Asked for again only when the grant names them; see `OAuthGrant`. */
       scopes?: readonly string[] | undefined;
@@ -1750,6 +1751,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         async (settings) => {
           const server = metadata(input.server);
           const additionalParameters = {
+            ...(input.redirectUri === undefined ? {} : { redirect_uri: input.redirectUri }),
             ...(input.scopes === undefined || input.scopes.length === 0
               ? {}
               : { scope: input.scopes.join(" ") }),

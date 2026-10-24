@@ -264,6 +264,24 @@ export default defineApp({ user: { accounts: { mail } } }, {
   tools: router({ fields: query({ input: object({}) }, async ({ user: { accounts } }) => accounts.mail.fields) }),
 });`;
 
+const gitLabServer = {
+  authorizationUrl: "https://gitlab.com/oauth/authorize",
+  tokenUrl: "https://gitlab.com/oauth/token",
+  revocationUrl: "https://gitlab.com/oauth/revoke",
+};
+const gitLabScopes = ["api", "read_user"];
+const miroServer = {
+  authorizationUrl: "https://miro.com/oauth/authorize",
+  tokenUrl: "https://api.miro.com/v1/oauth/token",
+};
+const miroScopes = [
+  "boards:read",
+  "boards:write",
+  "organizations:read",
+  "organizations:teams:read",
+  "organizations:teams:write",
+];
+
 /** The token the issuer gives every first sign-in. */
 const token = "synthetic-access-token";
 /** What a service received when the operator's placement carried the real token. */
@@ -865,6 +883,57 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     });
   const operator = operatorWith();
 
+  /** Start OAuth and read the provider's public setup response without contacting its server. */
+  const hostedOAuthAnswer = (
+    name: string,
+    hosts: readonly string[],
+    endpoints: object,
+    scopes: readonly string[],
+  ) =>
+    Effect.gen(function* () {
+      const { api, actors, prefix, deploy, connection } = yield* harness;
+      const providerName = `First-party ${name} ${randomUUID().slice(0, 8)}`;
+      const { path, app } = yield* deploy(
+        providerName,
+        endpointsApp(providerName, hosts, endpoints, scopes),
+      );
+      const id = yield* connection(path, "mail");
+      const started = yield* api.request(
+        actors.owner,
+        "POST",
+        `${prefix}/connections/${id}/oauth/start`,
+        { method: "oauth", label: name },
+      );
+      const provider = app.requirements.accounts.mail!.provider;
+      const setupResponse = yield* api.request(
+        actors.owner,
+        "GET",
+        `${prefix}/providers/${provider}/oauth/oauth/setup`,
+      );
+      return { started, setupResponse, setup: yield* body(Setup, setupResponse) };
+    });
+
+  const expectSecretAbsent = (
+    answer: {
+      readonly setupResponse: { readonly body: unknown };
+      readonly started: { readonly body: unknown };
+    },
+    secret: string,
+    label: string,
+  ) =>
+    expect(
+      JSON.stringify([answer.setupResponse.body, answer.started.body]).includes(secret),
+      `${label} OAuth secret was exposed by setup or start`,
+    ).toBe(false);
+
+  const expectUnavailable = (answer: {
+    readonly setup: typeof Setup.Type;
+    readonly started: { readonly body: unknown };
+  }) => {
+    expect(answer.setup.firstParty).toBeUndefined();
+    expect(answer.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+  };
+
   it.effect(scenarios.credentialManagedOffered.title, (context) =>
     withHostedCase(
       context,
@@ -1082,6 +1151,113 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         });
         expect(wider.setup.firstParty).toBeUndefined();
         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedFirstPartyUnset.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const [gitlab, miro] = yield* Effect.all(
+          [
+            hostedOAuthAnswer("GitLab", ["gitlab.com"], gitLabServer, gitLabScopes),
+            hostedOAuthAnswer("Miro", ["api.miro.com"], miroServer, miroScopes),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        expectUnavailable(gitlab);
+        expectUnavailable(miro);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedGitLab.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const clientId = "synthetic-gitlab-client";
+        const secret = "synthetic-gitlab-secret";
+        const [gitlab, wrongServer, wider, miro] = yield* Effect.all(
+          [
+            hostedOAuthAnswer("GitLab", ["gitlab.com"], gitLabServer, gitLabScopes),
+            hostedOAuthAnswer(
+              "GitLab other server",
+              ["gitlab.com"],
+              { ...gitLabServer, authorizationUrl: "https://gitlab.com/oauth/authorize/other" },
+              gitLabScopes,
+            ),
+            hostedOAuthAnswer("GitLab wider scopes", ["gitlab.com"], gitLabServer, [
+              ...gitLabScopes,
+              "sudo",
+            ]),
+            hostedOAuthAnswer("Miro without credentials", ["api.miro.com"], miroServer, miroScopes),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        for (const answer of [gitlab, wrongServer, wider, miro])
+          expectSecretAbsent(answer, secret, "GitLab");
+
+        expect(gitlab.setup.firstParty).toEqual({ label: "Executor for GitLab" });
+        expect(gitlab.setup.scopes).toEqual(gitLabScopes);
+        expect(gitlab.started.status, "GitLab OAuth start failed").toBe(200);
+        const url = new URL((yield* body(Redirect, gitlab.started)).authorizationUrl);
+        expect(`${url.origin}${url.pathname}`).toBe(gitLabServer.authorizationUrl);
+        expect(url.searchParams.get("scope")).toBe(gitLabScopes.join(" "));
+        expect(url.searchParams.get("client_id")).toBe(clientId);
+
+        expectUnavailable(wrongServer);
+        expectUnavailable(wider);
+        expectUnavailable(miro);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedMiro.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const clientId = "synthetic-miro-client";
+        const secret = "synthetic-miro-secret";
+        const [miro, wrongServer, wider, gitlab] = yield* Effect.all(
+          [
+            hostedOAuthAnswer("Miro", ["api.miro.com"], miroServer, miroScopes),
+            hostedOAuthAnswer(
+              "Miro other server",
+              ["api.miro.com"],
+              { ...miroServer, authorizationUrl: "https://miro.com/oauth/authorize/other" },
+              miroScopes,
+            ),
+            hostedOAuthAnswer("Miro wider scopes", ["api.miro.com"], miroServer, [
+              ...miroScopes,
+              "boards:admin",
+            ]),
+            hostedOAuthAnswer(
+              "GitLab without credentials",
+              ["gitlab.com"],
+              gitLabServer,
+              gitLabScopes,
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        for (const answer of [miro, wrongServer, wider, gitlab])
+          expectSecretAbsent(answer, secret, "Miro");
+
+        expect(miro.setup.firstParty).toEqual({ label: "Executor for Miro" });
+        expect(miro.setup.scopes).toEqual(miroScopes);
+        expect(miro.started.status, "Miro OAuth start failed").toBe(200);
+        const url = new URL((yield* body(Redirect, miro.started)).authorizationUrl);
+        expect(`${url.origin}${url.pathname}`).toBe(miroServer.authorizationUrl);
+        expect(url.searchParams.get("scope")).toBe(miroScopes.join(" "));
+        expect(url.searchParams.get("client_id")).toBe(clientId);
+
+        expectUnavailable(wrongServer);
+        expectUnavailable(wider);
+        expectUnavailable(gitlab);
       }),
     ),
   );
@@ -2239,7 +2415,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const signIn = yield* startSignIn(first.path);
         const firstSent = yield* sent(signIn.started);
         expectOperatorRequest(firstSent.url);
+        const originalRedirectUri = firstSent.redirect.redirectUri;
         const account = yield* completeSignIn(issuer, signIn.connection, firstSent.redirect);
+        yield* issuer.configure({ requireRefreshRedirectUri: originalRedirectUri });
         // The exchange sent the operator's resource, and the account holds the nested user token:
         // the service accepts only tokens it issued.
         expect((yield* issuer.metrics).exchangeResource).toBe(resource);
@@ -2256,11 +2434,25 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           operatorClients(issuer.origin, hosts, { ...slack, unlisted: true }),
           twoHours,
         );
-        const renewed = yield* call(first.path, Called, "resource");
-        expect(renewed.status).toBe(200);
+        const renewalResponse = yield* api.request(
+          actors.owner,
+          "POST",
+          `${first.path}/tools/call`,
+          { tool: "resource", kind: "query", input: {} },
+        );
         const metrics = yield* issuer.metrics;
+        expect(metrics.refreshRedirectUri, "refresh request redirect_uri").toBe(
+          originalRedirectUri,
+        );
+        expect(renewalResponse.status, "managed account renewal failed").toBe(200);
+        const renewed = yield* body(Called, renewalResponse);
+        expect(renewed.status).toBe(200);
         expect(metrics.refreshesIssued).toBeGreaterThan(refreshed);
-        expect(metrics.refreshChecks).toMatchObject({ issued: true, authSecret: true });
+        expect(metrics.refreshChecks).toMatchObject({
+          issued: true,
+          authSecret: true,
+          redirect: true,
+        });
         expect(metrics.refreshResource).toBe(resource);
         expect(metrics.resourceAuthorizations.at(-1)).toMatch(/^Bearer synthetic-refreshed-token-/);
 

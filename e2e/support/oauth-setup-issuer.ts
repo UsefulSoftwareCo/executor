@@ -141,6 +141,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let tokenChecks: Readonly<Record<string, boolean>> = {};
   let refreshes = 0;
   let refreshChecks: Readonly<Record<string, boolean>> = {};
+  let requiredRefreshRedirectUri: string | undefined;
+  let refreshRedirectUri: string | null | undefined;
   /** Client authentication on the latest code exchange; background refreshes do not overwrite it. */
   let lastExchangeAuth: TokenAuth | undefined;
   /** Appended to the authorization redirect as RFC 9207 `iss`, as Google does. */
@@ -447,8 +449,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         }
         if (refreshing) refreshes++;
         else tokenExchanges++;
-        if (refreshing) refreshResource = input.get("resource");
-        else exchangeResource = input.get("resource");
+        if (refreshing) {
+          refreshResource = input.get("resource");
+          refreshRedirectUri = input.get("redirect_uri");
+        } else exchangeResource = input.get("resource");
         tokenContentTypes.push(contentType);
         if (tokenError === "reset") {
           const source = request.source;
@@ -509,7 +513,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             client !== undefined &&
             (client.secret === null ? method === "none" : presented.secret === client.secret),
         };
-        if (refreshing) refreshChecks = { issued: refreshClient !== undefined, ...authChecks };
+        if (refreshing)
+          refreshChecks = {
+            issued: refreshClient !== undefined,
+            ...authChecks,
+            redirect:
+              requiredRefreshRedirectUri === undefined ||
+              refreshRedirectUri === requiredRefreshRedirectUri,
+          };
         else
           tokenChecks = {
             issued: issued !== undefined,
@@ -976,6 +987,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly refreshTokens?: boolean;
       /** Replace the refresh token on every refresh. */
       readonly rotateRefreshTokens?: boolean;
+      /** Refuse refreshes unless they repeat this authorization-code redirect URI. */
+      readonly requireRefreshRedirectUri?: string | null;
       /** Whether a replaced refresh token is still accepted. */
       readonly replacedRefreshTokens?: typeof replacedRefreshTokens;
       /** Hold matching requests until `release`; null stops holding new ones. */
@@ -1053,6 +1066,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.refreshTokens !== undefined) refreshTokens = input.refreshTokens;
         if (input.rotateRefreshTokens !== undefined)
           rotateRefreshTokens = input.rotateRefreshTokens;
+        if (input.requireRefreshRedirectUri !== undefined)
+          requiredRefreshRedirectUri =
+            input.requireRefreshRedirectUri === null ? undefined : input.requireRefreshRedirectUri;
         if (input.replacedRefreshTokens !== undefined)
           replacedRefreshTokens = input.replacedRefreshTokens;
         if (input.hold !== undefined) hold = input.hold === null ? undefined : input.hold;
@@ -1160,6 +1176,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       authorizationResource,
       exchangeResource,
       refreshResource,
+      refreshRedirectUri,
       refreshes,
       refreshChecks,
       lastExchangeAuth,

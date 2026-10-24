@@ -3259,6 +3259,46 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedFirstPartyUnset: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title: "GitLab and Miro first-party OAuth clients are unavailable without credentials",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses per-scenario self-host OAuth client settings."),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedGitLab: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Executor for GitLab is offered only on GitLab's authorization server with its catalog scopes",
+    serverEnvironment: {
+      EXECUTOR_OAUTH_GITLAB_CLIENT_ID: "synthetic-gitlab-client",
+      EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: "synthetic-gitlab-secret",
+    },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses per-scenario self-host OAuth client settings."),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedMiro: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Executor for Miro is offered only on Miro's authorization server with its catalog scopes",
+    serverEnvironment: {
+      EXECUTOR_OAUTH_MIRO_CLIENT_ID: "synthetic-miro-client",
+      EXECUTOR_OAUTH_MIRO_CLIENT_SECRET: "synthetic-miro-secret",
+    },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses per-scenario self-host OAuth client settings."),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedGoogle: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
