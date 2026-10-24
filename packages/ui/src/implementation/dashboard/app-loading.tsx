@@ -11,6 +11,8 @@ import { SourceBrowserLoading } from "./source-browser.tsx";
 import { ToolBrowserLoading } from "./tools.tsx";
 import { EmptyState } from "./empty-state.tsx";
 import { cn } from "../lib/utils.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /** Card contents load independently, without replacing a card with a table skeleton. */
 export function OverviewCardLoading({
@@ -128,6 +130,7 @@ export function AppAccountsLoading({
 
 /** Settings keeps its compact header and metadata cards, including a known copied origin. */
 export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) {
+  const brand = useProductBrand();
   return (
     <section role="status" aria-label="Loading settings" className="w-full">
       <div className="max-w-3xl space-y-6 p-7 max-[740px]:p-4">
@@ -135,7 +138,7 @@ export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) 
           <div className="space-y-2">
             <h3 className="text-sm font-medium">App name</h3>
             {app ? (
-              <p className="text-sm text-muted-foreground">{app.name}</p>
+              <p className="text-sm text-muted-foreground">{appDisplayName(app, brand)}</p>
             ) : (
               <Skeleton className="h-5 w-36" />
             )}

@@ -8,6 +8,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "../components/avatar.tsx";
 import { Button } from "../components/button.tsx";
 import { LocalTime, shortMoment } from "../components/local-time.tsx";
 import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 type AccountInfo = NonNullable<AccountHealth["info"]>;
 
@@ -135,6 +137,7 @@ export function AccountHealthPanel<E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly actions?: ReactNode;
 }) {
+  const brand = useProductBrand();
   const { apps, health } = data;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
@@ -173,7 +176,7 @@ export function AccountHealthPanel<E>({
             const entry = health?.apps.find((item) => item.app === app.id);
             return (
               <li key={app.id} className="flex items-center justify-between gap-3 py-2.5">
-                <span className="min-w-0 wrap-anywhere">{app.name}</span>
+                <span className="min-w-0 wrap-anywhere">{appDisplayName(app, brand)}</span>
                 <AccountCheckResult health={entry} />
               </li>
             );

@@ -345,7 +345,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         url: `${undeclaredOrigin}/undeclared`,
       });
       expect(undeclared.status).toBe(421);
-      const refusal = `Executor refused this request: ${name} credentials cannot be sent to ${new URL(undeclaredOrigin).host}. The provider allows: ${declaredHost}.`;
+      const refusal = `Refused this request: ${name} credentials cannot be sent to ${new URL(undeclaredOrigin).host}. The provider allows: ${declaredHost}.`;
       expect(Schema.decodeUnknownSync(Refusal)(undeclared.text)).toEqual({
         _tag: "NetworkRefused",
         host: new URL(undeclaredOrigin).host,

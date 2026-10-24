@@ -152,7 +152,7 @@ Object.defineProperty(CatalogImportFailed.prototype, "message", {
 export const CatalogUnavailable = ApiError.define({
   tag: "CatalogUnavailable",
   status: 502,
-  message: "Executor could not read the app catalog. Try again.",
+  message: "Could not read the app catalog. Try again.",
 });
 export type CatalogUnavailable = typeof CatalogUnavailable.Type;
 

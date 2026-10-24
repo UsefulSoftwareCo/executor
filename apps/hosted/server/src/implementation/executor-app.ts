@@ -1,5 +1,6 @@
 import { SourceFiles } from "@executor-js/sdk/core";
 import { Effect } from "effect";
+import { productBrandConfig } from "@executor-js/utils/product-brand";
 import { packageFile } from "@executor-js/app-templates";
 /** Executor uses the same source generator, provider accounts and versions as other API apps. */
 import type { HostedApiDocument } from "../contracts/api.ts";
@@ -61,9 +62,18 @@ const managementConfiguration = (origin: string, document: HostedApiDocument) =>
     2,
   );
 
+/**
+ * The provider people see when they connect the app: the deployment's product name. The app's
+ * own name and slug stay Executor for agents.
+ */
+const providerName = productBrandConfig.pipe(
+  Effect.orDie,
+  Effect.map((brand) => brand.name),
+);
+
 /** The version installed from the catalog. Existing untouched copies are recognized by exact files. */
 export const executorAppSource = (origin: string, document: HostedApiDocument) =>
-  Effect.succeed({
+  Effect.map(providerName, (name) => ({
     files: SourceFiles.make([
       { path: "index.ts", content: managementIndex(origin) },
       { path: "openapi.json", content: managementConfiguration(origin, document) },
@@ -72,7 +82,7 @@ export const executorAppSource = (origin: string, document: HostedApiDocument) =
         path: "provider.ts",
         content: `import { defineProvider, object, string, secrets, oauth2 } from "apps"
 
-export const provider = defineProvider({ name: "Executor", auth: {
+export const provider = defineProvider({ name: ${JSON.stringify(name)}, auth: {
   ["apiKey"]: secrets({ label: "API key", fields: object({ ["token"]: string({ minLength: 1 }) }) }),
   ["oauth"]: oauth2({
   "discover": ${JSON.stringify(`${origin}/api`)}
@@ -81,11 +91,11 @@ export const provider = defineProvider({ name: "Executor", auth: {
 `,
       },
     ]),
-  });
+  }));
 
 /** The default app accepts a saved user API key through the ordinary secrets method. */
 export const defaultExecutorAppSource = (origin: string, document: HostedApiDocument) =>
-  Effect.succeed({
+  Effect.map(providerName, (name) => ({
     files: SourceFiles.make([
       {
         path: "index.ts",
@@ -95,8 +105,8 @@ export const defaultExecutorAppSource = (origin: string, document: HostedApiDocu
         path: "provider.ts",
         content: `import { defineProvider, object, string, secrets, oauth2 } from "apps";
 
-export const provider = defineProvider({ name: "Executor", auth: {
-  apiKey: secrets({ label: "Executor API key", fields: object({ token: string(), organization: string() }) }),
+export const provider = defineProvider({ name: ${JSON.stringify(name)}, auth: {
+  apiKey: secrets({ label: ${JSON.stringify(`${name} API key`)}, fields: object({ token: string(), organization: string() }) }),
   oauth: oauth2({ discover: ${JSON.stringify(`${origin}/api`)} }),
 } });
 `,
@@ -104,4 +114,4 @@ export const provider = defineProvider({ name: "Executor", auth: {
       { path: "openapi.json", content: managementConfiguration(origin, document) },
       packageFile("executor"),
     ]),
-  });
+  }));

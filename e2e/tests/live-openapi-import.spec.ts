@@ -503,7 +503,7 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
           code: "no_supported_operations",
         });
         expect(failure("jobs")?.message).toContain(
-          "GET /jobs (auth_method: Executor cannot authenticate with any of its security requirements: client (oauth2 clientCredentials)); GET /jobs/events (event_stream: It responds with text/event-stream",
+          "GET /jobs (auth_method: None of its security requirements can be used to authenticate: client (oauth2 clientCredentials)); GET /jobs/events (event_stream: It responds with text/event-stream",
         );
         // It still offers a custom tool, for the operation that needs other authentication.
         expect(failure("jobs")?.message?.endsWith(customTool)).toBe(true);

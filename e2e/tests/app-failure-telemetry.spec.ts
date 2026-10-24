@@ -472,9 +472,9 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         for (const failed of [rejected, malformed]) {
           expect(failed.response.status).toBe(502);
           expect(yield* body(ResultLost, failed.response)).toMatchObject({
-            reason: "Executor did not receive a usable result from this tool call.",
+            reason: "No usable result came back from this tool call.",
             message:
-              "Executor did not receive a usable result from this tool call. No further failure detail is available.",
+              "No usable result came back from this tool call. No further failure detail is available.",
           });
           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
         }
@@ -485,9 +485,9 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           expect(failed.response.status).toBe(502);
           expect(yield* body(ResultLost, failed.response)).toMatchObject({
             reason:
-              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
+              "No usable result came back from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
             message:
-              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it. No further failure detail is available.",
+              "No usable result came back from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it. No further failure detail is available.",
           });
           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
         }

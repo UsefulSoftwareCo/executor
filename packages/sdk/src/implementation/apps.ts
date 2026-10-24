@@ -481,7 +481,7 @@ export const makeApps = (
             error.reason === "limit"
               ? Effect.fail(
                   invalidSource(
-                    "the ui/public/ files exceed Executor's limits: at most 10,000 files, each at most 32 MB and 1 GB in total.",
+                    "the ui/public/ files exceed the allowed limits: at most 10,000 files, each at most 32 MB and 1 GB in total.",
                   ),
                 )
               : error.reason === "invalid-source"

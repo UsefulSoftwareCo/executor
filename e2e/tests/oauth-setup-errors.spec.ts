@@ -160,7 +160,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
                 .then(() => page.evaluate(() => navigator.clipboard.readText())),
             );
             expect(copied).toContain("OAuthSetupFailed");
-            expect(copied).toContain("Diagnose and fix this problem in Executor");
+            expect(copied).toContain("Diagnose and fix this problem.");
             expect(copied).toContain("provider definition");
             expect(copied).toContain(
               "Do not disable authentication just because OAuth metadata is missing",
@@ -226,7 +226,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             { registrationStatus: 400, registrationError: "invalid_redirect_uri" },
             "Callback URL refused during registration",
             [
-              "This service doesn’t accept Executor’s callback URL.",
+              "This service doesn’t accept this deployment’s callback URL.",
               "Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
             ],
             true,
@@ -246,9 +246,9 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           [
             "metadata-refused",
             { registrationStatus: 400, registrationError: "invalid_client_metadata" },
-            "Service did not accept Executor’s callback URL",
+            "Service did not accept this deployment’s callback URL",
             [
-              "Executor’s callback URL is most likely not among the service’s allowed redirect URIs.",
+              "This deployment’s callback URL is most likely not among the service’s allowed redirect URIs.",
               "Ask the service’s administrator to allow it, or create an OAuth app there and enter its client ID and secret.",
             ],
             true,
@@ -257,9 +257,9 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           [
             "rejected",
             { registrationStatus: 400, registrationError: "invalid_request" },
-            "Service rejected Executor’s registration",
+            "Service rejected this deployment’s registration",
             [
-              "Without an OAuth client for this service, Executor can’t start sign-in.",
+              "Without an OAuth client for this service, sign-in can’t start.",
               "Create an OAuth app there with this redirect URL and enter its client ID and secret, or copy the fix prompt to investigate.",
             ],
             true,
@@ -268,8 +268,8 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           [
             "incompatible",
             { registrationStatus: 200, malformedRegistration: true },
-            "Executor could not use the service’s response",
-            ["Retrying won’t help until Executor is fixed."],
+            "Couldn’t use the service’s response",
+            ["Retrying won’t help until this is fixed."],
             false,
             undefined,
           ],
@@ -278,7 +278,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             "rate-limited",
             { registrationStatus: 429 },
             "Service rate limit reached",
-            ["The service asked Executor to wait before sending more sign-in requests.", retryAt],
+            ["The service asked for a pause before more sign-in requests.", retryAt],
             false,
             "429 Too Many Requests 429 Too Many Requests synthetic-edge",
           ],

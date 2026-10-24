@@ -51,7 +51,7 @@ export const VersionNotFound = UserFacingError.define({
   status: 404,
   fields: { app: AppId, version: VersionId },
   title: "Version no longer available",
-  description: "Executor could not find the requested version for this app.",
+  description: "Could not find the requested version for this app.",
   recovery: {
     action: "Reload the app to use its current version. If this continues, check Versions.",
     instructions:
@@ -134,12 +134,12 @@ export const BuildMemoryExceeded = UserFacingError.define({
   status: 422,
   title: "App build hit the current memory limit",
   description:
-    "This app's build needed more memory than Executor currently allows. No new version was activated.",
+    "This app's build needed more memory than is currently allowed. No new version was activated.",
   recovery: {
     action:
       "This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
     instructions:
-      "The build ran out of memory during compilation, not while the app was running. This is a current Executor limit that is planned to increase; it does not mean the app is too large to run. Tell the user the build hit the current limit. Do not remove features, swap libraries, or prebuild dependencies unless the user asks. If they want to deploy now, offer those workarounds as options.",
+      "The build ran out of memory during compilation, not while the app was running. This is a current build limit that is planned to increase; it does not mean the app is too large to run. Tell the user the build hit the current limit. Do not remove features, swap libraries, or prebuild dependencies unless the user asks. If they want to deploy now, offer those workarounds as options.",
   },
 });
 /** A confirmed compiler memory failure with safe recovery details. */

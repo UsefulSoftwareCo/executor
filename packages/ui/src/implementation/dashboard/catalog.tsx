@@ -22,6 +22,8 @@ import {
 } from "../components/dialog.tsx";
 import { Input } from "../components/input.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /**
  * The installed copy of each catalog package, by package name. Installs record the catalog package
@@ -85,6 +87,9 @@ export function CatalogPage<E, IE>({
   /** A link to the installed app, rendered inside the row's Open button. */
   readonly open: (app: App) => ReactNode;
 }) {
+  const brand = useProductBrand();
+  const entryName = (entry: { readonly name: string; readonly package: string }) =>
+    appDisplayName({ name: entry.name, copiedFrom: { name: entry.package } }, brand);
   const result = useAtomValue(query);
   const installedByPackage = installedCatalogApps(
     Option.getOrUndefined(AsyncResult.value(useAtomValue(inventory)))?.apps,
@@ -187,7 +192,7 @@ export function CatalogPage<E, IE>({
               >
                 <ProviderIcon name={entry.name} icons={entry.icons} />
                 <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
-                  <strong>{entry.name}</strong>
+                  <strong>{entryName(entry)}</strong>
                   <span className="line-clamp-1">{entry.description}</span>
                 </div>
                 {(() => {
@@ -201,7 +206,7 @@ export function CatalogPage<E, IE>({
                       type="button"
                       variant="outline"
                       size="sm"
-                      aria-label={`Add ${entry.name}`}
+                      aria-label={`Add ${entryName(entry)}`}
                       disabled={adding.has(entry.id)}
                       onClick={() => void add(entry, entry.name)}
                     >

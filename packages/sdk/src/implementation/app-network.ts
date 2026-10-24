@@ -25,7 +25,7 @@ export class NetworkUnreachable extends Schema.TaggedError<NetworkUnreachable>()
   {},
 ) {
   override get message() {
-    return "Executor's connection to the service failed before it answered. The request may have reached the service.";
+    return "The connection to the service failed before it answered. The request may have reached the service.";
   }
   /** Fixed text: telemetry records the message itself. */
   get [RecordedMessage]() {

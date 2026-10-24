@@ -67,21 +67,21 @@ export class NetworkRefused extends Schema.TaggedError<NetworkRefused>()("Networ
     const refusal = this.refusal;
     switch (refusal.reason) {
       case "private_address":
-        return `Executor refused a request to ${this.host}: apps on this instance can reach only public addresses, and ${this.host} is a private, loopback or internal address. The request was not sent.`;
+        return `Refused a request to ${this.host}: apps on this instance can reach only public addresses, and ${this.host} is a private, loopback or internal address. The request was not sent.`;
       case "credential_host":
         return refusal.allowedHosts.length === 0
-          ? `Executor refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}: the provider declares no hosts.`
-          : `Executor refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}. The provider allows: ${refusal.allowedHosts.join(", ")}.`;
+          ? `Refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}: the provider declares no hosts.`
+          : `Refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}. The provider allows: ${refusal.allowedHosts.join(", ")}.`;
       case "credential_app":
-        return "Executor refused this request: it carries a credential handle that is not valid for this app. Use the account fields this invocation received.";
+        return "Refused this request: it carries a credential handle that is not valid for this app. Use the account fields this invocation received.";
       case "credential_expired":
-        return `Executor refused this request: it carries an expired ${refusal.provider} credential handle. Use the account fields this invocation received.`;
+        return `Refused this request: it carries an expired ${refusal.provider} credential handle. Use the account fields this invocation received.`;
       case "credential_placement":
-        return `Executor refused this request: it carries a ${refusal.provider} credential handle in the ${refusal.location}, where the provider does not place it. Send credentials only as the provider's request declares, for example with the account's headers() and url().`;
+        return `Refused this request: it carries a ${refusal.provider} credential handle in the ${refusal.location}, where the provider does not place it. Send credentials only as the provider's request declares, for example with the account's headers() and url().`;
       case "credential_transport":
-        return `Executor refused this request: ${refusal.provider} credentials are sent only over HTTPS, and ${this.host} was requested over plain HTTP.`;
+        return `Refused this request: ${refusal.provider} credentials are sent only over HTTPS, and ${this.host} was requested over plain HTTP.`;
       case "credential_method":
-        return `Executor refused this request: credential handles are never sent with ${refusal.method}, which asks the service to echo the request back.`;
+        return `Refused this request: credential handles are never sent with ${refusal.method}, which asks the service to echo the request back.`;
     }
   }
 }
@@ -108,7 +108,7 @@ const encodeRefusalHeader = Schema.encodeSync(NetworkRefusedHeader);
 export const networkRefusalResponse = (refused: NetworkRefused) =>
   new Response(JSON.stringify({ ...encodeRefusal(refused), message: refused.message }), {
     status: networkRefusalStatus,
-    statusText: "Refused by Executor",
+    statusText: "Refused by network policy",
     headers: {
       "content-type": "application/json; charset=utf-8",
       [networkRefusalHeader]: encodeRefusalHeader(refused),
@@ -138,7 +138,7 @@ export class FetchOptionUnsupported extends Schema.TaggedError<FetchOptionUnsupp
 ) {
   override get message() {
     const supported = this.supported.map((value) => JSON.stringify(value)).join(" or ");
-    return `fetch option ${this.option}: ${JSON.stringify(this.value)} is not supported by Executor's app runtime. Use ${supported}, or omit ${this.option}.${this.advice}`;
+    return `fetch option ${this.option}: ${JSON.stringify(this.value)} is not supported by the app runtime. Use ${supported}, or omit ${this.option}.${this.advice}`;
   }
 
   /** What to do instead, when the standard value has an equivalent the runtime supports. */

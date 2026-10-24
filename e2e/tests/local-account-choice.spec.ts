@@ -334,7 +334,7 @@ layer(TestLive, { excludeTestServices: true })("Local account links", (it) => {
         expect(invalid.body).toEqual({
           _tag: "RequestInvalid",
           message:
-            "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+            "Could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
         });
 
         // Code mode refuses `$accounts` before running the tool.

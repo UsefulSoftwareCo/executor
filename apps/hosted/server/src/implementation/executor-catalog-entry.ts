@@ -2,19 +2,27 @@
 import { CatalogEntry } from "@executor-js/catalog/contracts";
 import type { AppCopyOrigin } from "@executor-js/sdk/core";
 import { executorCatalogPackage } from "../contracts/catalog.ts";
+import { defaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
 
-/** This installation's public API, available as a built-in app. */
-export const executorCatalogEntry = (origin: string) =>
+/**
+ * This installation's public API, available as a built-in app. Its name stays Executor, which
+ * the installed copy and agents rely on; the dashboard shows it under the product's name.
+ */
+export const executorCatalogEntry = (origin: string, brand: ProductBrand = defaultProductBrand) =>
   CatalogEntry.make({
     id: `${origin}/openapi.json`,
     package: executorCatalogPackage,
     name: "Executor",
-    description: "Manage apps and connected accounts in Executor.",
+    description: `Manage apps and connected accounts in ${brand.name}.`,
     auth: [
       { method: "oauth", kind: "oauth2" },
-      { method: "apiKey", kind: "secrets", label: "Executor API key" },
+      { method: "apiKey", kind: "secrets", label: `${brand.name} API key` },
     ],
-    icons: [{ src: "/favicon.png", mimeType: "image/png" }],
+    icons: [
+      brand.logo === defaultProductBrand.logo
+        ? { src: brand.logo, mimeType: "image/png" }
+        : { src: brand.logo },
+    ],
   });
 
 /**

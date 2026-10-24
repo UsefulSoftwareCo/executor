@@ -247,7 +247,7 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
         );
         expect(notice).toContain("The app threw Error: Synthetic tool failure");
         expect(notice).toContain(
-          "Read the error to determine whether input, app code, configuration or Executor needs attention.",
+          "Read the error to determine whether input, app code, configuration or this instance needs attention.",
         );
         // The form's own Run tool button repeats the call; the notice adds no Try again.
         expect(

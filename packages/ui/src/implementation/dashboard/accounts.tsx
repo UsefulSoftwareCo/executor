@@ -13,6 +13,8 @@ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 
 import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /** Saved account metadata is shared across app references, without exposing credential values. */
 export function AccountsPage<E>({
@@ -88,6 +90,7 @@ function AccountsList({
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
   readonly highlight?: AccountId | undefined;
 }) {
+  const brand = useProductBrand();
   const { AppLink } = useDashboard();
   const highlighted = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -186,7 +189,7 @@ function AccountsList({
                         <AccountCheckDot
                           health={account.health?.apps.find((entry) => entry.app === app.id)}
                         />
-                        {app.name}
+                        {appDisplayName(app, brand)}
                         <HugeiconsIcon
                           icon={ArrowUpRight01Icon}
                           strokeWidth={2}

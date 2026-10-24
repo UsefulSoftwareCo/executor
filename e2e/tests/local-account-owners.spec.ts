@@ -147,7 +147,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
             body: {
               _tag: "RequestInvalid",
               message:
-                "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+                "Could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
             },
           });
         const client = yield* mcp.connect(target.apiKey, "local-account-owners");

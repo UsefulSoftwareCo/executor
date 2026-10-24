@@ -490,7 +490,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
               retryable: false,
               recovery: {
                 instructions: expect.stringContaining(
-                  "The reported details do not establish whether the cause is the request, the service or Executor.",
+                  "The reported details do not establish whether the cause is the request, the service or this instance.",
                 ),
               },
             });
@@ -658,7 +658,7 @@ export default defineApp({}, async () => {
           code: "AppEvaluationFailed",
           status: 502,
           message:
-            "Executor could not load this app’s tool definitions. The app threw Error: Synthetic factory failure",
+            "Could not load this app’s tool definitions. The app threw Error: Synthetic factory failure",
           recovery: {
             action: "Try again. If this continues, investigate this error and fix its cause.",
           },

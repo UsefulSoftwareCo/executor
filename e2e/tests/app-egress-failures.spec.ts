@@ -215,7 +215,7 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
         // A send that fails before any answer rejects the app's fetch: never a status. The
         // message cannot claim the request was not sent: the connection may fail after it was.
         const networkMessage =
-          "Executor's connection to the service failed before it answered. The request may have reached the service.";
+          "The connection to the service failed before it answered. The request may have reached the service.";
         const rejected = { source: "app", errorName: "TypeError", message: networkMessage };
         const fetches: Record<string, unknown> = {};
         const fetchedTraces: Array<string> = [];

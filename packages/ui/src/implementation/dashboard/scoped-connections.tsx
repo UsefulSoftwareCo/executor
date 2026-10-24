@@ -59,6 +59,8 @@ import {
 import { useIncrementalList } from "./incremental-list.tsx";
 import { McpInstallInstructions } from "./connect.tsx";
 import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName, productNamed } from "../../contracts/product-brand.ts";
 
 /** Each host supplies its existing authorized catalog read of the app's tools. */
 export interface ConnectionToolPickerProps {
@@ -134,9 +136,11 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
   /** The agents connected through these URLs, when the host lists them. */
   readonly agents?: ReactNode;
   /** Documentation the setup prompt points agents to. */
-  readonly docs?: string;
+  /** `null` when the product has no docs to point the agent at. */
+  readonly docs?: string | null;
   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
 }) {
+  const brand = useProductBrand();
   const [view, setView] = useState<View>({ kind: "list" });
   const [revoking, setRevoking] = useState<ConnectionView>();
   const submitRevoke = useAtomSet(revoke, { mode: "promiseExit" });
@@ -168,7 +172,7 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
               className="mt-2 rounded-xl border bg-muted/20 px-6 pt-5 pb-6 shadow-xs"
             >
               <div className="mb-4 flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-medium">Executor MCP server</h2>
+                <h2 className="text-sm font-medium">{brand.name} MCP server</h2>
                 <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                   Every app you can use
                 </span>
@@ -373,9 +377,12 @@ function ConnectionList<E>({
   readonly query: Query<Inventory, E>;
   readonly onOpen: (connection: ConnectionId) => void;
 }) {
+  const brand = useProductBrand();
   const inventory = useAtomValue(query);
   const names = new Map<AppId, string>(
-    AsyncResult.isSuccess(inventory) ? inventory.value.apps.map((app) => [app.id, app.name]) : [],
+    AsyncResult.isSuccess(inventory)
+      ? inventory.value.apps.map((app) => [app.id, appDisplayName(app, brand)])
+      : [],
   );
   return (
     <div className="divide-y border-y">
@@ -571,6 +578,7 @@ function ConnectionEditor<E, ES extends E>({
   readonly onCancel: () => void;
   readonly onSaved: (connection: ConnectionView) => void;
 }) {
+  const brand = useProductBrand();
   const submit = useAtomSet(save, { mode: "promiseExit" });
   const saving = useAtomValue(save);
   const [draft, setDraft] = useState(initial);
@@ -587,9 +595,9 @@ function ConnectionEditor<E, ES extends E>({
       .toSorted(
         (a, b) =>
           Number(pinned.has(b.app.id)) - Number(pinned.has(a.app.id)) ||
-          a.app.name.localeCompare(b.app.name),
+          appDisplayName(a.app, brand).localeCompare(appDisplayName(b.app, brand)),
       );
-  }, [inventory, pinned]);
+  }, [inventory, pinned, brand]);
   const byId = useMemo(
     () => new Map<AppId, AppChoices>(choices.map((choice) => [choice.app.id, choice])),
     [choices],
@@ -609,7 +617,7 @@ function ConnectionEditor<E, ES extends E>({
       (filter === "all" ||
         (filter === "selected" && selections.has(choice.app.id)) ||
         (filter === "attention" && attention.has(choice.app.id))) &&
-      (query === "" || choice.app.name.toLowerCase().includes(query)),
+      (query === "" || appDisplayName(choice.app, brand).toLowerCase().includes(query)),
   );
   const addable = visible.filter((choice) => !selections.has(choice.app.id));
   const unassigned = draft.apps.filter(
@@ -814,6 +822,7 @@ function ConnectionAccessList({
   readonly apps: readonly ConnectionApp[];
   readonly inventory: Inventory;
 }) {
+  const brand = useProductBrand();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState<AppId>();
   const query = useDeferredValue(search.trim().toLowerCase());
@@ -822,8 +831,8 @@ function ConnectionAccessList({
     [inventory],
   );
   const visible = apps
-    .filter((app) => query === "" || app.name.toLowerCase().includes(query))
-    .toSorted((a, b) => a.name.localeCompare(b.name));
+    .filter((app) => query === "" || productNamed(app.name, brand).toLowerCase().includes(query))
+    .toSorted((a, b) => productNamed(a.name, brand).localeCompare(productNamed(b.name, brand)));
   const { count, sentinel } = useIncrementalList(visible.length, query);
   return (
     <section aria-label="App access" className="mt-6 rounded-lg border">
@@ -846,7 +855,9 @@ function ConnectionAccessList({
               <div className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
                 <AppIcon app={app} name={selection.name} />
                 <span className="min-w-0 flex-1 basis-48">
-                  <span className="block truncate text-[13px] font-medium">{selection.name}</span>
+                  <span className="block truncate text-[13px] font-medium">
+                    {productNamed(selection.name, brand)}
+                  </span>
                   <span className="block truncate text-xs text-muted-foreground">
                     {app === undefined
                       ? "No longer available"

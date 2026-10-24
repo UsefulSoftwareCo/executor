@@ -9,13 +9,15 @@ import { LoginFrame } from "./login-frame.tsx";
 import { AuthFailed, sessionAtom, signInAtom } from "../../contracts/auth.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { Spinner } from "@executor-js/ui/components/spinner";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { productLink } from "@executor-js/utils/product-brand";
 
-const callbackError = (error: unknown): string | null => {
+const callbackError = (error: unknown, product: string): string | null => {
   if (typeof error !== "string" || error === "") return null;
   if (error === "access_denied") return "Sign-in was canceled. You can try again.";
   if (error === "account_not_linked")
-    return "An Executor account already uses this email. Sign in with the method you used before.";
+    return `${/^[aeiou]/i.test(product) ? "An" : "A"} ${product} account already uses this email. Sign in with the method you used before.`;
   if (error === "unable_to_link_account")
     return "This email is not linked to this sign-in method. Contact an administrator.";
   return "Sign-in could not be completed. Please try again.";
@@ -99,8 +101,8 @@ export function LoginPage({
   readonly cardFooter?: ReactNode;
   readonly footer?: ReactNode;
 }) {
-  useDocumentTitle(productTitle(title));
-  const callbackFailure = callbackError(callbackCode);
+  useDocumentTitle(title);
+  const callbackFailure = callbackError(callbackCode, useProductBrand().name);
   const session = useAtomValue(sessionAtom);
   const refreshSession = useAtomRefresh(sessionAtom);
   const signIn = useAtomSet(signInAtom, { mode: "promiseExit" });
@@ -201,7 +203,10 @@ export function LoginPage({
   );
 }
 
-/** Product hosts provide their own legal URLs because cloud and self-host differ. */
+/**
+ * Product hosts provide Executor's legal URLs because cloud and self-host differ. A deployment
+ * under another name shows only the legal pages it names itself.
+ */
 export function LoginLegalFooter({
   privacyUrl,
   termsUrl,
@@ -209,11 +214,15 @@ export function LoginLegalFooter({
   readonly privacyUrl: string;
   readonly termsUrl: string;
 }) {
+  const brand = useProductBrand();
+  const privacy = productLink(brand, "privacy", privacyUrl);
+  const terms = productLink(brand, "terms", termsUrl);
+  if (privacy === undefined && terms === undefined) return null;
   return (
     <p className="auth-legal mt-4 flex items-center justify-center gap-2 text-xs text-muted-foreground">
-      <a href={privacyUrl}>Privacy</a>
-      <span aria-hidden>·</span>
-      <a href={termsUrl}>Terms</a>
+      {privacy !== undefined && <a href={privacy}>Privacy</a>}
+      {privacy !== undefined && terms !== undefined && <span aria-hidden>·</span>}
+      {terms !== undefined && <a href={terms}>Terms</a>}
     </p>
   );
 }

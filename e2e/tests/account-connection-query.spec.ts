@@ -121,7 +121,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         yield* browser.use("A lost response keeps the form open for retry", (page) =>
           page
             .getByRole("dialog")
-            .getByText("Can’t reach Executor", { exact: true })
+            .getByText("Can’t reach the server", { exact: true })
             .waitFor({ state: "visible" }),
         );
         account = (yield* Schema.decodeUnknownEffect(Resource)(committed)).id;

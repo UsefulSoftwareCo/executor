@@ -69,6 +69,8 @@ import {
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
 import { AppSource, AppVersions } from "./app-source.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
 
 /** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
 export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
@@ -464,6 +466,7 @@ export function AppDetailPage({
 }
 
 function DeleteApp({ app }: { readonly app: App }) {
+  const brand = useProductBrand();
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   const remove = useAtomSet(removeAppAtom({ organization, app: app.id }), { mode: "promiseExit" });
   const navigate = useNavigate();
@@ -486,7 +489,7 @@ function DeleteApp({ app }: { readonly app: App }) {
       </DialogTrigger>
       <DialogContent className="sm:max-w-[440px]">
         <DialogTitle>Delete app?</DialogTitle>
-        <p className="text-sm font-medium">{app.name}</p>
+        <p className="text-sm font-medium">{appDisplayName(app, brand)}</p>
         <DialogDescription>
           This permanently removes the app and its saved data. Connected accounts and copies
           installed by others are kept.

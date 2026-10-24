@@ -671,7 +671,7 @@ const runtimeFailure = (
         new ToolCallFailed({
           ...identity,
           reason:
-            "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
+            "No usable result came back from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
         }),
       HostEvaluationFailed: (error) => evaluationFailure(identity, error),
       SkillLoadFailed: (error) => evaluationFailure(identity, error),
@@ -683,7 +683,7 @@ const runtimeFailure = (
       RuntimeProtocolFailed: () =>
         new ToolCallFailed({
           ...identity,
-          reason: "Executor did not receive a usable result from this tool call.",
+          reason: "No usable result came back from this tool call.",
         }),
       RuntimeProtocolUnsupported: (error) =>
         new AppEvaluationFailed({ ...identity, reason: error.message }),
@@ -1489,7 +1489,7 @@ export const makeTools = (
                     Effect.fail(
                       new ToolCallFailed({
                         ...identity,
-                        reason: "Executor failed unexpectedly while handling this tool call.",
+                        reason: "Handling this tool call failed unexpectedly.",
                         mayHaveWritten: true,
                       }),
                     ),

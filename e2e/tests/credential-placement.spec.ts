@@ -1487,7 +1487,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(yield* revoked(1)).toEqual([refreshRevoked]);
         expect(JSON.stringify(broader.completed.body)).not.toContain("synthetic-");
         const refusal = yield* messageOf(broader.completed);
-        expect(refusal).toContain("Executor rejected the sign-in and saved nothing");
+        expect(refusal).toContain("The sign-in was rejected and nothing was saved");
         expect(refusal).not.toMatch(claimsRevoked);
 
         // One within `allowedScopes`, though not asked for, is kept.

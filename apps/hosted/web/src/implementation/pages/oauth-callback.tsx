@@ -23,6 +23,7 @@ import {
 } from "../../contracts/apps.ts";
 import { accountToNameAtom } from "../../contracts/accounts.ts";
 import type { HostedError } from "../../contracts/errors.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /** The SDK decides recovery for every completion reason; `setup` means the connection itself ended. */
 type Recovery = Exclude<OAuthCompletionRecovery, "cancelled"> | "setup";
@@ -44,6 +45,7 @@ type CallbackState =
  * user created it. The starting tab's context only adds its manual-client retry hint.
  */
 export function OAuthCallbackPage() {
+  const brand = useProductBrand();
   const navigate = useNavigate();
   const registry = useContext(RegistryContext);
   const started = useRef(false);
@@ -102,7 +104,7 @@ export function OAuthCallbackPage() {
         fixPrompt: Option.match(error, {
           onSome: (value) =>
             recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
-              ? `While connecting an account in Executor.\n\n${value.fixPrompt}`
+              ? `While connecting an account in ${brand.name}.\n\n${value.fixPrompt}`
               : undefined,
           onNone: () => undefined,
         }),
@@ -125,8 +127,7 @@ export function OAuthCallbackPage() {
         )
           return setState({
             status: "failed",
-            message:
-              "Another Executor user started this sign-in. Sign in as that user and open the link again.",
+            message: `Another ${brand.name} user started this sign-in. Sign in as that user and open the link again.`,
             recovery: "setup",
           });
         return fail(resolved.cause);
@@ -167,7 +168,7 @@ export function OAuthCallbackPage() {
             search: { view: "accounts" },
           }));
     })();
-  }, [registry, navigate]);
+  }, [registry, navigate, brand.name]);
   return (
     <ConnectionStatusPage
       status={state.status}
@@ -201,10 +202,11 @@ function OAuthRecoveryActions({
   readonly recovery: Recovery | "cancelled";
   readonly fixPrompt?: string | undefined;
 }) {
+  const brand = useProductBrand();
   if (Option.isNone(pending))
     return (
       <Button asChild>
-        <Link to="/">Open Executor</Link>
+        <Link to="/">Open {brand.name}</Link>
       </Button>
     );
   const context = pending.value;

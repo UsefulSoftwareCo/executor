@@ -72,7 +72,7 @@ const mcpMessage = ({ phase, reason, status }: McpError) => {
     Match.when(
       "invalid_response",
       () =>
-        `The MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.`,
+        `The MCP server returned an unusable response while ${stage}, such as an unreadable message or an address on another origin.`,
     ),
     Match.when("invalid_input", () => "The MCP server URL or connection settings are invalid."),
     // Only a transport failure has no answer from the server; a JSON-RPC error is an answer.
@@ -80,7 +80,7 @@ const mcpMessage = ({ phase, reason, status }: McpError) => {
       status !== undefined
         ? `The MCP server answered HTTP ${status} while ${stage}.`
         : phase === "transport"
-          ? `Executor could not reach the MCP server while ${stage}.`
+          ? `Could not reach the MCP server while ${stage}.`
           : `The request to the MCP server failed while ${stage}.`,
     ),
     Match.exhaustive,
@@ -90,8 +90,8 @@ const mcpMessage = ({ phase, reason, status }: McpError) => {
 /** Fixed text for an `mcpHealth` check that could not show the server needs the credentials. */
 const unverifiedMessage = ({ anonymous }: McpCredentialsUnverified) =>
   anonymous === "answered"
-    ? "This MCP server answers without credentials, so Executor can't check this account. A refused key will show up when a tool is called."
-    : `The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. ${
+    ? "This MCP server answers without credentials, so this account can't be checked. A refused key will show up when a tool is called."
+    : `The MCP server accepted the credentials, but the same check without them failed, so it isn't clear whether it requires them. ${
         Schema.is(McpError)(anonymous)
           ? mcpMessage(anonymous)
           : anonymous.status === undefined

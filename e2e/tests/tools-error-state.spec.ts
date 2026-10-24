@@ -70,7 +70,7 @@ export default defineApp({}, async () => {
         const copy = yield* browser.use("Read the complete error state", (page) =>
           page.getByRole("alert", { name: title, exact: true }).innerText(),
         );
-        expect(copy).toContain("Executor could not load this app’s tool definitions.");
+        expect(copy).toContain("Could not load this app’s tool definitions.");
         expect(copy).toContain("AppEvaluationFailed");
         expect(copy).not.toContain("Check its accounts");
         expect(copy).toContain("The app threw Error: SYNTHETIC_FACTORY_FAILURE");

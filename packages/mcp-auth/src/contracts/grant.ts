@@ -206,7 +206,7 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
         if (issued.kind === "api")
           return {
             title: "API credential",
-            description: "This credential was issued for the Executor API, not for MCP.",
+            description: "This credential was issued for API access, not for MCP.",
             recovery: {
               action: "Connect at the MCP URL to get a credential for it, then retry.",
               instructions: `A credential serves the one resource it was issued for. Connect the MCP client at the MCP URL so it receives its own credential, and verify that tools are listed. ${notBypassed}`,
@@ -227,7 +227,7 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
         description: `This credential’s grant needs its tool calls approved in the browser, but it was issued for an MCP URL with elicitation_mode=${mode}, which cannot ask for that approval. No MCP URL can use it.`,
         recovery: {
           action: "Connect again at the MCP URL with elicitation_mode=browser, then retry.",
-          instructions: `The grant was narrowed to selected tools with browser approval after it was issued for a URL in another approval mode, which Executor no longer allows. A grant serves only the URL it was issued for. Connect again at the same MCP URL with elicitation_mode=browser, choose its tools, and verify that tools are listed. ${notBypassed}`,
+          instructions: `The grant was narrowed to selected tools with browser approval after it was issued for a URL in another approval mode, which is no longer allowed. A grant serves only the URL it was issued for. Connect again at the same MCP URL with elicitation_mode=browser, choose its tools, and verify that tools are listed. ${notBypassed}`,
         },
       }),
       app: ({ app }) => ({

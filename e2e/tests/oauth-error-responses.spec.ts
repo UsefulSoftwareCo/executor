@@ -375,7 +375,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           expect(result.failure).toMatchObject({
             _tag: "OAuthCompletionFailed",
             reason: "rate_limited",
-            message: "The service asked Executor to wait before sending more sign-in requests.",
+            message: "The service asked for a pause before more sign-in requests.",
           });
           // Retry-After: 120 is two minutes from the answer, and the copy rounds it up to a minute.
           const retryAfter = result.failure.retryAfter;
@@ -392,7 +392,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             `Start the connection again after ${utc.slice(17, 22)} UTC on ${Number(utc.slice(5, 7))} ${utc.slice(8, 11)} ${utc.slice(12, 16)}.`,
           );
           expect(result.failure.recovery?.instructions).toContain(
-            `Its Retry-After header asked Executor to wait until ${retryAfter}`,
+            `Its Retry-After header asked for a wait until ${retryAfter}`,
           );
           const serviceError = result.failure.serviceError;
           if (serviceError === undefined || !("body" in serviceError))
@@ -471,7 +471,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             _tag: "OAuthSetupFailed",
             reason: "client_not_approved",
           });
-          expect(failure.message).toContain("doesn’t accept Executor’s callback URL");
+          expect(failure.message).toContain("doesn’t accept this deployment’s callback URL");
           curated("Registration refused", failure, serviceError);
           expect(yield* readConnection(connection.id)).toMatchObject({
             status: "pending",

@@ -325,7 +325,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect(
           yield* recoveryActions(
             "Read the saved-client recovery",
-            "no longer accepts the client Executor registered earlier",
+            "no longer accepts the client registered earlier",
           ),
         ).toEqual([1, 1, 0, 0]);
         yield* browser.checkpoint("Saved registered client rejected callback");
@@ -353,7 +353,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         expect(
           yield* recoveryActions(
             "Read the new-client recovery",
-            "refused the client Executor registered moments ago",
+            "refused the client registered moments ago",
           ),
         ).toEqual([1, 0, 0, 1]);
         yield* browser.checkpoint("New registered client rejected callback");

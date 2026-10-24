@@ -70,7 +70,7 @@ export function ConnectPage() {
   const origins = useResourceOrigins();
   const mcpOrigin = origins.mcp[0];
   const { organization } = useOrganizationRoute();
-  const docs = useDocumentationUrl();
+  const docs = useDocumentationUrl() ?? null;
   return (
     <ScopedConnectionsPage
       key={organization}

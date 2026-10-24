@@ -25,6 +25,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { AppIcon } from "./common.tsx";
 import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /** One way an app can run: as one account the user can use with it. */
 export interface Choice {
@@ -126,6 +128,7 @@ export function ConnectionAppRow({
   readonly onChange: (selection: ConnectionApp | undefined) => void;
   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
 }) {
+  const brand = useProductBrand();
   const id = useId();
   const { app } = choices;
   const issue = selection === undefined ? undefined : selectionIssue(choices, selection);
@@ -153,8 +156,11 @@ export function ConnectionAppRow({
           />
           <AppIcon app={app} />
           <span className="min-w-0">
-            <span className="block truncate text-[13px] font-medium" title={app.name}>
-              {app.name}
+            <span
+              className="block truncate text-[13px] font-medium"
+              title={appDisplayName(app, brand)}
+            >
+              {appDisplayName(app, brand)}
             </span>
             <span
               className={`block truncate text-xs ${
@@ -194,7 +200,7 @@ export function ConnectionAppRow({
             >
               <SelectTrigger
                 size="sm"
-                aria-label={`Tools for ${app.name}`}
+                aria-label={`Tools for ${appDisplayName(app, brand)}`}
                 className="min-w-0 flex-1 text-xs sm:w-36 sm:flex-none"
               >
                 <SelectValue />
@@ -207,7 +213,7 @@ export function ConnectionAppRow({
             </Select>
             {declaresEvents(app) && (
               <EventsPicker
-                appName={app.name}
+                appName={appDisplayName(app, brand)}
                 names={declaredEventNames(app)}
                 events={selection.events}
                 onChange={setEvents}
@@ -220,7 +226,11 @@ export function ConnectionAppRow({
               className={
                 selection.tools.kind === "selected" ? "" : "hidden sm:invisible sm:inline-flex"
               }
-              aria-label={expanded ? `Hide tools for ${app.name}` : `Show tools for ${app.name}`}
+              aria-label={
+                expanded
+                  ? `Hide tools for ${appDisplayName(app, brand)}`
+                  : `Show tools for ${appDisplayName(app, brand)}`
+              }
               aria-expanded={expanded}
               onClick={() => onExpandedChange(!expanded)}
             >

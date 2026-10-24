@@ -234,7 +234,7 @@ export const AppNotFound = UserFacingError.define({
   status: 404,
   fields: { app: AppId },
   title: "App no longer available",
-  description: "Executor could not find the requested app.",
+  description: "Could not find the requested app.",
   recovery: {
     action: "Return to Apps and open an available app.",
     instructions:

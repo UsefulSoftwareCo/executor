@@ -266,7 +266,7 @@ const elicitationFailures = {
   "invalid-request": "The tool's input request was invalid.",
   "invalid-response": "The input response did not match the tool's request.",
   transport: "The tool’s input request or answer could not be delivered.",
-  expired: "The tool’s input request expired before Executor received an answer.",
+  expired: "The tool’s input request expired before an answer was received.",
   forbidden: "This caller may no longer answer the tool's input request.",
 } as const;
 /**
@@ -289,7 +289,7 @@ const elicitationRecovery = {
   "invalid-request": {
     action: "Check the tool’s input request before changing the app.",
     instructions:
-      "Executor could not accept or record the tool’s input request. Check its form and delivery limits before changing the app.",
+      "Could not accept or record the tool’s input request. Check its form and delivery limits before changing the app.",
     retryable: false,
   },
   "invalid-response": {
@@ -313,7 +313,7 @@ const elicitationRecovery = {
   forbidden: {
     action: "Confirm or restore access to the app and its accounts before another attempt.",
     instructions:
-      "Executor checks the caller's access before it delivers an input request, and that check was refused, such as after access changed while the tool was waiting. Confirm or restore the caller's access to the app and its accounts before another attempt.",
+      "The caller's access is checked before an input request is delivered, and that check was refused, such as after access changed while the tool was waiting. Confirm or restore the caller's access to the app and its accounts before another attempt.",
     retryable: false,
   },
 } as const;
@@ -514,7 +514,7 @@ const refusedCredentialHost = {
     "A request of the skill loader that carried the account's token was refused because the account's provider does not declare the host it went to. The provider must declare every host the loader sends the token to: for GitHub, github.com and raw.githubusercontent.com. Reconnect an account connected with the provider's current hosts. Do not print the token.",
 };
 const invalidSourceInstructions =
-  "The skill loader reported a problem with its source, which its message names. Its settings may not be valid, such as a malformed or non-HTTP URL or an invalid repository name or path, or the source may list a file Executor cannot read, such as a symbolic link or a path outside the skill's folder. Check the skill loader's options and the files the source publishes.";
+  "The skill loader reported a problem with its source, which its message names. Its settings may not be valid, such as a malformed or non-HTTP URL or an invalid repository name or path, or the source may list a file that cannot be read, such as a symbolic link or a path outside the skill's folder. Check the skill loader's options and the files the source publishes.";
 const skillInstructions =
   "The app loads skills from a remote source. Read the app source to find the skill loader and its options. Do not print credentials or raw responses, and do not change accounts. If the factory awaits the loader, tools and skills both fail when that load fails. Declare it with dynamicSkills instead, such as dynamicSkills: dynamicSkills({ list: () => githubSkills(...) }), so only skill reads call it. To stop depending on the remote source, the app can bundle its skill folders and read them with folderSkills. Verify that the Skills and Tools pages load after the repair.";
 
@@ -688,7 +688,7 @@ export const mcpFailurePresentation = ({
       if (phase === "call")
         return {
           title: "MCP server did not answer the tool call",
-          description: `The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it.${answered}`,
+          description: `The app’s MCP server did not answer the tool call in time, so the call stopped waiting. The server may still finish it.${answered}`,
           recovery: {
             action: "You may retry once. If it times out again, investigate before repeating it.",
             instructions:
@@ -720,7 +720,7 @@ export const mcpFailurePresentation = ({
       return {
         title: "MCP server response not supported",
         // Includes Executor refusing to follow the server to another origin.
-        description: `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.${answered}`,
+        description: `The app’s MCP server returned an unusable response while ${stage}, such as an unreadable message or an address on another origin.${answered}`,
         recovery: {
           action: "Check the response compatibility and the app’s MCP server configuration.",
           instructions,
@@ -793,7 +793,7 @@ export const mcpFailurePresentation = ({
         ? phase === "transport"
           ? {
               title: "MCP server did not answer",
-              description: `Executor’s request to the app’s MCP server failed before the server answered, while ${stage}.`,
+              description: `The request to the app’s MCP server failed before the server answered, while ${stage}.`,
               recovery: {
                 action: "Try again. If this continues, check the MCP server’s address and status.",
                 instructions,
@@ -804,7 +804,7 @@ export const mcpFailurePresentation = ({
             ? {
                 title: "Tool call ended without an answer",
                 description:
-                  "The request to the app’s MCP server failed before the server answered the tool call, so Executor cannot tell whether the server ran it.",
+                  "The request to the app’s MCP server failed before the server answered the tool call, so it is unknown whether the server ran it.",
                 recovery: {
                   action:
                     "Retry at most once. If it fails again, check the server’s status and connection.",
@@ -879,17 +879,17 @@ export const AppEvaluationFailed = UserFacingError.define({
       : failure !== undefined
         ? {
             title: "Tools could not be loaded",
-            description: `Executor could not load this app’s tool definitions. ${appFailureText(failure)}`,
+            description: `Could not load this app’s tool definitions. ${appFailureText(failure)}`,
             recovery: {
               action: "Try again. If this continues, investigate this error and fix its cause.",
-              instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
+              instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or this instance, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
             },
             retryable: true,
           }
         : skills === undefined
           ? {
               title: "Tools could not be loaded",
-              description: "Executor could not load this app’s tool definitions.",
+              description: "Could not load this app’s tool definitions.",
               recovery: {
                 action: "Try again. If this continues, copy the fix prompt to investigate the app.",
                 instructions: evaluationInstructions,
@@ -938,7 +938,7 @@ export const ToolListingTimedOut = UserFacingError.define({
 export type ToolListingTimedOut = typeof ToolListingTimedOut.Type;
 
 const searchFailures = {
-  unsaved: "Executor could not save this app's tools for search, so search cannot rank them.",
+  unsaved: "Could not save this app's tools for search, so search cannot rank them.",
   removed:
     "The tools this execution found for this app are no longer kept for search: a newer listing replaced them long enough ago that they were removed.",
 } as const;
@@ -963,9 +963,9 @@ export const ToolSearchUnavailable = UserFacingError.define({
       reason === "unsaved"
         ? {
             action:
-              "Try again. If this continues, copy the fix prompt into your agent to check Executor’s storage.",
+              "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
             instructions:
-              "Check Executor’s storage availability and safe diagnostics for the failed tool search write. Do not change the app or its accounts to work around a storage failure. Other apps remain searchable.",
+              "Check this instance’s storage availability and safe diagnostics for the failed tool search write. Do not change the app or its accounts to work around a storage failure. Other apps remain searchable.",
           }
         : {
             action: "Search again in a new execute.",
@@ -1000,14 +1000,14 @@ const renewalRecovery = (
     case "StorageError":
       return {
         recovery: {
-          action: "Check Executor’s storage availability.",
+          action: "Check this instance’s storage availability.",
           instructions: failure.recovery.instructions,
         },
       };
     case "CredentialsError":
       return {
         recovery: {
-          action: "Check Executor’s credential storage and encryption-key availability.",
+          action: "Check this instance’s credential storage and encryption-key availability.",
           instructions: failure.recovery.instructions,
         },
       };
@@ -1084,10 +1084,10 @@ export const AppProviderFailed = UserFacingError.define({
           if (credentialsRenewed === true)
             return {
               title: "Access renewed; request not repeated",
-              description: `${service} rejected the credentials${target}${context}.${reported} Executor has renewed the account’s access, but did not repeat this call automatically.`,
+              description: `${service} rejected the credentials${target}${context}.${reported} The account’s access was renewed, but this call was not repeated automatically.`,
               recovery: {
                 action: "The renewed access is used from now on.",
-                instructions: `Executor renewed the account’s access but did not repeat this call. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
+                instructions: `The account’s access was renewed but this call was not repeated. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
               },
               retryable: false,
             };
@@ -1418,7 +1418,7 @@ export const ToolCallFailed = UserFacingError.define({
           description: reason,
           recovery: {
             action: "Read the reported error and check the corresponding request or configuration.",
-            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or Executor.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way Executor cannot use. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}`,
+            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or this instance.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way that cannot be used. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}`,
           },
           retryable: false,
         };
@@ -1449,7 +1449,7 @@ export const ToolCallFailed = UserFacingError.define({
           description: reason,
           recovery: {
             action:
-              "Read the error to determine whether input, app code, configuration or Executor needs attention.",
+              "Read the error to determine whether input, app code, configuration or this instance needs attention.",
             instructions:
               "This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
           },

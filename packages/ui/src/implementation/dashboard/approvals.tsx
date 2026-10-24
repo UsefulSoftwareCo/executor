@@ -7,6 +7,8 @@ import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ApprovalListItem } from "../../contracts/schedules.ts";
 import { QueryView } from "./context.tsx";
 import { Button } from "../components/button.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { productNamed } from "../../contracts/product-brand.ts";
 
 /** Pending scheduled work uses the same review interaction in local and hosted dashboards. */
 export function ApprovalsPage<E>({
@@ -18,6 +20,7 @@ export function ApprovalsPage<E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly review: (item: ApprovalListItem) => ReactNode;
 }) {
+  const brand = useProductBrand();
   return (
     <PageFrame>
       <PageHeader title={approvalsTitle} description={approvalsDescription} />
@@ -32,7 +35,9 @@ export function ApprovalsPage<E>({
               {items.map((item) => (
                 <div key={item.run.id} className="flex items-center justify-between gap-4 p-4">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium break-words">{item.app.name}</p>
+                    <p className="text-sm font-medium break-words">
+                      {productNamed(item.app.name, brand)}
+                    </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {item.run.name}
                       {item.run.expiresAt && (

@@ -21,6 +21,7 @@ import { organizationOwner } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { addLink } from "./app-accounts.ts";
 import { executorCopyOrigin } from "./executor-catalog-entry.ts";
+import { productBrandConfig } from "@executor-js/utils/product-brand";
 
 /** Only a new or changed installation generates the Executor app, so its OpenAPI compiler loads then. */
 const executorApp = Effect.promise(() => import("./executor-app.ts"));
@@ -245,7 +246,7 @@ export const organizationDefaults = (
                       provider: requirement.provider,
                       method: "apiKey",
                       // Email sign-ups have no name; say whose access this is instead.
-                      label: "Your Executor access",
+                      label: `Your ${(yield* productBrandConfig.pipe(Effect.orDie)).name} access`,
                       fields: Redacted.make({ token: Redacted.value(token), organization }),
                     })
                     .pipe(personalAccountCreation(user.userId));

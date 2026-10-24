@@ -1682,7 +1682,7 @@ http.createServer((request, response) => {
         },
         "@fixture/garbled": {
           reason: "invalid-response",
-          message: "The public app registry returned a response Executor could not read.",
+          message: "The public app registry returned a response that could not be read.",
         },
         "@fixture/missing": {
           reason: "not-found",
@@ -1706,7 +1706,7 @@ http.createServer((request, response) => {
         body: {
           _tag: "RegistryError",
           reason: "network",
-          message: "Executor could not reach the public app registry. Try again.",
+          message: "Could not reach the public app registry. Try again.",
         },
       });
       const deployed = yield* request(
@@ -1818,7 +1818,7 @@ export default defineApp({}, async () => ({
       expect(refused.ok).toBe(true);
       // Executor refuses the address by name, before the public-only network would.
       expect(refused.value, "private app fetch stays off by default").toMatch(
-        /^refused:Executor refused a request to 100\.64\.[\d.]+:\d+: apps on this instance can reach only public addresses/,
+        /^refused:Refused a request to 100\.64\.[\d.]+:\d+: apps on this instance can reach only public addresses/,
       );
       // A public name passes Executor's check, and the public-only network refuses its address.
       const resolved = yield* probe(`http://${disguised}:${containerPort}/health`);
@@ -1826,7 +1826,7 @@ export default defineApp({}, async () => ({
       expect(resolved.value, "the network refuses a public name's private address").toMatch(
         /^refused:/,
       );
-      expect(resolved.value).not.toMatch(/^refused:Executor refused/);
+      expect(resolved.value).not.toMatch(/^refused:Refused/);
       expect(yield* probe(`${origin}/health`), "authored apps reach the dashboard origin").toEqual({
         ok: true,
         value: "reached:200",

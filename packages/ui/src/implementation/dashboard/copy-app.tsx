@@ -5,6 +5,8 @@ import type { AppAcknowledgement, AppManagementProps } from "../../contracts/app
 import { AppCreateForm } from "./app-create.tsx";
 import { Button } from "../components/button.tsx";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "../components/dialog.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /** Both owned and public apps copy through the same operation and naming form. */
 export function CopyApp<E>({
@@ -18,6 +20,7 @@ export function CopyApp<E>({
   readonly onApp: AppAcknowledgement;
   readonly onCopied: (app: App) => void | Promise<void>;
 }) {
+  const brand = useProductBrand();
   const [open, setOpen] = useState(false);
   const mutation = atoms.copy({ app: app.id });
   const result = useAtomValue(mutation);
@@ -40,7 +43,9 @@ export function CopyApp<E>({
           <AppCreateForm
             mutation={mutation}
             Failure={Failure}
-            initialName={app.name.length <= 115 ? `${app.name} copy` : ""}
+            initialName={
+              appDisplayName(app, brand).length <= 115 ? `${appDisplayName(app, brand)} copy` : ""
+            }
             input={(name) => ({ name, onApp })}
             label="Make a copy"
             onCancel={() => setOpen(false)}

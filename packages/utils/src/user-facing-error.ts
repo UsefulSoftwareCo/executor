@@ -155,7 +155,7 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
       get(this: Self) {
         const details = presentation(this);
         return [
-          "Diagnose and fix this problem in Executor. Use the current app context where relevant.",
+          "Diagnose and fix this problem. Use the current app context where relevant.",
           `Error: ${details.title}\nError code: ${this.code}\nKnown cause: ${details.description}${details.detail === undefined ? "" : `\n${details.detail.label}: ${details.detail.value}`}`,
           `Investigation and recovery:\n${details.recovery.instructions}`,
           "Make the smallest justified fix. Preserve existing account selections and credentials. Do not expose secrets in code, logs, or your reply. If you need a user action or access you do not have, explain the exact next step.",
@@ -224,11 +224,11 @@ export const UnexpectedError = define({
   tag: "UnexpectedError",
   status: 500,
   title: "Action unavailable",
-  description: "Executor could not complete this action because of an unexpected error.",
+  description: "Could not complete this action because of an unexpected error.",
   recovery: {
     action: "Try again. If this continues, copy the fix prompt into your agent to investigate.",
     instructions:
-      "Reproduce the failed operation and inspect safe diagnostics to identify its cause. This error category does not establish a specific cause. Distinguish app configuration, service availability, and Executor defects before choosing a fix.",
+      "Reproduce the failed operation and inspect safe diagnostics to identify its cause. This error category does not establish a specific cause. Distinguish app configuration, service availability, and platform defects before choosing a fix.",
   },
   retryable: true,
 });

@@ -8,7 +8,7 @@ import { AuthBoundary } from "@executor-js/hosted-web/auth";
 import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
 import { useLocation } from "@tanstack/react-router";
 import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
-import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
+import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
 import { DashboardDocument } from "@executor-js/dashboard-start/shell";
 import styles from "@executor-js/hosted-web/styles?url";
 import { fontPreloads } from "@executor-js/ui/lib/fonts";
@@ -19,7 +19,6 @@ import { serverDocument } from "../document.ts";
 export const Route = createRootRoute({
   head: () => ({
     links: [...fontPreloads, { rel: "stylesheet", href: styles }],
-    meta: [{ title: "Executor" }],
   }),
   shellComponent: DashboardDocument,
   // Sign-in is decided before any HTML; the browser's session check only revalidates.
@@ -37,7 +36,7 @@ function Root() {
   const session = useAtomValue(sessionAtom);
   const { pathname } = useLocation();
   return (
-    <DocumentTitleProvider fallbackTitle={productTitle(hostedPageTitle(pathname))}>
+    <DocumentTitleProvider fallbackTitle={hostedPageTitle(pathname)}>
       <AuthBoundary>
         <OrganizationResumeBoundary>
           <Outlet />

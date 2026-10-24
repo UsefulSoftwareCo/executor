@@ -38,6 +38,7 @@ import {
   HostedAccountDialog,
   type AccountDialogKind,
 } from "./account-actions.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /**
  * The apps offered first, by catalog ID, when the catalog lists them. Google signs in to every
@@ -112,6 +113,7 @@ const searchRank = (item: SetupApp, term: string) => {
  * one height and one button width, so connecting never moves the list.
  */
 export function AccountsSetupPage() {
+  const brand = useProductBrand();
   const { organization } = useOrganizationRoute();
   // When the assistant connected first, its handoff rides in the URL to the first prompt.
   const handoff = setupHandoff(parseAccountsSetupSearch(useLocation().search));
@@ -143,7 +145,7 @@ export function AccountsSetupPage() {
         >
           <SetupTitle id="accounts-setup-title">Connect your accounts</SetupTitle>
           <SetupLede>
-            Your assistant uses these through Executor. Connect the tools you work in now
+            Your assistant uses these through {brand.name}. Connect the tools you work in now
             <span className="max-sm:hidden"> — you can add more any time</span>.
           </SetupLede>
           <SetupCard className="flex min-h-60 flex-1 flex-col sm:h-[620px] sm:flex-initial">
@@ -225,6 +227,7 @@ function LoadingList() {
  * whole list.
  */
 function NotListed({ query }: { readonly query: string }) {
+  const brand = useProductBrand();
   return (
     <div
       role="note"
@@ -236,7 +239,7 @@ function NotListed({ query }: { readonly query: string }) {
       </p>
       <p className="mt-0.5">
         Once your assistant is connected, ask it to add{" "}
-        {query === "" ? "any app or API" : `“${query}”`} through Executor.
+        {query === "" ? "any app or API" : `“${query}”`} through {brand.name}.
       </p>
     </div>
   );

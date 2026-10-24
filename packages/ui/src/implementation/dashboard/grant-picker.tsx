@@ -15,6 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { productNamed } from "../../contracts/product-brand.ts";
 
 /** A consent form needs at least one usable selection, or explicit all-app access. */
 export const hasGrantSelection = (policy: GrantPolicy) =>
@@ -37,6 +39,7 @@ export function GrantPicker<E>({
   disabled?: boolean;
   emptyAction?: ReactNode;
 }) {
+  const brand = useProductBrand();
   const approvalsId = useId();
   return (
     <div className="grant-picker flex flex-col gap-4">
@@ -107,11 +110,11 @@ export function GrantPicker<E>({
                     <section
                       key={app.id}
                       className="grant-app border border-border rounded-[10px] overflow-hidden min-w-0"
-                      aria-label={app.name}
+                      aria-label={productNamed(app.name, brand)}
                     >
                       <div className="grant-app-heading flex items-center justify-between gap-4 p-[16px] max-[480px]:p-[12px] max-[480px]:gap-2">
                         <div className="grant-app-title flex flex-col gap-1 min-w-0 [&_strong]:text-[14px] [&_strong]:font-semibold [&_strong]:overflow-hidden [&_strong]:text-ellipsis [&_strong]:whitespace-nowrap [&_>_span]:text-[11px] [&_>_span]:text-muted-foreground">
-                          <strong>{app.name}</strong>
+                          <strong>{productNamed(app.name, brand)}</strong>
                           <span>
                             {selected?.tools.kind === "all"
                               ? "All current and future tools"
@@ -132,7 +135,7 @@ export function GrantPicker<E>({
                           }}
                         >
                           <SelectTrigger
-                            aria-label={`Access to ${app.name}`}
+                            aria-label={`Access to ${productNamed(app.name, brand)}`}
                             className="grant-app-select min-w-35 flex-none text-[12px] max-[740px]:text-[12px] max-[480px]:min-w-30"
                           >
                             <SelectValue />
@@ -146,7 +149,7 @@ export function GrantPicker<E>({
                       </div>
                       {selected?.tools.kind === "selected" && (
                         <ToolSelection
-                          appName={app.name}
+                          appName={productNamed(app.name, brand)}
                           tools={tools(app.id)}
                           names={selected.tools.names}
                           disabled={disabled}
@@ -176,13 +179,13 @@ export function GrantPicker<E>({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="browser">Require approval in Executor</SelectItem>
+                    <SelectItem value="browser">Require approval in {brand.name}</SelectItem>
                     <SelectItem value="client">Allow this client to approve</SelectItem>
                   </SelectContent>
                 </Select>
                 <p>
                   {policy.approval === "browser"
-                    ? "Calls that need approval wait for you in the Executor browser."
+                    ? `Calls that need approval wait for you in the ${brand.name} browser.`
                     : "This client can answer approval requests, including through native prompts."}
                 </p>
               </div>

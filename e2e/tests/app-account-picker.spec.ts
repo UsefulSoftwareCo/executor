@@ -289,7 +289,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
           ),
         ).toBe(true);
         yield* linkFailure.release;
-        yield* failureShown("A failed link is reported in place", "Can’t reach Executor");
+        yield* failureShown("A failed link is reported in place", "Can’t reach the server");
         yield* shows("mailboxes", "A failed link keeps the current links", [
           ["First account", true],
           ["Second account", true],
@@ -374,7 +374,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
         );
         yield* unlinkFailure.requested;
         yield* unlinkFailure.release;
-        yield* failureShown("A failed unlink is reported in place", "Can’t reach Executor");
+        yield* failureShown("A failed unlink is reported in place", "Can’t reach the server");
         yield* shows("mailboxes", "A failed unlink keeps the account linked", allMailboxes);
         expect(yield* links).toEqual(
           pairs(

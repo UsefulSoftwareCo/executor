@@ -84,7 +84,7 @@ const ManagedWebhook = Schema.Struct({
 });
 
 const refusedRemoval =
-  "Executor could not remove this registration: it is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
+  "Could not remove this registration: this instance is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
 const selectedIds = (selected: SelectedAccounts) =>
   Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value));
 /**

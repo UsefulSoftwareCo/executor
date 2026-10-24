@@ -606,7 +606,7 @@ export const compileOpenApiDocument = (
           if (!isImportedMethod(method))
             fail(
               "operation_method",
-              `Executor does not send the HTTP method ${method}. It imports ${fixedMethods32.join(", ")} operations.`,
+              `The HTTP method ${method} is not sent. Only ${fixedMethods32.join(", ")} operations are imported.`,
             );
           const operationMethods: GeneratedSecrets[] = [];
           const resolved = withoutStreamAlternatives(
@@ -1003,7 +1003,7 @@ export const compileOpenApiDocument = (
           throw new TemplateError({ code: first.code, reason: first.reason, skipped: left });
         throw new TemplateError({
           code: "no_supported_operations",
-          reason: "Executor cannot import any operation in this API definition.",
+          reason: "No operation in this API definition can be imported.",
           skipped: left,
         });
       }
@@ -1052,14 +1052,14 @@ export const compileOpenApiDocument = (
         if (security.length === 0 || security.some(supported)) return undefined;
         return {
           code: "auth_method",
-          reason: `Executor cannot authenticate with any of its security requirements: ${security.map(unsupportedBy).join("; ")}.`,
+          reason: `None of its security requirements can be used to authenticate: ${security.map(unsupportedBy).join("; ")}.`,
         };
       };
       if (imported.every(({ operation }) => unusable(operation) !== undefined))
         throw new TemplateError({
           code: "no_supported_operations",
           reason:
-            "No operation can be called: each one is left out, streams its response, or needs authentication Executor does not support.",
+            "No operation can be called: each one is left out, streams its response, or needs authentication that is not supported.",
           skipped: inDefinitionOrder([
             ...skipped,
             ...imported.flatMap(({ operation, declared }) => {

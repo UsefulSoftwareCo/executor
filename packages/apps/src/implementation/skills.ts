@@ -57,7 +57,7 @@ const describe = (service: string, { reason, status }: SkillLoadFailed) => {
     case "document":
       return `A skill from ${service} is not a valid skill document.`;
     case "limit":
-      return `The skills from ${service} exceed Executor’s file or size limits.`;
+      return `The skills from ${service} exceed the file or size limits.`;
     case "changed":
       return `The skills on ${service} changed while they were being read.`;
     case "encoding":
@@ -198,7 +198,7 @@ type Remote = Effect.Success<ReturnType<typeof reader>>;
 const unreadable = () =>
   new SkillLoadFailed({
     reason: "request",
-    message: "GitHub returned a git response Executor could not read.",
+    message: "GitHub returned a git response that could not be read.",
   });
 const git = <A>(run: () => A | Promise<A>) =>
   // oxlint-disable-next-line executor/authored-code-through-adapter -- this module's git parsing
@@ -374,7 +374,7 @@ const cachedSkillDirectories = (
         () =>
           new SkillLoadFailed({
             reason: "request",
-            message: "Executor could not read or update the app cache for skills.",
+            message: "The app cache for skills could not be read or updated.",
           }),
       ),
     ),
@@ -450,7 +450,7 @@ const cachedCatalog = (
             () =>
               new SkillLoadFailed({
                 reason: "request",
-                message: "Executor could not read or update the app cache for skills.",
+                message: "The app cache for skills could not be read or updated.",
               }),
           ),
         ),

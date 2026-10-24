@@ -468,7 +468,7 @@ export const gitRoutes = (() => {
   }).pipe(
     Effect.catch((error) => {
       const headers = {
-        "www-authenticate": 'Basic realm="Executor Git"',
+        "www-authenticate": 'Basic realm="Git"',
         "cache-control": "no-store",
       };
       if (Schema.is(AppAccessDenied)(error) || Schema.is(AppNotFound)(error))

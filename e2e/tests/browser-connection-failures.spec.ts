@@ -18,7 +18,7 @@ import type { DriverFailed } from "../support/platform.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { batchPath } from "../support/read-batches.ts";
 
-const unreachable = (page: Page) => page.getByRole("heading", { name: "Can’t reach Executor" });
+const unreachable = (page: Page) => page.getByRole("heading", { name: "Can’t reach the server" });
 const connectionNotice = (page: Page) =>
   page
     .getByRole("alert")

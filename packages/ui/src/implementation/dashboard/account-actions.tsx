@@ -21,6 +21,8 @@ import {
 } from "./account-description.tsx";
 import { ProviderIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /** Account management lives on its list row; products supply the menu items they support. */
 export function AccountActionsMenu({
@@ -194,6 +196,7 @@ export function DisconnectAccountForm<E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly disabledReason?: string | undefined;
 }) {
+  const brand = useProductBrand();
   const { provider, apps } = data;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
@@ -202,8 +205,8 @@ export function DisconnectAccountForm<E>({
       <AccountDialogIdentity data={data} />
       <p className="text-sm text-muted-foreground">
         {data.revocation === "automatic"
-          ? `This deletes the saved credentials from Executor and asks ${provider.definition.name} to revoke its access.`
-          : `This deletes the saved credentials from Executor but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
+          ? `This deletes the saved credentials from ${brand.name} and asks ${provider.definition.name} to revoke its access.`
+          : `This deletes the saved credentials from ${brand.name} but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
         {apps.length === 0 && "No apps use this account."}
       </p>
       {apps.length > 0 && (
@@ -252,6 +255,7 @@ export function DisconnectAccountForm<E>({
 
 /** Links are managed on the app itself. */
 export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
+  const brand = useProductBrand();
   const { AppLink } = useDashboard();
   return apps.length === 0 ? (
     <EmptyState size="compact" heading="h3" title="No connected apps">
@@ -261,7 +265,7 @@ export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
     <div className="account-apps flex flex-col [&_>_a]:flex [&_>_a]:items-center [&_>_a]:justify-between [&_>_a]:gap-3 [&_>_a]:py-[13px] [&_>_a]:px-0 [&_>_a]:text-[14px] [&_>_a_+_a]:border-t [&_>_a_+_a]:border-t-border [&_>_a_>_span]:wrap-anywhere [&_>_a_>_span]:min-w-0 [&_>_a_>_svg]:shrink-0 [&_>_a_>_svg]:text-muted-foreground">
       {apps.map((app) => (
         <AppLink key={app.id} app={app.id} view="accounts">
-          <span>{app.name}</span>
+          <span>{appDisplayName(app, brand)}</span>
           <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={14} />
         </AppLink>
       ))}

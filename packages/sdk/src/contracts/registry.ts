@@ -89,12 +89,12 @@ const registryFailures = {
   "invalid-source": "The app source at this commit cannot be read as a public listing.",
   "invalid-manifest":
     "The app's package.json needs a valid package name in the publisher's scope and valid metadata.",
-  storage: "Executor could not read or write the public app catalog. Try again.",
-  network: "Executor could not reach the public app registry. Try again.",
+  storage: "Could not read or write the public app catalog. Try again.",
+  network: "Could not reach the public app registry. Try again.",
   status: "The public app registry returned an unexpected HTTP status.",
-  "invalid-response": "The public app registry returned a response Executor could not read.",
-  limit: "The public app registry's response exceeded Executor's size limit.",
-  unsupported: "This Executor reads a remote app registry and cannot publish to it.",
+  "invalid-response": "The public app registry returned a response that could not be read.",
+  limit: "The public app registry's response exceeded the size limit.",
+  unsupported: "This instance reads a remote app registry and cannot publish to it.",
 } as const;
 /** Safe public-catalog failures. */
 export const RegistryError = ApiError.define({

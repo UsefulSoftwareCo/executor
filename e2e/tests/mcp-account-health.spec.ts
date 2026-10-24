@@ -142,7 +142,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
             status: "check_failed",
             info: null,
             message:
-              "This MCP server answers without credentials, so Executor can't check this account. A refused key will show up when a tool is called.",
+              "This MCP server answers without credentials, so this account can't be checked. A refused key will show up when a tool is called.",
           });
         // When the attempt without credentials fails for another reason, the check cannot tell. A
         // server that never answers it uses up the check's time, and the check still says why.
@@ -161,7 +161,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
           expect(yield* check(acceptedToken), JSON.stringify(answer)).toEqual({
             status: "check_failed",
             info: null,
-            message: `The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. ${reason}`,
+            message: `The MCP server accepted the credentials, but the same check without them failed, so it isn't clear whether it requires them. ${reason}`,
           });
         }
         // An author's longer timeout cannot outlast the account check's deadline.
@@ -170,7 +170,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
           status: "check_failed",
           info: null,
           message:
-            "The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. The MCP server did not respond in time while connecting.",
+            "The MCP server accepted the credentials, but the same check without them failed, so it isn't clear whether it requires them. The MCP server did not respond in time while connecting.",
         });
 
         // Service answers map to the same account statuses as any other provider check.
@@ -209,7 +209,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
             status: "check_failed",
             info: null,
             message:
-              "The MCP server returned a response Executor could not use while connecting, such as an unreadable message or an address on another origin.",
+              "The MCP server returned an unusable response while connecting, such as an unreadable message or an address on another origin.",
           });
         }
         // A JSON-RPC error is the server's answer, not a server Executor could not reach.

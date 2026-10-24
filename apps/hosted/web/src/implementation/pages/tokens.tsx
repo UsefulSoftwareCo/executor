@@ -25,7 +25,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@executor-js/ui/components/dialog";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import {
   Select,
   SelectContent,
@@ -73,7 +73,7 @@ export function TokensPage({
           name: "Organization you left",
           logo: null,
         });
-  useDocumentTitle(productTitle(tokensTitle));
+  useDocumentTitle(tokensTitle);
   const [offset, setOffset] = useState(0);
   const query = apiKeysAtom(offset);
   const keys = useAtomValue(query);
@@ -376,14 +376,16 @@ export function TokensPage({
                 Leave blank for a token that does not expire.
               </span>
             </label>
-            <a
-              href={tokenDocsUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
-            >
-              About personal access tokens<span className="sr-only"> (opens in a new tab)</span>
-            </a>
+            {tokenDocsUrl !== undefined && (
+              <a
+                href={tokenDocsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+              >
+                About personal access tokens<span className="sr-only"> (opens in a new tab)</span>
+              </a>
+            )}
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}

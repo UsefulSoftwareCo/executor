@@ -148,7 +148,7 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect(deleted.stderr).toContain("the app's main branch cannot be deleted");
           const retained = yield* tools.git(["push", "origin", "HEAD:refs/heads/__executor/x"]);
           expect(retained.code).not.toBe(0);
-          expect(retained.stderr).toContain("Executor keeps this ref for retained versions");
+          expect(retained.stderr).toContain("This ref is kept for retained versions");
           expect(yield* remoteMain).toBe((yield* tools.git(["rev-parse", "HEAD"])).stdout.trim());
 
           // With the large files removed, the history holds more than a Worker reads in one Git

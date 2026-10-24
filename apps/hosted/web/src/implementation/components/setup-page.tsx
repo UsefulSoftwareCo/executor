@@ -4,15 +4,18 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@executor-js/ui/components/button";
 import { cn } from "@executor-js/ui/lib/utils";
 import { SessionMenu } from "./auth.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
 /**
- * Onboarding pages are one 600px column under the Executor mark, with their actions right below
+ * Onboarding pages are one 600px column under the product mark, with their actions right below
  * the step. Identity controls stay outside the instructions: wide screens pin them to the bottom
  * corner; narrower ones place them above the column. The column starts at a fixed top, so a step
  * that grows or shrinks never moves what is above it. A step that keeps its own content scrolling,
  * such as a list, passes `h-dvh` so the column ends at the bottom of the screen.
  */
 export function SetupPage({ className, children }: ComponentProps<"main">) {
+  const brand = useProductBrand();
   return (
     <main
       className={cn(
@@ -25,8 +28,8 @@ export function SetupPage({ className, children }: ComponentProps<"main">) {
       </div>
       <div className="flex min-h-0 w-full max-w-[600px] flex-1 flex-col">
         <div className="mb-8 flex items-center gap-2 font-mono text-[15px] max-sm:mb-6">
-          <img src="/favicon.png" alt="" width={20} height={20} className="size-5" />
-          <span>executor</span>
+          <img src={brand.logo} alt="" width={20} height={20} className="size-5" />
+          <span>{productWordmark(brand)}</span>
         </div>
         {children}
       </div>

@@ -76,7 +76,7 @@ export type GroupConflict = typeof GroupConflict.Type;
 export const GroupsUnavailable = ApiError.define({
   tag: "GroupsUnavailable",
   status: 503,
-  message: "Executor could not read or save groups. Try again.",
+  message: "Groups could not be read or saved. Try again.",
 });
 export type GroupsUnavailable = typeof GroupsUnavailable.Type;
 /** Lazy request-owned database acquisition; an isolate must never retain a live client. */

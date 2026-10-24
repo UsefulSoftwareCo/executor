@@ -23,7 +23,7 @@ export type OrganizationRemoved = typeof OrganizationRemoved.Type;
 export const OrganizationRemovalUnavailable = ApiError.define({
   tag: "OrganizationRemovalUnavailable",
   status: 503,
-  message: "Executor could not start or read the organization's removal. Try again.",
+  message: "The organization's removal could not be started or read. Try again.",
 });
 export type OrganizationRemovalUnavailable = typeof OrganizationRemovalUnavailable.Type;
 

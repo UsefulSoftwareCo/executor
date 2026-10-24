@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@executor-js/ui/components/dialog";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
@@ -33,6 +33,8 @@ import { groupsAtom, saveGroupAtom, removeGroupAtom } from "../../contracts/grou
 import { appError, type HostedError } from "../../contracts/errors.ts";
 import { GroupConflict } from "@executor-js/hosted-server/groups";
 import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/alert";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
 
 /** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
 export function GroupsPage({ id }: { readonly id?: string }) {
@@ -40,7 +42,7 @@ export function GroupsPage({ id }: { readonly id?: string }) {
   const result = useAtomValue(groupsAtom(organization));
   const refresh = useAtomRefresh(groupsAtom(organization));
   const data = AsyncResult.value(result);
-  useDocumentTitle(productTitle(groupsTitle));
+  useDocumentTitle(groupsTitle);
   return (
     <GroupsFrame>
       {AsyncResult.isFailure(result) && <HostedFailure cause={result.cause} retry={refresh} />}
@@ -577,6 +579,7 @@ function GroupEditor({
 }
 
 function GroupApps({ group }: { readonly group: string }) {
+  const brand = useProductBrand();
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   return (
     <section className="mt-7 space-y-3">
@@ -598,7 +601,7 @@ function GroupApps({ group }: { readonly group: string }) {
                   to="/org/$organizationSlug/apps/$appId"
                   params={{ organizationSlug, appId: app.id }}
                 >
-                  {app.name}
+                  {appDisplayName(app, brand)}
                 </Link>
               ))}
             </div>

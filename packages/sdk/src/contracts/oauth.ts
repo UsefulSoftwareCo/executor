@@ -251,7 +251,7 @@ const withServiceError = (
 
 const serviceUnavailable = {
   title: "The connected service’s sign-in is unavailable",
-  description: "Executor couldn’t reach the service, which may be down or busy.",
+  description: "Couldn’t reach the service, which may be down or busy.",
   recovery: {
     action: "Try again in a moment, or check the service’s status if this continues.",
     instructions:
@@ -299,23 +299,23 @@ const rateLimited = (
       retryAfter === undefined
         ? `${copy.action} shortly.`
         : `${copy.action} after ${retryTime(retryAfter)}.`,
-    instructions: `The service answered HTTP 429 Too Many Requests: Executor reached it, and it is limiting requests. ${
+    instructions: `The service answered HTTP 429 Too Many Requests: the request reached it, and it is limiting requests. ${
       retryAfter === undefined
         ? "It did not say how long to wait, so retry after a short pause."
-        : `Its Retry-After header asked Executor to wait until ${retryAfter.toISOString()}, so retry only after that.`
+        : `Its Retry-After header asked for a wait until ${retryAfter.toISOString()}, so retry only after that.`
     } ${copy.instructions} Do not retry in a loop, and do not change the app’s OAuth configuration or replace accounts for this failure. If it continues, check the service’s documented rate limits for its OAuth endpoints.`,
   },
   agentFixable: false,
 });
 
 const incompatibleResponse = {
-  title: "Executor could not use the service’s response",
+  title: "Couldn’t use the service’s response",
   description:
-    "This is a compatibility problem between Executor and the service, not a problem with your account.",
+    "This is a compatibility problem between this instance and the service, not a problem with your account.",
   recovery: {
-    action: "Retrying won’t help until Executor is fixed.",
+    action: "Retrying won’t help until this is fixed.",
     instructions:
-      "Compare the service’s OAuth response at the recorded stage with the fields Executor and the app’s provider definition require. Identify the precise incompatibility and whether Executor or the service must change. Do not weaken state, PKCE, issuer, or token validation to work around it.",
+      "Compare the service’s OAuth response at the recorded stage with the fields this instance and the app’s provider definition require. Identify the precise incompatibility and whether this instance or the service must change. Do not weaken state, PKCE, issuer, or token validation to work around it.",
   },
   agentFixable: false,
   report: "Incompatible OAuth response.",
@@ -520,15 +520,15 @@ export const OAuthSetupFailed = UserFacingError.define({
   recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
   presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter }) => {
     // Forms that open client entry already show the callback, so only the fix prompt repeats it.
-    const callback = callbackUrl === undefined ? "" : ` Executor’s callback URL is ${callbackUrl}.`;
+    const callback =
+      callbackUrl === undefined ? "" : ` This deployment’s callback URL is ${callbackUrl}.`;
     return withCause(
       (
         {
           service_unavailable: serviceUnavailable,
           rate_limited: {
             ...rateLimited(retryAfter, {
-              description:
-                "The service asked Executor to wait before sending more sign-in requests.",
+              description: "The service asked for a pause before more sign-in requests.",
               action: "Try again",
               instructions:
                 "Starting the sign-in again needs no change to the app or its OAuth client.",
@@ -556,17 +556,17 @@ export const OAuthSetupFailed = UserFacingError.define({
           discovery_blocked: {
             title: "OAuth address blocked",
             description:
-              "This Executor instance doesn’t allow requests to an address in the app’s OAuth settings.",
+              "This instance doesn’t allow requests to an address in the app’s OAuth settings.",
             recovery: {
               action: "Review the app’s server URL and this instance’s network policy.",
               instructions:
-                "Inspect the app’s OAuth discovery URL and advertised endpoints against this Executor instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
+                "Inspect the app’s OAuth discovery URL and advertised endpoints against this instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
             },
           },
           resource_mismatch: {
             title: "Server URL does not match its sign-in settings",
             description:
-              "The service says its sign-in belongs to another address, so Executor won’t use it.",
+              "The service says its sign-in belongs to another address, so it won’t be used.",
             recovery: {
               action: "Check the app’s server URL.",
               instructions:
@@ -576,12 +576,12 @@ export const OAuthSetupFailed = UserFacingError.define({
           // RFC 7591 section 3.2.2: registration itself failed, so no client exists yet.
           client_not_approved: {
             title: "Callback URL refused during registration",
-            description: "This service doesn’t accept Executor’s callback URL.",
+            description: "This service doesn’t accept this deployment’s callback URL.",
             recovery: {
               action:
                 "Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
               instructions:
-                "Executor’s dynamic client registration request was refused with invalid_redirect_uri (RFC 7591 section 3.2.2): the service does not accept Executor’s callback URL as a redirect URI. Read the service’s response, when one is shown, for the rule it applies. If the service lets users create their own OAuth apps, explain how to create one with this callback URL and enter its client ID and secret in Executor. Otherwise identify the service’s approval or allowlist process and prepare a request that includes Executor’s callback URL. Do not repeatedly register clients." +
+                "The dynamic client registration request was refused with invalid_redirect_uri (RFC 7591 section 3.2.2): the service does not accept this deployment’s callback URL as a redirect URI. Read the service’s response, when one is shown, for the rule it applies. If the service lets users create their own OAuth apps, explain how to create one with this callback URL and enter its client ID and secret in this deployment. Otherwise identify the service’s approval or allowlist process and prepare a request that includes this deployment’s callback URL. Do not repeatedly register clients." +
                 callback,
             },
             agentFixable: false,
@@ -595,7 +595,7 @@ export const OAuthSetupFailed = UserFacingError.define({
               action:
                 "Create an OAuth app there with this redirect URL, then enter its client ID and secret.",
               instructions:
-                "The service’s dynamic client registration endpoint requires authorization, such as an RFC 7591 initial access token, which Executor does not have. Explain how to create an OAuth client in the service’s developer settings with Executor’s callback URL, then enter its client ID and secret in Executor. Do not repeatedly register clients or ask for the service’s registration credentials." +
+                "The service’s dynamic client registration endpoint requires authorization, such as an RFC 7591 initial access token, which this deployment does not have. Explain how to create an OAuth client in the service’s developer settings with this deployment’s callback URL, then enter its client ID and secret in this deployment. Do not repeatedly register clients or ask for the service’s registration credentials." +
                 callback,
             },
             agentFixable: false,
@@ -604,26 +604,26 @@ export const OAuthSetupFailed = UserFacingError.define({
           // its allowed redirect URIs; with grant types matched to the server's metadata, that
           // allowlist is the likeliest cause.
           client_metadata_rejected: {
-            title: "Service did not accept Executor’s callback URL",
+            title: "Service did not accept this deployment’s callback URL",
             description:
-              "Executor’s callback URL is most likely not among the service’s allowed redirect URIs.",
+              "This deployment’s callback URL is most likely not among the service’s allowed redirect URIs.",
             recovery: {
               action:
                 "Ask the service’s administrator to allow it, or create an OAuth app there and enter its client ID and secret.",
               instructions:
-                "The registration endpoint returned invalid_client_metadata (RFC 7591 section 3.2.2). Services with a redirect URI allowlist, such as Cloudflare Access, return it when the callback URL is not allowed. Check the service’s allowed redirect URIs for Executor’s callback URL first, then compare the other registered fields: grant types, response types, token endpoint authentication method and scopes. Do not repeatedly register clients." +
+                "The registration endpoint returned invalid_client_metadata (RFC 7591 section 3.2.2). Services with a redirect URI allowlist, such as Cloudflare Access, return it when the callback URL is not allowed. Check the service’s allowed redirect URIs for this deployment’s callback URL first, then compare the other registered fields: grant types, response types, token endpoint authentication method and scopes. Do not repeatedly register clients." +
                 callback,
             },
             agentFixable: false,
           },
           registration_rejected: {
-            title: "Service rejected Executor’s registration",
-            description: "Without an OAuth client for this service, Executor can’t start sign-in.",
+            title: "Service rejected this deployment’s registration",
+            description: "Without an OAuth client for this service, sign-in can’t start.",
             recovery: {
               action:
                 "Create an OAuth app there with this redirect URL and enter its client ID and secret, or copy the fix prompt to investigate.",
               instructions:
-                "Compare Executor’s client registration request, including its redirect URI, grant types, token endpoint authentication method, and scopes, with the service’s registration policy. Determine whether the service needs a pre-registered client or rejects part of the request. Do not repeatedly register clients." +
+                "Compare this deployment’s client registration request, including its redirect URI, grant types, token endpoint authentication method, and scopes, with the service’s registration policy. Determine whether the service needs a pre-registered client or rejects part of the request. Do not repeatedly register clients." +
                 callback,
             },
           },
@@ -641,17 +641,16 @@ export const OAuthSetupFailed = UserFacingError.define({
           },
           invalid_redirect: {
             title: "Callback URL not valid",
-            description: "Executor’s callback URL is malformed or not allowed on this instance.",
+            description: "The callback URL is malformed or not allowed on this instance.",
             recovery: {
-              action: "Check this Executor instance’s public address.",
+              action: "Check this instance’s public address.",
               instructions:
-                "Compare Executor’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
+                "Compare this instance’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
             },
           },
           token_exchange: {
             title: "Account connection failed",
-            description:
-              "Executor couldn’t get an access token from the service for this OAuth client.",
+            description: "Couldn’t get an access token from the service for this OAuth client.",
             recovery: {
               action: "Try connecting again, or copy the fix prompt if this continues.",
               instructions:
@@ -661,11 +660,11 @@ export const OAuthSetupFailed = UserFacingError.define({
           },
           unsupported: {
             title: "Sign-in method unavailable",
-            description: "Executor doesn’t support the OAuth setup this app or service uses.",
+            description: "The OAuth setup this app or service uses isn’t supported.",
             recovery: {
               action: "Review the app’s sign-in method and OAuth settings.",
               instructions:
-                "Compare the app’s provider definition with the service’s supported OAuth flow and Executor’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
+                "Compare the app’s provider definition with the service’s supported OAuth flow and this instance’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
             },
           },
         } satisfies Record<typeof reason, ErrorPresentation>
@@ -750,17 +749,15 @@ export const OAuthCompletionFailed = UserFacingError.define({
         {
           callback_malformed: restart({
             title: "Sign-in response not recognised",
-            description:
-              "The service sent the browser back to Executor with an incomplete or altered address.",
+            description: "The service sent the browser back with an incomplete or altered address.",
             instructions:
-              "The callback URL had no single valid state value, or carried a fragment or credentials. Start a fresh sign-in from Executor; never replay or edit a callback URL.",
+              "The callback URL had no single valid state value, or carried a fragment or credentials. Start a fresh sign-in from this instance; never replay or edit a callback URL.",
           }),
           sign_in_not_found: restart({
             title: "Sign-in not found",
-            description:
-              "Executor has no record of this sign-in, which may have started at another Executor address.",
+            description: "This sign-in has no record here. It may have started at another address.",
             instructions:
-              "No pending sign-in matches the callback's state. The sign-in may have started on another Executor instance or origin. Start a fresh sign-in from the Executor instance that should own the account; never replay a callback.",
+              "No pending sign-in matches the callback's state. The sign-in may have started on another instance or origin. Start a fresh sign-in from the instance that should own the account; never replay a callback.",
           }),
           sign_in_replaced: restart({
             title: "Sign-in replaced",
@@ -770,11 +767,13 @@ export const OAuthCompletionFailed = UserFacingError.define({
           }),
           redirect_mismatch: {
             title: "Sign-in returned to a different address",
-            description: "A proxy or the service may have changed the callback URL Executor sent.",
+            description:
+              "A proxy or the service may have changed the callback URL this instance sent.",
             recovery: {
-              action: "Check Executor’s public address and the service’s allowed redirect URLs.",
+              action:
+                "Check this instance’s public address and the service’s allowed redirect URLs.",
               instructions:
-                "Compare the callback URL Executor registered for this sign-in with the address the browser returned to, including origin, path and query parameters. Check the instance’s public origin and any proxy or relay rewriting the callback. Preserve exact redirect matching.",
+                "Compare the callback URL this instance registered for this sign-in with the address the browser returned to, including origin, path and query parameters. Check the instance’s public origin and any proxy or relay rewriting the callback. Preserve exact redirect matching.",
             },
           },
           sign_in_expired: restart({
@@ -860,20 +859,20 @@ export const OAuthCompletionFailed = UserFacingError.define({
             },
           },
           registered_client_rejected: restart({
-            title: "Service rejected Executor’s client",
+            title: "Service rejected this deployment’s client",
             description:
-              "The service no longer accepts the client Executor registered earlier, so a new sign-in registers a fresh one.",
+              "The service no longer accepts the client registered earlier, so a new sign-in registers a fresh one.",
             instructions:
-              "The token endpoint answered invalid_client for a client Executor registered in an earlier sign-in and reused. Executor removed that saved registration, so the next sign-in registers a fresh client. If the fresh client is rejected too, the failure is reported as registered_client_incompatible.",
+              "The token endpoint answered invalid_client for a client registered in an earlier sign-in and reused. That saved registration was removed, so the next sign-in registers a fresh client. If the fresh client is rejected too, the failure is reported as registered_client_incompatible.",
           }),
           registered_client_incompatible: {
-            title: "Service rejected a new Executor client",
+            title: "Service rejected a newly registered client",
             description:
-              "The service refused the client Executor registered moments ago, so trying again would fail the same way.",
+              "The service refused the client registered moments ago, so trying again would fail the same way.",
             recovery: {
               action: "Copy the fix prompt for your agent to find out why.",
               instructions:
-                "The token endpoint answered invalid_client for a client Executor registered moments earlier in the same sign-in. Executor discarded it. Compare the client authentication method Executor registered, and how it sends the client ID and secret, with what the service's token endpoint accepts. Check the service's registration response for a different token_endpoint_auth_method. Do not ask the user for client details; the client was never theirs.",
+                "The token endpoint answered invalid_client for a client registered moments earlier in the same sign-in. That client was discarded. Compare the client authentication method that was registered, and how it sends the client ID and secret, with what the service's token endpoint accepts. Check the service's registration response for a different token_endpoint_auth_method. Do not ask the user for client details; the client was never theirs.",
             },
           },
           authorization_code_rejected: restart({
@@ -893,12 +892,11 @@ export const OAuthCompletionFailed = UserFacingError.define({
           },
           destination_blocked: {
             title: "OAuth address blocked",
-            description:
-              "This Executor instance doesn’t allow requests to the service’s token endpoint.",
+            description: "This instance doesn’t allow requests to the service’s token endpoint.",
             recovery: {
               action: "Review the app’s OAuth endpoints and this instance’s network policy.",
               instructions:
-                "Inspect the app's token endpoint against this Executor instance's network policy. Correct unintended addresses. Do not bypass address validation or weaken network protections.",
+                "Inspect the app's token endpoint against this instance's network policy. Correct unintended addresses. Do not bypass address validation or weaken network protections.",
             },
           },
           service_unavailable: {
@@ -911,7 +909,7 @@ export const OAuthCompletionFailed = UserFacingError.define({
           },
           // The sign-in was claimed before the token request, so only a new one can finish.
           rate_limited: rateLimited(retryAfter, {
-            description: "The service asked Executor to wait before sending more sign-in requests.",
+            description: "The service asked for a pause before more sign-in requests.",
             action: "Start the connection again",
             instructions:
               "The token endpoint refused the code exchange for now, and this sign-in has ended: start a fresh one, and never replay the callback.",
@@ -919,18 +917,18 @@ export const OAuthCompletionFailed = UserFacingError.define({
           incompatible_response: incompatibleResponse,
           unsupported: {
             title: "Sign-in method unavailable",
-            description: "The service issued a kind of access token that Executor can’t use.",
+            description: "The service issued a kind of access token that can’t be used here.",
             recovery: {
               action:
                 "Retrying won’t help unless the service can issue standard access tokens for this app.",
               instructions:
-                "Check the recorded response field. Executor sends access tokens as Bearer tokens and cannot create DPoP proofs (RFC 9449). Determine whether the service can issue Bearer tokens for this client, and configure that if it can. Do not strip sender constraints from tokens to work around it.",
+                "Check the recorded response field. This instance sends access tokens as Bearer tokens and cannot create DPoP proofs (RFC 9449). Determine whether the service can issue Bearer tokens for this client, and configure that if it can. Do not strip sender constraints from tokens to work around it.",
             },
             agentFixable: false,
           },
           oauth_unavailable: {
             title: "OAuth sign-in unavailable",
-            description: "This Executor instance isn’t configured for OAuth.",
+            description: "This instance isn’t configured for OAuth.",
             recovery: {
               action: "Ask the instance administrator to enable OAuth sign-in.",
               instructions:
@@ -943,7 +941,7 @@ export const OAuthCompletionFailed = UserFacingError.define({
           scope_exceeded: {
             title: "The service granted more access than allowed",
             description:
-              "The service granted this sign-in access beyond what this Executor instance allows for its own OAuth client. Executor rejected the sign-in and saved nothing. When the instance’s client supports revocation, Executor also asks the service to revoke that access.",
+              "The service granted this sign-in access beyond what this instance allows for its own OAuth client. The sign-in was rejected and nothing was saved. When the instance’s client supports revocation, the service is also asked to revoke that access.",
             recovery: {
               action: "Ask the instance administrator to check the OAuth client’s scopes.",
               instructions:
@@ -1041,9 +1039,9 @@ export const OAuthReconnectRequired = UserFacingError.define({
             : `The app’s “${appRequirement}” account needs to reconnect`,
         description:
           (reason === "renewal_interrupted"
-            ? "Executor stopped while renewing this account’s access, before it could save the result. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
+            ? "Renewing this account’s access stopped before the result was saved. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
             : reason === "scope_exceeded"
-              ? "Renewing this account’s access returned more access than this Executor instance allows for its own OAuth client, so Executor stopped using this sign-in. When the instance’s client supports revocation, Executor also asks the service to revoke that access."
+              ? "Renewing this account’s access returned more access than this instance allows for its own OAuth client, so this sign-in is no longer used. When the instance’s client supports revocation, the service is also asked to revoke that access."
               : "The saved sign-in can no longer be used for this account.") +
           (appRequirement === undefined
             ? ""
@@ -1115,7 +1113,7 @@ export const OAuthRenewalFailed = UserFacingError.define({
           service_unavailable: {
             ...serviceUnavailable,
             description:
-              "Executor could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.",
+              "Could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.",
             recovery: {
               action: "Try again in a moment. If this continues, check the service’s status.",
               instructions:
@@ -1125,14 +1123,14 @@ export const OAuthRenewalFailed = UserFacingError.define({
           incompatible_response: {
             ...incompatibleResponse,
             description:
-              "The service answered Executor’s request to renew this account’s access, but its response did not match what Executor expects. The saved sign-in is kept; this is a compatibility problem, not a problem with your account.",
+              "The service answered the request to renew this account’s access, but its response did not match what was expected. The saved sign-in is kept; this is a compatibility problem, not a problem with your account.",
             recovery: {
               ...incompatibleResponse.recovery,
               action: "Investigate the incompatible response before retrying renewal.",
             },
           },
           client_rejected: {
-            title: "The service rejected Executor’s OAuth client",
+            title: "The service rejected this deployment’s OAuth client",
             description:
               "The service rejected the OAuth client used for renewal. Check client configuration and how the renewal request authenticates. The account’s sign-in is kept.",
             recovery: {
@@ -1145,7 +1143,7 @@ export const OAuthRenewalFailed = UserFacingError.define({
           renewal_rejected: {
             title: "The service refused to renew this account’s access",
             description:
-              "The service refused Executor’s request to renew this account’s access without saying the sign-in has ended. The saved sign-in is kept, and Executor tries again the next time the account is used.",
+              "The service refused the request to renew this account’s access without saying the sign-in has ended. The saved sign-in is kept, and renewal is tried again the next time the account is used.",
             recovery: {
               action:
                 "Inspect the renewal refusal. Retry a temporary failure; reconnect only when the service’s response indicates that it is needed.",

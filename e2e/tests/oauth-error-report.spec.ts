@@ -87,7 +87,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* browser.use("Use the product dark theme", (page) =>
           page.emulateMedia({ colorScheme: "dark" }),
         );
-        const title = "Executor could not use the service’s response";
+        const title = "Couldn’t use the service’s response";
         // Open the page in its own step: the dashboard is server-rendered, and the browser waits
         // for hydration only after a step, so a click in the same step can land on inert markup.
         yield* browser.use("Open the app's accounts", (page) =>

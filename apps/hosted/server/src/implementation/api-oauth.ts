@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { requestResourceOrigin } from "@executor-js/mcp-auth";
 import { ApiAuthentication } from "../contracts/auth.ts";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 
 /** RFC 9728 metadata for the organization management API. */
 export const apiProtectedResource = Effect.gen(function* () {
@@ -14,7 +15,7 @@ export const apiProtectedResource = Effect.gen(function* () {
     authorization_servers: [issuer],
     scopes_supported: ["executor", "offline_access"],
     bearer_methods_supported: ["header"],
-    resource_name: "Executor API",
+    resource_name: `${(yield* CurrentProductBrand).name} API`,
   });
 });
 

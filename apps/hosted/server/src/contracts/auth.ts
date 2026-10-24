@@ -21,11 +21,11 @@ export const Unauthorized = UserFacingError.define({
   tag: "Unauthorized",
   status: 401,
   title: "Sign-in required",
-  description: "Executor needs a valid sign-in session to complete this action.",
+  description: "A valid sign-in session is needed to complete this action.",
   recovery: {
-    action: "Sign in to Executor, then try the action again.",
+    action: "Sign in again, then try the action again.",
     instructions:
-      "Restore the user’s Executor session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around an Executor login failure.",
+      "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around a login failure.",
   },
 });
 /** Parsed Unauthorized failure. */
@@ -35,10 +35,10 @@ export const Forbidden = UserFacingError.define({
   tag: "Forbidden",
   status: 403,
   title: "Request not allowed",
-  description: "This request did not meet Executor’s access checks.",
+  description: "This request did not meet the access checks.",
   recovery: {
     action:
-      "Open Executor directly in your browser and try again. If it still fails, copy the fix prompt into your agent to investigate.",
+      "Open this site directly in your browser and try again. If it still fails, copy the fix prompt into your agent to investigate.",
     instructions:
       "Check the request’s browser origin and the access requirements for the failed operation. Correct a wrong origin or context through the supported configuration. Preserve server authorization and origin validation.",
   },
@@ -57,12 +57,12 @@ export const AuthenticationUnavailable = UserFacingError.define({
   tag: "AuthenticationUnavailable",
   status: 503,
   title: "Session check unavailable",
-  description: "Executor could not verify your sign-in session.",
+  description: "Your sign-in session could not be verified.",
   recovery: {
     action:
       "Try again. If this continues, copy the fix prompt into your agent to investigate the session check.",
     instructions:
-      "Check the availability of Executor’s session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
+      "Check the availability of the session verification service and its dependencies. Distinguish a service failure from an expired user session. Restore the failing dependency or identify the required instance action; do not treat unavailable verification as valid authorization.",
   },
   retryable: true,
 });

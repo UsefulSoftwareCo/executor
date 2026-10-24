@@ -330,7 +330,7 @@ return { items };`,
         };
         const recovery = {
           action:
-            "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.",
+            "Do not automatically repeat this call or duplicate its change. Its outcome could not be confirmed.",
           instructions: `This call may have changed data or may still complete. A safe read can show effects but cannot rule out later completion. Tell the user what is known and get their agreement before repeating the change. ${readAdvice(`${declared.action} ${declared.instructions}`)} Repairing the cause does not establish whether the earlier call completed.`,
         };
         expect(

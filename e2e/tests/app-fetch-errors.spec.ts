@@ -97,7 +97,7 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
         const upstream = yield* credentialUpstream;
         const host = `127.0.0.1:${upstream.port}`;
 
-        const message = `Executor refused a request to ${host}: apps on this instance can reach only public addresses, and ${host} is a private, loopback or internal address. The request was not sent.`;
+        const message = `Refused a request to ${host}: apps on this instance can reach only public addresses, and ${host} is a private, loopback or internal address. The request was not sent.`;
         const refusedCall = (tool: string, input: object) =>
           call(tool, input).pipe(
             Effect.tap((response) =>
@@ -170,7 +170,7 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
           source: "app",
           errorName: "FetchOptionUnsupported",
           code: "redirect",
-          message: `fetch option redirect: "error" is not supported by Executor's app runtime. Use "follow" or "manual", or omit redirect. To reject redirects, send redirect: "manual" and treat a 3xx response as the error.`,
+          message: `fetch option redirect: "error" is not supported by the app runtime. Use "follow" or "manual", or omit redirect. To reject redirects, send redirect: "manual" and treat a 3xx response as the error.`,
         });
         const cache = yield* option({ cache: "force-cache" });
         expect(cache.failure).toMatchObject({ errorName: "FetchOptionUnsupported", code: "cache" });
@@ -180,7 +180,7 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
           source: "app",
           errorName: "FetchOptionUnsupported",
           code: "integrity",
-          message: `fetch option integrity: "sha256-synthetic" is not supported by Executor's app runtime. Use "", or omit integrity. To check a digest, read the body and hash it with crypto.subtle.digest.`,
+          message: `fetch option integrity: "sha256-synthetic" is not supported by the app runtime. Use "", or omit integrity. To check a digest, read the body and hash it with crypto.subtle.digest.`,
         });
 
         // Supported values are sent.

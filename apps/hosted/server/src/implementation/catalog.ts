@@ -6,6 +6,7 @@ import type { HostEgress } from "@executor-js/utils/url-policy";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { executorCatalogEntry, executorCopyOrigin } from "./executor-catalog-entry.ts";
 import type { ClientMetadataSetting } from "./oauth-client-metadata.ts";
+import { productBrandConfig } from "@executor-js/utils/product-brand";
 
 /**
  * Read the official app feed at `feedUrl` on request, after this installation's built-in Executor
@@ -29,7 +30,10 @@ export const catalogLive = (
         clientMetadataUrl: Option.getOrUndefined(Option.map(clientMetadata, ({ url }) => url)),
         feedUrl,
       });
-      const executor = executorCatalogEntry(apiOrigin);
+      const executor = executorCatalogEntry(
+        apiOrigin,
+        yield* productBrandConfig.pipe(Effect.orDie),
+      );
       return HostedCatalog.of({
         list: official.list.pipe(
           Effect.map((entries) => [

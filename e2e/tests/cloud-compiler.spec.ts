@@ -81,7 +81,7 @@ export default defineApp({}, {tools: router({
         expect(exhausted.body).toEqual({
           _tag: "BuildMemoryExceeded",
           message:
-            "This app's build needed more memory than Executor currently allows. No new version was activated.",
+            "This app's build needed more memory than is currently allowed. No new version was activated.",
           recovery: {
             action:
               "This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
@@ -108,7 +108,7 @@ export default defineApp({}, {tools: router({
         yield* browser.use("Show the compiler memory failure and recovery", (page) =>
           page
             .getByText(
-              "This app's build needed more memory than Executor currently allows. No new version was activated. This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
+              "This app's build needed more memory than is currently allowed. No new version was activated. This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
               { exact: true },
             )
             .waitFor(),

@@ -109,15 +109,15 @@ export const StorageError = UserFacingError.define({
   tag: "StorageError",
   status: 500,
   fields: { mayHaveWritten: MayHaveWritten },
-  recorded: () => "Executor could not read or write its saved data.",
+  recorded: () => "Could not read or write saved data.",
   presentation: callPresentation(() => ({
-    title: "Executor storage unavailable",
-    description: "Executor could not read or write its saved data.",
+    title: "Storage unavailable",
+    description: "Could not read or write saved data.",
     recovery: {
       action:
-        "Try again. If this continues, copy the fix prompt into your agent to check Executor’s storage.",
+        "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
       instructions:
-        "Check Executor’s storage availability and safe diagnostics for the failed operation. Restore the failing storage dependency or identify the required instance action. Do not change the integration’s authentication to work around an Executor storage failure. Do not delete stored data.",
+        "Check this instance’s storage availability and safe diagnostics for the failed operation. Restore the failing storage dependency or identify the required instance action. Do not change the integration’s authentication to work around a storage failure on this instance. Do not delete stored data.",
     },
     retryable: true,
   })),
@@ -133,15 +133,15 @@ export const CredentialsError = UserFacingError.define({
   tag: "CredentialsError",
   status: 500,
   fields: { mayHaveWritten: MayHaveWritten },
-  recorded: () => "Executor could not securely read or write the saved credentials.",
+  recorded: () => "Could not securely read or write the saved credentials.",
   presentation: callPresentation(() => ({
     title: "Saved credentials unavailable",
-    description: "Executor could not securely read or write the saved credentials.",
+    description: "Could not securely read or write the saved credentials.",
     recovery: {
       action:
-        "Try again. If this continues, copy the fix prompt into your agent to check Executor’s credential storage.",
+        "Try again. If this continues, copy the fix prompt into your agent to check this instance’s credential storage.",
       instructions:
-        "Check Executor’s credential storage and encryption-key availability without exposing secret values. Restore access through the supported configuration. Do not overwrite credentials, rotate keys as a guess, or change integration code to mask an Executor storage failure.",
+        "Check this instance’s credential storage and encryption-key availability without exposing secret values. Restore access through the supported configuration. Do not overwrite credentials, rotate keys as a guess, or change integration code to mask a storage failure on this instance.",
     },
     retryable: true,
   })),
@@ -154,7 +154,7 @@ export const RequestInvalid = ApiError.define({
   tag: "RequestInvalid",
   status: 400,
   message:
-    "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+    "Could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
 });
 export type RequestInvalid = typeof RequestInvalid.Type;
 

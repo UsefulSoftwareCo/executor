@@ -9,6 +9,7 @@ import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/a
 import { Effect, Option, Redacted, Schema } from "effect";
 import { ApiKeyId, ApiKeyMetadata, CreateApiKey } from "../contracts/api-keys.ts";
 import { OrganizationId } from "../contracts/organization.ts";
+import { productBrandConfig } from "@executor-js/utils/product-brand";
 
 /** Better Auth owns the only key store and lifecycle for personal and saved Executor accounts. */
 export const apiKeys = apiKey({
@@ -152,11 +153,12 @@ export const browserPersonalTokenAccess = (
  * copy is returned redacted for encrypted SDK storage; rollback removes both records.
  * Fields follow the pinned api-key plugin's public schema and native create endpoint.
  */
-/** Names the key on the Tokens page so its owner knows where it came from. */
-export const managedKeyName = "Executor app (created automatically)";
 export const managedAccountKey = (organization: OrganizationId, user: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    // Names the key on the Tokens page so its owner knows where it came from.
+    const { name: product } = yield* productBrandConfig.pipe(Effect.orDie);
+    const managedKeyName = `${product} app (created automatically)`;
     const token = Redacted.make(`exp_${generateRandomString(64)}`);
     const hash = yield* Effect.tryPromise({
       try: () => defaultKeyHasher(Redacted.value(token)),

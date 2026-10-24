@@ -221,7 +221,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
         ).toBe(0);
         yield* held.release;
         yield* browser.use("The new catalog's failure is visible", (page) =>
-          page.getByRole("alert", { name: "Can’t reach Executor", exact: true }).waitFor(),
+          page.getByRole("alert", { name: "Can’t reach the server", exact: true }).waitFor(),
         );
         yield* browser.use("Retry Work", (page) =>
           page.getByRole("button", { name: "Try again", exact: true }).click(),

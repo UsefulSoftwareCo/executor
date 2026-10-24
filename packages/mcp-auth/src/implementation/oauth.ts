@@ -969,7 +969,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       if (target === undefined)
         return yield* Effect.fail(
           new APIError("BAD_REQUEST", {
-            message: "Choose one Executor connection URL and try again.",
+            message: "Choose one connection URL and try again.",
           }),
         );
       const policyHeader = ctx.headers?.get("x-executor-grant");
@@ -1490,7 +1490,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             if (resource === undefined)
               throw new APIError("BAD_REQUEST", {
                 error: "invalid_target",
-                error_description: "Name the Executor URL to authorize in the resource parameter.",
+                error_description: "Name the URL to authorize in the resource parameter.",
               });
             const named = { ...input.value, resource };
             return { context: post ? { body: named } : { query: named } };

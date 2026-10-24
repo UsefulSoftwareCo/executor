@@ -148,7 +148,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
             expect(unpinned.body).toMatchObject(
               refusal(
                 "McpForbidden",
-                "This full-account token does not name an organization, so Executor cannot choose one for this MCP request. Recovery: Connect at /org/<organization>/mcp, or send the X-Executor-Organization header, then retry.",
+                "This full-account token does not name an organization, so none can be chosen for this MCP request. Recovery: Connect at /org/<organization>/mcp, or send the X-Executor-Organization header, then retry.",
               ),
             );
             const missing = yield* api.request(anonymous, "GET", "/mcp", undefined, {

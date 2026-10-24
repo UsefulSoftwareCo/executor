@@ -1,5 +1,7 @@
 import type { App } from "@executor-js/sdk";
 import type { ReactNode } from "react";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /** App metadata and removal live together; products supply only the actions they authorize. */
 export function AppSettings({
@@ -17,6 +19,7 @@ export function AppSettings({
   readonly notice?: ReactNode;
   readonly children?: ReactNode;
 }) {
+  const brand = useProductBrand();
   return (
     <div className="w-full">
       <div className="max-w-3xl space-y-6 p-7 max-[740px]:p-4">
@@ -24,7 +27,9 @@ export function AppSettings({
           <div className="flex flex-wrap items-center justify-between gap-5 p-5">
             <div className="min-w-0 flex-1 basis-48">
               <h3 className="text-sm font-medium">App name</h3>
-              <p className="mt-2 break-words text-sm text-muted-foreground">{app.name}</p>
+              <p className="mt-2 break-words text-sm text-muted-foreground">
+                {appDisplayName(app, brand)}
+              </p>
             </div>
             {renameAction}
           </div>

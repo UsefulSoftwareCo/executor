@@ -406,7 +406,7 @@ export default defineApp({}, {});`,
           message: `The app threw ConversationMissing: ${appMarker}`,
           recovery: {
             action:
-              "Read the error to determine whether input, app code, configuration or Executor needs attention.",
+              "Read the error to determine whether input, app code, configuration or this instance needs attention.",
             instructions:
               "This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
           },
@@ -463,7 +463,7 @@ export default defineApp({}, {});`,
         expect(written.response.recovery).toEqual(
           unknownOutcomeRecovery(
             readAdvice(
-              "Read the error to determine whether input, app code, configuration or Executor needs attention. This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
+              "Read the error to determine whether input, app code, configuration or this instance needs attention. This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
             ),
           ),
         );

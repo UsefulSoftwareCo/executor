@@ -19,8 +19,10 @@ import type { AppLinkProps } from "../../contracts/dashboard.ts";
 import type { AppView } from "../../contracts/dashboard.ts";
 import { AppIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
-import { productTitle, useDocumentTitle } from "../hooks/document-title.ts";
+import { useDocumentTitle } from "../hooks/document-title.ts";
 import { cn } from "../lib/utils.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 const sections = [
   { view: "overview", label: "Overview" },
@@ -95,7 +97,8 @@ export function AppDetailLayout({
   readonly actions?: ReactNode;
   readonly children: ReactNode;
 }) {
-  useDocumentTitle(productTitle(app?.name ?? "App"));
+  const brand = useProductBrand();
+  useDocumentTitle((app && appDisplayName(app, brand)) ?? "App");
   return (
     <div className="flex min-h-0 flex-1 flex-col [--app-tools-list-width:260px]">
       <header className="shrink-0 px-7 pb-7 pt-5 max-[740px]:flex max-[740px]:items-center max-[740px]:py-1.5 max-[740px]:pl-1 max-[740px]:pr-4">
@@ -107,15 +110,15 @@ export function AppDetailLayout({
             <AppIcon app={app} large />
             <h1
               className="min-w-0 truncate text-2xl font-semibold tracking-tight max-[740px]:text-lg"
-              title={app?.name}
+              title={app && appDisplayName(app, brand)}
             >
               {app ? (
                 <BoundAppLink
                   app={app.id}
-                  aria-label={`${app.name} overview`}
+                  aria-label={`${appDisplayName(app, brand)} overview`}
                   className="hover:underline"
                 >
-                  {app.name}
+                  {appDisplayName(app, brand)}
                 </BoundAppLink>
               ) : (
                 <>

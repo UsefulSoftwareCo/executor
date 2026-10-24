@@ -183,7 +183,7 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
           page.goto(`/org/${actors.organization.slug}/apps/add`),
         );
         yield* browser.use("The catalog error is visible", (page) =>
-          page.getByText("Can’t reach Executor", { exact: true }).waitFor(),
+          page.getByText("Can’t reach the server", { exact: true }).waitFor(),
         );
         expect(
           yield* browser.use("Failure is not a search result", (page) =>

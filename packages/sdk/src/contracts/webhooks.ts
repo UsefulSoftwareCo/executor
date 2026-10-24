@@ -258,7 +258,7 @@ export const WebhooksGroup = HttpApiGroup.make("webhooks")
       error: WebhookErrors,
     }).annotate(
       OpenApi.Description,
-      "Confirm cleanup after removing the webhook at its provider. Executor cannot verify external deletion. Disable the subscription first.",
+      "Confirm cleanup after removing the webhook at its provider. External deletion cannot be verified. Disable the subscription first.",
     ),
   )
   .add(

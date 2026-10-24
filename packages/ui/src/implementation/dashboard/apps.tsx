@@ -16,6 +16,8 @@ import {
 
 import { AppIcon, Empty, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
+import { appDisplayName } from "../../contracts/product-brand.ts";
 
 /** A card for each configured app and its linked accounts. */
 export function AppsPage<E>({
@@ -92,8 +94,11 @@ function AppsList({
   readonly empty: ReactNode;
   readonly pending?: ReactNode;
 }) {
+  const brand = useProductBrand();
   const { AppLink } = useDashboard();
-  const apps = data.apps.filter((app) => app.name.toLowerCase().includes(search.toLowerCase()));
+  const apps = data.apps.filter((app) =>
+    appDisplayName(app, brand).toLowerCase().includes(search.toLowerCase()),
+  );
   return (
     <>
       {data.apps.length === 0 && !pending ? (
@@ -136,13 +141,15 @@ function AppsList({
                 <AppLink
                   className="app-card flex min-h-[137px] flex-col min-w-0 p-[16px] border border-border rounded-[8px] bg-background [transition:border-color_120ms,_background-color_120ms] hover:border-input hover:bg-muted focus-visible:[outline:2px_solid_var(--ring)] focus-visible:outline-offset-[3px] max-[600px]:grid max-[600px]:min-h-0 max-[600px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[600px]:items-center max-[600px]:gap-x-3 max-[600px]:gap-y-0.5 max-[600px]:px-3.5 max-[600px]:py-3"
                   app={app.id}
-                  aria-label={`Open ${app.name}${needsSignIn ? ", needs sign-in" : unavailable ? ", account unavailable" : ""}`}
+                  aria-label={`Open ${appDisplayName(app, brand)}${needsSignIn ? ", needs sign-in" : unavailable ? ", account unavailable" : ""}`}
                 >
                   <div className="app-card-heading flex items-center justify-between gap-3 max-[600px]:contents">
                     <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px] max-[600px]:contents max-[600px]:[&_>_.provider-icon]:row-span-2">
                       <AppIcon app={app} />
                       <div className="max-[600px]:col-start-2 max-[600px]:row-start-1 max-[600px]:self-end">
-                        <strong title={app.name}>{app.name}</strong>
+                        <strong title={appDisplayName(app, brand)}>
+                          {appDisplayName(app, brand)}
+                        </strong>
                       </div>
                     </div>
                     <HugeiconsIcon

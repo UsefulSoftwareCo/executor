@@ -309,7 +309,7 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions) 
                 return yield* Effect.fail(oauthError("invalid_scope", "Request a scope."));
               if (body.resource === undefined || !settings.accepts(body.resource))
                 return yield* Effect.fail(
-                  oauthError("invalid_target", "Name the Executor URL to authorize as resource."),
+                  oauthError("invalid_target", "Name the URL to authorize as resource."),
                 );
               const resource = body.resource;
               const { clientId } = yield* authCall(() =>

@@ -40,7 +40,7 @@ const decidingRequest = (signals: ReadonlyArray<McpSignal>) =>
 
 /** Why advertised OAuth could not be used, from the last metadata lookup. */
 const oauthProblem = (signals: ReadonlyArray<McpSignal>) => {
-  const blocked = "an address in its OAuth settings is not allowed by this Executor instance";
+  const blocked = "an address in its OAuth settings is not allowed by this instance";
   const last = signals.filter((signal) => !Schema.is(McpRequestSignal)(signal)).at(-1);
   return last === undefined
     ? "its OAuth settings could not be used"
@@ -113,7 +113,7 @@ const undetermined = ({ reason, signals }: typeof McpDetection.cases.Undetermine
     })),
     Match.when("refused", () => ({
       code: "agent_setup_required" as const,
-      reason: `This MCP server refused Executor's request with a web page (${status}) instead of an MCP or sign-in response. Its firewall may block requests from this Executor host. ${agent}`,
+      reason: `This MCP server refused this instance's request with a web page (${status}) instead of an MCP or sign-in response. Its firewall may block requests from this host. ${agent}`,
     })),
     Match.when("not_mcp", () => ({
       code: "agent_setup_required" as const,

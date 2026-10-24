@@ -17,7 +17,7 @@ const outdatedAttribute = "data-outdated-build";
 const outdatedEvent = "executor:page-outdated";
 
 /** How a request failure on an outdated page reads: the failure is likely the update itself. */
-export const outdatedPageMessage = "Executor was updated. Reload this page to use the new version.";
+export const outdatedPageMessage = "A new version is available. Reload this page to use it.";
 
 /** Whether a response from this page's server named a build other than the page's own. */
 export const pageOutdated = (): boolean =>

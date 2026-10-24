@@ -2193,7 +2193,7 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
           executed.structured,
         )).execution.error;
         expect(message).toBe(
-          `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+          `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so the call stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(message).not.toContain("The app threw");
         expect(response).toMatchObject({ code: "ToolCallFailed", retryable: false });
@@ -2271,7 +2271,7 @@ try { return await call(); } catch (error) {
           mcp: { phase: "call", reason: "request" },
           mayHaveWritten: true,
           message:
-            "The request to the app’s MCP server failed before the server answered the tool call, so Executor cannot tell whether the server ran it.",
+            "The request to the app’s MCP server failed before the server answered the tool call, so it is unknown whether the server ran it.",
           recovery: { action: unknownOutcomeAction },
         });
         expect(called.body).not.toHaveProperty("mcp.status");
@@ -2291,7 +2291,7 @@ try { return await call(); } catch (error) {
           "For a call that only reads, the advice for this failure is: “Retry at most once.",
         );
         expect(write.message).toBe(
-          `ToolCallFailed (HTTP 502): The request to the app’s MCP server failed before the server answered the tool call, so Executor cannot tell whether the server ran it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+          `ToolCallFailed (HTTP 502): The request to the app’s MCP server failed before the server answered the tool call, so it is unknown whether the server ran it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(write.message).not.toContain("Try again");
 
@@ -2425,7 +2425,7 @@ try { return await call(); } catch (error) {
         );
         const tools = `tools[${JSON.stringify(app.slug)}]`;
         const unreachable =
-          "Executor’s request to the app’s MCP server failed before the server answered, while connecting.";
+          "The request to the app’s MCP server failed before the server answered, while connecting.";
 
         // The tool saves a record, then cannot reach the MCP server it syncs with. The failure
         // is the same as one while loading the app's tools, but the tool has already written.
@@ -2492,7 +2492,7 @@ try { return await call(); } catch (error) {
         const app = yield* hostedApp("Resolve wrote", resolveWritesAppSource(service.url));
         const tools = `tools[${JSON.stringify(app.slug)}]`;
         const optionsFailure =
-          "Executor could not load this app’s tool definitions. The app threw McpOptionsInvalid (invalid_option): mcpRouter received an option it cannot use.";
+          "Could not load this app’s tool definitions. The app threw McpOptionsInvalid (invalid_option): mcpRouter received an option it cannot use.";
         const failedTool = (code: string, label: string, file: string) =>
           executeOnce(app.client, label, `return await ${tools}.${code};`, file).pipe(
             Effect.flatMap((executed) =>
@@ -2853,7 +2853,7 @@ try { return await call(); } catch (error) {
         expect(failure).toMatchObject({
           _tag: "StorageError",
           mayHaveWritten: true,
-          message: "Executor could not read or write its saved data.",
+          message: "Could not read or write saved data.",
         });
         if (failure.recovery === undefined)
           return yield* Effect.die("The storage failure has no recovery");
@@ -2878,7 +2878,7 @@ try { return await call(); } catch (error) {
         expect(failed.response).toMatchObject({ code: "StorageError", retryable: false });
         expectUnknownOutcome(failed.response.recovery);
         expect(failed.message).toBe(
-          `StorageError (HTTP 500): Executor could not read or write its saved data. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+          `StorageError (HTTP 500): Could not read or write saved data. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expectNoRepeatAdvice(failed.response.recovery.instructions, "MCP");
       }).pipe(Effect.provide(McpClient.layer)),
@@ -2923,8 +2923,7 @@ try { return await call(); } catch (error) {
         expect(yield* Schema.decodeUnknownEffect(Diagnostic)(reported[0]!.reason)).toMatchObject({
           code: "ToolSearchUnavailable",
           status: 503,
-          message:
-            "Executor could not save this app's tools for search, so search cannot rank them.",
+          message: "Could not save this app's tools for search, so search cannot rank them.",
         });
         // The app itself still loads: its tools are callable, only searching them failed.
         const called = yield* executeOnce(

@@ -5,7 +5,7 @@ import { expect } from "@effect/vitest";
  * completed: it must not repeat the call automatically.
  */
 export const unknownOutcomeAction =
-  "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.";
+  "Do not automatically repeat this call or duplicate its change. Its outcome could not be confirmed.";
 
 /** The agent instructions that lead such a failure's recovery. */
 export const unknownOutcomeInstructions =

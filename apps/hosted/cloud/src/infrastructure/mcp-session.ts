@@ -35,6 +35,7 @@ import type { cloudServingProduct } from "./serving-product.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
 import { mcpSessionStore } from "./mcp-session-store.ts";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 
 /**
  * The isolate's executor and MCP identity, built once and shared by every session object in
@@ -58,6 +59,7 @@ export const makeMcpSession = Effect.fn(function* ({
   const reportErrors = yield* cloudSentry;
   const analytics = yield* cloudAnalytics;
   const objectDatabase = yield* cloudObjectDatabase;
+  const brand = yield* productBrandConfig.pipe(Effect.orDie);
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     // Every request and MCP operation of this session shares the object's connections.
@@ -77,6 +79,7 @@ export const makeMcpSession = Effect.fn(function* ({
     const callState = new Map<string, CallState>();
     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
+      Effect.provideService(CurrentProductBrand, brand),
       Effect.provide(HttpServer.layerServices),
     );
     const objectId = state.id.toString();

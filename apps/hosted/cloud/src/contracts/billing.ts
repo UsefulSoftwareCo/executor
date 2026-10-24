@@ -45,7 +45,7 @@ export const MemberLimit = Schema.Struct({
 export const BillingUnavailable = ApiError.define({
   tag: "BillingUnavailable",
   status: 503,
-  message: "Executor could not reach its billing service. Try again.",
+  message: "The billing service could not be reached. Try again.",
 });
 export type BillingUnavailable = typeof BillingUnavailable.Type;
 /** The requested plan is not in the available catalog. */

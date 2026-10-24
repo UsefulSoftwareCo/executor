@@ -363,7 +363,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         // Local says once what happened and what to do, in the reason's own words, as the
         // hosted dialog does.
         expect(refused).toContain(
-          "This service doesn’t accept Executor’s callback URL. Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
+          "This service doesn’t accept this deployment’s callback URL. Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
         );
         expect(refused).toContain(`Service response: invalid_redirect_uri: ${refusal}`);
         expect(refused).not.toContain("OAuthSetupFailed");
@@ -483,7 +483,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           ]);
         });
         expect(completion[0]).toContain(
-          "The service asked Executor to wait before sending more sign-in requests. Start the connection again shortly.",
+          "The service asked for a pause before more sign-in requests. Start the connection again shortly.",
         );
         expect(completion[0]).not.toContain("couldn’t reach");
         expect(completion[0]).toContain(

@@ -491,7 +491,7 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         // MCP `execute` or `skills` call answers with the failure and reports it like REST does.
         const garbled = yield* failing(`${prefix}/apps/${unreadable.id}/skill-bundle`);
         expect(garbled.error.message).toBe(
-          "GitHub returned a git response Executor could not read.",
+          "GitHub returned a git response that could not be read.",
         );
         const unattributed = yield* failing(`${prefix}/apps/${unsupportedApp.id}/tools`);
         expect(unattributed.error.message).toBe(
@@ -499,13 +499,13 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         );
         const unreached = yield* failing(`${prefix}/apps/${unanswered.id}/tools`);
         expect(unreached.error.message).toBe(
-          "Executor’s request to the app’s MCP server failed before the server answered, while connecting.",
+          "The request to the app’s MCP server failed before the server answered, while connecting.",
         );
         const refusedEgress = yield* failing(`${prefix}/apps/${egress.id}/tools`);
         expect(refusedEgress.error.message).toContain("NetworkRefused (credential_app)");
         const thrown = yield* failing(`${prefix}/apps/${throwing.id}/tools`);
         expect(thrown.error.message).toBe(
-          "Executor could not load this app’s tool definitions. The app threw TypeError: Synthetic failure in the factory",
+          "Could not load this app’s tool definitions. The app threw TypeError: Synthetic failure in the factory",
         );
         const closed = yield* failing(`${prefix}/apps/${closedSkills.id}/skill-bundle`);
         expect(closed.error.message).toBe("Could not reach 127.0.0.1 to load skills.");

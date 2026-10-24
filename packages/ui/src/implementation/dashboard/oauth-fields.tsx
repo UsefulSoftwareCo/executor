@@ -24,6 +24,7 @@ import { undeclaredError } from "@executor-js/utils/connection-failure";
 import { ErrorNotice } from "./error-notice.tsx";
 import { OAuthClientOrigin, sharesClientId } from "./oauth-client-origin.tsx";
 import { useQuery } from "./context.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
 export function OAuthSetup<E extends UserFacingError>({
@@ -137,6 +138,7 @@ export function OAuthFields<A, E>({
    */
   readonly missingClient?: ReactNode;
 }) {
+  const brand = useProductBrand();
   const choices = clientChoices(options, account !== undefined);
   const [picked, setPicked] = useState<ClientChoice | undefined>(
     manualClient ? { kind: "manual" } : undefined,
@@ -171,7 +173,7 @@ export function OAuthFields<A, E>({
   const guidance = machine
     ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
     : setup !== "unresolved" && setup.mode === "client-required"
-      ? `Executor can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
+      ? `${brand.name} can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
       : `Use an OAuth app in ${providerName} that allows this redirect URL, and enter its ${details}.`;
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
@@ -310,7 +312,8 @@ export function OAuthFields<A, E>({
         <>
           {missing && !manual && (
             <p className="text-[13px] leading-5 text-pretty text-muted-foreground">
-              No OAuth client is registered for {providerName}, and Executor doesn’t provide one.
+              No OAuth client is registered for {providerName}, and {brand.name} doesn’t provide
+              one.
             </p>
           )}
           {manual && (

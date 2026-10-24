@@ -237,10 +237,10 @@ const sourceFailures = {
     "The app's source changed since it was read. Read the latest source, reapply the change, then commit against the new revision.",
   "invalid-source":
     "The app source is not valid: files outside ui/public/ must be UTF-8 text, paths and file modes must be supported, and stored files must name blobs of the revision they were read from.",
-  git: "Executor's Git storage could not complete this source operation. Try again.",
-  storage: "Executor could not read or write this app's source. Try again.",
+  git: "Git storage could not complete this source operation. Try again.",
+  storage: "Could not read or write this app's source. Try again.",
   limit:
-    "The app source exceeds Executor's limits: at most 4,096 code files and 16 MiB of code and inline files, and at most 10,000 public files under ui/public/, each at most 32 MB and 1 GB in total.",
+    "The app source exceeds the allowed limits: at most 4,096 code files and 16 MiB of code and inline files, and at most 10,000 public files under ui/public/, each at most 32 MB and 1 GB in total.",
   protected:
     "The app's Git history is protected from this change, such as deleting or recreating its main branch, or an unsupported push format.",
 } as const;

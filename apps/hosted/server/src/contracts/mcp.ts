@@ -43,7 +43,7 @@ const forbidden: { readonly [Reason in McpForbiddenReason]: ErrorPresentation } 
   organization_required: {
     title: "Organization required",
     description:
-      "This full-account token does not name an organization, so Executor cannot choose one for this MCP request.",
+      "This full-account token does not name an organization, so none can be chosen for this MCP request.",
     recovery: {
       action:
         "Connect at /org/<organization>/mcp, or send the X-Executor-Organization header, then retry.",

@@ -41,7 +41,7 @@ export const ProviderNotFound = UserFacingError.define({
   status: 404,
   fields: { provider: ProviderId },
   title: "Service no longer available",
-  description: "Executor could not find the requested service configuration.",
+  description: "Could not find the requested service configuration.",
   recovery: {
     action:
       "Close this form and reload the app. If the service is still missing, copy the fix prompt into your agent to repair its configuration.",

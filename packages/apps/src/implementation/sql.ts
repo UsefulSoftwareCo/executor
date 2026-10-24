@@ -145,7 +145,7 @@ export const authorSql = (
     if (changed !== undefined)
       throw refuse(
         new Error(
-          `SQLite connection settings belong to Executor, so app code cannot change PRAGMA ${changed}; the statement was rolled back. Migrations may change settings while they run.`,
+          `SQLite connection settings belong to the host, so app code cannot change PRAGMA ${changed}; the statement was rolled back. Migrations may change settings while they run.`,
         ),
       );
   };
