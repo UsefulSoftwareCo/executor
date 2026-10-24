@@ -1,7 +1,7 @@
 /** Product analytics at the shared hosted Executor boundary, used by Cloud and self-host. */
 import type { Executor, ToolCallResult, ToolResumeResult } from "@executor-js/sdk/core";
 import { toolCompletion } from "@executor-js/telemetry/product-analytics";
-import { Clock, Effect, Exit } from "effect";
+import { Clock, Effect, Exit, Option } from "effect";
 import {
   observeUsage,
   recordUsage,
@@ -16,12 +16,14 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
 ) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
-    yield* recordUsage("tool_execution_started", properties);
+    const { app_id: _requestedAppId, ...requestedProperties } = properties;
+    // Before the SDK call resolves, `app` is still caller input.
+    yield* recordUsage("tool_execution_started", requestedProperties);
     return yield* work.pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
           const timed = {
-            ...properties,
+            ...requestedProperties,
             duration_ms: Math.max(0, (yield* Clock.currentTimeMillis) - started),
           };
           if (Exit.isFailure(exit)) {
@@ -32,14 +34,19 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
             return;
           }
           const status = exit.value.status;
+          // A pending invocation carries the SDK-resolved ID; a completed call proves the SDK
+          // resolved the requested ID from stored app state before dispatching the tool.
+          const appId =
+            status === "approval-required" ? exit.value.invocation.app : properties.app_id;
+          const attributed = appId === undefined ? timed : { ...timed, app_id: appId };
           if (status !== "approval-required") {
             yield* recordUsage("tool_execution_completed", {
-              ...timed,
+              ...attributed,
               status,
               ...toolCompletion(exit.value),
             });
           } else {
-            yield* recordUsage("tool_approval_requested", { ...timed, status });
+            yield* recordUsage("tool_approval_requested", { ...attributed, status });
           }
         }),
       ),
@@ -57,7 +64,23 @@ export const withExecutorAnalytics = (executor: Executor): Executor => ({
         executor.tools.call(input, options),
       ),
     resume: (input, options) =>
-      observeTool({ resumed: true }, executor.tools.resume(input, options)),
+      Effect.gen(function* () {
+        // Resume input carries only a request ID. Read the stored SDK invocation so the relay
+        // gets the authoritative app identity, without trusting request-local caller metadata.
+        const approval = yield* executor.tools
+          .approval({
+            requestId: input.requestId,
+            ...(input.owner === undefined ? {} : { owner: input.owner }),
+          })
+          .pipe(Effect.option);
+        return yield* observeTool(
+          {
+            resumed: true,
+            ...(Option.isSome(approval) ? { app_id: approval.value.invocation.app } : {}),
+          },
+          executor.tools.resume(input, options),
+        );
+      }),
   },
   appData: {
     ...executor.appData,

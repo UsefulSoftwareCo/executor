@@ -2612,6 +2612,17 @@ export const scenarios = plan({
       local: na("Local does not export product analytics or replay."),
     },
   },
+  telemetryRelay: {
+    fixtures: "actors",
+    file: "telemetry-relay.spec.ts",
+    title:
+      "Cloud telemetry relay exports resolved app IDs, rejects forged identities and keeps explicit feedback available under DNT",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host does not configure the hosted telemetry relay."),
+      local: na("Local does not configure the hosted telemetry relay."),
+    },
+  },
   productAnalyticsOnboarding: {
     file: "product-analytics.spec.ts",
     title:

@@ -112,12 +112,19 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       },
       (usage) =>
         runCallback(
-          recordUsage("product_operation_completed", {
-            area: "auth",
-            operation: usage.operation,
-            status_code: usage.status,
-            ok: usage.status < 400,
-            outcome: usage.status < 400 ? "success" : "failure",
+          Effect.gen(function* () {
+            yield* recordUsage("product_operation_completed", {
+              area: "auth",
+              operation: usage.operation,
+              status_code: usage.status,
+              ok: usage.status < 400,
+              outcome: usage.status < 400 ? "success" : "failure",
+            });
+            if (usage.status >= 400) return;
+            if (usage.operation === "organization.invite-member")
+              yield* recordUsage("invitation_sent");
+            else if (usage.operation === "organization.accept-invitation")
+              yield* recordUsage("invitation_accepted");
           }).pipe(
             Effect.provideService(CurrentUserId, usage.userId),
             Effect.provideService(CurrentUsage, { source: "dashboard" }),

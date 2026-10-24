@@ -120,6 +120,8 @@ export const startCloudEnvironment = (input: {
    * scenarios that prove it.
    */
   readonly authRateLimit: boolean;
+  /** Enable the synthetic local relay for the focused telemetry relay scenario. */
+  readonly telemetryRelay?: boolean;
   /**
    * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
    * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
@@ -251,6 +253,12 @@ export const startCloudEnvironment = (input: {
       EXECUTOR_BUILD_VERSION: input.commit,
       POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
       SENTRY_LOCAL_TEST_PORT: String(analyticsPort),
+      ...(input.telemetryRelay
+        ? {
+            EXECUTOR_TELEMETRY_RELAY_URL: `http://127.0.0.1:${analyticsPort}/__telemetry/v1`,
+            EXECUTOR_TELEMETRY_RELAY_TOKEN: "synthetic-telemetry-relay-token",
+          }
+        : {}),
       VITE_SENTRY_TUNNEL: "/api/fedcba9876543210/submit",
       VITE_SENTRY_DSN: `http://synthetic@127.0.0.1:${analyticsPort}/1`,
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector}/v1/traces`,

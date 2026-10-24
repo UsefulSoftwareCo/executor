@@ -1,7 +1,7 @@
-/** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
+/** Request-owned analytics and explicit feedback with optional destinations. */
 import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import { recordRoute } from "@executor-js/telemetry";
-import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
+import { FeedbackUnavailable, feedbackDisabled } from "@executor-js/telemetry/product-analytics";
 import {
   ProductAnalytics,
   type UsageEvent,
@@ -19,6 +19,15 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { evaluateFlag, FeatureFlags } from "./feature-flags.ts";
+import {
+  readRelayAnalyticsOptOut,
+  readTelemetryRelaySettings,
+  relayEvent,
+  sendRelayAnalytics,
+  sendRelayFeedback,
+  type RelayEvent,
+  type TelemetryRelaySettings,
+} from "./telemetry-relay.ts";
 
 const Settings = Schema.Struct({
   token: Schema.String,
@@ -35,6 +44,12 @@ type EventName =
   | "cloud_signup_completed"
   | "cloud_login_completed"
   | "analytics_events_dropped"
+  | "app_installed"
+  | "account_connection_failed"
+  | "invitation_sent"
+  | "invitation_accepted"
+  // The search observer is carried separately from this destination change.
+  | "tool_search_empty"
   | "$feature_flag_called"
   | "$identify";
 type Properties = Readonly<Record<string, string | number | boolean>>;
@@ -144,19 +159,62 @@ const readSettings = (read: Effect.Effect<unknown>) =>
 export const withProductAnalytics = <A, E, R>(
   handler: Effect.Effect<A, E, R>,
   settings: Effect.Effect<Settings | undefined>,
+  relaySettings: Effect.Effect<TelemetryRelaySettings | undefined>,
+  relayAnalyticsOptOut: (request: HttpServerRequest.HttpServerRequest) => Effect.Effect<boolean>,
 ) =>
   Effect.gen(function* () {
-    const config = yield* settings;
-    if (!config) return yield* handler;
+    const [config, relay] = yield* Effect.all([settings, relaySettings]);
+    if (!config && !relay) return yield* handler;
+    // A configured relay can receive explicit feedback even when its analytics stream is opted out.
+    const request =
+      relay === undefined
+        ? Option.none<HttpServerRequest.HttpServerRequest>()
+        : yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest);
+    const analyticsOptedOut = Option.isSome(request)
+      ? yield* relayAnalyticsOptOut(request.value)
+      : false;
     const events: Event[] = [];
     let dropped = 0;
     const add = (event: Event) => {
+      if (relay !== undefined) {
+        if (analyticsOptedOut) return;
+        const safe = relayEvent({
+          event: event.event,
+          accountId: event.distinct_id,
+          timestamp: event.timestamp,
+          properties: event.properties,
+        });
+        if (safe === undefined) return;
+        event = {
+          event: safe.event as EventName,
+          distinct_id: safe.account_id,
+          timestamp: safe.timestamp,
+          properties: safe.properties,
+        };
+      }
       if (events.length < 1000) events.push(event);
       else dropped++;
     };
     const client = yield* HttpClient.HttpClient;
-    const send = (batch: readonly Event[]) =>
-      client
+    const send = (batch: readonly Event[]) => {
+      if (relay !== undefined) {
+        const allowed: RelayEvent[] = batch.flatMap((event) => {
+          const safe = relayEvent({
+            event: event.event,
+            accountId: event.distinct_id,
+            timestamp: event.timestamp,
+            properties: event.properties,
+          });
+          return safe === undefined ? [] : [safe];
+        });
+        return sendRelayAnalytics(relay, allowed).pipe(
+          Effect.timeout("3 seconds"),
+          Effect.mapError(() => new FeedbackUnavailable()),
+          Effect.asVoid,
+        );
+      }
+      if (config === undefined) return Effect.void;
+      return client
         .execute(
           HttpClientRequest.post(`${config.host}/batch/`).pipe(
             HttpClientRequest.bodyJsonUnsafe({
@@ -191,13 +249,15 @@ export const withProductAnalytics = <A, E, R>(
               : Effect.fail(response.status),
           ),
           Effect.timeout("3 seconds"),
+          Effect.mapError(() => new FeedbackUnavailable()),
           Effect.asVoid,
         );
+    };
     yield* Effect.addFinalizer(() =>
       events.length === 0
         ? Effect.void
         : send(
-            dropped === 0
+            relay !== undefined || dropped === 0
               ? events
               : [
                   ...events,
@@ -208,26 +268,42 @@ export const withProductAnalytics = <A, E, R>(
                     properties: { dropped_events: dropped },
                   },
                 ],
-          ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
+          ).pipe(
+            Effect.catch(() =>
+              Effect.logWarning(
+                relay === undefined
+                  ? "PostHog batch export failed"
+                  : "Telemetry relay batch failed",
+              ),
+            ),
+          ),
     );
     return yield* handler.pipe(
       Effect.provideService(Analytics, {
         add,
       }),
       Effect.provideService(FeatureFlags, {
-        evaluate: (key, distinctId) => evaluateFlag(config, key, distinctId),
+        evaluate: (key, distinctId) =>
+          config === undefined ? Effect.succeed(undefined) : evaluateFlag(config, key, distinctId),
       }),
       Effect.provideService(ProductAnalytics, {
         enabled: true,
-        submitFeedback: (feedback) =>
-          send([
+        submitFeedback: (feedback) => {
+          if (relay !== undefined)
+            return sendRelayFeedback(relay, {
+              message: feedback.message,
+              accountId: feedback.userId,
+            });
+          if (config === undefined) return Effect.fail(feedbackDisabled());
+          return send([
             {
               event: "feedback_submitted",
               distinct_id: feedback.userId,
               timestamp: new Date().toISOString(),
               properties: { message: feedback.message, organization_id: feedback.organizationId },
             },
-          ]).pipe(Effect.mapError(() => new FeedbackUnavailable())),
+          ]);
+        },
         capture: (event) =>
           add({
             event: event.event,
@@ -354,11 +430,15 @@ const postHogProxy = (settings: Effect.Effect<Settings | undefined>) =>
 /** Capture the Alchemy runtime accessor during initialization, then read bindings per request. */
 export const cloudAnalytics = Effect.gen(function* () {
   const context = yield* CurrentRuntimeContext;
-  const settings = readSettings(
-    context ? context.get<unknown>("EXECUTOR_POSTHOG") : Effect.succeed(undefined),
-  );
+  const readBinding = (name: string) =>
+    context ? context.get<unknown>(name) : Effect.succeed(undefined);
+  const settings = readSettings(readBinding("EXECUTOR_POSTHOG"));
+  const relaySettings = readTelemetryRelaySettings(readBinding);
+  const relayAnalyticsOptOut = (request: HttpServerRequest.HttpServerRequest) =>
+    readRelayAnalyticsOptOut(readBinding, request);
   return {
     proxy: postHogProxy(settings),
-    wrap: <A, E, R>(handler: Effect.Effect<A, E, R>) => withProductAnalytics(handler, settings),
+    wrap: <A, E, R>(handler: Effect.Effect<A, E, R>) =>
+      withProductAnalytics(handler, settings, relaySettings, relayAnalyticsOptOut),
   };
 });

@@ -45,6 +45,7 @@ import {
   organizationOwner,
 } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
+import { recordUsage } from "../contracts/product-analytics.ts";
 import { currentOwner, ownedConnection } from "./access.ts";
 import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
 import { AccountLinkedToApp } from "../contracts/accounts.ts";
@@ -110,7 +111,10 @@ export const checkCredentials = (
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(input.app, "use");
-    return yield* executor.apps.checkCredentials({ ...input, owner });
+    return yield* executor.apps.checkCredentials({ ...input, owner }).pipe(
+      // Check failures may happen before the SDK resolves this caller-supplied app ID.
+      Effect.tapError(() => recordUsage("account_connection_failed")),
+    );
   });
 /** Run the checks of the apps the caller linked the account to, with their own account access. */
 export const checkAccount = Effect.gen(function* () {
@@ -274,6 +278,9 @@ export const submitConnection = (
     );
     return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
       accountDestination(intent.destination),
+      Effect.tapError(() =>
+        recordUsage("account_connection_failed", { app_id: intent.target.app }),
+      ),
       Effect.tap(() => Effect.flatten(ScheduleWakeup)),
     );
   });
@@ -310,6 +317,9 @@ export const completeOAuth = (
     );
     return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
       accountDestination(intent.destination),
+      Effect.tapError(() =>
+        recordUsage("account_connection_failed", { app_id: intent.target.app }),
+      ),
       Effect.tap(() => Effect.flatten(ScheduleWakeup)),
     );
   });
