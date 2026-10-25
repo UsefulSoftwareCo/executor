@@ -56,9 +56,18 @@ export const OperationSchedule = Schema.Struct({
   input: PreviousSchedule.fields.input,
 });
 export const HostedTool = Schema.Struct({
-  ...PreviousTool.fields,
-  kindConfirmed: Schema.optionalKey(Schema.Boolean),
   schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
+  name: PreviousTool.fields.name,
+  router: PreviousTool.fields.router,
+  tags: PreviousTool.fields.tags,
+  description: PreviousTool.fields.description,
+  inputSchema: PreviousTool.fields.inputSchema,
+  readOnly: PreviousTool.fields.readOnly,
+  kindConfirmed: Schema.optionalKey(Schema.Boolean),
+  title: PreviousTool.fields.title,
+  outputSchema: PreviousTool.fields.outputSchema,
+  annotations: PreviousTool.fields.annotations,
+  _meta: PreviousTool.fields._meta,
 });
 export const HostedToolSummary = HostedTool.mapFields(
   ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
