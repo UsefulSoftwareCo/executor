@@ -242,6 +242,10 @@ const OAuthCreateClientInput = Schema.Struct({
   grant: OAuthGrantSchema,
   clientId: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Provider-shaped, NON-secret extra parameters (Auth0's `audience`, for
+   *  example) sent on every token request this client makes. OAuth protocol
+   *  parameter names are rejected at registration. */
+  tokenParams: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.String))),
   /** Integration whose connect dialog registered this manual app. Recorded so
    *  the picker can match it by intent (exact) instead of by root domain. */
   originIntegration: Schema.optional(Schema.NullOr(Schema.String)),
@@ -259,6 +263,10 @@ const OAuthCreateClientHandoffInput = Schema.Struct({
   authorizationUrl: Schema.optional(Schema.String),
   tokenUrl: Schema.optional(Schema.String),
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Provider-shaped, NON-secret extra parameters (Auth0's `audience`, for
+   *  example) the form pre-fills; they are sent on every token request the
+   *  registered app makes. Never a secret. */
+  tokenParams: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   label: Schema.optional(Schema.String),
 });
 const OAuthCreateClientHandoffOutput = Schema.Struct({
@@ -525,6 +533,10 @@ const oauthClientCreateHandoffUrl = (
   if (input.authorizationUrl !== undefined) search.set("authorizationUrl", input.authorizationUrl);
   if (input.tokenUrl !== undefined) search.set("tokenUrl", input.tokenUrl);
   if (input.resource != null && input.resource.length > 0) search.set("resource", input.resource);
+  // Serialized as JSON because it is a map, pre-filled into the form's extra
+  // token-parameter field. NON-secret by contract — provider-shaped parameters
+  // (Auth0's `audience`, for example) are public request data.
+  if (input.tokenParams !== undefined) search.set("tokenParams", JSON.stringify(input.tokenParams));
   if (input.label !== undefined) search.set("label", input.label);
   const orgPrefix = orgSlug !== undefined && orgSlug.length > 0 ? `/${orgSlug}` : "";
   const path = `${orgPrefix}/integrations/${encodeURIComponent(input.integration)}?${search.toString()}`;
@@ -823,6 +835,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
                 // `oauth.clients.createHandoff`.
                 clientSecret: "",
                 resource: input.resource ?? null,
+                tokenParams: input.tokenParams ?? undefined,
                 origin: {
                   kind: "manual",
                   integration:

@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
 import { useAtomSet } from "@effect/atom-react";
 import * as Exit from "effect/Exit";
+import { Option, Schema } from "effect";
 import { ExternalLink } from "lucide-react";
 import {
+  isReservedOAuthTokenParam,
   isTokenEndpointAuthMethod,
   OAuthClientSlug,
   type IntegrationSlug,
@@ -72,6 +74,10 @@ export interface OAuthClientFormPrefill {
   readonly tokenEndpointAuthMethodsSupported?: readonly string[];
   /** Saved manual-client transport. Omitted means client_secret_post. */
   readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
+  /** Provider-shaped, NON-secret token-request parameters pre-filled by an
+   *  `oauth.clients.createHandoff` deep link (Auth0's `audience`, for
+   *  example). Sent on every token request the registered app makes. */
+  readonly tokenParams?: Readonly<Record<string, string>>;
 }
 
 export const preferredManualTokenEndpointAuthMethod = (
@@ -89,6 +95,60 @@ export const registrationScopes = (
   declaredScopes: readonly string[],
   discoveredScopes: readonly string[],
 ): readonly string[] => (declaredScopes.length > 0 ? declaredScopes : discoveredScopes);
+
+/** Extra token parameters arrive at the form as one-line JSON
+ *  (`{"audience":"https://…/api/v2/"}`). Decoded with Effect Schema so a
+ *  malformed or non-string-valued field reads as a decode failure rather than a
+ *  thrown parse error — registration is client-side input handling, not an
+ *  Effect workflow. */
+const OAuthTokenParamsJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
+// Compiled once at module scope — the decode runs on every form submit and
+// every deep-link parse.
+const decodeOAuthTokenParamsJson = Schema.decodeUnknownOption(OAuthTokenParamsJson);
+
+/** Decode a handoff URL's serialized token-parameter map. `undefined` when the
+ *  value is missing or malformed: the handoff URL is public request data, so a
+ *  corrupted field drops just itself instead of blocking the registration. */
+export const decodeOAuthTokenParams = (
+  raw: string | null | undefined,
+): Record<string, string> | undefined => {
+  if (raw == null) return undefined;
+  const decoded = decodeOAuthTokenParamsJson(raw);
+  if (Option.isNone(decoded)) return undefined;
+  return Object.fromEntries(Object.entries(decoded.value));
+};
+
+export type ParseTokenParamsResult =
+  | { readonly ok: true; readonly params: Record<string, string> | null }
+  | { readonly ok: false; readonly message: string };
+
+/** Parse the extra token-parameter JSON input into the map the client stores,
+ *  with the failure reason per problem: not JSON, not a flat string map, or a
+ *  name that would shadow one of the grant protocol's own parameters.
+ *  `params: null` means the field is empty — omit the map entirely, exactly
+ *  like a resource field left blank. */
+export const parseTokenParamsInput = (text: string): ParseTokenParamsResult => {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return { ok: true, params: null };
+  const decoded = decodeOAuthTokenParamsJson(trimmed);
+  if (Option.isNone(decoded)) {
+    return {
+      ok: false,
+      message:
+        'Extra token parameters must be a JSON object whose values are strings, like {"audience":"…"}',
+    };
+  }
+  const entries = Object.entries(decoded.value);
+  for (const [name] of entries) {
+    if (isReservedOAuthTokenParam(name)) {
+      return {
+        ok: false,
+        message: `"${name}" is an OAuth protocol parameter, so it cannot be sent as a token parameter`,
+      };
+    }
+  }
+  return { ok: true, params: Object.fromEntries(entries) };
+};
 
 /** The `originIntegration` to send with a `createClient` payload. When the
  *  caller passes an explicit `intentIntegration` (edit flow: the app's
@@ -218,6 +278,13 @@ export function OAuthClientForm(props: {
   const [authorizationUrl, setAuthorizationUrl] = useState(prefill?.authorizationUrl ?? "");
   const [tokenUrl, setTokenUrl] = useState(prefill?.tokenUrl ?? "");
   const [resource, setResource] = useState(prefill?.resource ?? null);
+  // Extra token-request parameters entered as a single-line JSON map
+  // (`{"audience":"https://…/api/v2/"}`), for providers such as Auth0 whose
+  // client-credentials grant only issues a token when it names the API.
+  // Parsed at submit; a malformed or protocol-shadowing entry fails there.
+  const [tokenParamsText, setTokenParamsText] = useState(() =>
+    prefill?.tokenParams !== undefined ? JSON.stringify(prefill.tokenParams) : "",
+  );
   // Scopes to register with DCR. The form has no scopes input (DCR sends them
   // verbatim). Declared scopes are the integration's TEMPLATE scopes — immutable
   // and authoritative, so they survive Discover. Discovered scopes are seeded
@@ -365,6 +432,12 @@ export function OAuthClientForm(props: {
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
+    const parsed = parseTokenParamsInput(tokenParamsText);
+    if (!parsed.ok) {
+      toast.error(parsed.message);
+      return;
+    }
+    const tokenParams = parsed.params;
     setSubmitting(true);
     const slug = fixedSlug ?? uniqueClientSlug(name, existingSlugs);
     const exit = await doCreate({
@@ -378,6 +451,7 @@ export function OAuthClientForm(props: {
         clientSecret: clientSecret.trim(),
         tokenEndpointAuthMethod,
         resource: normalizedResource,
+        ...(tokenParams === null ? {} : { tokenParams }),
         // Editing preserves the app's already-recorded origin (via
         // `intentIntegration`, passed verbatim by the caller); a fresh
         // registration from an integration's dialog stamps recorded intent.
@@ -719,6 +793,27 @@ export function OAuthClientForm(props: {
               placeholder="https://mcp.example.com/mcp"
               value={resource ?? ""}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setResource(e.target.value)}
+              className="font-mono"
+            />
+          </div>
+
+          {/* Provider-shaped extra token-request parameters (Auth0's
+              `audience`, for example) — one-line JSON map, NON-secret. The
+              grant protocol's own parameter names are refused at submit. */}
+          <div className="space-y-1.5">
+            <Label htmlFor="oauth-token-params" className="text-xs text-muted-foreground">
+              Extra token parameters
+              <span className="font-normal text-muted-foreground/70">
+                optional JSON, sent on every token request (Auth0 needs audience)
+              </span>
+            </Label>
+            <Input
+              id="oauth-token-params"
+              placeholder='{"audience": "https://your-org.auth0.com/api/v2/"}'
+              value={tokenParamsText}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setTokenParamsText(e.target.value)
+              }
               className="font-mono"
             />
           </div>

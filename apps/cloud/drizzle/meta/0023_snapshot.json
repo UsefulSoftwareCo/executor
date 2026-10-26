@@ -1,6 +1,6 @@
 {
-  "id": "6b0d43ca-a04b-4dc8-b637-982f7ebbc3b8",
-  "prevId": "88f2845b-be28-4ad3-92b2-2cac819478e5",
+  "id": "5b4f48bf-9d1d-4d9c-8bb0-f03d8cfef94b",
+  "prevId": "9d3bc667-63af-4a1b-99d9-b490ffcd80ef",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -296,6 +296,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "v2_org_slug": {
+          "name": "v2_org_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -322,7 +328,7 @@
       "checkConstraints": {
         "org_moved_to_v2_state_check": {
           "name": "org_moved_to_v2_state_check",
-          "value": "\"org_moved_to_v2\".\"state\" in ('moving', 'moved')"
+          "value": "\"org_moved_to_v2\".\"state\" in ('moving', 'moved', 'rolled_back')"
         }
       },
       "isRLSEnabled": false
@@ -1107,6 +1113,12 @@
         "resource": {
           "name": "resource",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "token_params": {
+          "name": "token_params",
+          "type": "json",
           "primaryKey": false,
           "notNull": false
         },

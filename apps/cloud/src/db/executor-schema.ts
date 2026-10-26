@@ -102,6 +102,9 @@ export const oauth_client = pgTable(
     credential_write: json("credential_write"),
     token_endpoint_auth_method: text("token_endpoint_auth_method"),
     resource: text("resource"),
+    // Provider-shaped, NON-secret extra parameters sent on EVERY token
+    // request this client makes. Null in rows registered without one.
+    token_params: json("token_params"),
     origin_kind: text("origin_kind"),
     origin_integration: text("origin_integration"),
     origin_issuer: text("origin_issuer"),

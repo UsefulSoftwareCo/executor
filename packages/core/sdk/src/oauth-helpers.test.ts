@@ -1333,6 +1333,25 @@ describe("exchangeAuthorizationCode", () => {
         }),
     ),
   );
+
+  it.effect("sends the registered client's extra token parameters on code exchange", () =>
+    withTokenEndpoint(tokenResponse(validCodeBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeAuthorizationCode({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          redirectUrl: "https://app.example.com/cb",
+          codeVerifier: "verifier",
+          code: "abc",
+          extraTokenParams: { audience: "https://api.example.com/" },
+        });
+        const body = (yield* calls)[0]!.body;
+        expect(body.get("grant_type")).toBe("authorization_code");
+        expect(body.get("audience")).toBe("https://api.example.com/");
+      }),
+    ),
+  );
 });
 
 describe("exchangeClientCredentials", () => {
@@ -1392,6 +1411,46 @@ describe("exchangeClientCredentials", () => {
       if (!Exit.isFailure(exit)) return;
       expect(JSON.stringify(exit.cause)).toContain("Token URL must use https: or loopback http:");
     }),
+  );
+
+  it.effect("sends the registered client's extra token parameters (Auth0 audience)", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeClientCredentials({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "secret",
+          scopes: ["read"],
+          extraTokenParams: { audience: "https://api.example.com/" },
+        });
+
+        const body = (yield* calls)[0]!.body;
+        expect(body.get("grant_type")).toBe("client_credentials");
+        expect(body.get("scope")).toBe("read");
+        expect(body.get("audience")).toBe("https://api.example.com/");
+      }),
+    ),
+  );
+
+  it.effect("refuses stored parameters that shadow OAuth protocol parameters", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        const exit = yield* Effect.exit(
+          exchangeClientCredentials({
+            tokenUrl,
+            clientId: "cid",
+            clientSecret: "secret",
+            extraTokenParams: { grant_type: "password" },
+          }),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (!Exit.isFailure(exit)) return;
+        expect(JSON.stringify(exit.cause)).toContain("protocol parameter");
+        // Nothing was sent: the grant the endpoint received is the one the
+        // protocol sent, not the stored shadow.
+        expect(yield* calls).toEqual([]);
+      }),
+    ),
   );
 });
 
@@ -1481,6 +1540,42 @@ describe("refreshAccessToken", () => {
           scopes: [],
         });
         expect((yield* calls)[0]!.body.has("scope")).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("sends the registered client's extra token parameters on refresh", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* refreshAccessToken({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          refreshToken: "old",
+          extraTokenParams: { audience: "https://api.example.com/" },
+        });
+        expect((yield* calls)[0]!.body.get("audience")).toBe("https://api.example.com/");
+      }),
+    ),
+  );
+
+  it.effect("sends extra token parameters on JSON-format refresh too", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* refreshAccessToken({
+          tokenUrl,
+          clientId: "cid",
+          clientSecret: "csecret",
+          refreshToken: "old",
+          requestFormat: "json",
+          extraTokenParams: { audience: "https://api.example.com/" },
+        });
+        const body = (yield* calls)[0]!.jsonBody;
+        expect(body).toMatchObject({
+          grant_type: "refresh_token",
+          refresh_token: "old",
+          audience: "https://api.example.com/",
+        });
       }),
     ),
   );

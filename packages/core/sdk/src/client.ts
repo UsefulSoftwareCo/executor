@@ -178,6 +178,9 @@ export interface IntegrationAccountHandoff {
     readonly clientId?: string;
     readonly authorizationUrl?: string;
     readonly tokenUrl?: string;
+    /** Provider-shaped, NON-secret token-request parameters pre-filled onto
+     *  the registration form (Auth0's `audience`, for example). */
+    readonly tokenParams?: Record<string, string>;
     /** RFC 8707 resource indicator. On a reconnect handoff this is the STORED
      *  client's value, and an EXPLICIT null means the stored client was
      *  registered WITHOUT a resource indicator — that absence must survive a

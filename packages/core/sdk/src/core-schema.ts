@@ -278,6 +278,11 @@ export const coreTables = defineTables({
       // re-minted access token stays bound to the same resource. Null when the
       // provider doesn't use resource indicators.
       resource: nullableTextColumn("resource"),
+      // Provider-shaped, NON-secret extra parameters sent on EVERY token
+      // request this client makes (Auth0's `audience`, for example). Reserved
+      // OAuth protocol names are rejected on write and again on read; null in
+      // rows registered without one.
+      token_params: nullableJsonColumn("token_params"),
       // Where this oauth_client came from. Null in old databases is treated as
       // "manual" by the service layer.
       origin_kind: nullableTextColumn("origin_kind"),

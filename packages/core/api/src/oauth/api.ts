@@ -28,6 +28,7 @@ import {
   OAuthSessionNotFoundError,
   OAuthStartError,
   OAuthState,
+  OAuthTokenParamsSchema,
   OrgWriteDeniedError,
   Owner,
   ProviderKey,
@@ -70,6 +71,10 @@ const CreateClientPayload = Schema.Struct({
   clientSecret: Schema.String,
   tokenEndpointAuthMethod: Schema.optional(TokenEndpointAuthMethodSchema),
   resource: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Provider-shaped, NON-secret extra parameters (Auth0's `audience`, for
+   *  example) sent on every token request this client makes. OAuth protocol
+   *  parameter names are rejected at registration. */
+  tokenParams: Schema.optional(OAuthTokenParamsSchema),
   /** Integration whose connect dialog registered this manual app. Recorded so
    *  the picker matches it to this integration by intent, not root domain. */
   originIntegration: Schema.optional(Schema.NullOr(IntegrationSlug)),
@@ -120,6 +125,8 @@ const OAuthClientSummaryResponse = Schema.Struct({
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   clientId: Schema.String,
   tokenEndpointAuthMethod: Schema.optional(TokenEndpointAuthMethodSchema),
+  /** Omitted for rows registered without extra token parameters. */
+  tokenParams: Schema.optional(OAuthTokenParamsSchema),
   origin: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("manual") }),
     Schema.Struct({

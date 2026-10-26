@@ -35,6 +35,7 @@ import { ToolDetail, ToolDetailEmpty } from "../components/tool-detail";
 import type { ToolSummary } from "../components/tool-tree";
 import { AccountsSection } from "../components/accounts-section";
 import { IntegrationEditSheet } from "../components/metadata-edit-sheet";
+import { decodeOAuthTokenParams } from "../components/oauth-client-form";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs";
 import { authMethodsFromDescriptors, type AuthMethod } from "../lib/auth-placements";
 import { usePolicyActions } from "../hooks/use-policy-actions";
@@ -177,6 +178,10 @@ export function IntegrationDetailPage(props: {
       const authorizationUrl = search.get("authorizationUrl");
       const tokenUrl = search.get("tokenUrl");
       const resource = search.get("resource");
+      // A JSON map of provider-shaped token-request parameters (Auth0's
+      // `audience`, for example). Malformed data is DROPPED: the handoff URL is
+      // public request data and the rest of the prefill stays valid.
+      const tokenParams = decodeOAuthTokenParams(search.get("tokenParams"));
       return {
         ...(slug != null && slug.length > 0 ? { slug } : {}),
         ...(grant != null && grant.length > 0 ? { grant } : {}),
@@ -184,6 +189,7 @@ export function IntegrationDetailPage(props: {
         ...(authorizationUrl != null && authorizationUrl.length > 0 ? { authorizationUrl } : {}),
         ...(tokenUrl != null && tokenUrl.length > 0 ? { tokenUrl } : {}),
         ...(resource != null && resource.length > 0 ? { resource } : {}),
+        ...(tokenParams !== undefined ? { tokenParams } : {}),
       };
     })();
     return {

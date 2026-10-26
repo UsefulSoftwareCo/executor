@@ -693,6 +693,10 @@ describe("createExecutor", () => {
           clientId: "test-client",
           clientSecret: "test-secret",
           resource: server.resourceUrl,
+          // Auth0's Management API only issues a client-credentials token that
+          // names the API — the parameter rides on the mint (and, through the
+          // same stored row, on the proactive re-mint at refresh time).
+          tokenParams: { audience: "https://api.example.com/" },
         });
         expect(registered).toEqual(client);
 
@@ -725,6 +729,9 @@ describe("createExecutor", () => {
         );
         expect(tokenRequest).toBeDefined();
         expect(new URLSearchParams(tokenRequest!.body).get("resource")).toBe(server.resourceUrl);
+        expect(new URLSearchParams(tokenRequest!.body).get("audience")).toBe(
+          "https://api.example.com/",
+        );
 
         const out = yield* executor.execute(ToolAddress.make("tools.demo.org.oauth.run"), {});
         expect(out).toEqual({ ran: "run" });

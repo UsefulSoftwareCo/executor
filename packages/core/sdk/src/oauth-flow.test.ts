@@ -16,6 +16,7 @@ import {
 } from "./ids";
 import { authToolFailure } from "./auth-tool-failure";
 import { createExecutor } from "./executor";
+import { StorageError } from "./fuma-runtime";
 import { decodeOAuthCallbackState } from "./oauth";
 import { OAuthStartError } from "./oauth-client";
 import { missingGrantedOAuthScopes } from "./oauth-service";
@@ -964,6 +965,81 @@ describe("oauth.start / oauth.complete", () => {
           template: TEMPLATE,
         });
         expect(started.status).toBe("connected");
+      }),
+    ),
+  );
+
+  it.effect(
+    "client_credentials start sends the registered client's extra token parameters (Auth0 audience)",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const server = yield* serveOAuthTestServer({ scopes: ["read"] });
+          const { executor } = yield* makeTestWorkspaceHarness({
+            plugins,
+            redirectUri: null,
+          });
+          yield* executor.acme.seed();
+
+          yield* executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: server.authorizationEndpoint,
+            tokenUrl: server.tokenEndpoint,
+            grant: "client_credentials",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            // Auth0's Management API only issues a token whose `aud` names the
+            // API — the parameter is provider-shaped, not a protocol one.
+            tokenParams: { audience: "https://api.example.com/" },
+          });
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("cc"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("connected");
+
+          // The token endpoint saw the provider-shaped parameter on the mint.
+          const tokenCalls = (yield* server.requests).filter(
+            (request) => request.path === "/token",
+          );
+          expect(tokenCalls.length).toBeGreaterThan(0);
+          expect(
+            tokenCalls.every(
+              (request) =>
+                new URLSearchParams(request.body).get("audience") === "https://api.example.com/",
+            ),
+          ).toBe(true);
+        }),
+      ),
+  );
+
+  it.effect("createClient refuses token parameters that shadow protocol parameters", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executor } = yield* makeTestWorkspaceHarness({ plugins });
+        const error = yield* Effect.flip(
+          executor.oauth.createClient({
+            owner: "org",
+            slug: CLIENT,
+            authorizationUrl: "https://as.example.com/authorize",
+            tokenUrl: "https://as.example.com/token",
+            grant: "client_credentials",
+            clientId: "test-client",
+            clientSecret: "test-secret",
+            tokenParams: { grant_type: "password" },
+          }),
+        );
+        // `StorageError` carries a typed `message`; the tagged-error cast
+        // narrows the union so the read below is on a typed failure.
+        expect(Predicate.isTagged("StorageError")(error)).toBe(true);
+        const storageError = error as StorageError;
+        expect(storageError.message).toContain("protocol parameter");
       }),
     ),
   );

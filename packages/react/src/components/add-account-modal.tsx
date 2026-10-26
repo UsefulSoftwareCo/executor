@@ -1668,6 +1668,9 @@ function AddAccountModalView(props: AddAccountModalProps) {
       ...(oauthClientHandoff.resource ? { resource: oauthClientHandoff.resource } : {}),
       ...(grant ? { grant } : {}),
       ...(oauthClientHandoff.clientId ? { clientId: oauthClientHandoff.clientId } : {}),
+      ...(oauthClientHandoff.tokenParams != null
+        ? { tokenParams: oauthClientHandoff.tokenParams }
+        : {}),
     };
   }, [oauthClientHandoff]);
 

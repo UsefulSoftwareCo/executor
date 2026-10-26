@@ -20,6 +20,7 @@ import { Data, Effect, Option, Predicate, Schema } from "effect";
 import * as oauth from "oauth4webapi";
 
 import type { SubjectTokenType, TokenEndpointAuthMethod } from "./oauth-client";
+import { isReservedOAuthTokenParam } from "./oauth-client";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -1224,6 +1225,40 @@ const processTokenEndpointResponse = async (
 };
 
 // ---------------------------------------------------------------------------
+// Extra token-request parameters (provider-shaped, non-secret)
+// ---------------------------------------------------------------------------
+
+/** Refuse a client's extra token parameters that would shadow what the grant
+ *  protocol itself controls. The registration surface rejects these names
+ *  already; this is the same verdict on the request path, so no code path
+ *  (today's or a future one) can send a stored key as a protocol parameter. */
+export const assertExtraTokenParamsValid = (
+  extra: Readonly<Record<string, string>> | undefined,
+): void => {
+  for (const name of Object.keys(extra ?? {})) {
+    if (isReservedOAuthTokenParam(name)) {
+      // Thrown INSIDE the callers' `Effect.tryPromise` bodies, whose catch
+      // normalizes it into the helpers' declared `OAuth2Error` failure channel.
+      // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: typed-error throw normalized to a typed failure by the surrounding Effect.tryPromise catch
+      throw new OAuth2Error({
+        message: `Stored token parameter "${name}" is an OAuth protocol parameter, so it cannot be overridden.`,
+      });
+    }
+  }
+};
+
+/** Merge a client's extra token parameters into a request's form parameters. */
+export const appendExtraTokenParams = (
+  params: URLSearchParams,
+  extra: Readonly<Record<string, string>> | undefined,
+): void => {
+  assertExtraTokenParamsValid(extra);
+  for (const [name, value] of Object.entries(extra ?? {})) {
+    params.set(name, value);
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Exchange authorization code → tokens
 // ---------------------------------------------------------------------------
 
@@ -1244,6 +1279,10 @@ export type ExchangeAuthorizationCodeInput = {
    *  the token request when the client knows the resource it intends
    *  to call. */
   readonly resource?: string;
+  /** Provider-shaped extra parameters sent on this client's token requests
+   *  (Auth0's `audience`, for example). Reserved OAuth protocol names are
+   *  rejected before anything is sent. */
+  readonly extraTokenParams?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
@@ -1325,6 +1364,7 @@ export const exchangeAuthorizationCode = (
       if (input.resource) {
         params.set("resource", input.resource);
       }
+      appendExtraTokenParams(params, input.extraTokenParams);
       const response =
         input.requestFormat === "json"
           ? await jsonTokenEndpointRequest({
@@ -1378,6 +1418,10 @@ export type ExchangeClientCredentialsInput = {
   /** RFC 8707 Resource Indicator. MCP Authorization 2025-06-18 requires this
    *  on token requests when the client knows the protected resource. */
   readonly resource?: string;
+  /** Provider-shaped extra parameters sent on this client's token requests
+   *  (Auth0's `audience`, for example). Reserved OAuth protocol names are
+   *  rejected before anything is sent. */
+  readonly extraTokenParams?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
@@ -1401,6 +1445,7 @@ export const exchangeClientCredentials = (
       if (input.resource) {
         params.set("resource", input.resource);
       }
+      appendExtraTokenParams(params, input.extraTokenParams);
       const response = await oauth.clientCredentialsGrantRequest(
         as,
         client,
@@ -1448,6 +1493,10 @@ export type RefreshAccessTokenInput = {
    *  refresh requests so the new access token's audience is bound to
    *  the same resource. */
   readonly resource?: string;
+  /** Provider-shaped extra parameters sent on this client's token requests
+   *  (Auth0's `audience`, for example). Reserved OAuth protocol names are
+   *  rejected before anything is sent. */
+  readonly extraTokenParams?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
   readonly endpointUrlPolicy?: OAuthEndpointUrlPolicy;
   readonly fetch?: typeof globalThis.fetch;
@@ -1475,6 +1524,7 @@ export const refreshAccessToken = (
           input.clientAuth ?? DEFAULT_CLIENT_AUTH_METHOD,
         );
         const scope = scopeParameter(scopes);
+        assertExtraTokenParamsValid(input.extraTokenParams);
         const extraParams = new URLSearchParams();
         if (scope !== undefined) {
           extraParams.set("scope", scope);
@@ -1482,6 +1532,7 @@ export const refreshAccessToken = (
         if (input.resource) {
           extraParams.set("resource", input.resource);
         }
+        appendExtraTokenParams(extraParams, input.extraTokenParams);
         const additionalParameters =
           Array.from(extraParams.keys()).length > 0 ? extraParams : undefined;
         if (input.requestFormat === "json") {
@@ -1495,6 +1546,7 @@ export const refreshAccessToken = (
               refresh_token: input.refreshToken,
               ...(scope !== undefined ? { scope } : {}),
               ...(input.resource ? { resource: input.resource } : {}),
+              ...(input.extraTokenParams ?? {}),
             },
             timeoutMs: input.timeoutMs,
             endpointUrlPolicy: input.endpointUrlPolicy,

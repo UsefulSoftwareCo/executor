@@ -53,6 +53,70 @@ export type TokenEndpointAuthMethod = typeof TokenEndpointAuthMethodSchema.Type;
 export const isTokenEndpointAuthMethod = (value: unknown): value is TokenEndpointAuthMethod =>
   value === "body" || value === "basic" || value === "basic_raw";
 
+/** Extra, provider-selected parameters carried on EVERY token request a
+ *  registered client makes (the client-credentials exchange, the code
+ *  exchange, and refresh). Auth0's Management API only issues a
+ *  client-credentials token when the request names the API in `audience` — a
+ *  parameter that is entirely provider-shaped and NON-secret, so any
+ *  registered OAuth app can carry it.
+ *
+ *  `OAuth` protocol parameter names are rejected at registration and again
+ *  before every request, so a stored map can never shadow what the grant
+ *  itself sends (`grant_type`, `client_id`, `client_secret`, `scope`,
+ *  `resource`, `code`, `code_verifier`, `redirect_uri`, `refresh_token`). */
+export const OAuthTokenParamsSchema = Schema.Record(Schema.String, Schema.String).annotate({
+  identifier: "OAuthTokenParams",
+  description: "Provider-shaped, NON-secret extra parameters sent on this client's token requests.",
+});
+
+export type OAuthTokenParams = typeof OAuthTokenParamsSchema.Type;
+
+const TOKEN_PROTOCOL_PARAMS = new Set([
+  "grant_type",
+  "client_id",
+  "client_secret",
+  "scope",
+  "resource",
+  "code",
+  "code_verifier",
+  "redirect_uri",
+  "refresh_token",
+]);
+
+export const isReservedOAuthTokenParam = (name: string): boolean =>
+  TOKEN_PROTOCOL_PARAMS.has(name.toLowerCase());
+
+/** The first reserved name in `params`, when one exists — the message a
+ *  registration surface reports. Order-independent: reserved keys are refused
+ *  regardless of their value, because an OAuth protocol parameter is not
+ *  provider-selected data at all. */
+export const reservedOAuthTokenParamIn = (
+  params: Readonly<Record<string, string>> | undefined,
+): string | null => {
+  if (params === undefined) return null;
+  for (const name of Object.keys(params)) {
+    if (isReservedOAuthTokenParam(name)) return name;
+  }
+  return null;
+};
+
+/** Decode a nullable stored `token_params` value into the contract shape.
+ *  `undefined` means the row carries none (legacy rows, or an explicit null);
+ *  `null` means the row holds a NON-conforming value — the caller fails loudly
+ *  the same way it does for an unknown token-endpoint auth method, because this
+ *  map is sent verbatim on every token request. */
+export const parseStoredOAuthTokenParams = (
+  value: unknown,
+): OAuthTokenParams | undefined | null => {
+  if (value == null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  for (const [name, paramValue] of Object.entries(value)) {
+    if (typeof paramValue !== "string") return null;
+    if (isReservedOAuthTokenParam(name)) return null;
+  }
+  return value as OAuthTokenParams;
+};
+
 /** Decode a nullable stored value. `undefined` is the legacy/default body
  *  method; `null` means the row contains an invalid non-null value. */
 export const parseStoredTokenEndpointAuthMethod = (
@@ -139,6 +203,10 @@ export interface OAuthClient {
   /** RFC 8707 Resource Indicator (MCP). Carried so the refresh request can keep
    *  the re-minted token bound to the same resource. Null/omitted otherwise. */
   readonly resource?: string | null;
+  /** Provider-shaped, NON-secret parameters sent on every token request this
+   *  client makes (Auth0's `audience`, for example). Protocol parameter names
+   *  are rejected at registration. Omitted when the client carries none. */
+  readonly tokenParams?: Readonly<Record<string, string>>;
 }
 
 export type OAuthClientOrigin =
@@ -298,6 +366,8 @@ export interface OAuthClientSummary {
   readonly clientId: string;
   /** Omitted for legacy rows, which use client_secret_post. */
   readonly tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
+  /** Omitted for rows registered without extra token parameters. */
+  readonly tokenParams?: Readonly<Record<string, string>>;
   readonly origin: OAuthClientOrigin;
 }
 

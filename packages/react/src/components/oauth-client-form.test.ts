@@ -5,9 +5,11 @@ import { Schema } from "effect";
 import {
   canSubmitOAuthClientForm,
   initialOAuthClientOwner,
+  parseTokenParamsInput,
   preferredManualTokenEndpointAuthMethod,
   registrationScopes,
   resolveOriginIntegration,
+  type ParseTokenParamsResult,
 } from "./oauth-client-form";
 import {
   connectionOwnerOptionsForAccess,
@@ -23,6 +25,11 @@ const validBase = {
   authorizationUrl: "https://us.posthog.com/oauth/authorize",
   tokenUrl: "https://us.posthog.com/oauth/token",
 } as const;
+
+/** The failure reason of a token-parameter parse, with an unexpected success
+ *  reading as its own assertion failure below. */
+const failureMessage = (parsed: ParseTokenParamsResult): string =>
+  parsed.ok ? "unexpected: the input parsed" : parsed.message;
 
 const SlackDeepLinkManifest = Schema.Struct({
   oauth_config: Schema.Struct({
@@ -151,6 +158,40 @@ describe("OAuth client owner default", () => {
     const adminOptions = connectionOwnerOptionsForAccess("org_123", true);
     expect(normalizeConnectionOwner(defaultChoice, adminOptions)).toBe("org");
     expect(normalizeConnectionOwner("user", adminOptions)).toBe("user");
+  });
+});
+
+describe("parseTokenParamsInput", () => {
+  it("parses a JSON map of provider-shaped parameters", () => {
+    expect(parseTokenParamsInput('{"audience":"https://api.example.com/"}')).toEqual({
+      ok: true,
+      params: { audience: "https://api.example.com/" },
+    });
+  });
+
+  it("reports the empty field as no map, exactly like a blank resource", () => {
+    expect(parseTokenParamsInput("")).toEqual({ ok: true, params: null });
+    expect(parseTokenParamsInput("   ")).toEqual({ ok: true, params: null });
+  });
+
+  it("rejects non-JSON input", () => {
+    expect(failureMessage(parseTokenParamsInput("audience=https://api.example.com/"))).toMatch(
+      /JSON object/,
+    );
+  });
+
+  it("rejects a value that is not a flat string map", () => {
+    expect(failureMessage(parseTokenParamsInput('{"audience":123}'))).toMatch(/JSON object/);
+    expect(failureMessage(parseTokenParamsInput('["audience"]'))).toMatch(/JSON object/);
+  });
+
+  it("rejects names that would shadow OAuth protocol parameters", () => {
+    expect(failureMessage(parseTokenParamsInput('{"grant_type":"password"}'))).toMatch(
+      /protocol parameter/,
+    );
+    expect(failureMessage(parseTokenParamsInput('{"client_secret":"sneaky"}'))).toMatch(
+      /protocol parameter/,
+    );
   });
 });
 
