@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
 import type { R2Bucket } from "@cloudflare/workers-types";
+import { Miniflare } from "miniflare";
 
 import { StorageError, pluginBlobStore } from "@executor-js/sdk";
 
@@ -72,6 +73,48 @@ describe("makeR2BlobStore", () => {
       expect(yield* store.has("ns/p", "k")).toBe(false);
       expect(yield* store.get("ns/p", "k")).toBeNull();
     }),
+  );
+
+  it.effect("claims a minimal marker once across two Miniflare R2 adapters", () =>
+    Effect.acquireUseRelease(
+      Effect.sync(
+        () =>
+          new Miniflare({
+            modules: true,
+            script: 'export default { fetch() { return new Response("ok") } }',
+            r2Buckets: ["BUCKET"],
+            compatibilityDate: "2025-04-01",
+          }),
+      ),
+      (miniflare) =>
+        Effect.gen(function* () {
+          // Miniflare's R2 type uses its bundled undici Headers type while the
+          // host adapter is typed against workers-types. Both describe the same
+          // runtime bucket methods; keep the cast at this test boundary.
+          // oxlint-disable-next-line executor/no-double-cast -- Miniflare/workers-types Headers declarations differ
+          const bucket = (yield* Effect.promise(() =>
+            miniflare.getR2Bucket("BUCKET"),
+          )) as unknown as R2Bucket;
+          const first = makeR2BlobStore(bucket);
+          const second = makeR2BlobStore(bucket);
+          const results = yield* Effect.all(
+            [
+              first.claim("u:t:s/@pending-approval/@claim", "exec_1", "claimed"),
+              second.claim("u:t:s/@pending-approval/@claim", "exec_1", "claimed"),
+            ],
+            { concurrency: "unbounded" },
+          );
+          expect(results.filter(Boolean)).toHaveLength(1);
+
+          const marker = yield* Effect.promise(() =>
+            bucket.get("u:t:s/@pending-approval/@claim/exec_1"),
+          );
+          expect(marker).not.toBeNull();
+          if (marker === null) return;
+          expect(yield* Effect.promise(() => marker.text())).toBe("claimed");
+        }),
+      (miniflare) => Effect.promise(() => miniflare.dispose()),
+    ),
   );
 
   it.effect("bucket failures surface as StorageError", () =>

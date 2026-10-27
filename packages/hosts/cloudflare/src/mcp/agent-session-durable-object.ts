@@ -1,4 +1,4 @@
-import { Cause, Deferred, Effect, Exit, Option, Schema } from "effect";
+import { Cause, Data, Deferred, Effect, Exit, Option, Schema } from "effect";
 import type * as Tracer from "effect/Tracer";
 import type { Connection, ConnectionContext } from "agents";
 import { McpAgent } from "agents/mcp";
@@ -27,9 +27,14 @@ import {
   currentOrgWriteAccess,
   makeOrgWriteAccessState,
   type OrgWriteAccess,
+  type DelegationCapability,
 } from "@executor-js/sdk";
 
-import type { IncomingPropagationHeaders, McpElicitationMode } from "./do-headers";
+import type {
+  IncomingPropagationHeaders,
+  McpDelegationBinding,
+  McpElicitationMode,
+} from "./do-headers";
 import { classifyDurableObjectError, type DurableObjectFailure } from "./durable-object-errors";
 import type {
   McpExecutionOwnerDirectory,
@@ -88,6 +93,8 @@ interface McpSessionInitBase {
    *  `/mcp/toolkits/<slug>` toolkit), so the tool catalog is scoped to it. */
   readonly resource: McpResource;
   readonly webOrigin?: string;
+  /** Serializable grant binding; live scope is rebuilt after restore. */
+  readonly delegation?: McpDelegationBinding;
 }
 
 /** Live session initialization metadata from an authenticated principal. */
@@ -101,6 +108,10 @@ export interface McpSessionProps extends Record<string, unknown> {
 export type McpApprovalOwner = {
   readonly accountId: string;
   readonly organizationId: string;
+  readonly delegation?: McpDelegationBinding;
+  /** Current human role, when this identity came from the browser approval
+   * route. It is never accepted from the approval body. */
+  readonly orgRole?: "admin" | "member";
 };
 
 /** A model `resume` forwarded from another session of the same owner, carrying
@@ -112,6 +123,33 @@ export type McpModelResumeCaller = McpApprovalOwner & {
 /** Authenticated browser approver with a freshly resolved organization role. */
 export type McpApprovalPrincipal = McpApprovalOwner & {
   readonly orgRole: "admin" | "member";
+};
+
+/** A delegated session must have a host-authoritative resolver. The default is
+ * fail-closed so a persisted binding can never become ordinary access after a
+ * cold restore merely because a host forgot to wire its DB-backed service. */
+export class McpDelegationUnavailableError extends Data.TaggedError(
+  "McpDelegationUnavailableError",
+)<{}> {
+  override get message(): string {
+    return "Delegated session authorization is unavailable";
+  }
+}
+
+const sameDelegationBinding = (
+  left: McpDelegationBinding | undefined,
+  right: McpDelegationBinding | undefined,
+): boolean => {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.tenant === right.tenant &&
+    left.grantId === right.grantId &&
+    left.credentialId === right.credentialId &&
+    left.credentialRef === right.credentialRef &&
+    left.actorSubject === right.actorSubject &&
+    left.effectiveSubject === right.effectiveSubject &&
+    left.scopeVersion === right.scopeVersion
+  );
 };
 
 type McpSessionApprovalErrorResult =
@@ -173,6 +211,8 @@ interface SessionMetaBase {
    *  `buildMcpServer` scopes the tool catalog to it. */
   readonly resource: McpResource;
   readonly webOrigin?: string;
+  /** Persisted grant binding used for ownership and cold-restore checks. */
+  readonly delegation?: McpDelegationBinding;
   /**
    * Whether this session's client advertised MCP-Apps support at `initialize`.
    *
@@ -393,6 +433,37 @@ export abstract class McpAgentSessionDOBase<
     sessionMeta: SessionMeta,
     dbHandle: TDbHandle,
   ): Effect.Effect<BuiltMcpServer>;
+
+  /** Rebuild and revalidate delegated grant state from authoritative host
+   * storage. Implementations must read current membership and revocation state
+   * for every request; the serializable session binding is only an index. */
+  protected revalidateDelegation(
+    _binding: McpDelegationBinding,
+    _capability: DelegationCapability,
+  ): Effect.Effect<void, McpDelegationUnavailableError> {
+    return Effect.fail(new McpDelegationUnavailableError());
+  }
+
+  /**
+   * Record who approved a delegated execution. A delegated session must opt
+   * into a host-authoritative implementation; otherwise browser approval
+   * remains fail-closed and cannot silently lose human attribution.
+   */
+  protected auditBrowserApproval(
+    binding: McpDelegationBinding | undefined,
+    _approver: McpApprovalPrincipal,
+    _executionId: string,
+    _response: ResumeResponse,
+  ): Effect.Effect<void, McpDelegationUnavailableError> {
+    return binding === undefined ? Effect.void : Effect.fail(new McpDelegationUnavailableError());
+  }
+
+  private revalidateDelegationBinding(
+    binding: McpDelegationBinding | undefined,
+    capability: DelegationCapability,
+  ): Effect.Effect<void, McpDelegationUnavailableError> {
+    return binding === undefined ? Effect.void : this.revalidateDelegation(binding, capability);
+  }
 
   /**
    * Cheap, count-only proxies for what the runtime `buildMcpServer` just built
@@ -1643,9 +1714,14 @@ export abstract class McpAgentSessionDOBase<
         }
         const ownerMatches =
           identity.accountId === sessionMeta.userId &&
-          identity.organizationId === sessionMeta.organizationId;
+          identity.organizationId === sessionMeta.organizationId &&
+          sameDelegationBinding(identity.delegation, sessionMeta.delegation);
         const resourceMatches = mcpResourceKey(resource) === mcpResourceKey(sessionMeta.resource);
-        return ownerMatches && resourceMatches ? ("ok" as const) : ("forbidden" as const);
+        if (!ownerMatches || !resourceMatches) return "forbidden" as const;
+        yield* self.revalidateDelegationBinding(sessionMeta.delegation, {
+          operation: "invoke",
+        });
+        return "ok" as const;
       }).pipe(
         Effect.withSpan("McpSessionDO.validateMcpSessionOwner"),
         // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: DO RPC exposes Promise results
@@ -1663,11 +1739,14 @@ export abstract class McpAgentSessionDOBase<
     return Effect.runPromise(
       Effect.gen(function* () {
         yield* self.prepareErrorCaptureScope();
-        const owner = yield* self.validateApprovalIdentity(identity);
+        const owner = yield* self.validateApprovalIdentity(identity, "approval");
         if (owner !== "ok") return { status: owner } as const;
 
         const restored = yield* self.ensureRuntimeForApproval();
         if (!restored || !self.engine) return { status: "not_found" } as const;
+
+        const sessionMeta = yield* self.loadSessionMeta();
+        if (!sessionMeta) return { status: "not_found" } as const;
 
         const paused = yield* self.engine.getPausedExecution(executionId);
         if (!paused) return { status: "not_found" } as const;
@@ -1701,7 +1780,7 @@ export abstract class McpAgentSessionDOBase<
     return Effect.runPromise(
       Effect.gen(function* () {
         yield* self.prepareErrorCaptureScope();
-        const owner = yield* self.validateApprovalIdentity(identity);
+        const owner = yield* self.validateApprovalIdentity(identity, "resume");
         if (owner === "forbidden") return { status: "execution_forbidden" } as const;
         if (owner === "not_found") {
           return { status: "execution_expired" as const, ttlMs: PAUSED_APPROVAL_TIMEOUT_MS };
@@ -1769,15 +1848,19 @@ export abstract class McpAgentSessionDOBase<
     return Effect.runPromise(
       Effect.gen(function* () {
         yield* self.prepareErrorCaptureScope();
-        const owner = yield* self.validateApprovalIdentity(identity);
+        const owner = yield* self.validateApprovalIdentity(identity, "approval");
         if (owner !== "ok") return { status: owner } as const;
 
         const restored = yield* self.ensureRuntimeForApproval();
         if (!restored || !self.engine) return { status: "not_found" } as const;
 
+        const sessionMeta = yield* self.loadSessionMeta();
+        if (!sessionMeta) return { status: "not_found" } as const;
+
         const paused = yield* self.engine.getPausedExecution(executionId);
         if (!paused) return { status: "not_found" } as const;
 
+        yield* self.auditBrowserApproval(sessionMeta.delegation, identity, executionId, response);
         yield* self.recordApprovalResponse(executionId, {
           response,
           orgWriteAccess: identity.orgRole === "admin" ? "allowed" : "denied",
@@ -1879,15 +1962,27 @@ export abstract class McpAgentSessionDOBase<
 
   private validateApprovalIdentity(
     identity: McpApprovalOwner,
-  ): Effect.Effect<"ok" | "not_found" | "forbidden"> {
+    operation: "approval" | "resume" = "approval",
+  ): Effect.Effect<"ok" | "not_found" | "forbidden", McpDelegationUnavailableError> {
     const self = this;
     return Effect.gen(function* () {
       const sessionMeta = yield* self.loadSessionMeta();
       if (!sessionMeta) return "not_found" as const;
-      return identity.accountId === sessionMeta.userId &&
-        identity.organizationId === sessionMeta.organizationId
-        ? ("ok" as const)
-        : ("forbidden" as const);
+      const delegatedHumanApprover =
+        operation === "approval" &&
+        identity.delegation === undefined &&
+        sessionMeta.delegation !== undefined &&
+        identity.organizationId === sessionMeta.organizationId &&
+        (identity.accountId === sessionMeta.delegation.effectiveSubject ||
+          identity.orgRole === "admin");
+      const ownerMatches =
+        identity.organizationId === sessionMeta.organizationId &&
+        (delegatedHumanApprover ||
+          (identity.accountId === sessionMeta.userId &&
+            sameDelegationBinding(identity.delegation, sessionMeta.delegation)));
+      if (!ownerMatches) return "forbidden" as const;
+      yield* self.revalidateDelegationBinding(sessionMeta.delegation, { operation });
+      return "ok" as const;
     }).pipe(Effect.withSpan("mcp.session.validate_approval_identity"));
   }
 
@@ -1930,6 +2025,7 @@ export abstract class McpAgentSessionDOBase<
         owner: self.executionOwnerRoute(),
         accountId: sessionMeta.userId,
         organizationId: sessionMeta.organizationId,
+        ...(sessionMeta.delegation === undefined ? {} : { delegation: sessionMeta.delegation }),
         expiresAt: deadline.expiresAt,
         ttlMs: deadline.ttlMs,
       };
@@ -1988,11 +2084,13 @@ export abstract class McpAgentSessionDOBase<
       const identity: McpModelResumeCaller = {
         accountId: sessionMeta.userId,
         organizationId: sessionMeta.organizationId,
+        ...(sessionMeta.delegation === undefined ? {} : { delegation: sessionMeta.delegation }),
         orgWriteAccess: yield* currentOrgWriteAccess,
       };
       if (
         identity.accountId !== record.accountId ||
-        identity.organizationId !== record.organizationId
+        identity.organizationId !== record.organizationId ||
+        !sameDelegationBinding(identity.delegation, record.delegation)
       ) {
         return { status: "execution_forbidden" } as const;
       }

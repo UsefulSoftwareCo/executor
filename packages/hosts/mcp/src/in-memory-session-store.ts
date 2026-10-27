@@ -1,9 +1,13 @@
-import { Cause, Data, Effect, Layer } from "effect";
+import { Cause, Data, Effect, Exit, Layer } from "effect";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 
-import { formatPausedExecution, type ExecutionEngine } from "@executor-js/execution";
-import type { Executor, OrgWriteAccess } from "@executor-js/sdk";
+import {
+  formatPausedExecution,
+  type ExecutionEngine,
+  type ResumeResponse,
+} from "@executor-js/execution";
+import type { DelegationCapability, Executor, OrgWriteAccess } from "@executor-js/sdk";
 
 import {
   buildResumeApprovalUrl,
@@ -25,6 +29,7 @@ import {
   MCP_ORG_WRITE_ACCESS_HEADER,
   defaultMcpResource,
   mcpResourceKey,
+  McpDelegationUnavailableError,
   orgWriteAccessForPrincipal,
   principalOwns,
   withOrgWriteAccess,
@@ -121,6 +126,19 @@ export interface McpBuildServerOptions {
   readonly searchToolsEnabled?: boolean;
   /** The tool surface (`?mode=`): codemode (default) or passthrough. */
   readonly mode?: McpToolMode;
+}
+
+/** Trusted browser approval attribution supplied by the host. The approver is
+ * resolved from the host's current human session; it never comes from the
+ * approval request body. `owner` is the session principal captured at MCP
+ * initialization, so delegated execution remains bound to its original grant.
+ */
+export interface BrowserApprovalAuditInput {
+  readonly sessionId: string;
+  readonly executionId: string;
+  readonly owner: Principal;
+  readonly approver: Principal;
+  readonly response: ResumeResponse;
 }
 
 /** Build the per-session `McpServer` + engine for a principal (the host's engine + tools). */
@@ -243,6 +261,16 @@ export const makeInMemoryMcpSessionStore = (
     readonly sessionIdleTtlMs?: number;
     /** How often the sweep runs. Defaults to a quarter of the TTL. */
     readonly sessionSweepIntervalMs?: number;
+    /** Authoritative grant and current-membership check. Delegated sessions
+     * fail closed when this is absent. */
+    readonly revalidateDelegation?: (
+      principal: Extract<Principal, { readonly kind: "delegated" }>,
+      capability: DelegationCapability,
+    ) => Effect.Effect<void, unknown, never>;
+    /** Record the verified human approver for a delegated browser decision. */
+    readonly onBrowserApproval?: (
+      input: BrowserApprovalAuditInput,
+    ) => Effect.Effect<void, unknown, never>;
   } = {},
 ): InMemoryMcpSessionStore => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -263,6 +291,25 @@ export const makeInMemoryMcpSessionStore = (
   // out from under the request that is still using them. Counting requests in
   // flight makes "idle" mean what it says.
   const activeRequests = new Map<string, number>();
+
+  const revalidatePrincipal = (
+    principal: Principal,
+    capability: DelegationCapability,
+  ): Effect.Effect<void, unknown, never> => {
+    if (principal.kind !== "delegated") return Effect.void;
+    return options.revalidateDelegation
+      ? options.revalidateDelegation(principal, capability)
+      : Effect.fail(new McpDelegationUnavailableError());
+  };
+
+  const revalidateForDispatch = (
+    principal: Principal,
+    capability: DelegationCapability,
+  ): Effect.Effect<boolean> =>
+    revalidatePrincipal(principal, capability).pipe(
+      Effect.as(true),
+      Effect.catchCause(() => Effect.succeed(false)),
+    );
 
   const idleTtlMs = options.sessionIdleTtlMs ?? DEFAULT_SESSION_IDLE_TTL_MS;
   const sweepIntervalMs =
@@ -394,15 +441,24 @@ export const makeInMemoryMcpSessionStore = (
     const owner = owners.get(sessionId);
     if (!transport || !owner) return Effect.succeed("not-found");
     if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
-    owners.set(sessionId, { principal, resource });
-    touch(sessionId);
-    // Claim before the await, release in the finalizer — `runHandleRequest`
-    // already recovers every failure to a 500, but `ensuring` also covers an
-    // interrupt, so the counter cannot be left permanently raised (which would
-    // make the session immortal, the opposite leak).
-    beginRequest(sessionId);
-    return runHandleRequest(transport, request, orgWriteAccessForPrincipal(principal)).pipe(
-      Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
+    return revalidateForDispatch(principal, { operation: "invoke" }).pipe(
+      Effect.flatMap((authorized) => {
+        if (!authorized) {
+          return Effect.succeed<McpDispatchResult>(
+            jsonRpcError(403, -32003, "Delegated session is no longer authorized"),
+          );
+        }
+        owners.set(sessionId, { principal, resource });
+        touch(sessionId);
+        // Claim before the await, release in the finalizer — `runHandleRequest`
+        // already recovers every failure to a 500, but `ensuring` also covers an
+        // interrupt, so the counter cannot be left permanently raised (which would
+        // make the session immortal, the opposite leak).
+        beginRequest(sessionId);
+        return runHandleRequest(transport, request, orgWriteAccessForPrincipal(principal)).pipe(
+          Effect.ensuring(Effect.sync(() => endRequest(sessionId))),
+        );
+      }),
     );
   };
 
@@ -451,13 +507,30 @@ export const makeInMemoryMcpSessionStore = (
     resource: McpResource,
     request: Request,
   ): Effect.Effect<McpDispatchResult> => {
+    type OpenOutcome =
+      | { readonly kind: "built"; readonly built: BuiltMcpServer }
+      | { readonly kind: "denied" };
     let createdSessionId: string | null = null;
-    return buildServer(principal, {
-      ...buildOptionsFor(request, () => createdSessionId),
-      resource,
-    }).pipe(
-      Effect.flatMap(({ mcpServer, engine, executor, close }) =>
-        Effect.gen(function* () {
+    return revalidateForDispatch(principal, { operation: "catalog" }).pipe(
+      Effect.flatMap(
+        (
+          authorized,
+        ): Effect.Effect<OpenOutcome, McpEngineBuildError | McpPassthroughUnavailableError> =>
+          authorized
+            ? buildServer(principal, {
+                ...buildOptionsFor(request, () => createdSessionId),
+                resource,
+              }).pipe(Effect.map((built): OpenOutcome => ({ kind: "built", built })))
+            : Effect.succeed<OpenOutcome>({ kind: "denied" }),
+      ),
+      Effect.flatMap((outcome) => {
+        if (outcome.kind === "denied") {
+          return Effect.succeed<McpDispatchResult>(
+            jsonRpcError(403, -32003, "Delegated session is no longer authorized"),
+          );
+        }
+        const { mcpServer, engine, executor, close } = outcome.built;
+        return Effect.gen(function* () {
           const transport = new WebStandardStreamableHTTPServerTransport({
             sessionIdGenerator: () => crypto.randomUUID(),
             enableJsonResponse: true,
@@ -478,16 +551,11 @@ export const makeInMemoryMcpSessionStore = (
             if (sid) void dispose(sid, { server: true });
           };
           yield* Effect.promise(() => mcpServer.connect(transport));
-          // The session id is minted on the first (initialize) request, so we
-          // drive `handleRequest` here; if no id results we close eagerly.
           return yield* runHandleRequest(
             transport,
             request,
             orgWriteAccessForPrincipal(principal),
             () => {
-              // Nothing was ever registered under a session id, so `dispose` has
-              // no entry to work from — release the handles by hand, engine
-              // and executor included.
               void ignoreClose(null, "transport", () => transport.close());
               void ignoreClose(null, "server", () => mcpServer.close());
               void shutdownEngine(null, engine);
@@ -495,8 +563,8 @@ export const makeInMemoryMcpSessionStore = (
               if (close) void ignoreClose(null, "session", close);
             },
           );
-        }),
-      ),
+        });
+      }),
       // A build failure has nowhere typed to go in the envelope; render a 500.
       Effect.catchTags({
         McpEngineBuildError: () =>
@@ -541,7 +609,13 @@ export const makeInMemoryMcpSessionStore = (
   ): "allowed" | "not-found" | "forbidden" => {
     const owner = owners.get(sessionId);
     if (!owner) return "not-found";
-    if (principal && !principalOwns(owner.principal, principal)) return "forbidden";
+    if (!principal) return "allowed";
+    const delegatedApproval =
+      owner.principal.kind === "delegated" &&
+      principal.kind !== "delegated" &&
+      owner.principal.organizationId === principal.organizationId &&
+      (owner.principal.effectiveSubject === principal.accountId || principal.orgRole === "admin");
+    if (!delegatedApproval && !principalOwns(owner.principal, principal)) return "forbidden";
     return "allowed";
   };
 
@@ -549,11 +623,17 @@ export const makeInMemoryMcpSessionStore = (
   const pausedFromSession = (
     sessionId: string,
     executionId: string,
+    principal?: Principal,
   ): Promise<ReturnType<typeof formatPausedExecution> | null> => {
     const engine = engines.get(sessionId);
-    if (!engine) return Promise.resolve(null);
+    const owner = owners.get(sessionId);
+    if (!engine || !owner) return Promise.resolve(null);
     return Effect.runPromise(
-      engine.getPausedExecution(executionId).pipe(
+      (principal === undefined
+        ? Effect.void
+        : revalidatePrincipal(owner.principal, { operation: "approval", executionId })
+      ).pipe(
+        Effect.andThen(engine.getPausedExecution(executionId)),
         Effect.map((paused) => (paused ? formatPausedExecution(paused) : null)),
         Effect.orElseSucceed(() => null),
       ),
@@ -571,7 +651,7 @@ export const makeInMemoryMcpSessionStore = (
     const access = ownerAccess(sessionId, principal);
     if (access === "forbidden") return json({ error: "Forbidden" }, 403);
     if (access === "not-found") return json({ error: "Paused execution not found" }, 404);
-    const paused = await pausedFromSession(sessionId, decodeURIComponent(match[2]!));
+    const paused = await pausedFromSession(sessionId, decodeURIComponent(match[2]!), principal);
     if (!paused) return json({ error: "Paused execution not found" }, 404);
     return json({ text: paused.text, structured: paused.structured });
   };
@@ -591,7 +671,7 @@ export const makeInMemoryMcpSessionStore = (
     if (access === "not-found") return json({ error: "Paused execution not found" }, 404);
     // The session must still hold the paused execution — guards stale ids and
     // confirms the execution belongs to this session before recording.
-    const paused = await pausedFromSession(sessionId, executionId);
+    const paused = await pausedFromSession(sessionId, executionId, principal);
     if (!paused) return json({ error: "Paused execution not found" }, 404);
 
     const raw = await Effect.runPromise(
@@ -601,6 +681,21 @@ export const makeInMemoryMcpSessionStore = (
     );
     const response = raw === null ? null : decodeResumeResponse(raw);
     if (!response) return json({ error: "Invalid approval response" }, 400);
+
+    const owner = owners.get(sessionId);
+    if (!owner) return json({ error: "Paused execution not found" }, 404);
+    if (options.onBrowserApproval) {
+      const audit = await Effect.runPromiseExit(
+        options.onBrowserApproval({
+          sessionId,
+          executionId,
+          owner: owner.principal,
+          approver: principal ?? owner.principal,
+          response,
+        }),
+      );
+      if (Exit.isFailure(audit)) return json({ error: "Approval unavailable" }, 503);
+    }
 
     await Effect.runPromise(
       approvals.recordResponse(executionId, {

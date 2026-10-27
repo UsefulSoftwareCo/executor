@@ -21,6 +21,7 @@
 // ---------------------------------------------------------------------------
 
 import { Context, Effect, Schema } from "effect";
+import type { DelegationContext } from "@executor-js/sdk";
 
 /**
  * The provider-neutral resolved identity. Both self-host's AuthProvider impls
@@ -50,30 +51,58 @@ interface PrincipalBase {
   readonly roles: readonly string[];
 }
 
+/** A host-verified delegated caller. Delegated requests retain the actor and
+ * grant binding while deliberately carrying no target email, roles, or org
+ * write authority. The live SDK context is request-scoped and is optional at
+ * this identity boundary; MCP/session adapters rebuild it authoritatively. */
+export interface DelegatedPrincipal {
+  readonly kind: "delegated";
+  readonly accountId: string;
+  readonly organizationId: string;
+  readonly organizationName: string;
+  readonly organizationSlug?: string;
+  readonly email: "";
+  readonly name: null;
+  readonly avatarUrl: null;
+  readonly roles: readonly [];
+  readonly orgRoleModel: "organization";
+  readonly orgRole: "member";
+  readonly tenant: string;
+  readonly grantId: string;
+  readonly credentialId: string;
+  readonly credentialRef: string;
+  readonly actorSubject: string;
+  readonly effectiveSubject: string;
+  readonly scopeVersion: string;
+  readonly delegation?: DelegationContext;
+}
+
 /**
  * The provider-neutral resolved member identity. The role-model discriminant
  * makes it impossible for a role-less host to carry an authorizing org role.
  */
-export type Principal = PrincipalBase &
-  (
-    | {
-        readonly orgRoleModel: "organization";
-        /**
-         * The member's NORMALIZED workspace role for an `"organization"` model:
-         * `"admin"` may configure workspace-level state (org-owned rows, the
-         * integration catalog), `"member"` may only use it. Cloud maps its WorkOS
-         * membership role (`admin` / `member`); self-host maps Better Auth's org
-         * membership role (`owner` and `admin` → `"admin"`). It may be absent only
-         * at a legacy serialized boundary; an organization role model then denies
-         * workspace writes. A host without roles declares `orgRoleModel: "none"`.
-         */
-        readonly orgRole?: "admin" | "member";
-      }
-    | {
-        readonly orgRoleModel: "none";
-        readonly orgRole?: never;
-      }
-  );
+export type Principal =
+  | (PrincipalBase &
+      (
+        | {
+            readonly orgRoleModel: "organization";
+            /**
+             * The member's NORMALIZED workspace role for an `"organization"` model:
+             * `"admin"` may configure workspace-level state (org-owned rows, the
+             * integration catalog), `"member"` may only use it. Cloud maps its WorkOS
+             * membership role (`admin` / `member`); self-host maps Better Auth's org
+             * membership role (`owner` and `admin` → `"admin"`). It may be absent only
+             * at a legacy serialized boundary; an organization role model then denies
+             * workspace writes. A host without roles declares `orgRoleModel: "none"`.
+             */
+            readonly orgRole?: "admin" | "member";
+          }
+        | {
+            readonly orgRoleModel: "none";
+            readonly orgRole?: never;
+          }
+      ))
+  | DelegatedPrincipal;
 
 /**
  * An ORG-level credential (cloud's org-scoped API key), resolved. Deliberately
@@ -102,6 +131,9 @@ export interface PlatformPrincipal {
  *  credential. */
 export type ResolvedPrincipal = Principal | PlatformPrincipal;
 
+export const isDelegatedPrincipal = (value: ResolvedPrincipal): value is DelegatedPrincipal =>
+  value.kind === "delegated";
+
 export const isPlatformPrincipal = (value: ResolvedPrincipal): value is PlatformPrincipal =>
   value.kind === "platform";
 
@@ -120,27 +152,50 @@ export const isPlatformPrincipal = (value: ResolvedPrincipal): value is Platform
 export class AuthContext extends Context.Service<
   AuthContext,
   {
+    readonly kind?: "member" | "delegated" | "platform";
     readonly accountId: string | null;
     readonly organizationId: string;
     readonly email: string | null;
     readonly name: string | null;
     readonly avatarUrl: string | null;
     readonly roles: readonly string[];
+    readonly tenant?: string;
+    readonly grantId?: string;
+    readonly credentialId?: string;
+    readonly credentialRef?: string;
+    readonly actorSubject?: string;
+    readonly effectiveSubject?: string;
+    readonly scopeVersion?: string;
+    readonly delegation?: DelegationContext;
   }
 >()("@executor-js/api/AuthContext") {}
 
 /** Build the shared `AuthContext` value from a resolved `Principal`. */
 export const authContextFromPrincipal = (principal: Principal): AuthContext["Service"] => ({
+  kind: principal.kind,
   accountId: principal.accountId,
   organizationId: principal.organizationId,
   email: principal.email,
   name: principal.name,
   avatarUrl: principal.avatarUrl,
   roles: principal.roles,
+  ...(principal.kind === "delegated"
+    ? {
+        tenant: principal.tenant,
+        grantId: principal.grantId,
+        credentialId: principal.credentialId,
+        credentialRef: principal.credentialRef,
+        actorSubject: principal.actorSubject,
+        effectiveSubject: principal.effectiveSubject,
+        scopeVersion: principal.scopeVersion,
+        ...(principal.delegation ? { delegation: principal.delegation } : {}),
+      }
+    : {}),
 });
 
 /** The platform credential's `AuthContext`: org identity, no member fields. */
 export const authContextFromPlatform = (principal: PlatformPrincipal): AuthContext["Service"] => ({
+  kind: "platform",
   accountId: null,
   organizationId: principal.organizationId,
   email: null,

@@ -184,7 +184,7 @@ export {
 } from "./oauth-client";
 
 // Wire-level HTTP error schema for plugin HttpApiGroup definitions.
-export { InternalError } from "./api-errors";
+export { DelegationForbiddenError, InternalError } from "./api-errors";
 
 // Executor server connection contracts (browser-safe).
 export {
