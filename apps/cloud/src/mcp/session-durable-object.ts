@@ -44,6 +44,8 @@ import {
   type McpExecutionOwnerRoute,
 } from "@executor-js/cloudflare/mcp/execution-owner-directory";
 import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
+import { mcpClientChannelIdFromName } from "@executor-js/cloudflare/mcp/execution-owner-directory";
+import type { ClientManifest } from "./client-channel";
 import {
   buildExecuteDescription,
   parseIntegrationInventory,
@@ -350,6 +352,12 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         sessionMeta.organizationName,
         {
           mcpResource: sessionMeta.resource,
+          ...(sessionMeta.clientIdentity === undefined
+            ? {}
+            : { clientIdentity: sessionMeta.clientIdentity }),
+          ...(sessionMeta.clientManifestGeneration === undefined
+            ? {}
+            : { clientManifestGeneration: sessionMeta.clientManifestGeneration }),
           orgWrites: "request",
         },
       ).pipe(
@@ -380,6 +388,19 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         "mcp.session.integration_count": parseIntegrationInventory(description).length,
       };
       const sessionElicitationMode = sessionMeta.elicitationMode ?? "model";
+      const clientBinding = sessionMeta.clientIdentity;
+      const clientChannel = clientBinding
+        ? env.MCP_CLIENT_CHANNEL.get(
+            mcpClientChannelIdFromName(env.MCP_CLIENT_CHANNEL, clientBinding),
+          )
+        : null;
+      const clientManifest =
+        clientBinding && clientChannel
+          ? yield* Effect.tryPromise({
+              try: () => clientChannel.getManifest(clientBinding),
+              catch: () => null,
+            }).pipe(Effect.orElseSucceed(() => null))
+          : null;
       const mcpServer = yield* createExecutorMcpServer({
         engine,
         description,
@@ -413,6 +434,18 @@ export class McpSessionDOSqlite extends McpAgentSessionDOBase<Env, CloudSessionD
         pausedExecutionHooks: self.pausedExecutionHooks,
         pausedExecutionLeaseMs: PAUSED_APPROVAL_TIMEOUT_MS,
         resumeFallback: self.modelResumeFallback,
+        ...(clientManifest && clientChannel && clientBinding
+          ? {
+              clientManifest: clientManifest as ClientManifest,
+              invokeClient: (request: { readonly method: string; readonly params: unknown }) =>
+                clientChannel.invoke(
+                  clientBinding,
+                  sessionMeta.clientManifestGeneration ?? 0,
+                  request.method,
+                  request.params,
+                ),
+            }
+          : {}),
         elicitationMode:
           sessionElicitationMode === "browser"
             ? {

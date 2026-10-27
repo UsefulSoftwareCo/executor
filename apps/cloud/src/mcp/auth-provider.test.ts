@@ -25,7 +25,11 @@ import { Data, Effect, Layer, Predicate } from "effect";
 import { McpAuthProvider, orgWriteAccessForPrincipal } from "@executor-js/host-mcp";
 
 import { WorkOSError } from "../auth/errors";
-import { cloudMcpAuthProviderLayer, type CloudPrincipal } from "./auth-provider";
+import {
+  authenticateClientChannelToken,
+  cloudMcpAuthProviderLayer,
+  type CloudPrincipal,
+} from "./auth-provider";
 import {
   MCP_ORGANIZATION_HEADER,
   McpAuth,
@@ -33,6 +37,7 @@ import {
   mcpAuthorized,
   mcpUnauthorized,
 } from "./auth";
+import { authenticateClientToken, createClientChannelState } from "./client-channel";
 
 const ACCOUNT_ID = "user_test";
 const ORG_ID = "org_test";
@@ -96,6 +101,65 @@ const authenticateWith = (
   );
 
 describe("cloud MCP org-authorization classification", () => {
+  it("resolves channel credentials to durable identity and generation, rejecting invalid tokens", () => {
+    const state = createClientChannelState();
+    const binding = state.register(
+      { accountId: ACCOUNT_ID, organizationId: ORG_ID },
+      {
+        tools: [{ name: "alpha" }],
+        resources: [],
+        prompts: [],
+      },
+    );
+    expect(typeof binding).toBe("string");
+    if (typeof binding !== "string") return;
+    expect(authenticateClientToken(state, binding)).toEqual({
+      principal: { accountId: ACCOUNT_ID, organizationId: ORG_ID },
+      generation: 0,
+      binding,
+    });
+    expect(authenticateClientToken(state, "forged-token")).toBeNull();
+    state.disconnect(binding);
+    expect(authenticateClientToken(state, binding)).toBeNull();
+  });
+
+  it("authenticates supplied channel tokens against verified tenant identity", async () => {
+    const state = createClientChannelState();
+    const binding = state.register(
+      { accountId: ACCOUNT_ID, organizationId: ORG_ID },
+      {
+        tools: [{ name: "alpha" }],
+        resources: [],
+        prompts: [],
+      },
+    );
+    expect(typeof binding).toBe("string");
+    if (typeof binding !== "string") return;
+    const namespace = {
+      idFromName: (name: string) => name,
+      get: () => ({
+        authenticate: (token: string) => Promise.resolve(authenticateClientToken(state, token)),
+      }),
+    };
+    await expect(
+      authenticateClientChannelToken(namespace, binding, {
+        accountId: ACCOUNT_ID,
+        organizationId: ORG_ID,
+      }),
+    ).resolves.toMatchObject({ binding, generation: 0 });
+    await expect(
+      authenticateClientChannelToken(namespace, "invalid-token", {
+        accountId: ACCOUNT_ID,
+        organizationId: ORG_ID,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      authenticateClientChannelToken(namespace, binding, {
+        accountId: "other",
+        organizationId: ORG_ID,
+      }),
+    ).resolves.toBeNull();
+  });
   it.effect("WorkOS 5xx -> Unavailable (retryable 503, session preserved)", () =>
     Effect.gen(function* () {
       const outcome = yield* authenticateWith(stubOrgAuthFailing(new WorkOSError({ status: 503 })));

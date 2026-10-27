@@ -226,6 +226,10 @@ export const buildOAuthRedirectUri = (input: {
 
 export interface PluginsProviderContext {
   readonly mcpResource?: McpResource;
+  /** Server-verified client installation identity, if the session is linked. */
+  readonly clientIdentity?: string;
+  /** Capability manifest revision pinned to this MCP session. */
+  readonly clientManifestGeneration?: number;
 }
 
 export interface PluginsProviderShape {

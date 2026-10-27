@@ -68,6 +68,26 @@ import {
   authorizationServerMetadataResponse,
   protectedResourceMetadataResponse,
 } from "./oauth-metadata";
+import type { McpClientChannelDO } from "./client-channel-durable-object";
+import { clientChannelBelongsToPrincipal } from "./client-channel";
+import { mcpClientChannelIdFromName } from "@executor-js/cloudflare/mcp/execution-owner-directory";
+
+export interface McpClientChannelNamespace<Id> {
+  readonly idFromName: (name: string) => Id;
+  readonly get: (id: Id) => Pick<McpClientChannelDO, "authenticate">;
+}
+
+export const authenticateClientChannelToken = async <Id>(
+  namespace: McpClientChannelNamespace<Id>,
+  token: string,
+  principal: Pick<Principal, "accountId" | "organizationId">,
+) => {
+  if (!/^[0-9a-f-]{36}$/i.test(token)) return null;
+  const channel = namespace.get(mcpClientChannelIdFromName(namespace, token));
+  const identity = await channel.authenticate(token);
+  if (!clientChannelBelongsToPrincipal(identity, principal)) return null;
+  return identity;
+};
 
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
 const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:toolkitSlug`;

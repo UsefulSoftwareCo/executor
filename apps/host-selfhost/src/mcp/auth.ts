@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata } from "better-auth/plugins";
 
 import { IdentityProvider, isPlatformPrincipal } from "@executor-js/api/server";
@@ -10,6 +10,7 @@ import {
   type McpDiscoveryRoute,
   type Principal,
 } from "@executor-js/host-mcp";
+import { makeInMemoryMcpClientBridge } from "@executor-js/host-mcp/in-memory-client-bridge";
 
 import { isPrivileged } from "../admin/require-admin";
 import { BetterAuth } from "../auth/better-auth";
@@ -58,6 +59,25 @@ const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource"
 const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/mcp/toolkits/:toolkitSlug`;
 const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server";
 const TOOLKIT_MCP_SEGMENT = "/mcp/toolkits/";
+
+export class SelfHostMcpClientBridge extends Context.Service<
+  SelfHostMcpClientBridge,
+  ReturnType<typeof makeInMemoryMcpClientBridge>
+>()("@executor-js/host-selfhost/SelfHostMcpClientBridge") {}
+
+export const authenticateClientBinding = (
+  principal: Principal,
+  request: Request,
+  clientBridge: ReturnType<typeof makeInMemoryMcpClientBridge>,
+  challenge: string,
+): AuthOutcome => {
+  const token = request.headers.get("x-executor-client-token");
+  if (token === null) return authenticated(principal);
+  const binding = clientBridge.getBinding(token, principal);
+  return binding
+    ? authenticated(principal, binding.clientIdentity, binding.manifestGeneration)
+    : unauthorized(challenge);
+};
 
 const parseRoles = (role: string | null | undefined): ReadonlyArray<string> =>
   (role ?? "user")
@@ -153,145 +173,150 @@ const toolkitProtectedResourceMetadata = (
   });
 };
 
-export const selfHostMcpAuth: Layer.Layer<McpAuthProvider, never, BetterAuth | IdentityProvider> =
-  Layer.effect(
-    McpAuthProvider,
-    Effect.gen(function* () {
-      const { auth, organizationId, organizationName, organizationSlug } = yield* BetterAuth;
-      const fallback = yield* IdentityProvider;
+export const selfHostMcpAuth: Layer.Layer<
+  McpAuthProvider,
+  never,
+  BetterAuth | IdentityProvider | SelfHostMcpClientBridge
+> = Layer.effect(
+  McpAuthProvider,
+  Effect.gen(function* () {
+    const { auth, organizationId, organizationName, organizationSlug } = yield* BetterAuth;
+    const fallback = yield* IdentityProvider;
+    const clientBridge = yield* SelfHostMcpClientBridge;
 
-      const asMetadata = oAuthDiscoveryMetadata(auth);
-      const prMetadata = oAuthProtectedResourceMetadata(auth);
+    const asMetadata = oAuthDiscoveryMetadata(auth);
+    const prMetadata = oAuthProtectedResourceMetadata(auth);
 
-      const baseURL = auth.options.baseURL;
-      const resourceMetadataUrl = (request: Request): string =>
-        resourceMetadataUrlFor(baseURL, request);
+    const baseURL = auth.options.baseURL;
+    const resourceMetadataUrl = (request: Request): string =>
+      resourceMetadataUrlFor(baseURL, request);
 
-      // RFC 9728 challenge string carried on the Unauthorized outcome. Same shape
-      // as the envelope's default; we supply it explicitly to keep the 401's
-      // `WWW-Authenticate` fully owned by the provider.
-      const challengeFor = (request: Request): string =>
-        `Bearer resource_metadata="${resourceMetadataUrl(request)}"`;
+    // RFC 9728 challenge string carried on the Unauthorized outcome. Same shape
+    // as the envelope's default; we supply it explicitly to keep the 401's
+    // `WWW-Authenticate` fully owned by the provider.
+    const challengeFor = (request: Request): string =>
+      `Bearer resource_metadata="${resourceMetadataUrl(request)}"`;
 
-      const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
-        {
-          path: PROTECTED_RESOURCE_METADATA_PATH,
-          handler: (request) =>
-            Effect.promise(() => prMetadata(request)).pipe(
-              Effect.flatMap((response) =>
-                toolkitProtectedResourceMetadata(request, response, baseURL),
-              ),
+    const discoveryRoutes: ReadonlyArray<McpDiscoveryRoute> = [
+      {
+        path: PROTECTED_RESOURCE_METADATA_PATH,
+        handler: (request) =>
+          Effect.promise(() => prMetadata(request)).pipe(
+            Effect.flatMap((response) =>
+              toolkitProtectedResourceMetadata(request, response, baseURL),
             ),
-        },
-        {
-          path: TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH,
-          handler: (request) =>
-            Effect.promise(() => prMetadata(request)).pipe(
-              Effect.flatMap((response) =>
-                toolkitProtectedResourceMetadata(request, response, baseURL),
-              ),
-            ),
-        },
-        {
-          path: AUTHORIZATION_SERVER_METADATA_PATH,
-          handler: (request) => Effect.promise(() => asMetadata(request)),
-        },
-      ];
-
-      // Resolved once; `internalAdapter.findUserById` enriches an OAuth userId.
-      const context = yield* Effect.promise(() => auth.$context);
-
-      /** Enrich a bare OAuth `userId` into the full provider-neutral principal. */
-      const principalFromUserId = (userId: string): Effect.Effect<Principal | null> =>
-        Effect.gen(function* () {
-          const user = yield* Effect.promise(() => context.internalAdapter.findUserById(userId));
-          if (!user) return null;
-          // The workspace role, read from the INSTANCE org's membership row
-          // (an OAuth token carries no session, so the header-based
-          // `getActiveMemberRole` gate is out of reach — the adapter query
-          // answers the same question against the same table). FAIL CLOSED to
-          // "member": an infra fault demotes rather than escalates.
-          const membership = yield* Effect.promise(() =>
-            context.adapter.findOne<{ readonly role?: string | null }>({
-              model: "member",
-              where: [
-                { field: "userId", value: userId },
-                { field: "organizationId", value: organizationId },
-              ],
-            }),
-          ).pipe(Effect.orElseSucceed(() => null));
-          const orgRole =
-            membership?.role != null && isPrivileged(membership.role)
-              ? ("admin" as const)
-              : ("member" as const);
-          return {
-            accountId: user.id,
-            // Single-org self-host: OAuth tokens carry no active org, so pin to
-            // the seeded org (same default as the cookie/api-key path).
-            organizationId,
-            organizationName,
-            organizationSlug,
-            email: user.email ?? "",
-            name: user.name ?? null,
-            avatarUrl: user.image ?? null,
-            roles: parseRoles(userRole(user)),
-            orgRoleModel: "organization",
-            orgRole,
-          } satisfies Principal;
-        });
-
-      /** (a) The mcp() OAuth opaque bearer, with self-enforced expiry. */
-      const authenticateOAuthBearer = (request: Request): Effect.Effect<Principal | null> =>
-        Effect.gen(function* () {
-          const session = yield* Effect.promise(() =>
-            auth.api.getMcpSession({ headers: request.headers }),
-          );
-          if (!session) return null;
-          // GOTCHA: getMcpSession does NOT validate accessTokenExpiresAt — an
-          // expired token still resolves. Reject it here.
-          if (new Date(session.accessTokenExpiresAt).getTime() < Date.now()) return null;
-          return yield* principalFromUserId(session.userId);
-        }).pipe(Effect.orElseSucceed(() => null));
-
-      /** (b) The existing cookie / bearer-session / x-api-key path. The fallback's
-       * api `Principal` shape is byte-identical to host-mcp's `Principal`. The
-       * neutral seam can also resolve a platform credential, which self-host's
-       * identity never produces — narrowed away rather than asserted, so an MCP
-       * session can never bind to a subject-less credential if that changes. */
-      const authenticateSession = (request: Request): Effect.Effect<Principal | null> =>
-        fallback.authenticate(request).pipe(
-          Effect.map((principal) => (isPlatformPrincipal(principal) ? null : principal)),
-          Effect.catchTags({
-            Unauthorized: () => Effect.succeed(null),
-            NoOrganization: () => Effect.succeed(null),
-            ReadOnlyCredential: () => Effect.succeed(null),
-          }),
-        );
-
-      /**
-       * Try the OAuth bearer ONLY when a Bearer header is present (no
-       * getMcpSession round-trip on cookie requests), then the cookie/api-key
-       * fallback. Self-host always pins an org, so the outcome is always
-       * Authenticated or Unauthorized.
-       */
-      const authenticate = (request: Request): Effect.Effect<AuthOutcome> =>
-        (hasBearer(request)
-          ? authenticateOAuthBearer(request).pipe(
-              Effect.flatMap((principal) =>
-                principal ? Effect.succeed(principal) : authenticateSession(request),
-              ),
-            )
-          : authenticateSession(request)
-        ).pipe(
-          Effect.map((principal) =>
-            principal ? authenticated(principal) : unauthorized(challengeFor(request)),
           ),
-        );
+      },
+      {
+        path: TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH,
+        handler: (request) =>
+          Effect.promise(() => prMetadata(request)).pipe(
+            Effect.flatMap((response) =>
+              toolkitProtectedResourceMetadata(request, response, baseURL),
+            ),
+          ),
+      },
+      {
+        path: AUTHORIZATION_SERVER_METADATA_PATH,
+        handler: (request) => Effect.promise(() => asMetadata(request)),
+      },
+    ];
 
-      return {
-        discoveryRoutes,
-        resourceMetadataUrl,
-        authenticate,
-      };
-    }),
-  );
+    // Resolved once; `internalAdapter.findUserById` enriches an OAuth userId.
+    const context = yield* Effect.promise(() => auth.$context);
+
+    /** Enrich a bare OAuth `userId` into the full provider-neutral principal. */
+    const principalFromUserId = (userId: string): Effect.Effect<Principal | null> =>
+      Effect.gen(function* () {
+        const user = yield* Effect.promise(() => context.internalAdapter.findUserById(userId));
+        if (!user) return null;
+        // The workspace role, read from the INSTANCE org's membership row
+        // (an OAuth token carries no session, so the header-based
+        // `getActiveMemberRole` gate is out of reach — the adapter query
+        // answers the same question against the same table). FAIL CLOSED to
+        // "member": an infra fault demotes rather than escalates.
+        const membership = yield* Effect.promise(() =>
+          context.adapter.findOne<{ readonly role?: string | null }>({
+            model: "member",
+            where: [
+              { field: "userId", value: userId },
+              { field: "organizationId", value: organizationId },
+            ],
+          }),
+        ).pipe(Effect.orElseSucceed(() => null));
+        const orgRole =
+          membership?.role != null && isPrivileged(membership.role)
+            ? ("admin" as const)
+            : ("member" as const);
+        return {
+          accountId: user.id,
+          // Single-org self-host: OAuth tokens carry no active org, so pin to
+          // the seeded org (same default as the cookie/api-key path).
+          organizationId,
+          organizationName,
+          organizationSlug,
+          email: user.email ?? "",
+          name: user.name ?? null,
+          avatarUrl: user.image ?? null,
+          roles: parseRoles(userRole(user)),
+          orgRoleModel: "organization",
+          orgRole,
+        } satisfies Principal;
+      });
+
+    /** (a) The mcp() OAuth opaque bearer, with self-enforced expiry. */
+    const authenticateOAuthBearer = (request: Request): Effect.Effect<Principal | null> =>
+      Effect.gen(function* () {
+        const session = yield* Effect.promise(() =>
+          auth.api.getMcpSession({ headers: request.headers }),
+        );
+        if (!session) return null;
+        // GOTCHA: getMcpSession does NOT validate accessTokenExpiresAt — an
+        // expired token still resolves. Reject it here.
+        if (new Date(session.accessTokenExpiresAt).getTime() < Date.now()) return null;
+        return yield* principalFromUserId(session.userId);
+      }).pipe(Effect.orElseSucceed(() => null));
+
+    /** (b) The existing cookie / bearer-session / x-api-key path. The fallback's
+     * api `Principal` shape is byte-identical to host-mcp's `Principal`. The
+     * neutral seam can also resolve a platform credential, which self-host's
+     * identity never produces — narrowed away rather than asserted, so an MCP
+     * session can never bind to a subject-less credential if that changes. */
+    const authenticateSession = (request: Request): Effect.Effect<Principal | null> =>
+      fallback.authenticate(request).pipe(
+        Effect.map((principal) => (isPlatformPrincipal(principal) ? null : principal)),
+        Effect.catchTags({
+          Unauthorized: () => Effect.succeed(null),
+          NoOrganization: () => Effect.succeed(null),
+          ReadOnlyCredential: () => Effect.succeed(null),
+        }),
+      );
+
+    /**
+     * Try the OAuth bearer ONLY when a Bearer header is present (no
+     * getMcpSession round-trip on cookie requests), then the cookie/api-key
+     * fallback. Self-host always pins an org, so the outcome is always
+     * Authenticated or Unauthorized.
+     */
+    const authenticate = (request: Request): Effect.Effect<AuthOutcome> =>
+      (hasBearer(request)
+        ? authenticateOAuthBearer(request).pipe(
+            Effect.flatMap((principal) =>
+              principal ? Effect.succeed(principal) : authenticateSession(request),
+            ),
+          )
+        : authenticateSession(request)
+      ).pipe(
+        Effect.map((principal) => {
+          if (!principal) return unauthorized(challengeFor(request));
+          return authenticateClientBinding(principal, request, clientBridge, challengeFor(request));
+        }),
+      );
+
+    return {
+      discoveryRoutes,
+      resourceMetadataUrl,
+      authenticate,
+    };
+  }),
+);

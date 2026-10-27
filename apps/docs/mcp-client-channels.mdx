@@ -1,0 +1,142 @@
+---
+title: Persistent MCP client channels
+description: "How an authenticated MCP client can expose its own tools, resources, and prompts through an Executor session."
+---
+
+An MCP client channel lets an authenticated client expose a declared set of its
+own tools, resources, and prompts through Executor. Executor publishes that
+manifest in the MCP session and routes calls back to the client that registered
+it. The channel is separate from Executor's ordinary integration catalog and
+does not grant access to another client's capabilities.
+
+This is an Executor-specific protocol, not an MCP transport extension. The
+client must authenticate with its normal Executor credentials for registration,
+the WebSocket, and MCP requests.
+
+## Manifest
+
+The manifest is JSON with three arrays. Tool and prompt entries use `name`;
+resource entries use `uri`.
+
+```json
+{
+  "tools": [
+    {
+      "name": "read_workspace",
+      "description": "Read a file from the approved workspace",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "path": { "type": "string" } },
+        "required": ["path"]
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "workspace://README.md",
+      "name": "README",
+      "mimeType": "text/markdown"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "review_file",
+      "description": "Review a workspace file",
+      "arguments": [{ "name": "path", "required": true }]
+    }
+  ]
+}
+```
+
+Only names and descriptions are declarations; they do not enforce permissions
+inside the client. The client remains responsible for applying its own access
+checks when handling a request.
+
+## Cloud registration
+
+Register with `POST /mcp/client-channel` using the usual bearer credentials and
+a JSON body containing `manifest`:
+
+```http
+POST /mcp/client-channel
+Authorization: Bearer <executor-access-token>
+Content-Type: application/json
+
+{"manifest":{"tools":[],"resources":[],"prompts":[]}}
+```
+
+A successful registration returns `201 Created` with a channel token, WebSocket
+URL, and initial manifest generation:
+
+```json
+{
+  "token": "<opaque-channel-token>",
+  "websocket": "https://executor.example/mcp/client-channel",
+  "generation": 0
+}
+```
+
+Connect to the returned URL with a WebSocket upgrade, the same Executor bearer,
+and `x-executor-client-token: <opaque-channel-token>`. The bearer identifies the
+authenticated account and organization; the server-issued token selects that
+client's registered manifest. Both checks must succeed before the socket is
+accepted.
+
+## Self-host registration
+
+Open a WebSocket upgrade to `GET /api/mcp/client-channel` using the normal
+authenticated credentials. After the upgrade, send the manifest in the first
+frame:
+
+```json
+{
+  "type": "initialize",
+  "manifest": { "tools": [], "resources": [], "prompts": [] }
+}
+```
+
+The server responds with a `bound` frame containing an opaque
+`bindingToken`, a server-assigned `clientIdentity`, and `manifestGeneration`.
+Keep the token secret. Use it as `x-executor-client-token` on subsequent MCP
+HTTP requests, together with the normal Executor credentials.
+
+## Invocation and replies
+
+Executor sends capability calls to the registered WebSocket as JSON frames:
+
+```json
+{
+  "id": "<request-id>",
+  "method": "tools/call",
+  "params": { "name": "read_workspace", "arguments": { "path": "README.md" } }
+}
+```
+
+Supported methods are `tools/call`, `resources/read`, and `prompts/get`. The
+client replies with the same `id` and either a `result` or an `error`:
+
+```json
+{ "id": "<request-id>", "result": { "content": [{ "type": "text", "text": "..." }] } }
+```
+
+Executor checks each request against the registered manifest and routes it only
+to that channel. MCP discovery lists only the manifest's declared client-owned
+capabilities; normal Executor tools remain available according to the session's
+usual configuration.
+
+## Lifecycle and security
+
+- Treat the channel token as a bearer secret. Send it only in the
+  `x-executor-client-token` header over HTTPS/WSS; never put it in a URL,
+  logs, or client-controlled identity fields.
+- Keep the WebSocket open while the client expects to receive calls. Closing
+  the socket invalidates that binding; register and bind a new channel after
+  reconnecting.
+- Use a distinct registration per client instance. The server binds each
+  registration and MCP session to the authenticated principal, client identity,
+  and manifest generation. A different client cannot resume that session.
+- A manifest describes available capabilities but does not grant authority.
+  The client must enforce its own tool/resource access policy, and MCP calls
+  remain subject to Executor's normal authentication and session checks.
+- WebSocket messages and manifests are size-limited. Keep manifests concise and
+  reject requests the client does not recognize.

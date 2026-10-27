@@ -5,6 +5,9 @@
 declare global {
   namespace Cloudflare {
     interface Env {
+      MCP_CLIENT_CHANNEL: DurableObjectNamespace<
+        import("./mcp/client-channel-durable-object").McpClientChannelDO
+      >;
       /** TOTP enrollment and verification attempts; absence refuses verification. */
       ADMIN_MFA_RATE_LIMITER?: {
         readonly limit: (options: {

@@ -11,6 +11,8 @@ import {
   type McpBuildServer,
   type McpBuildServerOptions,
 } from "./in-memory-session-store";
+import { makeInMemoryMcpClientBridge } from "./in-memory-client-bridge";
+import type { McpClientSessionResolver } from "./in-memory-client-bridge";
 import { defaultMcpResource, type Principal } from "./seams";
 import { createExecutorMcpServer } from "./tool-server";
 
@@ -23,6 +25,11 @@ const TEST_PRINCIPAL: Principal = {
   avatarUrl: null,
   roles: ["user"],
   orgRoleModel: "organization",
+};
+
+const TEST_CLIENT_RESOLVER: McpClientSessionResolver = {
+  getManifestForIdentity: () => ({ tools: [], resources: [], prompts: [] }),
+  requestForIdentity: () => Promise.resolve(null),
 };
 
 it("preserves native elicitation mode when creating an in-memory MCP session", async () => {
@@ -58,6 +65,237 @@ it("preserves native elicitation mode when creating an in-memory MCP session", a
   expect(result).toBeInstanceOf(Response);
   expect((result as Response).status).toBe(500);
   expect(buildOptions?.elicitationMode).toEqual({ mode: "native" });
+});
+
+it("fails closed when an authenticated client binding has no exact manifest", async () => {
+  let buildCalled = false;
+  const sessions = makeInMemoryMcpSessionStore(() => {
+    buildCalled = true;
+    return Effect.fail(new McpEngineBuildError({ cause: "should not build" }));
+  });
+
+  const response = await Effect.runPromise(
+    sessions.store.dispatch({
+      request: new Request("https://executor.test/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+      }),
+      principal: TEST_PRINCIPAL,
+      clientIdentity: "client-a",
+      clientManifestGeneration: 1,
+      resource: defaultMcpResource,
+      sessionId: null,
+      method: "POST",
+    }),
+  );
+
+  expect(response).toBeInstanceOf(Response);
+  expect((response as Response).status).toBe(403);
+  expect(buildCalled).toBe(false);
+});
+
+it("rejects reuse of an MCP session by a different authenticated client", async () => {
+  const sessions = makeInMemoryMcpSessionStore(
+    () =>
+      createExecutorMcpServer({ engine: makeIdleTestEngine() }).pipe(
+        Effect.map((mcpServer) => ({ mcpServer, engine: makeIdleTestEngine() })),
+      ),
+    { clientSessionResolver: TEST_CLIENT_RESOLVER },
+  );
+  const sessionId = await openSession(
+    sessions,
+    TEST_PRINCIPAL,
+    "https://executor.test/mcp",
+    "client-a",
+  );
+
+  const result = await Effect.runPromise(
+    sessions.store.dispatch({
+      request: new Request("https://executor.test/mcp", {
+        method: "POST",
+        headers: {
+          ...MCP_POST_HEADERS,
+          "mcp-session-id": sessionId,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+        }),
+      }),
+      principal: TEST_PRINCIPAL,
+      clientIdentity: "client-b",
+      resource: defaultMcpResource,
+      sessionId,
+      method: "POST",
+    }),
+  );
+
+  expect(result).toBe("forbidden");
+
+  const unlinkedResult = await Effect.runPromise(
+    sessions.store.dispatch({
+      request: new Request("https://executor.test/mcp", {
+        method: "POST",
+        headers: {
+          ...MCP_POST_HEADERS,
+          "mcp-session-id": sessionId,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/list",
+        }),
+      }),
+      principal: TEST_PRINCIPAL,
+      resource: defaultMcpResource,
+      sessionId,
+      method: "POST",
+    }),
+  );
+
+  expect(unlinkedResult).toBe("forbidden");
+  await sessions.close();
+});
+
+it("builds each session with only its authenticated client identity", async () => {
+  const identities: Array<string | undefined> = [];
+  const sessions = makeInMemoryMcpSessionStore(
+    (_principal, options) => {
+      identities.push(options?.clientIdentity);
+      return createExecutorMcpServer({ engine: makeIdleTestEngine() }).pipe(
+        Effect.map((mcpServer) => ({ mcpServer, engine: makeIdleTestEngine() })),
+      );
+    },
+    { clientSessionResolver: TEST_CLIENT_RESOLVER },
+  );
+
+  await openSession(sessions, TEST_PRINCIPAL, "https://executor.test/mcp", "client-a");
+  await openSession(sessions, TEST_PRINCIPAL, "https://executor.test/mcp", "client-b");
+
+  expect(identities).toEqual(["client-a", "client-b"]);
+  await sessions.close();
+});
+
+it("requires a new MCP session after a linked client's manifest changes", async () => {
+  const sessions = makeInMemoryMcpSessionStore(
+    () =>
+      createExecutorMcpServer({ engine: makeIdleTestEngine() }).pipe(
+        Effect.map((mcpServer) => ({ mcpServer, engine: makeIdleTestEngine() })),
+      ),
+    { clientSessionResolver: TEST_CLIENT_RESOLVER },
+  );
+  const sessionId = await openSession(
+    sessions,
+    TEST_PRINCIPAL,
+    "https://executor.test/mcp",
+    "client-a",
+    1,
+  );
+
+  const requestForGeneration = (clientManifestGeneration: number) =>
+    sessions.store.dispatch({
+      request: new Request("https://executor.test/mcp", {
+        method: "POST",
+        headers: {
+          ...MCP_POST_HEADERS,
+          "mcp-session-id": sessionId,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+      }),
+      principal: TEST_PRINCIPAL,
+      clientIdentity: "client-a",
+      clientManifestGeneration,
+      resource: defaultMcpResource,
+      sessionId,
+      method: "POST",
+    });
+
+  expect(await Effect.runPromise(requestForGeneration(1))).toBeInstanceOf(Response);
+  expect(await Effect.runPromise(requestForGeneration(2))).toBe("forbidden");
+  await sessions.close();
+});
+
+it("routes same-named manifest tools to their originating client only", async () => {
+  const bridge = makeInMemoryMcpClientBridge();
+  const makeClient = (label: string) => {
+    let connection: ReturnType<typeof bridge.connect>;
+    connection = bridge.connect({
+      principal: TEST_PRINCIPAL,
+      manifest: {
+        tools: [{ name: "client_tool", description: `${label} tool` }],
+        resources: [],
+        prompts: [],
+      },
+      send: (frame) => {
+        connection.respond(frame.id, { content: [{ type: "text", text: label }] });
+      },
+    });
+    return {
+      identity: bridge.getBinding(connection.bindingToken, TEST_PRINCIPAL)!.clientIdentity,
+      generation: connection.manifestGeneration,
+    };
+  };
+  const clientA = makeClient("A");
+  const clientB = makeClient("B");
+  const sessions = makeInMemoryMcpSessionStore(
+    (_principal, options) =>
+      createExecutorMcpServer({
+        engine: makeIdleTestEngine(),
+        ...(options?.clientManifest === undefined
+          ? {}
+          : { clientManifest: options.clientManifest }),
+        ...(options?.invokeClient === undefined ? {} : { invokeClient: options.invokeClient }),
+      }).pipe(Effect.map((mcpServer) => ({ mcpServer, engine: makeIdleTestEngine() }))),
+    { clientSessionResolver: bridge },
+  );
+  const sessionA = await openSession(
+    sessions,
+    TEST_PRINCIPAL,
+    "https://executor.test/mcp",
+    clientA.identity,
+    clientA.generation,
+  );
+  const sessionB = await openSession(
+    sessions,
+    TEST_PRINCIPAL,
+    "https://executor.test/mcp",
+    clientB.identity,
+    clientB.generation,
+  );
+  const call = async (sessionId: string, identity: string, generation: number) =>
+    Effect.runPromise(
+      sessions.store.dispatch({
+        request: new Request("https://executor.test/mcp", {
+          method: "POST",
+          headers: {
+            ...MCP_POST_HEADERS,
+            "mcp-session-id": sessionId,
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 7,
+            method: "tools/call",
+            params: { name: "client_tool", arguments: {} },
+          }),
+        }),
+        principal: TEST_PRINCIPAL,
+        clientIdentity: identity,
+        clientManifestGeneration: generation,
+        resource: defaultMcpResource,
+        sessionId,
+        method: "POST",
+      }),
+    );
+
+  const [responseA, responseB] = await Promise.all([
+    call(sessionA, clientA.identity, clientA.generation),
+    call(sessionB, clientB.identity, clientB.generation),
+  ]);
+  expect(await (responseA as Response).text()).toContain('"text":"A"');
+  expect(await (responseB as Response).text()).toContain('"text":"B"');
+  await sessions.close();
 });
 
 /** A do-nothing engine: the eviction test drives session lifetime, not tools. */
@@ -127,6 +365,8 @@ const openSession = async (
   sessions: TestSessionStore,
   principal: Principal = TEST_PRINCIPAL,
   requestUrl = "https://executor.test/mcp",
+  clientIdentity?: string,
+  clientManifestGeneration?: number,
 ): Promise<string> => {
   const response = (await Effect.runPromise(
     sessions.store.dispatch({
@@ -148,6 +388,10 @@ const openSession = async (
         }),
       }),
       principal,
+      ...(clientIdentity === undefined ? {} : { clientIdentity }),
+      ...(clientIdentity === undefined
+        ? {}
+        : { clientManifestGeneration: clientManifestGeneration ?? 1 }),
       resource: defaultMcpResource,
       sessionId: null,
       method: "POST",

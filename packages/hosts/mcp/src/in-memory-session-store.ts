@@ -20,6 +20,11 @@ import {
   type InProcessBrowserApprovalStore,
 } from "./browser-approval-store";
 import { jsonRpcErrorBody, preInitializeMethodNotFound } from "./envelope";
+import type {
+  McpClientManifest,
+  McpClientRequest,
+  McpClientSessionResolver,
+} from "./in-memory-client-bridge";
 import {
   McpSessionStore,
   MCP_ORG_WRITE_ACCESS_HEADER,
@@ -107,6 +112,14 @@ export interface BuiltMcpServer {
 /** The browser-mode wiring the store hands a build call when a session opts in. */
 export interface McpBuildServerOptions {
   readonly resource?: McpResource;
+  /** Authenticated client identity used to select session-scoped capabilities. */
+  readonly clientIdentity?: string;
+  /** Manifest revision captured when this MCP session was initialized. */
+  readonly clientManifestGeneration?: number;
+  /** Exact manifest snapshot selected by the authenticated binding. */
+  readonly clientManifest?: McpClientManifest;
+  /** Routes capability calls back to the authenticated originating client. */
+  readonly invokeClient?: (request: McpClientRequest) => Promise<unknown>;
   readonly elicitationMode?:
     | { readonly mode: "browser"; readonly approvalUrl: (executionId: string) => string }
     | { readonly mode: "model" }
@@ -213,15 +226,21 @@ const RESUME_PATH = /^\/api\/mcp-sessions\/([^/?#]+)\/executions\/([^/?#]+)\/res
 
 interface SessionOwner {
   readonly principal: Principal;
+  readonly clientIdentity: string | null;
+  readonly clientManifestGeneration: number | null;
   readonly resource: McpResource;
 }
 
 const sessionOwnerMatches = (
   owner: SessionOwner,
   principal: Principal,
+  clientIdentity: string | undefined,
+  clientManifestGeneration: number | undefined,
   resource: McpResource,
 ): boolean =>
   principalOwns(owner.principal, principal) &&
+  owner.clientIdentity === (clientIdentity ?? null) &&
+  owner.clientManifestGeneration === (clientManifestGeneration ?? null) &&
   mcpResourceKey(owner.resource) === mcpResourceKey(resource);
 
 /**
@@ -243,6 +262,8 @@ export const makeInMemoryMcpSessionStore = (
     readonly sessionIdleTtlMs?: number;
     /** How often the sweep runs. Defaults to a quarter of the TTL. */
     readonly sessionSweepIntervalMs?: number;
+    /** Resolver for authenticated, manifest-bound client sessions. */
+    readonly clientSessionResolver?: McpClientSessionResolver;
   } = {},
 ): InMemoryMcpSessionStore => {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -387,14 +408,22 @@ export const makeInMemoryMcpSessionStore = (
   const forward = (
     sessionId: string,
     principal: Principal,
+    clientIdentity: string | undefined,
+    clientManifestGeneration: number | undefined,
     resource: McpResource,
     request: Request,
   ): Effect.Effect<McpDispatchResult> => {
     const transport = transports.get(sessionId);
     const owner = owners.get(sessionId);
     if (!transport || !owner) return Effect.succeed("not-found");
-    if (!sessionOwnerMatches(owner, principal, resource)) return Effect.succeed("forbidden");
-    owners.set(sessionId, { principal, resource });
+    if (!sessionOwnerMatches(owner, principal, clientIdentity, clientManifestGeneration, resource))
+      return Effect.succeed("forbidden");
+    owners.set(sessionId, {
+      principal,
+      clientIdentity: clientIdentity ?? null,
+      clientManifestGeneration: clientManifestGeneration ?? null,
+      resource,
+    });
     touch(sessionId);
     // Claim before the await, release in the finalizer — `runHandleRequest`
     // already recovers every failure to a 500, but `ensuring` also covers an
@@ -448,12 +477,50 @@ export const makeInMemoryMcpSessionStore = (
   /** Open a new session: build the server, connect a transport, drive the request. */
   const openSession = (
     principal: Principal,
+    clientIdentity: string | undefined,
+    clientManifestGeneration: number | undefined,
     resource: McpResource,
     request: Request,
   ): Effect.Effect<McpDispatchResult> => {
     let createdSessionId: string | null = null;
+    const clientResolver = options.clientSessionResolver;
+    const clientManifest =
+      clientIdentity !== undefined && clientManifestGeneration !== undefined
+        ? clientResolver?.getManifestForIdentity(
+            clientIdentity,
+            principal,
+            clientManifestGeneration,
+          )
+        : undefined;
+    const invokeClient =
+      clientIdentity !== undefined &&
+      clientManifestGeneration !== undefined &&
+      clientResolver !== undefined
+        ? (clientRequest: McpClientRequest) =>
+            clientResolver.requestForIdentity(
+              clientIdentity,
+              principal,
+              clientManifestGeneration,
+              clientRequest,
+            )
+        : undefined;
+    if (
+      clientIdentity !== undefined &&
+      (clientManifestGeneration === undefined ||
+        clientResolver === undefined ||
+        clientManifest === null ||
+        clientManifest === undefined ||
+        invokeClient === undefined)
+    ) {
+      return Effect.succeed(jsonRpcError(403, -32003, "Client binding unavailable"));
+    }
     return buildServer(principal, {
       ...buildOptionsFor(request, () => createdSessionId),
+      ...(clientIdentity === undefined ? {} : { clientIdentity }),
+      ...(clientManifestGeneration === undefined ? {} : { clientManifestGeneration }),
+      ...(clientManifest === undefined || clientManifest === null
+        ? {}
+        : { clientManifest, invokeClient }),
       resource,
     }).pipe(
       Effect.flatMap(({ mcpServer, engine, executor, close }) =>
@@ -465,7 +532,12 @@ export const makeInMemoryMcpSessionStore = (
               createdSessionId = sid;
               transports.set(sid, transport);
               servers.set(sid, mcpServer);
-              owners.set(sid, { principal, resource });
+              owners.set(sid, {
+                principal,
+                clientIdentity: clientIdentity ?? null,
+                clientManifestGeneration: clientManifestGeneration ?? null,
+                resource,
+              });
               engines.set(sid, engine);
               if (executor) executors.set(sid, executor);
               if (close) closers.set(sid, close);
@@ -515,6 +587,8 @@ export const makeInMemoryMcpSessionStore = (
    */
   const create = (
     principal: Principal,
+    clientIdentity: string | undefined,
+    clientManifestGeneration: number | undefined,
     resource: McpResource,
     request: Request,
   ): Effect.Effect<McpDispatchResult> =>
@@ -522,15 +596,28 @@ export const makeInMemoryMcpSessionStore = (
       Effect.flatMap((unsupported) =>
         unsupported
           ? Effect.succeed<McpDispatchResult>(unsupported)
-          : openSession(principal, resource, request),
+          : openSession(principal, clientIdentity, clientManifestGeneration, resource, request),
       ),
     );
 
   const store: McpSessionStore["Service"] = {
-    dispatch: ({ request, principal, resource, sessionId }: McpDispatchInput) =>
+    dispatch: ({
+      request,
+      principal,
+      clientIdentity,
+      clientManifestGeneration,
+      resource,
+      sessionId,
+    }: McpDispatchInput) =>
       sessionId
-        ? forward(sessionId, principal, resource, request)
-        : create(principal, resource ?? defaultMcpResource, request),
+        ? forward(sessionId, principal, clientIdentity, clientManifestGeneration, resource, request)
+        : create(
+            principal,
+            clientIdentity,
+            clientManifestGeneration,
+            resource ?? defaultMcpResource,
+            request,
+          ),
     dispose: (sessionId) =>
       Effect.promise(() => dispose(sessionId, { transport: true, server: true })),
   };
