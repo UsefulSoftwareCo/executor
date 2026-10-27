@@ -282,9 +282,13 @@ const withResourceQueryParams = (
 const discoverResourceMetadataChallenge = (
   resourceUrl: string,
   options: DiscoveryRequestOptions,
-): Effect.Effect<string | null, OAuthDiscoveryError> =>
+): Effect.Effect<
+  { readonly metadataUrl: string | null; readonly scope: string | null },
+  OAuthDiscoveryError
+> =>
   provideHttpClient(
     Effect.gen(function* () {
+      const noChallenge = { metadataUrl: null, scope: null };
       yield* validateEndpointUrl(resourceUrl, "resource", options.endpointUrlPolicy);
       let request = HttpClientRequest.get(
         withResourceQueryParams(resourceUrl, options.resourceQueryParams),
@@ -313,38 +317,58 @@ const discoverResourceMetadataChallenge = (
               }),
           ),
         );
-      if (response.status !== 401 && response.status !== 403) return null;
+      if (response.status !== 401 && response.status !== 403) return noChallenge;
       const header = response.headers["www-authenticate"];
-      if (header === undefined) return null;
+      if (header === undefined) return noChallenge;
       const challenges = parseChallenges(header);
-      if (challenges === null) return null;
+      if (challenges === null) return noChallenge;
+      let scope: string | null = null;
       for (const challenge of challenges) {
         if (challenge.scheme !== "bearer") continue;
+        // The challenge's `scope` attribute (RFC 6750 §3) is the resource's own
+        // statement of what to request — including lifecycle scopes such as
+        // `offline_access` that RFC 9728 `scopes_supported` rightly omits. The
+        // MCP authorization spec prefers it over the metadata lists.
+        if (scope === null) {
+          const requested = challenge.params.get("scope");
+          if (requested !== undefined && requested.trim().length > 0) scope = requested.trim();
+        }
         const metadataUrl = challenge.params.get("resource_metadata");
         if (metadataUrl === undefined) continue;
-        return yield* validateEndpointUrl(
-          metadataUrl,
-          "resource_metadata",
-          options.endpointUrlPolicy,
-        );
+        return {
+          metadataUrl: yield* validateEndpointUrl(
+            metadataUrl,
+            "resource_metadata",
+            options.endpointUrlPolicy,
+          ),
+          scope,
+        };
       }
-      return null;
+      return { metadataUrl: null, scope };
     }).pipe(Effect.scoped),
     options,
   );
 
-/** Discover RFC 9728 metadata, preferring an explicit Bearer challenge URL. */
+/** Discover RFC 9728 metadata, preferring an explicit Bearer challenge URL.
+ *  When the 401/403 challenge carries a `scope` attribute it is surfaced as
+ *  `challengeScope` alongside the metadata it pointed at. */
 export const discoverProtectedResourceMetadata = (
   resourceUrl: string,
   options: DiscoveryRequestOptions = {},
 ): Effect.Effect<
-  { readonly metadataUrl: string; readonly metadata: OAuthProtectedResourceMetadata } | null,
+  {
+    readonly metadataUrl: string;
+    readonly metadata: OAuthProtectedResourceMetadata;
+    readonly challengeScope: string | null;
+  } | null,
   OAuthDiscoveryError
 > =>
   Effect.gen(function* () {
-    const advertisedUrl = yield* discoverResourceMetadataChallenge(resourceUrl, options);
+    const advertised = yield* discoverResourceMetadataChallenge(resourceUrl, options);
     const metadataUrls =
-      advertisedUrl === null ? buildResourceMetadataUrls(resourceUrl) : [advertisedUrl];
+      advertised.metadataUrl === null
+        ? buildResourceMetadataUrls(resourceUrl)
+        : [advertised.metadataUrl];
     for (const url of metadataUrls) {
       // A challenge may name another origin. Never forward resource credentials there.
       const sameOrigin = new URL(url).origin === new URL(resourceUrl).origin;
@@ -389,7 +413,7 @@ export const discoverProtectedResourceMetadata = (
             }),
         ),
       );
-      return { metadataUrl: url, metadata };
+      return { metadataUrl: url, metadata, challengeScope: advertised.scope };
     }
     return null;
   });

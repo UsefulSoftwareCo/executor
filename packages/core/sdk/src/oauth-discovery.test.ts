@@ -112,6 +112,85 @@ describe("discoverProtectedResourceMetadata", () => {
           expect(result).not.toBeNull();
           expect(result!.metadata.authorization_servers?.[0]).toBe(baseUrl);
           expect(result!.metadataUrl).toBe(`${baseUrl}/.well-known/oauth-protected-resource`);
+          expect(result!.challengeScope).toBeNull();
+        }),
+    ),
+  );
+
+  it.effect("surfaces the Bearer challenge's scope attribute with the metadata it named", () =>
+    withOAuthFixture(
+      (request, baseUrl) => {
+        if (request.url === "/mcp") {
+          return HttpServerResponse.empty({
+            status: 401,
+            headers: {
+              "www-authenticate": `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource/mcp", scope="mcp offline_access"`,
+            },
+          });
+        }
+        if (request.url === "/.well-known/oauth-protected-resource/mcp") {
+          return sendJson({ resource: `${baseUrl}/mcp`, scopes_supported: ["mcp"] });
+        }
+        return notFound();
+      },
+      ({ baseUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* discoverProtectedResourceMetadata(`${baseUrl}/mcp`);
+          expect(result).not.toBeNull();
+          expect(result!.challengeScope).toBe("mcp offline_access");
+          expect(result!.metadataUrl).toBe(`${baseUrl}/.well-known/oauth-protected-resource/mcp`);
+          expect(result!.metadata.scopes_supported).toEqual(["mcp"]);
+        }),
+    ),
+  );
+
+  it.effect("a challenge without a scope attribute leaves challengeScope null", () =>
+    withOAuthFixture(
+      (request, baseUrl) => {
+        if (request.url === "/mcp") {
+          return HttpServerResponse.empty({
+            status: 401,
+            headers: {
+              "www-authenticate": `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource/mcp", error="invalid_token"`,
+            },
+          });
+        }
+        if (request.url === "/.well-known/oauth-protected-resource/mcp") {
+          return sendJson({ resource: `${baseUrl}/mcp`, scopes_supported: ["mcp"] });
+        }
+        return notFound();
+      },
+      ({ baseUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* discoverProtectedResourceMetadata(`${baseUrl}/mcp`);
+          expect(result).not.toBeNull();
+          expect(result!.challengeScope).toBeNull();
+        }),
+    ),
+  );
+
+  it.effect("a challenge scope is kept even when no resource_metadata URL is advertised", () =>
+    withOAuthFixture(
+      (request, baseUrl) => {
+        if (request.url === "/mcp") {
+          return HttpServerResponse.empty({
+            status: 401,
+            headers: {
+              "www-authenticate": `Bearer scope="mcp offline_access"`,
+            },
+          });
+        }
+        if (request.url === "/.well-known/oauth-protected-resource/mcp") {
+          return sendJson({ resource: `${baseUrl}/mcp`, scopes_supported: ["mcp"] });
+        }
+        return notFound();
+      },
+      ({ baseUrl }) =>
+        Effect.gen(function* () {
+          const result = yield* discoverProtectedResourceMetadata(`${baseUrl}/mcp`);
+          expect(result).not.toBeNull();
+          expect(result!.challengeScope).toBe("mcp offline_access");
+          expect(result!.metadataUrl).toBe(`${baseUrl}/.well-known/oauth-protected-resource/mcp`);
         }),
     ),
   );

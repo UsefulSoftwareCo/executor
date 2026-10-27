@@ -863,11 +863,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
     (protectedResource?.metadata.authorization_servers ?? []).slice(0, MAX_DISCOVERY_AUTH_SERVERS);
 
   // Discover the scopes to request when the integration declares none — only
-  // reached for integrations that opt in (MCP-style). The resource's own RFC
-  // 9728 `scopes_supported` is authoritative when present, even when empty (§2
-  // defines the field; §7.2 cautions against requesting more than it lists).
-  // Only when the resource is SILENT do we read the scopes advertised by the
-  // authorization servers it NAMES (RFC 8414) — we never probe arbitrary URLs.
+  // reached for integrations that opt in (MCP-style). Preference order:
+  //   1. the Bearer challenge's `scope` attribute (RFC 6750 §3) — the resource
+  //      telling us what to request, including lifecycle scopes such as
+  //      `offline_access` that RFC 9728 `scopes_supported` rightly omits and
+  //      that the MCP authorization spec prefers here;
+  //   2. the resource's RFC 9728 `scopes_supported` — authoritative when
+  //      present, even when empty (§2 defines the field; §7.2 cautions against
+  //      requesting more than it lists);
+  //   3. only when the resource is SILENT on scopes, the scopes advertised by
+  //      the authorization servers it NAMES (RFC 8414) — we never probe
+  //      arbitrary URLs.
   const discoverScopesForResource = (
     resource: string | null,
   ): Effect.Effect<readonly string[], OAuthDiscoveryError> =>
@@ -885,6 +891,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         resource,
         discoveryOptions,
       );
+      const challengeScope = protectedResource?.challengeScope;
+      if (challengeScope != null) return capScopes(challengeScope.split(/\s+/).filter(Boolean));
+
       const resourceScopes = protectedResource?.metadata.scopes_supported;
       if (resourceScopes !== undefined) return capScopes(resourceScopes);
 

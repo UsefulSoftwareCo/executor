@@ -117,6 +117,15 @@ const makeMcpScopePlugin = (config: { readonly scopes: readonly string[] | null 
  *  SILENT on scopes; `[]` advertises an explicit empty set); `"error"` makes the
  *  PRM endpoint return 500; `null`/absent makes it 404. `authServerScopes`, when
  *  set, serves authorization-server metadata advertising those scopes. */
+/** Serve RFC 9728 protected-resource metadata and RFC 8414 authorization-server
+ *  metadata on one origin, with configurable scopes. `prm`: an object serves
+ *  protected-resource metadata (omit `scopesSupported` to leave the resource
+ *  SILENT on scopes; `[]` advertises an explicit empty set); `"error"` makes the
+ *  PRM endpoint return 500; `null`/absent makes it 404. `authServerScopes`, when
+ *  set, serves authorization-server metadata advertising those scopes.
+ *  `challenge`, when set, makes the resource itself (`/mcp`) answer the
+ *  discovery probe with a 401 Bearer challenge naming its PRM, optionally with
+ *  a `scope` attribute (the better-auth-style server of #2304). */
 const serveMetadataServer = (config: {
   readonly prm?:
     | {
@@ -128,11 +137,22 @@ const serveMetadataServer = (config: {
   readonly authServerScopes?: readonly string[];
   readonly authServerAuthorizationPath?: string;
   readonly authServerTokenPath?: string;
+  readonly challenge?: { readonly scope?: string };
 }) =>
   Effect.gen(function* () {
     const baseUrlRef = { value: "" };
     const respond = (path: string): HttpServerResponse.HttpServerResponse => {
       const base = baseUrlRef.value;
+      if (path === "/mcp" && config.challenge !== undefined) {
+        return HttpServerResponse.empty({
+          status: 401,
+          headers: {
+            "www-authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"${
+              config.challenge.scope === undefined ? "" : `, scope="${config.challenge.scope}"`
+            }`,
+          },
+        });
+      }
       if (path.startsWith("/.well-known/oauth-protected-resource")) {
         if (config.prm === "error")
           return HttpServerResponse.jsonUnsafe({ error: "boom" }, { status: 500 });
@@ -526,6 +546,73 @@ describe("oauth.start integration-driven scopes", () => {
         expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["openid"]);
       }),
     ),
+  );
+
+  it.effect(
+    "(m) for MCP, the 401 challenge's scope attribute wins over the resource's scopes_supported",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // The better-auth-style server of #2304: the 401 challenge requests
+          // `mcp offline_access` (its PRM correctly per RFC 9728 lists only the
+          // resource scope — `offline_access` is not a scope on the resource).
+          // The challenge is the resource's own statement of what to request,
+          // so it is authoritative and supplies the lifecycle scope whose
+          // absence made every token expire without a refresh token.
+          const server = yield* serveMetadataServer({
+            challenge: { scope: "mcp offline_access" },
+            prm: { scopesSupported: ["mcp"] },
+            authServerScopes: ["mcp"],
+          });
+          const executor = yield* setupMcpScopeClient(server);
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+
+          expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual([
+            "mcp",
+            "offline_access",
+          ]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "(n) for MCP, a 401 challenge without a scope attribute falls back to the resource's scopes_supported",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // Same 401 shape as #1981 (challenge names only resource_metadata).
+          // No `scope` attribute ⇒ the PRM's list remains, un-broadened.
+          const server = yield* serveMetadataServer({
+            challenge: {},
+            prm: { scopesSupported: ["mcp"] },
+            authServerScopes: ["should:not:appear"],
+          });
+          const executor = yield* setupMcpScopeClient(server);
+
+          const started = yield* executor.oauth.start({
+            owner: "org",
+            client: CLIENT,
+            clientOwner: "org",
+            name: ConnectionName.make("main"),
+            integration: INTEG,
+            template: TEMPLATE,
+          });
+          expect(started.status).toBe("redirect");
+          if (started.status !== "redirect") return;
+
+          expect(scopesFromAuthorizeUrl(started.authorizationUrl)).toEqual(["mcp"]);
+        }),
+      ),
   );
 
   it.effect(
