@@ -63,6 +63,7 @@ import {
   type ConnectionOwnerOption,
 } from "../plugins/connection-owner";
 import {
+  canUseClientIdMetadataDocument,
   oauthCallbackUrl,
   oauthClientIdMetadataDocumentUrl,
   useOAuthPopupFlow,
@@ -1022,7 +1023,13 @@ export async function runAutomaticOAuthConnect(
         ? null
         : (probe.resource ?? input.storedResource)
       : (probe.resource ?? input.resourceFallback ?? null);
-  if (probe.clientIdMetadataDocumentSupported === true) {
+  if (
+    probe.clientIdMetadataDocumentSupported === true &&
+    canUseClientIdMetadataDocument({
+      clientIdMetadataDocumentUrl: input.cimd.clientIdMetadataDocumentUrl,
+      authorizationUrl: probe.authorizationUrl,
+    })
+  ) {
     const resolved = await resolveCimdClient(
       { createClient: deps.createCimdClient },
       {
@@ -1769,7 +1776,13 @@ function AddAccountModalView(props: AddAccountModalProps) {
   // CIMD-capable: the provider accepts a client_id that is a metadata-document
   // URL, so we can create a public local client and skip provider app
   // registration entirely.
-  const isCimd = isOAuth && method?.oauth?.supportsClientIdMetadataDocument === true;
+  const isCimd =
+    isOAuth &&
+    method?.oauth?.supportsClientIdMetadataDocument === true &&
+    canUseClientIdMetadataDocument({
+      clientIdMetadataDocumentUrl: oauthClientIdMetadataDocumentUrl(),
+      authorizationUrl: method.oauth.authorizationUrl,
+    });
   const cimdActive = isCimd;
   // Single-input header/query methods: the placement's lead + prefix (e.g.
   // "Authorization: Bearer ") merges INTO the credential field as a non-editable

@@ -166,6 +166,60 @@ export function oauthClientIdMetadataDocumentUrl(options?: {
   return url.toString();
 }
 
+// An authorization server fetches the CIMD client_id URL itself. A self-hosted
+// Executor on localhost, a LAN, or a tailnet serves the document at an address
+// a public provider can't reach, and the provider fails the sign-in with
+// `invalid_client`. Those connects use Dynamic Client Registration instead.
+const PRIVATE_HOST_SUFFIXES = [
+  ".localhost",
+  ".local",
+  ".internal",
+  ".lan",
+  ".home.arpa",
+  ".ts.net",
+];
+
+const isPrivateIpv4 = (host: string): boolean => {
+  const parts = host.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  const [a, b] = parts as [number, number, number, number];
+  return (
+    a === 10 ||
+    a === 127 ||
+    a === 0 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127)
+  );
+};
+
+export function isPubliclyReachableUrl(value: string): boolean {
+  if (!/^https:\/\//i.test(value)) return false;
+  const host = new URL(value).hostname.toLowerCase().replace(/\.$/, "");
+  if (host.startsWith("[")) {
+    const ip = host.slice(1, -1);
+    return !(ip === "::1" || ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80"));
+  }
+  if (!host.includes(".") || host === "localhost") return false;
+  if (PRIVATE_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) return false;
+  return !isPrivateIpv4(host);
+}
+
+// CIMD works when the provider can fetch the document: either the document is
+// public, or the provider is itself private (same machine or network). When
+// the authorization server is unknown, keep CIMD.
+export function canUseClientIdMetadataDocument(input: {
+  readonly clientIdMetadataDocumentUrl: string;
+  readonly authorizationUrl?: string | null;
+}): boolean {
+  if (isPubliclyReachableUrl(input.clientIdMetadataDocumentUrl)) return true;
+  if (input.authorizationUrl == null) return true;
+  return !isPubliclyReachableUrl(input.authorizationUrl);
+}
+
 export function useOAuthPopupFlow<
   TPayload extends OAuthCompletionPayload = OAuthCompletionPayload,
 >(options: {

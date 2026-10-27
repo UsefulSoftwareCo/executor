@@ -504,6 +504,98 @@ describe("runAutomaticOAuthConnect", () => {
     });
     expect(startArgs!.reservation).toBe(RESERVED);
   });
+
+  it("uses DCR when the CIMD document is on a private host the provider can't fetch", async () => {
+    const popup = popupSpy();
+    const calls: string[] = [];
+
+    const outcome = await runAutomaticOAuthConnect(
+      {
+        ...popup,
+        isActive: (): boolean => true,
+        probe: (): Promise<ProbeResult> =>
+          Promise.resolve({
+            authorizationUrl: "https://auth.example.com/authorize",
+            tokenUrl: "https://auth.example.com/token",
+            resource: "https://mcp.example.com/mcp",
+            registrationEndpoint: "https://auth.example.com/register",
+            clientIdMetadataDocumentSupported: true,
+          }),
+        createCimdClient: (args: CimdCreateArgs): Promise<OAuthClientSlug> => {
+          calls.push("create-cimd");
+          return Promise.resolve(args.slug);
+        },
+        register: (): Promise<OAuthClientSlug> => {
+          calls.push("register-dcr");
+          return Promise.resolve(OAuthClientSlug.make("dcr-client"));
+        },
+        start: (): void => {
+          calls.push("start");
+        },
+      },
+      {
+        discoveryUrl: "https://mcp.example.com/mcp",
+        resourceFallback: "https://mcp.example.com/mcp",
+        owner: "user",
+        integration: TEST_INTEGRATION,
+        cimd: {
+          integrationName: "Test MCP",
+          clientIdMetadataDocumentUrl:
+            "https://box.tailnet.ts.net:8446/api/oauth/client-id-metadata/default.json",
+          existingClients: [],
+        },
+      },
+    );
+
+    expect(outcome).toEqual({ kind: "started", flow: "dcr" });
+    expect(calls).toEqual(["register-dcr", "start"]);
+  });
+
+  it("keeps CIMD when the provider is on the same private network as the document", async () => {
+    const popup = popupSpy();
+    const calls: string[] = [];
+
+    const outcome = await runAutomaticOAuthConnect(
+      {
+        ...popup,
+        isActive: (): boolean => true,
+        probe: (): Promise<ProbeResult> =>
+          Promise.resolve({
+            authorizationUrl: "https://sso.tailnet.ts.net/authorize",
+            tokenUrl: "https://sso.tailnet.ts.net/token",
+            resource: "https://mcp.example.com/mcp",
+            registrationEndpoint: "https://sso.tailnet.ts.net/register",
+            clientIdMetadataDocumentSupported: true,
+          }),
+        createCimdClient: (args: CimdCreateArgs): Promise<OAuthClientSlug> => {
+          calls.push("create-cimd");
+          return Promise.resolve(args.slug);
+        },
+        register: (): Promise<OAuthClientSlug> => {
+          calls.push("register-dcr");
+          return Promise.resolve(OAuthClientSlug.make("dcr-client"));
+        },
+        start: (): void => {
+          calls.push("start");
+        },
+      },
+      {
+        discoveryUrl: "https://mcp.example.com/mcp",
+        resourceFallback: "https://mcp.example.com/mcp",
+        owner: "user",
+        integration: TEST_INTEGRATION,
+        cimd: {
+          integrationName: "Test MCP",
+          clientIdMetadataDocumentUrl:
+            "https://box.tailnet.ts.net:8446/api/oauth/client-id-metadata/default.json",
+          existingClients: [],
+        },
+      },
+    );
+
+    expect(outcome).toEqual({ kind: "started", flow: "cimd" });
+    expect(calls).toEqual(["create-cimd", "start"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
