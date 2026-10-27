@@ -25,11 +25,12 @@ const MAX_LIST_TOOLS_PAGES = 100;
 // carries a deadline of its own against a server that never answers (a
 // closed/half-open loopback socket, a server wedged mid-handshake), so
 // without a bound here a single unresponsive endpoint hangs the calling
-// fiber forever. Mirrors the shape-probe fallback's default
-// (`probeMcpEndpointShape`'s `timeoutMs = 8_000`) at a slightly longer
-// bound since a real handshake + listTools round-trip is heavier than the
-// shape probe's single unauth POST.
-const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(15);
+// fiber forever. Longer than the shape-probe fallback's default
+// (`probeMcpEndpointShape`'s `timeoutMs = 8_000`) since a real handshake +
+// listTools round-trip is heavier than the shape probe's single unauth POST,
+// and generous enough for servers that cold-start or build a large tool
+// catalog on first connect.
+const DEFAULT_DISCOVER_TIMEOUT = Duration.seconds(30);
 
 // Teardown is best-effort and paid for by the request that performed discovery.
 // A remote transport may accept close and then never settle, so use the same
