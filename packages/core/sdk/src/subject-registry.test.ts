@@ -7,7 +7,13 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug, ToolName } from "./i
 import type { ExecutorOwnerPolicyContext } from "./owner-policy";
 import { definePlugin } from "./plugin";
 import { createSqliteTestFumaDb, type SqliteTestFumaDb } from "./sqlite-test-db";
-import { resetSubjectTouchCache, touchSubject } from "./subject-registry";
+import {
+  makeVerifiedHumanSubjectRegistry,
+  resetSubjectTouchCache,
+  REVOKED_HUMAN_SUBJECT_STATUS,
+  touchSubject,
+  VERIFIED_HUMAN_SUBJECT_STATUS,
+} from "./subject-registry";
 import { makeTestWorkspaceHarness, memoryCredentialsPlugin } from "./test-config";
 
 // `touchSubject` is the only writer of the `subject` table. Written against the
@@ -306,6 +312,70 @@ describe("touchSubject", () => {
         yield* Effect.promise(() => db.client.execute("DROP TABLE subject"));
 
         yield* touchSubject(db.db, { tenant: TENANT, externalId: "user_a" });
+      }),
+    ),
+  );
+});
+
+describe("verified human subject registry", () => {
+  it.effect("creates a subject at the verified browser boundary", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const registry = makeVerifiedHumanSubjectRegistry(db.db);
+        expect(yield* registry.isVerifiedHuman({ tenant: TENANT, subject: "new-human" })).toBe(
+          false,
+        );
+
+        yield* registry.markVerifiedHuman({ tenant: TENANT, subject: "new-human" });
+
+        expect(yield* registry.isVerifiedHuman({ tenant: TENANT, subject: "new-human" })).toBe(
+          true,
+        );
+        const rows = yield* Effect.promise(() =>
+          scopedTo(db, TENANT).findMany("subject", {
+            where: (builder) => builder("external_id", "=", "new-human"),
+          }),
+        );
+        expect(rows[0]?.status).toBe(VERIFIED_HUMAN_SUBJECT_STATUS);
+      }),
+    ),
+  );
+
+  it.effect("keeps an operator revocation disabled across later sightings", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const registry = makeVerifiedHumanSubjectRegistry(db.db);
+        const input = { tenant: TENANT, subject: "offboarded-human" } as const;
+        yield* registry.revokeVerifiedHuman(input);
+        expect(yield* registry.isVerifiedHuman(input)).toBe(false);
+
+        // A later verified browser sighting must not turn a durable tombstone
+        // back into a verified state.
+        yield* registry.markVerifiedHuman(input);
+        expect(yield* registry.isVerifiedHuman(input)).toBe(false);
+        const rows = yield* Effect.promise(() =>
+          scopedTo(db, TENANT).findMany("subject", {
+            where: (builder) => builder("external_id", "=", input.subject),
+          }),
+        );
+        expect(rows[0]?.status).toBe(REVOKED_HUMAN_SUBJECT_STATUS);
+      }),
+    ),
+  );
+
+  it.effect("partitions verification and revocation by tenant", () =>
+    withDb((db) =>
+      Effect.gen(function* () {
+        const registry = makeVerifiedHumanSubjectRegistry(db.db);
+        yield* registry.markVerifiedHuman({ tenant: TENANT, subject: "shared-human" });
+        yield* registry.revokeVerifiedHuman({ tenant: OTHER_TENANT, subject: "shared-human" });
+
+        expect(yield* registry.isVerifiedHuman({ tenant: TENANT, subject: "shared-human" })).toBe(
+          true,
+        );
+        expect(
+          yield* registry.isVerifiedHuman({ tenant: OTHER_TENANT, subject: "shared-human" }),
+        ).toBe(false);
       }),
     ),
   );
