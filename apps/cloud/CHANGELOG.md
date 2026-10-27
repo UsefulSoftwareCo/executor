@@ -1,5 +1,34 @@
 # @executor-js/cloud
 
+## 1.4.73
+
+### Patch Changes
+
+- [#2391](https://github.com/UsefulSoftwareCo/executor/pull/2391) [`083209a`](https://github.com/UsefulSoftwareCo/executor/commit/083209a155f2ac2c20d194e1194d0e28b78eddaf) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - An MCP request that reaches a session while the session is being torn down now gets the "Session not found" protocol error instead of a 500.
+
+- [#2337](https://github.com/UsefulSoftwareCo/executor/pull/2337) [`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Hosts can pause every change to a workspace with `workspaceWriteGate`: connection and OAuth writes, OAuth completion (before the code is exchanged) and OAuth token refreshes are refused with the host's message, while reads and tool calls keep working. The OAuth callback popup now shows why a refusal the user can act on happened. Executor Cloud uses this to freeze an organization while it moves to Executor v2, refuses changes to it once it has moved, and opens a moved organization's dashboard in v2.
+
+- [#2388](https://github.com/UsefulSoftwareCo/executor/pull/2388) [`f08d88d`](https://github.com/UsefulSoftwareCo/executor/commit/f08d88d0e90d63480d132c6c47918f9ccb98d49c) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Executor Cloud forwards MCP requests that use `mode=passthrough` for a workspace that has moved to Executor v2, instead of refusing them. v2 serves its own tools for them.
+
+- [#2356](https://github.com/UsefulSoftwareCo/executor/pull/2356) [`b0d1089`](https://github.com/UsefulSoftwareCo/executor/commit/b0d1089662e6e721b9d78478fe019cbc06354e20) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Executor Cloud hands a signed-in member of a workspace that has moved to Executor v2 to v2 with a short-lived signed token, so v2 opens the workspace without asking them to sign in again. It is off until `V2_SESSION_HANDOFF_SECRET` is set.
+
+- Updated dependencies [[`56aec8b`](https://github.com/UsefulSoftwareCo/executor/commit/56aec8bd1b5d227554bf67f8ff82f9fa3227bda9), [`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3)]:
+  - @executor-js/sdk@1.6.12
+  - @executor-js/api@1.4.75
+  - @executor-js/execution@1.6.12
+  - @executor-js/vite-plugin@0.0.72
+  - @executor-js/cloudflare@0.0.54
+  - @executor-js/host-mcp@1.4.4
+  - @executor-js/mcp-apps-shell@1.4.23
+  - @executor-js/runtime-dynamic-worker@1.4.4
+  - @executor-js/plugin-graphql@1.6.12
+  - @executor-js/plugin-mcp@1.6.12
+  - @executor-js/plugin-openapi@1.6.12
+  - @executor-js/plugin-toolkits@1.5.47
+  - @executor-js/plugin-workos-vault@0.0.2
+  - @executor-js/react@1.4.75
+  - @executor-js/runtime-quickjs@1.6.12
+
 ## 1.4.72
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @executor-js/sdk
 
+## 1.6.12
+
+### Patch Changes
+
+- [#2402](https://github.com/UsefulSoftwareCo/executor/pull/2402) [`56aec8b`](https://github.com/UsefulSoftwareCo/executor/commit/56aec8bd1b5d227554bf67f8ff82f9fa3227bda9) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Keep OAuth requests within the scopes a dynamically registered client was registered for. DCR clients now persist the scopes their registration asked for (`oauth_client.origin_requested_scopes`) and the scopes the server registered, from the registration response (`oauth_client.origin_scopes`, RFC 7591 §3.2.1). Reuse picks a client only when its registration covers the requested scopes, so reconnecting after a server adds scopes registers a new client instead of pairing the old one with scopes the server refuses with `invalid_scope`. `oauth.start` narrows discovered scopes to the server-registered set and fails with a clear error when declared scopes fall outside it. Clients registered before this release have no recorded scopes and are registered again on their next connect; existing connections keep refreshing through them.
+
+- [#2337](https://github.com/UsefulSoftwareCo/executor/pull/2337) [`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Hosts can pause every change to a workspace with `workspaceWriteGate`: connection and OAuth writes, OAuth completion (before the code is exchanged) and OAuth token refreshes are refused with the host's message, while reads and tool calls keep working. The OAuth callback popup now shows why a refusal the user can act on happened. Executor Cloud uses this to freeze an organization while it moves to Executor v2, refuses changes to it once it has moved, and opens a moved organization's dashboard in v2.
+
 ## 1.6.11
 
 ### Patch Changes
