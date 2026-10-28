@@ -25,27 +25,35 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI User-Agent", (it) => {
           HttpRouter.add(
             "GET",
             "/openapi.json",
-            HttpServerResponse.json({
-              openapi: "3.0.3",
-              info: { title: "GitHub-style REST fixture", version: "1" },
-              components: {
-                securitySchemes: { bearer: { type: "http", scheme: "bearer" } },
-              },
-              security: [{ bearer: [] }],
-              paths: {
-                "/user": {
-                  get: {
-                    operationId: "currentUser",
-                    parameters: [{ name: "User-Agent", in: "header", schema: { type: "string" } }],
-                    responses: {
-                      "200": {
-                        description: "Current account and client identifier",
-                        content: { "application/json": { schema: { type: "object" } } },
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              // The document refuses a source download without a User-Agent (issue #2411).
+              if (request.headers["user-agent"] === undefined)
+                return HttpServerResponse.empty({ status: 403 });
+              return yield* HttpServerResponse.json({
+                openapi: "3.0.3",
+                info: { title: "GitHub-style REST fixture", version: "1" },
+                components: {
+                  securitySchemes: { bearer: { type: "http", scheme: "bearer" } },
+                },
+                security: [{ bearer: [] }],
+                paths: {
+                  "/user": {
+                    get: {
+                      operationId: "currentUser",
+                      parameters: [
+                        { name: "User-Agent", in: "header", schema: { type: "string" } },
+                      ],
+                      responses: {
+                        "200": {
+                          description: "Current account and client identifier",
+                          content: { "application/json": { schema: { type: "object" } } },
+                        },
                       },
                     },
                   },
                 },
-              },
+              });
             }),
           ),
           HttpRouter.add(
