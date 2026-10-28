@@ -3,30 +3,9 @@ import { readFile, stat, mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
+import { privateMcpHttp } from "./private-invocation-http.ts";
+import { actualReadback, type PrivateReadback } from "./private-invocation-readback.ts";
 
-interface Call {
-  path: string;
-  input: Record<string, unknown>;
-  referenceFile: string;
-}
-interface Fixture {
-  version: 1;
-  mcpUrl: string;
-  tokenFile: string;
-  direct: Call;
-  journal: Call;
-  effect: Call;
-  expectedResult: unknown;
-  expectedEffect: unknown;
-  /** Existing fixture ownership/provenance artifacts, never accepted by the product as authority. */
-  provenance: {
-    executorHead: string;
-    issuerHead: string;
-    nativeAdmissionReceiptFile: string;
-    authenticatedAccountReceiptFile: string;
-    ownedProcessesReceiptFile: string;
-  };
-}
 class Prerequisite extends Error {}
 const requireFile = async (path: string): Promise<string> => {
   const s = await stat(path);
@@ -47,104 +26,26 @@ const outcome = (v: unknown): Record<string, unknown> => {
   if (execution.ok !== true) return { ok: false };
   return json(execution.value);
 };
-export async function runPrivateConformance(
-  fixturePath: string,
-  evidencePath: string,
-): Promise<void> {
-  let fixture: Fixture;
+interface SupportFixture {
+  mcpUrl: string;
+  tokenFile: string;
+  organizationId: string;
+  journalPath: string;
+  protectedPath: string;
+  expectedPrincipal: string;
+  readback: PrivateReadback;
+}
+/** Available engineering checks. A real ordinary path must succeed before a denial is meaningful. */
+export async function runLabSupport(fixturePath: string, evidencePath: string): Promise<void> {
+  const fixture: SupportFixture = JSON.parse(await requireFile(fixturePath));
+  const connection = privateMcpHttp(
+    new URL(fixture.mcpUrl),
+    (await requireFile(fixture.tokenFile)).trim(),
+    fixture.organizationId,
+  );
+  const { send } = connection;
   try {
-    fixture = JSON.parse(await requireFile(fixturePath));
-  } catch {
-    throw new Prerequisite(
-      "Missing protected real-product fixture manifest; see docs/private-invocation.md",
-    );
-  }
-  if (
-    fixture.version !== 1 ||
-    !fixture.provenance ||
-    !/^[a-f0-9]{40}$/.test(fixture.provenance.executorHead) ||
-    !/^[a-f0-9]{40}$/.test(fixture.provenance.issuerHead)
-  )
-    throw new Prerequisite("Pinned real product/issuer provenance required");
-  // Read all genuine-fixture prerequisites before the first network operation. Never generate them.
-  for (const file of [
-    fixture.provenance.nativeAdmissionReceiptFile,
-    fixture.provenance.authenticatedAccountReceiptFile,
-    fixture.provenance.ownedProcessesReceiptFile,
-  ])
-    await requireFile(file);
-  const token = (await requireFile(fixture.tokenFile)).trim();
-  const refs = new Map<Call, string>();
-  for (const call of [fixture.direct, fixture.journal, fixture.effect]) {
-    if (!call?.path || !call.input)
-      throw new Prerequisite("Three exact scoped real calls required");
-    const ref = (await requireFile(call.referenceFile)).trim();
-    if (!/^[\x21-\x7e]{1,512}$/.test(ref))
-      throw new Prerequisite("Invalid protected reference fixture");
-    refs.set(call, ref);
-  }
-  if (new Set(refs.values()).size !== 3)
-    throw new Prerequisite("Independent operation references required");
-  const url = new URL(fixture.mcpUrl);
-  if (url.protocol !== "https:" || url.username || url.password)
-    throw new Prerequisite("Owned authenticated HTTPS MCP endpoint required");
-  let session: string | undefined;
-  let id = 0;
-  const observations: { method: string; status: number }[] = [];
-  const send = async (method: string, params: unknown, reference?: string): Promise<unknown> => {
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-    };
-    if (session) {
-      headers["mcp-session-id"] = session;
-      headers["mcp-protocol-version"] = "2025-11-25";
-    }
-    if (reference) headers["Private-Invocation"] = reference;
-    const notification = method.startsWith("notifications/");
-    const response = await fetch(url, {
-      method: "POST",
-      redirect: "error",
-      headers,
-      signal: AbortSignal.timeout(15000),
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        ...(notification ? {} : { id: ++id }),
-        method,
-        params,
-      }),
-    });
-    observations.push({ method, status: response.status });
-    session ??= response.headers.get("mcp-session-id") ?? undefined;
-    if (!response.ok) {
-      await response.body?.cancel();
-      return { refused: true };
-    }
-    if (notification) {
-      await response.body?.cancel();
-      return null;
-    }
-    if (!response.body) throw new Error("Missing MCP response");
-    const reader = response.body.getReader(),
-      decoder = new TextDecoder();
-    let text = "";
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        text += decoder.decode(value, { stream: true });
-        if (text.length > 262144) throw new Error("MCP response exceeds evidence bound");
-        const event = text.split("\n").find((line) => line.startsWith("data: "));
-        if (event) return JSON.parse(event.slice(6));
-      }
-      return JSON.parse(text);
-    } finally {
-      await reader.cancel();
-    }
-  };
-  try {
-    const initialized = json(
+    const initialize = json(
       await send("initialize", {
         protocolVersion: "2025-11-25",
         capabilities: {
@@ -152,93 +53,278 @@ export async function runPrivateConformance(
             privateInvocation: { version: 1, header: "Private-Invocation", directCallOnly: true },
           },
         },
-        clientInfo: { name: "private-conformance", version: "1" },
+        clientInfo: { name: "owned-lab-support", version: "1" },
       }),
     );
-    const experimental = json(json(json(initialized.result).capabilities).experimental);
-    assert.deepEqual(experimental.privateInvocation, {
-      version: 1,
-      header: "Private-Invocation",
-      directCallOnly: true,
-    });
-    assert.ok(session, "Stateful negotiated MCP required");
-    await send("notifications/initialized", {});
-    const call = (c: Call) =>
-      send(
-        "tools/call",
-        { name: "call", arguments: { calls: { path: c.path, input: c.input } } },
-        refs.get(c),
-      );
-    const positive = outcome(await call(fixture.direct));
-    assert.equal(positive.ok, true, "Actual private direct call must complete");
-    assert.deepEqual(positive.value, fixture.expectedResult);
-    const replay = json(await call(fixture.direct));
-    assert.ok(
-      replay.refused === true || "error" in replay || outcome(replay).ok === false,
-      "Replay cannot redispatch",
-    );
-    const journal = outcome(await call(fixture.journal));
-    assert.equal(journal.ok, true);
-    const status = json(journal.value);
-    assert.equal(
-      status.outcome,
-      "observed",
-      "Read persisted app journal through real process/network",
-    );
-    const readback = outcome(await call(fixture.effect));
-    assert.equal(readback.ok, true);
     assert.deepEqual(
-      readback.value,
-      fixture.expectedEffect,
-      "Independent actual effect readback after replay",
+      json(json(json(initialize.result).capabilities).experimental).privateInvocation,
+      { version: 1, header: "Private-Invocation", directCallOnly: true },
     );
+    assert.ok(connection.session);
+    await send("notifications/initialized", {});
+    const ordinary = () =>
+      send("tools/call", {
+        name: "call",
+        arguments: { calls: { path: fixture.journalPath, input: {} } },
+      });
+    const before = outcome(await ordinary());
     await mkdir(evidencePath, { recursive: true, mode: 0o700 });
     await writeFile(
-      resolve(evidencePath, "private-invocation-result.json"),
+      resolve(evidencePath, "ordinary-response.private.json"),
+      JSON.stringify(before),
+      { mode: 0o600 },
+    );
+    assert.equal(before.ok, true, "same-app ordinary journal must execute");
+    assert.equal(json(before.value).principal, fixture.expectedPrincipal);
+    const effectsBefore = await actualReadback(fixture.readback);
+    const missing = outcome(
+      await send("tools/call", {
+        name: "call",
+        arguments: {
+          calls: {
+            path: fixture.protectedPath,
+            input: { operationId: "no-native-support-check", value: "owned-support" },
+          },
+        },
+      }),
+    );
+    assert.equal(missing.ok, false, "protected tool must refuse absent native authority");
+    const after = outcome(await ordinary());
+    assert.deepEqual(after, before, "refused call must not enter the app's durable journal");
+    assert.deepEqual(
+      await actualReadback(fixture.readback),
+      effectsBefore,
+      "independent effect store must stay unchanged",
+    );
+    await writeFile(
+      resolve(evidencePath, "support-result.json"),
       JSON.stringify(
         {
-          version: 1,
-          executedScenarios: 1,
-          actualDirectCalls: 4,
-          modelCalls: 0,
-          observations,
-          provenance: {
-            executorHead: fixture.provenance.executorHead,
-            issuerHead: fixture.provenance.issuerHead,
-          },
+          executedSupportCases: 3,
           assertions: [
-            "negotiated",
-            "direct-effect",
-            "replay-refused",
-            "persistent-journal",
-            "independent-effect-readback",
+            "negotiated-real-session",
+            "same-app-ordinary-journal",
+            "missing-origin-refusal-before-journal-and-effect",
           ],
+          pairedAcceptedRows: 0,
+          voiceAcceptedRows: 0,
+          nativeAdmissions: 0,
+          modelCalls: 0,
+          observations: connection.observations,
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+  } finally {
+    await connection.close();
+  }
+}
+interface NativeFixture extends SupportFixture {
+  version: 2;
+  bindingFile: string;
+  provenance: {
+    executorHead: string;
+    hermesHead: string;
+    ownedProcessesReceiptFile: string;
+    authenticatedAccountReceiptFile: string;
+  };
+  operations: ReadonlyArray<{
+    operationId: string;
+    input: Record<string, unknown>;
+    receiptFile: string;
+    resultFile: string;
+    issuerFile: string;
+    referenceFile: string;
+    originalOriginFile?: string;
+    outcome: "observed" | "unknown";
+  }>;
+  expectedOrigin: Record<string, unknown>;
+}
+/** Observe the actual gateway SDK path, then independently reconcile its real effect and journal. */
+export async function observeNative(fixturePath: string, evidencePath: string): Promise<void> {
+  const fixture: NativeFixture = JSON.parse(await requireFile(fixturePath));
+  if (
+    fixture.version !== 2 ||
+    !/^[a-f0-9]{40}$/.test(fixture.provenance?.executorHead ?? "") ||
+    !/^[a-f0-9]{40}$/.test(fixture.provenance?.hermesHead ?? "")
+  )
+    throw new Prerequisite("Exact owned candidate source provenance required");
+  await requireFile(fixture.provenance.ownedProcessesReceiptFile);
+  await requireFile(fixture.provenance.authenticatedAccountReceiptFile);
+  const expectedTarget = json(json(JSON.parse(await requireFile(fixture.bindingFile))).target);
+  if (!fixture.operations.length)
+    throw new Prerequisite("At least one genuine native operation required");
+  const readEventually = async (path: string): Promise<string> => {
+    const end = Date.now() + 60000;
+    for (;;) {
+      try {
+        return await requireFile(path);
+      } catch (error) {
+        if (Date.now() >= end) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  };
+  const connection = privateMcpHttp(
+    new URL(fixture.mcpUrl),
+    (await requireFile(fixture.tokenFile)).trim(),
+    fixture.organizationId,
+  );
+  const reports: unknown[] = [];
+  try {
+    await connection.send("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {
+        experimental: {
+          privateInvocation: { version: 1, header: "Private-Invocation", directCallOnly: true },
+        },
+      },
+      clientInfo: { name: "genuine-native-observer", version: "1" },
+    });
+    assert.ok(connection.session);
+    await connection.send("notifications/initialized", {});
+    for (const operation of fixture.operations) {
+      const [rawNative, rawSdk, rawIssuer, reference] = await Promise.all(
+        [
+          operation.receiptFile,
+          operation.resultFile,
+          operation.issuerFile,
+          operation.referenceFile,
+        ].map(readEventually),
+      );
+      const native = json(JSON.parse(rawNative!)),
+        sdk = json(JSON.parse(rawSdk!)),
+        issuer = json(JSON.parse(rawIssuer!));
+      const origin = operation.originalOriginFile
+        ? json(JSON.parse(await requireFile(operation.originalOriginFile))).origin
+        : native.origin;
+      for (const [key, value] of Object.entries(fixture.expectedOrigin))
+        assert.deepEqual(json(origin)[key], value);
+      assert.deepEqual(native.input, operation.input);
+      const binding = json(issuer.binding);
+      assert.equal(binding.operationId, operation.operationId);
+      for (const key of [
+        "recipientPrincipal",
+        "appId",
+        "buildId",
+        "toolPath",
+        "selectedAccountsDigest",
+        "action",
+      ])
+        assert.deepEqual(binding[key], expectedTarget[key]);
+      assert.equal(binding.recipientPrincipal, fixture.expectedPrincipal);
+      assert.equal(issuer.status, operation.outcome);
+      assert.equal(
+        JSON.stringify(sdk).includes(reference!.trim()),
+        false,
+        "private reference must not enter SDK result",
+      );
+      const completed =
+        sdk.ok === false
+          ? undefined
+          : json(
+              typeof sdk.result === "string"
+                ? JSON.parse(sdk.result)
+                : (sdk.structuredContent ?? sdk.result),
+            );
+      const execution = completed === undefined ? { ok: false } : json(completed.execution);
+      const call = execution.ok === true ? json(execution.value) : { ok: false };
+      assert.equal(call.ok, operation.outcome === "observed");
+      const journal = outcome(
+        await connection.send("tools/call", {
+          name: "call",
+          arguments: {
+            calls: {
+              path: fixture.journalPath.replace(/\.journal$/, ".status"),
+              input: { operationId: operation.operationId },
+            },
+          },
+        }),
+      );
+      assert.equal(journal.ok, true);
+      assert.equal(json(journal.value).outcome, operation.outcome);
+      assert.equal(json(journal.value).digest, binding.inputDigest);
+      const effects = json(await actualReadback(fixture.readback));
+      assert.ok(Array.isArray(effects.effects));
+      const matching = effects.effects.filter(
+        (entry: unknown) => json(entry).operationId === operation.operationId,
+      );
+      assert.equal(matching.length, 1, "exactly one actual durable effect");
+      const payload = json(json(matching[0]).payload);
+      assert.deepEqual(payload.input, operation.input);
+      assert.deepEqual(payload.origin, origin);
+      assert.deepEqual(payload.binding, binding);
+      assert.ok(
+        typeof binding.expiresAt === "number" && Date.now() < binding.expiresAt,
+        "replay check must use the still-unexpired genuine operation",
+      );
+      const replay = await connection.send(
+        "tools/call",
+        {
+          name: "call",
+          arguments: {
+            calls: {
+              path: fixture.protectedPath,
+              input: operation.input,
+            },
+          },
+        },
+        reference!.trim(),
+      );
+      assert.equal(outcome(replay).ok, false, "used genuine reference must not dispatch twice");
+      assert.equal(
+        JSON.stringify(replay).includes(reference!.trim()),
+        false,
+        "private reference must not enter errors",
+      );
+      assert.deepEqual(
+        await actualReadback(fixture.readback),
+        effects,
+        "replay cannot undo or duplicate a real effect",
+      );
+      reports.push({
+        operationId: operation.operationId,
+        outcome: operation.outcome,
+        assertions: [
+          "genuine-native-receipt",
+          "actual-gateway-sdk",
+          "current-principal-binding",
+          "persistent-journal",
+          "independent-mtls-effect",
+          "no-duplicate-on-replay",
+        ],
+      });
+    }
+    await mkdir(evidencePath, { recursive: true, mode: 0o700 });
+    await writeFile(
+      resolve(evidencePath, "genuine-native-results.private.json"),
+      JSON.stringify(
+        {
+          observedOperations: reports.length,
+          reports,
+          modelCalls: 0,
+          allPairedRowsQualified: false,
           remaining: [
-            "overlapping-origin-isolation",
-            "all-denials",
-            "restart-rebind-revocation",
-            "write-response-loss",
-            "model-trace-catalog-inspection",
-            "ordinary-old-host-compatibility",
+            "asserted-overlap",
+            "full-denial-matrix",
+            "owned-restart-and-revocation",
+            "real-provider-trace",
+            "old-host-compatibility",
           ],
         },
         null,
         2,
-      ) + "\n",
+      ),
       { mode: 0o600 },
     );
   } finally {
-    if (session)
-      await fetch(url, {
-        method: "DELETE",
-        redirect: "error",
-        headers: { authorization: `Bearer ${token}`, "mcp-session-id": session },
-        signal: AbortSignal.timeout(5000),
-      })
-        .then((r) => r.body?.cancel())
-        .catch(() => {});
+    await connection.close();
   }
 }
+/** The existing E2E entry now observes the actual Hermes SDK route, not a substitute HTTP positive. */
+export const runPrivateConformance = observeNative;
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const argument = (name: string) => {
     const at = process.argv.indexOf(name);
@@ -251,9 +337,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       throw new Prerequisite(
         "Usage: node e2e/private-invocation-driver.ts --fixture PROTECTED_MANIFEST --evidence PRIVATE_DIRECTORY",
       );
-    await runPrivateConformance(fixture, evidence);
+    const support = process.argv.includes("--support-only");
+    const native = process.argv.includes("--observe-native");
+    if (support) await runLabSupport(fixture, evidence);
+    else if (native) await observeNative(fixture, evidence);
+    else await runPrivateConformance(fixture, evidence);
     process.stdout.write(
-      "Executed one real external private invocation scenario; see private evidence\n",
+      support
+        ? "Executed three real-process support checks; native acceptance remains unqualified\n"
+        : "Executed one real external private invocation scenario; see private evidence\n",
     );
   } catch (error) {
     process.stderr.write(

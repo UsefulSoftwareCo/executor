@@ -1448,14 +1448,34 @@ export const makeTools = (
           Effect.withSpan("sdk.accounts.resolve"),
           Effect.provideService(GrantReadAhead, grants),
         );
+        const selectedPrivate = scopedSelection(
+          state.version.requirements.accounts,
+          state.accounts,
+          state.scope,
+        );
+        const freezeScope = (scope: AppAccounts["app"]) =>
+          Object.freeze(
+            Object.fromEntries(
+              Object.entries(scope).map(([name, ids]) => [name, Object.freeze([...ids])]),
+            ),
+          );
+        const privateAccounts: AppAccounts = Object.freeze({
+          app: freezeScope(selectedPrivate.app),
+          ...(selectedPrivate.user === undefined
+            ? {}
+            : { user: freezeScope(selectedPrivate.user) }),
+        });
         const attachment = yield* PrivateInvocationRequest;
         let privateInvocation: import("apps/contracts").PrivateInvocationRpc | undefined;
-        if (attachment !== undefined || state.version.requirements.privateInvocation === true) {
+        const requirement = state.version.requirements.privateInvocation;
+        const requiresPrivate =
+          requirement === true || (Array.isArray(requirement) && requirement.includes(parsed.tool));
+        if (attachment !== undefined || requiresPrivate) {
           if (
             attachment === undefined ||
             context.caller === undefined ||
             context.caller !== attachment.principal ||
-            state.version.requirements.privateInvocation !== true
+            !requiresPrivate
           )
             return yield* new RequestInvalid();
           const lifetime = yield* Effect.acquireRelease(
@@ -1472,13 +1492,7 @@ export const makeTools = (
                   appId: state.app.id,
                   buildId: state.version.build,
                   toolPath: parsed.tool,
-                  accountsDigest: await privateDigest(
-                    scopedSelection(
-                      state.version.requirements.accounts,
-                      state.accounts,
-                      state.scope,
-                    ),
-                  ),
+                  accountsDigest: await privateDigest(privateAccounts),
                   action: "call",
                   inputDigest: await privateDigest(args),
                 },
@@ -1494,7 +1508,7 @@ export const makeTools = (
                 app: state.app.id,
                 version: state.version.id,
                 tool: parsed.tool,
-                accounts: state.accounts,
+                accounts: privateAccounts,
               }),
               { signal: lifetime.signal },
             );
@@ -1577,7 +1591,12 @@ export const makeTools = (
           }
           // The app reports the decoded input it asks approval for; its prompt is not used.
           if (Schema.is(HostToolApprovalRequired)(result.failure)) {
-            if (privateInvocation !== undefined) return yield* new RequestInvalid();
+            if (privateInvocation !== undefined)
+              return yield* new ToolCallFailed({
+                ...identity,
+                reason: "Private approval continuation refused",
+                mayHaveWritten: true,
+              });
             // The request saves the caller's kind, so its pending response and its resumption
             // treat a call that named none as one that may write.
             return yield* approvals.save(

@@ -206,7 +206,9 @@ export const DeclaredRequirements = Schema.Struct({
    */
   accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
   /** Every tool call requires private host authority; discovery does not grant it. */
-  privateInvocation: Schema.optionalKey(Schema.Literal(true)),
+  privateInvocation: Schema.optionalKey(
+    Schema.Union([Schema.Literal(true), Schema.Array(Schema.NonEmptyString)]),
+  ),
   /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
   sql: Schema.optionalKey(Schema.Literal(true)),
   /** The events the app declares, so a host lists them without evaluating the app. */

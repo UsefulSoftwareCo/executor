@@ -145,6 +145,7 @@
     "@rrweb/replay": "2.1.6",
     "@types/node": "26.6.1",
     "@vitest/ui": "5.0.1",
+    "apps": "workspace:*",
     "autumn-js": "1.2.28",
     "dugite": "3.2.3",
     "effect": "4.0.1",

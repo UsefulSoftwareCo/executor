@@ -456,8 +456,32 @@
         {
           "name": "privateInvocation",
           "type": {
-            "_tag": "Literal",
-            "literal": true
+            "_tag": "Union",
+            "types": [
+              {
+                "_tag": "Literal",
+                "literal": true
+              },
+              {
+                "_tag": "Arrays",
+                "rest": [
+                  {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
           },
           "isOptional": true
         },

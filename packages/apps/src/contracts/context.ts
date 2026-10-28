@@ -12,7 +12,7 @@ import type { AppIcon } from "./icons.ts";
  */
 export interface AppRequirements {
   /** All tool effects require an invocation-local private grant (prototype protocol 15). */
-  readonly privateInvocation?: true;
+  readonly privateInvocation?: true | ReadonlyArray<string>;
   readonly app?: { readonly accounts: AccountSlots };
   readonly user?: { readonly accounts: AccountSlots };
   /** Removed: declare `user: { accounts }` for the caller's accounts or `app: { accounts }`. */

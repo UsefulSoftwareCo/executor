@@ -1,8 +1,11 @@
 /** Prototype v1. This facade contains no serializable authority. */
 export interface PrivatePermit {
+  /** Forward the unchanged input through one fixed host binding, once. */
   readonly forward: (bindingId: string, input: unknown) => Promise<unknown>;
 }
+/** Invocation-local host authority; unavailable in factories and ordinary calls. */
 export interface PrivateInvocation {
+  /** Require the issuer-owned exact operation before requesting its fixed forward. */
   readonly require: (operationId: string) => Promise<PrivatePermit>;
 }
 /** Host-only invocation RPC, never a public Request field. */

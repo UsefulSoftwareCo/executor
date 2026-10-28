@@ -125,7 +125,7 @@ export type EvaluationContext<Slots extends ScopedSlots> = BoundContext<Slots, "
 /** The host evaluates this factory fresh with the invocation's accounts. */
 export interface App<Slots extends ScopedSlots, Def extends AppDefinition<never>> {
   readonly accounts: Slots;
-  readonly privateInvocation?: true;
+  readonly privateInvocation?: true | ReadonlyArray<string>;
   /** Declared beside the accounts, so a host lists them without evaluating the app. */
   readonly events?: Readonly<Record<string, import("./events.ts").AppEvent>>;
   /** Declared beside the accounts and checked when the module loads. */

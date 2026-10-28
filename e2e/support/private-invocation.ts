@@ -5,7 +5,7 @@ import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
 
 export const privateInvocationConformance = Effect.gen(function* () {
-  const manifest = yield* Config.string("EXECUTOR_PRIVATE_INVOCATION_FIXTURE");
+  const manifest = yield* Config.String("EXECUTOR_PRIVATE_INVOCATION_FIXTURE");
   const target = yield* Target;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const evidence = yield* Evidence;

@@ -12,6 +12,7 @@ import {
   type RouterIcon,
 } from "../contracts/router.ts";
 import { fromPromise } from "./authoring.ts";
+import { extendRoot } from "./router-extend.ts";
 import type { Approval } from "../approval.ts";
 import {
   NativeRouterKey as NativeRouter,
@@ -75,7 +76,9 @@ export const mergeMeta = (
 /**
  * Group operations and routers under path keys, like tRPC's nested routers, with metadata an
  * agent can read. Passing an existing router instead of children overrides its metadata:
- * `router(mcpRouter(options), { description: "..." })`.
+ * `router(mcpRouter(options), { description: "..." })`. A third argument adds named local
+ * operations at the same root, without renaming source paths. Collisions refuse rather than
+ * override: `router(source, {}, { localOperation })`.
  */
 export function router<Query = unknown, Mutation = unknown>(
   children: Readonly<Record<string, RouterChild<Query, Mutation>>>,
@@ -84,13 +87,27 @@ export function router<Query = unknown, Mutation = unknown>(
 export function router<Query, Mutation>(
   source: RouterDeclaration<Query, Mutation>,
   options: RouterOptions,
+  additions?: Readonly<Record<string, OperationChild<Query, Mutation>>>,
 ): RouterDeclaration<Query, Mutation>;
 export function router(
   children: Readonly<Record<string, unknown>> | RouterDeclaration,
   options?: RouterOptions,
+  additions?: Readonly<Record<string, unknown>>,
 ): RouterDeclaration {
   const meta = metaOf(options);
-  const existing = nativeRouter(children);
+  let existing = nativeRouter(children);
+  if (additions !== undefined) {
+    if (existing === undefined) throw new Error("Same-root additions require an existing router");
+    const operations: Record<string, AppOperation> = {};
+    for (const [name, value] of Object.entries(additions)) {
+      if (!Schema.is(RouterKey)(name)) throw new Error("Invalid same-root operation name");
+      const operation = nativeOperation(value);
+      if (operation === undefined)
+        throw new Error("Same-root additions must be queries or mutations");
+      operations[name] = operation;
+    }
+    existing = extendRoot(existing, operations);
+  }
   if (existing !== undefined)
     return routerDeclaration(
       existing.kind === "router"

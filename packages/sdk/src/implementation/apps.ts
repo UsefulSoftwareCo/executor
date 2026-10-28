@@ -365,9 +365,9 @@ export const makeApps = (
         ),
       );
       const requirements: AppRequirements = {
-        ...(built.requirements.privateInvocation === true
-          ? { privateInvocation: true as const }
-          : {}),
+        ...(built.requirements.privateInvocation === undefined
+          ? {}
+          : { privateInvocation: built.requirements.privateInvocation }),
         ...(built.requirements.capabilities === undefined
           ? {}
           : { capabilities: built.requirements.capabilities }),

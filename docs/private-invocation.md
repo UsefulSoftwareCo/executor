@@ -2,7 +2,8 @@
 
 This local companion is an unreleased proposal over JustYannicc's caller/cache
 isolation contribution, PR2346 at `6e6c79b50bdca8416a1521ba1c0d3b5e12eadf45`,
-whose public v2 base is `9edd4a510301f1bb061a0328c482e1b60e0cb937`.
+whose advertised base is `639505b7f2f83c6b7865fbe56f770fc4c8c76422`.
+This companion is not a port onto the newer public-v2 export.
 It does not establish maintainer acceptance, a supported release or production
 compatibility. Public contributions target v2 and are ported by maintainers.
 Protocol15 and `apps@0.0.1-beta.116-private-invocation.1` distinguish this candidate
@@ -25,9 +26,16 @@ it never restores authority from that cache. Ordinary sessions are unchanged.
 Only a single `tools/call` request naming MCP `call`, with arguments
 `{calls:{path,input}}`, can attach the opaque ASCII header (1–512 bytes). Arrays,
 execute, resume, notifications and malformed attachments refuse before dispatch.
-Requiring apps declare `defineApp({privateInvocation:true}, ...)`. Missing
+Requiring apps declare `defineApp({privateInvocation:true}, ...)`, or exact app-local
+paths with `defineApp({privateInvocation:["dispatch"]}, ...)`. Only those named
+tools require attachments; other tools in the same app keep ordinary authorization.
+To add a local operation beside an opaque imported router, use
+`router(source, {}, { localOperation })`, then wrap that returned router with the
+existing approval policy. Source names and metadata stay unchanged; collisions
+refuse at source read and local resolution. Never extract private router symbols
+or wrap the input after its digest was bound. Missing
 attachments refuse at the SDK before app calls, including execute/batch/resume
-attempts. Ordinary apps cannot receive an attached grant. Their unprotected calls
+attempts. Tools without a private requirement cannot receive an attached grant. Their unprotected calls
 use their existing path. App-owned upstream MCP headers cannot set the reserved
 header; this extension is not a static account credential.
 
@@ -80,9 +88,13 @@ admitted origin, current policy and immutable operation binding, atomically rese
 redemption and return:
 
 ```ts
-{
-  version: (1, invocationId, operationId, expiresAt, lease);
-}
+const receipt = {
+  version: 1,
+  invocationId: "issuer-owned",
+  operationId: "issuer-owned",
+  expiresAt: 1790000000000,
+  lease: "host-private-opaque-reference",
+};
 ```
 
 `expiresAt` is epoch milliseconds, at most60seconds ahead. IDs and expiry come from
@@ -104,9 +116,7 @@ accounts and tool policy. The forward client compares the final input digest and
 one configured binding ID, reserves locally before any await, and POSTs:
 
 ```ts
-{
-  version: (1, lease, binding, bindingId, input);
-}
+const forward = { version: 1, lease, binding, bindingId, input };
 ```
 
 The issuer must recheck current revocation, expiry, original scope and exact input,
@@ -152,15 +162,60 @@ The mode0600 manifest has this shape (file paths are private fixture injection,
 never credentials or references in source):
 
 ```ts
-{
-  version:1,mcpUrl:"https://owned-development-host/mcp",tokenFile:"/protected/product-token",
-  direct:{path:"tools[\"app_slug\"].dispatch",input:{operationId:"issued-operation",value:"owned-effect"},referenceFile:"/protected/direct-reference"},
-  journal:{path:"tools[\"app_slug\"].status",input:{operationId:"issued-operation"},referenceFile:"/protected/journal-reference"},
-  effect:{path:"tools[\"readback_slug\"].read",input:{operationId:"issued-operation"},referenceFile:"/protected/readback-reference"},
-  expectedResult:{/* independently expected ordinary result */},expectedEffect:{/* exact effect/count */},
-  provenance:{executorHead:"<40hex>",issuerHead:"<40hex>",nativeAdmissionReceiptFile:"/protected/native-admission",authenticatedAccountReceiptFile:"/protected/real-auth-account",ownedProcessesReceiptFile:"/protected/process-storage-ownership"}
-}
+const fixture = {
+  version: 2,
+  mcpUrl: "https://owned-development-host/mcp",
+  organizationId: "actual-organization",
+  tokenFile: "/protected/actual-product-token",
+  expectedPrincipal: "actual-user",
+  journalPath: 'tools["owned-app"].journal',
+  protectedPath: 'tools["owned-app"].dispatch',
+  bindingFile: "/protected/authenticated-active-build-binding.json",
+  expectedOrigin: {
+    platform: "slack",
+    workspace: "dedicated-workspace",
+    author: "genuine-author",
+    channel: "original-dm",
+  },
+  operations: [
+    {
+      operationId: "actual-operation",
+      input: { operationId: "actual-operation", value: "synthetic-value" },
+      receiptFile: "/protected/actual-native-receipt",
+      resultFile: "/protected/actual-sdk-result",
+      issuerFile: "/protected/actual-issuer-observation",
+      referenceFile: "/protected/actual-used-reference",
+      outcome: "observed",
+    },
+  ],
+  readback: {
+    url: "https://owned-effect/effects",
+    certificateFile: "/protected/readback.crt",
+    privateKeyFile: "/protected/readback.key",
+    certificateAuthorityFile: "/protected/ca.crt",
+  },
+  provenance: {
+    executorHead: "exact-clean-head",
+    hermesHead: "exact-clean-head",
+    ownedProcessesReceiptFile: "/protected/process-ownership",
+    authenticatedAccountReceiptFile: "/protected/account-receipt",
+  },
+};
 ```
+
+The observer waits for real native callback/SDK receipts, independently reads the
+actual app journal and mTLS effect target, checks exact original scope and actual
+recipient/app/build/accounts, then attempts replay with that genuine, still-unexpired
+used reference. `outcome: "unknown"` requires an actual effect plus an unknown local
+journal after real response loss; it never invents an origin or a result. A retained
+rebind case additionally supplies `originalOriginFile` from the genuine retained
+admission. It does not assert concurrency, full revocation/denial coverage, a real
+provider trace or old-host behavior merely because these narrower observations pass.
+
+`--support-only` uses a separate protected support manifest to execute negotiation,
+a successful same-app ordinary journal read, and missing-origin refusal with
+unchanged independent effects. It reports zero accepted paired/voice rows. This
+mode never supplies a native origin or substitutes for the genuine observer.
 
 The fixture owner must provide actual modified product/issuer processes, TLS trust,
 real signup/login/consent and selected accounts, an admitted native human event and

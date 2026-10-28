@@ -323,7 +323,14 @@ export const defineApp = <
     throw new TypeError(`The app's icons are invalid: ${iconsProblem}`);
   const native: NativeApp<RequirementSlots<Requirements>, EffectDefinition<Def>> = {
     accounts,
-    ...(requirements.privateInvocation === true ? { privateInvocation: true as const } : {}),
+    ...(requirements.privateInvocation === undefined
+      ? {}
+      : {
+          privateInvocation:
+            requirements.privateInvocation === true
+              ? (true as const)
+              : Object.freeze([...requirements.privateInvocation]),
+        }),
     ...(events === undefined ? {} : { events }),
     ...(requirements.icons === undefined || requirements.icons.length === 0
       ? {}

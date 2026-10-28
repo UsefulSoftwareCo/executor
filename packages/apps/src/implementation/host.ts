@@ -438,10 +438,15 @@ function dispatch(
       const ownsSql = hasMigrations(context.files ?? []);
       const declared = {
         ...(yield* requirements(native.accounts, ownsSql, native.events, native.icons)),
-        ...(native.privateInvocation === true ? { privateInvocation: true as const } : {}),
+        ...(native.privateInvocation === undefined
+          ? {}
+          : { privateInvocation: native.privateInvocation }),
       };
       if (
-        native.privateInvocation === true &&
+        (native.privateInvocation === true ||
+          (request.operation === "call" &&
+            Array.isArray(native.privateInvocation) &&
+            native.privateInvocation.includes(request.tool))) &&
         request.operation !== "requirements" &&
         request.operation !== "inspect" &&
         request.operation !== "skills" &&
@@ -753,6 +758,7 @@ function dispatch(
                     (yield* captureTelemetry).context,
                   ),
                   files,
+                  invocation: unavailableInvocation,
                   fetch: yield* appInvocationFetch(signal),
                   signal,
                   runId: execution.runId,
