@@ -51,7 +51,7 @@ export const privateInvocationHttp = (options: McpOptions) => {
       // Reuse that supported cached effect, then bound the sanitized materialization.
       const text = yield* request.text;
       const bytes = new TextEncoder().encode(text);
-      if (bytes.byteLength > (header === undefined ? 1048576 : 262144)) return denied();
+      if (header !== undefined && bytes.byteLength > 262144) return denied();
       const headers = { ...request.headers };
       delete headers["private-invocation"];
       // Keep the native source identity: Effect keys its pre-response/session handlers
