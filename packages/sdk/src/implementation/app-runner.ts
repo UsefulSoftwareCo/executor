@@ -126,6 +126,7 @@ export interface AppRunnerHost {
 
 /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
 export interface AppInvocation {
+  readonly privateInvocation?: true;
   readonly caller?: string;
   readonly app: string;
   readonly build: string;
@@ -855,6 +856,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           bundleAccounts(protocol, invocation.app, host.credentialKey, resolved);
         const accounts = yield* accountsFor(invocation.accounts);
         const body = protocol.invocation({
+          ...(invocation.privateInvocation === true ? { privateInvocation: true as const } : {}),
           command: invocation.command,
           accounts,
           ...(invocation.caller === undefined ? {} : { caller: invocation.caller }),

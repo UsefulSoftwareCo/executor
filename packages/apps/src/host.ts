@@ -20,6 +20,7 @@ import {
 } from "./contracts/elicitation.ts";
 
 export type { HostContext, ResolvedAccountsInput } from "./contracts/host.ts";
+export { isolatedPrivateInvocation } from "./implementation/private-invocation.ts";
 export { isolatedCacheSession } from "./implementation/cache-session.ts";
 
 /** Parse host-owned accounts, approval and caller identity. Never take the caller from public request input. */

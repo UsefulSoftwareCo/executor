@@ -1,3 +1,8 @@
+export {
+  privateCanonicalJson,
+  type PrivateInvocation,
+  type PrivatePermit,
+} from "./contracts/private-invocation.ts";
 export { ProviderError } from "./contracts/provider-error.ts";
 export { FetchOptionUnsupported, NetworkRefused } from "./contracts/network.ts";
 export type { AppCache, CacheLoadContext, CacheGetOptions } from "./contracts/cache.ts";

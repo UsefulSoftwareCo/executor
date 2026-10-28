@@ -29,7 +29,9 @@ export const defaultMcpClientLimits = McpClientLimits.make({
 /** Platform timer ceiling, not an execution allowance; our active-time clock owns the call deadline. */
 export const mcpSdkTimerCeilingMs = 2_147_483_647;
 
-/** Server and headers for this selected account. Headers are a credential snapshot. */
+/** Server and headers for this selected account. Headers are a credential snapshot.
+ * Private-Invocation is reserved for negotiated host transport, never a static account header.
+ */
 export const McpToolsOptions = Schema.Struct({
   url: HttpUrl,
   accountId: Schema.optional(AccountId),

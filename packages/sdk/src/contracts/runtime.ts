@@ -1,3 +1,6 @@
+/** Private invocation authority is a HostContext callback, never part of public call input.
+ * Workerd adapters must refuse pre-15 builds when it is present.
+ */
 /** Pluggable Effect runtime. The caller resolves accounts; no database or owner policy lives here. */
 import { Context, Effect, Schema, type Stream } from "effect";
 import {

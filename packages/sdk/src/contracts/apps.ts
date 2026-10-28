@@ -62,6 +62,7 @@ export type AccountRequirement = typeof AccountRequirement.Type;
 /** App-wide requirements, extracted from the deployed app's declaration. */
 export const AppRequirements = Schema.Struct({
   capabilities: DeclaredRequirements.fields.capabilities,
+  privateInvocation: DeclaredRequirements.fields.privateInvocation,
   /** The document store of apps built before `sql`. Their retained builds still use it. */
   database: DeclaredRequirements.fields.database,
   sql: DeclaredRequirements.fields.sql,

@@ -486,7 +486,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.116",
+      "version": "0.0.1-beta.116-private-invocation.1",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",

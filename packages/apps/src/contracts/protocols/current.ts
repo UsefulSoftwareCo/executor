@@ -205,6 +205,8 @@ export const DeclaredRequirements = Schema.Struct({
    * requirements only.
    */
   accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
+  /** Every tool call requires private host authority; discovery does not grant it. */
+  privateInvocation: Schema.optionalKey(Schema.Literal(true)),
   /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
   sql: Schema.optionalKey(Schema.Literal(true)),
   /** The events the app declares, so a host lists them without evaluating the app. */
@@ -573,6 +575,8 @@ export type HostResponse = typeof HostResponse.Type;
  * the retained build, so this shape is part of the protocol too.
  */
 export const HostInvocation = Schema.Struct({
+  /** Support marker only; authority is the separate invocation-owned RPC callback. */
+  privateInvocation: Schema.optionalKey(Schema.Literal(true)),
   command: HostRequest,
   accounts: ResolvedAccounts,
   /** Trusted host identity; never part of the public command. */

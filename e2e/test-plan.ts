@@ -104,6 +104,25 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = plan({
+  privateInvocationExternal: {
+    file: "private-invocation.spec.ts",
+    title: "Private invocation external genuine origin direct effect and replay confinement",
+    targets: {
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Requires owned paired issuer/product builds, protected genuine native-human references, authenticated selected accounts and actual effect readback; not provisioned in ordinary CI",
+      },
+      local: {
+        status: "not-run",
+        reason: "Same external fixture prerequisite; local host has no configured verifier",
+      },
+      cloud: {
+        status: "not-run",
+        reason: "No private issuer trust registration/fixtures on Cloud",
+      },
+    },
+  },
   cloudRoleHostRoutes: {
     fixtures: "actors",
     file: "cloud-role-hosts.spec.ts",

@@ -71,6 +71,9 @@ const protocol14: AppProtocol = {
   sealedCredentials: true,
 };
 
+/** Prototype only: private RPC uses the invocation-owned controls callback, never JSON authority. */
+const protocol15: AppProtocol = { ...protocol14, version: 15, nodeEntry: nodeAppEntry(15) };
+
 /** Earlier builds have no caller identity field. Keep their retained entry body unchanged. */
 const withoutCaller = ({ caller: _caller, ...input }: HostInvocation) => input;
 const protocol13: AppProtocol = {
@@ -282,6 +285,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol12,
     protocol13,
     protocol14,
+    protocol15,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

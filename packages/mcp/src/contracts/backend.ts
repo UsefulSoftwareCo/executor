@@ -59,7 +59,7 @@ export interface McpBackend<E extends Error> {
   ) => Effect.Effect<AppSkillDocument, E>;
   /** Reauthorize input delivery using the current request before releasing a running tool. */
   readonly authorizeElicitation: (
-    input: Pick<Parameters<Executor["tools"]["call"]>[0], "app" | "tool" | "accounts">,
+    input: Pick<Parameters<Executor["tools"]["call"]>[0], "app" | "version" | "tool" | "accounts">,
   ) => Effect.Effect<void, ElicitationFailed>;
   /** Apply IDs in storage before loading app metadata. [] selects none; omitted IDs add no restriction.
    * Hosts still enforce owner access; this filter is never an authorization grant.
@@ -98,6 +98,7 @@ export interface McpBackend<E extends Error> {
     input: Parameters<Executor["tools"]["search"]>[0],
   ) => Effect.Effect<ToolSearchPage, E>;
   /** Check execution permission again; prior discovery does not authorize this call. */
+  /** Invocation-private authority is carried by the host Effect context only. Public input cannot set it. */
   readonly callTool: (
     input: Parameters<Executor["tools"]["call"]>[0],
     options?: ToolInvocationOptions,

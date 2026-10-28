@@ -140,9 +140,20 @@ export const makeHostedMcp = (
   limits: McpOptions["limits"] = defaultMcpLimits,
   sessions?: McpOptions["sessions"],
   interactions?: McpOptions["interactions"],
+  privateVerifier?: import("@executor-js/sdk/core").PrivateInvocationVerifier,
 ) =>
   makeMcp({
     backend: requestBackend,
+    ...(privateVerifier === undefined
+      ? {}
+      : {
+          privateInvocation: {
+            verifier: privateVerifier,
+            principal: Effect.flatMap(CurrentUserId, (id) =>
+              id === undefined ? Effect.die("No authenticated private caller") : Effect.succeed(id),
+            ),
+          },
+        }),
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
     ...(sessions === undefined ? {} : { sessions }),
     ...(interactions === undefined ? {} : { interactions }),
@@ -212,6 +223,7 @@ export const dispatchHostedMcp = <E, R>(
     // move it to another organization. The same bearer keeps its user, client and grant.
     const headers = new Headers(request.headers);
     headers.delete("x-executor-organization");
+    headers.delete("private-invocation");
     // The organization's opaque ID goes on the request's span and on each operation that rechecks
     // (`mcp.tool.call`, `mcp.tool.resume`), so their latency can be split by organization.
     const organization = { "executor.organization.id": access.access.organization };
@@ -424,6 +436,7 @@ export const dispatchHostedMcp = <E, R>(
         return url.toString();
       }),
       Effect.provideService(RequestCaller, mcpSessionKey(access)),
+      Effect.provideService(CurrentUserId, access.userId),
       Effect.provideService(CurrentUsage, { source: "mcp", client_id: access.clientId }),
     );
   });

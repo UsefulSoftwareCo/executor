@@ -11,6 +11,8 @@ import type { AppIcon } from "./icons.ts";
  * each caller links. A requirement name is used once across both.
  */
 export interface AppRequirements {
+  /** All tool effects require an invocation-local private grant (prototype protocol 15). */
+  readonly privateInvocation?: true;
   readonly app?: { readonly accounts: AccountSlots };
   readonly user?: { readonly accounts: AccountSlots };
   /** Removed: declare `user: { accounts }` for the caller's accounts or `app: { accounts }`. */

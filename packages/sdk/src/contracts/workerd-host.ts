@@ -26,6 +26,7 @@ import type { RpcTarget } from "capnweb";
  * part of an invocation: the runner asks the invocation's callbacks for it on a cold start.
  */
 export const WorkerInvocation = Schema.Struct({
+  privateInvocation: Schema.optionalKey(Schema.Literal(true)),
   app: Schema.NonEmptyString,
   build: Schema.NonEmptyString,
   /** The host API revision the app's cache belongs to, for an app that reads it; see `HostApiCheck`. */
@@ -45,7 +46,10 @@ export const WorkerInvocation = Schema.Struct({
   workflowControls: Schema.Boolean,
 });
 export type WorkerInvocation = typeof WorkerInvocation.Type;
-/** Only these capabilities cross from a live app invocation back to the product. */
+/** Only these capabilities cross from a live app invocation back to the product.
+ * Protocol15 multiplexes {privateInvocation:{operation,...}} on control; it carries no
+ * reference or bearer and is bound to the original invocation RPC object.
+ */
 export interface AppHostCallbacks extends RpcTarget {
   elicit(input: string): Promise<string>;
   control(input: string): Promise<string>;

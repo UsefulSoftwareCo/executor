@@ -53,6 +53,12 @@ export const BrowserMcpToolkit = Toolkit.make(
 
 /** Hosts supply authorized operations and documentation I/O. */
 export interface McpOptions {
+  /** Host-only prototype configuration. No registration tool or request-selected issuer. */
+  readonly privateInvocation?: {
+    readonly verifier: import("@executor-js/sdk/core").PrivateInvocationVerifier;
+    /** Actual authenticated product user, not the MCP session/cache partition. */
+    readonly principal: Effect.Effect<string>;
+  };
   readonly backend: McpBackend<Error>;
   /** Admit each new program once. Resumes never call this hook. */
   readonly beforeExecute?: Effect.Effect<void, ExecutionRejected>;

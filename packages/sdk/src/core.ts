@@ -1,5 +1,6 @@
 /** Public Effect-native SDK. The caller owns platform layers and resource lifetimes. */
 export * from "./contracts/index.ts";
+export { httpPrivateInvocationIssuer } from "./implementation/private-invocation.ts";
 export { createExecutor, createRemoteExecutor } from "./implementation/create.ts";
 export { httpEventSender } from "./implementation/event-sender.ts";
 export { makeDeclarationCache } from "./implementation/declarations.ts";

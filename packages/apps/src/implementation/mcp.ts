@@ -409,6 +409,10 @@ export const mcpClientEffect = (input: McpToolsOptions, changed?: Effect.Effect<
     const options = yield* Schema.decodeUnknownEffect(McpToolsOptions)(input).pipe(
       Effect.mapError(() => new McpError({ phase: "connect", reason: "invalid_input" })),
     );
+    if (
+      Object.keys(options.headers ?? {}).some((name) => name.toLowerCase() === "private-invocation")
+    )
+      return yield* new McpError({ phase: "connect", reason: "invalid_input" });
     const url = new URL(options.url);
     if (url.username || url.password || url.hash)
       return yield* new McpError({ phase: "connect", reason: "invalid_input" });

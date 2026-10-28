@@ -28,6 +28,7 @@ import { makeExecutions } from "./executions.ts";
 import { executeNative } from "./native-elicitation.ts";
 import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
 import { decodeSkillsInput, skills } from "./skills.ts";
+import { privateInvocationHttp, PrivateAttachment, privateBackend } from "./private-invocation.ts";
 import { eventsHandler } from "./events.ts";
 
 // Observe the final protocol value after timeout, admission and resume handling.
@@ -150,6 +151,7 @@ const withLink = (
 /** Build protocol state and its browser accessors together. Hosts authorize browser calls separately from MCP. */
 export const makeMcp = (options: McpOptions) =>
   Effect.gen(function* () {
+    const privateHttp = privateInvocationHttp(options);
     const executions = yield* makeExecutions(
       options.limits,
       options.beforeExecute,
@@ -176,6 +178,7 @@ export const makeMcp = (options: McpOptions) =>
                 ? browserIdentity(product, sessionId)
                 : callerIdentity(product, mode),
             sessionId,
+            attachment: yield* PrivateAttachment,
           };
         });
         // Which skills agents read, and in what order, shows whether they follow the entry skill.
@@ -213,11 +216,11 @@ export const makeMcp = (options: McpOptions) =>
                       ),
                     call: (input) =>
                       caller.pipe(
-                        Effect.flatMap(({ id }) =>
+                        Effect.flatMap(({ id, attachment }) =>
                           executeNative(
                             executions,
                             id,
-                            options.backend,
+                            privateBackend(options.backend, attachment),
                             callTools(input),
                             "client",
                           ),
@@ -247,9 +250,14 @@ export const makeMcp = (options: McpOptions) =>
                         ),
                       call: (input) =>
                         caller.pipe(
-                          Effect.flatMap(({ id, sessionId }) =>
+                          Effect.flatMap(({ id, sessionId, attachment }) =>
                             executions
-                              .execute(id, options.backend, callTools(input), "result")
+                              .execute(
+                                id,
+                                privateBackend(options.backend, attachment),
+                                callTools(input),
+                                "result",
+                              )
                               .pipe(
                                 Effect.flatMap((result) => withLink(result, sessionId, delivery)),
                               ),
@@ -299,8 +307,13 @@ export const makeMcp = (options: McpOptions) =>
                         ),
                       call: (input) =>
                         caller.pipe(
-                          Effect.flatMap(({ id }) =>
-                            executions.execute(id, options.backend, callTools(input), "result"),
+                          Effect.flatMap(({ id, attachment }) =>
+                            executions.execute(
+                              id,
+                              privateBackend(options.backend, attachment),
+                              callTools(input),
+                              "result",
+                            ),
                           ),
                           observeExecution("mcp.call"),
                         ),
@@ -382,7 +395,7 @@ export const makeMcp = (options: McpOptions) =>
               ),
         }),
       );
-    }).pipe(Effect.map(withSseHeartbeat));
+    }).pipe(privateHttp, Effect.map(withSseHeartbeat));
     const approvals: BrowserApprovals = {
       get: (product, address) =>
         executions.browserView(browserIdentity(product, address.sessionId), address.requestId),

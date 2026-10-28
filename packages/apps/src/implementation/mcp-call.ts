@@ -62,7 +62,10 @@ function callBudget(timeoutMs: number) {
   });
 }
 
-/** Register prompts only around tools/call, preserve metadata, and close every callback with the call. Never retries. */
+/** Register prompts only around tools/call, preserve metadata, and close every callback with the call. Never retries.
+ * This ordinary app-owned outbound adapter cannot attach private invocation authority; only
+ * invocation.require/forward reaches the fixed host-owned verifier/destination.
+ */
 export const mcpCall = (
   client: Client,
   name: string,

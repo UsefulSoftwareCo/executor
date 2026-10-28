@@ -217,6 +217,8 @@ function declaredSlots(slots: AccountSlots) {
   });
 }
 
+import { unavailableInvocation, isolatedPrivateInvocation } from "./private-invocation.ts";
+
 function requirements(
   slots: ScopedSlots,
   sql: boolean,
@@ -434,7 +436,19 @@ function dispatch(
       const secrets = accountSecrets(context.accounts);
       // The build's migrations, not a flag, decide whether the app has a database.
       const ownsSql = hasMigrations(context.files ?? []);
-      const declared = yield* requirements(native.accounts, ownsSql, native.events, native.icons);
+      const declared = {
+        ...(yield* requirements(native.accounts, ownsSql, native.events, native.icons)),
+        ...(native.privateInvocation === true ? { privateInvocation: true as const } : {}),
+      };
+      if (
+        native.privateInvocation === true &&
+        request.operation !== "requirements" &&
+        request.operation !== "inspect" &&
+        request.operation !== "skills" &&
+        request.operation !== "migrate" &&
+        context.privateInvocation === undefined
+      )
+        return yield* new HostToolBlocked();
       if (request.operation === "requirements")
         return yield* safe(
           () => Schema.decodeUnknownEffect(JsonValue)(declared),
@@ -600,6 +614,7 @@ function dispatch(
       const hostCache = context.cache ?? unavailableCache;
       const fetching = yield* fetchLifetime(signal, hostCache.background);
       const bound = {
+        invocation: unavailableInvocation,
         cache: authorCache(
           {
             ...hostCache,
@@ -816,6 +831,7 @@ function dispatch(
           request,
           {
             files,
+            invocation: unavailableInvocation,
             cache: bound.cache,
             app: bound.app,
             ...(bound.user === undefined ? {} : { user: bound.user }),
@@ -925,6 +941,10 @@ function dispatch(
             return yield* tool.run(
               {
                 ...bound,
+                invocation:
+                  context.privateInvocation === undefined
+                    ? unavailableInvocation
+                    : isolatedPrivateInvocation(context.privateInvocation, invocationSignal),
                 fetch,
                 workflows: kind === "mutate" ? workflowControls : workflowReads,
                 sql: kind === "mutate" ? session.writer : session.reader,

@@ -40,7 +40,7 @@ import {
   RuntimeCallTimings,
   RuntimeProtocolFailed,
   type RuntimeCallTiming,
-  type RuntimeProtocolUnsupported,
+  RuntimeProtocolUnsupported,
   type Runtime,
   type RuntimeBuildUnavailable,
 } from "../contracts/runtime.ts";
@@ -66,7 +66,10 @@ export const buildLoadSpan = "runtime.app.build.load";
  * only its load finds that out: `refused` keeps that as the invocation's failure.
  */
 export const invocationBuildLoader = <R>(
-  invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts" | "run">,
+  invocation: Pick<
+    AppInvocation,
+    "app" | "build" | "database" | "command" | "accounts" | "run" | "privateInvocation"
+  >,
   read: Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, R>,
 ): Effect.Effect<
   {
@@ -93,7 +96,12 @@ export const invocationBuildLoader = <R>(
         Effect.runPromiseWith(services)(
           read.pipe(
             Effect.tap((loaded) =>
-              appProtocol(loaded.protocol).pipe(
+              (invocation.privateInvocation === true && loaded.protocol !== 15
+                ? Effect.fail(
+                    new RuntimeProtocolUnsupported({ protocol: loaded.protocol, supported: [15] }),
+                  )
+                : appProtocol(loaded.protocol)
+              ).pipe(
                 Effect.tapError((error) =>
                   Effect.sync(() => {
                     unsupported = error;
@@ -166,6 +174,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
           const build = input.build;
           const run = yield* InvocationRun;
           const invocation: AppInvocation = {
+            ...(input.privateInvocation === undefined ? {} : { privateInvocation: true as const }),
             app: input.app,
             build,
             database: input.database,
@@ -183,16 +192,32 @@ export const appRuntime = (host: AppRuntimeHost) =>
           // Only the trusted runner or data supervisor calls the loader. The runner may sit behind
           // RPC, so the loader keeps an unsupported protocol as this call's typed failure.
           const loader = yield* invocationBuildLoader(invocation, host.loadBuild(build));
+          const workflowRpc =
+            input.workflowControls === undefined
+              ? null
+              : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal);
+          const privateRpc = input.privateInvocation;
+          const controls: AppCapabilities["controls"] =
+            privateRpc === undefined
+              ? workflowRpc
+              : async (command) => {
+                  if (lifetime.signal.aborted) throw new Error("Private invocation closed");
+                  if (
+                    typeof command === "object" &&
+                    command !== null &&
+                    "privateInvocation" in command
+                  )
+                    return privateRpc(command);
+                  if (workflowRpc === null) throw new Error("Workflow controls unavailable");
+                  return workflowRpc(command);
+                };
           const capabilities: AppCapabilities = {
             load: loader.load,
             elicit:
               input.elicitation === undefined
                 ? null
                 : invocationElicitation(input.elicitation, lifetime.signal),
-            controls:
-              input.workflowControls === undefined
-                ? null
-                : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal),
+            controls,
             ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
           };
           const from = yield* Clock.currentTimeNanos;

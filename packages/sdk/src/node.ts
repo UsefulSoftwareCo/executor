@@ -1,3 +1,7 @@
+export {
+  nodePrivateInvocationIssuer,
+  type PrivateInvocationTls,
+} from "./implementation/private-invocation-node.ts";
 /** Node host adapters. Products use workerdApps to isolate authored code. */
 export { filesystemBlobStore } from "./implementation/filesystem-blobs.ts";
 

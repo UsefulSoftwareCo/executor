@@ -20,6 +20,7 @@ export * from "./executor.ts";
 export * from "./declarations.ts";
 export * from "./storage.ts";
 export * from "./runtime.ts";
+export * from "./private-invocation.ts";
 export * from "./blobs.ts";
 
 export * from "./schedules.ts";

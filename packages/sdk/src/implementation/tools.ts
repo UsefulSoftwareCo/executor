@@ -105,6 +105,8 @@ import { makeToolApprovals } from "./tool-approvals.ts";
 import { gotApp, storedVersion } from "./apps.ts";
 import { database, query, type Query } from "./database.ts";
 import type { OwnerId } from "../contracts/shared.ts";
+import { PrivateInvocationRequest } from "../contracts/private-invocation.ts";
+import { privateDigest } from "./private-invocation.ts";
 import { invocationAccounts } from "./linked-accounts.ts";
 import {
   accountAuthority,
@@ -1446,6 +1448,59 @@ export const makeTools = (
           Effect.withSpan("sdk.accounts.resolve"),
           Effect.provideService(GrantReadAhead, grants),
         );
+        const attachment = yield* PrivateInvocationRequest;
+        let privateInvocation: import("apps/contracts").PrivateInvocationRpc | undefined;
+        if (attachment !== undefined || state.version.requirements.privateInvocation === true) {
+          if (
+            attachment === undefined ||
+            context.caller === undefined ||
+            context.caller !== attachment.principal ||
+            state.version.requirements.privateInvocation !== true
+          )
+            return yield* new RequestInvalid();
+          const lifetime = yield* Effect.acquireRelease(
+            Effect.sync(() => new AbortController()),
+            (c) => Effect.sync(() => c.abort()),
+          );
+          const issuerRpc = yield* Effect.tryPromise({
+            try: async () =>
+              attachment.verifier.redeem(
+                attachment.reference,
+                {
+                  digestVersion: "rfc8785-sha256-v1",
+                  recipientPrincipal: context.caller!,
+                  appId: state.app.id,
+                  buildId: state.version.build,
+                  toolPath: parsed.tool,
+                  accountsDigest: await privateDigest(
+                    scopedSelection(
+                      state.version.requirements.accounts,
+                      state.accounts,
+                      state.scope,
+                    ),
+                  ),
+                  action: "call",
+                  inputDigest: await privateDigest(args),
+                },
+                lifetime.signal,
+              ),
+            catch: () => new RequestInvalid(),
+          });
+          const services = yield* Effect.context<never>();
+          privateInvocation = async (command) => {
+            if (lifetime.signal.aborted) throw new Error("Private invocation closed");
+            await Effect.runPromiseWith(services)(
+              attachment.reauthorize({
+                app: state.app.id,
+                version: state.version.id,
+                tool: parsed.tool,
+                accounts: state.accounts,
+              }),
+              { signal: lifetime.signal },
+            );
+            return issuerRpc(command);
+          };
+        }
         const identity = { app: state.app.id, version: state.version.id, tool: parsed.tool };
         yield* Effect.annotateCurrentSpan({
           "executor.app.id": state.app.id,
@@ -1475,11 +1530,14 @@ export const makeTools = (
               toolError = false;
               return runtime.call({
                 app: state.app.id,
-                ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
+                ...(workflows === undefined || privateInvocation !== undefined
+                  ? {}
+                  : { workflowControls: workflows(state) }),
                 build: state.version.build,
                 hostApi: listings.hostApi(state.version),
                 database: ownsDatabase(state.version.requirements),
                 ...context,
+                ...(privateInvocation === undefined ? {} : { privateInvocation }),
                 tool: parsed.tool,
                 ...(kind === undefined ? {} : { kind }),
                 input: args,
@@ -1493,7 +1551,11 @@ export const makeTools = (
               }),
               Effect.result,
             );
-          const { result, renewal } = yield* executeRenewing(state, context, read, execute);
+          // Never automatically redispatch a private operation after any ambiguous app entry.
+          const { result, renewal } =
+            privateInvocation === undefined
+              ? yield* executeRenewing(state, context, read, execute)
+              : { result: yield* execute(context), renewal: undefined };
           // The tool is named once the app has answered for it: a name it lacks is the caller's text.
           if (
             Result.isSuccess(result) ||
@@ -1515,6 +1577,7 @@ export const makeTools = (
           }
           // The app reports the decoded input it asks approval for; its prompt is not used.
           if (Schema.is(HostToolApprovalRequired)(result.failure)) {
+            if (privateInvocation !== undefined) return yield* new RequestInvalid();
             // The request saves the caller's kind, so its pending response and its resumption
             // treat a call that named none as one that may write.
             return yield* approvals.save(
@@ -1560,7 +1623,7 @@ export const makeTools = (
           ),
           Effect.provideService(AppCodeEntered, appCode),
         );
-      }).pipe(Effect.withSpan("sdk.tools.call")),
+      }).pipe(Effect.scoped, Effect.withSpan("sdk.tools.call")),
     pruneApprovals: (input: Parameters<Executor["tools"]["pruneApprovals"]>[0] = {}) =>
       Schema.decodeUnknownEffect(ToolInputs.pruneApprovals)(input)
         .pipe(
@@ -1624,6 +1687,11 @@ export const makeTools = (
                     "executor.tool.name": saved.tool,
                     "executor.approval.id": input.requestId,
                   });
+                  if (
+                    state.version.requirements.privateInvocation === true ||
+                    (yield* PrivateInvocationRequest) !== undefined
+                  )
+                    return yield* new RequestInvalid();
                   const context = yield* resolve(state, resolveAccount).pipe(
                     Effect.withSpan("sdk.accounts.resolve"),
                   );

@@ -24,6 +24,7 @@ import {
   ElicitationFailed,
   EventNotFound,
   InvocationSelection,
+  sameAccounts,
   linkedRequirements,
   type AppId,
   type ToolInvocationOptions,
@@ -192,6 +193,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* sdk;
         const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+        if (input.accounts !== undefined && !sameAccounts(input.accounts, accounts))
+          return yield* new ElicitationFailed({ reason: "forbidden" });
         // A tool whose permission cannot be confirmed cannot receive input.
         yield* authorizeTool({ ...input, version, accounts }).pipe(
           Effect.mapError(() => new ElicitationFailed({ reason: "forbidden" })),
