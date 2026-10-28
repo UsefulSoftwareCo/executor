@@ -28,6 +28,7 @@ export const isolatedPrivateInvocation = (
       if (signal.aborted || required || typeof operationId !== "string" || !operationId)
         return refuse();
       required = true;
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- rpc is the trusted invocation-owned host bridge, not an authored callback.
       await rpc({ privateInvocation: { operation: "require", operationId } });
       let forwarded = false;
       return opaque({
