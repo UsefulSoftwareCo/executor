@@ -646,6 +646,53 @@ const recordUpstreamUnreachable = (integration: string, error: OpenApiInvocation
   );
 };
 
+// A 403 that means "you are going too fast" is a throttling signal, not a
+// credential rejection. Google reports per-user quotas as HTTP 403 with
+// `reason: "rateLimitExceeded"` or `status: "RESOURCE_EXHAUSTED"`; GitHub
+// sends a 403 "secondary rate limit" with Retry-After. Classifying those as
+// connection_rejected tells the agent to re-authenticate, which can never
+// clear a quota, and drops the upstream reason. Detection is structural:
+// throttling headers, or an exact error/reason/status/code field value. Prose
+// alone never classifies, so a permission 403 keeps its re-auth guidance.
+const RATE_LIMIT_VALUES = new Set([
+  "ratelimitexceeded",
+  "userratelimitexceeded",
+  "rate_limit_exceeded",
+  "resource_exhausted",
+  "too_many_requests",
+]);
+
+const hasRateLimitField = (body: unknown, depth: number): boolean => {
+  if (depth > 6) return false;
+  if (Array.isArray(body)) return body.some((item) => hasRateLimitField(item, depth + 1));
+  if (typeof body !== "object" || body === null) return false;
+  for (const [key, value] of Object.entries(body)) {
+    if (
+      (key === "error" || key === "reason" || key === "status" || key === "code") &&
+      typeof value === "string" &&
+      RATE_LIMIT_VALUES.has(value.toLowerCase())
+    ) {
+      return true;
+    }
+    if (typeof value === "object" && value !== null && hasRateLimitField(value, depth + 1)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const detectRateLimited = (result: {
+  readonly error: unknown;
+  readonly headers?: Record<string, string>;
+}): boolean => {
+  for (const [name, value] of Object.entries(result.headers ?? {})) {
+    const header = name.toLowerCase();
+    if (header === "retry-after" && value.trim().length > 0) return true;
+    if (header === "x-ratelimit-remaining" && value.trim() === "0") return true;
+  }
+  return hasRateLimitField(result.error, 0);
+};
+
 export const invokeOpenApiBackedTool = (input: {
   readonly ctx: PluginCtx<OpenapiStore>;
   readonly toolRow: { readonly integration: string; readonly name: string };
@@ -774,7 +821,10 @@ export const invokeOpenApiBackedTool = (input: {
     const result = invocation.result;
     const ok = result.status >= 200 && result.status < 300;
     if (!ok) {
-      if (result.status === 401 || result.status === 403) {
+      // Throttling 403s keep the upstream message and stay on the ordinary
+      // upstream_http_error path; re-auth cannot clear a quota.
+      const throttled = result.status === 403 && detectRateLimited(result);
+      if (!throttled && (result.status === 401 || result.status === 403)) {
         // A 403 naming a scope shortfall (RFC 6750 insufficient_scope,
         // Google's ACCESS_TOKEN_SCOPE_INSUFFICIENT) cannot be fixed by
         // re-running the same grant, so it gets its own code and recovery

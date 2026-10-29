@@ -402,6 +402,69 @@ describe("OpenAPI upstream failure modes", () => {
     }),
   );
 
+  // A throttling 403 is not a credential failure. Re-authenticating cannot
+  // clear a quota, so it must keep the upstream reason instead of telling the
+  // agent to reconnect (the #2420 Gmail burst case).
+  it.effect("rate-limit 403 (Google RESOURCE_EXHAUSTED) is upstream_http_error", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          error: {
+            code: 403,
+            message: "Rate Limit Exceeded",
+            status: "RESOURCE_EXHAUSTED",
+            errors: [
+              {
+                message: "Rate Limit Exceeded",
+                domain: "usageLimits",
+                reason: "rateLimitExceeded",
+              },
+            ],
+          },
+        }),
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 403,
+          message: expect.stringContaining("Rate Limit Exceeded"),
+        },
+      });
+    }),
+  );
+
+  it.effect("throttling 403 with Retry-After is upstream_http_error", () =>
+    Effect.gen(function* () {
+      const server = yield* startScriptedServer(() => ({
+        status: 403,
+        headers: { "content-type": "application/json", "retry-after": "60" },
+        body: JSON.stringify({
+          message: "You have exceeded a secondary rate limit. Please wait before retrying.",
+          documentation_url: "https://docs.github.com/rest/using-the-rest-api/rate-limits",
+        }),
+      }));
+      const { executor, address } = yield* buildExecutorForOpenApiServer(server);
+
+      const result = yield* executor.execute(address, {});
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: "upstream_http_error",
+          status: 403,
+          message: expect.stringContaining("secondary rate limit"),
+        },
+      });
+    }),
+  );
+
   it.effect("upstream returns malformed JSON despite Content-Type: application/json", () =>
     Effect.gen(function* () {
       const server = yield* startScriptedServer(() => ({
