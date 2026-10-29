@@ -1,10 +1,11 @@
 import { cp, mkdir, rm, writeFile, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve, join, dirname } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { $ } from "bun";
+import { platformVariantVersion } from "./platform-variant-version";
 import { WORKER_BUNDLER_DIRNAME, missingWorkerBundlerFiles } from "./worker-bundler-artifact";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -547,8 +548,11 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
 
       // Variant package.json. All variants publish to the SAME npm package
       // name (`executor`) under platform-tagged versions (e.g.
-      // `1.4.14-linux-x64`). The wrapper references each variant via an
-      // `npm:` alias in its optionalDependencies. This mirrors codex's
+      // `2.0.0-0.beta.31.windows-x64`). The numeric leading prerelease
+      // identifier keeps each binary variant below the wrapper version in
+      // SemVer ordering, so package updaters don't mistake a variant for the
+      // globally installable package. The wrapper references each variant
+      // via an `npm:` alias in its optionalDependencies. This mirrors codex's
       // pattern and avoids ever having to claim a new npm package name when
       // a new platform is added — a single trusted-publishing config on the
       // `executor` package covers everything.
@@ -556,7 +560,7 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
       // No `bin` field on purpose — the wrapper's launcher resolves the
       // platform binary via require.resolve on the alias name and execs it.
       const tag = platformTag(target);
-      const variantVersion = `${meta.version}-${tag}`;
+      const variantVersion = platformVariantVersion(meta.version, tag);
       await writeFile(
         join(outDir, "package.json"),
         JSON.stringify(
@@ -625,7 +629,7 @@ const buildWrapperPackage = async (binaries: Record<string, string>) => {
         bin: { executor: "bin/executor" },
         // Per-platform compiled binaries published as platform-tagged
         // versions of `executor` itself, referenced via npm:alias specs:
-        //   "executor-linux-x64": "npm:executor@1.4.14-linux-x64"
+        //   "executor-linux-x64": "npm:executor@1.4.14-0.linux-x64"
         // npm/bun fetch only the variant matching the current os/cpu (set
         // on each variant's package.json); everything else is a no-op.
         // The local alias name on the left is what the launcher passes to
@@ -821,28 +825,14 @@ const publishPackedPackage = async (pkgDir: string, channel: string) => {
   throw new Error(`npm publish failed for ${pkgDir} (exit ${result.exitCode})`);
 };
 
-/** Extract the platform-tag suffix from a variant version string.
- *  e.g. "1.4.14-linux-x64" -> "linux-x64".
- *  Variants get a per-platform npm dist-tag (not `latest` or `beta`) so
- *  publishing them doesn't move the channel pointer. The wrapper alone
- *  drives `latest`/`beta`. */
-const variantTagFromVersion = (version: string): string => {
-  const idx = version.indexOf("-");
-  if (idx === -1) {
-    throw new Error(
-      `Variant version missing platform-tag suffix (expected '<base>-<tag>'): ${version}`,
-    );
-  }
-  return version.slice(idx + 1);
-};
-
 const publish = async (channel: string) => {
   const meta = await readMetadata();
 
   // Variants publish first so the wrapper's optionalDependencies resolve.
   // All variants and the wrapper publish to the same npm package
-  // (`executor`) — variants under platform-tagged versions, wrapper under
-  // the channel tag. Single trusted-publishing config covers everything.
+  // (`executor`) — variants under platform-tagged versions and platform
+  // dist-tags, wrapper under the channel tag. Single trusted-publishing config
+  // covers everything.
   const platformDirs: string[] = [];
   for (const entry of new Bun.Glob("executor-*/package.json").scanSync({ cwd: distDir })) {
     platformDirs.push(join(distDir, dirname(entry)));
@@ -858,8 +848,7 @@ const publish = async (channel: string) => {
   // (~5s per variant × 8 ≈ 40s).
   console.log(`Publishing ${platformDirs.length} platform variant(s)...`);
   for (const dir of platformDirs) {
-    const pkg = (await Bun.file(join(dir, "package.json")).json()) as { version: string };
-    const tag = variantTagFromVersion(pkg.version);
+    const tag = basename(dir).slice("executor-".length);
     await publishPackedPackage(dir, tag);
   }
 
