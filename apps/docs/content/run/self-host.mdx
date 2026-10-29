@@ -27,6 +27,7 @@ These settings override the defaults:
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
+| `EXECUTOR_TRUSTED_PROXIES`           | no       | Comma-separated addresses or CIDR ranges of your reverse proxies, so rate limits count each client behind them. See below. |
 | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
 | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
 | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
@@ -104,6 +105,16 @@ The container publishes port `4400` on loopback only, as
 `127.0.0.1:4400`. Put your own TLS terminator in front of it and forward to that
 port. Startup initializes the embedded database before it opens HTTP, so the
 first boot takes a moment.
+
+Sign-in and the other auth routes are rate-limited per client address. Behind a
+reverse proxy every request comes from the proxy, so all clients share its
+limits. Set `EXECUTOR_TRUSTED_PROXIES` to the proxies' addresses or CIDR ranges,
+such as `172.17.0.1` or `10.0.0.0/8`. A request from one of them takes its client
+from `X-Forwarded-For`, read from the right past every trusted address, so a
+client can't pick its own address by sending that header. Each proxy must append
+the address it received the request from, as nginx does with
+`$proxy_add_x_forwarded_for`. Requests from any other address, or with the
+setting empty, use the connection's address.
 
 Stop it with:
 
