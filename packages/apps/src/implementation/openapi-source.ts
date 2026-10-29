@@ -437,7 +437,9 @@ const withDefaultUserAgent =
     fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
   ): ((input: string | URL | Request, init?: RequestInit) => Promise<Response>) =>
   (input, init) => {
-    const headers = new Headers(init?.headers);
+    // A Request input keeps its own headers; the call's init headers are applied over them.
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
     if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
     return fetch(input, { ...init, headers });
   };
@@ -1081,8 +1083,8 @@ export type OpenapiToolNamesOptions = Omit<
  * an author can check the names a `withApprovals` policy matches before any account connects.
  * `skipped` lists only the operations the compiler left out and why. An operation no configured
  * `methods` or `oauth` entry can authorize is missing from `tools` and not listed in `skipped`.
- * `fetch` defaults to the global fetch, which sends `User-Agent: Executor` unless the request names
- * one; a `fetch` the caller supplies receives requests unchanged.
+ * `fetch` defaults to the global fetch wrapped by `withDefaultUserAgent`, which sets
+ * `User-Agent: Executor` unless the request names one; a caller's `fetch` is used as given.
  */
 export const openapiToolNames = (options: OpenapiToolNamesOptions): Promise<OpenapiToolNames> =>
   Effect.runPromise(
