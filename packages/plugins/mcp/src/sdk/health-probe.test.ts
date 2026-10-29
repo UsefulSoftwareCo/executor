@@ -4,21 +4,7 @@ import type { ContentBlock } from "@modelcontextprotocol/client";
 import { classifyMcpHealthFailure, classifyMcpHealthProbe } from "./health-probe";
 
 describe("configured MCP health probe", () => {
-  it("treats an isError result as a failure despite a successful transport", () => {
-    const result = classifyMcpHealthProbe({
-      isError: true,
-      content: [{ type: "text", text: "SESSION_REQUIRED_OR_INVALID" }],
-      structuredContent: { email: "synthetic@example.test" },
-    });
-    expect(result).toEqual({
-      status: "degraded",
-      checkedAt: expect.any(Number),
-      reason: "probe_failed",
-      detail: "MCP health probe returned an error.",
-    });
-  });
-
-  it("keeps no tool error text, not even a code-shaped one", () => {
+  it("treats an isError result as a failure and keeps none of its text", () => {
     const errorContents: ContentBlock[][] = [
       [{ type: "text", text: "synthetic private account and message" }],
       [{ type: "text", text: "CUSTOMER_PRIVATE_NAME" }],
@@ -29,13 +15,17 @@ describe("configured MCP health probe", () => {
       [{ type: "text", text: "KEY_SYNTHETICSECRET" }],
     ];
     for (const content of errorContents) {
+      // Structured output beside the error is ignored too: no sample, no identity.
       const result = classifyMcpHealthProbe(
-        { isError: true, content },
-        { secrets: ["SYNTHETICSECRET"] },
+        { isError: true, content, structuredContent: { email: "private@example.test" } },
+        { identityField: "email", secrets: ["SYNTHETICSECRET"] },
       );
-      expect(result.detail).toBe("MCP health probe returned an error.");
-      expect(result.responseSample).toBeUndefined();
-      expect(JSON.stringify(result)).not.toMatch(/PRIVATE|private|CODE|SYNTHETICSECRET/);
+      expect(result).toEqual({
+        status: "degraded",
+        checkedAt: expect.any(Number),
+        reason: "probe_failed",
+        detail: "MCP health probe returned an error.",
+      });
     }
   });
 

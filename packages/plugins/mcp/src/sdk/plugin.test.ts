@@ -1358,12 +1358,7 @@ describe("mcpPlugin", () => {
             override: (rpc) =>
               rpc.method === "initialize" && ++handshakes > 1 ? scopeChallenge() : undefined,
           });
-          const result = yield* validate({ operation: "explode" });
-          expect(result).toMatchObject({
-            status: "misconfigured",
-            httpStatus: 403,
-            detail: expect.stringContaining("additional scope"),
-          });
+          expect(yield* validate({ operation: "explode" })).toMatchObject(scopeShortfall);
           expect(handshakes).toBe(2);
           expect(calls).toEqual([]);
         }),

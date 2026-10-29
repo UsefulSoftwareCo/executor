@@ -83,12 +83,6 @@ const listAllTools = (
               reauthorizationRequired: true,
             });
           }
-          const failure = Option.getOrNull(decodeSdkFailure(cause));
-          // A modern-era connection whose server breaks the modern response
-          // contract means the server echoed our proposed revision without
-          // implementing it; callers can retry with legacy negotiation.
-          const modernContractViolation =
-            connection.client.getProtocolEra?.() === "modern" && failure?.code === "INVALID_RESULT";
           // Raised below the SDK by the fetch adapter (connection.ts) on an
           // RFC 6750 challenge, or recognised in a 403 body.
           if (Predicate.isTagged(cause, "McpInsufficientScopeError")) {
@@ -99,6 +93,12 @@ const listAllTools = (
               insufficientScope: true,
             });
           }
+          const failure = Option.getOrNull(decodeSdkFailure(cause));
+          // A modern-era connection whose server breaks the modern response
+          // contract means the server echoed our proposed revision without
+          // implementing it; callers can retry with legacy negotiation.
+          const modernContractViolation =
+            connection.client.getProtocolEra?.() === "modern" && failure?.code === "INVALID_RESULT";
           const httpStatus = httpStatusFromCause(cause);
           const insufficientScope = httpStatus === 403 && insufficientScopeFromCause(cause);
           return new McpToolDiscoveryError({

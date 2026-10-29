@@ -16,14 +16,14 @@ const candidate = (
 });
 
 describe("initialHealthCheckOperation", () => {
+  const tool = candidate("whoami", { method: "mcp", explicitSelectionOnly: true });
+
   it("never preselects a candidate that must be picked explicitly", () => {
-    const tool = candidate("whoami", { method: "mcp", explicitSelectionOnly: true });
     expect(initialHealthCheckOperation(null, [tool])).toBe("");
     expect(initialHealthCheckOperation(null, [tool, candidate("me")])).toBe("me");
   });
 
   it("keeps the saved operation and the first HTTP candidate default", () => {
-    const tool = candidate("whoami", { method: "mcp", explicitSelectionOnly: true });
     expect(initialHealthCheckOperation({ operation: "whoami" }, [tool])).toBe("whoami");
     expect(initialHealthCheckOperation({ operation: "gone" }, [])).toBe("gone");
     expect(initialHealthCheckOperation(null, [candidate("first"), candidate("second")])).toBe(
