@@ -1,7 +1,7 @@
 /** Default management keys are ordinary personal accounts each user links to the common app. */
 import { holdTeamInstallation, InstallationDirectory } from "../support/team-installation.ts";
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema, Schedule } from "effect";
+import { Effect, Redacted, Schema, Schedule } from "effect";
 import type { Page } from "playwright";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -17,6 +17,7 @@ import {
 } from "../support/app-accounts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { managementApp } from "../support/management-app.ts";
+import { McpClient } from "../support/mcp-client.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { Resource } from "../support/contracts.ts";
 import { randomUUID } from "node:crypto";
@@ -30,6 +31,7 @@ const App = Schema.Struct({
   activeVersion: Schema.String,
   accounts: Schema.optional(Schema.Never),
 });
+const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 const Inventory = Schema.Struct({
   apps: Schema.Array(App),
   links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
@@ -39,6 +41,54 @@ const Inventory = Schema.Struct({
 });
 const Identity = Schema.Struct({ organization: Schema.String, role: Schema.String });
 layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it) => {
+  it.effect(scenarios.executorKeyMember.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient;
+        const organization = actors.organization.id;
+        // Member setup links a member's own key, as it does an owner's or an admin's.
+        const member = yield* managementApp(actors.member);
+        const owner = yield* managementApp(actors.owner);
+        expect(member.app.id).toBe(owner.app.id);
+        expect(member.account).not.toBe(owner.account);
+        const created = yield* api.request(actors.member, "POST", "/api/auth/api-key/create", {
+          name: "Member skills",
+        });
+        expect(created.status).toBe(200);
+        const token = yield* body(Token, created);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.member, "POST", "/api/auth/api-key/delete", { keyId: token.id })
+            .pipe(Effect.orDie),
+        );
+        const client = yield* mcp.connect(token.key, "member-executor-key", { organization });
+        // The skills the MCP tools tell agents to read first need the app's account.
+        for (const name of ["executor", "code-mode"]) {
+          const read = yield* client.use(
+            `A member reads the Executor app's ${name} skill`,
+            (client, signal) =>
+              client.callTool({ name: "skills", arguments: { app: "executor", name } }, undefined, {
+                signal,
+              }),
+          );
+          const text = JSON.stringify(read.structuredContent ?? read.content);
+          expect(read.isError, text).not.toBe(true);
+          expect(text).not.toContain("needs a linked account");
+        }
+        // The key carries the member's own role: administration still refuses them.
+        expect(
+          (yield* api.request(actors.member, "POST", `/api/organizations/${organization}/groups`, {
+            name: `Member group ${randomUUID().slice(0, 8)}`,
+            description: "",
+            memberIds: [],
+          })).status,
+        ).toBe(403);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
   it.effect(scenarios.executorAppCardAccount.title, (context) =>
     withHostedCase(
       context,

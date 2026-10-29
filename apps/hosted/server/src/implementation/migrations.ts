@@ -12,7 +12,7 @@ import { migrateResourceAccess } from "./resource-schema.ts";
 import { migrateOAuthClientAccess } from "./oauth-client-schema.ts";
 import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
 import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
-import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
+import { queueExecutorAppUpgrades, queueMemberExecutorKeys } from "./executor-app-upgrades.ts";
 import { migrateAppAccountLinks } from "./app-account-schema.ts";
 
 /**
@@ -109,6 +109,8 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   // App and user account links; profiles become user links. Runs after SDK 4.0.13, which keeps
   // the profiles.
   "9_app_account_links": migrateAppAccountLinks,
+  // Member setup links a managed key for every member, not only owners and admins.
+  "10_member_executor_keys": queueMemberExecutorKeys,
 });
 
 /**
