@@ -5,6 +5,7 @@ import * as Exit from "effect/Exit";
 
 import { IntegrationSlug } from "@executor-js/sdk/shared";
 import type { IntegrationAccountHandoff } from "@executor-js/sdk/client";
+import { HealthCheckEditor } from "@executor-js/react/components/health-check-editor";
 import { AccountsSection } from "@executor-js/react/components/accounts-section";
 import type { AuthMethod, Placement } from "@executor-js/react/lib/auth-placements";
 import {
@@ -108,6 +109,7 @@ export default function McpAccountsPanel(props: {
         createCustomMethod={canConfigureAuth ? createCustomMethod : undefined}
         removeCustomMethod={canConfigureAuth ? removeCustomMethod : undefined}
       />
+      <HealthCheckEditor integration={slug} />
     </div>
   );
 }

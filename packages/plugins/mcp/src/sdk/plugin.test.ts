@@ -47,6 +47,7 @@ const JsonRpcId = Schema.Union([Schema.String, Schema.Number, Schema.Null]);
 const JsonRpcRequest = Schema.Struct({
   id: Schema.optional(JsonRpcId),
   method: Schema.String,
+  params: Schema.optional(Schema.Unknown),
 });
 type JsonRpcRequest = typeof JsonRpcRequest.Type;
 
@@ -64,7 +65,20 @@ const jsonRpcResult = (request: JsonRpcRequest, result: unknown) =>
 // scenario supplies that branch via a `CallToolResponder`.
 type CallToolResponder = (rpc: JsonRpcRequest) => ReturnType<typeof HttpServerResponse.text>;
 
-const callToolFixtureResponse = (rpc: JsonRpcRequest, callTool: CallToolResponder) => {
+/** Answers a handshake or listing request in place of the scaffold, or
+ *  returns undefined to let the scaffold answer. */
+type FixtureOverride = (
+  rpc: JsonRpcRequest,
+) => ReturnType<typeof HttpServerResponse.text> | undefined;
+
+const callToolFixtureResponse = (
+  rpc: JsonRpcRequest,
+  callTool: CallToolResponder,
+  readOnly = false,
+  override?: FixtureOverride,
+) => {
+  const overridden = override?.(rpc);
+  if (overridden !== undefined) return overridden;
   if (rpc.method === "initialize") {
     return jsonRpcResult(rpc, {
       protocolVersion: "2025-06-18",
@@ -80,6 +94,7 @@ const callToolFixtureResponse = (rpc: JsonRpcRequest, callTool: CallToolResponde
       tools: [
         {
           name: "explode",
+          annotations: { readOnlyHint: readOnly },
           description: "Returns a failure from tools/call",
           inputSchema: { type: "object", properties: {} },
         },
@@ -92,7 +107,11 @@ const callToolFixtureResponse = (rpc: JsonRpcRequest, callTool: CallToolResponde
   return HttpServerResponse.text("Unexpected JSON-RPC method", { status: 400 });
 };
 
-const serveCallToolServer = (callTool: CallToolResponder) =>
+const serveCallToolServer = (
+  callTool: CallToolResponder,
+  readOnly = false,
+  override?: FixtureOverride,
+) =>
   serveTestHttpApp((request) =>
     Effect.gen(function* () {
       if (request.method === "GET") {
@@ -102,7 +121,7 @@ const serveCallToolServer = (callTool: CallToolResponder) =>
       const body = yield* request.text.pipe(Effect.orDie);
       return Option.match(decodeJsonRpcRequest(body), {
         onNone: () => HttpServerResponse.text("Invalid JSON-RPC fixture request", { status: 400 }),
-        onSome: (rpc) => callToolFixtureResponse(rpc, callTool),
+        onSome: (rpc) => callToolFixtureResponse(rpc, callTool, readOnly, override),
       });
     }),
   );
@@ -256,10 +275,12 @@ const seedCallToolExecutor = (input: {
    *  transport gets a real authProvider — the production OAuth path where the
    *  SDK's own challenge handling would otherwise swallow scope signals. */
   oauth?: boolean;
+  readOnly?: boolean;
+  override?: FixtureOverride;
 }) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
-      const server = yield* serveCallToolServer(input.callTool);
+      const server = yield* serveCallToolServer(input.callTool, input.readOnly, input.override);
       const config = makeTestConfig({
         plugins: [memoryCredentialsPlugin(), mcpPlugin()] as const,
       });
@@ -998,6 +1019,387 @@ describe("mcpPlugin", () => {
       ),
     );
   }
+
+  describe("configured health probe", () => {
+    // Every case counts tools/call requests: the probe must call the selected
+    // tool at most once and never replay it to hide an auth failure.
+    const succeedWith =
+      (result: unknown): CallToolResponder =>
+      (rpc) =>
+        jsonRpcResult(rpc, result);
+
+    const seedProbe = (input: {
+      slug: string;
+      readOnly?: boolean;
+      oauth?: boolean;
+      callTool?: CallToolResponder;
+      /** Applied only after seeding, so setup still discovers normally. */
+      override?: FixtureOverride;
+    }) =>
+      Effect.gen(function* () {
+        const calls: JsonRpcRequest[] = [];
+        let seeded = false;
+        const { executor } = yield* seedCallToolExecutor({
+          slug: input.slug,
+          readOnly: input.readOnly ?? true,
+          ...(input.oauth ? { oauth: true } : {}),
+          override: (rpc) => (seeded ? input.override?.(rpc) : undefined),
+          callTool: (rpc) => {
+            calls.push(rpc);
+            return (input.callTool ?? succeedWith({ content: [] }))(rpc);
+          },
+        });
+        const validate = (spec?: {
+          operation: string;
+          args?: Record<string, unknown>;
+          identityField?: string;
+        }) =>
+          executor.connections.validate({
+            owner: "org",
+            integration: IntegrationSlug.make(input.slug),
+            template: input.oauth ? AuthTemplateSlug.make("oauth2") : TEMPLATE,
+            value: input.oauth ? "static-access-token" : "",
+            ...(spec ? { spec } : {}),
+          });
+        seeded = true;
+        return { executor, calls, validate } as const;
+      });
+
+    it.effect("lists read-only tools as candidates without calling any", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const slug = "health_candidates";
+          const { executor, calls } = yield* seedProbe({ slug, callTool: succeedWith({}) });
+          const candidates = yield* executor.integrations.healthCheck.candidates(
+            IntegrationSlug.make(slug),
+          );
+          expect(candidates.map((candidate) => candidate.operation)).toEqual(["explode"]);
+          expect(candidates[0]?.explicitSelectionOnly).toBe(true);
+          expect(calls).toEqual([]);
+        }),
+      ),
+    );
+
+    it.effect("offers no candidates while a connection's catalog cannot be listed", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const slug = "health_candidates_stale";
+          let listFails = false;
+          const { executor, calls } = yield* seedProbe({
+            slug,
+            override: (rpc) =>
+              listFails && rpc.method === "tools/list"
+                ? HttpServerResponse.jsonUnsafe({
+                    jsonrpc: "2.0",
+                    id: rpc.id ?? null,
+                    error: { code: -32603, message: "catalog unavailable" },
+                  })
+                : undefined,
+          });
+          const integration = IntegrationSlug.make(slug);
+          const candidates = executor.integrations.healthCheck
+            .candidates(integration)
+            .pipe(Effect.map((found) => found.map((candidate) => candidate.operation)));
+          expect(yield* candidates).toEqual(["explode"]);
+
+          // Core keeps the prior catalog for ordinary callers over the outage,
+          // but that retained catalog is not evidence the tool is still offered.
+          listFails = true;
+          expect(yield* candidates).toEqual([]);
+          const ref = { owner: "org" as const, integration, name: ConnectionName.make("main") };
+          const retained = yield* executor.connections.refresh(ref);
+          expect(retained.map((tool) => String(tool.name))).toEqual(["explode"]);
+
+          listFails = false;
+          expect(yield* candidates).toEqual(["explode"]);
+          expect(calls).toEqual([]);
+        }),
+      ),
+    );
+
+    it.effect("offers identity paths that resolve against the probe's structured result", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const slug = "health_candidate_identity";
+          const { executor, calls, validate } = yield* seedProbe({
+            slug,
+            callTool: succeedWith({
+              content: [{ type: "text", text: "synthetic summary" }],
+              structuredContent: { user: { email: "synthetic@example.test" } },
+            }),
+            override: (rpc) =>
+              rpc.method === "tools/list"
+                ? jsonRpcResult(rpc, {
+                    tools: [
+                      {
+                        name: "explode",
+                        annotations: { readOnlyHint: true },
+                        inputSchema: { type: "object", properties: {} },
+                        outputSchema: {
+                          type: "object",
+                          properties: { user: { $ref: "#/$defs/User" } },
+                          $defs: {
+                            User: { type: "object", properties: { email: { type: "string" } } },
+                          },
+                        },
+                      },
+                    ],
+                  })
+                : undefined,
+          });
+          const [candidate] = yield* executor.integrations.healthCheck.candidates(
+            IntegrationSlug.make(slug),
+          );
+          // Paths address the tool's own body, not the CallToolResult
+          // envelope (`structuredContent.*`, `content`, `isError`).
+          expect(candidate?.responseFields).toEqual([{ path: "user.email", type: "string" }]);
+          expect(calls).toEqual([]);
+
+          const identityField = candidate?.responseFields?.[0]?.path;
+          const result = yield* validate({ operation: "explode", identityField });
+          expect(result).toMatchObject({ status: "healthy", identity: "synthetic@example.test" });
+          expect(calls).toHaveLength(1);
+        }),
+      ),
+    );
+
+    it.effect("calls the selected tool once with typed JSON arguments", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { calls, validate } = yield* seedProbe({
+            slug: "health_typed_args",
+            callTool: succeedWith({
+              content: [{ type: "text", text: "{}" }],
+              structuredContent: { user: { email: "synthetic@example.test" } },
+            }),
+          });
+          const args = { limit: 1, enabled: false, tags: ["a"], options: { nested: null } };
+          const result = yield* validate({ operation: "explode", args });
+          expect(result).toMatchObject({ status: "healthy" });
+          expect(calls.map((rpc) => rpc.params)).toEqual([{ name: "explode", arguments: args }]);
+        }),
+      ),
+    );
+
+    const scopeChallenge = () =>
+      HttpServerResponse.text("do-not-leak synthetic detail", {
+        status: 403,
+        headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="health.read"' },
+      });
+    const onMethod =
+      (method: string, respond: CallToolResponder): FixtureOverride =>
+      (rpc) =>
+        rpc.method === method ? respond(rpc) : undefined;
+    const readOnlyTool = {
+      name: "explode",
+      annotations: { readOnlyHint: true },
+      inputSchema: { type: "object", properties: {} },
+    };
+    const unavailableProbe = {
+      status: "degraded",
+      reason: "probe_failed",
+      detail: expect.stringContaining("unavailable or not read-only"),
+    };
+    const scopeShortfall = {
+      status: "misconfigured",
+      httpStatus: 403,
+      detail: expect.stringContaining("additional scope"),
+    };
+
+    // Each case validates every listed operation (undefined: no probe
+    // configured), expects the same verdict carrying no upstream text, and
+    // counts the tools/call requests the probe sent.
+    const verdictCases: readonly {
+      readonly name: string;
+      readonly readOnly?: boolean;
+      readonly oauth?: boolean;
+      readonly callTool?: CallToolResponder;
+      readonly override?: FixtureOverride;
+      readonly operations?: readonly (string | undefined)[];
+      readonly expected: Record<string, unknown>;
+      readonly calls: number;
+    }[] = [
+      {
+        name: "checks discovery only when no probe is configured",
+        operations: [undefined],
+        expected: { status: "healthy" },
+        calls: 0,
+      },
+      {
+        name: "refuses to call a configured tool that is missing or not read-only",
+        readOnly: false,
+        operations: ["explode", "missing"],
+        expected: unavailableProbe,
+        calls: 0,
+      },
+      {
+        name: "refuses to call a tool name the server lists twice",
+        override: onMethod("tools/list", (rpc) =>
+          jsonRpcResult(rpc, { tools: [readOnlyTool, readOnlyTool] }),
+        ),
+        expected: unavailableProbe,
+        calls: 0,
+      },
+      {
+        name: "accepts an empty content list as a successful probe",
+        callTool: succeedWith({ content: [] }),
+        expected: { status: "healthy" },
+        calls: 1,
+      },
+      {
+        name: "treats an isError result over HTTP 200 as degraded",
+        callTool: succeedWith({
+          isError: true,
+          content: [{ type: "text", text: "do-not-leak synthetic account" }],
+        }),
+        expected: { status: "degraded", reason: "probe_failed" },
+        calls: 1,
+      },
+      // Malformed results are refused by the SDK client every connector shares
+      // (a missing `content` included; see `requireToolCallContent`), or, for
+      // structured output it leaves untyped, by the probe itself.
+      ...[
+        {},
+        { structuredContent: { user: { email: "do-not-leak@example.test" } } },
+        { content: [null] },
+        { content: [{ type: "text" }] },
+        { content: [{ type: "unknown-kind" }] },
+        { content: [], isError: "yes" },
+        { content: [], structuredContent: 42 },
+        { content: [], structuredContent: ["array"] },
+      ].map((result) => ({
+        name: `refuses the malformed result ${JSON.stringify(result)}`,
+        callTool: succeedWith(result),
+        expected: { status: "degraded", reason: "probe_failed" },
+        calls: 1,
+      })),
+      ...(
+        [
+          [401, "expired"],
+          [403, "expired"],
+          [500, "degraded"],
+        ] as const
+      ).map(([status, expected]) => ({
+        name: `classifies HTTP ${status} from the probe call without replaying it`,
+        callTool: httpStatusCallTool(status),
+        expected: { status: expected, httpStatus: status, reason: "upstream_status" },
+        calls: 1,
+      })),
+      {
+        name: "reports a 401 from an OAuth probe call without replaying it",
+        oauth: true,
+        callTool: httpStatusCallTool(401),
+        expected: { status: "expired" },
+        calls: 1,
+      },
+      {
+        name: "reports a scope shortfall as misconfigured without replaying it",
+        oauth: true,
+        callTool: scopeChallenge,
+        expected: { ...scopeShortfall, reason: "upstream_status" },
+        calls: 1,
+      },
+      {
+        name: "keeps no upstream text from a refused tools/list",
+        override: onMethod("tools/list", (rpc) =>
+          HttpServerResponse.jsonUnsafe({
+            jsonrpc: "2.0",
+            id: rpc.id ?? null,
+            error: { code: -32603, message: "do-not-leak SYNTHETIC_CREDENTIAL" },
+          }),
+        ),
+        operations: [undefined, "explode"],
+        expected: {
+          status: "degraded",
+          reason: "probe_failed",
+          detail: "Failed listing MCP tools.",
+        },
+        calls: 0,
+      },
+      ...(["initialize", "tools/list"] as const).map((method) => ({
+        name: `reports a scope shortfall at ${method} as misconfigured`,
+        oauth: true,
+        override: onMethod(method, scopeChallenge),
+        operations: [undefined, "explode"],
+        expected: scopeShortfall,
+        calls: 0,
+      })),
+    ];
+
+    verdictCases.forEach(
+      ({ name, operations = ["explode"], expected, calls: sent, ...fixture }, i) =>
+        it.effect(name, () =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { calls, validate } = yield* seedProbe({
+                slug: `health_verdict_${i}`,
+                ...fixture,
+              });
+              for (const operation of operations) {
+                const result = yield* validate(operation === undefined ? undefined : { operation });
+                expect(result).toMatchObject(expected);
+                expect(JSON.stringify(result)).not.toMatch(/do-not-leak|SYNTHETIC_CREDENTIAL/);
+              }
+              expect(calls).toHaveLength(sent);
+            }),
+          ),
+        ),
+    );
+
+    it.effect("reports a scope shortfall at the probe's own handshake as misconfigured", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          // Discovery's handshake succeeds; the probe dials a second session,
+          // whose handshake is refused before any tools/call is sent.
+          let handshakes = 0;
+          const { calls, validate } = yield* seedProbe({
+            slug: "health_scope_probe_connect",
+            oauth: true,
+            override: (rpc) =>
+              rpc.method === "initialize" && ++handshakes > 1 ? scopeChallenge() : undefined,
+          });
+          expect(yield* validate({ operation: "explode" })).toMatchObject(scopeShortfall);
+          expect(handshakes).toBe(2);
+          expect(calls).toEqual([]);
+        }),
+      ),
+    );
+  });
+  // The 2025 codec would default a missing `content` to `[]`; every revision
+  // requires it, so a contentless result fails rather than reading as an
+  // empty success, while JSON-RPC errors and complete envelopes reach the
+  // caller intact on the same retained session.
+  it.effect("refuses a tools/call result without content and keeps complete envelopes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const envelope = {
+          content: [{ type: "text", text: "ok" }],
+          structuredContent: { ok: true },
+          _meta: { trace: "synthetic" },
+        };
+        let result: unknown;
+        const { executor, toolAddress } = yield* seedCallToolExecutor({
+          slug: "call_contentless",
+          callTool: (rpc) =>
+            result === undefined ? jsonRpcErrorCallTool(-32000)(rpc) : jsonRpcResult(rpc, result),
+        });
+
+        expect(
+          yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" }),
+        ).toMatchObject({ ok: false, error: { code: "mcp_tool_error" } });
+        // The same failure as any other result the SDK refuses as invalid.
+        result = {};
+        const refused = yield* Effect.flip(
+          executor.execute(toolAddress, {}, { onElicitation: "accept-all" }),
+        );
+        expect(refused.cause).toMatchObject({ sdkFailure: { code: "INVALID_RESULT" } });
+        result = envelope;
+        expect(
+          yield* executor.execute(toolAddress, {}, { onElicitation: "accept-all" }),
+        ).toMatchObject({ ok: true, data: envelope });
+      }),
+    ),
+  );
 
   // The lone-401 replay above is restricted to read-only methods. A
   // `tools/call` may have executed its side effect before the server answered

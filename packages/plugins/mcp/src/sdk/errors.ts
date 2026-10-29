@@ -56,6 +56,10 @@ export class McpToolDiscoveryError extends Schema.TaggedErrorClass<McpToolDiscov
      *  the health check can report `probe_timeout` — a slow-but-alive server —
      *  without string-matching the message. */
     timedOut: Schema.optional(Schema.Boolean),
+    /** The connect or tools/list 403 carried an insufficient_scope signal.
+     *  Structural, so the health check reports a scope shortfall rather than
+     *  a rejected credential without parsing the message. */
+    insufficientScope: Schema.optional(Schema.Boolean),
   },
   { httpApiStatus: 400 },
 ) {}

@@ -16,7 +16,7 @@
 
 import { Cause, Effect, Exit, Option, Predicate, Schema } from "effect";
 
-import type { ClientContext, ProtocolError } from "@modelcontextprotocol/client";
+import type { CallToolResult, ClientContext, ProtocolError } from "@modelcontextprotocol/client";
 
 // SDK error classes come through the lazy loader; by the time a tool call can
 // fail, the connect path has always loaded the module (see client-module.ts).
@@ -352,7 +352,8 @@ const installToolListChangedHandler = (
 };
 
 // ---------------------------------------------------------------------------
-// Single tool call — install handlers, callTool, return raw result
+// Single tool call — install handlers, callTool, return the result the SDK
+// client validated against the protocol's CallToolResult schema
 // ---------------------------------------------------------------------------
 
 const useConnection = (
@@ -361,7 +362,7 @@ const useConnection = (
   args: Record<string, unknown>,
   elicit: Elicit,
   onToolListChanged: (() => void) | undefined,
-): Effect.Effect<unknown, McpInvocationError | McpOAuthReauthorizationRequired> =>
+): Effect.Effect<CallToolResult, McpInvocationError | McpOAuthReauthorizationRequired> =>
   Effect.gen(function* () {
     const deadline = yield* Effect.acquireRelease(
       Effect.sync(() => makeActiveWorkDeadline()),
@@ -457,7 +458,7 @@ export interface InvokeMcpToolInput {
 export const invokeMcpTool = (
   input: InvokeMcpToolInput,
 ): Effect.Effect<
-  unknown,
+  CallToolResult,
   McpConnectionError | McpInvocationError | McpOAuthReauthorizationRequired
 > =>
   Effect.gen(function* () {

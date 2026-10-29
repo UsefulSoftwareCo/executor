@@ -28,3 +28,24 @@ export const parseHealthCheckArgs = (
   }
   return { ok: true, args };
 };
+
+// Tool arguments (MCP) are one typed JSON object, edited whole. JSON text
+// keeps numbers, booleans, arrays, null, nested objects, and string
+// whitespace, and decodes every key (even `__proto__`) as an own property.
+const decodeArguments = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+export const formatJsonArguments = (args: Readonly<Record<string, unknown>> | undefined): string =>
+  args === undefined || Object.keys(args).length === 0 ? "" : JSON.stringify(args, null, 2);
+
+/** Blank means no arguments; anything else must be a JSON object. */
+export const parseJsonArguments = (
+  text: string,
+): { readonly ok: true; readonly args: Record<string, unknown> } | { readonly ok: false } => {
+  if (text.trim().length === 0) return { ok: true, args: {} };
+  return Option.match(decodeArguments(text), {
+    onNone: () => ({ ok: false }),
+    onSome: (args) => ({ ok: true, args }),
+  });
+};

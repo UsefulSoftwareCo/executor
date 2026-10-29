@@ -411,6 +411,7 @@ export {
   type IntegrationPresetAuthentication,
   type IntegrationPresetCatalogEntry,
   type ResolveToolsInput,
+  type RefreshedToolCatalog,
   type ResolveToolsResult,
   type ToolInvocationCredential,
   type HealthCheckInput,

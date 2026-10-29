@@ -7,7 +7,7 @@ import { Duration, Effect, Option, Predicate, Schema } from "effect";
 import { hasNestedOAuthReauthorization, type McpConnection, type McpConnector } from "./connection";
 import { McpToolDiscoveryError } from "./errors";
 import { createMcpConnector, type ConnectorInput } from "./connection";
-import { httpStatusFromCause } from "./http-status";
+import { httpStatusFromCause, insufficientScopeFromCause } from "./http-status";
 import {
   decodeListToolsPage,
   extractManifestFromListToolsResult,
@@ -83,6 +83,16 @@ const listAllTools = (
               reauthorizationRequired: true,
             });
           }
+          // Raised below the SDK by the fetch adapter (connection.ts) on an
+          // RFC 6750 challenge, or recognised in a 403 body.
+          if (Predicate.isTagged(cause, "McpInsufficientScopeError")) {
+            return new McpToolDiscoveryError({
+              stage: "list_tools",
+              message: "Failed listing MCP tools (HTTP 403: insufficient scope)",
+              httpStatus: 403,
+              insufficientScope: true,
+            });
+          }
           const failure = Option.getOrNull(decodeSdkFailure(cause));
           // A modern-era connection whose server breaks the modern response
           // contract means the server echoed our proposed revision without
@@ -90,6 +100,7 @@ const listAllTools = (
           const modernContractViolation =
             connection.client.getProtocolEra?.() === "modern" && failure?.code === "INVALID_RESULT";
           const httpStatus = httpStatusFromCause(cause);
+          const insufficientScope = httpStatus === 403 && insufficientScopeFromCause(cause);
           return new McpToolDiscoveryError({
             stage: "list_tools",
             message:
@@ -100,6 +111,7 @@ const listAllTools = (
                   : `Failed listing MCP tools (HTTP ${httpStatus})`,
             ...(httpStatus === undefined ? {} : { httpStatus }),
             ...(modernContractViolation ? { modernContractViolation: true } : {}),
+            ...(insufficientScope ? { insufficientScope: true } : {}),
           });
         },
       });
@@ -204,12 +216,16 @@ export const discoverTools = (
             const timedOut =
               Predicate.isTagged(failure, "McpConnectionError") &&
               failure.failureKind === "timeout";
+            const insufficientScope =
+              Predicate.isTagged(failure, "McpConnectionError") &&
+              failure.insufficientScope === true;
             return new McpToolDiscoveryError({
               stage: "connect",
               message: `Failed connecting to MCP server: ${failure.message}`,
               ...(httpStatus !== undefined ? { httpStatus } : {}),
               ...(reauthorizationRequired ? { reauthorizationRequired: true } : {}),
               ...(timedOut ? { timedOut } : {}),
+              ...(insufficientScope ? { insufficientScope } : {}),
             });
           }),
         ),

@@ -6,6 +6,7 @@ import {
   rankResponseSample,
   type AuthTemplateSlug,
   type HealthCheckCandidate,
+  type HealthCheckCandidateParameter,
   type HealthCheckResult,
   type HealthCheckSpec,
   type IntegrationSlug,
@@ -22,7 +23,12 @@ import {
 import { healthCheckWriteKeys } from "../api/reactivity-keys";
 import { messageFromExit } from "../api/error-reporting";
 import { HEALTH_STATUS_LABEL, HEALTH_TEXT_CLASS } from "../lib/health-display";
-import { formatHealthCheckArgs, parseHealthCheckArgs } from "../lib/health-check-args";
+import {
+  formatHealthCheckArgs,
+  formatJsonArguments,
+  parseHealthCheckArgs,
+  parseJsonArguments,
+} from "../lib/health-check-args";
 import { Button } from "./button";
 import { FreeformCombobox, type FreeformComboboxOption } from "./combobox";
 import { Input } from "./input";
@@ -108,6 +114,9 @@ function HealthCheckConfigFields(props: {
   readonly onIdentityFieldChange: (path: string) => void;
   readonly args: Record<string, string>;
   readonly onArgChange: (name: string, value: string) => void;
+  /** The arguments object of a `jsonArguments` candidate, as JSON text. */
+  readonly jsonArgs?: string;
+  readonly onJsonArgsChange?: (text: string) => void;
   readonly disabled?: boolean;
   readonly idPrefix: string;
 }) {
@@ -143,7 +152,10 @@ function HealthCheckConfigFields(props: {
   );
 
   const pinnedParams = useMemo(
-    () => (selected?.parameters ?? []).filter((p) => p.required || p.location === "body"),
+    () =>
+      selected?.jsonArguments
+        ? []
+        : (selected?.parameters ?? []).filter((p) => p.required || p.location === "body"),
     [selected],
   );
 
@@ -174,6 +186,16 @@ function HealthCheckConfigFields(props: {
           </p>
         ) : null}
       </div>
+
+      {selected?.jsonArguments && props.onJsonArgsChange ? (
+        <JsonArgumentsField
+          id={`${idPrefix}-arguments`}
+          parameters={selected.parameters ?? []}
+          value={props.jsonArgs ?? ""}
+          onChange={props.onJsonArgsChange}
+          disabled={disabled}
+        />
+      ) : null}
 
       {pinnedParams.length > 0 ? (
         <div className="space-y-3">
@@ -252,6 +274,43 @@ function HealthCheckConfigFields(props: {
   );
 }
 
+/** A tool's arguments, edited as one JSON object so every value keeps its
+ *  type. The argument names are listed as guidance. */
+export function JsonArgumentsField(props: {
+  readonly id: string;
+  readonly parameters: readonly HealthCheckCandidateParameter[];
+  readonly value: string;
+  readonly onChange: (text: string) => void;
+  readonly disabled?: boolean;
+}) {
+  const valid = parseJsonArguments(props.value).ok;
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={props.id}>Arguments (JSON)</Label>
+      <Textarea
+        id={props.id}
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder="{}"
+        aria-invalid={!valid}
+        disabled={props.disabled}
+        className="font-mono text-xs"
+      />
+      {props.parameters.length > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          Takes{" "}
+          {props.parameters.map((p) => (p.required ? `${p.name} (required)` : p.name)).join(", ")}.
+        </p>
+      ) : null}
+      {valid ? null : (
+        <p role="alert" className="text-xs text-destructive">
+          Enter the arguments as a JSON object.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Live preview: runs the drafted check against a pasted test key WITHOUT
 // saving it (the same `validateConnection` probe the key-first connect uses),
@@ -265,7 +324,8 @@ function HealthCheckLivePreviewBlock(props: {
   readonly preview: HealthCheckLivePreview;
   readonly operation: string;
   readonly identityField: string;
-  readonly args: Record<string, string>;
+  /** Parsed arguments; null while a draft is invalid. */
+  readonly args: Readonly<Record<string, unknown>> | null;
   readonly disabled: boolean;
 }) {
   const { integration, preview, operation, identityField, args, disabled } = props;
@@ -282,11 +342,10 @@ function HealthCheckLivePreviewBlock(props: {
     const slug = (template || preview.templates[0]?.template) as AuthTemplateSlug | undefined;
     if (slug === undefined) return;
     const identity = identityField.trim();
-    const parsedArgs = parseHealthCheckArgs(args);
-    if (!parsedArgs.ok) return;
+    if (args === null) return;
     const spec: HealthCheckSpec = {
       operation,
-      ...(Object.keys(parsedArgs.args).length > 0 ? { args: parsedArgs.args } : {}),
+      ...(Object.keys(args).length > 0 ? { args } : {}),
       ...(identity.length > 0 ? { identityField: identity } : {}),
     };
     setRunning(true);
@@ -396,6 +455,18 @@ function HealthCheckLivePreviewBlock(props: {
   );
 }
 
+/** The operation the editor opens on: the saved one, else the first candidate
+ *  that may be preselected. A candidate that must be picked explicitly (an MCP
+ *  tool, whose read-only claim is only a hint) is never preselected, since
+ *  Save would schedule it without the user choosing it. */
+export const initialHealthCheckOperation = (
+  spec: HealthCheckSpec | null,
+  candidates: readonly HealthCheckCandidate[],
+): string =>
+  spec?.operation ??
+  candidates.find((candidate) => candidate.explicitSelectionOnly !== true)?.operation ??
+  "";
+
 function HealthCheckEditorSheet(props: {
   readonly integration: IntegrationSlug;
   readonly spec: HealthCheckSpec | null;
@@ -412,14 +483,16 @@ function HealthCheckEditorSheet(props: {
   // Pinned argument values keyed by parameter name; stored as strings (the form
   // input value); JSON bodies are parsed before save and preview.
   const [args, setArgs] = useState<Record<string, string>>({});
+  const [jsonArgs, setJsonArgs] = useState("");
   const [saving, setSaving] = useState(false);
 
   // Re-seed the drafts from the persisted spec each time the sheet opens.
   useEffect(() => {
     if (!open) return;
-    setOperation(spec?.operation ?? candidates[0]?.operation ?? "");
+    setOperation(initialHealthCheckOperation(spec, candidates));
     setIdentityField(spec?.identityField ?? "");
     setArgs(formatHealthCheckArgs(spec?.args));
+    setJsonArgs(formatJsonArguments(spec?.args));
   }, [open, spec, candidates]);
 
   const selected = useMemo(
@@ -431,14 +504,24 @@ function HealthCheckEditorSheet(props: {
     () => (selected?.parameters ?? []).filter((p) => p.required),
     [selected],
   );
-  const missingRequired = requiredParams.some((p) => (args[p.name] ?? "").trim().length === 0);
-  const parsedArgs = parseHealthCheckArgs(args);
+  // A configured operation missing from the candidates (an MCP catalog that
+  // could not be read right now) has no argument fields, so its persisted
+  // arguments are kept verbatim instead of being re-read as text drafts.
+  const parsedArgs =
+    selected === null && operation === spec?.operation
+      ? { ok: true as const, args: { ...spec.args } }
+      : selected?.jsonArguments
+        ? parseJsonArguments(jsonArgs)
+        : parseHealthCheckArgs(args);
+  const missingRequired =
+    parsedArgs.ok && requiredParams.some((p) => !Object.hasOwn(parsedArgs.args, p.name));
 
   const onOperationChange = (next: string) => {
     setOperation(next);
     // Parameters and the response shape differ per operation; drop the prior
     // pick's pinned args and identity path so neither dangles onto a new op.
     setArgs({});
+    setJsonArgs("");
     setIdentityField("");
   };
 
@@ -509,6 +592,8 @@ function HealthCheckEditorSheet(props: {
             onIdentityFieldChange={setIdentityField}
             args={args}
             onArgChange={onArgChange}
+            jsonArgs={jsonArgs}
+            onJsonArgsChange={setJsonArgs}
             disabled={saving}
             idPrefix="health-check"
           />
@@ -519,7 +604,7 @@ function HealthCheckEditorSheet(props: {
               preview={livePreview}
               operation={operation}
               identityField={identityField}
-              args={args}
+              args={parsedArgs.ok ? parsedArgs.args : null}
               disabled={
                 saving || !parsedArgs.ok || missingRequired || isUnsupportedHealthCheck(selected)
               }
