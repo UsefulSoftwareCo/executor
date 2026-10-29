@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { $ } from "bun";
+import { platformVariantVersion } from "./platform-variant-version";
 import { WORKER_BUNDLER_DIRNAME, missingWorkerBundlerFiles } from "./worker-bundler-artifact";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -184,19 +185,6 @@ const platformName = (t: Target) => (t.os === "win32" ? "windows" : t.os);
  *  semver prerelease segment of variant package versions. e.g. "linux-x64",
  *  "linux-x64-musl", "darwin-arm64". */
 const platformTag = (t: Target) => [platformName(t), t.arch, t.abi].filter(Boolean).join("-");
-
-/** Make a platform package version sort below its matching wrapper version. */
-const variantPackageVersion = (version: string, tag: string): string => {
-  const match = /^(\d+\.\d+\.\d+)(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$/.exec(version);
-  const baseVersion = match?.[1];
-  if (baseVersion === undefined) {
-    throw new Error(`Invalid Executor package version for platform variant: ${version}`);
-  }
-
-  const prerelease = match[2];
-  const build = match[3];
-  return `${baseVersion}-0${prerelease === undefined ? "" : `.${prerelease}`}.${tag}${build === undefined ? "" : `+${build}`}`;
-};
 
 /** Dist directory name (e.g. dist/executor-linux-x64). Only used as a build
  *  artifact convention; the actual npm package name inside is `executor`. */
@@ -572,7 +560,7 @@ const buildBinaries = async (targets: Target[], mode: BuildMode) => {
       // No `bin` field on purpose — the wrapper's launcher resolves the
       // platform binary via require.resolve on the alias name and execs it.
       const tag = platformTag(target);
-      const variantVersion = variantPackageVersion(meta.version, tag);
+      const variantVersion = platformVariantVersion(meta.version, tag);
       await writeFile(
         join(outDir, "package.json"),
         JSON.stringify(
