@@ -2966,6 +2966,16 @@ export const scenarios = plan({
       local: na("Local has no organizations or groups."),
     },
   },
+  groupInputValidation: {
+    fixtures: "actors",
+    file: "group-input-validation.spec.ts",
+    title: "Group names, descriptions and ids that storage cannot hold are refused as bad requests",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization groups."),
+    },
+  },
   groupsIsolation: {
     fixtures: "actors",
     file: "groups.spec.ts",

@@ -3,7 +3,7 @@ import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
 import { QueryView } from "@executor-js/ui/dashboard/context";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
-import { Cause, Exit, Option } from "effect";
+import { Cause, Exit, Option, Schema } from "effect";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useForm, useStore } from "@tanstack/react-form";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -31,7 +31,7 @@ import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pend
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { groupsAtom, saveGroupAtom, removeGroupAtom } from "../../contracts/groups.ts";
 import { appError, type HostedError } from "../../contracts/errors.ts";
-import { GroupConflict } from "@executor-js/hosted-server/groups";
+import { GroupConflict, GroupDescription, GroupName } from "@executor-js/hosted-server/groups";
 import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/alert";
 
 /** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
@@ -429,7 +429,9 @@ function GroupEditor({
                   ? "Enter a group name."
                   : value.trim().length > 80
                     ? "Use 80 characters or fewer."
-                    : undefined,
+                    : !Schema.is(GroupName)(value.trim())
+                      ? "Use one line with at least one visible character."
+                      : undefined,
             }}
           >
             {(field) => {
@@ -473,7 +475,11 @@ function GroupEditor({
             name="description"
             validators={{
               onChange: ({ value }) =>
-                value.length > 240 ? "Use 240 characters or fewer." : undefined,
+                value.length > 240
+                  ? "Use 240 characters or fewer."
+                  : !Schema.is(GroupDescription)(value.trim())
+                    ? "Use plain text without control characters."
+                    : undefined,
             }}
           >
             {(field) => {
