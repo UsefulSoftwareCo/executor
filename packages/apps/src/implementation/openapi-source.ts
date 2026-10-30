@@ -428,6 +428,22 @@ const parseYaml = (text: string): unknown => {
   return JSON.parse(JSON.stringify(parseYamlStrictly(text)));
 };
 
+/**
+ * A framework fetch that sends `User-Agent: Executor` unless the request already names one, since
+ * some hosts refuse a request without one (issue #2411). A caller's own fetch is never wrapped.
+ */
+const withDefaultUserAgent =
+  (
+    fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+  ): ((input: string | URL | Request, init?: RequestInit) => Promise<Response>) =>
+  (input, init) => {
+    // A Request input keeps its own headers; the call's init headers are applied over them.
+    const headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+    if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
+    return fetch(input, { ...init, headers });
+  };
+
 /** Fetch a bounded document using the loader's owned lifetime, never the original request signal. */
 const download = (
   url: string,
@@ -582,7 +598,10 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
   // compilation ends, before the compiled parts are serialized and written.
   const compile = (context: CacheLoadContext) =>
     Effect.gen(function* () {
-      let document: JsonObject | undefined = yield* sourceDocument(options, context);
+      let document: JsonObject | undefined = yield* sourceDocument(options, {
+        ...context,
+        fetch: withDefaultUserAgent(context.fetch),
+      });
       // oxlint-disable-next-line executor/authored-code-through-adapter -- scheduler yield
       yield* Effect.promise(yieldToRuntime);
       // Revisions are content-addressed: refreshing an unchanged document rewrites the
@@ -1064,13 +1083,14 @@ export type OpenapiToolNamesOptions = Omit<
  * an author can check the names a `withApprovals` policy matches before any account connects.
  * `skipped` lists only the operations the compiler left out and why. An operation no configured
  * `methods` or `oauth` entry can authorize is missing from `tools` and not listed in `skipped`.
- * `fetch` defaults to the global fetch.
+ * `fetch` defaults to the global fetch wrapped by `withDefaultUserAgent`, which sets
+ * `User-Agent: Executor` unless the request names one; a caller's `fetch` is used as given.
  */
 export const openapiToolNames = (options: OpenapiToolNamesOptions): Promise<OpenapiToolNames> =>
   Effect.runPromise(
     Effect.gen(function* () {
       const document = yield* sourceDocument(options, {
-        fetch: options.fetch ?? globalThis.fetch,
+        fetch: options.fetch ?? withDefaultUserAgent(globalThis.fetch),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       });
       const compiled = yield* compileSource(options, document);
