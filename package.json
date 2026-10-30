@@ -97,6 +97,7 @@
     "deploy-events:plan": "bun run --cwd apps/hosted/cloud alchemy deploy alchemy.deploy-events.ts --stage v2 --dry-run --detect-drift --no-input",
     "deploy-events:deploy": "bun run --cwd apps/hosted/cloud alchemy deploy alchemy.deploy-events.ts --stage v2",
     "e2e:billing": "vitest run --config e2e/billing.config.ts",
+    "auth:security": "bun apps/hosted/server/scripts/check-better-auth-security.mjs",
     "e2e:pglite": "vitest run --config e2e/pglite.config.ts",
     "e2e:dashboard-file-names": "vitest run --config e2e/dashboard-file-names.config.ts",
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
@@ -192,7 +193,8 @@
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.80.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.13": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.13.patch",
-    "@better-auth/api-key@1.7.5": "patches/@better-auth%2Fapi-key@1.7.5.patch"
+    "@better-auth/api-key@1.7.5": "patches/@better-auth%2Fapi-key@1.7.5.patch",
+    "@better-auth/core@1.7.5": "patches/@better-auth%2Fcore@1.7.5.patch"
   },
   "trustedDependencies": [
     "dugite",

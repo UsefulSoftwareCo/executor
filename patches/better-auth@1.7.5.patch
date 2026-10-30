@@ -127,3 +127,94 @@ index f0e2b9c..5229800 100644
  		if (field?.required === false) schema = schema.nullish();
  		if (!isClientSide && field?.returned === false) return acc;
  		return {
+diff --git a/dist/plugins/admin/admin.d.mts b/dist/plugins/admin/admin.d.mts
+index 03e33f2..7f69af7 100644
+--- a/dist/plugins/admin/admin.d.mts
++++ b/dist/plugins/admin/admin.d.mts
+@@ -868,6 +868,7 @@ declare const admin: <O extends AdminOptions>(options?: O | undefined) => {
+     INVALID_ROLE_TYPE: _$_better_auth_core_utils_error_codes0.RawError<"INVALID_ROLE_TYPE">;
+     YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: _$_better_auth_core_utils_error_codes0.RawError<"YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL">;
+     PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: _$_better_auth_core_utils_error_codes0.RawError<"PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER">;
++    USER_ID_CANNOT_BE_UPDATED: _$_better_auth_core_utils_error_codes0.RawError<"USER_ID_CANNOT_BE_UPDATED">;
+   };
+   schema: {
+     user: {
+diff --git a/dist/plugins/admin/admin.mjs b/dist/plugins/admin/admin.mjs
+index b27646d..49ad91a 100644
+--- a/dist/plugins/admin/admin.mjs
++++ b/dist/plugins/admin/admin.mjs
+@@ -22,7 +22,7 @@ const admin = (options) => {
+ 	return {
+ 		id: "admin",
+ 		version: PACKAGE_VERSION,
+-		init() {
++		init(authContext) {
+ 			return { options: { databaseHooks: {
+ 				user: { create: { async before(user) {
+ 					return { data: {
+@@ -31,11 +31,11 @@ const admin = (options) => {
+ 					} };
+ 				} } },
+ 				session: { create: { async before(session, ctx) {
+-					if (!ctx) return;
+-					const user = await ctx.context.internalAdapter.findUserById(session.userId);
++					const internalAdapter = ctx?.context.internalAdapter ?? authContext.internalAdapter;
++					const user = await internalAdapter.findUserById(session.userId);
+ 					if (user?.banned) {
+ 						if (user.banExpires && new Date(user.banExpires).getTime() < Date.now()) {
+-							await ctx.context.internalAdapter.updateUser(session.userId, {
++							await internalAdapter.updateUser(session.userId, {
+ 								banned: false,
+ 								banReason: null,
+ 								banExpires: null
+diff --git a/dist/plugins/admin/client.d.mts b/dist/plugins/admin/client.d.mts
+index 921bb02..c0b1eb9 100644
+--- a/dist/plugins/admin/client.d.mts
++++ b/dist/plugins/admin/client.d.mts
+@@ -75,6 +75,7 @@ declare const adminClient: <O extends AdminClientOptions>(options?: O | undefine
+     INVALID_ROLE_TYPE: _$_better_auth_core_utils_error_codes0.RawError<"INVALID_ROLE_TYPE">;
+     YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: _$_better_auth_core_utils_error_codes0.RawError<"YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL">;
+     PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: _$_better_auth_core_utils_error_codes0.RawError<"PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER">;
++    USER_ID_CANNOT_BE_UPDATED: _$_better_auth_core_utils_error_codes0.RawError<"USER_ID_CANNOT_BE_UPDATED">;
+   };
+ };
+ //#endregion
+diff --git a/dist/plugins/admin/error-codes.d.mts b/dist/plugins/admin/error-codes.d.mts
+index 0906710..18b1d9c 100644
+--- a/dist/plugins/admin/error-codes.d.mts
++++ b/dist/plugins/admin/error-codes.d.mts
+@@ -25,6 +25,7 @@ declare const ADMIN_ERROR_CODES: {
+   INVALID_ROLE_TYPE: _$_better_auth_core_utils_error_codes0.RawError<"INVALID_ROLE_TYPE">;
+   YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: _$_better_auth_core_utils_error_codes0.RawError<"YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL">;
+   PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: _$_better_auth_core_utils_error_codes0.RawError<"PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER">;
++  USER_ID_CANNOT_BE_UPDATED: _$_better_auth_core_utils_error_codes0.RawError<"USER_ID_CANNOT_BE_UPDATED">;
+ };
+ //#endregion
+ export { ADMIN_ERROR_CODES };
+\ No newline at end of file
+diff --git a/dist/plugins/admin/error-codes.mjs b/dist/plugins/admin/error-codes.mjs
+index 6f2639d..6f55147 100644
+--- a/dist/plugins/admin/error-codes.mjs
++++ b/dist/plugins/admin/error-codes.mjs
+@@ -23,7 +23,8 @@ const ADMIN_ERROR_CODES = defineErrorCodes({
+ 	YOU_CANNOT_IMPERSONATE_ADMINS: "You cannot impersonate admins",
+ 	INVALID_ROLE_TYPE: "Invalid role type",
+ 	YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: "You are not allowed to update users email",
+-	PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: "Password cannot be updated through update-user. Use the set-user-password endpoint instead"
++	PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER: "Password cannot be updated through update-user. Use the set-user-password endpoint instead",
++	USER_ID_CANNOT_BE_UPDATED: "User id cannot be updated"
+ });
+ //#endregion
+ export { ADMIN_ERROR_CODES };
+diff --git a/dist/plugins/admin/routes.mjs b/dist/plugins/admin/routes.mjs
+index 126a99b..eb4859b 100644
+--- a/dist/plugins/admin/routes.mjs
++++ b/dist/plugins/admin/routes.mjs
+@@ -255,6 +255,7 @@ const adminUpdateUser = (opts) => createAuthEndpoint("/admin/update-user", {
+ 	const updateData = ctx.body.data;
+ 	const hasDataKey = (key) => Object.prototype.hasOwnProperty.call(updateData, key);
+ 	if (hasDataKey("password")) throw APIError.from("BAD_REQUEST", ADMIN_ERROR_CODES.PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER);
++	if (hasDataKey("id")) throw APIError.from("BAD_REQUEST", ADMIN_ERROR_CODES.USER_ID_CANNOT_BE_UPDATED);
+ 	if (Object.prototype.hasOwnProperty.call(ctx.body.data, "role")) {
+ 		if (!hasPermission({
+ 			userId: ctx.context.session.user.id,

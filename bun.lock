@@ -40,7 +40,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.32",
+      "version": "2.0.0-beta.33",
     },
     "apps/docs": {
       "name": "@executor-js/docs",
@@ -847,6 +847,7 @@
     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
     "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch",
     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
+    "@better-auth/core@1.7.5": "patches/@better-auth%2Fcore@1.7.5.patch",
     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
     "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",

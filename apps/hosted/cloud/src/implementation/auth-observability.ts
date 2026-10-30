@@ -41,7 +41,76 @@ const TokenError = Schema.Literals([
   "invalid_scope",
   "invalid_target",
 ]);
-const TokenErrorBody = Schema.fromJsonString(Schema.Struct({ error: Schema.String }));
+/** RFC 7591 registration errors, and the other OAuth codes Better Auth answers one with. */
+const RegistrationError = Schema.Literals([
+  "invalid_client_metadata",
+  "invalid_redirect_uri",
+  "invalid_software_statement",
+  "invalid_client",
+  "invalid_request",
+  "invalid_scope",
+  "invalid_target",
+  "access_denied",
+]);
+/**
+ * Why Better Auth refused a registration, matched against the fixed opening of its own
+ * `error_description`. The description itself names client input and is never recorded.
+ */
+const registrationRejections = [
+  ["redirect_uri_not_absolute", /^redirect URI must be an absolute URI/u],
+  ["redirect_uri_credentials_or_fragment", /^redirect URI must not include credentials/u],
+  ["redirect_uri_localhost_dots", /^redirect URI localhost must not include trailing dots/u],
+  ["redirect_uri_web_requires_https", /^web clients require https redirect URIs/u],
+  ["redirect_uri_native_https_loopback", /^native clients must not use https loopback/u],
+  ["redirect_uri_native_http_host", /^native clients may use http only/u],
+  ["redirect_uri_native_scheme", /^native private-use redirect URI schemes/u],
+  ["redirect_uris_missing", /^Redirect URIs are required/u],
+  ["token_endpoint_auth_method", /^unsupported token_endpoint_auth_method /u],
+  ["grant_types", /^(?:unsupported grant_type |no mutually supported grant_type )/u],
+  ["response_types", /'code' response type/u],
+  ["scope", /^cannot request scope /u],
+  ["pkce_required", /^pkce is required/u],
+  ["client_credentials_unauthenticated", /^client_credentials grant requires/u],
+  ["authentication_required", /^Authentication required for client registration/u],
+  ["registration_disabled", /^Client registration is disabled/u],
+] as const;
+/** Fields a registration names; a schema refusal's description starts with the field's path. */
+const RegistrationField = Schema.Literals([
+  "redirect_uris",
+  "scope",
+  "client_name",
+  "client_uri",
+  "logo_uri",
+  "contacts",
+  "tos_uri",
+  "policy_uri",
+  "software_id",
+  "software_version",
+  "software_statement",
+  "post_logout_redirect_uris",
+  "backchannel_logout_uri",
+  "backchannel_logout_session_required",
+  "token_endpoint_auth_method",
+  "jwks",
+  "jwks_uri",
+  "grant_types",
+  "response_types",
+  "application_type",
+  "subject_type",
+  "dpop_bound_access_tokens",
+  "resources",
+  "skip_consent",
+  "client_id",
+  "client_secret",
+  "client_secret_expires_at",
+  "client_id_issued_at",
+]);
+const OAuthErrorBody = Schema.fromJsonString(
+  Schema.Struct({
+    error: Schema.optionalKey(Schema.String),
+    error_description: Schema.optionalKey(Schema.String),
+  }),
+);
 const JsonTokenRequest = Schema.fromJsonString(Schema.Struct({ grant_type: Schema.String }));
 const JsonRefreshRequest = Schema.fromJsonString(Schema.Struct({ refresh_token: Schema.String }));
 /** Token requests are a few hundred bytes; a larger body is not read a second time. */
@@ -142,17 +211,38 @@ const refreshTokenRef = (token: string) =>
     ),
   );
 
+/** The endpoint's own JSON error answer, if it gave one. */
+const errorBody = (response: HttpServerResponse.HttpServerResponse) =>
+  response.body._tag === "Uint8Array"
+    ? Schema.decodeUnknownOption(OAuthErrorBody)(new TextDecoder().decode(response.body.body))
+    : Option.none();
+
 /** The `error` of the endpoint's own JSON answer when it is a known code; never its description. */
 const tokenError = (response: HttpServerResponse.HttpServerResponse) => {
   if (response.status < 400) return "none";
-  if (response.body._tag !== "Uint8Array") return "other";
   return Option.getOrElse(
-    Option.flatMap(
-      Schema.decodeUnknownOption(TokenErrorBody)(new TextDecoder().decode(response.body.body)),
-      (body) => Schema.decodeUnknownOption(TokenError)(body.error),
+    Option.flatMap(errorBody(response), (body) =>
+      Schema.decodeUnknownOption(TokenError)(body.error),
     ),
     () => "other" as const,
   );
+};
+
+/** A refused registration's OAuth error and the rule it broke, from closed vocabularies. */
+const registrationOutcome = (response: HttpServerResponse.HttpServerResponse) => {
+  if (response.status < 400) return { error: "none", rejection: "none" };
+  const body = Option.getOrUndefined(errorBody(response));
+  const error = Option.getOrElse(Schema.decodeUnknownOption(RegistrationError)(body?.error), () =>
+    body?.error === undefined ? ("missing" as const) : ("other" as const),
+  );
+  const description = body?.error_description ?? "";
+  const rule = registrationRejections.find(([, pattern]) => pattern.test(description));
+  if (rule !== undefined) return { error, rejection: rule[0] };
+  // A schema refusal opens with the path of the field it refused, such as `redirect_uris[0]`.
+  const field = Schema.decodeUnknownOption(RegistrationField)(
+    /^([a-z_]+)(?:[.:[ ]|$)/u.exec(description)?.[1],
+  );
+  return { error, rejection: Option.getOrElse(field, () => "other" as const) };
 };
 
 /**
@@ -201,6 +291,12 @@ const clientFamily = (row: unknown): ClientFamily => {
   );
   return callback === undefined ? "other" : callback[0];
 };
+/** The naming fields of a registration body; any that are malformed name no client. */
+const RegistrationRequest = Schema.Struct({
+  client_name: Schema.optionalKey(Schema.Unknown),
+  software_id: Schema.optionalKey(Schema.Unknown),
+  redirect_uris: Schema.optionalKey(Schema.Unknown),
+});
 const OAuthClientRequest = Schema.Struct({ client_id: Schema.NonEmptyString });
 const ConsentRequest = Schema.Struct({ oauth_query: Schema.String });
 /**
@@ -254,7 +350,7 @@ interface Observation {
 }
 
 /**
- * Observe social callbacks and OAuth token, authorization and consent requests without
+ * Observe social callbacks and OAuth token, registration, authorization and consent requests without
  * exporting URLs, tokens, client IDs or names, provider payloads or thrown errors.
  */
 export const authObservability = () => {
@@ -329,6 +425,21 @@ export const authObservability = () => {
         });
       return yield* exit;
     });
+  /** Record the OAuth error a registration was refused with and which rule refused it. */
+  const observeRegistration = <E, R>(
+    handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const exit = yield* observeClient(handler);
+      const outcome = Exit.isSuccess(exit)
+        ? registrationOutcome(exit.value)
+        : { error: "other", rejection: "other" };
+      yield* Effect.annotateCurrentSpan({
+        "auth.register.error": outcome.error,
+        "auth.register.rejection": outcome.rejection,
+      });
+      return yield* exit;
+    });
   const stage = async <A>(name: Stage, task: () => Promise<A>, accepted: (value: A) => boolean) => {
     const observation = requests.getStore();
     if (observation === undefined) return task();
@@ -397,6 +508,28 @@ export const authObservability = () => {
       };
     },
     hooks: {
+      before: [
+        {
+          matcher: (ctx) => ctx.path === "/oauth2/register",
+          // A registration is not stored yet, refused or not: name its client from the body,
+          // before Better Auth validates it.
+          handler: createAuthMiddleware(async (ctx) => {
+            const observed = oauthRequests.getStore();
+            if (observed === undefined) return;
+            const body = Schema.decodeUnknownOption(RegistrationRequest)(ctx.body);
+            if (Option.isNone(body)) {
+              observed.client = "unknown";
+              return;
+            }
+            const { client_name, software_id, redirect_uris } = body.value;
+            observed.client = clientFamily({
+              ...(client_name === undefined ? {} : { name: client_name }),
+              ...(software_id === undefined ? {} : { softwareId: software_id }),
+              ...(redirect_uris === undefined ? {} : { redirectUris: redirect_uris }),
+            });
+          }),
+        },
+      ],
       after: [
         {
           matcher: (ctx) => ctx.path !== undefined && clientPaths.has(ctx.path),
@@ -432,6 +565,8 @@ export const authObservability = () => {
         const path = new URL(request.url, "https://auth.invalid").pathname;
         if (request.method === "POST" && path === "/api/auth/oauth2/token")
           return yield* observeToken(handler);
+        if (request.method === "POST" && path === "/api/auth/oauth2/register")
+          return yield* observeRegistration(handler);
         if (path === "/api/auth/oauth2/authorize" || path === "/api/auth/oauth2/consent")
           return yield* Effect.flatten(observeClient(handler));
         const match = /^\/api\/auth\/(?:oauth2\/)?callback\/([^/]+)$/.exec(path);

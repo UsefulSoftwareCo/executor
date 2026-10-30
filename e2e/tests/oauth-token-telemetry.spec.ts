@@ -5,6 +5,8 @@
  * whether refresh-token reuse detection ended a whole grant, how long ago a refused token was
  * replaced, and the family of MCP client the registration names.
  * Authorization and consent spans name that family too, so re-logins can be counted per client.
+ * Registration spans name the family the body declares, the OAuth error a refusal carried and the
+ * rule that refused it, never the description that quotes the client's input.
  */
 import { randomBytes } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
@@ -94,6 +96,50 @@ const register = (client: { readonly name?: string; readonly redirect?: string }
       }),
     );
   });
+
+/** A registration under a new trace. Only its status leaves this function; never its body. */
+const registrationRequest = (body: Record<string, unknown>) =>
+  Effect.gen(function* () {
+    const target = yield* Target,
+      http = yield* HttpClient.HttpClient;
+    const origin = target.metadata.origin;
+    const traceId = randomBytes(16).toString("hex");
+    const status = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const request = yield* HttpClientRequest.post(`${origin}/api/auth/oauth2/register`).pipe(
+          HttpClientRequest.setHeaders({
+            origin,
+            traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01`,
+          }),
+          HttpClientRequest.bodyJson(body),
+        );
+        const response = yield* http.execute(request);
+        yield* response.text;
+        return response.status;
+      }),
+    ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
+    return { traceId, status };
+  });
+
+/** The registration's server span, once the collector has it. */
+const registrationSpan = (traceId: string) =>
+  Effect.flatMap(Telemetry, (telemetry) => telemetry.query(traceId)).pipe(
+    Effect.map((found) =>
+      found.data
+        .map(({ span }) => span)
+        .find(
+          (span) =>
+            span.tags["url.path"] === "/api/auth/oauth2/register" &&
+            span.tags["auth.register.error"] !== undefined,
+        ),
+    ),
+    Effect.flatMap((span) =>
+      span === undefined
+        ? Effect.fail(new Error(`The registration span of trace ${traceId} has not arrived`))
+        : Effect.succeed(span),
+    ),
+    Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
+  );
 
 /** Server spans of one operation on one path that name this client family, newest last. */
 const familySpans = (operation: string, path: string, family: string, since: number) =>
@@ -417,6 +463,103 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             "unknown",
           );
 
+        // A refused registration records its OAuth error and the rule that refused it; the
+        // description, which quotes the client's input, stays out of the span.
+        const grants = {
+          token_endpoint_auth_method: "none",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+        };
+        const registrationCases = [
+          {
+            // A private-use callback without `application_type` registers as a web client.
+            body: {
+              ...grants,
+              client_name: "Cursor",
+              redirect_uris: ["cursor://anysphere.cursor-retrieval/oauth/callback"],
+            },
+            expected: {
+              status: 400,
+              error: "invalid_redirect_uri",
+              rejection: "redirect_uri_web_requires_https",
+              family: "cursor",
+            },
+          },
+          {
+            // The schema refuses a callback that is not a URL before any rule runs.
+            body: { ...grants, client_name: "Cursor", redirect_uris: [`cursor://${grantMarker}`] },
+            expected: {
+              status: 400,
+              error: "invalid_redirect_uri",
+              rejection: "redirect_uris",
+              family: "cursor",
+            },
+          },
+          {
+            body: {
+              ...grants,
+              client_name: "Codex",
+              redirect_uris: [loopback],
+              token_endpoint_auth_method: "tls_client_auth",
+            },
+            expected: {
+              status: 400,
+              error: "invalid_client_metadata",
+              rejection: "token_endpoint_auth_method",
+              family: "codex",
+            },
+          },
+          {
+            body: {
+              ...grants,
+              client_name: "Codex",
+              redirect_uris: [loopback],
+              scope: grantMarker,
+            },
+            expected: {
+              status: 400,
+              error: "invalid_scope",
+              rejection: "scope",
+              family: "codex",
+            },
+          },
+          {
+            // The schema refuses the field before any rule runs; a malformed name names no client.
+            body: { ...grants, client_name: 42, redirect_uris: [loopback] },
+            expected: {
+              status: 400,
+              error: "invalid_client_metadata",
+              rejection: "client_name",
+              family: "unknown",
+            },
+          },
+          {
+            body: { ...grants, client_name: clientName, redirect_uris: [loopback] },
+            expected: { status: 201, error: "none", rejection: "none", family: "claude-code" },
+          },
+        ];
+        const registered = yield* Effect.forEach(registrationCases, ({ body }) =>
+          registrationRequest(body),
+        );
+        expect(registered.map(({ status }) => status)).toEqual(
+          registrationCases.map(({ expected }) => expected.status),
+        );
+        const registrationSpans = yield* Effect.forEach(registered, ({ traceId }) =>
+          registrationSpan(traceId),
+        );
+        expect(
+          registrationSpans.map((span) => ({
+            status: Number(span.tags["http.response.status_code"]),
+            error: span.tags["auth.register.error"],
+            rejection: span.tags["auth.register.rejection"],
+            family: span.tags["auth.token.client_family"],
+          })),
+        ).toEqual(registrationCases.map(({ expected }) => expected));
+        const registrationText = JSON.stringify(registrationSpans);
+        expect([grantMarker, clientName].some((value) => registrationText.includes(value))).toBe(
+          false,
+        );
+
         // Each answer is the client's to act on: none is reported as an Executor failure.
         yield* Effect.sleep("2 seconds");
         const traces = new Set(
@@ -431,6 +574,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             lastUnsupported,
             padded,
             uppercase,
+            ...registered,
           ].map(({ traceId }) => traceId),
         );
         const reported = (yield* sentryExceptions).filter(

@@ -1,0 +1,179 @@
+diff --git a/dist/social-providers/apple.mjs b/dist/social-providers/apple.mjs
+index 9f4c8e610bc1806b67f82a44800e259116588161..b3dea9e8bc39b334995b36caa47b280f46fd90f8 100644
+--- a/dist/social-providers/apple.mjs
++++ b/dist/social-providers/apple.mjs
+@@ -4,8 +4,8 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { decodeJwt, importJWK } from "jose";
+-import { betterFetch } from "@better-fetch/fetch";
+ //#region src/social-providers/apple.ts
+ const apple = (options) => {
+ 	const tokenEndpoint = "https://appleid.apple.com/auth/token";
+@@ -85,7 +85,7 @@ const apple = (options) => {
+ 	};
+ };
+ const getApplePublicKey = async (kid) => {
+-	const { data } = await betterFetch(`https://appleid.apple.com/auth/keys`);
++	const { data } = await fetchRefusingRedirects(`https://appleid.apple.com/auth/keys`);
+ 	if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
+ 	const jwk = data.keys.find((key) => key.kid === kid);
+ 	if (!jwk) throw new Error(`JWK with kid ${kid} not found`);
+diff --git a/dist/social-providers/cognito.mjs b/dist/social-providers/cognito.mjs
+index 5b5c070b048408d8eec7f543e322f0f41c8d88df..9404e2635278b2be2755b7ea0ac346a5417864d2 100644
+--- a/dist/social-providers/cognito.mjs
++++ b/dist/social-providers/cognito.mjs
+@@ -4,6 +4,7 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { decodeJwt, importJWK } from "jose";
+ import { betterFetch } from "@better-fetch/fetch";
+ //#region src/social-providers/cognito.ts
+@@ -136,7 +137,7 @@ const cognito = (options) => {
+ const getCognitoPublicKey = async (kid, region, userPoolId) => {
+ 	const COGNITO_JWKS_URI = `https://cognito-idp.${region}.amazonaws.com/${userPoolId}/.well-known/jwks.json`;
+ 	try {
+-		const { data } = await betterFetch(COGNITO_JWKS_URI);
++		const { data } = await fetchRefusingRedirects(COGNITO_JWKS_URI);
+ 		if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
+ 		const jwk = data.keys.find((key) => key.kid === kid);
+ 		if (!jwk) throw new Error(`JWK with kid ${kid} not found`);
+diff --git a/dist/social-providers/facebook.mjs b/dist/social-providers/facebook.mjs
+index cba8ca1b45f3811189bf130b1f12de4346381947..a71363cbe28cc5d1465609d66cd49a3cef7cfca9 100644
+--- a/dist/social-providers/facebook.mjs
++++ b/dist/social-providers/facebook.mjs
+@@ -4,6 +4,7 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { createRemoteJWKSet, decodeJwt } from "jose";
+ import { betterFetch } from "@better-fetch/fetch";
+ //#region src/social-providers/facebook.ts
+@@ -26,7 +27,7 @@ async function verifyFacebookAccessToken(accessToken, options) {
+ 	const primaryClientId = getPrimaryClientId(options.clientId);
+ 	if (!primaryClientId || !options.clientSecret) return null;
+ 	const clientIds = Array.isArray(options.clientId) ? options.clientId : [options.clientId];
+-	const { data, error } = await betterFetch("https://graph.facebook.com/debug_token", { query: {
++	const { data, error } = await fetchRefusingRedirects("https://graph.facebook.com/debug_token", { query: {
+ 		input_token: accessToken,
+ 		access_token: `${primaryClientId}|${options.clientSecret}`
+ 	} });
+diff --git a/dist/social-providers/github.mjs b/dist/social-providers/github.mjs
+index b65f4eb43c9eb3dc3737eff381a222d747cedf7e..c20b904036530f7863d66a872962c125ce2d1beb 100644
+--- a/dist/social-providers/github.mjs
++++ b/dist/social-providers/github.mjs
+@@ -3,6 +3,7 @@ import { getOAuth2Tokens } from "../oauth2/utils.mjs";
+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { authorizationCodeRequest } from "../oauth2/validate-authorization-code.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { betterFetch } from "@better-fetch/fetch";
+ //#region src/social-providers/github.ts
+ const github = (options) => {
+@@ -35,7 +36,7 @@ const github = (options) => {
+ 				redirectURI,
+ 				options
+ 			});
+-			const { data, error } = await betterFetch(tokenEndpoint, {
++			const { data, error } = await fetchRefusingRedirects(tokenEndpoint, {
+ 				method: "POST",
+ 				body,
+ 				headers: requestHeaders
+diff --git a/dist/social-providers/google.mjs b/dist/social-providers/google.mjs
+index 0c40ed6650cbd93bdfd5e2d8292e3a26b61e636b..687b1dcdefcac4eef899099c1b592ca532be6bb3 100644
+--- a/dist/social-providers/google.mjs
++++ b/dist/social-providers/google.mjs
+@@ -4,8 +4,8 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify } from "jose";
+-import { betterFetch } from "@better-fetch/fetch";
+ //#region src/social-providers/google.ts
+ const GOOGLE_ID_TOKEN_MAX_AGE = "1h";
+ const GOOGLE_ID_TOKEN_ALGORITHM = "RS256";
+@@ -142,7 +142,7 @@ const getGooglePublicKey = async (kid) => {
+ 	return publicKey;
+ };
+ const getGooglePublicKeys = async (kid) => {
+-	const { data } = await betterFetch("https://www.googleapis.com/oauth2/v3/certs");
++	const { data } = await fetchRefusingRedirects("https://www.googleapis.com/oauth2/v3/certs");
+ 	if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
+ 	const jwks = kid ? data.keys.filter((key) => key.kid === kid) : data.keys;
+ 	if (!jwks.length) throw new Error(`JWK with kid ${kid} not found`);
+diff --git a/dist/social-providers/line.mjs b/dist/social-providers/line.mjs
+index 031dcecaab32a7fa3897c733811f08e0dfa4db91..fee623c638ee4f18bcc367262f16e9d97d95b89c 100644
+--- a/dist/social-providers/line.mjs
++++ b/dist/social-providers/line.mjs
+@@ -1,6 +1,7 @@
+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { decodeJwt } from "jose";
+ import { betterFetch } from "@better-fetch/fetch";
+ //#region src/social-providers/line.ts
+@@ -66,7 +67,7 @@ const line = (options) => {
+ 			body.set("id_token", token);
+ 			body.set("client_id", options.clientId);
+ 			if (nonce) body.set("nonce", nonce);
+-			const { data, error } = await betterFetch(verifyIdTokenEndpoint, {
++			const { data, error } = await fetchRefusingRedirects(verifyIdTokenEndpoint, {
+ 				method: "POST",
+ 				headers: { "content-type": "application/x-www-form-urlencoded" },
+ 				body
+diff --git a/dist/social-providers/microsoft-entra-id.mjs b/dist/social-providers/microsoft-entra-id.mjs
+index 67a197c8967d9922b5c34a70c2c0ea59b067b7aa..a4557936b6b8dfb9e4e73f1f3f40a8b269e9b2c9 100644
+--- a/dist/social-providers/microsoft-entra-id.mjs
++++ b/dist/social-providers/microsoft-entra-id.mjs
+@@ -4,6 +4,7 @@ import { getPrimaryClientId } from "../oauth2/utils.mjs";
+ import { createAuthorizationURL } from "../oauth2/create-authorization-url.mjs";
+ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { base64 } from "@better-auth/utils/base64";
+ import { decodeJwt, importJWK } from "jose";
+ import { betterFetch } from "@better-fetch/fetch";
+@@ -152,7 +153,7 @@ const microsoft = (options) => {
+ 	};
+ };
+ const getMicrosoftPublicKey = async (kid, tenant, authority) => {
+-	const { data } = await betterFetch(`${authority}/${tenant}/discovery/v2.0/keys`);
++	const { data } = await fetchRefusingRedirects(`${authority}/${tenant}/discovery/v2.0/keys`);
+ 	if (!data?.keys) throw new APIError("BAD_REQUEST", { message: "Keys not found" });
+ 	const jwk = data.keys.find((key) => key.kid === kid);
+ 	if (!jwk) throw new Error(`JWK with kid ${kid} not found`);
+diff --git a/dist/social-providers/wechat.mjs b/dist/social-providers/wechat.mjs
+index 78b99de5cb5d2d5dc8c183c7b38a00fce2af0d14..f13bc2cc095dc5648319c16bee7b1de01fbc9b60 100644
+--- a/dist/social-providers/wechat.mjs
++++ b/dist/social-providers/wechat.mjs
+@@ -1,4 +1,5 @@
+ import { RESERVED_AUTHORIZATION_PARAMS_SET } from "../oauth2/create-authorization-url.mjs";
++import { fetchRefusingRedirects } from "../oauth2/reject-redirects.mjs";
+ import { createPlaceholderEmail } from "../utils/email.mjs";
+ import { betterFetch } from "@better-fetch/fetch";
+ //#region src/social-providers/wechat.ts
+@@ -27,7 +28,7 @@ const wechat = (options) => {
+ 			return url;
+ 		},
+ 		validateAuthorizationCode: async ({ code }) => {
+-			const { data: tokenData, error } = await betterFetch("https://api.weixin.qq.com/sns/oauth2/access_token?" + new URLSearchParams({
++			const { data: tokenData, error } = await fetchRefusingRedirects("https://api.weixin.qq.com/sns/oauth2/access_token?" + new URLSearchParams({
+ 				appid: options.clientId,
+ 				secret: options.clientSecret,
+ 				code,
+@@ -45,7 +46,7 @@ const wechat = (options) => {
+ 			};
+ 		},
+ 		refreshAccessToken: options.refreshAccessToken ? options.refreshAccessToken : async (refreshToken) => {
+-			const { data: tokenData, error } = await betterFetch("https://api.weixin.qq.com/sns/oauth2/refresh_token?" + new URLSearchParams({
++			const { data: tokenData, error } = await fetchRefusingRedirects("https://api.weixin.qq.com/sns/oauth2/refresh_token?" + new URLSearchParams({
+ 				appid: options.clientId,
+ 				grant_type: "refresh_token",
+ 				refresh_token: refreshToken

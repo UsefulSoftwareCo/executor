@@ -5933,7 +5933,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-token-telemetry.spec.ts",
     title:
-      "Cloud OAuth token requests record their grant type, OAuth error, refresh-family revocation and client family without reporting them",
+      "Cloud OAuth token requests record their grant type, OAuth error, refresh-family revocation and client family, and registrations their refusal rule, without reporting them",
     targets: {
       cloud: managedCloud,
       "self-host": na("Cloud OAuth token endpoint instrumentation."),
