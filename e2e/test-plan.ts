@@ -6486,6 +6486,17 @@ export const scenarios = plan({
       local: na("Local connections are covered by the local scoped connection scenario."),
     },
   },
+  mcpConnectionInputValidation: {
+    fixtures: "actors",
+    file: "mcp-connection-input-validation.spec.ts",
+    title:
+      "MCP connection names and agent IDs that storage cannot hold are refused as bad requests",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local connections are covered by the local scoped connection scenario."),
+    },
+  },
   scopedConnectionAccounts: {
     fixtures: "actors",
     file: "mcp-connections.spec.ts",
