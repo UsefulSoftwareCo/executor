@@ -108,18 +108,26 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
         const url = yield* waitForAppUrl(actors.owner, `${path}/ui`);
         const bookmark = `${url}/notes?filter=active#draft`;
         yield* browser.omitNetworkTrace;
-        for (const endpoint of ["version", "watch.js"]) {
-          expect(
-            (yield* browser.use("Unsigned watcher requests stay private", (page) =>
-              page.context().request.get(`${url}/_executor/${endpoint}`),
-            )).status(),
-          ).toBe(401);
-        }
+        expect(
+          (yield* browser.use("Unsigned version watches stay private", (page) =>
+            page.context().request.get(`${url}/_executor/version`),
+          )).status(),
+        ).toBe(401);
         yield* browser.login(actors.owner);
+        // The page carries its watcher, so opening it fetches no separate watcher script.
+        const watcherScripts: string[] = [];
+        yield* browser.use("Watch for a watcher script request", (page) => {
+          page.on("request", (request) => {
+            if (new URL(request.url()).pathname === "/_executor/watch.js")
+              watcherScripts.push(request.url());
+          });
+          return Promise.resolve();
+        });
         yield* openPrivateApp(bookmark);
         yield* browser.use("A page without app queries is ready", (page) =>
           page.getByRole("heading", { name: "Static version", exact: true }).waitFor(),
         );
+        expect(watcherScripts).toEqual([]);
         // The initial page's watcher stays open. Disable only the next document's
         // version connection, so its query stream must recover a missed notification.
         let blockedVersions = 0;
