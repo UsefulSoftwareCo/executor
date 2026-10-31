@@ -24,7 +24,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@executor-js/ui/components/dialog";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
@@ -40,7 +40,7 @@ export function GroupsPage({ id }: { readonly id?: string }) {
   const result = useAtomValue(groupsAtom(organization));
   const refresh = useAtomRefresh(groupsAtom(organization));
   const data = AsyncResult.value(result);
-  useDocumentTitle(productTitle(groupsTitle));
+  useDocumentTitle(groupsTitle);
   return (
     <GroupsFrame>
       {AsyncResult.isFailure(result) && <HostedFailure cause={result.cause} retry={refresh} />}

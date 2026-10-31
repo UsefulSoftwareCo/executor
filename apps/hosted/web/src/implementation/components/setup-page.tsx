@@ -4,6 +4,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@executor-js/ui/components/button";
 import { cn } from "@executor-js/ui/lib/utils";
 import { SessionMenu } from "./auth.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
 /**
  * Onboarding pages are one 600px column under the Executor mark, with their actions right below
@@ -23,6 +25,7 @@ export function SetupPage({
   /** Reports leaving from a setup step, before the session ends. */
   readonly onSignOut?: () => void;
 }) {
+  const brand = useProductBrand();
   return (
     <main
       className={cn(
@@ -35,8 +38,8 @@ export function SetupPage({
       </div>
       <div className="flex min-h-0 w-full max-w-[600px] flex-1 flex-col">
         <div className="mb-8 flex items-center gap-2 font-mono text-[15px] max-sm:mb-6">
-          <img src="/favicon.png" alt="" width={20} height={20} className="size-5" />
-          <span>executor</span>
+          <img src={brand.logo} alt="" width={20} height={20} className="size-5" />
+          <span>{productWordmark(brand)}</span>
         </div>
         {children}
       </div>

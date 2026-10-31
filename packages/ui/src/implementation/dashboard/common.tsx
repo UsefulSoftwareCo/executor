@@ -18,6 +18,7 @@ import type { CatalogIcon } from "@executor-js/catalog/contracts";
 import { Input } from "@executor-js/ui/components/input";
 import { cn } from "@executor-js/ui/lib/utils";
 import { Skeleton } from "../components/skeleton.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 const noIcons = Atom.make(noCatalogIcons);
 
 /** The dashboard's catalog icons, or none outside a dashboard. */
@@ -69,13 +70,15 @@ export function ProviderIcon({
   readonly pending?: boolean;
 }) {
   const catalogIcons = useCatalogIcons();
+  const { logo } = useProductBrand();
   const [failed, setFailed] = useState<readonly string[]>([]);
   const normalized = name.toLowerCase().trim();
   // Fetched large enough to stay sharp in the biggest tile on a 2x screen.
   const fetchSize = 64;
   const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
   const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
-  const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, fetchSize);
+  // The built-in app keeps the name Executor and shows the deployment's logo.
+  const source = normalized === "executor" ? logo : faviconUrl(domain, fetchSize);
   const sources = declared ?? catalogIconSources(catalog);
   const waiting = sources === null && (pending || (icons === undefined && !catalogIcons.settled));
   const own = sources !== null && !failed.includes(sources.light) ? sources : null;

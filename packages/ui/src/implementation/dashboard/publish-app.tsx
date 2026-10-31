@@ -26,6 +26,7 @@ import { CopyButton } from "./code.tsx";
 import { AppIcon } from "./common.tsx";
 import { QueryView, useQuery } from "./context.tsx";
 import { cn } from "../lib/utils.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 type PublishableSource = Omit<typeof AppSourceDisplay.Type, "publication"> & {
   readonly publication: typeof PublicationReadiness.Type;
@@ -41,8 +42,8 @@ const nameTask = (reason: PublicationIssue["reason"], suggestedName: string | nu
       : `Set "name" in package.json to "${suggestedName}" and leave the other fields unchanged.`;
 
 /** A self-contained request an agent with this app's source tools can act on. */
-const agentPrompt = (app: App, repair: ReturnType<typeof publicationRepair>) =>
-  `The Executor app "${app.name}" (${app.id}) can't be published yet. ${repair.title}: ${repair.detail}
+const agentPrompt = (app: App, repair: ReturnType<typeof publicationRepair>, product: string) =>
+  `The ${product} app "${app.name}" (${app.id}) can't be published yet. ${repair.title}: ${repair.detail}
 
 ${repair.task} Commit the change to the app's working source. Don't deploy or publish the app.`;
 
@@ -404,6 +405,7 @@ function PublishDialog<E>({
   readonly onClose: () => void;
   readonly onRenamed: (commit: string) => void;
 }) {
+  const brand = useProductBrand();
   const [source] = useState(initialSource);
   const { publication } = source;
   const repair =
@@ -468,11 +470,11 @@ function PublishDialog<E>({
             Failure={Failure}
             onClose={onClose}
             onRenamed={onRenamed}
-            prompt={agentPrompt(app, repair)}
+            prompt={agentPrompt(app, repair, brand.name)}
           />
         ) : (
           <div className="flex items-center justify-between gap-2 border-t bg-muted/10 px-7 py-4 max-[740px]:px-5">
-            {repair !== undefined && <CopyPrompt prompt={agentPrompt(app, repair)} />}
+            {repair !== undefined && <CopyPrompt prompt={agentPrompt(app, repair, brand.name)} />}
             <Button onClick={onClose}>OK</Button>
           </div>
         )

@@ -305,15 +305,17 @@ export function AppOverviewSource({
 }: {
   readonly source: typeof AppAuthoringMetadata.Type;
 }) {
+  const brand = useProductBrand();
   return (
     <div className="space-y-3 pt-4 text-sm leading-6 text-muted-foreground">
       <p>View the files that make this app work.</p>
       <p>
         {source.canEdit
           ? "Ask your agent to help make changes."
-          : "This app is maintained by Executor."}
+          : `This app is maintained by ${brand.name}.`}
       </p>
     </div>
   );
 }
 import { EmptyState } from "./empty-state.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";

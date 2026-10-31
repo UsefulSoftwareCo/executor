@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import { Match } from "effect";
 import type { GrantTarget } from "@executor-js/mcp-auth/grants";
 import { Skeleton } from "../components/skeleton.tsx";
+import { productWordmark } from "../../contracts/product-brand.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 /** Stable consent shell shared by local and hosted connections, including their loading state. */
 export function McpConsentLayout({
@@ -11,15 +13,16 @@ export function McpConsentLayout({
   readonly children: ReactNode;
   readonly description: ReactNode;
 }) {
+  const brand = useProductBrand();
   return (
     <main className="mcp-consent-page min-h-dvh py-[48px] px-[20px] max-[480px]:py-[28px] max-[480px]:px-[16px]">
       <section className="mcp-consent-form w-full max-w-150 my-0 mx-auto flex flex-col gap-7 [&_h1]:text-[28px] [&_h1]:leading-[1.2] [&_h1]:[margin:0_0_10px] max-[480px]:gap-5.5 max-[480px]:[&_h1]:text-[24px]">
         <div className="mcp-consent-brand flex items-center gap-2.25 text-[19px] [font-weight:550] tracking-[-0.04em] mb-2 [&_img]:w-6.25 [&_img]:h-6.25">
-          <img src="/favicon.png" alt="" />
-          executor
+          <img src={brand.logo} alt="" />
+          {productWordmark(brand)}
         </div>
         <header>
-          <h1 className="font-semibold tracking-[-0.035em]">Connect to Executor</h1>
+          <h1 className="font-semibold tracking-[-0.035em]">Connect to {brand.name}</h1>
           <div className="mcp-consent-intro text-muted-foreground text-[14px] leading-[1.6] [&_strong]:text-foreground [&_strong]:[font-weight:550]">
             {description}
           </div>
@@ -77,12 +80,13 @@ export function McpConsentSummary({
   readonly target: GrantTarget;
   readonly destination?: string | undefined;
 }) {
+  const brand = useProductBrand();
   const approval =
     target.kind === "api"
       ? undefined
       : Match.value(target.mode).pipe(
           Match.when("browser", () => ({
-            title: "Approvals in Executor",
+            title: `Approvals in ${brand.name}`,
             detail: "Calls that need approval wait for you to review them in your browser.",
           })),
           Match.when("native", () => ({
@@ -100,7 +104,7 @@ export function McpConsentSummary({
       <div>
         <h2>
           {target.kind === "api"
-            ? "Connect to the Executor API"
+            ? `Connect to the ${brand.name} API`
             : target.connection === undefined
               ? "Access to your apps"
               : "Access to one of your connections"}
@@ -110,7 +114,7 @@ export function McpConsentSummary({
             ? "This app can use the API with your account’s permissions."
             : target.connection === undefined
               ? "This connection can use all apps available to you. Your account’s permissions still apply."
-              : "This connection can use only the apps and tools you chose for it in Executor. Changes you make there apply immediately."}
+              : `This connection can use only the apps and tools you chose for it in ${brand.name}. Changes you make there apply immediately.`}
         </p>
       </div>
       {approval !== undefined && (

@@ -1,6 +1,7 @@
 import { Option, Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
+import type { ProductBrand } from "@executor-js/utils/product-brand";
 
 /** Display identity only; session tokens and organization preferences never cross this boundary. */
 export const BrowserSession = Schema.NullOr(
@@ -61,6 +62,8 @@ export interface HostedDocumentContext {
    * for any of them.
    */
   readonly resourceOrigins: ResourceOrigins;
+  /** The name and logo the pages present. */
+  readonly brand: ProductBrand;
 }
 
 /**

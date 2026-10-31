@@ -12,6 +12,7 @@ import {
   type SendAuthEmail,
   type SendWelcomeEmail,
 } from "../contracts/email.ts";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 
 const emailDomain = Config.String("AUTH_EMAIL_DOMAIN").pipe(
   Config.withDefault("executor.sh"),
@@ -49,6 +50,7 @@ export const authEmailInfrastructure = Effect.gen(function* () {
  * its native binding; production keeps Cloudflare delivery.
  */
 export const cloudEmail = Effect.gen(function* () {
+  const brand = yield* CurrentProductBrand;
   const from = `no-reply@${yield* emailDomain}`;
   const founder = "rhys@executor.sh";
   // Better Auth starts new Effect fibers. Preserve the environment that owns resource outputs.
@@ -117,7 +119,7 @@ export const cloudEmail = Effect.gen(function* () {
   const send: SendAuthEmail = (email) =>
     Effect.suspend(() =>
       client.send({
-        from: { name: "Executor", email: from },
+        from: { name: brand.name, email: from },
         to: email.to,
         subject: email.subject,
         text: Redacted.value(email.text),

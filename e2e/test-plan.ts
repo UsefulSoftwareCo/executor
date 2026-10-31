@@ -74,6 +74,12 @@ const cloudOnboarding = {
 
 /** App Workers the budget scenarios keep loaded; their spec asserts this limit. */
 export const appWorkerBudgetLimit = 2;
+/** The brand the product brand scenario's server starts with; `server` is its MCP server name. */
+export const productBrand = {
+  name: "Acme Tools",
+  logo: "/acme-tools.png",
+  server: "acme-tools",
+} as const;
 /**
  * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
  * stalled app reached during the program is told apart from one discovery gave up on.
@@ -6441,6 +6447,23 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Recording Executor's installed version writes the runner-owned product database."),
       local: na("Local uses its configured instance API key."),
+    },
+  },
+  productBrand: {
+    fixtures: "actors",
+    file: "product-brand.spec.ts",
+    title:
+      "a configured product name and logo replace Executor's in pages, consent, metadata and MCP",
+    serverEnvironment: {
+      EXECUTOR_PRODUCT_NAME: productBrand.name,
+      EXECUTOR_PRODUCT_LOGO_URL: productBrand.logo,
+    },
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Managed local Cloud serves every scenario from one Worker, so it cannot start under another brand. Self-host runs the same shared pages, metadata and MCP server.",
+      ),
+      local: na("Local always presents Executor; it has no brand settings."),
     },
   },
   sharedAuthorization: {

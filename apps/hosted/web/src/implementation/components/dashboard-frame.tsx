@@ -18,6 +18,8 @@ import { DashboardShell as SharedShell } from "@executor-js/ui/dashboard/shell";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { SessionMenu } from "./auth.tsx";
 import { useDocumentationUrl } from "../documentation.ts";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
 const items = [
   { to: "/org/$organizationSlug/apps", label: "Apps", icon: BoxesIcon },
@@ -167,11 +169,12 @@ export function DashboardFrame({
   readonly account?: boolean;
   readonly children: ReactNode;
 }) {
+  const productBrand = useProductBrand();
   const docsUrl = useDocumentationUrl();
   const brand = {
     className:
       "wordmark flex items-center gap-2 h-12 min-w-0 font-mono text-[15px] font-medium max-[740px]:h-11 max-[740px]:shrink-0",
-    children: <span>executor</span>,
+    children: <span>{productWordmark(productBrand)}</span>,
   };
   return (
     <SharedShell

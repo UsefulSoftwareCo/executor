@@ -24,6 +24,7 @@ import {
   RequireUser,
   Unauthorized,
 } from "../contracts/auth.ts";
+import { defaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
 
 /**
  * Connected-account OAuth uses the configured relay URL, or this host's callback. It is returned
@@ -78,12 +79,14 @@ export const authOptions = (
     readonly resourceOrigins: ResourceOrigins;
     /** The authorization server's issuer; `${url}/api/auth` where one origin serves everything. */
     readonly issuer: string;
+    /** The name sign-in presents, such as in authenticator apps; Executor when unset. */
+    readonly brand?: ProductBrand;
   },
   ipAddressHeaders: string[],
   observers: GrantObservers = {},
 ) =>
   ({
-    appName: "Executor",
+    appName: (settings.brand ?? defaultProductBrand).name,
     baseURL: settings.url,
     basePath: "/api/auth",
     trustedOrigins: [settings.url],

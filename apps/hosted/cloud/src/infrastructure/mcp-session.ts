@@ -39,6 +39,7 @@ import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
 import { interactionFaults } from "./mcp-interaction-faults.ts";
 import { mcpInteractionStore } from "./mcp-interaction-store.ts";
 import { mcpSessionStore } from "./mcp-session-store.ts";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 
 /**
  * How often an object holding a program wakes itself. workerd evicts an object 70–140 s after its
@@ -71,6 +72,7 @@ export const makeMcpSession = Effect.fn(function* ({
   const analytics = yield* cloudAnalytics;
   // One object per grant: through Hyperdrive, so active sessions share its PgBouncer clients.
   const objectDatabase = yield* cloudObjectDatabase(cloudDatabaseConnection);
+  const brand = yield* productBrandConfig.pipe(Effect.orDie);
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     // Every request and MCP operation of this session shares the object's connections.
@@ -97,7 +99,10 @@ export const makeMcpSession = Effect.fn(function* ({
       undefined,
       mcpSessionStore(state.storage),
       mcpInteractionStore(faults.kv, () => clock.currentTimeMillisUnsafe()),
-    ).pipe(Effect.provide(HttpServer.layerServices));
+    ).pipe(
+      Effect.provideService(CurrentProductBrand, brand),
+      Effect.provide(HttpServer.layerServices),
+    );
     /** While the object holds a program, an alarm is due within `holdMillis`. */
     const hold = Effect.gen(function* () {
       if (handler.programs() === 0) return;

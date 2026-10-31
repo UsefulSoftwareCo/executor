@@ -26,6 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
 export function AccountForm<A, E>({
@@ -240,6 +241,7 @@ function CredentialAccess({
   readonly hidden: boolean;
   readonly readable: boolean;
 }) {
+  const brand = useProductBrand();
   if (!hidden && !readable) return null;
   return (
     <div className="flex flex-col gap-1.5 text-xs leading-relaxed" data-credential-hosts>
@@ -256,7 +258,7 @@ function CredentialAccess({
             <span className="font-medium text-emerald-700 dark:text-emerald-400">
               Hidden from app.
             </span>{" "}
-            The app and your agent only get a placeholder. Executor swaps in the real value{" "}
+            The app and your agent only get a placeholder. {brand.name} swaps in the real value{" "}
             {hosts.length === 0 ? (
               "on no request."
             ) : (
@@ -310,6 +312,7 @@ function SignInAccess({
   readonly provider: string;
   readonly hosts?: readonly string[] | undefined;
 }) {
+  const brand = useProductBrand();
   return hosts === undefined ? (
     <p
       className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground"
@@ -333,7 +336,9 @@ function SignInAccess({
       />
       <span>
         {hosts.length === 0 ? (
-          <>Executor never sends your {provider} sign-in on the app's requests.</>
+          <>
+            {brand.name} never sends your {provider} sign-in on the app's requests.
+          </>
         ) : (
           <>
             Your {provider} sign-in is only sent to{" "}

@@ -35,7 +35,6 @@ import {
   authSettings,
   clientMetadataSetting,
   firstPartyOAuthClients,
-  hostedOAuthClientName,
   withDeploySetupWake,
   withExecutorAnalytics,
   executorDefaultRedeployed,
@@ -51,6 +50,7 @@ import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/
 import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { SqlClient } from "effect/sql";
+import { productBrandConfig } from "@executor-js/utils/product-brand";
 
 /** Native resources supplied at the self-host composition boundary. */
 export interface SelfHostPlatform {
@@ -119,7 +119,7 @@ export const selfHostExecutorServices = <E, R>(
         hooks: lifecycle.hooks,
         oauth: {
           httpClient: egress.client,
-          clientName: hostedOAuthClientName,
+          clientName: (yield* productBrandConfig).name,
           urlPolicy: egress.policy,
           ...(Option.isSome(clientMetadata)
             ? {
