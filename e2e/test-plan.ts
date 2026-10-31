@@ -5316,6 +5316,17 @@ export const scenarios = plan({
       local: na("This journey checks hosted app metadata requests."),
     },
   },
+  navigationIntentReads: {
+    fixtures: "actors",
+    file: "navigation-intent.spec.ts",
+    title:
+      "Hovering an app link reads the app and its tools before the click, and opening it reuses that read",
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("Local pages are not organization routes, which declare these reads."),
+    },
+  },
   organizationIcon: {
     fixtures: "actors",
     file: "organization-icon.spec.ts",

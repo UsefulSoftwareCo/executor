@@ -18,7 +18,7 @@ const pageFocus = Atom.readable((get) => {
 });
 
 /** A page opened again within this time shows its retained value without another read. */
-const retention: Duration.Input = "5 minutes";
+const retention: Duration.Input = "30 minutes";
 /** Older retained values are shown while they are read again in the background. */
 const freshness: Duration.Input = "30 seconds";
 

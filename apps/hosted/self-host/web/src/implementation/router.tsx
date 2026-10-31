@@ -2,6 +2,7 @@ import { PagePending } from "@executor-js/hosted-web/page-pending";
 import { PageError } from "@executor-js/hosted-web/route-fallbacks";
 import { hostedServerValues } from "@executor-js/hosted-web/document";
 import { dashboardRegistry } from "@executor-js/dashboard-start/registry";
+import { organizationRouteReads } from "@executor-js/hosted-web/organization";
 import { createRouter } from "@tanstack/react-router";
 import { serverDocument } from "./document.ts";
 import { signInInitialValues } from "../contracts/auth.ts";
@@ -19,13 +20,14 @@ export const getRouter = () => {
       routeTree,
       defaultPreload: "intent",
       defaultPendingComponent: PagePending,
-      defaultPendingMs: 100,
+      defaultPendingMs: 0,
       defaultPendingMinMs: 0,
       defaultErrorComponent: PageError,
       scrollRestoration: true,
       scrollToTopSelectors: ["main"],
       Wrap,
     }),
+    organizationRouteReads,
   );
 };
 
