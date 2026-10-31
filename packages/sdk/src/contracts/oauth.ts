@@ -19,6 +19,7 @@ import {
   OAuthTokenResponse,
   PlacementHeaderName,
 } from "apps/contracts";
+import { AccountIdentityId } from "./account-identity.ts";
 import { Account, type AccountFieldsInvalid } from "./account.ts";
 export { OAuthClientAuth } from "apps/contracts";
 import type { HttpClient } from "effect/http";
@@ -1303,6 +1304,7 @@ export type OAuthAttemptId = typeof OAuthAttemptId.Type;
 
 /** Validated subset of authorization-server metadata used for saved grants. */
 export const OAuthTokenServer = Schema.Struct({
+  userinfo_endpoint: Schema.optionalKey(HttpUrl),
   /** Microsoft identity platform's multi-tenant metadata publishes a `{tenantid}` template here. */
   issuer: HttpUrl,
   /**
@@ -1454,6 +1456,9 @@ const attemptFields = {
   state: Schema.NonEmptyString,
   verifier: Schema.NonEmptyString,
   response: JsonObject,
+  /** The identity declaration and requested access frozen before the browser leaves. */
+  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
+  requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
 };
 /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
 export const OAuthAttempt = Schema.Struct({
@@ -1508,10 +1513,20 @@ const grantFields = {
  * current generation, since every sign-in since then records it.
  */
 const grantGeneration = Schema.optional(Schema.Int);
+/** Authenticated provenance, kept encrypted with the actual grant rather than inferred from labels. */
+const reusableGrant = {
+  authorizationClient: Schema.optionalKey(Schema.NonEmptyString),
+  identityId: Schema.optionalKey(AccountIdentityId),
+  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, subject: Schema.NonEmptyString })),
+  requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** Unknown on legacy grants and when the service did not confirm its granted scopes. */
+  grantedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+};
 /** Private renewal context; machine grants retain scopes and exchange client credentials again. */
 export const OAuthGrant = Schema.Union([
   Schema.Struct({
     ...grantFields,
+    ...reusableGrant,
     grant: Schema.optionalKey(Schema.Literal("authorization_code")),
     server: OAuthServer,
     client: OAuthRegistration,
@@ -1546,6 +1561,7 @@ export const OAuthGrant = Schema.Union([
    */
   Schema.Struct({
     grant: Schema.Literal("authorization_code"),
+    ...reusableGrant,
     firstParty: FirstPartyOAuthClientId,
     response: JsonObject,
     expiresAt: Schema.optional(Schema.Number),

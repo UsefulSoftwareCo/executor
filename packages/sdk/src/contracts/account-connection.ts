@@ -167,6 +167,20 @@ export const StartConnectionOAuth = Schema.Struct({
   redirectUri: Schema.optional(HttpUrl),
   client: Schema.optional(OAuthClientChoice),
 });
+/** Reuse the selected account's actual grant, retaining its OAuth client. Hosts authorize both resources. */
+export const ReuseConnectionOAuth = Schema.Struct({
+  ...GetAccountConnection.fields,
+  account: AccountId,
+  method: AuthMethodName,
+  label: Schema.optional(Schema.NonEmptyString),
+});
+export const OAuthGrantReuseResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+  Schema.Struct({
+    status: Schema.Literal("consent-required"),
+    reason: Schema.Literals(["identity", "placement", "client", "resource", "scopes", "busy"]),
+  }),
+]);
 /** Both request identity and OAuth state must match before exchanging a code. */
 export const CompleteConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
@@ -238,6 +252,16 @@ const saveErrors = [
 ] as const;
 /** SDK account setup surface, independent of any dashboard, MCP transport or browser session. */
 export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
+  .add(
+    HttpApiEndpoint.post("reuseOAuth", "/v1/account-connections/oauth/reuse", {
+      payload: ReuseConnectionOAuth,
+      success: OAuthGrantReuseResult,
+      error: [...saveErrors, OAuthSetupFailed],
+    }).annotate(
+      OpenApi.Description,
+      "Use one verified account's existing OAuth grant for a pending connection. Keeps the source's exact client and resource. Completes only when one real grant covers the target scopes and both bindings have the same durable placement; otherwise returns consent-required without saving an account or link. Hosts must authorize use of the source and completion of the target.",
+    ),
+  )
   .add(
     HttpApiEndpoint.post("create", "/v1/account-connections", {
       payload: CreateAccountConnection,

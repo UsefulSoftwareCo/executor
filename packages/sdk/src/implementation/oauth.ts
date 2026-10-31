@@ -118,6 +118,8 @@ import {
   type OAuthProtocolFailed,
 } from "./oauth-protocol.ts";
 import { defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
+import { accountGrantId, accountIdentity, recordAccountIdentity } from "./account-identities.ts";
+import { grantBindings, releaseAccountGrant } from "./oauth-grant-bindings.ts";
 import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
 
 /**
@@ -627,9 +629,9 @@ export const makeOAuth = (
    * held (§6). Scopes are whitespace-delimited, and also split on the server's
    * `grantedScopeSeparator`, such as GitHub's `repo,gist`; never on the request's `scopeSeparator`.
    */
-  const grantedScopes = (client: FirstPartyOAuthClient, scope: string | undefined) => {
+  const grantedScopes = (client: FirstPartyOAuthClient | undefined, scope: string | undefined) => {
     if (scope === undefined) return undefined;
-    const separator = client.server.grantedScopeSeparator;
+    const separator = client?.server.grantedScopeSeparator;
     return scope
       .split(/\s+/u)
       .flatMap((part) => (separator === undefined ? [part] : part.split(separator)))
@@ -1493,16 +1495,25 @@ export const makeOAuth = (
       const choice = input.client;
       const scope: ClientScope = { ...input, issuer: resolved.issuer };
       const automatic = choice === undefined || Schema.is(OAuthAutomaticClient)(choice);
+      const binding =
+        existing === undefined ? undefined : yield* ownedAccount(db, { account: existing.id });
       const row =
         existing === undefined || !automatic
           ? null
           : yield* query(() =>
-              db.findFirst("oauthGrants", { where: (b) => b("id", "=", existing.id) }),
+              db.findFirst("oauthGrants", {
+                where: (b) =>
+                  b("id", "=", binding === undefined ? existing.id : accountGrantId(binding)),
+              }),
             );
       const previous =
         existing === undefined || row === null
           ? undefined
-          : yield* decrypt(existing.id, row.encrypted, OAuthGrant);
+          : yield* decrypt(
+              binding === undefined ? existing.id : accountGrantId(binding),
+              row.encrypted,
+              OAuthGrant,
+            );
       // The operator's client that issued the grant this reconnect replaces, offered again even
       // when it is unlisted.
       const reconnecting =
@@ -1627,6 +1638,7 @@ export const makeOAuth = (
           chosen.firstParty,
           resolved.redirect,
           method.response,
+          "identity" in method ? method.identity : undefined,
         );
       const stored = chosen.kind === "stored" ? chosen.use : undefined;
       const save = "save" in chosen && chosen.save === true;
@@ -1739,6 +1751,10 @@ export const makeOAuth = (
         ...(stored === undefined ? {} : { storedClient: stored }),
         ...(save ? { saveClient: true } : {}),
         response: method.response,
+        ...(!("identity" in method) || method.identity === undefined
+          ? {}
+          : { identity: method.identity }),
+        requestedScopes: discovered.scopes,
       });
       return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
     }).pipe(Effect.withSpan("oauth.beginOAuth"));
@@ -1790,6 +1806,7 @@ export const makeOAuth = (
     firstParty: { readonly client: FirstPartyOAuthClient; readonly scopes: readonly string[] },
     redirect: URL | undefined,
     response: JsonObject,
+    identity: typeof OAuthAttempt.Type.identity,
   ) =>
     Effect.gen(function* () {
       if (protocol === undefined) return yield* new OAuthClientUnavailable(input);
@@ -1818,6 +1835,8 @@ export const makeOAuth = (
         ...(existing === undefined ? {} : { reconnect: true }),
         firstParty: firstParty.client.id,
         response,
+        ...(identity === undefined ? {} : { identity }),
+        requestedScopes: firstParty.scopes,
       });
       return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
     }).pipe(Effect.withSpan("oauth.beginFirstParty"));
@@ -2157,8 +2176,34 @@ export const makeOAuth = (
             }),
         ),
       );
+      const verified =
+        attempt.identity === undefined
+          ? undefined
+          : yield* protocol.identify(attempt.identity, operating.server, tokens.access_token).pipe(
+              Effect.mapError(
+                () =>
+                  new OAuthCompletionFailed({
+                    reason: "incompatible_response",
+                    cause: { stage: "exchange" },
+                  }),
+              ),
+            );
       const completedAt = yield* Clock.currentTimeMillis;
       const issued = {
+        authorizationClient: operating.client.client_id,
+        ...(verified === undefined
+          ? {}
+          : { identity: { issuer: verified.issuer, subject: verified.subject } }),
+        ...(attempt.requestedScopes === undefined
+          ? {}
+          : { requestedScopes: attempt.requestedScopes }),
+        ...(tokens.scope === undefined
+          ? {}
+          : {
+              grantedScopes: isFirstPartyAttempt(attempt)
+                ? grantedScopes(firstPartyClients.get(attempt.firstParty), tokens.scope)
+                : tokens.scope.split(/\s+/u).filter(Boolean),
+            }),
         response: attempt.response,
         fields,
         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
@@ -2260,7 +2305,12 @@ export const makeOAuth = (
             yield* query(() =>
               tx.updateMany("accounts", {
                 where: (b) => b("id", "=", target.id),
-                set: { encryptedCredentials, credentialGeneration: generation },
+                set: {
+                  encryptedCredentials,
+                  credentialGeneration: generation,
+                  identityId: null,
+                  oauthGrantId: null,
+                },
               }),
             );
             yield* resumeWaitingSources(tx, target.id);
@@ -2270,6 +2320,7 @@ export const makeOAuth = (
             );
             if (lifecycle) yield* lifecycle.accountCreated(saved);
           }
+          if (target?.oauthGrantId != null) yield* releaseAccountGrant(tx, target);
           const grant = {
             encrypted: yield* grantOf(generation),
             status: ready,
@@ -2282,6 +2333,16 @@ export const makeOAuth = (
               update: grant,
             }),
           );
+          if (verified !== undefined) {
+            yield* recordAccountIdentity(
+              tx,
+              crypto,
+              lifecycle,
+              { id: saved.id, owner: saved.owner, credentialGeneration: generation },
+              verified,
+              new Date(completedAt),
+            );
+          }
           yield* query(() =>
             tx.updateMany("oauthAttempts", {
               where: (b) => b("id", "=", id),
@@ -2344,6 +2405,12 @@ export const makeOAuth = (
       /** Record why the grant cannot be used on this span; only fixed vocabularies and codes. */
       const reconnect = (reason: ReconnectReason, cause?: OAuthFailureCause) =>
         reconnectRequired("oauth.resolve", account.id, reason, cause);
+      let grantId = accountGrantId(account);
+      if (
+        account.oauthGrantId !== null &&
+        (yield* accountIdentity(db, account, lifecycle)) === undefined
+      )
+        return yield* reconnect("grant_unusable");
       // Set once this call has waited for another renewal of the grant. The token it then reads
       // is that renewal's result, and is used until it expires rather than renewed ahead again.
       let awaited = false;
@@ -2351,16 +2418,29 @@ export const makeOAuth = (
       while (true) {
         const ahead =
           readAhead !== undefined && !awaited && !resolution.contested
-            ? readAhead.get(account.id)
+            ? readAhead.get(grantId)
             : undefined;
-        readAhead?.delete(account.id);
+        readAhead?.delete(grantId);
         const row: GrantRow | null =
           ahead !== undefined
             ? ahead
             : yield* query(() =>
-                db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+                db.findFirst("oauthGrants", { where: (b) => b("id", "=", grantId) }),
               );
-        if (row === null) return yield* reconnect("grant_missing");
+        if (row === null) {
+          // Promotion may have moved a legacy grant after this invocation read its account.
+          const latest = yield* ownedAccount(db, {
+            account: account.id,
+            owner: account.owner,
+          }).pipe(Effect.catchTag("AccountNotFound", () => Effect.fail(new StorageError())));
+          const moved = accountGrantId(latest);
+          if (moved !== grantId && latest.credentialGeneration === account.credentialGeneration) {
+            grantId = moved;
+            readAhead?.clear();
+            continue;
+          }
+          return yield* reconnect("grant_missing");
+        }
         if (row.status === "reconnect") return yield* reconnect("grant_unusable");
         const now = yield* Clock.currentTimeMillis;
         // A renewal holds the grant. Its row still carries the grant it started from.
@@ -2378,7 +2458,30 @@ export const makeOAuth = (
         // An unconfirmed claim was abandoned by a process that stopped before saving a result.
         // Renew again from the saved grant, as it would have. See renewalLease.
         const abandoned = claimed;
-        const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
+        const grant = yield* decrypt(grantId, row.encrypted, OAuthGrant);
+        if (account.oauthGrantId !== null) {
+          const method = provider.auth[account.method];
+          const scopes = method?.type === "oauth2" ? (method.scopes ?? []) : [];
+          const requiredScopes =
+            scopes.length === 0 && isFirstPartyGrant(grant)
+              ? (firstPartyClients.get(grant.firstParty)?.defaultScopes ?? [])
+              : scopes;
+          if (
+            isFirstPartyGrant(grant) &&
+            grant.authorizationClient !== firstPartyClients.get(grant.firstParty)?.clientId
+          )
+            return yield* reconnect("grant_unusable");
+          if (
+            grant.grant === "client_credentials" ||
+            method?.type !== "oauth2" ||
+            method.grant === "client_credentials" ||
+            grant.identity === undefined ||
+            grant.identityId !== account.identityId ||
+            grant.grantedScopes === undefined ||
+            !requiredScopes.every((scope) => grant.grantedScopes?.includes(scope))
+          )
+            return yield* reconnect("grant_unusable");
+        }
         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
         // The service refused exactly the credentials this grant still holds. A grant another
         // call has renewed since then holds different ones, which this call uses instead.
@@ -2387,7 +2490,10 @@ export const makeOAuth = (
         const held = (fields: JsonObject): AccountCredential => ({
           fields: Redacted.make(fields),
           firstParty: isFirstPartyGrant(grant) ? grant.firstParty : undefined,
-          generation: grant.generation ?? account.credentialGeneration,
+          generation:
+            grantId === account.id
+              ? (grant.generation ?? account.credentialGeneration)
+              : account.credentialGeneration,
         });
         if (refused && !renewable) return held(grant.fields);
         if (
@@ -2462,12 +2568,12 @@ export const makeOAuth = (
             const settled = yield* transaction(db, (tx) =>
               Effect.gen(function* () {
                 const current = yield* query(() =>
-                  tx.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+                  tx.findFirst("oauthGrants", { where: (b) => b("id", "=", grantId) }),
                 );
                 if (current?.status !== claim) return false;
                 yield* query(() =>
                   tx.updateMany("oauthGrants", {
-                    where: (b) => b.and(b("id", "=", account.id), b("status", "=", claim)),
+                    where: (b) => b.and(b("id", "=", grantId), b("status", "=", claim)),
                     // Anything but a refusal releases the claim with the grant and its refresh
                     // token unchanged, so a later call can renew it.
                     set:
@@ -2539,40 +2645,44 @@ export const makeOAuth = (
             decode(OAuthGrant, {
               ...Struct.omit(base, ["expiresAt"]),
               fields,
+              ...(tokens.scope === undefined || base.grant === "client_credentials"
+                ? {}
+                : {
+                    grantedScopes: isFirstPartyGrant(base)
+                      ? grantedScopes(firstPartyClients.get(base.firstParty), tokens.scope)
+                      : tokens.scope.split(/\s+/u).filter(Boolean),
+                  }),
               ...(base.grant === "client_credentials" || refreshToken === undefined
                 ? {}
                 : { refreshToken }),
               ...expiry(updatedAt.getTime(), tokens.expires_in),
-            }).pipe(Effect.flatMap((updated) => encrypt(account.id, updated)));
+            }).pipe(Effect.flatMap((updated) => encrypt(grantId, updated)));
           const renewed = yield* renewedFrom(grant);
           const encryptedCredentials = yield* encrypt(account.id, fields);
           const ready = `ready_${yield* nextId}`;
           const committed = yield* transaction(db, (tx) =>
             Effect.gen(function* () {
-              const saved = yield* query(() =>
-                tx.findFirst("accounts", { where: (b) => b("id", "=", account.id) }),
-              );
-              if (saved === null) return false;
+              if ((yield* grantBindings(tx, grantId)).length === 0) return false;
               // Only the tokens are this renewal's. The grant is written on the condition that it
               // still holds what was read, and read again otherwise, so a write that kept the
               // claim is carried forward rather than replaced by the grant this renewal started
               // from, however the two interleave.
               while (true) {
                 const current = yield* query(() =>
-                  tx.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+                  tx.findFirst("oauthGrants", { where: (b) => b("id", "=", grantId) }),
                 );
                 if (current?.status !== claim) return false;
                 const encrypted =
                   Base64.encode(current.encrypted) === Base64.encode(row.encrypted)
                     ? renewed
-                    : yield* decrypt(account.id, current.encrypted, OAuthGrant).pipe(
+                    : yield* decrypt(grantId, current.encrypted, OAuthGrant).pipe(
                         Effect.flatMap(renewedFrom),
                       );
                 yield* query(() =>
                   tx.updateMany("oauthGrants", {
                     where: (b) =>
                       b.and(
-                        b("id", "=", account.id),
+                        b("id", "=", grantId),
                         b("status", "=", claim),
                         b("encrypted", "=", current.encrypted),
                       ),
@@ -2580,16 +2690,17 @@ export const makeOAuth = (
                   }),
                 );
                 const written = yield* query(() =>
-                  tx.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+                  tx.findFirst("oauthGrants", { where: (b) => b("id", "=", grantId) }),
                 );
                 if (written?.status === ready) break;
               }
-              yield* query(() =>
-                tx.updateMany("accounts", {
-                  where: (b) => b("id", "=", account.id),
-                  set: { encryptedCredentials },
-                }),
-              );
+              if (grantId === account.id)
+                yield* query(() =>
+                  tx.updateMany("accounts", {
+                    where: (b) => b.and(b("id", "=", account.id), b("oauthGrantId", "is", null)),
+                    set: { encryptedCredentials },
+                  }),
+                );
               return true;
             }),
           );
@@ -2598,7 +2709,8 @@ export const makeOAuth = (
             return undefined;
           }
           yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
-          return held(fields);
+          // Shared bindings must recheck the saved grant when refresh changes its scopes.
+          return account.oauthGrantId === null ? held(fields) : undefined;
         });
         // From claiming the grant to settling it, the renewal cannot be interrupted: a caller that
         // times out or disconnects would otherwise abandon a live claim, and with it any rotated
@@ -2611,12 +2723,12 @@ export const makeOAuth = (
             const claimedAt = new Date(yield* Clock.currentTimeMillis);
             yield* query(() =>
               db.updateMany("oauthGrants", {
-                where: (b) => b.and(b("id", "=", account.id), b("status", "=", row.status)),
+                where: (b) => b.and(b("id", "=", grantId), b("status", "=", row.status)),
                 set: { status: claim, updatedAt: claimedAt },
               }),
             );
             const current = yield* query(() =>
-              db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+              db.findFirst("oauthGrants", { where: (b) => b("id", "=", grantId) }),
             );
             if (current?.status !== claim) return undefined;
             heldClaims.add(claim);
@@ -2637,7 +2749,7 @@ export const makeOAuth = (
                 Effect.flatMap((confirmedAt) =>
                   query(() =>
                     db.updateMany("oauthGrants", {
-                      where: (b) => b.and(b("id", "=", account.id), b("status", "=", claim)),
+                      where: (b) => b.and(b("id", "=", grantId), b("status", "=", claim)),
                       set: { updatedAt: new Date(confirmedAt) },
                     }),
                   ),
@@ -2793,7 +2905,7 @@ export const makeOAuth = (
         ...new Set(
           checks
             .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
-            .map(({ account }) => account.id),
+            .map(({ account }) => accountGrantId(account)),
         ),
       ];
       const rows =
@@ -2809,14 +2921,14 @@ export const makeOAuth = (
         if (provider.auth[account.method]?.type === "secrets") continue;
         const reconnect = (reason: ReconnectReason) =>
           reconnectRequired("oauth.usable", account.id, reason);
-        const row = grants.get(account.id);
+        const row = grants.get(accountGrantId(account));
         if (row === undefined) return yield* reconnect("grant_missing");
         if (row.status === "reconnect") return yield* reconnect("grant_unusable");
         // A renewal in progress, or one a stopped process abandoned, is settled by the next live
         // resolve; its outcome is not known until then.
         if (!row.status.startsWith("ready_")) continue;
         const now = yield* Clock.currentTimeMillis;
-        const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
+        const grant = yield* decrypt(accountGrantId(account), row.encrypted, OAuthGrant);
         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
         if (
           grant.expiresAt === undefined ||
@@ -2987,7 +3099,7 @@ export const makeOAuth = (
     Effect.gen(function* () {
       const ids = selected
         .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
-        .map(({ account }) => account.id);
+        .map(({ account }) => accountGrantId(account));
       if (ids.length === 0) return undefined;
       const rows = yield* query(() =>
         db.findMany("oauthGrants", { where: (b) => b("id", "in", ids) }),
@@ -3119,11 +3231,14 @@ export const makeOAuth = (
   const revocation = (account: AccountId) =>
     Effect.gen(function* () {
       if (protocol === undefined) return { revocation: "manual" as const };
+      const binding = yield* ownedAccount(db, { account });
+      const grantId = accountGrantId(binding);
+      if ((yield* grantBindings(db, grantId)).length > 1) return { revocation: "manual" as const };
       const row = yield* query(() =>
-        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
+        db.findFirst("oauthGrants", { where: (b) => b("id", "=", grantId) }),
       );
       if (row === null) return { revocation: "manual" as const };
-      const grant = yield* operatingGrant(yield* decrypt(account, row.encrypted, OAuthGrant));
+      const grant = yield* operatingGrant(yield* decrypt(grantId, row.encrypted, OAuthGrant));
       if (grant === undefined) return { revocation: "manual" as const };
       const accessToken = grant.fields["access_token"];
       const token =

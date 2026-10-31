@@ -86,9 +86,10 @@ export { protocol8 } from "./protocols/8.ts";
 export { protocol9 } from "./protocols/9.ts";
 export { protocol10 } from "./protocols/10.ts";
 export { protocol11 } from "./protocols/11.ts";
+export { protocol13 } from "./protocols/13.ts";
 export { protocol12 } from "./protocols/12.ts";
 export {
-  current as protocol13,
+  current as protocol23,
   AccountCheckCommand,
   CredentialHost,
   MigrateCommand,

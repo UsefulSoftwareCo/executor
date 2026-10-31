@@ -43,6 +43,9 @@ export const executorHandlers = (executor: Executor) =>
         .handle("update", ({ params, query, payload }) =>
           executor.accounts.update({ ...params, ...query, ...payload }),
         )
+        .handle("identify", ({ params, query }) =>
+          executor.accounts.identify({ ...params, ...query }),
+        )
         .handle("provider", ({ params, query }) =>
           executor.accounts.provider({ ...params, ...query }),
         )
@@ -70,6 +73,7 @@ export const executorHandlers = (executor: Executor) =>
           executor.accountConnections.cancel({ ...params, ...query }),
         )
         .handle("submit", ({ payload }) => executor.accountConnections.submit(payload))
+        .handle("reuseOAuth", ({ payload }) => executor.accountConnections.reuseOAuth(payload))
         .handle("oauthSetup", ({ payload }) => executor.accountConnections.oauthSetup(payload))
         .handle("startOAuth", ({ payload }) => executor.accountConnections.startOAuth(payload))
         .handle("findOAuth", ({ payload }) => executor.accountConnections.findOAuth(payload))

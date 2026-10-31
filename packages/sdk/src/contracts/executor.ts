@@ -80,6 +80,14 @@ export interface AccountConnectionCompletion {
 /** Product metadata participates in the resource transaction; hooks must perform no external I/O. */
 export interface ResourceLifecycle {
   /**
+   * The saved account's placement, resolved from product state, never from the current actor.
+   * Equal placements may group verified identities; null keeps the account independent.
+   * Called inside resource transactions. Hosts with access policies must supply this hook.
+   */
+  readonly accountIdentityPlacement?: (
+    account: Pick<Account, "id" | "owner">,
+  ) => Effect.Effect<string | null, StorageError>;
+  /**
    * The user links a subject has to an app whose accounts they may still use, oldest link first,
    * each naming its requirement, for background work: each run resolves its actor's accounts here,
    * and a plain requirement uses the newest. Unknown or inaccessible accounts are omitted, never

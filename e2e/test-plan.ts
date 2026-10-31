@@ -104,6 +104,50 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = plan({
+  accountIdentityUpgrade: {
+    file: "account-identities.spec.ts",
+    legacyStorage: true,
+    title:
+      "Additive identity storage upgrades retained grants and IDs and survives repeated startup",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The SDK storage migration is shared; this fixture also uses the local management API.",
+      ),
+      cloud: na("The scenario stops and upgrades one runner-owned database."),
+    },
+  },
+
+  accountIdentityGrouping: {
+    file: "account-identities.spec.ts",
+    title: "Verified subjects group five app bindings without merging email addresses or issuers",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Identity grouping uses the shared SDK; hosted policy is covered separately.",
+      ),
+      cloud: na("The synthetic identity issuer listens on loopback."),
+    },
+  },
+  accountGrantReuse: {
+    file: "account-identities.spec.ts",
+    title: "Covering grants share one refresh lock and survive reconnecting or deleting a binding",
+    targets: {
+      local: scheduled,
+      "self-host": na("Shared grant primitives use the same SDK on every host."),
+      cloud: na("The synthetic identity issuer listens on loopback."),
+    },
+  },
+  accountGrantRefusal: {
+    file: "account-identities.spec.ts",
+    title: "Separate grants never combine scopes and failed consent keeps working accounts intact",
+    targets: {
+      local: scheduled,
+      "self-host": na("Grant coverage and callback rollback use the same SDK on every host."),
+      cloud: na("The synthetic identity issuer listens on loopback."),
+    },
+  },
+
   cloudRoleHostRoutes: {
     fixtures: "actors",
     file: "cloud-role-hosts.spec.ts",

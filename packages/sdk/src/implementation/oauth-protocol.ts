@@ -1477,6 +1477,52 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     });
 
   return {
+    /** UserInfo is authenticated by the access token and pinned to verified issuer metadata. */
+    identify: (
+      identity: { readonly issuer: string; readonly name: string },
+      server: OAuthServer,
+      accessToken: string,
+    ) =>
+      Effect.gen(function* () {
+        const issuer = yield* secureUrl(identity.issuer);
+        const discovered = yield* discoverIssuer(issuer);
+        if ("missing" in discovered) return yield* discovered.missing;
+        const verified = discovered.server;
+        if (
+          verified.issuer !== identity.issuer ||
+          verified.authorization_endpoint !== server.authorization_endpoint ||
+          verified.token_endpoint !== server.token_endpoint ||
+          verified.userinfo_endpoint === undefined
+        )
+          return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
+        const endpoint = yield* secureUrl(verified.userinfo_endpoint);
+        const profile = yield* request(async (settings) => {
+          const response = await settings[oauth.customFetch](endpoint.href, {
+            method: "GET",
+            body: undefined,
+            redirect: "manual",
+            signal: settings.signal,
+            headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
+          });
+          if (response.status !== 200)
+            throw new OAuthProtocolFailed({ reason: "invalid_response" });
+          return response.json();
+        });
+        const user = yield* decode(
+          Schema.Struct({
+            sub: Schema.NonEmptyString,
+            name: Schema.optionalKey(Schema.NonEmptyString),
+            email: Schema.optionalKey(Schema.NonEmptyString),
+          }),
+          profile,
+        );
+        return {
+          issuer: identity.issuer,
+          subject: user.sub,
+          name: identity.name,
+          label: user.email ?? user.name ?? identity.name,
+        };
+      }).pipe(Effect.withSpan("oauth.identify")),
     discover: (method: OAuthMethod) =>
       Effect.gen(function* () {
         const resolved = yield* Effect.gen(function* () {

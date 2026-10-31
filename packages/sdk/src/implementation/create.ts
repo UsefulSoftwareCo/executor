@@ -41,6 +41,8 @@ import { toEffectRuntime } from "./runtime.ts";
 import { validateFields } from "./provider.ts";
 import { database } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
+import { makeAccountIdentification } from "./account-identification.ts";
+import { makeOAuthGrantReuse } from "./oauth-grant-reuse.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
 import { makeListings } from "./listings.ts";
 import { makeToolSearch } from "./tool-search.ts";
@@ -265,6 +267,7 @@ export const createExecutor = (
       accounts: {
         ...accountOperations,
         ...accountHealth,
+        identify: makeAccountIdentification(db, credentials, crypto, options.oauth, options.hooks),
         revocation: (input) =>
           storedAccount(db, input.account, input.owner).pipe(
             Effect.flatMap((account) => oauth.revocation(account.id)),
@@ -275,6 +278,7 @@ export const createExecutor = (
       accountConnections: {
         ...connections,
         ...oauth.connections,
+        reuseOAuth: makeOAuthGrantReuse(db, credentials, crypto, options.oauth, options.hooks),
         findOAuth: (input) =>
           Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
             Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),

@@ -627,6 +627,7 @@ export const localResourceLifecycle = (
   executor: Effect.Effect<Executor>,
   sql: SqlClient.SqlClient,
 ): ResourceLifecycle => ({
+  accountIdentityPlacement: (account) => Effect.succeed(account.owner),
   userLinks: (input) =>
     Effect.gen(function* () {
       const sdk = yield* executor;

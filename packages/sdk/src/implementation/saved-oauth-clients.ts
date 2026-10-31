@@ -137,44 +137,48 @@ export const makeSavedOAuthClients = (
 
   /** Who holds each client ID: every account whose grant signed in with it. */
   const holders = Effect.gen(function* () {
-    const accounts = new Map(
-      (yield* query(() =>
-        db.findMany("accounts", { select: ["id", "owner", "provider", "method"] }),
-      )).map((account) => [account.id, account] as const),
+    const accounts = yield* query(() =>
+      db.findMany("accounts", { select: ["id", "owner", "provider", "method", "oauthGrantId"] }),
     );
     const byClient = new Map<string, Holder[]>();
     for (const row of yield* query(() => db.findMany("oauthGrants", {}))) {
-      const account = accounts.get(AccountId.make(row.id));
-      if (account === undefined) continue;
-      const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant).pipe(Effect.option);
+      const bindings = accounts.filter(
+        (account) => (account.oauthGrantId ?? account.id) === row.id,
+      );
+      if (bindings.length === 0) continue;
+      const grant = yield* decrypt(AccountId.make(row.id), row.encrypted, OAuthGrant).pipe(
+        Effect.option,
+      );
       if (Option.isNone(grant) || isFirstPartyGrant(grant.value)) continue;
       const { client, server, fields } = grant.value;
       const list = byClient.get(client.client_id) ?? [];
-      list.push({
-        account: account.id,
-        owner: account.owner,
-        provider: account.provider,
-        secret: client.token_endpoint_auth_method === "none" ? undefined : client.client_secret,
-        machine: grant.value.grant === "client_credentials",
-        method: account.method,
-        issuer: server.issuer,
-        identity: oauthClientIssuer(server),
-        oauthClient: "oauthClient" in grant.value ? grant.value.oauthClient : undefined,
-        metadata: {
-          ...(server.token_endpoint_auth_methods_supported === undefined
-            ? {}
-            : {
-                token_endpoint_auth_methods_supported: server.token_endpoint_auth_methods_supported,
-              }),
-          ...(server.grant_types_supported === undefined
-            ? {}
-            : { grant_types_supported: server.grant_types_supported }),
-        },
-        granted:
-          typeof fields.scope === "string"
-            ? fields.scope.split(/[\s,]+/).filter((scope) => scope !== "")
-            : undefined,
-      });
+      for (const account of bindings)
+        list.push({
+          account: account.id,
+          owner: account.owner,
+          provider: account.provider,
+          secret: client.token_endpoint_auth_method === "none" ? undefined : client.client_secret,
+          machine: grant.value.grant === "client_credentials",
+          method: account.method,
+          issuer: server.issuer,
+          identity: oauthClientIssuer(server),
+          oauthClient: "oauthClient" in grant.value ? grant.value.oauthClient : undefined,
+          metadata: {
+            ...(server.token_endpoint_auth_methods_supported === undefined
+              ? {}
+              : {
+                  token_endpoint_auth_methods_supported:
+                    server.token_endpoint_auth_methods_supported,
+                }),
+            ...(server.grant_types_supported === undefined
+              ? {}
+              : { grant_types_supported: server.grant_types_supported }),
+          },
+          granted:
+            typeof fields.scope === "string"
+              ? fields.scope.split(/[\s,]+/).filter((scope) => scope !== "")
+              : undefined,
+        });
       byClient.set(client.client_id, list);
     }
     return byClient;

@@ -57,7 +57,7 @@ export interface AppProtocol {
   readonly sealedCredentials: boolean;
 }
 
-/** Protocol 13 is the host's current protocol, so its messages need no conversion. */
+/** Identity declarations add no invocation command; both scoped protocols use the same adapter. */
 const protocol13: AppProtocol = {
   version: 13,
   workerEntry: appBridge,
@@ -70,6 +70,8 @@ const protocol13: AppProtocol = {
   concurrentData: true,
   sealedCredentials: true,
 };
+
+const protocol23: AppProtocol = { ...protocol13, version: 23, nodeEntry: nodeAppEntry(23) };
 
 /**
  * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
@@ -272,6 +274,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol11,
     protocol12,
     protocol13,
+    protocol23,
   ].map((protocol) => [protocol.version, protocol]),
 );
 
