@@ -53,6 +53,8 @@ export const AccountRequirement = Schema.Struct({
   provider: ProviderId,
   definition: ProviderDefinition,
   cardinality: Schema.Literals(["one", "many"]),
+  /** Only app-scope collections may opt in to member contributions. */
+  contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   /** This version's provider defines an account check for the slot. */
   health: Schema.optionalKey(Schema.Literal(true)),
 });

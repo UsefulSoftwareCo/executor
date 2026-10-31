@@ -1,3 +1,4 @@
+import { visibleAccountStatuses } from "./account-identity.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
 import { fullAuthority } from "@executor-js/authorization";
@@ -590,7 +591,14 @@ export const hostedAppUi = <R = never>(
           Effect.mapError(unavailable),
         ),
       );
-      const problems = accountProblems(current.app, resolution.accounts, new Map(found.flat()));
+      const statuses = yield* visibleAccountStatuses(found.flat().map(([, entry]) => entry)).pipe(
+        asCaller,
+      );
+      const problems = accountProblems(
+        current.app,
+        resolution.accounts,
+        new Map(statuses.map((entry) => [entry.account.id, entry])),
+      );
       if (problems.length === 0) return undefined;
       return { app: current.app.name, problems, fix: fix.href };
     });

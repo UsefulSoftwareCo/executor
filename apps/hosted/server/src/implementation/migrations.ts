@@ -6,7 +6,7 @@ import { makeExecutorStorage } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import * as Migrator from "effect/sql/Migrator";
-import { migrateProvisioning } from "./provisioning-schema.ts";
+import { migrateProvisioning, migrateContributedDepartures } from "./provisioning-schema.ts";
 import { migrateGroups } from "./group-schema.ts";
 import { migrateResourceAccess } from "./resource-schema.ts";
 import { migrateOAuthClientAccess } from "./oauth-client-schema.ts";
@@ -109,6 +109,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   // App and user account links; profiles become user links. Runs after SDK 4.0.13, which keeps
   // the profiles.
   "9_app_account_links": migrateAppAccountLinks,
+  "10_contributed_departures": migrateContributedDepartures,
 });
 
 /**

@@ -8,6 +8,7 @@ import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { ScheduleWakeup } from "@executor-js/hosted-server";
 import {
   provision,
+  recoverContributedDepartures,
   provisionTeam,
   ProvisioningFailed,
   type ProvisioningServices,
@@ -150,6 +151,7 @@ export const dispatchProvisioning = <R>(
     const environment = yield* Cloudflare.WorkerEnvironment;
     const binding = yield* Schema.decodeUnknownEffect(NativeProvisioning)(environment.Provisioning);
     const sql = yield* Effect.flatten(GroupDatabase);
+    yield* recoverContributedDepartures.pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const jobs =
       // Claim a short dispatch lease in one statement. Concurrent request finalizers
       // must not each submit the same queued jobs to the provider. A lost dispatch

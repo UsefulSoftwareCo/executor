@@ -1,8 +1,9 @@
 import { use, useContext, useState } from "react";
-import { RegistryContext, useAtomSet, useAtomMount } from "@effect/atom-react";
-import { AtomRegistry } from "effect/reactivity";
+import { RegistryContext, useAtomSet, useAtomMount, useAtomValue } from "@effect/atom-react";
+import { AsyncResult, AtomRegistry } from "effect/reactivity";
 import { Effect, Option } from "effect";
 import { useQuery } from "@executor-js/ui/dashboard/context";
+import { sessionAtom } from "../../contracts/auth.ts";
 import { appAccessAtom } from "../../contracts/resource-access.ts";
 import type { Provider, AccountRequirement, AccountScope, App } from "@executor-js/sdk";
 import {
@@ -70,6 +71,7 @@ export function AppAccounts({
   const { organization } = useOrganizationRoute();
   const { data } = useQuery(appAccessAtom({ organization, app: app.id }));
   const canUse = Option.isSome(data) && data.value.canUse;
+  const viewer = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)))?.user.id;
   const deployed = app.activeVersion !== null;
   const registry = useContext(RegistryContext);
   const revalidate = (account: AccountSummary["id"]) => {
@@ -121,26 +123,40 @@ export function AppAccounts({
     connecting,
     onUnlinked: (account) => void unused.check(account),
   });
+  const removable = (
+    links: readonly RequirementLink<AccountSummary>[],
+    slot: string,
+    account: AccountSummary,
+  ) =>
+    links.find((link) => link.requirement === slot && link.account.id === account.id)?.canRemove !==
+    false;
   const scopeAccounts = (
     scope: AccountScope,
     links: readonly RequirementLink<AccountSummary>[],
     editable: boolean,
     readOnly: string,
+    contribute = false,
   ): ScopeAccounts<HostedError> =>
-    editable
+    editable || contribute
       ? {
           links,
-          edit: editing(scope),
+          viewer,
+          ...(editable ? { edit: editing(scope) } : { contribute: editing(scope), readOnly }),
           revalidate,
           accountMenu: (account, slot, requirement, linked) =>
-            linked && (
+            linked &&
+            (usable(account) || removable(links, slot, account)) && (
               <LinkedAccountMenu
                 label={account.label || "Unnamed account"}
-                unlink={unlinkAccountAtom({
-                  ...target(scope),
-                  requirement: slot,
-                  account: account.id,
-                })}
+                unlink={
+                  removable(links, slot, account)
+                    ? unlinkAccountAtom({
+                        ...target(scope),
+                        requirement: slot,
+                        account: account.id,
+                      })
+                    : undefined
+                }
                 Failure={HostedFailure}
                 onUnlinked={() => void unused.check(account.id)}
               >
@@ -173,12 +189,13 @@ export function AppAccounts({
               </Button>
             ),
         }
-      : { links, readOnly };
+      : { links, viewer, readOnly };
   const notDeployed = "Deploy this app to link accounts.";
   return (
     <>
       {Object.values(app.requirements.accounts).flatMap((requirement) =>
-        deployed && (requirement.scope === "app" ? canManage : canUse)
+        deployed &&
+        (requirement.scope === "app" ? canManage || (canUse && requirement.contributed) : canUse)
           ? methodsOf(requirement)
               .filter(([, auth]) => auth.type === "oauth2")
               .map(([method]) => (
@@ -199,6 +216,7 @@ export function AppAccounts({
           appLinks,
           canManage && deployed,
           canManage ? notDeployed : "Only people who can edit this app can change these accounts.",
+          !canManage && canUse && deployed,
         )}
         yourAccounts={scopeAccounts("user", userLinks, canUse && deployed, notDeployed)}
       />

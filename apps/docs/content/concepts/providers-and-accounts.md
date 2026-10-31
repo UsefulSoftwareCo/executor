@@ -98,6 +98,27 @@ provider. Linking another account to a plain slot replaces the one before; a
 account, which stays saved. An account linked to an app for everyone cannot be
 deleted until it is unlinked. The same account may also be linked for yourself.
 
+An app author can opt an app account collection into member contributions:
+
+```ts
+{ app: { accounts: { subscriptions: provider.many().contributed() } } }
+```
+
+Anyone who can use the app can connect or link accounts they can use into that
+requirement. Each link names who added it. Its linker or an app editor can
+unlink it; deleting the saved account checks the same rule. Other requirements
+keep their existing rules. `contributed()` is only valid on app-scope collections.
+
+On contributed links, the account's holder, account managers and app editors can
+see the upstream identity reported by account checks. Ordinary app links show
+that identity only to app editors. Other viewers see health without that
+identity. Human-entered account labels and descriptions stay visible as before.
+
+When a member leaves or is removed, the host durably unlinks their personal
+contributions and reconciles the app's webhook sources. It keeps saved accounts
+and shared-account links. Cleanup retries independently and does not remove a
+newer link made after the departure.
+
 When an app account needs reconnecting, the people who can edit the app are
 told, and a call that needs it fails saying that one of them must reconnect it.
 

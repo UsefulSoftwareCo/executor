@@ -1,3 +1,4 @@
+import { requireRequirementAccess } from "./contributed-account-policy.ts";
 /** Pending connection ownership is persisted; knowing a connection ID grants no authority. */
 import {
   StorageError,
@@ -12,7 +13,6 @@ import { ConnectionAccess, type ConnectionDestination } from "../contracts/resou
 import {
   currentResourceAuthority,
   policyDatabase,
-  requireAppAccess,
   requireAccountAccess,
 } from "./resource-policy.ts";
 
@@ -70,7 +70,7 @@ export const connectionAccess = (connection: AccountConnectionId) =>
     and creator_id = ${actor.user}`;
     const access = (yield* Schema.decodeUnknownEffect(Schema.Array(ConnectionAccess))(rows))[0];
     if (access === undefined) return yield* new OrganizationForbidden();
-    yield* requireAppAccess(access.target.app, access.target.scope === "app" ? "manage" : "use");
+    yield* requireRequirementAccess(access.target);
     yield* checkDestination(access.destination);
     return access;
   }).pipe(

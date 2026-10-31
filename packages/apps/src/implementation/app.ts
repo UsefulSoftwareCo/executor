@@ -1,3 +1,4 @@
+import { ManyAccounts } from "../contracts/provider.ts";
 /** App author boundary: Promise callbacks are adapted into one native Effect definition. */
 import { Effect, Schema as EffectSchema } from "effect";
 import { JsonValue } from "../contracts/schema.ts";
@@ -279,6 +280,16 @@ function scopedSlots<Requirements extends AppRequirements>(
     );
   const app: AccountSlots = requirements.app?.accounts ?? {};
   const user: AccountSlots = requirements.user?.accounts ?? {};
+  for (const [name, slot] of Object.entries(app))
+    if ("isContributed" in slot && slot.isContributed === true && !(slot instanceof ManyAccounts))
+      throw new TypeError(
+        `The contributed requirement ${JSON.stringify(name)} must use provider.many().contributed()`,
+      );
+  for (const [name, slot] of Object.entries(user))
+    if (slot instanceof ManyAccounts && slot.isContributed)
+      throw new TypeError(
+        `The contributed requirement ${JSON.stringify(name)} must be in app.accounts`,
+      );
   for (const name of Object.keys(app))
     if (Object.hasOwn(user, name))
       throw new TypeError(

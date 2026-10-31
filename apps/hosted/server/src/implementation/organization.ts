@@ -1,3 +1,4 @@
+import { visibleAccountStatuses } from "./account-identity.ts";
 import type { AuthContext } from "@better-auth/core";
 import type { Principal } from "../contracts/auth.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
@@ -251,11 +252,18 @@ export const inventory = (owner: OwnerId) =>
         (entry) => [entry.account, entry],
       ),
     );
-    const withHealth = (listedAccounts: typeof accounts) =>
-      listedAccounts.map((account) => {
+    const statuses = yield* visibleAccountStatuses(
+      accounts.map((account) => {
         const checks = health.get(account.id);
-        return checks === undefined ? account : { ...account, health: checks };
-      });
+        return checks === undefined ? { account } : { account, health: checks };
+      }),
+    );
+    const withHealth = (listedAccounts: typeof accounts) => {
+      const selected = new Set(listedAccounts.map((account) => account.id));
+      return statuses
+        .filter((entry) => selected.has(entry.account.id))
+        .map(({ account, health }) => (health === undefined ? account : { ...account, health }));
+    };
     if (policy.tools.kind === "all") return { apps, accounts: withHealth(accounts), links };
     const selected = new Set(links.map((link) => link.account));
     return {

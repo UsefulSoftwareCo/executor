@@ -353,6 +353,14 @@ export const makeApps = (
           message: reason,
         });
       }
+      const invalidContribution = declared.find(
+        ([, scope, value]) =>
+          value.contributed && (scope !== "app" || value.cardinality !== "many"),
+      );
+      if (invalidContribution !== undefined) {
+        const reason = `The contributed requirement "${invalidContribution[0]}" must be a many() requirement in app.accounts.`;
+        return yield* new VersionBuildFailed({ owner, name, reason, message: reason });
+      }
       const entries = yield* Effect.forEach(declared, ([slot, scope, value]) =>
         identifyProvider(value.definition, crypto).pipe(
           Effect.map((provider) => ({
@@ -360,6 +368,7 @@ export const makeApps = (
             scope,
             provider,
             cardinality: value.cardinality,
+            contributed: scope === "app" && value.contributed === true,
             health: value.health,
           })),
         ),
@@ -375,13 +384,14 @@ export const makeApps = (
         ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
         ...(built.requirements.icons === undefined ? {} : { icons: built.requirements.icons }),
         accounts: Object.fromEntries(
-          entries.map(({ slot, scope, provider, cardinality, health }) => [
+          entries.map(({ slot, scope, provider, cardinality, contributed, health }) => [
             slot,
             {
               scope,
               provider: provider.id,
               definition: provider.definition,
               cardinality,
+              contributed,
               ...(health === undefined ? {} : { health }),
             },
           ]),

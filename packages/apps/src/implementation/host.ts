@@ -209,6 +209,7 @@ function declaredSlots(slots: AccountSlots) {
       const provider = selection instanceof ManyAccounts ? selection.provider : selection;
       accounts.set(slot, {
         cardinality: selection instanceof ManyAccounts ? "many" : "one",
+        contributed: selection instanceof ManyAccounts && selection.isContributed === true,
         definition: yield* providerDeclaration(provider),
         ...(provider.health === undefined ? {} : { health: true }),
       });

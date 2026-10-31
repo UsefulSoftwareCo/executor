@@ -7761,6 +7761,62 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  contributedAppRequirements: {
+    fixtures: "actors",
+    file: "contributed-app-requirements.spec.ts",
+    title:
+      "members contribute to opted-in app collections, only the linker or an editor unlinks, and account identity follows holder and management access",
+    targets: {
+      local: na("Local has one owner and no organization members."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  contributedAppConnections: {
+    fixtures: "actors",
+    file: "contributed-app-requirements.spec.ts",
+    title:
+      "pending contributions recheck app access and active opt-in, and invalid contributed declarations fail deployment",
+    targets: {
+      local: na("Local has one owner and no organization members."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  contributedAppDepartures: {
+    fixtures: "actors",
+    file: "contributed-app-departures.spec.ts",
+    title:
+      "removing a member or leaving durably unlinks personal contributions while shared accounts and ordinary requirements stay linked",
+    targets: {
+      local: na("Local has one owner and no organization members."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  contributedAppDepartureRecovery: {
+    fixtures: "actors",
+    file: "contributed-app-departures.spec.ts",
+    title:
+      "departure cleanup survives old-server acknowledgements and restarts without removing a newer contribution or saved credentials",
+    legacyStorage: true,
+    targets: {
+      local: na("Local has one owner and no organization members."),
+      "self-host": scheduled,
+      cloud: na("Exercises retained self-host storage from an older server."),
+    },
+  },
+  contributedAppAccountsBrowser: {
+    fixtures: "actors",
+    file: "contributed-app-accounts.spec.ts",
+    title:
+      "the Accounts tab names contributors and lets members add accounts and remove their own contributions while ordinary requirements stay read-only",
+    targets: {
+      local: na("Local has one owner and no organization members."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedAppLinks: {
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",

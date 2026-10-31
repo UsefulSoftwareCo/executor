@@ -1,3 +1,4 @@
+import { visibleAccountStatuses } from "./account-identity.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { AccountGrants } from "./proofs/account-access.ts";
@@ -103,7 +104,11 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
             (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
           ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
         : false;
-    return { apps: appEntries, accounts: accountEntries.flat(), pendingApp };
+    return {
+      apps: appEntries,
+      accounts: yield* visibleAccountStatuses(accountEntries.flat()),
+      pendingApp,
+    };
   });
 /** The compare-and-swap revision protects settings and all group grants as one update. */
 export const shareApp = (

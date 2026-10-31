@@ -86,6 +86,37 @@ handler that declares its context without a type gets the caller's, with
 schedules (`userCron`, `userInterval`) run once for each member who enables them,
 as them. `{ accounts }` requirements and `ctx.accounts` are removed.
 
+Shared apps can accept accounts from members who can use them:
+
+```ts
+{
+  app: {
+    accounts: {
+      subscriptions: provider.many().contributed();
+    }
+  }
+}
+```
+
+`contributed()` is opt-in and belongs only on app-scope `many()` requirements.
+The deployment records `contributed` beside `cardinality`. Existing requirements
+default to `false` and keep their management rules. A member may connect or link
+an account they can use, and unlink contributions they added. App editors can
+unlink any contribution. Deleting the saved account checks the same link authority.
+
+Link views include `linkedBy: { id, name }` and `canRemove`. Requirement views
+include `canContribute`. The Accounts tab names who added each link. Upstream
+`accountInfo` on contributed links is visible to the holder, account managers
+and app editors. Ordinary app links show it only to app editors. Account labels
+and descriptions entered by people are unchanged.
+
+Leaving or being removed from an organization queues durable cleanup of the
+member's personal contributions. Cleanup uses ordinary link removal and webhook
+source reconciliation. It preserves saved credentials, shared accounts, normal
+requirements and newer links. The outbox uses the existing member-job kind so old
+servers can still process their queues. If an old server acknowledges a cleanup
+job, the new server recovers its snapshots under a fresh job ID.
+
 Authenticated templates use a `provider.many()` user requirement and
 `accountRouter` from `apps`. A factory also runs without a caller for app-scope
 work, so `ctx.user` may be undefined there:
