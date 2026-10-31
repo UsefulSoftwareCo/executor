@@ -78,6 +78,13 @@ interface ListingRead extends ToolListOptions {
    */
   readonly hosted?: boolean;
   /**
+   * Whether the read checks that what this process keeps of the app is from after its cached data
+   * last changed (`followChanges`), as it does by default. A call's own read of the tool's kind
+   * passes false: it runs before the call hands its work to the app, which resolves the tool
+   * against its live catalog, so it sends the supervisor nothing ahead of that.
+   */
+  readonly followChanges?: boolean;
+  /**
    * Serve no kept listing evaluated at or before this time, such as the one a renewal of search
    * rows evaluated then replaces: the read evaluates the app unless a newer listing is kept.
    */
@@ -458,6 +465,9 @@ export const makeListings = (options: {
               : undefined,
           ),
         );
+      // What this process keeps of the app from before its cached data changed is forgotten once
+      // the check this starts, if one is due, reads when that was.
+      if (read.followChanges !== false) yield* options.declarations.followChanges(state.app.id);
       const early = yield* keptListing;
       if (early?.value instanceof Listed && servable(early.at))
         return yield* serve(early.at, early.value, "memory");
@@ -717,6 +727,8 @@ export const makeListings = (options: {
         const now = yield* Clock.currentTimeMillis;
         // Read before the rows: an evaluation that ends while they are read wrote them first.
         const running = cache.pending(id);
+        // Rows from before the app's cached data last changed are not served; see `followChanges`.
+        yield* options.declarations.followChanges(state.app.id);
         const kept = policy.maxStaleMillis <= 0 ? undefined : yield* search.listing(state, listing);
         // Rows missing, stale or removed are filled from an evaluation through the shared gate,
         // which keeps no decoded listing: rows are what later searches read. Readers of the same

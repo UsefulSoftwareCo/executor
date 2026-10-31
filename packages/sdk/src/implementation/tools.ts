@@ -1007,19 +1007,25 @@ export const makeTools = (
     kind: ToolKind | undefined,
   ) =>
     kind === undefined
-      ? listings.read(state, callListingOf(state), { refreshStale: false, resolved: context }).pipe(
-          Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
-          // A listing that did not finish says nothing about the tool.
-          Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
-          Effect.flatMap((listed) =>
-            listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
-          ),
-          Effect.map((tool): ToolKind | undefined =>
-            tool.readOnly === true ? "query" : "mutation",
-          ),
-          Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
-          Effect.withSpan("sdk.tools.kind"),
-        )
+      ? listings
+          .read(state, callListingOf(state), {
+            refreshStale: false,
+            followChanges: false,
+            resolved: context,
+          })
+          .pipe(
+            Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
+            // A listing that did not finish says nothing about the tool.
+            Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
+            Effect.flatMap((listed) =>
+              listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
+            ),
+            Effect.map((tool): ToolKind | undefined =>
+              tool.readOnly === true ? "query" : "mutation",
+            ),
+            Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
+            Effect.withSpan("sdk.tools.kind"),
+          )
       : Effect.succeed(kind);
   /**
    * With the accounts the host's check resolved ({@link InvocationSelection}), make the call's

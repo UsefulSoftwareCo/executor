@@ -113,7 +113,10 @@ const unnamedDocument = {
 /**
  * An operation, then a sibling the API adds later whose name normalizes to the same one: another
  * version of the path, the path without its parameter, and an operationId equal to a refined name.
+ * In `taken`, the sibling collides with `/forks` and its refined name is one `/starred` already
+ * holds by its own operationId.
  */
+const repos = (operationId: string) => ({ ...ok, operationId, tags: ["repos"] });
 const collisions = {
   version: [{ "/v1/items": { get: ok } }, { "/v2/items": { get: ok } }],
   parameter: [
@@ -123,6 +126,10 @@ const collisions = {
   operationId: [
     { "/items/{id}": { parameters: pathParameters("id"), get: ok } },
     { "/items/lookup": { get: { ...ok, operationId: "getItemsById" } } },
+  ],
+  taken: [
+    { "/forks": { get: repos("list") }, "/starred": { get: repos("listStars") } },
+    { "/stars": { get: repos("list") } },
   ],
 };
 const itemsDocument = (paths: Record<string, unknown>) => ({
@@ -837,10 +844,19 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
             "GET /items/{id} items.getItems",
             ["GET /items/lookup items.getItemsById", "GET /items/{id} items.getItems"],
           ],
+          // `repos.listStars` keeps calling `/starred`; the sibling is refined past the held name.
+          taken: [
+            ["GET /forks repos.list", "GET /starred repos.listStars"],
+            [
+              "GET /forks repos.listForks",
+              "GET /starred repos.listStars",
+              "GET /stars repos.listGet",
+            ],
+          ],
         } as const;
         const expected: Record<string, readonly string[]> = {};
         for (const [name, [alone, added]] of Object.entries(released)) {
-          expected[`${name} alone`] = [alone, status].sort();
+          expected[`${name} alone`] = [...[alone].flat(), status].sort();
           expected[`${name} added`] = [status, ...added].sort();
           expected[`${name} reordered`] = [status, ...added].sort();
         }

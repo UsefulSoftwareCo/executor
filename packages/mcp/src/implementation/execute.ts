@@ -904,6 +904,8 @@ function catalog(
     const namespaces: Namespaces = new Map();
     /** The version each loaded namespace's tools came from. */
     const loadedFrom = new Map<string, VersionId>();
+    /** The app and accounts each loaded app's tools were listed with. */
+    const loadedWith = new Map<string, { readonly app: AppId; readonly accounts: AppAccounts }>();
     const unavailableOf = (app: AppId) => {
       const seen = new Set<string>();
       return [
@@ -1108,6 +1110,8 @@ function catalog(
         const namespace = app.slug;
         namespaces.set(namespace, "available");
         loadedFrom.set(namespace, catalog.version);
+        const accounts = discoveryAccounts(linked);
+        if (accounts !== undefined) loadedWith.set(namespace, { app: app.id, accounts });
         // A router that could not list its tools is reported like an app, at its own namespace,
         // so a call into it explains why instead of reporting an unknown tool.
         for (const { namespace, entry } of routerFailures(app, catalog.version, catalog.routers)) {
@@ -1395,9 +1399,30 @@ function catalog(
       lost,
       unavailableApps,
       unknownTool: (error: CodeMode.Diagnostic) => unknownTool(error, loadedFrom, slugs),
+      /**
+       * Have the app a program named an unknown tool of checked for new tools. Its listing is read
+       * as one that refreshes when it is past its freshness: the refresh runs the app, whose
+       * cached tool list, such as an MCP server's, refreshes in turn once it is stale, and a
+       * changed list makes every process list the app again. Nothing waits for that refresh.
+       */
+      recheck: (error: CodeMode.Diagnostic) => {
+        const loaded = loadedWith.get(unknownPath(error)?.split(".")[0] ?? "");
+        return loaded === undefined
+          ? Effect.void
+          : backend.listTools({ app: loaded.app, accounts: loaded.accounts, limit: 1 }).pipe(
+              // A listing this read evaluates runs on as the host's background work, where
+              // there is one, after the answer stops waiting for it.
+              Effect.timeoutOption(recheckWaitMillis),
+              Effect.ignore,
+              Effect.withSpan("mcp.execute.recheck"),
+            );
+      },
     };
   });
 }
+
+/** How long an execute that named an unknown tool waits for the app's listing it rechecks. */
+const recheckWaitMillis = 2_000;
 
 /** Unavailable namespaces map to their reason; loaded ones are marked available. */
 type Namespaces = Map<string, typeof UnavailableApp.Type | "available">;
@@ -1475,7 +1500,7 @@ const unknownTool = (
   for (let length = segments.length; length > 0; length--) {
     const version = loadedFrom.get(segments.slice(0, length).join("."));
     if (version !== undefined)
-      return `This execute loaded '${slug}' from version ${version} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`;
+      return `This execute loaded '${slug}' from version ${version} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. If the tool was added to the service behind the app, Executor is checking the app for new tools now; they appear within a few minutes, so call it again in a new execute. Otherwise use search to find the app's tools.`;
   }
   if (!slugs.has(slug))
     return `No app '${slug}' existed when this execute started. If it was created or deployed during this execute, call it in a new execute. Otherwise use search to find available tools.`;
@@ -1713,6 +1738,7 @@ function runProgram(
         yield* Effect.annotateCurrentSpan("executor.unavailable_app.called", true);
       const unknown =
         result.ok || unavailable !== undefined ? undefined : prepared.unknownTool(result.error);
+      if (unknown !== undefined && !result.ok) yield* prepared.recheck(result.error);
       const execution = executionDiagnostic({
         ...result,
         ...(unknown === undefined || result.ok

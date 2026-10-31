@@ -109,3 +109,37 @@ export const selfHostSignInAtom = BrowserAtoms.fn((input: SelfHostSignIn, get) =
     Effect.asVoid,
   );
 });
+
+/** The providers the signed-in person can sign in with; `sso` once they connected SSO. */
+const LinkedAccounts = Schema.Array(Schema.Struct({ providerId: Schema.String }));
+
+/** Whether the signed-in person has connected the operator's SSO to their account. */
+export const ssoConnectedAtom = browserOnly(
+  BrowserAtoms.atom(
+    authRequest((options) => authClient.listAccounts({}, options)).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(LinkedAccounts)),
+      Effect.map((accounts) => accounts.some((account) => account.providerId === "sso")),
+      Effect.catchTag("SchemaError", () =>
+        Effect.fail(new AuthFailed({ message: "Unable to read your sign-in methods." })),
+      ),
+      Effect.withSpan("ui.auth.sso_connected"),
+    ),
+  ),
+);
+
+/**
+ * Connect the operator's SSO to the signed-in account. The provider returns to the Security page,
+ * with an `error` code when the instance refused the link.
+ */
+export const connectSsoAtom = BrowserAtoms.fn(() =>
+  authRequest((options) =>
+    authClient.linkSocial(
+      {
+        provider: "sso",
+        callbackURL: "/account/security",
+        errorCallbackURL: "/account/security",
+      },
+      options,
+    ),
+  ).pipe(Effect.withSpan("ui.auth.connect_sso"), Effect.asVoid),
+);

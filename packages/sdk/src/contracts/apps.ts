@@ -149,11 +149,32 @@ export const sameAccounts = (left: AppAccounts, right: AppAccounts) => {
 /** AppAccounts in a GET query: JSON text, so an empty requirement survives as []. */
 export const AppAccountsQuery = Schema.optional(Schema.fromJsonString(AppAccounts));
 
-/** Display names are nonblank and bounded; they do not replace stable app identities. */
+// The API document publishes the pattern; Effect publishes only `u`-flag patterns, which JSON
+// Schema reads with Unicode semantics. It uses code-unit ranges rather than `\p{…}` classes, so it
+// also means the same without the flag and in engines, such as Python's, that reject `\p{…}`.
+/** Control characters and line or paragraph separators. */
+const breaks = "\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029";
+/** Spaces that are not line breaks. */
+const blanks = " \\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000";
+/** Format characters, which render as nothing, such as zero-width spaces and joiners. */
+const invisible =
+  "\\u00AD\\u0600-\\u0605\\u061C\\u06DD\\u070F\\u0890\\u0891\\u08E2\\u180E\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB";
+/** Blanks and invisible characters, then a visible one, then anything on the same line. */
+const oneVisibleLine = new RegExp(
+  `^[${blanks}${invisible}]*[^${breaks}${blanks}${invisible}][^${breaks}]*$`,
+  "u",
+);
+
+/**
+ * Display names are one bounded line with a visible character; they do not replace stable app
+ * identities. Control characters are refused because storage cannot hold NUL, and names made only
+ * of invisible characters would list as blank. Names already stored are read with `NonEmptyString`,
+ * so this only narrows what new writes accept.
+ */
 export const AppName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(120),
-  Schema.isPattern(/\S/u),
+  Schema.isPattern(oneVisibleLine),
 );
 
 /** Informational origin captured when a copy is made. It never grants access or drives updates. */

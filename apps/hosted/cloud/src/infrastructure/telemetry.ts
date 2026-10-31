@@ -124,6 +124,22 @@ export const telemetryResources = Effect.gen(function* () {
 });
 
 /**
+ * Native invocation logs with query strings removed: request URLs can carry unsubscribe links,
+ * sign-in codes and the searches apps send through their outbound Worker.
+ */
+const platformLogs = {
+  enabled: true,
+  redactQueryString: true,
+  logs: { enabled: true, invocationLogs: true, persist: true },
+};
+
+/** Props for a Worker that keeps only its native logs, with no tail consumer or trace export. */
+export const platformObservability = Effect.gen(function* () {
+  if ((yield* AlchemyContext).dev) return {};
+  return { observability: platformLogs };
+});
+
+/**
  * Export invocation summaries and supplementary platform spans, joined by Ray ID.
  * Tail delivery supplies timings independently of native trace sampling.
  * This does not register a second Effect tracer.
@@ -131,9 +147,7 @@ export const telemetryResources = Effect.gen(function* () {
 export const cloudObservability = Effect.gen(function* () {
   if ((yield* AlchemyContext).dev) return {};
   const native = {
-    enabled: true,
-    redactQueryString: true,
-    logs: { enabled: true, invocationLogs: true, persist: true },
+    ...platformLogs,
     traces: { enabled: true, headSamplingRate: 1, persist: true },
   };
   if (!(yield* telemetryExport)) return { observability: native };

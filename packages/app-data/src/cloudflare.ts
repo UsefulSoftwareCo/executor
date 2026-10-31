@@ -17,6 +17,7 @@ import { discardsEvaluated } from "@executor-js/app-cache/changes";
 import { sqliteCache } from "@executor-js/app-cache/sqlite";
 import { evaluatedStore } from "./implementation/evaluated.ts";
 import type {
+  EvaluatedChanged,
   EvaluatedEntry,
   EvaluatedSupervisor,
   EvaluatedWritten,
@@ -346,18 +347,21 @@ export const makeFacetSupervisor = (
       });
     const evaluated = evaluatedStore(state.storage);
     const cached = sqliteCache(state.storage);
-    // Every cache command, from the host or from an invocation, passes here, so an invalidation
-    // is recorded for evaluated results before any caller can read them again.
+    // Every cache command, from the host or from an invocation, passes here, so a change is
+    // recorded for evaluated results before any caller can read them again: an invalidation, an
+    // explicit refresh, or any command that replaced a value with different data, such as a
+    // routine background refresh that found a changed MCP tool list.
     const store = (namespace: string, command: unknown) =>
       cached(namespace, command).pipe(
-        Effect.tap(() =>
-          discardsEvaluated(command)
+        Effect.tap(({ replaced }) =>
+          replaced || discardsEvaluated(command)
             ? Clock.currentTimeMillis.pipe(
                 Effect.flatMap(evaluated.changed),
                 Effect.mapError(() => new CacheError({ reason: "storage" })),
               )
             : Effect.void,
         ),
+        Effect.map(({ reply }) => reply),
       );
     const cache = (namespace: string, command: unknown) =>
       store(namespace, command).pipe(
@@ -685,7 +689,7 @@ export const makeFacetSupervisor = (
         runningIn(trace).pipe(
           Effect.flatMap(({ supervisor }) =>
             evaluated.command(command).pipe(
-              Effect.map((reply): EvaluatedEntry | EvaluatedWritten =>
+              Effect.map((reply): EvaluatedEntry | EvaluatedWritten | EvaluatedChanged =>
                 typeof reply === "boolean"
                   ? { kept: reply, supervisor }
                   : reply === null

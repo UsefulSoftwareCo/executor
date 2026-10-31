@@ -2,7 +2,11 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option } from "effect";
 import { InvocationTelemetry } from "./infrastructure/invocation-telemetry.ts";
-import { cloudTelemetry, telemetryBindings } from "./infrastructure/telemetry.ts";
+import {
+  cloudTelemetry,
+  platformObservability,
+  telemetryBindings,
+} from "./infrastructure/telemetry.ts";
 import { cloudHosts } from "./infrastructure/stage.ts";
 import { recordInvocations } from "./implementation/invocation-summary.ts";
 
@@ -15,6 +19,7 @@ export default InvocationTelemetry.make(
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
       env: yield* telemetryBindings,
       // No tail consumer or native trace export here: the receiver must not observe itself.
+      ...(yield* platformObservability),
     };
   }),
   Effect.gen(function* () {

@@ -15,6 +15,7 @@ import {
 } from "@executor-js/sdk/workerd";
 import { type AppEgressFailed, egressFailure } from "../implementation/app-egress.ts";
 import { cloudSentry, reportCloudFailure } from "../implementation/error-reporting.ts";
+import { platformObservability } from "./telemetry.ts";
 
 export const AppOutbound = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__) return yield* Cloudflare.Worker.ref("AppOutbound");
@@ -28,6 +29,7 @@ export const AppOutbound = Effect.gen(function* () {
     script: `export default {
       fetch(request) { return fetch(request); }
     };`,
+    ...(yield* platformObservability),
   });
 });
 
