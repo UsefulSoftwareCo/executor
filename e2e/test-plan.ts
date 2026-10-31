@@ -8971,7 +8971,7 @@ export const scenarios = plan({
   localAppsCliFailures: {
     file: "local-apps-cli.spec.ts",
     title:
-      "apps CLI reports the host's error code, status and fields as text and JSON, says when the CLI is out of date, refuses source over the limits or not UTF-8 before uploading, and reads EXECUTOR_HOST",
+      "apps CLI reports host errors, refuses source over the limits or not UTF-8 before uploading, checks source offline, and reads EXECUTOR_HOST",
     targets: {
       local: scheduled,
       "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
@@ -8991,7 +8991,7 @@ export const scenarios = plan({
   localAppsCliRelease: {
     file: "local-apps-cli.spec.ts",
     title:
-      "apps CLI prints the host's apps release, requires --files, and deploys the documented two-file app; the local Executor app pins the same release",
+      "apps CLI prints the host's apps release, checks app metadata offline, lints app conventions and deploys the documented two-file app",
     targets: {
       local: scheduled,
       "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
