@@ -12,6 +12,8 @@ export const startAnalyticsCollector = (directory: string) =>
     yield* fs.writeFileString(file, "", { mode: 0o600 });
     const sentryFile = `${directory}/sentry.ndjson`;
     yield* fs.writeFileString(sentryFile, "", { mode: 0o600 });
+    const relayFile = `${directory}/telemetry-relay.ndjson`;
+    yield* fs.writeFileString(relayFile, "", { mode: 0o600 });
     const sentry = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const envelope = yield* request.text;
@@ -65,6 +67,21 @@ export const startAnalyticsCollector = (directory: string) =>
       yield* fs.writeFileString(file, `${JSON.stringify(batch)}\n`, { flag: "a", mode: 0o600 });
       return HttpServerResponse.jsonUnsafe({ status: 1 });
     }).pipe(Effect.orDie);
+    const relay = (kind: "analytics" | "feedback") =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (request.headers.authorization !== "Bearer synthetic-telemetry-relay-token")
+          return HttpServerResponse.empty({ status: 401 });
+        const body = yield* request.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json)),
+        );
+        const record = { kind, body };
+        yield* fs.writeFileString(relayFile, `${JSON.stringify(record)}\n`, {
+          flag: "a",
+          mode: 0o600,
+        });
+        return HttpServerResponse.jsonUnsafe({ status: "accepted" });
+      }).pipe(Effect.orDie);
     // A fresh router per collector: one process can own several products, each with its own.
     const services = yield* Layer.build(
       Layer.fresh(
@@ -86,6 +103,8 @@ export const startAnalyticsCollector = (directory: string) =>
             ),
             HttpRouter.add("POST", "/batch/", handler),
             HttpRouter.add("POST", "/e/", handler),
+            HttpRouter.add("POST", "/__telemetry/v1/analytics", relay("analytics")),
+            HttpRouter.add("POST", "/__telemetry/v1/feedback", relay("feedback")),
             HttpRouter.add("POST", "/flags/", flags),
             HttpRouter.add(
               "GET",
