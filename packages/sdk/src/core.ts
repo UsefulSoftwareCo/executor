@@ -30,6 +30,7 @@ export {
   type ResolvedAppRuntime,
 } from "./implementation/runtime.ts";
 export { executorDatabase } from "./implementation/storage-migrations.ts";
+export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
 export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
 
 /** Optional Web Crypto adapter; callers retain signing-key custody. */
