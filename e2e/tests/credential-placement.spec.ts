@@ -2272,7 +2272,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const signIn = yield* startSignIn(first.path);
         const firstSent = yield* sent(signIn.started);
         expectOperatorRequest(firstSent.url);
+        const originalRedirectUri = firstSent.redirect.redirectUri;
         const account = yield* completeSignIn(issuer, signIn.connection, firstSent.redirect);
+        yield* issuer.configure({ requireRefreshRedirectUri: originalRedirectUri });
         // The exchange sent the operator's resource, and the account holds the nested user token:
         // the service accepts only tokens it issued.
         expect((yield* issuer.metrics).exchangeResource).toBe(resource);
@@ -2289,11 +2291,25 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           operatorClients(issuer.origin, hosts, { ...slack, unlisted: true }),
           twoHours,
         );
-        const renewed = yield* call(first.path, Called, "resource");
-        expect(renewed.status).toBe(200);
+        const renewalResponse = yield* api.request(
+          actors.owner,
+          "POST",
+          `${first.path}/tools/call`,
+          { tool: "resource", kind: "query", input: {} },
+        );
         const metrics = yield* issuer.metrics;
+        expect(metrics.refreshRedirectUri, "refresh request redirect_uri").toBe(
+          originalRedirectUri,
+        );
+        expect(renewalResponse.status, "managed account renewal failed").toBe(200);
+        const renewed = yield* body(Called, renewalResponse);
+        expect(renewed.status).toBe(200);
         expect(metrics.refreshesIssued).toBeGreaterThan(refreshed);
-        expect(metrics.refreshChecks).toMatchObject({ issued: true, authSecret: true });
+        expect(metrics.refreshChecks).toMatchObject({
+          issued: true,
+          authSecret: true,
+          redirect: true,
+        });
         expect(metrics.refreshResource).toBe(resource);
         expect(metrics.resourceAuthorizations.at(-1)).toMatch(/^Bearer synthetic-refreshed-token-/);
 

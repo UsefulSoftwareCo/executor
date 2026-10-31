@@ -2161,6 +2161,7 @@ export const makeOAuth = (
       const issued = {
         response: attempt.response,
         fields,
+        redirectUri: attempt.redirectUri,
         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
         ...expiry(completedAt, tokens.expires_in),
       };
@@ -3194,6 +3195,7 @@ export const makeOAuth = (
           ? {}
           : { refreshToken: Redacted.value(input.refreshToken) };
       const scopes = renewal.scopes.length === 0 ? {} : { scopes: renewal.scopes };
+      const redirect = input.redirectUri === undefined ? {} : { redirectUri: input.redirectUri };
       const registered =
         "client" in input
           ? yield* Effect.gen(function* () {
@@ -3221,6 +3223,7 @@ export const makeOAuth = (
               response: method.response,
               fields,
               ...refresh,
+              ...redirect,
               ...scopes,
               generation: 0,
               ...expires,
@@ -3252,6 +3255,7 @@ export const makeOAuth = (
                   : { tokenResponse: discovered.tokenResponse }),
                 fields,
                 ...refresh,
+                ...redirect,
                 generation: 0,
                 ...expires,
               };
