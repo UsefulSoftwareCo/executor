@@ -1,3 +1,4 @@
+import { isProvisionedMethod } from "@executor-js/sdk/core";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { AccountGrants } from "./proofs/account-access.ts";
@@ -88,6 +89,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
           provider = yield* executor.accounts.provider({ owner, account: account.id });
           providers.set(account.provider, provider);
         }
+        if (isProvisionedMethod(provider.definition, account.method)) return [];
         const checks = health.get(account.id);
         return [
           checks === undefined

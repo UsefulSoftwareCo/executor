@@ -3,7 +3,7 @@ import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 /** Durable configured apps and immutable versions, sharing one execution path. */
-import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
+import { Clock, Context, type Crypto, Effect, Schema, Struct } from "effect";
 import { SqlError } from "effect/sql";
 import {
   App,
@@ -69,7 +69,52 @@ import {
   type StoredBytes,
 } from "./public-files.ts";
 
+/** The outer app-removal transaction owns the final commit and public-file release. */
+export const AppFileReleaseDeferred = Context.Reference<boolean>(
+  "executor/AppFileReleaseDeferred",
+  {
+    defaultValue: () => false,
+  },
+);
+export const releaseRemovedAppFiles = (blobs: BlobStorage, code: AppCodeId) =>
+  releasePublicFiles(blobs, code).pipe(
+    Effect.catch(() =>
+      Effect.logWarning("Releasing a removed app's public files failed", { code }),
+    ),
+  );
+
 type DeployInput = NonNullable<Parameters<Executor["apps"]["deploy"]>[0]>;
+
+/** The same pure eligibility checks run before bulk cleanup and again at the actual deletion. */
+const assertAppRemovalAllowed = (tx: Query, app: AppId) =>
+  Effect.gen(function* () {
+    const live = yield* query(() =>
+      tx.findFirst("webhooks", {
+        where: (b) => b.and(b("app", "=", app), b("status", "!=", "stopped")),
+      }),
+    );
+    if (live !== null) return yield* new AppWebhooksActive({ app: app });
+    const run = yield* query(() =>
+      tx.findFirst("workflowRuns", {
+        where: (b) =>
+          b.and(b("app", "=", app), b.or(b("status", "=", "queued"), b("status", "=", "running"))),
+      }),
+    );
+    if (run !== null) return yield* new AppWorkflowsActive({ app: app });
+  });
+export const checkAppRemoval = (db: Query, input: Parameters<Executor["apps"]["remove"]>[0]) =>
+  transaction(db, (tx) =>
+    Effect.gen(function* () {
+      const app = yield* storedApp(tx, input).pipe(
+        Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)),
+      );
+      if (app !== undefined) {
+        yield* lockApp(tx, input);
+        yield* assertAppRemovalAllowed(tx, app.id);
+      }
+      return app;
+    }),
+  ).pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
 
 /** Read a configured app, applying an optional owner constraint. */
 
@@ -361,6 +406,7 @@ export const makeApps = (
             provider,
             cardinality: value.cardinality,
             health: value.health,
+            interactiveHealth: value.interactiveHealth,
           })),
         ),
       );
@@ -375,7 +421,7 @@ export const makeApps = (
         ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
         ...(built.requirements.icons === undefined ? {} : { icons: built.requirements.icons }),
         accounts: Object.fromEntries(
-          entries.map(({ slot, scope, provider, cardinality, health }) => [
+          entries.map(({ slot, scope, provider, cardinality, health, interactiveHealth }) => [
             slot,
             {
               scope,
@@ -383,6 +429,7 @@ export const makeApps = (
               definition: provider.definition,
               cardinality,
               ...(health === undefined ? {} : { health }),
+              ...(interactiveHealth === undefined ? {} : { interactiveHealth }),
             },
           ]),
         ),
@@ -764,22 +811,7 @@ export const makeApps = (
                 set: { createdAt: app.createdAt },
               }),
             );
-            const live = yield* query(() =>
-              tx.findFirst("webhooks", {
-                where: (b) => b.and(b("app", "=", app.id), b("status", "!=", "stopped")),
-              }),
-            );
-            if (live !== null) return yield* new AppWebhooksActive({ app: app.id });
-            const run = yield* query(() =>
-              tx.findFirst("workflowRuns", {
-                where: (b) =>
-                  b.and(
-                    b("app", "=", app.id),
-                    b.or(b("status", "=", "queued"), b("status", "=", "running")),
-                  ),
-              }),
-            );
-            if (run !== null) return yield* new AppWorkflowsActive({ app: app.id });
+            yield* assertAppRemovalAllowed(tx, app.id);
             if (lifecycle) yield* lifecycle.appRemoving(app.id);
             yield* query(() =>
               tx.deleteMany("workflowRuns", { where: (b) => b("app", "=", app.id) }),
@@ -832,13 +864,9 @@ export const makeApps = (
         // The lineage's public files belong to no other app: release them once its row is gone.
         // A failed release leaves files no version can serve; it does not undo the removal.
         Effect.tap(({ code }) =>
-          code === null
-            ? Effect.void
-            : releasePublicFiles(blobs, code).pipe(
-                Effect.catch(() =>
-                  Effect.logWarning("Releasing a removed app's public files failed", { code }),
-                ),
-              ),
+          Effect.flatMap(AppFileReleaseDeferred, (deferred) =>
+            code === null || deferred ? Effect.void : releaseRemovedAppFiles(blobs, code),
+          ),
         ),
         Effect.map(({ app }) => ({ app })),
         Effect.withSpan("sdk.apps.remove"),

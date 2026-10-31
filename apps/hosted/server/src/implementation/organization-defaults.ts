@@ -11,7 +11,7 @@ import {
 } from "../contracts/organization-defaults.ts";
 import { organizationOwner } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
-import { addLink } from "./app-accounts.ts";
+import { provisionAccountLink } from "./app-accounts.ts";
 import { executorCopyOrigin } from "./executor-catalog-entry.ts";
 
 /** Only a new or changed installation generates the Executor app, so its OpenAPI compiler loads then. */
@@ -159,18 +159,13 @@ export const organizationDefaults = (
               // A new managed key is linked to the common Executor app once, when it is
               // created. A member who unlinks it later keeps that choice.
               if (
-                yield* addLink(sql, executor.webhooks, {
+                yield* provisionAccountLink(sql, executor.webhooks, {
                   app: app.id,
                   requirement: "service",
                   account: account.id,
                   subject: user.userId,
                   linkedBy: user.userId,
-                }).pipe(
-                  Effect.catchTags({
-                    RequirementMismatch: () => new StorageError(),
-                    AccountNotFound: () => new StorageError(),
-                  }),
-                )
+                })
               )
                 intent = true;
               const accounts = JSON.stringify({ ...state.accounts, [user.userId]: account.id });

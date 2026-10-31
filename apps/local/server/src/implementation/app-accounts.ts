@@ -1,3 +1,4 @@
+import { isProvisionedMethod } from "@executor-js/sdk/core";
 /**
  * The accounts linked to each local app's requirements, kept in `local_app_account_links`, and the
  * accounts every operation runs with: resolved by the same rules as hosted, app requirements from
@@ -8,6 +9,7 @@ import {
   AccountChoiceUnsupported,
   AccountId,
   AccountNotFound,
+  AccountProvisioned,
   AppId,
   StorageError,
   StorageHost,
@@ -213,7 +215,11 @@ export const appAccountRequirement = (
       accounts: [
         ...linked.map((account) => ({ account, linked: true })),
         ...all
-          .filter((account) => !linkedIds.has(account.id))
+          .filter(
+            (account) =>
+              !linkedIds.has(account.id) &&
+              !isProvisionedMethod(required.definition, account.method),
+          )
           .map((account) => ({ account, linked: false })),
       ],
     } satisfies AppAccountRequirement;
@@ -440,6 +446,9 @@ const addLink = (
         scope: scopeOf(subject),
         reason: "provider",
       });
+    const method = required.definition.auth[account.method];
+    if (method?.type === "secrets" && method.provisioned === true)
+      return yield* new AccountProvisioned({ provider: account.provider });
     const replaced =
       required.cardinality === "many"
         ? []
@@ -452,6 +461,12 @@ const addLink = (
                 order by l.created_at, l.account`,
             ),
           );
+    for (const previous of replaced) {
+      const saved = yield* storage(executor.accounts.get({ account: previous.account }));
+      const method = required.definition.auth[saved.method];
+      if (method?.type === "secrets" && method.provisioned === true)
+        return yield* new AccountProvisioned({ provider: saved.provider });
+    }
     for (const previous of replaced)
       yield* removeLink(sql, executor, {
         app: app.id,
@@ -695,8 +710,16 @@ export const localResourceLifecycle = (
         requirement: input.requirement,
         account: input.account,
         subject: scopeSubject(input.scope),
-      }).pipe(Effect.mapError(() => new StorageError()));
-    }),
+      }).pipe(
+        Effect.mapError((error) =>
+          Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
+        ),
+      );
+    }).pipe(
+      Effect.mapError((error) =>
+        Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
+      ),
+    ),
   accountCreated: () => Effect.void,
   // An app link is used by its app for every call; the route refuses with the apps that link it,
   // and this refuses an app link made since. Its user links are removed with it.

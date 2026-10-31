@@ -16,6 +16,7 @@ export type PromiseMethods<T> = { readonly [Key in keyof T]: PromiseMethod<T[Key
 
 /** Which of the app's callbacks runs, recorded on the `app.code` span around it. */
 export type AppCode =
+  | "connect"
   | "factory"
   | "router"
   | "approval"
