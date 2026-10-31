@@ -12,7 +12,7 @@ import { RuntimeContext } from "alchemy";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { Context, Effect, Layer } from "effect";
 import { SqlClient } from "effect/sql";
-import { cloudBuildAsset } from "../implementation/build-storage.ts";
+import { cloudBuildAsset, loadCloudBuildRecord } from "../implementation/build-storage.ts";
 import { cachedBuildAssets } from "../implementation/asset-cache.ts";
 import { cloudBlobs } from "./blobs.ts";
 import { cloudExecutor } from "./executor.ts";
@@ -62,6 +62,11 @@ export const cloudProductServices = Effect.fn(function* (
         assets.pipe(
           Effect.flatMap((read) => read(build, path)),
           Effect.provide(RuntimeContext.phantom),
+        ),
+      screen: (build) =>
+        loadCloudBuildRecord(build).pipe(
+          Effect.map((record) => record.ui?.some((file) => file.path === "index.html") === true),
+          Effect.provideService(BlobStore, blobs),
         ),
     }),
   );

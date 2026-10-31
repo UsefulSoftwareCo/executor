@@ -216,7 +216,7 @@ export const cloudAuthOptions = (
                 // already have a fast path, and existing-user sign-ins never
                 // recreate a dismissed prompt.
                 if (context?.path !== emailCodeSignInPath) return;
-                context.setCookie(passkeyEnrollmentCookie.name, user.id, {
+                context.setCookie(passkeyEnrollmentCookie.name(settings.url), user.id, {
                   ...passkeyEnrollmentCookie.attributes,
                   secure: new URL(settings.url).protocol === "https:",
                 });
@@ -232,15 +232,11 @@ export const cloudAuthOptions = (
           after: async (session, context) => {
             if (onLogin !== undefined) await onLogin(session.userId);
             if (!context) return;
-            context.setCookie(siteVisitorCookie, "", {
+            context.setCookie(siteVisitorCookie(settings.url), "", {
               path: "/",
               maxAge: 0,
               sameSite: "lax",
               secure: new URL(settings.url).protocol === "https:",
-              ...Option.match(settings.hosts.sharedCookieDomain, {
-                onNone: () => ({}),
-                onSome: (domain) => ({ domain }),
-              }),
             });
           },
           before: async (session, context) => {

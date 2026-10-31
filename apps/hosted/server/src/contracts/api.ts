@@ -1,3 +1,4 @@
+import { hostCookieName } from "./browser.ts";
 import { HostedAppAccounts } from "./app-accounts.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
 import { HostedOAuthClients } from "./oauth-clients.ts";
@@ -146,7 +147,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
         browserSession: {
           type: "apiKey",
           in: "cookie",
-          name: `${new URL(origin).protocol === "https:" ? "__Secure-" : ""}${cookiePrefix}.session_token`,
+          name: `${hostCookieName(origin, cookiePrefix)}.session_token`,
           description:
             "Browser-managed session. Sign in through this deployment; bearer credentials cannot call session-only endpoints.",
         },

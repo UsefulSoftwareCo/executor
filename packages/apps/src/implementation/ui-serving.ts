@@ -29,6 +29,7 @@ export const appDocument = <E, R>(options: {
   /** The account IDs the page runs with, by requirement. */
   readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
   readonly origin: string;
+  readonly parentOrigin?: string | undefined;
   readonly accounts?: UiAccountNotice | undefined;
   readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
 }) =>
@@ -78,7 +79,11 @@ export const appDocument = <E, R>(options: {
       telemetry === undefined
         ? ""
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
-    const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
+    const ready =
+      options.parentOrigin === undefined
+        ? ""
+        : `<script>addEventListener("load",()=>parent.postMessage({type:"executor:app-ready"},${JSON.stringify(options.parentOrigin).replaceAll("<", "\\u003c")}))</script>`;
+    const boot = `${ready}${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
     return HttpServerResponse.text(
       versionDocument(new TextDecoder().decode(document.body), options.version).replace(
         "<!--executor-ui-->",

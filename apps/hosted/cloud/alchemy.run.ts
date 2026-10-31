@@ -9,6 +9,7 @@ import * as Docker from "alchemy/Docker";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Effect, Layer, Option } from "effect";
 import AppPages from "./src/app-ui.ts";
+import { appUiAddressScheme } from "@executor-js/hosted-server/app-ui";
 import { cloudAppUiBase } from "./src/contracts/app-ui.ts";
 import ApiLive, { Api } from "./src/main.ts";
 import AppCompilerLive from "./src/compiler.ts";
@@ -103,7 +104,10 @@ export default Alchemy.Stack(
     if (appBase !== undefined) {
       const pages = yield* AppPages;
       yield* uploadCloudSourceMaps("app-pages", pages.hash).pipe(Effect.orDie);
-      if (!(yield* AlchemyContext).dev) {
+      if (
+        !(yield* AlchemyContext).dev &&
+        (yield* appUiAddressScheme.pipe(Effect.orDie)) === "nested"
+      ) {
         const controller = yield* AppDomainController;
         const lifecycle = yield* AppDomainLifecycle("AppDomains", {
           origin: yield* cloudOrigin.pipe(Effect.orDie),

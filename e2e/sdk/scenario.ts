@@ -59,6 +59,7 @@ export const startScenario = (
     return Target.of({
       ...target,
       controlOrigin: server.controlOrigin,
+      ...(server.tlsCertificate === undefined ? {} : { tlsCertificate: server.tlsCertificate }),
       metadata: { ...target.metadata, origin: server.origin },
     });
   });

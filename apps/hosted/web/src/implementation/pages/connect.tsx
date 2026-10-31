@@ -10,7 +10,7 @@ import {
 } from "@executor-js/ui/dashboard/scoped-connections";
 import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
 import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
 import { connectionToolListAtom } from "../../contracts/apps.ts";
@@ -115,6 +115,13 @@ function useConnectionBindings() {
       ),
   };
 }
+
+/** Installed apps, MCP connections and connected agents. */
+export const connectPageReads: OrganizationPageReads = (organization) => [
+  resourceInventoryAtom(organization),
+  mcpConnectionsAtom(organization),
+  mcpAgentsAtom(organization),
+];
 
 /** The member's full-access URL, scoped connections and connected agents for this organization. */
 export function ConnectPage() {

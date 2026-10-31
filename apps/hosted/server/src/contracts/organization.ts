@@ -14,7 +14,7 @@ import {
   Account,
   AccountHealth,
   AccountId,
-  App,
+  AppFields,
   AppId,
   OwnerId,
   HttpUrl,
@@ -53,6 +53,12 @@ export const organizationHandle = (name: string, maxLength = organizationSlugMax
 /** Explicit API target. Resolution rejects collisions between the ID and slug namespaces. */
 export const OrganizationReference = Schema.Union([OrganizationId, OrganizationSlug]);
 export type OrganizationReference = typeof OrganizationReference.Type;
+/** App records include UI presence so dashboard tabs do not wait for a second request. */
+export const AppScreenRecord = Schema.Struct({
+  ...AppFields.fields,
+  hasUi: Schema.optional(Schema.Boolean),
+});
+export type AppScreenRecord = typeof AppScreenRecord.Type;
 /** An icon is an HTTPS image, a private uploaded-image path, or null. */
 export const OrganizationLogo = Schema.NullOr(
   Schema.String.check(
@@ -182,7 +188,7 @@ export class OrganizationIcons extends Context.Service<
 export const Inventory = Schema.Struct({
   /** The accounts the caller linked to each listed app and may use. */
   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
-  apps: Schema.Array(App),
+  apps: Schema.Array(AppScreenRecord),
   /** Each account's checks by the apps listed here; reading them never runs a check. */
   accounts: Schema.Array(
     Schema.Struct({ ...Account.fields, health: Schema.optionalKey(AccountHealth) }),

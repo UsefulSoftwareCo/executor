@@ -1,6 +1,6 @@
 import { SkillBrowserLoading, WorkflowBrowserLoading } from "./app-browser-loading.tsx";
 import type { ReactElement, ReactNode } from "react";
-import { AppDetailLayout } from "./app-detail.tsx";
+import { AppDetailLayout, type AppScreenTab } from "./app-detail.tsx";
 /** App tabs reserve the layout of their own content at every data-loading boundary. */
 import type { App } from "@executor-js/sdk";
 import type { AppView } from "../../contracts/dashboard.ts";
@@ -273,11 +273,18 @@ export function AppDetailLoading({
   selectedTool,
   accountAction,
 }: {
-  readonly view: AppView;
+  /** Undefined while the default destination is not known yet. */
+  readonly view: AppView | undefined;
   readonly app?: App | undefined;
   readonly selectedTool?: string | undefined;
   readonly accountAction?: ReactNode;
 }): ReactElement {
+  if (view === undefined)
+    return (
+      <div role="status" aria-label="Loading app details" className="relative flex min-h-0 flex-1">
+        <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
+      </div>
+    );
   if (app?.activeVersion === null) {
     if (view === "tools" || view === "accounts")
       return (
@@ -293,6 +300,12 @@ export function AppDetailLoading({
       );
   }
   switch (view) {
+    case "app":
+      return (
+        <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
+          <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
+        </div>
+      );
     case "skills":
       return <SkillBrowserLoading />;
     case "workflows":
@@ -324,19 +337,28 @@ export function AppDetailLoading({
 /** Route and inventory loading keep the same app heading, navigation and selected-tab geometry. */
 export function AppDetailPending({
   view,
+  appScreen = "absent",
   back,
   actions,
   selectedTool,
   accountAction,
 }: {
-  readonly view: AppView;
+  readonly view: AppView | undefined;
+  readonly appScreen?: AppScreenTab;
   readonly back: ReactNode;
   readonly actions?: ReactNode;
   readonly selectedTool?: string | undefined;
   readonly accountAction?: ReactNode;
 }) {
   return (
-    <AppDetailLayout app={undefined} view={view} canInspectSource back={back} actions={actions}>
+    <AppDetailLayout
+      app={undefined}
+      view={view}
+      appScreen={appScreen}
+      canInspectSource
+      back={back}
+      actions={actions}
+    >
       <AppDetailLoading view={view} selectedTool={selectedTool} accountAction={accountAction} />
     </AppDetailLayout>
   );

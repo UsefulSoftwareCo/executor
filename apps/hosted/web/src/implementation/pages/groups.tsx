@@ -26,13 +26,16 @@ import {
 } from "@executor-js/ui/components/dialog";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { groupsAtom, saveGroupAtom, removeGroupAtom } from "../../contracts/groups.ts";
 import { appError, type HostedError } from "../../contracts/errors.ts";
 import { GroupConflict } from "@executor-js/hosted-server/groups";
 import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/alert";
+
+/** The organization's groups. */
+export const groupsPageReads: OrganizationPageReads = (organization) => [groupsAtom(organization)];
 
 /** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
 export function GroupsPage({ id }: { readonly id?: string }) {

@@ -1,6 +1,7 @@
 import { CloudPagePending } from "./components/page-pending.tsx";
 import { PageError } from "@executor-js/hosted-web/route-fallbacks";
 import { dashboardRegistry } from "@executor-js/dashboard-start/registry";
+import { organizationRouteReads } from "@executor-js/hosted-web/organization";
 import { createRouter } from "@tanstack/react-router";
 import { cloudServerValues, serverDocument } from "./document.ts";
 import { routeTree } from "./routeTree.gen.ts";
@@ -16,7 +17,7 @@ export const getRouter = () => {
       routeTree,
       defaultPreload: "intent",
       defaultPendingComponent: CloudPagePending,
-      defaultPendingMs: 100,
+      defaultPendingMs: 0,
       defaultPendingMinMs: 0,
       defaultErrorComponent: PageError,
       scrollRestoration: true,
@@ -27,6 +28,7 @@ export const getRouter = () => {
         </Registry>
       ),
     }),
+    organizationRouteReads,
   );
 };
 
