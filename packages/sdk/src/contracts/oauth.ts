@@ -360,9 +360,17 @@ const incompatibleResponse = {
   report: "Incompatible OAuth response.",
 } satisfies ErrorPresentation;
 
+/**
+ * Storage cannot hold NUL in a client ID, so one that carries it fails the save and surfaces as a
+ * storage error to retry. Refuse it as a bad request instead. The stored client's ID stays
+ * permissive. The secret is stored encrypted, so it is not limited.
+ */
+// oxlint-disable-next-line no-control-regex -- NUL is refused on purpose
+const clientIdWithoutNul = Schema.isPattern(/^[^\u0000]*$/u);
+
 /** User-supplied client configuration. A client secret is write-only at API boundaries. */
 export const OAuthClientInput = Schema.Struct({
-  clientId: Schema.NonEmptyString,
+  clientId: Schema.NonEmptyString.check(clientIdWithoutNul),
   clientSecret: Schema.optional(Schema.RedactedFromValue(Schema.NonEmptyString)),
 });
 export type OAuthClientInput = typeof OAuthClientInput.Type;

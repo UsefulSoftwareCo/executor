@@ -5042,6 +5042,16 @@ export const scenarios = plan({
       local: na("Hosted organization roles and client audiences."),
     },
   },
+  oauthClientInputValidation: {
+    fixtures: "actors",
+    file: "oauth-client-input-validation.spec.ts",
+    title: "An OAuth client ID that storage cannot hold is refused as a bad request",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Runs on self-host; the Cloud registration route is the same hosted contract."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
   oauthClientMissing: {
     fixtures: "actors",
     file: "oauth-clients.spec.ts",
