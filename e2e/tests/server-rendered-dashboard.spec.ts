@@ -5,12 +5,17 @@ import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { batchedReads, batchPath } from "../support/read-batches.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { appLinksFixture, keyProvider } from "../support/app-links.ts";
+import { Api } from "../support/api.ts";
 import { scenarios } from "../test-plan.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 /** A document navigation, as a browser sends it. */
 const navigation = { accept: "text/html" };
+const appLinksSource = `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
+const service = ${keyProvider("Shared account count fixture")};
+export default defineApp({ app: { accounts: { service: service.many() } } }, async () => ({ tools: router({}) }));`;
 
 layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (it) => {
   it.effect(scenarios.serverRenderedDashboard.title, (context) =>
@@ -19,6 +24,10 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
       Effect.gen(function* () {
         const actors = yield* Actors;
         const browser = yield* Browser;
+        const api = yield* Api;
+        const shared = yield* appLinksFixture([{ path: "index.ts", content: appLinksSource }]);
+        yield* shared.connect(actors.owner, "app", "service", "synthetic shared account one");
+        yield* shared.connect(actors.owner, "app", "service", "synthetic shared account two");
         // Repeated and encoded parameters stand in for a signed OAuth query that must survive.
         const destination = `/org/${actors.organization.slug}/apps?view=accounts&scope=a%20b&scope=c`;
 
@@ -73,6 +82,33 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         expect(headers["cache-control"]).toContain("no-store");
         expect(headers["vary"]).toContain("Cookie");
         const html = yield* browser.use("Read the document the server sent", () => response.text());
+        yield* browser.use("Find the shared app card", (page) =>
+          page
+            .getByRole("link", { name: `Open ${shared.app.name}`, exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.checkpoint("Shared app card with its account count");
+        const sharedCard = yield* browser.use("Read the shared app card", (page) =>
+          page.getByRole("link", { name: `Open ${shared.app.name}`, exact: true }).innerText(),
+        );
+        expect(sharedCard).toContain("2 accounts · for everyone");
+        const inventoryResponse = yield* api.request(
+          actors.owner,
+          "GET",
+          `/api/organizations/${actors.organization.id}/resources`,
+        );
+        expect(inventoryResponse.status, JSON.stringify(inventoryResponse.body)).toBe(200);
+        const counts = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            apps: Schema.Array(
+              Schema.Struct({
+                app: Schema.Struct({ id: Schema.String }),
+                appAccountCount: Schema.Number,
+              }),
+            ),
+          }),
+        )(inventoryResponse.body);
+        expect(counts.apps.find((item) => item.app.id === shared.app.id)?.appAccountCount).toBe(2);
         /** The document the server renders for a navigation to `path`. */
         const document = (path: string) =>
           browser.use(`Request ${path}`, (page) =>

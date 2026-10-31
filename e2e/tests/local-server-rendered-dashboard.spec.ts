@@ -15,6 +15,7 @@ const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 const ProviderApp = Schema.Struct({
   app: Schema.Struct({
     id: Schema.String,
+    name: Schema.String,
     requirements: Schema.Struct({
       accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
     }),
@@ -74,6 +75,40 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           headers,
         );
         owned.push(`/v1/accounts/${account.id}`);
+        const sharedApp = yield* body(
+          ProviderApp,
+          yield* send("POST", "/v1/apps/deploy", {
+            owner: "local",
+            name: `Local shared ${randomUUID().slice(0, 8)}`,
+            files: [
+              {
+                path: "index.ts",
+                content: `import {defineApp,defineProvider,object,router,secrets,string} from "apps";
+const service=defineProvider({name:"Rendered shared mail",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
+export default defineApp({app:{accounts:{service:service.many()}}},async()=>({tools:router({})}));`,
+              },
+              appsManifest,
+            ],
+          }),
+        );
+        owned.push(`/v1/apps/${sharedApp.app.id}`);
+        for (const [label, token] of [
+          ["Rendered shared one", "synthetic-shared-one"],
+          ["Rendered shared two", "synthetic-shared-two"],
+        ] as const) {
+          const sharedAccount = yield* connectLocalAccount(
+            agent,
+            {
+              app: sharedApp.app.id,
+              requirement: "service",
+              method: "key",
+              label,
+              fields: { token },
+            },
+            headers,
+          );
+          owned.push(`/v1/accounts/${sharedAccount.id}`);
+        }
         const { url } = yield* body(
           Schema.Struct({ url: Schema.String }),
           yield* send("POST", "/auth/pair"),
@@ -118,6 +153,19 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           );
           expect(failures, `${label} hydrates to the server's markup`).toEqual([]);
         }
+        yield* browser.use("Open the local apps list with shared accounts", (page) =>
+          page
+            .goto("/apps")
+            .then(() =>
+              page
+                .getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true })
+                .waitFor({ state: "visible" }),
+            ),
+        );
+        const sharedCard = yield* browser.use("Read the local shared app card", (page) =>
+          page.getByRole("link", { name: `Open ${sharedApp.app.name}`, exact: true }).innerText(),
+        );
+        expect(sharedCard).toContain("2 accounts · for everyone");
         yield* browser.checkpoint("Local pages hydrate to their server-rendered markup");
       }),
     ),
