@@ -58,6 +58,7 @@ const ledger = [
   "require_connection_targets",
   "oauth_client_access",
   "app_account_links",
+  "member_executor_keys",
 ].map((name, index) => ({ migration_id: index + 1, name }));
 
 const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
@@ -231,6 +232,8 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
           {
             sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9 RETURNING migration_id",
           },
+          // Step 10 runs again after it; it only queues member setup.
+          { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
           { sql: "DROP TABLE hosted_app_account_links" },
           profile({
             id: `ins_first_${suffix}`,
@@ -325,7 +328,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             createdAt: "2026-01-08 00:00:00",
           }),
         ]);
-        // The fixture is an upgrade while step 9 is the latest hosted step.
+        // The fixture is an upgrade from before step 9.
         expect(recorded, "current hosted ledger").toEqual(ledger);
         expect(rolledBack, "step 9 is pending again").toEqual([{ migration_id: 9 }]);
         yield* serverControl("start");

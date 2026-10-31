@@ -6345,6 +6345,17 @@ export const scenarios = plan({
       local: na("This scenario uses hosted app deploys and browser authentication."),
     },
   },
+  executorKeyMember: {
+    fixtures: "actors",
+    file: "executor-key-account.spec.ts",
+    title:
+      "A member gets their own managed Executor key, so their agent reads the Executor app's skills over MCP, and the key keeps their member role",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local uses its configured instance API key."),
+    },
+  },
   executorKeyAccount: {
     fixtures: "actors",
     file: "executor-key-account.spec.ts",

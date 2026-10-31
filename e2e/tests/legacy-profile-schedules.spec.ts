@@ -312,6 +312,7 @@ const upgradeFixture = (
       return [
         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
         ...beforeAppAccounts(),
+        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
         { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
         { sql: "DROP TABLE hosted_app_account_links" },
         ...beforeProfileRemoval(),
@@ -509,7 +510,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
         );
         expect(
           recorded?.map((row) => row.name),
-          "step 9 is the latest hosted step",
+          "the ledger records step 9",
         ).toContain("app_account_links");
         yield* serverControl("start");
 
@@ -746,7 +747,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
         );
         expect(
           recorded?.map((row) => row.name),
-          "step 9 is the latest hosted step",
+          "the ledger records step 9",
         ).toContain("app_account_links");
         yield* serverControl("start");
 

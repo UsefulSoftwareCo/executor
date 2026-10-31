@@ -41,3 +41,22 @@ export const executorDefaultRedeployed =
       // Polling recovers a missed wake.
       yield* wake;
     });
+
+/**
+ * One-off: member setup once linked a managed key only for owners and admins, so members who
+ * joined before it linked one for every member have none. Queue their member setup once. Setup
+ * records each member it handles, including one who later deletes their key, so a recorded member
+ * is never queued.
+ *
+ * Jobs start after a delay so the replacement server, whose member setup links members' keys,
+ * runs them, not the one still serving during the deployment.
+ */
+export const queueMemberExecutorKeys = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
+    select 'member', organization.id, member."userId", now() + interval '15 minutes'
+    from organization
+    join member on member."organizationId" = organization.id and member.role = 'member'
+    where coalesce((organization.metadata::jsonb -> 'executorDefaults' ->> 'installed')::boolean, false)
+      and organization.metadata::jsonb -> 'executorKeyAccounts' -> member."userId" is null`;
+});
