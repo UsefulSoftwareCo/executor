@@ -4,6 +4,8 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
+    "./account-display-privacy": "./src/account-display-privacy.ts",
+    "./account-secrets": "./src/account-secrets.ts",
     "./url-policy": "./src/url-policy.ts",
     "./safe-fetch": "./src/safe-fetch.ts",
     "./user-facing-error": "./src/user-facing-error.ts",
