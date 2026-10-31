@@ -9419,6 +9419,25 @@ export const scenarios = plan({
       local: na("Local does not have organization memberships."),
     },
   },
+  scheduleInputValidation: {
+    fixtures: "actors",
+    file: "schedule-input-validation.spec.ts",
+    title: "Schedule names and IDs that storage cannot hold are refused as bad requests",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local's SDK routes are covered by the local schedule input validation scenario."),
+    },
+  },
+  localScheduleInputValidation: {
+    file: "local-schedule-input-validation.spec.ts",
+    title: "The SDK schedule routes refuse names, IDs and actors that storage cannot hold",
+    targets: {
+      local: scheduled,
+      "self-host": na("SDK route fixture; hosted routes are covered by the hosted scenario."),
+      cloud: na("SDK route fixture; hosted routes are covered by the hosted scenario."),
+    },
+  },
   scheduledRunRedeploy: {
     fixtures: "actors",
     file: "scheduled-run-redeploy.spec.ts",
