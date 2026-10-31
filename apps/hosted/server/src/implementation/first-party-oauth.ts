@@ -7,6 +7,7 @@
 import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
 import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
 import { FirstPartyOAuthClientsInvalid } from "../contracts/oauth-client-metadata.ts";
+import { catalogOAuthClientDefinitions } from "./shared-catalog-oauth.ts";
 
 /** A first-party client without its credentials: everything about it that code reviews. */
 export const FirstPartyOAuthClientDefinition = FirstPartyOAuthClient.mapFields(
@@ -134,6 +135,7 @@ const slackMcpUserScopes = [
  *   those it already holds. Its tokens go only to Slack's MCP server.
  */
 export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
+  ...catalogOAuthClientDefinitions,
   {
     id: "github",
     label: "Executor for GitHub",

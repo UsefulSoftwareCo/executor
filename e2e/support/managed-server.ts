@@ -57,6 +57,7 @@ export const OperatorSettings = Schema.Struct({
   SSO_CLIENT_SECRET: Schema.optionalKey(Schema.NonEmptyString),
   SSO_ALLOWED_DOMAINS: Schema.optionalKey(Schema.NonEmptyString),
   EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optionalKey(Schema.NonEmptyString),
+  EXECUTOR_OAUTH_CALLBACK_URL: Schema.optionalKey(Schema.String),
   /** The build an upgrade installs. */
   EXECUTOR_BUILD_VERSION: Schema.optionalKey(Schema.NonEmptyString),
   /**
@@ -69,6 +70,12 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_NOTION_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_NOTION_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_TODOIST_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_TRELLO_CLIENT_ID: Schema.optionalKey(Schema.String),
+  EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SLACK_CLIENT_ID: Schema.optionalKey(Schema.String),
   EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
 });

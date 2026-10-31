@@ -3472,6 +3472,26 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  catalogOAuthAccounts: {
+    fixtures: "actors",
+    file: "catalog-oauth-accounts.spec.ts",
+    title: "Catalog OAuth grants keep each person's shared-client account private",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Restarts a runner-owned product against synthetic authorization servers."),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  catalogOAuthClients: {
+    fixtures: "actors",
+    file: "catalog-oauth-clients.spec.ts",
+    title: "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Restarts a runner-owned product with optional client credentials."),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedGoogle: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
