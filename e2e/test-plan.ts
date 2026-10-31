@@ -5525,6 +5525,18 @@ export const scenarios = plan({
       local: na("The API document and catalog installation are hosted product surfaces."),
     },
   },
+  cloudAppQueryAuth: {
+    fixtures: "actors",
+    file: "cloud-app-query-auth.spec.ts",
+    appOrigin: true,
+    title:
+      "Cloud app queries read current authorization without deleting expired verification records",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
+      local: na("Local does not serve hosted app origins."),
+    },
+  },
   appUiApiDocument: {
     fixtures: "actors",
     managementApps: ["owner"],
