@@ -50,6 +50,7 @@ const Redirect = Schema.Struct({
 const Setup = Schema.Struct({
   mode: Schema.String,
   scopes: Schema.Array(Schema.String),
+  tokenEndpointAuthMethod: Schema.optional(Schema.String),
   firstParty: Schema.optional(Schema.Struct({ label: Schema.String })),
   userScopes: Schema.optional(Schema.Array(Schema.String)),
 });
@@ -1025,6 +1026,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           tokenUrl: "https://oauth2.googleapis.com/token",
         };
         const calendar = "https://www.googleapis.com/auth/calendar";
+        const adminDirectoryUser = "https://www.googleapis.com/auth/admin.directory.user";
+        const cloudPlatform = "https://www.googleapis.com/auth/cloud-platform";
+        const adminScopes = ["openid", "email", "profile", adminDirectoryUser];
         /** Deploy a Google service asking for `scopes`, then start signing in and read setup. */
         const signIn = (key: string, scopes: readonly string[]) =>
           Effect.gen(function* () {
@@ -1048,6 +1052,40 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             );
             return { started, setup: yield* body(Setup, answered) };
           });
+        const signInAdmin = (
+          key: string,
+          scopes: readonly string[],
+          endpoints: object = {
+            ...google,
+            tokenEndpointAuthMethod: "client_secret_post",
+          },
+        ) =>
+          Effect.gen(function* () {
+            const name = "Google Admin " + key + " " + randomUUID().slice(0, 8);
+            const { path, app } = yield* deploy(
+              name,
+              endpointsApp(
+                "Google Admin",
+                ["admin.googleapis.com", "openidconnect.googleapis.com"],
+                endpoints,
+                scopes,
+              ),
+            );
+            const id = yield* connection(path, "mail");
+            const started = yield* api.request(
+              actors.owner,
+              "POST",
+              prefix + "/connections/" + id + "/oauth/start",
+              { method: "oauth", label: "Google Admin" },
+            );
+            const provider = app.requirements.accounts.mail!.provider;
+            const answered = yield* api.request(
+              actors.owner,
+              "GET",
+              prefix + "/providers/" + encodeURIComponent(provider) + "/oauth/oauth/setup",
+            );
+            return { started, setup: yield* body(Setup, answered) };
+          });
         const cleared = {
           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
@@ -1064,13 +1102,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
         });
-        const [allowed, defaults, wider] = yield* Effect.all(
+        const [
+          allowed,
+          defaults,
+          wider,
+          admin,
+          adminEndpointMismatch,
+          adminScopeMismatch,
+        ] = yield* Effect.all(
           [
             signIn("calendar", [calendar]),
             // A provider that asks for no scopes gets the client's defaults.
             signIn("defaults", []),
             // A scope outside the client's allowed scopes.
-            signIn("wider", [calendar, "https://www.googleapis.com/auth/cloud-platform"]),
+            signIn("wider", [calendar, cloudPlatform]),
+            signInAdmin("matching", adminScopes),
+            signInAdmin("endpoint-mismatch", adminScopes, {
+              authorizationUrl: "https://accounts.google.com/o/oauth2/v2/authorize",
+              tokenUrl: google.tokenUrl,
+              tokenEndpointAuthMethod: "client_secret_post",
+            }),
+            signInAdmin("scope-mismatch", [...adminScopes, cloudPlatform]),
           ],
           { concurrency: "unbounded" },
         );
@@ -1091,6 +1143,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           firstParty: { label: "Executor for Google" },
           scopes: ["openid", "email", "profile"],
         });
+        expect(defaults.setup.scopes).not.toContain(adminDirectoryUser);
+        expect(admin.setup).toMatchObject({
+          mode: "automatic",
+          firstParty: { label: "Executor for Google" },
+          scopes: adminScopes,
+          tokenEndpointAuthMethod: "client_secret_post",
+        });
+        expect(admin.started.status, JSON.stringify(admin.started.body)).toBe(200);
+        const adminUrl = new URL((yield* body(Redirect, admin.started)).authorizationUrl);
+        expect(adminUrl.origin + adminUrl.pathname).toBe(google.authorizationUrl);
+        expect(adminUrl.searchParams.get("client_id")).toBe(clientId);
+        expect(
+          new Set((adminUrl.searchParams.get("scope") ?? "").split(" ")),
+        ).toEqual(new Set(adminScopes));
+        expect(adminUrl.searchParams.get("access_type")).toBe("offline");
+        expect(adminUrl.searchParams.get("prompt")).toBe("consent");
+        for (const mismatch of [adminEndpointMismatch, adminScopeMismatch]) {
+          expect(mismatch.setup.mode).toBe("client-required");
+          expect(mismatch.setup.firstParty).toBeUndefined();
+          expect(mismatch.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+        }
         // Each approved product must offer the shared client and forward its exact scopes.
         for (const [key, scopes] of [
           ["youtube", ["youtube", "youtube.force-ssl"]],

@@ -15,7 +15,7 @@ export const FirstPartyOAuthClientDefinition = FirstPartyOAuthClient.mapFields(
 export type FirstPartyOAuthClientDefinition = typeof FirstPartyOAuthClientDefinition.Encoded;
 
 /**
- * Every scope Executor for Google may ask for and a grant may hold. This is v1's
+ * Every regular Google scope Executor for Google may ask for and a grant may hold. This is v1's
  * `GOOGLE_ALLOWED_SCOPES` (`apps/cloud/src/engine/first-party-oauth-clients.ts` in
  * UsefulSoftwareCo/executor): the scopes v1's catalog requested for its 13 first-party Google
  * presets (Calendar, Meet, Gmail, Sheets, Drive, Docs, Slides, Forms, Tasks, People, Photos
@@ -69,6 +69,28 @@ const googleAllowedScopes = [
   "https://www.googleapis.com/auth/script.deployments",
   "https://www.googleapis.com/auth/script.processes",
   "https://www.googleapis.com/auth/script.metrics",
+];
+
+/** Admin SDK scopes requested by the official Google Admin app. */
+const googleAdminScopes = [
+  "https://www.googleapis.com/auth/admin.directory.user",
+  "https://www.googleapis.com/auth/admin.directory.user.alias",
+  "https://www.googleapis.com/auth/admin.directory.user.security",
+  "https://www.googleapis.com/auth/admin.directory.userschema",
+  "https://www.googleapis.com/auth/admin.directory.group",
+  "https://www.googleapis.com/auth/admin.directory.group.member",
+  "https://www.googleapis.com/auth/admin.directory.orgunit",
+  "https://www.googleapis.com/auth/admin.directory.domain",
+  "https://www.googleapis.com/auth/admin.directory.customer",
+  "https://www.googleapis.com/auth/admin.directory.rolemanagement",
+  "https://www.googleapis.com/auth/admin.directory.device.chromeos",
+  "https://www.googleapis.com/auth/admin.directory.device.mobile",
+  "https://www.googleapis.com/auth/admin.directory.device.mobile.action",
+  "https://www.googleapis.com/auth/admin.directory.resource.calendar",
+  "https://www.googleapis.com/auth/admin.chrome.printers",
+  "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+  "https://www.googleapis.com/auth/admin.reports.usage.readonly",
+  "https://www.googleapis.com/auth/admin.datatransfer",
 ];
 
 /**
@@ -164,7 +186,7 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     },
     tokenEndpointAuthMethod: "client_secret_post",
     defaultScopes: ["openid", "email", "profile"],
-    allowedScopes: googleAllowedScopes,
+    allowedScopes: [...googleAllowedScopes, ...googleAdminScopes],
     placement: { hosts: ["*.googleapis.com"] },
   },
   {
