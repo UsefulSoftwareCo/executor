@@ -19,6 +19,7 @@ import {
   OAuthTokenResponse,
   PlacementHeaderName,
 } from "apps/contracts";
+import { AccountIdentityId } from "./account-identity.ts";
 import { Account, type AccountFieldsInvalid } from "./account.ts";
 export { OAuthClientAuth } from "apps/contracts";
 import type { HttpClient } from "effect/http";
@@ -738,6 +739,9 @@ export const OAuthCompletionReason = Schema.Literals([
   "sign_in_expired",
   "sign_in_used",
   "account_unavailable",
+  "identity_mismatch",
+  "grant_changed",
+  "scope_missing",
   // The stored client the sign-in started with is no longer one the caller may use.
   "client_unavailable",
   // The service's authorization response, validated before its `error` is read.
@@ -953,6 +957,27 @@ export const OAuthCompletionFailed = UserFacingError.define({
                 "Compare the issuer the app's provider definition declares, or the issuer its discovery URL publishes, with the service's documented issuer. Prefer the service's discovery document, or declare its exact issuer alongside explicit endpoints. Do not disable issuer validation (RFC 9207).",
             },
           },
+          identity_mismatch: restart({
+            title: "A different account signed in",
+            description:
+              "The service returned a different account. Your saved sign-in and app links were not changed.",
+            instructions:
+              "Start again with the selected account, or choose to add another account. Never attach a different subject to the selected identity.",
+          }),
+          grant_changed: restart({
+            title: "Sign-in changed during consent",
+            description:
+              "The selected sign-in changed while you were away. Your new app links were not saved.",
+            instructions:
+              "Read the account and its current grant state, then start a fresh connection. Do not replay this callback or replace the newer grant.",
+          }),
+          scope_missing: restart({
+            title: "Some access was not granted",
+            description:
+              "The service did not confirm all the requested access. Your saved sign-in and app links were not changed.",
+            instructions:
+              "Start again and grant the access required by the selected apps. Requested scopes are not proof that access was granted.",
+          }),
           denied: {
             title: "Sign-in was cancelled",
             description: "Access was not approved on the service’s sign-in page.",
@@ -1113,6 +1138,9 @@ export const oauthCompletionRecovery = {
   sign_in_expired: "restart",
   sign_in_used: "restart",
   account_unavailable: "account",
+  identity_mismatch: "restart",
+  grant_changed: "restart",
+  scope_missing: "restart",
   client_unavailable: "restart",
   issuer_mismatch: "configuration",
   denied: "cancelled",
@@ -1303,6 +1331,7 @@ export type OAuthAttemptId = typeof OAuthAttemptId.Type;
 
 /** Validated subset of authorization-server metadata used for saved grants. */
 export const OAuthTokenServer = Schema.Struct({
+  userinfo_endpoint: Schema.optionalKey(HttpUrl),
   /** Microsoft identity platform's multi-tenant metadata publishes a `{tenantid}` template here. */
   issuer: HttpUrl,
   /**
@@ -1440,6 +1469,24 @@ export const OAuthClientUse = Schema.Struct({
   fresh: Schema.Boolean,
 });
 export type OAuthClientUse = typeof OAuthClientUse.Type;
+/** Existing connection requests batched into one authorization; each retains its own target and policy. */
+export const OAuthAdditionalConnection = Schema.Struct({
+  connection: AccountConnectionId,
+  method: Schema.NonEmptyString,
+});
+export type OAuthAdditionalConnection = typeof OAuthAdditionalConnection.Type;
+/** The source grant revision selected before consent; callbacks cannot substitute another identity or client. */
+export const OAuthConsentSource = Schema.Struct({
+  account: AccountId,
+  grant: AccountId,
+  generation: Schema.Int,
+  version: Schema.NonEmptyString,
+  identity: AccountIdentityId,
+  issuer: HttpUrl,
+  subject: Schema.NonEmptyString,
+});
+export type OAuthConsentSource = typeof OAuthConsentSource.Type;
+
 /** What every sign-in attempt keeps, whichever client it uses. */
 const attemptFields = {
   connection: AccountConnectionId,
@@ -1454,6 +1501,11 @@ const attemptFields = {
   state: Schema.NonEmptyString,
   verifier: Schema.NonEmptyString,
   response: JsonObject,
+  /** The identity declaration and requested access frozen before the browser leaves. */
+  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
+  requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+  consentSource: Schema.optionalKey(OAuthConsentSource),
+  additionalConnections: Schema.optionalKey(Schema.Array(OAuthAdditionalConnection)),
 };
 /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
 export const OAuthAttempt = Schema.Struct({
@@ -1508,10 +1560,20 @@ const grantFields = {
  * current generation, since every sign-in since then records it.
  */
 const grantGeneration = Schema.optional(Schema.Int);
+/** Authenticated provenance, kept encrypted with the actual grant rather than inferred from labels. */
+const reusableGrant = {
+  authorizationClient: Schema.optionalKey(Schema.NonEmptyString),
+  identityId: Schema.optionalKey(AccountIdentityId),
+  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, subject: Schema.NonEmptyString })),
+  requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** Unknown on legacy grants and when the service did not confirm its granted scopes. */
+  grantedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+};
 /** Private renewal context; machine grants retain scopes and exchange client credentials again. */
 export const OAuthGrant = Schema.Union([
   Schema.Struct({
     ...grantFields,
+    ...reusableGrant,
     grant: Schema.optionalKey(Schema.Literal("authorization_code")),
     server: OAuthServer,
     client: OAuthRegistration,
@@ -1546,6 +1608,7 @@ export const OAuthGrant = Schema.Union([
    */
   Schema.Struct({
     grant: Schema.Literal("authorization_code"),
+    ...reusableGrant,
     firstParty: FirstPartyOAuthClientId,
     response: JsonObject,
     expiresAt: Schema.optional(Schema.Number),

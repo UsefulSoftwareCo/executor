@@ -1067,7 +1067,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const [allowed, defaults, wider] = yield* Effect.all(
           [
             signIn("calendar", [calendar]),
-            // A provider that asks for no scopes gets the client's defaults.
+            // Google still requests the identity scopes when the app declares none.
             signIn("defaults", []),
             // A scope outside the client's allowed scopes.
             signIn("wider", [calendar, "https://www.googleapis.com/auth/cloud-platform"]),
@@ -1076,21 +1076,24 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         );
         expect(allowed.setup).toMatchObject({
           firstParty: { label: "Executor for Google" },
-          scopes: [calendar],
+          scopes: [calendar, "openid", "email"],
         });
         expect(allowed.started.status, JSON.stringify(allowed.started.body)).toBe(200);
         // Signing in goes to Google with the operator's client, asking for a refresh token.
         const sent = new URL((yield* body(Redirect, allowed.started)).authorizationUrl);
         expect(`${sent.origin}${sent.pathname}`).toBe(google.authorizationUrl);
         expect(sent.searchParams.get("client_id")).toBe(clientId);
-        expect(sent.searchParams.get("scope")).toBe(calendar);
+        expect(sent.searchParams.get("scope")).toBe(`${calendar} openid email`);
         expect(sent.searchParams.get("access_type")).toBe("offline");
         expect(sent.searchParams.get("prompt")).toBe("consent");
-        expect(sent.searchParams.has("include_granted_scopes")).toBe(false);
+        expect(sent.searchParams.get("include_granted_scopes")).toBe("true");
         expect(defaults.setup).toMatchObject({
           firstParty: { label: "Executor for Google" },
-          scopes: ["openid", "email", "profile"],
+          scopes: ["openid", "email"],
         });
+        expect(defaults.started.status, JSON.stringify(defaults.started.body)).toBe(200);
+        const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
+        expect(defaultsUrl.searchParams.get("scope")).toBe("openid email");
         // Each approved product must offer the shared client and forward its exact scopes.
         for (const [key, scopes] of [
           ["youtube", ["youtube", "youtube.force-ssl"]],
@@ -1107,7 +1110,11 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expect(product.started.status, key).toBe(200);
           const url = new URL((yield* body(Redirect, product.started)).authorizationUrl);
           expect(url.searchParams.get("client_id"), key).toBe(clientId);
-          expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
+          expect(url.searchParams.get("scope")?.split(" "), key).toEqual([
+            ...requested,
+            "openid",
+            "email",
+          ]);
         }
         expect(wider.setup.firstParty).toBeUndefined();
         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });

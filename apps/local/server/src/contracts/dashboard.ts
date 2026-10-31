@@ -19,6 +19,13 @@ import { AccountWebhooksActive } from "@executor-js/sdk/core";
 import { AppWebhooksActive } from "@executor-js/sdk/core";
 /** Browser-safe read contracts for inspecting the local Executor instance. */
 import {
+  AccountConnection,
+  AccountConnectionId,
+  PlanConnectionOAuth,
+  OAuthConnectionPlan,
+  StartConnectionOAuth,
+  ReuseConnectionOAuth,
+  OAuthGrantReuseResult,
   AccountConnectionTargetChanged,
   AccountConnectionRefused,
   AccountScope,
@@ -106,7 +113,7 @@ import {
 import { ConnectionSignIn } from "./account-connections.ts";
 import { RequirementMismatch } from "./requirement-mismatch.ts";
 import { AuthStorageError } from "./auth.ts";
-import { Schema } from "effect";
+import { Schema, Struct } from "effect";
 import {
   HttpApi,
   HttpApiEndpoint,
@@ -349,6 +356,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
         OAuthClientUnavailable,
         OAuthClientNotFound,
         OAuthSetupFailed,
+        OAuthCompletionFailed,
       ],
     }).annotate(
       OpenApi.Description,
@@ -551,6 +559,62 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
         success: DashboardApp,
         error: [StorageError, AppNotFound],
       }),
+    )
+    .add(
+      HttpApiEndpoint.post("identifyAccount", "/dashboard/api/accounts/:account/identity", {
+        params: { account: AccountId },
+        success: Account,
+        error: [StorageError, CredentialsError, AccountNotFound, AccountManagementBlocked],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post("createIdentityConnection", "/dashboard/api/account-connections", {
+        payload: Schema.Struct({
+          app: AppId,
+          requirement: Schema.NonEmptyString,
+          scope: AccountScope,
+        }),
+        success: AccountConnection,
+        error: appConnectionErrors,
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post("planIdentityOAuth", "/dashboard/api/account-connections/oauth/plan", {
+        payload: Schema.Struct(Struct.omit(PlanConnectionOAuth.fields, ["owner"])),
+        success: OAuthConnectionPlan,
+        error: [...appConnectionErrors, OAuthSetupFailed],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post("reuseIdentityOAuth", "/dashboard/api/account-connections/oauth/reuse", {
+        payload: Schema.Struct(Struct.omit(ReuseConnectionOAuth.fields, ["owner"])),
+        success: OAuthGrantReuseResult,
+        error: [...appConnectionErrors, OAuthSetupFailed],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post("startIdentityOAuth", "/dashboard/api/account-connections/oauth/start", {
+        payload: Schema.Struct(Struct.omit(StartConnectionOAuth.fields, ["owner", "redirectUri"])),
+        success: ConnectionSignIn,
+        error: [
+          ...appConnectionErrors,
+          OAuthSetupFailed,
+          OAuthCompletionFailed,
+          OAuthClientUnavailable,
+          OAuthClientNotFound,
+        ],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post(
+        "cancelIdentityConnection",
+        "/dashboard/api/account-connections/:connection/cancel",
+        {
+          params: { connection: AccountConnectionId },
+          success: AccountConnection,
+          error: appConnectionErrors,
+        },
+      ),
     )
     .add(appList)
     .add(appGet)

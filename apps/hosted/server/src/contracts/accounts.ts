@@ -25,6 +25,10 @@ import {
   AuthMethodInvalid,
   CredentialsError,
   OAuthClientNotFound,
+  PlanConnectionOAuth,
+  OAuthConnectionPlan,
+  ReuseConnectionOAuth,
+  OAuthGrantReuseResult,
   OAuthClientSelection,
   OAuthClientUnavailable,
   OAuthConnectOptions,
@@ -158,6 +162,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
     }).annotate(RequiredAction, "run"),
   )
   .add(
+    HttpApiEndpoint.post("identify", `${prefix}/accounts/:account/identity`, {
+      params: { ...params, account: AccountId },
+      success: Account,
+      error: [StorageError, CredentialsError, AccountNotFound, OrganizationForbidden],
+    }).pipe(requireAccount.use),
+  )
+  .add(
     HttpApiEndpoint.post("check", `${prefix}/accounts/:account/health`, {
       params: { ...params, account: AccountId },
       success: AccountHealth,
@@ -229,10 +240,44 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
     }).annotate(RequiredAction, "manage"),
   )
   .add(
+    HttpApiEndpoint.post("planOAuth", `${prefix}/connections/:connection/oauth/plan`, {
+      params: connection,
+      payload: Schema.Struct({
+        method: PlanConnectionOAuth.fields.method,
+        sourceAccount: PlanConnectionOAuth.fields.sourceAccount,
+        additionalConnections: PlanConnectionOAuth.fields.additionalConnections,
+      }),
+      success: OAuthConnectionPlan,
+      error: [...completionErrors, AuthMethodInvalid, OAuthSetupFailed],
+    }).annotate(RequiredAction, "manage"),
+  )
+  .add(
+    HttpApiEndpoint.post("reuseOAuth", `${prefix}/connections/:connection/oauth/reuse`, {
+      params: connection,
+      payload: Schema.Struct({
+        account: ReuseConnectionOAuth.fields.account,
+        method: ReuseConnectionOAuth.fields.method,
+        label: ReuseConnectionOAuth.fields.label,
+        additionalConnections: ReuseConnectionOAuth.fields.additionalConnections,
+      }),
+      success: OAuthGrantReuseResult,
+      error: [...completionErrors, AuthMethodInvalid, OAuthSetupFailed],
+    }).annotate(RequiredAction, "manage"),
+  )
+  .add(
+    HttpApiEndpoint.post("cancelConnection", `${prefix}/connections/:connection/cancel`, {
+      params: connection,
+      success: AccountConnection,
+      error: [...completionErrors],
+    }).annotate(RequiredAction, "manage"),
+  )
+  .add(
     HttpApiEndpoint.post("startOAuth", `${prefix}/connections/:connection/oauth/start`, {
       params: connection,
       payload: Schema.Struct({
         method: Schema.NonEmptyString,
+        sourceAccount: PlanConnectionOAuth.fields.sourceAccount,
+        additionalConnections: PlanConnectionOAuth.fields.additionalConnections,
         label: Schema.optional(Schema.NonEmptyString),
         /**
          * A registered client the caller may use, the organization's automatic client, or one
@@ -248,6 +293,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
         OAuthClientUnavailable,
         OAuthClientNotFound,
         OAuthSetupFailed,
+        OAuthCompletionFailed,
       ],
     }).annotate(RequiredAction, "manage"),
   )

@@ -1,3 +1,8 @@
+import { VerifyIdentities } from "@executor-js/ui/dashboard/verify-identities";
+import { useAtomSet } from "@effect/atom-react";
+import { identifyAccountsAtom } from "../../contracts/accounts.ts";
+import { IdentityAppPicker } from "@executor-js/ui/dashboard/identity-app-picker";
+import { AppConnectionDialogContent } from "./app-accounts.tsx";
 import { useState } from "react";
 import type { AccountId } from "@executor-js/sdk";
 import {
@@ -14,6 +19,7 @@ import { useQuery } from "@executor-js/ui/dashboard/context";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
 import { OAuthClientsDialog } from "./oauth-clients.tsx";
+import { inventoryAtom } from "../../contracts/organization.ts";
 import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
 /**
  * Personal and shared credentials use one list. Administrators also manage the organization's
@@ -27,7 +33,9 @@ export function AccountsPage({
   readonly oauthClients: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void };
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
+  const identify = useAtomSet(identifyAccountsAtom(organization), { mode: "promiseExit" });
   const directory = useQuery(resourceDirectoryAtom(organization));
+  const setup = useQuery(inventoryAtom(organization));
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
   const role = useOrganizationDetails()?.role;
   const admin = role !== undefined && role !== "member";
@@ -41,7 +49,16 @@ export function AccountsPage({
       <SharedPage
         query={resourceInventoryAtom(organization)}
         Failure={HostedFailure}
-        action={manageClients}
+        action={
+          <>
+            <VerifyIdentities
+              query={resourceInventoryAtom(organization)}
+              identify={identify}
+              Failure={HostedFailure}
+            />
+            {manageClients}
+          </>
+        }
         empty={
           <EmptyState
             title="No accounts available"
@@ -60,6 +77,29 @@ export function AccountsPage({
           </EmptyState>
         }
         highlight={highlight}
+        identityActions={(bindings, inventory) => {
+          const ready = Option.getOrUndefined(setup.data);
+          return (
+            ready !== undefined && (
+              <IdentityAppPicker bindings={bindings} inventory={inventory}>
+                {({ app, requirement, slot, method, account, onDone, onPendingChange }) => (
+                  <AppConnectionDialogContent
+                    key={`${app.id}:${slot}`}
+                    app={app}
+                    scope={requirement.scope}
+                    slot={slot}
+                    requirement={requirement}
+                    method={method}
+                    initialAccount={account}
+                    redirectUri={ready.accountSetup.redirectUri}
+                    onSaved={onDone}
+                    onPendingChange={onPendingChange}
+                  />
+                )}
+              </IdentityAppPicker>
+            )
+          );
+        }}
         accountActions={(account) => {
           const entry = Option.isSome(directory.data)
             ? directory.data.value.accounts.find((item) => item.account.id === account.id)

@@ -42,12 +42,21 @@ const tones = {
 /**
  * One app's latest check as a dot on its app reference. A result from before the account's
  * credentials or the app changed is shown as outdated, never as the current state. Apps without a
- * check, or not yet checked, show nothing.
+ * check show nothing; a checkable app without a result has a neutral marker.
  */
 export function AccountCheckDot({ health }: { readonly health: AccountAppHealth | undefined }) {
   const format = useDisplayFormat();
   const check = health?.check;
-  if (check === null || check === undefined || health?.checkable !== true) return null;
+  if (health?.checkable !== true) return null;
+  if (check === null || check === undefined)
+    return (
+      <span
+        className={`size-1.5 shrink-0 rounded-full ${tones.muted}`}
+        role="img"
+        aria-label="Not checked"
+        title="Not checked"
+      />
+    );
   const { label, tone } = describeAccountCheck(check.status);
   const text = `${check.current ? label : `${label} (outdated)`}${check.message === undefined ? "" : `: ${check.message}`}`;
   return (

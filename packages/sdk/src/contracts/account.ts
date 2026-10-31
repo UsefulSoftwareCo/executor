@@ -9,6 +9,7 @@ import type { UiAccountProblem } from "apps/ui/contracts";
 import type { App, AppAccounts } from "./apps.ts";
 import { AccountId, AppId, JsonObject, OwnerId, ProviderId, WebhookId } from "./shared.ts";
 import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
+import { AccountIdentity } from "./account-identity.ts";
 
 /**
  * An independently owned account for one provider method. Several configured
@@ -27,6 +28,8 @@ export const Account = Schema.Struct({
   description: Schema.NullOr(Schema.String),
   owner: OwnerId,
   createdAt: Schema.Date,
+  /** Present only for a verified upstream subject at this binding's current placement. */
+  identity: Schema.optionalKey(AccountIdentity),
 });
 
 export type Account = typeof Account.Type;
@@ -356,6 +359,18 @@ export const AccountSignIn = Schema.Union([
 export type AccountSignIn = typeof AccountSignIn.Type;
 
 export const AccountsGroup = HttpApiGroup.make("accounts")
+  .add(
+    HttpApiEndpoint.post("identify", "/v1/accounts/:account/identity", {
+      params: accountParams,
+      query: ownerQuery,
+      success: Account,
+      error: [StorageError, CredentialsError, AccountNotFound],
+    }).annotate(
+      OpenApi.Description,
+      "Verify a retained account's stable subject through its declared issuer's authenticated UserInfo endpoint. Preserves account IDs, links, client choices and grants. An account without available proof remains independent. Hosts must authorize use of the account.",
+    ),
+  )
+
   .add(
     HttpApiEndpoint.patch("update", "/v1/accounts/:account", {
       params: accountParams,

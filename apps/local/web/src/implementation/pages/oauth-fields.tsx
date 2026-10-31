@@ -1,6 +1,12 @@
 import { usePageUrl } from "@executor-js/dashboard-start/page";
 import type { AccountOAuthProps, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
 import type { FailureProps } from "@executor-js/ui/contracts/dashboard";
+import { useState } from "react";
+import type { AccountId, AccountScope } from "@executor-js/sdk";
+import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
+import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
+import { overviewAtom } from "../../contracts/api.ts";
 import { useAtomSet } from "@effect/atom-react";
 import type { Atom } from "effect/reactivity";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
@@ -37,25 +43,62 @@ type FieldsProps = AccountOAuthProps & {
 /** A sign-in for an app requirement on its app page; the browser returns to that app. */
 export function AppOAuthFields({
   app,
+  scope,
+  requirement,
+  initialAccount,
   atoms,
   onSaved,
   ...props
 }: FieldsProps & {
   readonly app: AppId;
+  readonly scope: AccountScope;
+  readonly requirement: string;
+  readonly initialAccount?: AccountId | undefined;
   readonly atoms: ReturnType<typeof appConnectionAtoms>;
   readonly onSaved: (account: Account) => void;
 }) {
   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
+  const [identityAtoms] = useState(() => identityConsentAtoms({ app, scope, requirement }));
+  const plan = useAtomSet(identityAtoms.plan, { mode: "promiseExit" });
+  const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
+  const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
   const reconnect = props.account !== undefined;
-  return (
+  const fields = (selection: IdentityConsentSelection) => (
     <Fields
       {...props}
       query={oauthSetupAtom({ provider: props.provider.id, method: props.method })}
       Failure={Failure}
-      start={(client) => start({ method: props.method, ...client })}
+      start={(client) =>
+        reconnect
+          ? start({ method: props.method, ...client })
+          : authorize({ ...selection, method: props.method, ...client })
+      }
       onSaved={onSaved}
       open={(authorizationUrl) => openOAuth(authorizationUrl, { app, reconnect })}
     />
+  );
+  if (reconnect) return fields({});
+  return (
+    <IdentityConsent
+      query={overviewAtom}
+      Failure={Failure}
+      provider={props.provider}
+      method={props.method}
+      app={app}
+      initialAccount={initialAccount}
+      disabled={props.disabled}
+      onPendingChange={props.onPendingChange}
+      plan={plan}
+      reuse={reuse}
+      start={(selection) => authorize({ method: props.method, ...selection })}
+      onSaved={onSaved}
+      onAuthorized={(value) => {
+        if (value.status === "completed") onSaved(value.account);
+        else Effect.runSync(openOAuth(value.authorizationUrl, { app, reconnect: false }));
+      }}
+    >
+      {(selection) => fields(selection)}
+    </IdentityConsent>
   );
 }
 

@@ -28,6 +28,7 @@ import {
 } from "../contracts/oauth.ts";
 import type { OAuthTokenRequestFormat, OAuthTokenResponse } from "apps/contracts";
 import type { ProviderAuthMethod } from "../contracts/provider.ts";
+import { oauthIdentityConsent } from "../contracts/oauth-families.ts";
 import {
   challengeDiagnostics,
   descriptionLength,
@@ -1477,6 +1478,52 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     });
 
   return {
+    /** UserInfo is authenticated by the access token and pinned to verified issuer metadata. */
+    identify: (
+      identity: { readonly issuer: string; readonly name: string },
+      server: OAuthServer,
+      accessToken: string,
+    ) =>
+      Effect.gen(function* () {
+        const issuer = yield* secureUrl(identity.issuer);
+        const discovered = yield* discoverIssuer(issuer);
+        if ("missing" in discovered) return yield* discovered.missing;
+        const verified = discovered.server;
+        if (
+          verified.issuer !== identity.issuer ||
+          verified.authorization_endpoint !== server.authorization_endpoint ||
+          verified.token_endpoint !== server.token_endpoint ||
+          verified.userinfo_endpoint === undefined
+        )
+          return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
+        const endpoint = yield* secureUrl(verified.userinfo_endpoint);
+        const profile = yield* request(async (settings) => {
+          const response = await settings[oauth.customFetch](endpoint.href, {
+            method: "GET",
+            body: undefined,
+            redirect: "manual",
+            signal: settings.signal,
+            headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
+          });
+          if (response.status !== 200)
+            throw new OAuthProtocolFailed({ reason: "invalid_response" });
+          return response.json();
+        });
+        const user = yield* decode(
+          Schema.Struct({
+            sub: Schema.NonEmptyString,
+            name: Schema.optionalKey(Schema.NonEmptyString),
+            email: Schema.optionalKey(Schema.NonEmptyString),
+          }),
+          profile,
+        );
+        return {
+          issuer: identity.issuer,
+          subject: user.sub,
+          name: identity.name,
+          label: user.email ?? user.name ?? identity.name,
+        };
+      }).pipe(Effect.withSpan("oauth.identify")),
     discover: (method: OAuthMethod) =>
       Effect.gen(function* () {
         const resolved = yield* Effect.gen(function* () {
@@ -1516,14 +1563,21 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           yield* allowedEndpoints(resolved.server);
           return { ...resolved, ...requestEncoding, grant: "client_credentials" as const };
         }
+        const identityConsent = oauthIdentityConsent(method);
         return {
           ...resolved,
+          scopes: [...new Set([...resolved.scopes, ...(identityConsent?.scopes ?? [])])],
           ...requestEncoding,
           grant: "authorization_code" as const,
           server: yield* browserServer(resolved.server),
-          ...(method.authorizationParams === undefined
+          ...(method.authorizationParams === undefined && identityConsent === undefined
             ? {}
-            : { authorizationParams: method.authorizationParams }),
+            : {
+                authorizationParams: {
+                  ...identityConsent?.authorizationParams,
+                  ...method.authorizationParams,
+                },
+              }),
           ...(method.tokenResponse === undefined ? {} : { tokenResponse: method.tokenResponse }),
         };
       }).pipe(protocolStage("discover")),

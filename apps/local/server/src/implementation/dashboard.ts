@@ -1,3 +1,4 @@
+import { dashboardOAuthConnections } from "./dashboard-oauth-connections.ts";
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 import { connectOptions, connectionClient } from "./oauth-clients.ts";
 import { localResourceHandlers } from "./resources.ts";
@@ -218,6 +219,7 @@ export const dashboard = (
       return { ...signIn, connection: connection.id };
     });
   const access = dashboardAccess(config, auth);
+  const identityConnections = dashboardOAuthConnections(executor, managedApp);
   /** Only the dashboard's own runs are reviewed here. The arguments shown and resumed are the saved invocation's. */
   const reviewedTool = (app: AppId, requestId: ApprovalRequestId) =>
     Effect.gen(function* () {
@@ -493,6 +495,30 @@ export const dashboard = (
             Effect.tap(() => wakeWebhookSources),
           ),
         ),
+      )
+      .handle("identifyAccount", ({ params }) =>
+        manage(params.account, executor.accounts.identify({ account: params.account, owner })),
+      )
+      .handle("createIdentityConnection", ({ payload }) =>
+        appConnection({ app: payload.app, requirement: payload.requirement }, payload.scope, {}),
+      )
+      .handle("planIdentityOAuth", ({ payload }) => identityConnections.plan(payload))
+      .handle("reuseIdentityOAuth", ({ payload }) =>
+        identityConnections.reuse(payload).pipe(Effect.tap(() => wakeWebhookSources)),
+      )
+      .handle("startIdentityOAuth", ({ payload }) =>
+        Effect.gen(function* () {
+          const request = yield* localRequest(config.port, config.browserOrigin).pipe(
+            Effect.mapError(() => new DashboardForbidden()),
+          );
+          return yield* identityConnections.start({
+            ...payload,
+            redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
+          });
+        }),
+      )
+      .handle("cancelIdentityConnection", ({ params }) =>
+        identityConnections.cancel(params.connection),
       )
       .handle("appConnect", ({ params, payload }) => connectWithFields(params, "app", payload))
       .handle("appConnectOAuth", ({ params, payload }) => connectWithOAuth(params, "app", payload))

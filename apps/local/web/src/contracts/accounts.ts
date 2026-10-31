@@ -128,3 +128,22 @@ export const checkCredentialsAtom = DashboardClient.runtime.fn(
       }),
     ),
 );
+
+/** Only safe verified identity metadata is added; existing IDs, clients and links stay intact. */
+export const identifyAccountsAtom = DashboardClient.runtime.fn(
+  (accounts: readonly AccountId[], get) =>
+    Effect.forEach(
+      accounts,
+      (account) =>
+        Effect.flatMap(DashboardClient, (client) =>
+          client.dashboard.identifyAccount({ params: { account } }),
+        ),
+      { concurrency: 2 },
+    ).pipe(
+      Effect.tap((accounts) =>
+        Effect.sync(() => {
+          for (const account of accounts) accountCredentialsChanged(get, account);
+        }),
+      ),
+    ),
+);

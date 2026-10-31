@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
         expect(rejected.body).toMatchObject({
           _tag: "VersionBuildFailed",
           reason:
-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13. Declare a supported apps version.",
+            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 23. Declare a supported apps version.",
         });
         expect((yield* call("queries.version")).body).toEqual(Published);
         expect(

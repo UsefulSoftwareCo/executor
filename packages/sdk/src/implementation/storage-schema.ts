@@ -1,6 +1,7 @@
 import { WorkflowRunId } from "../contracts/workflows.ts";
 import { AppSlug } from "../contracts/app-slug.ts";
 import { AccountScope } from "../contracts/apps.ts";
+import { AccountIdentityId } from "../contracts/account-identity.ts";
 /** Table layouts of each schema version. Versions and upgrades are registered in storage-migrations.ts. */
 import { SourceCommit } from "../contracts/source.ts";
 import {
@@ -867,4 +868,55 @@ export const queueReadIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_webhook_sources_intent ON executor_webhook_sources (lease_until) WHERE status = 'pending' AND lease IS NULL",
   "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
   "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
+] as const;
+
+/** Additive identity and grant references; legacy bindings keep null references. */
+const identifiedAccounts = table("executor_accounts", {
+  ...version4015Tables.accounts.columns,
+  identityId: column("identity_id", Schema.NullOr(AccountIdentityId), {
+    type: "varchar(255)",
+  }).default(null),
+  oauthGrantId: column("oauth_grant_id", Schema.NullOr(AccountId), {
+    type: "varchar(255)",
+  }).default(null),
+});
+
+const accountIdentities = table("executor_account_identities", {
+  id: idColumn("id", AccountIdentityId, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  placement: column("placement", Schema.String),
+  issuer: column("issuer", Schema.String),
+  subject: column("subject", Schema.String),
+  name: column("name", Schema.String),
+  label: column("label", Schema.String),
+  verifiedAt: column("verified_at", Schema.Date),
+  createdAt: column("created_at", Schema.Date),
+});
+
+const reusableConnections = table("executor_account_connections", {
+  ...version4015Tables.accountConnections.columns,
+  sourceAccount: column("source_account", Schema.NullOr(AccountId), {
+    type: "varchar(255)",
+  }).default(null),
+  additionalTargets: column("additional_targets", Schema.Json).default([]),
+});
+
+const reusableGrants = table("executor_oauth_grants", {
+  ...version4015Tables.oauthGrants.columns,
+  /** Shared grants outlive any one binding, so owner removal cannot depend on its old account ID. */
+  owner: column("owner", Schema.NullOr(OwnerId), { type: "varchar(255)" }).default(null),
+});
+
+/** The single identity storage step includes the references later connection flows consume. */
+export const version4024Tables = {
+  ...version4015Tables,
+  accounts: identifiedAccounts,
+  accountIdentities,
+  accountConnections: reusableConnections,
+  oauthGrants: reusableGrants,
+};
+
+export const accountIdentityIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_accounts_identity ON executor_accounts (identity_id)",
+  "CREATE INDEX IF NOT EXISTS executor_accounts_oauth_grant ON executor_accounts (oauth_grant_id)",
 ] as const;

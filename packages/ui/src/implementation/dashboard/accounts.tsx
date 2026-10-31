@@ -12,7 +12,9 @@ import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dash
 import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 
 import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+import { accountGroups, bindingApps } from "../../contracts/account-identities.ts";
 import { Button } from "../components/button.tsx";
+import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 
 /** Saved account metadata is shared across app references, without exposing credential values. */
 export function AccountsPage<E>({
@@ -26,6 +28,10 @@ export function AccountsPage<E>({
   readonly action?: ReactNode;
   readonly empty?: ReactNode;
   readonly accountActions?: (account: AccountSummary) => ReactNode;
+  readonly identityActions?: (
+    bindings: readonly AccountSummary[],
+    inventory: Inventory,
+  ) => ReactNode;
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
   /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
   readonly highlight?: AccountId | undefined;
@@ -37,7 +43,7 @@ export function AccountsPage<E>({
       <PageHeader
         title="Accounts"
         description="Saved sign-ins, available to your apps."
-        {...(Option.isSome(data) ? { count: data.value.accounts.length } : {})}
+        {...(Option.isSome(data) ? { count: accountGroups(data.value.accounts).length } : {})}
       >
         {(!Option.isSome(data) || data.value.accounts.length > 0) && action}
       </PageHeader>
@@ -75,6 +81,7 @@ function AccountsList({
   data,
   search,
   accountActions,
+  identityActions,
   accountMeta,
   highlight,
   empty,
@@ -85,6 +92,10 @@ function AccountsList({
   readonly empty: ReactNode;
   readonly clearSearch: () => void;
   readonly accountActions?: (account: AccountSummary) => ReactNode;
+  readonly identityActions?: (
+    bindings: readonly AccountSummary[],
+    inventory: Inventory,
+  ) => ReactNode;
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
   readonly highlight?: AccountId | undefined;
 }) {
@@ -93,14 +104,23 @@ function AccountsList({
   useEffect(() => {
     highlighted.current?.scrollIntoView({ block: "center" });
   }, [highlight]);
-  const accounts = data.accounts.filter((account) =>
-    `${account.label} ${account.providerName ?? ""}`.toLowerCase().includes(search.toLowerCase()),
+  const groups = accountGroups(data.accounts).filter(({ bindings }) =>
+    bindings.some((account) =>
+      `${account.identity?.label ?? ""} ${account.identity?.name ?? ""} ${account.label} ${account.providerName ?? ""} ${bindingApps(
+        data,
+        [account],
+      )
+        .map((app) => app.name)
+        .join(" ")}`
+        .toLowerCase()
+        .includes(search.toLowerCase()),
+    ),
   );
   return (
     <>
       {data.accounts.length === 0 ? (
         empty
-      ) : accounts.length === 0 ? (
+      ) : groups.length === 0 ? (
         <Empty
           title="No matching accounts"
           action={
@@ -119,25 +139,26 @@ function AccountsList({
             <span>Apps</span>
             <span className="sr-only">Actions</span>
           </div>
-          {accounts.map((account) => {
-            const apps = data.apps.filter((app) =>
-              data.links.some((link) => link.app === app.id && link.account === account.id),
-            );
+          {groups.map(({ account, bindings }) => {
+            const apps = bindingApps(data, bindings);
+            const marked = bindings.some((binding) => binding.id === highlight);
             return (
               <div
                 className="inventory-row accounts-grid grid grid-cols-[minmax(200px,_1.5fr)_minmax(130px,_0.8fr)_minmax(170px,_1fr)_auto] gap-6.25 items-center py-[12px] px-[16px] border-t border-t-border min-h-16 [a&:hover]:bg-muted max-[1000px]:grid-cols-[minmax(0,_1.3fr)_minmax(0,_1fr)_auto] max-[1000px]:gap-4 max-[1000px]:[.inventory-header&_>_span:nth-child(2)]:hidden max-[740px]:grid-cols-[minmax(0,_1fr)_auto] max-[740px]:gap-3 max-[740px]:py-[12px] data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)] max-[740px]:px-[16px] max-[740px]:[&:first-of-type]:border-t-0 max-[740px]:[.inventory-header_+_&]:border-t-0"
                 key={account.id}
-                {...(account.id === highlight
+                {...(marked
                   ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
                   : {})}
               >
-                <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px]">
+                <div className="app-cell max-[740px]:col-span-2 [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px]">
                   <ProviderIcon
-                    name={account.providerName ?? "Account"}
+                    name={account.identity?.name ?? account.providerName ?? "Account"}
                     url={account.providerUrl}
                   />
                   <div>
-                    <strong>{account.label || "Unnamed account"}</strong>
+                    <strong>
+                      {account.identity?.label ?? (account.label || "Unnamed account")}
+                    </strong>
                     {account.description && (
                       <p
                         className="account-description mt-0.5 truncate text-[12px] text-muted-foreground"
@@ -149,11 +170,13 @@ function AccountsList({
                     <div className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
                       {account.providerName && (
                         <>
-                          <span>{account.providerName}</span>
+                          <span>{account.identity?.name ?? account.providerName}</span>
                           <span>·</span>
                         </>
                       )}
-                      <span>{account.method}</span>
+                      <span>
+                        {[...new Set(bindings.map((binding) => binding.method))].join(", ")}
+                      </span>
                       {account.health?.info && (
                         <>
                           <span aria-hidden>·</span>
@@ -183,9 +206,18 @@ function AccountsList({
                   ) : (
                     apps.map((app) => (
                       <AppLink app={app.id} view="accounts" key={app.id}>
-                        <AccountCheckDot
-                          health={account.health?.apps.find((entry) => entry.app === app.id)}
-                        />
+                        {bindings
+                          .filter((binding) =>
+                            data.links.some(
+                              (link) => link.app === app.id && link.account === binding.id,
+                            ),
+                          )
+                          .map((binding) => (
+                            <AccountCheckDot
+                              key={binding.id}
+                              health={binding.health?.apps.find((entry) => entry.app === app.id)}
+                            />
+                          ))}
                         {app.name}
                         <HugeiconsIcon
                           icon={ArrowUpRight01Icon}
@@ -197,8 +229,36 @@ function AccountsList({
                     ))
                   )}
                 </div>
-                <div className="flex items-center justify-end gap-2 max-[740px]:col-start-2 max-[740px]:row-start-1">
-                  {accountActions?.(account)}
+                <div className="flex items-center justify-end gap-2 max-[740px]:col-span-2 max-[740px]:col-start-1 max-[740px]:row-start-2 max-[740px]:justify-start max-[740px]:flex-wrap max-[740px]:pl-11.5">
+                  {account.identity !== undefined && identityActions?.(bindings, data)}
+                  {bindings.length === 1 ? (
+                    accountActions?.(account)
+                  ) : (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          Manage apps
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-72 p-2">
+                        {bindings.map((binding) => (
+                          <div
+                            key={binding.id}
+                            className="flex items-center justify-between gap-3 px-2 py-2"
+                          >
+                            <span className="min-w-0 break-words text-[12px]">
+                              {bindingApps(data, [binding])
+                                .map((app) => app.name)
+                                .join(", ") ||
+                                binding.providerName ||
+                                "Saved sign-in"}
+                            </span>
+                            {accountActions?.(binding)}
+                          </div>
+                        ))}
+                      </PopoverContent>
+                    </Popover>
+                  )}
                 </div>
               </div>
             );

@@ -38,7 +38,16 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
       Effect.mapError(() => new StorageError()),
     );
     const { hosts: _hosts, ...shared } = parsed;
-    const content = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
+    // Identity discovery adds display provenance, never a new provider compatibility class.
+    const auth = Object.fromEntries(
+      Object.entries(shared.auth).map(([name, method]) => {
+        if (method.type !== "oauth2" || method.grant === "client_credentials")
+          return [name, method];
+        const { identity: _identity, ...compatible } = method;
+        return [name, compatible];
+      }),
+    );
+    const content = yield* Schema.decodeUnknownEffect(JsonObject)({ ...shared, auth }).pipe(
       Effect.mapError(() => new StorageError()),
     );
     const hash = yield* crypto

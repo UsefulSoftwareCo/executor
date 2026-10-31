@@ -19,6 +19,7 @@ import { usePairingLinks } from "./connection.ts";
 import { cn } from "@executor-js/ui/lib/utils";
 import { Button } from "@executor-js/ui/components/button";
 import { Failure } from "./components/common.tsx";
+import { accountGroups } from "@executor-js/ui/contracts/account-identities";
 import { LocalDashboard } from "./dashboard-bindings.tsx";
 import { DashboardShell } from "@executor-js/ui/dashboard/shell";
 import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
@@ -169,7 +170,7 @@ function Dashboard() {
           >
             <HugeiconsIcon icon={UserCircleIcon} strokeWidth={2} aria-hidden size={16} />
             Accounts
-            {Option.isSome(data) && <span>{data.value.accounts.length}</span>}
+            {Option.isSome(data) && <span>{accountGroups(data.value.accounts).length}</span>}
           </Link>
           <Link
             to="/approvals"
