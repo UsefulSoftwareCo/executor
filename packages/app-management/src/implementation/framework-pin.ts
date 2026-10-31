@@ -118,6 +118,25 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
   );
 };
 
+/**
+ * `files` carrying the framework pin `workspace`'s manifest declares, so committing other source
+ * over a pinned workspace keeps the pin. Unchanged when `workspace` declares no pin release, or
+ * when `files` declares its own `apps`.
+ */
+export const withFrameworkPin = (workspace: SourceFiles, files: SourceFiles) =>
+  Effect.gen(function* () {
+    const declared = Option.flatMap(
+      Schema.decodeUnknownOption(Schema.fromJsonString(JsonObject))(manifestOf(workspace) ?? ""),
+      (document) => Schema.decodeUnknownOption(Dependencies)(document.dependencies),
+    ).pipe(Option.flatMapNullishOr((dependencies) => dependencies.apps));
+    const release = Option.filter(declared, (apps) =>
+      [frameworkPinRelease, frameworkPinCatchUpRelease].includes(apps),
+    );
+    if (Option.isNone(release)) return files;
+    const manifest = pinManifest(manifestOf(files), release.value);
+    return manifest.kind === "pin" ? yield* withManifest(files, manifest.content) : files;
+  });
+
 /** A JSON value with object keys sorted, so equal documents compare equal whatever their key order. */
 const canonical = (value: unknown): unknown =>
   Array.isArray(value)

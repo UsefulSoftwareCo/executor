@@ -3079,6 +3079,21 @@ export const scenarios = plan({
       local: na("The shared catalog form is exercised through hosted installation."),
     },
   },
+  catalogAppUpdates: {
+    fixtures: "actors",
+    file: "catalog-app-updates.spec.ts",
+    title:
+      "Installed catalog apps update with the catalog, and an update that breaks accounts or replaces an edit waits for a manager",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud queues the same member setup from its daily cron; the shared sweep is exercised through self-host.",
+      ),
+      local: na(
+        "Updating installed catalog apps is a hosted feature; local keeps its copies as installed.",
+      ),
+    },
+  },
   catalogAgentSearch: {
     fixtures: "actors",
     managementApps: ["owner"],
@@ -5634,6 +5649,18 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: sourceStorageCloud,
       local: na("Local's /v1 API is covered by localVersionApiCompatibility."),
+    },
+  },
+  localDeployExpectedVersion: {
+    file: "local-deploy-expected-version.spec.ts",
+    title:
+      "A deploy that expects an active version fails without saving one when another version is active",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The SDK deploy check is shared; hosted catalog updates use it through self-host.",
+      ),
+      cloud: na("The SDK deploy check is shared; hosted catalog updates use it through self-host."),
     },
   },
   localVersionApiCompatibility: {

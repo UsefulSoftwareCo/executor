@@ -15,11 +15,13 @@ export function AppVersions<E>({
   file,
   Failure,
   actions,
+  notice,
 }: AppVersionsProps<E>) {
   const { result, refresh } = useQuery(query);
   const isActive = version === app.activeVersion;
   return (
     <section aria-label="App versions" className="flex min-h-0 flex-1 flex-col">
+      {notice}
       <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
         <nav
           aria-label="Version history"

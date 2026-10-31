@@ -27,6 +27,7 @@ export const BackgroundJob = Schema.Literals([
   "workflow-reconcile",
   "billing-reconcile",
   "agent-grant-expiry",
+  "catalog-app-updates",
 ]);
 export type BackgroundJob = typeof BackgroundJob.Type;
 

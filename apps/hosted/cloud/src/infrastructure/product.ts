@@ -19,7 +19,7 @@ import { AppRepositoryRecovery, RepositoryHost, StorageError } from "@executor-j
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import type * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Layer } from "effect";
+import { Config, Effect, Layer, Option } from "effect";
 import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
 import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
 import { UiFailed } from "apps/ui/contracts";
@@ -28,6 +28,8 @@ import { cloudProductServices } from "./product-services.ts";
 import { cloudAppSources } from "./source.ts";
 import { cloudHosts } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
+import { cachedFeedClient } from "../implementation/catalog-feed-cache.ts";
+import { cloudEgress } from "./executor.ts";
 
 /**
  * Every hosted service the cloud Workers provide, composed over {@link cloudProductServices}. The
@@ -63,11 +65,23 @@ export const cloudProduct = Effect.fn(function* (
       const { defaultApp, executorCloudApiDocument } = yield* Effect.promise(
         () => import("../implementation/default-app.ts"),
       );
+      // Catalog app updates read the feed installs read, through the same cache.
+      const feedUrl = yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option);
+      const egress = yield* cloudEgress;
       return yield* withDatabase(
         defaultApp(
           yield* sdk,
           apiOrigin,
           Effect.sync(() => (document ??= executorCloudApiDocument(apiOrigin))),
+          Option.isNone(feedUrl)
+            ? undefined
+            : {
+                url: feedUrl.value,
+                egress: {
+                  ...egress,
+                  client: cachedFeedClient(apiOrigin, feedUrl.value, egress.client),
+                },
+              },
         ),
       );
     }).pipe(

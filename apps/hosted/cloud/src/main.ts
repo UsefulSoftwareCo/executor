@@ -29,7 +29,11 @@ import {
   localRemovalStalls,
   removalStallBindings,
 } from "./infrastructure/organization-removal-stalls.ts";
-import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
+import {
+  HostedExecutor,
+  lazyHostedApiDocument,
+  queueCatalogAppUpdates,
+} from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { frameworkDocumentation, registryRoutes, gitRoutes } from "@executor-js/app-management";
@@ -399,6 +403,23 @@ export default Api.make(
       Effect.as(jobCompleted),
       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
     );
+    // Installed copies of the official feed's apps follow it: member setup sweeps them, and this
+    // daily pass queues member setup for every organization holding one.
+    const feedUrl = yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option);
+    const catalogAppUpdates = Effect.gen(function* () {
+      if (Option.isNone(feedUrl)) return;
+      const sql = yield* Effect.flatten(GroupDatabase);
+      yield* queueCatalogAppUpdates(feedUrl.value).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+    }).pipe(
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.withSpan("job.catalog-app-updates"),
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Catalog app update queueing failed")),
+    );
     const jobs = yield* cloudBackgroundJobs;
     yield* jobs.schedule(
       "* * * * *",
@@ -415,7 +436,12 @@ export default Api.make(
       "workflow-reconcile",
       "app-domain-heartbeat",
     );
-    yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
+    yield* jobs.schedule(
+      "17 4 * * *",
+      "billing-reconcile",
+      "agent-grant-expiry",
+      "catalog-app-updates",
+    );
     const backgroundJobs = {
       "organization-removal": organizationRemovals,
       provisioning: dispatch,
@@ -428,14 +454,13 @@ export default Api.make(
       "workflow-reconcile": workflowReconcile,
       "billing-reconcile": billingReconcile,
       "agent-grant-expiry": agentGrantExpiry,
+      "catalog-app-updates": catalogAppUpdates,
     } satisfies Record<BackgroundJob, unknown>;
 
     const egress = yield* cloudEgress;
     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
     // The official app feed Add app lists; without it, only the built-in Executor app is listed.
-    const catalogFeedUrl = Option.getOrUndefined(
-      yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
-    );
+    const catalogFeedUrl = Option.getOrUndefined(feedUrl);
     // Only /openapi.json and preparing the Executor catalog app read the document.
     // Clients and the Executor app call the API at its canonical origin.
     const apiOrigin = auth.resourceOrigins.api[0];

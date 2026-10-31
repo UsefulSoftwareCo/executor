@@ -16,11 +16,13 @@ import {
   DialogTitle,
 } from "@executor-js/ui/components/dialog";
 import { Exit, type Cause } from "effect";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { useContext, useState } from "react";
 import {
   activateAppAtom,
   appAtom,
+  applyCatalogUpdateAtom,
+  catalogUpdateAtom,
   versionsAtom,
   sourceAtom,
   sourceFileAtom,
@@ -62,10 +64,97 @@ export function AppVersions({ app }: { readonly app: App }) {
                 <ActivateVersion key={version} app={app} version={version} />
               )
             }
+            notice={app.copiedFrom !== null && <CatalogUpdate app={app} />}
           />
         )}
       </QueryView>
     </>
+  );
+}
+
+/**
+ * A catalog update held back for a copied app, if any. It always breaks accounts or replaces
+ * someone's version, so applying it asks first.
+ */
+function CatalogUpdate({ app }: { readonly app: App }) {
+  const { organization } = useOrganizationRoute();
+  const result = useAtomValue(catalogUpdateAtom({ organization, app: app.id }));
+  const update = AsyncResult.isSuccess(result) ? result.value : null;
+  if (update === null) return null;
+  return <CatalogUpdateNotice app={app} update={update} />;
+}
+
+function CatalogUpdateNotice({
+  app,
+  update,
+}: {
+  readonly app: App;
+  readonly update: NonNullable<Atom.Success<ReturnType<typeof catalogUpdateAtom>>>;
+}) {
+  const { organization } = useOrganizationRoute();
+  const apply = useAtomSet(applyCatalogUpdateAtom({ organization, app: app.id }), {
+    mode: "promiseExit",
+  });
+  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<Cause.Cause<HostedError>>();
+  const newAccount = update.reasons.includes("added");
+  const run = async () => {
+    if (pending) return;
+    setPending(true);
+    setError(undefined);
+    const result = await apply();
+    setPending(false);
+    if (Exit.isFailure(result)) setError(result.cause);
+    else setConfirming(false);
+  };
+  return (
+    <div
+      role="status"
+      className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-2 text-sm max-[740px]:px-4"
+    >
+      <span>
+        Update available
+        {update.reconnect > 0 &&
+          ` · ${update.reconnect} ${update.reconnect === 1 ? "account needs" : "accounts need"} reconnecting`}
+        {newAccount && " · needs a new account"}
+      </span>
+      <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
+        Update
+      </Button>
+      {error && !confirming && <HostedFailure cause={error} retry={() => setError(undefined)} />}
+      <Dialog
+        open={confirming}
+        onOpenChange={(open) => {
+          if (!open && !pending) {
+            setConfirming(false);
+            setError(undefined);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogTitle>Update this app?</DialogTitle>
+          <DialogDescription>
+            {update.touched && "This replaces the version someone deployed; it stays in Versions. "}
+            {update.reconnect > 0 &&
+              `${update.reconnect} linked ${update.reconnect === 1 ? "account stops" : "accounts stop"} working until reconnected. `}
+            {newAccount && "The update needs an account nobody has linked yet. "}
+            {update.reasons.includes("cardinality") &&
+              "It uses one account where several are linked now. "}
+            New calls will use the catalog's current code.
+          </DialogDescription>
+          {error && <HostedFailure cause={error} retry={() => setError(undefined)} />}
+          <DialogFooter>
+            <Button variant="outline" disabled={pending} onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+            <Button loading={pending} onClick={() => void run()}>
+              Update
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

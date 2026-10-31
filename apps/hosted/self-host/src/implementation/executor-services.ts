@@ -40,7 +40,10 @@ import {
   withExecutorAnalytics,
   executorDefaultRedeployed,
   hostedAppCopies,
+  queueCatalogAppUpdates,
+  withCatalogAppUpdates,
 } from "@executor-js/hosted-server";
+import { catalogFeedUrl } from "../contracts/config.ts";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { deliverEvents } from "@executor-js/sdk/scheduling";
@@ -183,12 +186,26 @@ export const selfHostExecutorServices = <E, R>(
           Effect.repeat(Schedule.spaced("5 seconds")),
         ),
       );
-      const initialize = yield* organizationDefaults(
+      // Installed copies of the official feed's apps follow it: member setup sweeps them, and a
+      // daily pass, starting now, queues member setup for every organization holding one.
+      const feed = yield* catalogFeedUrl;
+      if (Option.isSome(feed))
+        yield* Effect.forkScoped(
+          queueCatalogAppUpdates(feed.value).pipe(
+            Effect.catch(() => Effect.logWarning("Catalog app update queueing failed")),
+            Effect.repeat(Schedule.spaced("1 day")),
+          ),
+        );
+      const initialize = yield* withCatalogAppUpdates(
         executor,
-        origin,
-        api.document,
-        // Password registration is admitted locally; self-host does not send verification mail.
-        false,
+        Option.isSome(feed) ? { egress, url: feed.value } : undefined,
+        yield* organizationDefaults(
+          executor,
+          origin,
+          api.document,
+          // Password registration is admitted locally; self-host does not send verification mail.
+          false,
+        ),
       );
       const scheduleAuthority = yield* makeScheduledAuthority(executor);
       // Records and wakes setup only inside requests that carry this instance's analytics sink

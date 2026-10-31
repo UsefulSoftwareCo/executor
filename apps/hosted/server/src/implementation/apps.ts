@@ -1,5 +1,5 @@
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
-import { requireAppAccess } from "./resource-policy.ts";
+import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
 import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executor-js/catalog";
 import {
@@ -10,13 +10,15 @@ import {
   type OwnerId,
 } from "@executor-js/sdk/core";
 import { Effect } from "effect";
-import { CurrentOrganizationNamespace } from "../contracts/organization.ts";
+import { CurrentOrganization, CurrentOrganizationNamespace } from "../contracts/organization.ts";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import type { DeployApp, InstallApp } from "../contracts/apps.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { appManagerOwner, currentOwner } from "./access.ts";
+import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
+import { SqlClient } from "effect/sql";
 
 /** Install a catalog entry as a new app without replacing an existing name. */
 export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
@@ -111,6 +113,26 @@ export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
       ...(version === undefined ? {} : { version }),
     });
   });
+/** A catalog update held back for this app, which a manager may apply. */
+export const catalogUpdate = (owner: OwnerId, app: AppId) =>
+  Effect.gen(function* () {
+    const executor = yield* Effect.flatten(HostedExecutor);
+    const { organization } = yield* CurrentOrganization;
+    const current = yield* executor.apps.get({ owner, app });
+    return yield* catalogAppOffer(organization, current).pipe(
+      Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
+    );
+  });
+/** Deploy the held-back catalog source as the app's active version. */
+export const applyCatalogUpdate = (app: AppId) =>
+  Effect.gen(function* () {
+    const executor = yield* Effect.flatten(HostedExecutor);
+    const catalog = yield* HostedCatalog;
+    const { organization } = yield* CurrentOrganization;
+    return yield* applyCatalogAppOffer(executor, catalog, organization, app).pipe(
+      Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
+    );
+  });
 /** Activation moves a pointer; it never rewinds app data or upstream side effects. */
 export const activateApp = (
   owner: OwnerId,
@@ -185,6 +207,12 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
     .handle("sourceDisplayFile", ({ params, query }) => versionDisplayFile(params, query.path))
     .handle("legacySourceDisplayFile", ({ params, query }) =>
       versionDisplayFile(params, query.path),
+    )
+    .handle("catalogUpdate", ({ params }) =>
+      Effect.flatMap(appManagerOwner(params.app), (owner) => catalogUpdate(owner, params.app)),
+    )
+    .handle("applyCatalogUpdate", ({ params }) =>
+      Effect.andThen(appManagerOwner(params.app), applyCatalogUpdate(params.app)),
     )
     .handle("activate", ({ params, payload }) =>
       Effect.flatMap(appManagerOwner(params.app), (owner) =>
