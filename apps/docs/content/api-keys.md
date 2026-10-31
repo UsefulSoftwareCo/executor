@@ -7,9 +7,9 @@ description: "Create a personal access token for a script or agent. Tokens use y
 
 Executor API keys are personal access tokens (PATs). A token authenticates as you
 and uses your current permissions in the organization targeted by each request.
-Tokens have no permission or tool-selection settings of their own. To limit
-what an agent reaches, connect it through a
-[scoped connection](/mcp#scoped-connections) instead.
+Tokens created in Account settings use your full current permissions. To select
+which apps and tools an agent reaches, use a
+[scoped connection](/mcp#scoped-connections).
 
 Tokens belong to your account, not to an organization. They live under
 **Account settings → Tokens** (`/account/tokens`), reached from your avatar menu,
@@ -47,6 +47,19 @@ to an organization you do not belong to. Tool approval rules still apply.
 For `GET /api/context`, pass `?organization=<organization-id-or-slug>` instead. A token
 limited to one organization can omit it.
 Invalid, expired, or revoked tokens return `401`. Insufficient access returns `403`.
+
+## Tools-only clients
+
+A signed-in browser can create a tools-only key through
+`POST /api/auth/api-key/create` with
+`metadata: { organization: "<organization-id>", scope: "tools" }`.
+Tools-only keys start with `ext_`; older servers refuse them. The key can discover and run tools in that organization, with your current roles
+and the tools' existing approval rules. It cannot read app source, manage apps,
+change account settings or create more keys. Keep model gateway credentials
+separate. Omitting `scope` preserves ordinary personal token permissions.
+
+This limits the key's API authority. Connected tools still use the accounts and
+permissions you granted them; review those before giving a client tool access.
 
 ## Expiry and revocation
 

@@ -3,11 +3,11 @@ import { generateRandomString } from "better-auth/crypto";
 import { SqlClient } from "effect/sql";
 import { StorageError } from "@executor-js/sdk/core";
 import type { GenericEndpointContext } from "@better-auth/core";
-import { fullAuthority } from "@executor-js/authorization";
+import { fullAuthority, selectedAuthority } from "@executor-js/authorization";
 import { authCall } from "@executor-js/mcp-auth/oauth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { Effect, Option, Redacted, Schema } from "effect";
-import { ApiKeyId, ApiKeyMetadata, CreateApiKey } from "../contracts/api-keys.ts";
+import { ApiKeyId, ApiKeyMetadata, ApiKeyScope, CreateApiKey } from "../contracts/api-keys.ts";
 import { OrganizationId } from "../contracts/organization.ts";
 
 /** Better Auth owns the only key store and lifecycle for personal and saved Executor accounts. */
@@ -25,6 +25,13 @@ export const apiKeys = apiKey({
 
 /** Stored metadata; keys created before pinning existed carry none. */
 const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
+
+// Older hosts reject this prefix instead of ignoring a scope they do not understand.
+const toolsKeyPrefix = "ext_";
+
+/** An omitted scope preserves existing keys; tools keys cannot manage the account or app source. */
+export const apiKeyAuthorization = (scope: typeof ApiKeyScope.Type | undefined) =>
+  scope === "tools" ? selectedAuthority(["discover", "run"], { kind: "all" }) : fullAuthority;
 /** Pin a key to one organization; the auto-minted Executor app key always uses this. */
 export const pinnedKeyMetadata = (organization: OrganizationId) => ({ organization });
 
@@ -55,18 +62,25 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
           message: "You are not a member of that organization.",
         });
     }
+    if (input.value.metadata?.scope === "tools")
+      return { context: { body: { ...input.value, prefix: toolsKeyPrefix } } };
   }
   if (!["/api-key/create", "/api-key/list", "/api-key/get", "/api-key/delete"].includes(ctx.path))
     throw new APIError("NOT_FOUND");
 });
 
 /** Native PATs select key authentication instead of the OAuth bearer path. */
-export const isApiKey = (token: string) => token.startsWith("exp_");
+export const isApiKey = (token: string) =>
+  token.startsWith("exp_") || token.startsWith(toolsKeyPrefix);
+
+/** A scoped key cannot become unrestricted if its metadata is missing or damaged. */
+export const apiKeyScopeMatches = (token: string, scope: typeof ApiKeyScope.Type | undefined) =>
+  token.startsWith(toolsKeyPrefix) === (scope === "tools");
 
 /** Project a native key into current-user authority; deleted users cannot retain access. */
 const identity = (
   ctx: GenericEndpointContext,
-  key: { id: string; referenceId: string; metadata: unknown },
+  key: { id: string; referenceId: string; metadata: unknown; prefix: string | null },
 ) =>
   Effect.gen(function* () {
     const user = yield* authCall(() =>
@@ -84,10 +98,12 @@ const identity = (
     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(key.metadata).pipe(
       Effect.mapError(() => new APIError("UNAUTHORIZED")),
     );
+    if (!apiKeyScopeMatches(key.prefix ?? "", metadata?.scope))
+      return yield* Effect.fail(new APIError("UNAUTHORIZED"));
     return {
       userId: key.referenceId,
       key: { id },
-      policy: fullAuthority,
+      policy: apiKeyAuthorization(metadata?.scope),
       organization: metadata?.organization,
     };
   });
