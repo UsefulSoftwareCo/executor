@@ -247,8 +247,23 @@ export const dashboard = (
       { concurrency: 4 },
     );
     // An account's checks are those of the apps that link it, in either scope; the inventory
-    // lists the user links, each app and account once.
+    // lists the user and app links apart, each app and account once per scope.
     const all = yield* accountLinks(sql, executor);
+    const listedApps = new Set(apps.map((app) => app.id));
+    const appAccounts = new Map<AppId, Set<AccountId>>();
+    for (const link of all) {
+      if (link.subject !== null || !listedApps.has(link.app)) continue;
+      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
+      accounts.add(link.account);
+      appAccounts.set(link.app, accounts);
+    }
+    const appAccountCounts = apps.map((app) => ({
+      app: app.id,
+      count: appAccounts.get(app.id)?.size ?? 0,
+    }));
+    const appLinks = [...appAccounts].flatMap(([app, accounts]) =>
+      [...accounts].map((account) => ({ app, account })),
+    );
     const pairs = (subjectScoped: boolean) => {
       const seen = new Set<string>();
       return all.flatMap((link) => {
@@ -275,7 +290,7 @@ export const dashboard = (
         ...(health === undefined ? {} : { health }),
       });
     }
-    return { apps, links, accounts: display };
+    return { apps, links, appLinks, appAccountCounts, accounts: display };
   });
   const appDetail = (appId: AppId) =>
     Effect.gen(function* () {
